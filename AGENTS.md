@@ -47,7 +47,10 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/secretbox` | AES-256-GCM encryption of stored credentials, `secret.key` |
 | `internal/encryption` | age encryption |
 | `internal/events`, `internal/notify`, `internal/metrics` | Event bus, notifications, Prometheus |
-| `internal/server` | REST API, auth, dashboard serving |
+| `internal/operations` | Backup, job-run and restore use cases shared by the REST API and MCP |
+| `internal/audit` | Audit log of MCP tool calls |
+| `internal/server` | REST API, auth, route → scope table, dashboard serving |
+| `internal/mcp` | MCP adapter: tools, resources, prompts, Streamable HTTP handler, stdio bridge |
 | `internal/redact`, `internal/mongouri`, `internal/mongotools` | Credential scrubbing, URI validation, tool helpers |
 | `internal/integration` | Integration tests (`integration` build tag) |
 | `web/static` | Embedded dashboard |

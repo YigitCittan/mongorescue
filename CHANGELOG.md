@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MCP server for AI assistants ([docs/mcp.md](docs/mcp.md)), built on the official MCP Go SDK: Streamable HTTP at `/mcp` on the main listener (API keys only, stateless, JSON responses) and `mongorescue mcp`, a stdio bridge that forwards to a running instance with `MONGORESCUE_MCP_API_KEY`. Tools `list_connections`, `list_databases`, `list_collections`, `list_jobs`, `get_job`, `list_backups`, `get_backup`, `list_restores`, `get_restore`, `list_storage_targets`, `get_status` (read) and `start_backup`, `run_job`, `restore_to_safe_clone` (operator), with MCP tool annotations; resources `mongorescue://status`, `mongorescue://backups/{id}`, `mongorescue://jobs/{id}`, `mongorescue://restores/{id}`; prompts `diagnose_failed_backup`, `disaster_recovery_plan`, `verify_recent_backups`. Settings → Security → *MCP server for AI assistants* (`security.mcp_enabled`, on by default) switches it off.
+- API key scopes: `read` (GET-only REST and read-only MCP tools), `operator` (plus backups, job runs and safe-clone restores) and `admin` (everything), enforced centrally from one route → scope table; chosen when creating a key (default `read`) and shown in the key list.
+- Audit log of every MCP tool call (time, API key, transport, tool, redacted arguments, result, duration) in the new `audit_log` table, shown under Settings → Security → *Recent API/MCP activity* and served by `GET /api/v1/audit` (admin).
+- Per-API-key rate limit for MCP (60 calls per minute, bursts of 20) and the `mongorescue_mcp_calls_total{tool,result}` metric.
 - Embedded SQLite metadata store (`mongorescue.db` in the data directory) replacing `state.json`: pure-Go driver (no CGO), WAL mode, versioned schema migrations, transactional multi-step writes, files created with mode `0600`.
 - Automatic migration from `state.json`: on the first start with an empty database, every job, backup and restore record, notification channel and rule is imported in one transaction, the counts are verified, and the file is renamed to `state.json.migrated-<timestamp>`. A failed import leaves `state.json` untouched and stops startup; if the database already has data, `state.json` is ignored with a warning.
 - Zero-configuration first run: without users the server starts in setup mode and logs a one-time setup code; `POST /api/v1/setup` creates the first user.
@@ -26,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One-time import of the deprecated environment variables and `<data_dir>/config.json` into the database, with a warning per source.
 
 ### Changed
+- API keys created without a `scope` are read-only; existing keys and the key imported from `MONGORESCUE_API_KEY` become `admin` keys (migration `0004`), so current automation keeps working. In-place restores need an admin key or a session.
+- The backup, job-run and restore use cases moved from the HTTP handlers into `internal/operations`, shared by the REST API and the MCP server; unexpected errors of these endpoints answer `internal error` instead of the raw error text.
 - Only bootstrap options remain outside the database: `-data-dir`/`MONGORESCUE_DATA_DIR`, `-host`/`-port` (`MONGORESCUE_SERVER_HOST`/`_PORT`), `-log-level`, the optional `MONGORESCUE_SECRET_KEY` and `-version`.
 - The API always requires a session or an API key; the unauthenticated mode is gone.
 - Jobs and manual backups require `connection_id`; `mongo_uri` is no longer accepted in jobs, backups or restores.
@@ -39,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The JSON configuration file (`-config`), `config.example.json`, `.env.example`, the flags `-api-key`, `-mongo-uri`, `-storage` and `-gen-age-key` (the dashboard generates keys), `database_path`/`MONGORESCUE_DB_PATH` (the database is always `<data_dir>/mongorescue.db`), `GET /api/v1/config` and every other environment variable (static API key, MongoDB URI, storage, encryption, restore, timeouts, CORS, metrics, cookies, proxy headers).
 
 ### Security
+- The MCP endpoint never accepts session cookies, refuses foreign `Origin` headers and non-local `Host` names on a loopback listener (DNS rebinding) unless proxy headers are trusted, exposes no tool that deletes, restores in place or changes configuration, filters and re-checks tools by scope, and never returns connection strings or storage credentials.
 - Login attempts are reserved atomically before the password check (one in flight per client IP and username, four per IP), so parallel requests cannot exceed the failure budget.
 - Every login performs exactly one bcrypt comparison whether or not the user exists; passwords over 72 bytes are rejected before the user lookup.
 - The per-IP failure count only tightens the per-user budget and never refuses a correct password for an unlocked user; wrong setup codes are throttled only after 100 per IP in 15 minutes and never block the correct code.

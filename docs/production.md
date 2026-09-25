@@ -7,7 +7,8 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] TLS terminated by a reverse proxy in front of MongoRescue, with **Settings → Security → Trust proxy headers** on (or *Secure cookies: always*) so session cookies are marked `Secure`.
 - [ ] Setup completed right after the first start (until then, anyone who can reach the port and read the logs can claim the instance).
 - [ ] The HTTP port reachable only from the proxy and your monitoring, not from the internet.
-- [ ] One user per person; API keys (not user passwords) for automation, one per consumer.
+- [ ] One user per person; API keys (not user passwords) for automation, one per consumer, with the smallest scope that works (`read` for dashboards and assistants that only report, `operator` for backup automation).
+- [ ] The [MCP endpoint](mcp.md) switched off under Settings → Security if no AI assistant uses it.
 - [ ] Backups encrypted with X25519 recipients; private key stored off the backup host.
 - [ ] `mongorescue.db` backed up consistently (see [Data directory](#data-directory)) and `secret.key` (or `MONGORESCUE_SECRET_KEY`) stored somewhere safe, separately.
 - [ ] Container image pinned to a release tag.
@@ -36,7 +37,8 @@ Every API call needs a session or an API key; there is no unauthenticated mode. 
 - **Users** sign in to the dashboard. Passwords are hashed with bcrypt and must be 12 to 72 bytes long. Every user is an administrator in this release.
 - **Sessions** use an `HttpOnly`, `SameSite=Strict` cookie and a CSRF token that the dashboard sends with every change. They expire after 12 hours of inactivity or 7 days after login, and are revoked on logout, when the user's password changes (all other sessions) or when the user is deleted.
 - **Login throttling**: 5 failures for the same client address and username lock that pair out for 30 seconds, doubling up to 15 minutes. After 20 failures from one address, each further username from it is locked after one failure; a correct password for an unlocked user is never refused, so users behind one proxy address cannot be locked out by someone else. Attempts are reserved before the password check (one at a time per address and username), so parallel requests cannot exceed the budget. The lockouts live in memory.
-- **API keys** are created in Settings → API keys, shown once, and stored only as SHA-256 hashes; each records when it was last used. Send them as `Authorization: Bearer <key>` or `X-API-Key: <key>`. A `MONGORESCUE_API_KEY` from an earlier build is imported once as a key named *Imported from MONGORESCUE_API_KEY*; remove the variable afterwards.
+- **API keys** are created in Settings → API keys, shown once, and stored only as SHA-256 hashes; each records when it was last used. Send them as `Authorization: Bearer <key>` or `X-API-Key: <key>`. Each key has a scope: `read` (the default), `operator` (also backups, job runs and safe-clone restores) or `admin` ([api.md](api.md#api-key-scopes)). A `MONGORESCUE_API_KEY` from an earlier build is imported once as an admin key named *Imported from MONGORESCUE_API_KEY*; remove the variable afterwards, and replace admin keys with narrower ones where you can.
+- **AI assistants** use the [MCP endpoint](mcp.md) `/mcp` with an API key; it never accepts sessions, cannot delete anything or restore in place, and records every call in the audit log (Settings → Security). Behind a reverse proxy on the same host, turn on *Trust proxy headers*; otherwise `/mcp` refuses requests whose `Host` is not local (DNS-rebinding protection).
 
 The channel **test** endpoint and the connection test make outbound requests to whatever destination they name, so only give accounts and keys to people and systems you trust with network access from the MongoRescue host.
 
