@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -518,7 +519,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden: "+err.Error())
 	default:
-		s.logger.Error("operation failed", slog.Any("error", err))
+		s.logger.Error("operation failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

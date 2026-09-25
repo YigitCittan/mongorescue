@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 )
 
 // Session lifetimes.
@@ -543,7 +545,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 		return nil, "", err
 	}
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
-		slog.String("scope", string(k.Scope)), slog.String("by", actor.UserID()))
+		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()))
 	return k, plain, nil
 }
 
