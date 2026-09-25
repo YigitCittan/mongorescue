@@ -17,11 +17,11 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 
 | Scope | Allowed |
 | :--- | :--- |
-| `read` | Every `GET` route except `GET /api/v1/audit`, `/metrics`, and the MCP endpoint (read tools only) |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone (and the MCP action tools) |
-| `admin` | Everything: deletions, in-place restores, jobs, connections, storage targets, notifications, settings, users, API keys and the audit log |
+| `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone on the backup's own connection (and the MCP action tools) |
+| `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
-An in-place restore (`"safe_clone": false` or a `target_database`) needs `admin` even though the route itself needs `operator`. Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
+An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`. Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
 
 Failed logins return a generic `401`. After 5 failures for the same (client IP, username), further attempts for that pair get `429 Too Many Requests` with `Retry-After`; the lockout starts at 30 seconds and doubles up to 15 minutes. Once an IP has 20 recent failures, each further username from it is locked after a single failure, but the correct password of a user that is not locked always works, so clients sharing one address (NAT, a proxy) cannot lock each other out. Only one attempt per (IP, username) is checked at a time, and at most four per IP for usernames that already failed; concurrent extras get `429` with `Retry-After: 2`. Password comparisons share a global pool (twice the number of CPUs): a login waits up to 5 seconds for a free slot rather than being refused. Wrong setup codes are throttled only after 100 per IP within 15 minutes, and the correct code is always accepted. Passwords longer than 72 bytes are rejected without a password check.
 
@@ -39,7 +39,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin, 415, 429 |
 | `POST` | `/api/v1/auth/logout` | Revoke the current session | 200 | |
 | `GET` | `/api/v1/auth/me` | `{user, csrf_token, auth: "session"\|"api_key"}`; signed out: `{user: null, csrf_token: "", auth: ""}` | 200 | |
-| `GET` / `POST` | `/api/v1/users` | List / create users `{username, password}` | 200 / 201 | 400, 409 username taken |
+| `GET` / `POST` | `/api/v1/users` | List / create users `{username, password}`; admin only | 200 / 201 | 400, 403, 409 username taken |
 | `DELETE` | `/api/v1/users/{id}` | Delete a user and revoke their sessions and API keys | 200 | 400 yourself, 404, 409 last user |
 | `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}` (current required for your own account) | 200 | 400, 403 wrong current password, 404 |
 | `GET` / `POST` | `/api/v1/api-keys` | List keys / create `{name, scope}` (`scope`: `read` (default), `operator` or `admin`) → `{api_key, key}` (plaintext only here) | 200 / 201 | 400 |
@@ -69,7 +69,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/backups` | List backups (`?database=` filter) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
-| `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `target_connection_id`, `verify`) | 202 | 400, 404, 409, 422 |
+| `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `target_connection_id` (admin), `verify`) | 202 | 400, 403, 404, 409, 422 |
 | `GET` | `/api/v1/restores` | Restore audit history | 200 | |
 | `GET` / `POST` | `/api/v1/notifications/channels` | List / create notification channels | 200 / 201 | 400 |
 | `PUT` / `DELETE` | `/api/v1/notifications/channels/{id}` | Update / delete a channel | 200 | 400, 404 |
@@ -85,7 +85,7 @@ Every protected endpoint also answers `401` without valid credentials, `403` for
 
 Connection strings are validated, encrypted at rest and only ever returned redacted (`mongodb://user:******@host/...`). To keep the stored password when editing, send the URI back exactly as it was returned; any other value containing `******` is rejected. A connection test succeeds or fails with HTTP `200` (`ok: false` plus a redacted `error`) and times out after 10 seconds.
 
-Jobs and manual backups name a `connection_id`. Backup records keep `connection_id` and a `connection_name` snapshot. A restore goes to the backup's connection unless `target_connection_id` names another one, which restores across servers; restore records always carry `source_connection_id`, `source_connection_name`, `target_connection_id` and `target_connection_name`, the names as they were when the restore started.
+Jobs and manual backups name a `connection_id`. Backup records keep `connection_id` and a `connection_name` snapshot. A restore goes to the backup's connection unless `target_connection_id` names another one, which restores across servers and needs `admin`; restore records always carry `source_connection_id`, `source_connection_name`, `target_connection_id` and `target_connection_name`, the names as they were when the restore started.
 
 ## Settings
 

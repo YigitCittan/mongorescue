@@ -302,7 +302,9 @@ func runError(err error, busyMessage string) error {
 //
 // Restores go into a safe clone unless req explicitly asks for an in-place restore,
 // which must be confirmed (models.ErrInPlaceNotConfirmed, an ErrInvalid) and needs a
-// principal with the admin scope in ctx (auth.ErrForbidden). Other expected failures:
+// principal with the admin scope in ctx (auth.ErrForbidden). Restoring into another
+// connection than the backup's (req.TargetConnectionID) needs admin too: an operator
+// may only safe-clone into the server the backup was taken from. Other expected failures:
 // ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired, ErrBusy
 // and ErrShuttingDown.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
@@ -330,7 +332,13 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	}
 
 	// The target defaults to the server the backup was taken from; another connection
-	// restores across servers.
+	// restores across servers, which writes to a server the backup did not come from
+	// and so needs admin.
+	if req.TargetConnectionID != "" && req.TargetConnectionID != source.ConnectionID {
+		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
+			return nil, fmt.Errorf("restores into another connection than the backup's need an admin API key or a session: %w", scopeErr)
+		}
+	}
 	targetID := req.TargetConnectionID
 	if targetID == "" {
 		targetID = source.ConnectionID
