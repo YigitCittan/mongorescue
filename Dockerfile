@@ -2,7 +2,7 @@
 # Produces a self-contained image (<30MB) with pre-installed MongoDB database tools.
 
 # Stage 1: Build static Go binary
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /src
 
