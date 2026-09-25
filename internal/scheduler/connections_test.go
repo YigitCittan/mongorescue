@@ -93,8 +93,8 @@ func TestRetentionOnlyPrunesTheJobsConnection(t *testing.T) {
 
 	old := time.Now().UTC().AddDate(0, 0, -30)
 	for _, r := range []*models.BackupRecord{
-		{ID: "bkp_a_old", Database: "shop", ConnectionID: "conn_a", Status: models.StatusCompleted, StorageKey: "a/old", StartedAt: old},
-		{ID: "bkp_b_old", Database: "shop", ConnectionID: "conn_b", Status: models.StatusCompleted, StorageKey: "b/old", StartedAt: old},
+		{ID: "bkp_a_old", JobID: "job_a", Database: "shop", ConnectionID: "conn_a", Status: models.StatusCompleted, StorageKey: "a/old", StartedAt: old},
+		{ID: "bkp_b_old", JobID: "job_a", Database: "shop", ConnectionID: "conn_b", Status: models.StatusCompleted, StorageKey: "b/old", StartedAt: old},
 	} {
 		if err := st.SaveBackupRecord(ctx, r); err != nil {
 			t.Fatal(err)

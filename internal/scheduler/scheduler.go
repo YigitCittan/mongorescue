@@ -287,22 +287,28 @@ func (s *Scheduler) UnregisterJob(jobID string) {
 // TriggerJob executes a job immediately on demand and waits for it to finish. Like
 // every on-demand run it never applies retention (see ExecuteJobRun).
 func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) (*models.BackupRecord, error) {
-	job, record, err := s.PrepareJobRun(ctx, jobID)
+	job, record, err := s.PrepareJobRun(ctx, jobID, models.TriggerOnDemand)
 	if err != nil {
 		return nil, err
 	}
 	return s.ExecuteJobRun(ctx, job, record)
 }
 
-// PrepareJobRun loads jobID and returns the job with the in-progress backup record its
-// run will produce, without starting it. It wraps store.ErrNotFound for unknown jobs.
-// Pass both to ExecuteJobRun (typically in the background).
-func (s *Scheduler) PrepareJobRun(ctx context.Context, jobID string) (*models.Job, *models.BackupRecord, error) {
+// PrepareJobRun loads jobID and returns the job with the in-progress backup record of
+// an on-demand run, without starting it. The record carries trigger (TriggerOnDemand
+// or TriggerMCP; anything else, including TriggerScheduled, is recorded as
+// TriggerOnDemand, so callers cannot make an on-demand run count for retention). It
+// wraps store.ErrNotFound for unknown jobs. Pass both to ExecuteJobRun (typically in
+// the background).
+func (s *Scheduler) PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.Job, *models.BackupRecord, error) {
 	job, err := s.metadataStore.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("retrieve job %s: %w", jobID, err)
 	}
-	opts, err := s.jobOptions(ctx, job)
+	if trigger != models.TriggerMCP {
+		trigger = models.TriggerOnDemand
+	}
+	opts, err := s.jobOptions(ctx, job, trigger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare job %s: %w", jobID, err)
 	}
@@ -324,7 +330,7 @@ func (s *Scheduler) ExecuteJobRun(ctx context.Context, job *models.Job, record *
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
-	opts, err := s.jobOptions(ctx, job)
+	opts, err := s.jobOptions(ctx, job, record.Trigger)
 	if err != nil {
 		record.Status, record.ErrorMessage = models.StatusFailed, err.Error()
 		return s.finishJobRun(ctx, job, record, err, false)
@@ -374,11 +380,12 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	_, _ = s.runBackupForJob(ctx, job)
 }
 
-// jobOptions derives the backup options of a job run, resolving its connection.
-// Without a ConnectionResolver the engine's default URI applies.
-func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job) (models.BackupOptions, error) {
+// jobOptions derives the backup options of a job run started by trigger, resolving its
+// connection. Without a ConnectionResolver the engine's default URI applies.
+func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger models.BackupTrigger) (models.BackupOptions, error) {
 	opts := models.BackupOptions{
 		JobID:              job.ID,
+		Trigger:            trigger,
 		Database:           job.Database,
 		Collections:        job.Collections,
 		ExcludeCollections: job.ExcludeCollections,
@@ -414,7 +421,7 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
-	opts, err := s.jobOptions(ctx, job)
+	opts, err := s.jobOptions(ctx, job, models.TriggerScheduled)
 	if err != nil {
 		return s.finishJobRun(ctx, job, nil, err, true)
 	}
@@ -482,11 +489,14 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	if scheduled && record.Status == models.StatusCompleted && (job.RetentionDays > 0 || job.RetentionCount > 0) {
 		history, listErr := s.metadataStore.ListBackupRecords(ctx, job.Database)
 		if listErr == nil {
-			// The same database name on another server is a different dataset, and
-			// retention counts per storage target: backups kept on another target
-			// (e.g. before the job was moved) are not pruned by this one.
+			// Retention only ever sees this job's own scheduled backups: on-demand,
+			// manual and MCP backups neither count towards the kept ones nor get
+			// pruned. The same database name on another server is a different
+			// dataset, and retention counts per storage target: backups kept on
+			// another target (e.g. before the job was moved) are not pruned by this one.
 			history = slices.DeleteFunc(history, func(r *models.BackupRecord) bool {
-				return r.ConnectionID != job.ConnectionID || r.StorageTargetID != record.StorageTargetID
+				return r.JobID != job.ID || r.EffectiveTrigger() != models.TriggerScheduled ||
+					r.ConnectionID != job.ConnectionID || r.StorageTargetID != record.StorageTargetID
 			})
 			_, _ = PruneBackupsOn(
 				ctx,

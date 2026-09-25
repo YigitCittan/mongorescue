@@ -225,6 +225,7 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 	record := &models.BackupRecord{
 		ID:             backupID,
 		JobID:          opts.JobID,
+		Trigger:        opts.Trigger,
 		Database:       opts.Database,
 		ConnectionID:   opts.ConnectionID,
 		ConnectionName: opts.ConnectionName,

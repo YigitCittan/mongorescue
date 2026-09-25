@@ -76,7 +76,7 @@ func TestOnDemandRunsNeverPrune(t *testing.T) {
 			}
 			continue
 		}
-		j, rec, err := s.PrepareJobRun(ctx, job.ID)
+		j, rec, err := s.PrepareJobRun(ctx, job.ID, models.TriggerMCP)
 		if err != nil {
 			t.Fatalf("PrepareJobRun: %v", err)
 		}
@@ -118,7 +118,7 @@ func TestCountRetentionKeepsRecentBackups(t *testing.T) {
 	for i := range 7 {
 		r := &models.BackupRecord{
 			ID: fmt.Sprintf("bkp_%d", i), Database: "shop", Status: models.StatusCompleted,
-			StartedAt: now.Add(-time.Duration(i) * time.Minute),
+			Trigger: models.TriggerScheduled, StartedAt: now.Add(-time.Duration(i) * time.Minute),
 		}
 		records = append(records, r)
 		_ = st.SaveBackupRecord(context.Background(), r)
@@ -148,7 +148,7 @@ func TestRetentionFloor(t *testing.T) {
 			for i := range 3 {
 				r := &models.BackupRecord{
 					ID: fmt.Sprintf("bkp_%d", i), Database: "shop", Status: models.StatusCompleted,
-					StartedAt: now.AddDate(0, 0, -5-i),
+					Trigger: models.TriggerScheduled, StartedAt: now.AddDate(0, 0, -5-i),
 				}
 				records = append(records, r)
 				_ = st.SaveBackupRecord(context.Background(), r)
@@ -163,5 +163,63 @@ func TestRetentionFloor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOnDemandRunsDoNotShieldGarbageFromRetention is the attack the trigger closes:
+// an operator runs a job three times on corrupted data, then the next cron run
+// applies retention_count=3. Only the job's scheduled backups count, so the two newest
+// good scheduled backups survive (with the cron run), only scheduled backups beyond
+// the policy are pruned, and on-demand, manual and MCP backups are never touched.
+func TestOnDemandRunsDoNotShieldGarbageFromRetention(t *testing.T) {
+	s, st, job := retentionFixture(t) // 5 good scheduled backups, 2 to 10 days old
+	ctx := context.Background()
+	old := time.Now().UTC().AddDate(0, 0, -20)
+	for _, rec := range []*models.BackupRecord{
+		{ID: "bkp_manual", Database: job.Database, Status: models.StatusCompleted, Trigger: models.TriggerManual, StartedAt: old},
+		{ID: "bkp_mcp", JobID: job.ID, Database: job.Database, Status: models.StatusCompleted, Trigger: models.TriggerMCP, StartedAt: old},
+		{ID: "bkp_other_job", JobID: "job_other", Database: job.Database, Status: models.StatusCompleted, Trigger: models.TriggerScheduled, StartedAt: old},
+	} {
+		if err := st.SaveBackupRecord(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var garbage []string
+	for range 3 {
+		rec, err := s.TriggerJob(ctx, job.ID)
+		if err != nil || rec.Trigger != models.TriggerOnDemand {
+			t.Fatalf("TriggerJob = %+v, %v; want an on_demand record", rec, err)
+		}
+		garbage = append(garbage, rec.ID)
+		time.Sleep(1100 * time.Millisecond) // backup IDs have second resolution
+	}
+	s.executeJob(ctx, job.ID) // the cron run
+
+	status := func(id string) models.BackupStatus {
+		rec, err := st.GetBackupRecord(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec.Status
+	}
+	for _, id := range append([]string{"bkp_old_1", "bkp_old_2", "bkp_manual", "bkp_mcp", "bkp_other_job"}, garbage...) {
+		if got := status(id); got != models.StatusCompleted {
+			t.Errorf("%s = %s; want kept", id, got)
+		}
+	}
+	for _, id := range []string{"bkp_old_3", "bkp_old_4", "bkp_old_5"} {
+		if got := status(id); got != models.StatusPruned {
+			t.Errorf("%s = %s; want pruned (scheduled, beyond retention_count)", id, got)
+		}
+	}
+	list, _ := st.ListBackupRecords(ctx, job.Database)
+	var cron int
+	for _, r := range list {
+		if r.JobID == job.ID && r.Trigger == models.TriggerScheduled && r.Status == models.StatusCompleted && !strings.HasPrefix(r.ID, "bkp_old_") {
+			cron++
+		}
+	}
+	if cron != 1 {
+		t.Fatalf("scheduled cron backups kept = %d; want 1", cron)
 	}
 }

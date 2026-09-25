@@ -101,7 +101,7 @@ func TestErrorsAreClassified(t *testing.T) {
 			_, err := svc.StartBackup(ctx, operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "c"}})
 			return err
 		}(), operations.ErrUnknownConnection, "unknown connection_id"},
-		{func() error { _, err := svc.RunJob(ctx, "job_x"); return err }(), operations.ErrSchedulerUnavailable, "scheduler"},
+		{func() error { _, err := svc.RunJob(ctx, "job_x", models.TriggerOnDemand); return err }(), operations.ErrSchedulerUnavailable, "scheduler"},
 		{func() error { _, err := svc.StartRestore(ctx, models.RestoreRequest{}); return err }(), operations.ErrInvalid, "backup_id required"},
 		{func() error {
 			f := false

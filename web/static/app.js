@@ -711,10 +711,18 @@ function storageDescription(type) {
   return String(type || "");
 }
 
-// "connection · job" line under a backup's database name.
+// How a backup was started; records written before triggers existed have none.
+const BACKUP_TRIGGERS = ["scheduled", "on_demand", "manual", "mcp"];
+
+function backupTrigger(b) {
+  const trigger = b.trigger || (b.job_id ? "scheduled" : "manual");
+  return BACKUP_TRIGGERS.includes(trigger) ? t(`metrics.trigger_${trigger}`) : "";
+}
+
+// "connection · job · trigger" line under a backup's database name.
 function backupOrigin(b) {
   const conn = b.connection_name || (b.connection_id ? connectionName(b.connection_id) : "");
-  return conn ? `${conn} · ${jobLabel(b.job_id)}` : jobLabel(b.job_id);
+  return [conn, b.job_id ? jobLabel(b.job_id) : "", backupTrigger(b)].filter(Boolean).join(" · ");
 }
 
 // Short note under a job's database when it backs up only some collections.

@@ -27,6 +27,25 @@ const (
 	StatusPruned BackupStatus = "pruned"
 )
 
+// BackupTrigger records how a backup was started. Retention only ever prunes
+// scheduled backups of the job that runs it; the others are kept until an admin
+// deletes them.
+type BackupTrigger string
+
+// Backup triggers.
+const (
+	// TriggerScheduled is a cron-triggered run of a job.
+	TriggerScheduled BackupTrigger = "scheduled"
+	// TriggerOnDemand is a job run started through the REST API or the dashboard
+	// (POST /api/v1/jobs/{id}/run).
+	TriggerOnDemand BackupTrigger = "on_demand"
+	// TriggerManual is a one-off backup started through the REST API or the
+	// dashboard (POST /api/v1/backups).
+	TriggerManual BackupTrigger = "manual"
+	// TriggerMCP is a backup or job run started by an AI assistant through MCP.
+	TriggerMCP BackupTrigger = "mcp"
+)
+
 // BackupRecord represents a persistent record of a completed or running backup.
 type BackupRecord struct {
 	// ID is the unique identifier for this backup (e.g. "bkp_20260924_153000_mydb").
@@ -34,6 +53,10 @@ type BackupRecord struct {
 
 	// JobID references the scheduled job that triggered this backup, if any.
 	JobID string `json:"job_id,omitempty"`
+
+	// Trigger records how the backup was started. Records written before triggers
+	// existed have none; see EffectiveTrigger.
+	Trigger BackupTrigger `json:"trigger,omitempty"`
 
 	// Database is the name of the backed up MongoDB database.
 	Database string `json:"database"`
@@ -94,6 +117,20 @@ type BackupRecord struct {
 	ErrorMessage string `json:"error_message,omitempty"`
 }
 
+// EffectiveTrigger returns r.Trigger, or for records written before triggers existed
+// TriggerScheduled when the record belongs to a job and TriggerManual otherwise (the
+// same rule the schema migration backfills with).
+func (r *BackupRecord) EffectiveTrigger() BackupTrigger {
+	switch {
+	case r.Trigger != "":
+		return r.Trigger
+	case r.JobID != "":
+		return TriggerScheduled
+	default:
+		return TriggerManual
+	}
+}
+
 // BackupOptions configures an on-demand or scheduled backup execution.
 type BackupOptions struct {
 	// Database is the target MongoDB database name to dump.
@@ -135,6 +172,10 @@ type BackupOptions struct {
 
 	// JobID associates this run with a scheduled job.
 	JobID string `json:"job_id,omitempty"`
+
+	// Trigger is recorded on the backup record. It is set by the application (the
+	// scheduler, the operations service), never read from clients.
+	Trigger BackupTrigger `json:"-"`
 }
 
 // Redacted returns a copy of the options with the MongoURI password masked, suitable
