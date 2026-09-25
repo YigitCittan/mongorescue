@@ -85,6 +85,12 @@ type Server struct {
 
 	// version is reported by the health endpoint.
 	version string
+
+	// mux is the router built by buildRoutes; the auth middleware asks it which route
+	// a request matches to enforce that route's scope. patterns lists every
+	// registered route pattern.
+	mux      *http.ServeMux
+	patterns []string
 }
 
 // WithVersion sets the build version reported by GET /api/v1/health.
@@ -209,9 +215,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-// buildRoutes registers all API endpoints using Go 1.22 ServeMux method routing.
+// buildRoutes registers all API endpoints using Go 1.22 ServeMux method routing. The
+// returned mux is also the one the auth middleware consults to find the matched route
+// (and so its required scope); the registered patterns are recorded in s.patterns.
 func (s *Server) buildRoutes() *http.ServeMux {
-	mux := http.NewServeMux()
+	mux := &router{mux: http.NewServeMux()}
+	s.mux = mux.mux
+	defer func() { s.patterns = mux.patterns }()
 
 	// Setup, sessions, users and API keys
 	s.registerAuthRoutes(mux)
@@ -256,7 +266,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 		mux.Handle("GET /", fileServer)
 	}
 
-	return mux
+	return mux.mux
 }
 
 // JSON API Response Envelope
@@ -672,6 +682,13 @@ func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
 	if err := req.ValidateTarget(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// The route needs operator; overwriting existing data in place needs admin.
+	if req.InPlace() {
+		if err := auth.RequireScope(r.Context(), auth.ScopeAdmin); err != nil {
+			writeError(w, http.StatusForbidden, "forbidden: in-place restores need an admin API key or a session ("+scopeMessage(err)+")")
+			return
+		}
 	}
 
 	// Lookup-based: any stored backup (including legacy-format IDs) may be restored.

@@ -104,6 +104,8 @@ type APIKey struct {
 	Name string `json:"name"`
 	// Prefix is the public, non-secret part of the key ("mr_<prefix>_...").
 	Prefix string `json:"prefix"`
+	// Scope limits what the key may do (read, operator or admin).
+	Scope Scope `json:"scope"`
 	// Hash is the hex SHA-256 of the full key; it is never serialised.
 	Hash string `json:"-"`
 	// CreatedBy is the ID of the user who created the key ("" for the static key).
@@ -124,6 +126,8 @@ const (
 	// MethodAPIKey is an API key (created in the dashboard or imported from the
 	// deprecated MONGORESCUE_API_KEY).
 	MethodAPIKey Method = "api_key"
+	// MethodSystem is the application acting on its own behalf (see SystemPrincipal).
+	MethodSystem Method = "system"
 )
 
 // Principal is the authenticated caller of a request.
@@ -136,8 +140,13 @@ type Principal struct {
 	SessionHash string
 	// CSRFToken is the session's CSRF token (MethodSession only).
 	CSRFToken string
-	// APIKeyID identifies the stored API key ("" for the static key).
+	// APIKeyID identifies the stored API key (MethodAPIKey only).
 	APIKeyID string
+	// APIKeyName is the label of the API key (MethodAPIKey only), for audit records.
+	APIKeyName string
+	// Scope is what the caller may do: the key's scope for API keys, ScopeAdmin for
+	// sessions (every user is an administrator).
+	Scope Scope
 }
 
 // UserID returns the acting user's ID or "".

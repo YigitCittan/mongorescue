@@ -17,7 +17,7 @@ func WithConnections(svc *connections.Service) Option {
 }
 
 // registerConnectionRoutes adds the managed connection endpoints.
-func (s *Server) registerConnectionRoutes(mux *http.ServeMux) {
+func (s *Server) registerConnectionRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/connections", s.handleListConnections)
 	mux.HandleFunc("POST /api/v1/connections", s.handleCreateConnection)
 	mux.HandleFunc("POST /api/v1/connections/test", s.handleTestConnectionURI)

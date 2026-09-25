@@ -23,7 +23,7 @@ func WithStorageTargets(svc *targets.Service) Option {
 }
 
 // registerStorageTargetRoutes adds the storage target endpoints.
-func (s *Server) registerStorageTargetRoutes(mux *http.ServeMux) {
+func (s *Server) registerStorageTargetRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/storage-targets", s.handleListTargets)
 	mux.HandleFunc("POST /api/v1/storage-targets", s.handleCreateTarget)
 	mux.HandleFunc("POST /api/v1/storage-targets/test", s.handleTestTargetInput)

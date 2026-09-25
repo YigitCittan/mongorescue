@@ -17,7 +17,7 @@ const maxNotificationBody = 64 << 10
 //
 // Deleting a channel that is referenced by rules succeeds and removes the channel ID
 // from those rules (rules left without channels stay stored but deliver nothing).
-func (s *Server) registerNotificationRoutes(mux *http.ServeMux) {
+func (s *Server) registerNotificationRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/notifications/channels", s.handleListChannels)
 	mux.HandleFunc("POST /api/v1/notifications/channels", s.handleCreateChannel)
 	mux.HandleFunc("PUT /api/v1/notifications/channels/{id}", s.handleUpdateChannel)
