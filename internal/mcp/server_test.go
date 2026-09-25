@@ -125,7 +125,8 @@ func TestBackupAndSafeCloneRestoreFlow(t *testing.T) {
 
 	var started backupStarted
 	structured(t, ToolStartBackup, call(t, cs, ToolStartBackup, map[string]any{"connection_id": testConnID, "database": "shop"}), &started)
-	if started.Backup == nil || started.Backup.Status != models.StatusInProgress || !strings.Contains(started.NextStep, "get_backup") {
+	if started.Backup == nil || started.Backup.Status != models.StatusInProgress || started.Backup.Trigger != models.TriggerMCP ||
+		!strings.Contains(started.NextStep, "get_backup") {
 		t.Fatalf("start_backup = %+v; want an in-progress record and a polling hint", started)
 	}
 	done := awaitBackup(t, cs, started.Backup.ID)
@@ -145,7 +146,7 @@ func TestBackupAndSafeCloneRestoreFlow(t *testing.T) {
 
 	var job backupStarted
 	structured(t, ToolRunJob, call(t, cs, ToolRunJob, map[string]any{"job_id": testJobID}), &job)
-	if job.Backup == nil || job.Backup.JobID != testJobID {
+	if job.Backup == nil || job.Backup.JobID != testJobID || job.Backup.Trigger != models.TriggerMCP {
 		t.Fatalf("run_job = %+v", job)
 	}
 	if b := awaitBackup(t, cs, job.Backup.ID); b.Status != models.StatusCompleted {

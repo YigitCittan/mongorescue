@@ -27,6 +27,7 @@ func TestRetentionPruningDays(t *testing.T) {
 	recOld := &models.BackupRecord{
 		ID:         "bkp_old",
 		Database:   "analytics",
+		Trigger:    models.TriggerScheduled,
 		Status:     models.StatusCompleted,
 		StorageKey: "analytics/old.gz",
 		StartedAt:  now.AddDate(0, 0, -30),
@@ -34,6 +35,7 @@ func TestRetentionPruningDays(t *testing.T) {
 	recRecent := &models.BackupRecord{
 		ID:         "bkp_recent",
 		Database:   "analytics",
+		Trigger:    models.TriggerScheduled,
 		Status:     models.StatusCompleted,
 		StorageKey: "analytics/recent.gz",
 		StartedAt:  now.AddDate(0, 0, -5),
@@ -41,6 +43,7 @@ func TestRetentionPruningDays(t *testing.T) {
 	recFresh := &models.BackupRecord{
 		ID:         "bkp_fresh",
 		Database:   "analytics",
+		Trigger:    models.TriggerScheduled,
 		Status:     models.StatusCompleted,
 		StorageKey: "analytics/fresh.gz",
 		StartedAt:  now,
@@ -86,6 +89,7 @@ func TestRetentionPruningCount(t *testing.T) {
 		r := &models.BackupRecord{
 			ID:         "bkp_" + string(rune('0'+i)),
 			Database:   "analytics",
+			Trigger:    models.TriggerScheduled,
 			Status:     models.StatusCompleted,
 			StorageKey: "analytics/" + string(rune('0'+i)) + ".gz",
 			StartedAt:  now.Add(-time.Duration(i) * 25 * time.Hour),
@@ -359,9 +363,9 @@ func TestJobRunsUseTheirTargetAndRetentionCountsPerTarget(t *testing.T) {
 	ctx := context.Background()
 
 	// Older completed backups of the same database kept on targets a and b.
-	oldA := &models.BackupRecord{ID: "bkp_old_a", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_a",
+	oldA := &models.BackupRecord{ID: "bkp_old_a", JobID: "job_b", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_a",
 		StorageTargetID: "stg_a", StartedAt: time.Now().Add(-48 * time.Hour)}
-	oldB := &models.BackupRecord{ID: "bkp_old_b", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_b",
+	oldB := &models.BackupRecord{ID: "bkp_old_b", JobID: "job_b", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_b",
 		StorageTargetID: "stg_b", StartedAt: time.Now().Add(-48 * time.Hour)}
 	for _, rec := range []*models.BackupRecord{oldA, oldB} {
 		if _, err := tg.drivers[rec.StorageTargetID].Save(ctx, rec.StorageKey, strings.NewReader("x")); err != nil {

@@ -81,8 +81,9 @@ type RestoreEngine interface {
 // JobRunner prepares and executes on-demand runs of scheduled jobs (implemented by
 // *scheduler.Scheduler, which persists the final record and publishes the outcome).
 type JobRunner interface {
-	// PrepareJobRun loads the job and returns its in-progress record.
-	PrepareJobRun(ctx context.Context, jobID string) (*models.Job, *models.BackupRecord, error)
+	// PrepareJobRun loads the job and returns the in-progress record of an on-demand
+	// run started by trigger (models.TriggerOnDemand or models.TriggerMCP).
+	PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.Job, *models.BackupRecord, error)
 	// ExecuteJobRun runs the prepared job.
 	ExecuteJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord) (*models.BackupRecord, error)
 }
@@ -192,6 +193,9 @@ type BackupRequest struct {
 	models.BackupOptions
 	// Gzip overrides the default compression when set.
 	Gzip *bool `json:"gzip"`
+	// Trigger is set by the adapter: models.TriggerMCP for MCP, anything else is
+	// recorded as models.TriggerManual. It is never read from clients.
+	Trigger models.BackupTrigger `json:"-"`
 }
 
 // StartBackup validates req, persists the in-progress record and runs the backup in
@@ -211,6 +215,10 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 	}
 	opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
 	opts.Gzip = derefOr(req.Gzip, s.settings().General.DefaultGzip)
+	opts.Trigger = models.TriggerManual
+	if req.Trigger == models.TriggerMCP {
+		opts.Trigger = models.TriggerMCP
+	}
 
 	record, err := s.cfg.Backup.Prepare(opts)
 	if err != nil {
@@ -232,14 +240,16 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 }
 
 // RunJob runs the stored job jobID now, in the background, and returns a snapshot of
-// the in-progress record. Expected failures: ErrSchedulerUnavailable, ErrNotFound,
-// ErrInvalid, ErrBusy and ErrShuttingDown.
-func (s *Service) RunJob(ctx context.Context, jobID string) (*models.BackupRecord, error) {
+// the in-progress record. trigger is models.TriggerMCP for MCP and otherwise recorded
+// as models.TriggerOnDemand; on-demand runs never apply or count towards retention.
+// Expected failures: ErrSchedulerUnavailable, ErrNotFound, ErrInvalid, ErrBusy and
+// ErrShuttingDown.
+func (s *Service) RunJob(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.BackupRecord, error) {
 	if s.cfg.Jobs == nil {
 		return nil, ErrSchedulerUnavailable
 	}
 	// Lookup-based: any stored job (including legacy-format IDs) may be triggered.
-	job, record, err := s.cfg.Jobs.PrepareJobRun(ctx, jobID)
+	job, record, err := s.cfg.Jobs.PrepareJobRun(ctx, jobID, trigger)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, public("job not found", ErrNotFound, err)

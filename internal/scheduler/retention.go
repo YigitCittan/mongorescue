@@ -40,10 +40,12 @@ func PruneBackups(
 // or job. It deletes expired archives from the storage target each record names
 // (resolved through storages) and marks the records as pruned in the metadata store.
 //
-// Only completed backups are considered, and two floors protect them: the
-// max(retentionCount, 1) most recent completed backups are never pruned (by either
-// rule), and count-based retention never prunes a backup younger than
-// MinCountPruneAge.
+// Only completed scheduled backups (models.TriggerScheduled, see
+// BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups are
+// never pruned automatically. Two floors protect the scheduled ones: the
+// max(retentionCount, 1) most recent are never pruned (by either rule), and
+// count-based retention never prunes a backup younger than MinCountPruneAge. Callers
+// pass the records of one job.
 func PruneBackupsOn(
 	ctx context.Context,
 	retentionDays int,
@@ -62,10 +64,10 @@ func PruneBackupsOn(
 		logger = slog.Default()
 	}
 
-	// Filter successful backups only
+	// Filter successful scheduled backups only
 	var successful []*models.BackupRecord
 	for _, r := range records {
-		if r.Status == models.StatusCompleted {
+		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled {
 			successful = append(successful, r)
 		}
 	}

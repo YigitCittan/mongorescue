@@ -468,7 +468,7 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "job id required")
 		return
 	}
-	record, err := s.ops.RunJob(r.Context(), id)
+	record, err := s.ops.RunJob(r.Context(), id, models.TriggerOnDemand)
 	if err != nil {
 		s.writeOperationError(w, err)
 		return

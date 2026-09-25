@@ -689,7 +689,8 @@ func (s *Server) startBackup(ctx context.Context, in startBackupInput) (backupSt
 			ConnectionID: in.ConnectionID, Database: in.Database, StorageTargetID: in.StorageTargetID,
 			Collections: in.Collections, ExcludeCollections: in.ExcludeCollections,
 		},
-		Gzip: in.Gzip,
+		Gzip:    in.Gzip,
+		Trigger: models.TriggerMCP,
 	})
 	if err != nil {
 		return backupStarted{}, "", err
@@ -702,7 +703,7 @@ func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, str
 	if err := requireID("job_id", in.JobID); err != nil {
 		return backupStarted{}, "", err
 	}
-	rec, err := s.cfg.Operations.RunJob(ctx, in.JobID)
+	rec, err := s.cfg.Operations.RunJob(ctx, in.JobID, models.TriggerMCP)
 	if err != nil {
 		return backupStarted{}, "", err
 	}

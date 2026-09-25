@@ -98,6 +98,9 @@ func TestManualBackupSurvivesClientDisconnect(t *testing.T) {
 	if got["status"] != "completed" {
 		t.Fatalf("backup must complete after the client disconnected, got %v", got)
 	}
+	if got["trigger"] != string(models.TriggerManual) {
+		t.Fatalf("a manual backup must record trigger manual, got %v", got["trigger"])
+	}
 }
 
 func TestJobRunIsAsyncAndGuardedAgainstConcurrentRuns(t *testing.T) {
@@ -112,7 +115,7 @@ func TestJobRunIsAsyncAndGuardedAgainstConcurrentRuns(t *testing.T) {
 
 	// The record is visible (in progress) while the run is going on.
 	rec, err := f.store.GetBackupRecord(context.Background(), id)
-	if err != nil || rec.Status != models.StatusInProgress || rec.JobID != "job_shop" {
+	if err != nil || rec.Status != models.StatusInProgress || rec.JobID != "job_shop" || rec.Trigger != models.TriggerOnDemand {
 		t.Fatalf("in-progress record not persisted: %+v, %v", rec, err)
 	}
 

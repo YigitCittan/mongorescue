@@ -61,11 +61,11 @@ func TestPrepareAndExecuteJobRun(t *testing.T) {
 	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", backup.WithRunner(runner))
 	s := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil)
 
-	if _, _, err := s.PrepareJobRun(context.Background(), "missing"); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := s.PrepareJobRun(context.Background(), "missing", models.TriggerOnDemand); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown job: got %v", err)
 	}
 	_ = metaStore.SaveJob(context.Background(), &models.Job{ID: "j", Database: "shop", CronExpression: "@daily"})
-	job, record, err := s.PrepareJobRun(context.Background(), "j")
+	job, record, err := s.PrepareJobRun(context.Background(), "j", models.TriggerOnDemand)
 	if err != nil || record.Status != models.StatusInProgress || record.JobID != "j" {
 		t.Fatalf("PrepareJobRun: %+v, %v", record, err)
 	}

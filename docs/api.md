@@ -122,6 +122,8 @@ Restoring in place (into the source database, or into `target_database`) must be
 
 ## Asynchronous operations
 
+Every backup record has a `trigger`: `scheduled` (a cron run of `job_id`), `on_demand` (`POST /api/v1/jobs/{id}/run`), `manual` (`POST /api/v1/backups`) or `mcp` (an assistant's `start_backup` or `run_job`). It is set by the server, never taken from the request, and retention only prunes a job's `scheduled` backups ([configuration.md](configuration.md#general)).
+
 `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed` or `failed`. Operations keep running if the client disconnects.
 
 | Status | Meaning |
