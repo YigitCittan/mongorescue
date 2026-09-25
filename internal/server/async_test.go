@@ -137,8 +137,17 @@ func TestJobRunIsAsyncAndGuardedAgainstConcurrentRuns(t *testing.T) {
 			t.Fatalf("backup %s: %v", bid, got)
 		}
 	}
-	stored, _ := f.store.GetJob(context.Background(), "job_shop")
-	if stored.LastRun == nil {
+	// The scheduler stores the job's run timestamps before the final record, so a
+	// client that saw "completed" sees LastRun too; poll briefly all the same, so a
+	// slow store cannot make this flaky.
+	var stored *models.Job
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		stored, _ = f.store.GetJob(context.Background(), "job_shop")
+		if (stored != nil && stored.LastRun != nil) || time.Now().After(deadline) {
+			break
+		}
+	}
+	if stored == nil || stored.LastRun == nil {
 		t.Fatal("job LastRun not updated by the background run")
 	}
 

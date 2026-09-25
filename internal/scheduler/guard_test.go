@@ -77,3 +77,38 @@ func TestPrepareAndExecuteJobRun(t *testing.T) {
 		t.Fatalf("final record not persisted: %+v", stored)
 	}
 }
+
+// orderCheckStore records whether a final backup record was saved before its job's
+// run timestamps.
+type orderCheckStore struct {
+	store.Store
+	early atomic.Int32
+}
+
+func (s *orderCheckStore) SaveBackupRecord(ctx context.Context, rec *models.BackupRecord) error {
+	if rec.Status != models.StatusInProgress && rec.JobID != "" {
+		if job, err := s.GetJob(ctx, rec.JobID); err == nil && job.LastRun == nil {
+			s.early.Add(1)
+		}
+	}
+	return s.Store.SaveBackupRecord(ctx, rec)
+}
+
+// TestJobTimestampsArePersistedBeforeTheFinalRecord proves a client that sees a job
+// run's final status also sees the job's LastRun (no read-your-writes race).
+func TestJobTimestampsArePersistedBeforeTheFinalRecord(t *testing.T) {
+	st := &orderCheckStore{Store: storetest.New(t)}
+	runner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
+	}
+	s := NewScheduler(st, backup.NewEngine(storage.NewMockStorage(), "mongodb://h", backup.WithRunner(runner)), storage.NewMockStorage(), nil)
+	if err := st.SaveJob(context.Background(), &models.Job{ID: "job_order", Database: "shop", CronExpression: "@daily"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TriggerJob(context.Background(), "job_order"); err != nil {
+		t.Fatal(err)
+	}
+	if st.early.Load() != 0 {
+		t.Fatal("the final backup record was saved before the job's LastRun")
+	}
+}
