@@ -42,7 +42,8 @@ func principalOf(ctx context.Context) *auth.Principal {
 }
 
 // middleware authenticates, authorises, rate limits, audits and counts MCP requests.
-// It is the single place where tool scopes are enforced.
+// It is the single place where tool scopes are enforced. Tool calls, resource reads
+// and prompt requests are rate limited and audited.
 func (s *Server) middleware(next sdk.MethodHandler) sdk.MethodHandler {
 	return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 		p := principalOf(ctx)
@@ -62,10 +63,7 @@ func (s *Server) middleware(next sdk.MethodHandler) sdk.MethodHandler {
 			}
 			return res, err
 		case methodReadResource, methodGetPrompt:
-			if ok, wait := s.limiter.allow(p.APIKeyID); !ok {
-				return nil, rateLimitError(wait)
-			}
-			return next(ctx, method, req)
+			return s.readOrPrompt(ctx, p, next, method, req)
 		default:
 			return next(ctx, method, req)
 		}
@@ -120,6 +118,46 @@ func (s *Server) callTool(ctx context.Context, p *auth.Principal, next sdk.Metho
 	case r != nil && r.IsError:
 		finish(audit.ResultError, resultText(r))
 	default:
+		finish(audit.ResultOK, "")
+	}
+	return res, err
+}
+
+// readOrPrompt handles resources/read and prompts/get: rate limit, then the request,
+// with one audit entry per request. The entry's tool is the method; its arguments
+// name the resource URI or the prompt and its arguments.
+func (s *Server) readOrPrompt(ctx context.Context, p *auth.Principal, next sdk.MethodHandler, method string, req sdk.Request) (sdk.Result, error) {
+	start := s.now()
+	var args any
+	switch r := req.(type) {
+	case *sdk.ReadResourceRequest:
+		if r.Params != nil {
+			args = map[string]string{"resource": truncateName(r.Params.URI)}
+		}
+	case *sdk.GetPromptRequest:
+		if r.Params != nil {
+			args = map[string]any{"prompt": truncateName(r.Params.Name), "arguments": r.Params.Arguments}
+		}
+	}
+	raw, _ := json.Marshal(args) // maps of strings always encode
+	entry := audit.Entry{
+		Time: start, APIKeyID: p.APIKeyID, APIKeyName: p.APIKeyName, Transport: transportFrom(ctx),
+		Tool: method, Arguments: raw,
+	}
+	finish := func(result, errMsg string) {
+		entry.Result, entry.Error = result, errMsg
+		entry.DurationMS = s.now().Sub(start).Milliseconds()
+		s.cfg.Audit.Record(ctx, entry)
+	}
+	if ok, wait := s.limiter.allow(p.APIKeyID); !ok {
+		rlErr := rateLimitError(wait)
+		finish(audit.ResultRateLimited, rlErr.Message)
+		return nil, rlErr
+	}
+	res, err := next(ctx, method, req)
+	if err != nil {
+		finish(audit.ResultError, err.Error())
+	} else {
 		finish(audit.ResultOK, "")
 	}
 	return res, err

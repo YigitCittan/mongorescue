@@ -23,9 +23,9 @@ func (s *SQLiteStore) AppendAudit(ctx context.Context, e *audit.Entry, keep int)
 		args = "{}"
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `INSERT INTO audit_log (at, api_key_id, api_key_name, transport, tool, arguments, result, error, duration_ms, count)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			timeKey(e.Time), e.APIKeyID, e.APIKeyName, e.Transport, e.Tool, args, e.Result, e.Error, e.DurationMS, max(e.Count, 1))
+		res, err := tx.ExecContext(ctx, `INSERT INTO audit_log (at, api_key_id, api_key_name, transport, tool, arguments, result, error, duration_ms, count, http_status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			timeKey(e.Time), e.APIKeyID, e.APIKeyName, e.Transport, e.Tool, args, e.Result, e.Error, e.DurationMS, max(e.Count, 1), e.HTTPStatus)
 		if err != nil {
 			return fmt.Errorf("store: append audit entry: %w", err)
 		}
@@ -63,7 +63,7 @@ func (s *SQLiteStore) AddAuditCount(ctx context.Context, id int64, n int) error 
 
 // ListAudit returns up to limit audit entries, newest first.
 func (s *SQLiteStore) ListAudit(ctx context.Context, limit int) ([]*audit.Entry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at, api_key_id, api_key_name, transport, tool, arguments, result, error, duration_ms, count
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, api_key_id, api_key_name, transport, tool, arguments, result, error, duration_ms, count, http_status
 		FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list audit log: %w", err)
@@ -74,7 +74,7 @@ func (s *SQLiteStore) ListAudit(ctx context.Context, limit int) ([]*audit.Entry,
 		var e audit.Entry
 		var at int64
 		var args string
-		if err := rows.Scan(&e.ID, &at, &e.APIKeyID, &e.APIKeyName, &e.Transport, &e.Tool, &args, &e.Result, &e.Error, &e.DurationMS, &e.Count); err != nil {
+		if err := rows.Scan(&e.ID, &at, &e.APIKeyID, &e.APIKeyName, &e.Transport, &e.Tool, &args, &e.Result, &e.Error, &e.DurationMS, &e.Count, &e.HTTPStatus); err != nil {
 			return nil, fmt.Errorf("store: scan audit entry: %w", err)
 		}
 		e.Time, e.Arguments = fromKey(at), json.RawMessage(args)

@@ -44,7 +44,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}` (current required for your own account) | 200 | 400, 403 wrong current password, 404 |
 | `GET` / `POST` | `/api/v1/api-keys` | List keys / create `{name, scope}` (`scope`: `read` (default), `operator` or `admin`) → `{api_key, key}` (plaintext only here) | 200 / 201 | 400 |
 | `DELETE` | `/api/v1/api-keys/{id}` | Revoke a key | 200 | 404 |
-| `GET` | `/api/v1/audit` | Recent MCP tool calls, newest first (`?limit=` 1-1000, default 200); admin only | 200 | 400, 403 |
+| `GET` | `/api/v1/audit` | Recent API key activity (MCP calls and REST requests), newest first (`?limit=` 1-1000, default 200); admin only | 200 | 400, 403 |
 | `GET` / `POST` | `/api/v1/connections` | List / create `{name, uri, description}` | 200 / 201 | 400 |
 | `GET` / `PUT` | `/api/v1/connections/{id}` | Get / update a connection | 200 | 400, 404 |
 | `DELETE` | `/api/v1/connections/{id}` | Delete a connection | 200 | 404, 409 used by jobs |
@@ -136,7 +136,7 @@ Restoring in place (into the source database, or into `target_database`) must be
 
 ## Audit log
 
-`GET /api/v1/audit` (admin) returns the most recent [MCP](mcp.md) tool calls, newest first:
+`GET /api/v1/audit` (admin) returns the most recent activity of API keys, newest first: [MCP](mcp.md) tool calls, resource reads (`tool` is `resources/read`, the URI in `arguments.resource`) and prompt requests (`prompts/get`), and REST requests to `/api/...` authenticated by an API key. Browser sessions and `/metrics` scrapes are not audited.
 
 ```json
 {"id": 42, "time": "2026-09-25T10:15:03Z", "api_key_id": "key_1a2b3c4d5e6f7a8b", "api_key_name": "claude-desktop",
@@ -144,4 +144,12 @@ Restoring in place (into the source database, or into `target_database`) must be
  "result": "ok", "duration_ms": 18, "count": 1}
 ```
 
-`result` is `ok`, `error` (the call ran and failed; `error` holds the message the assistant saw), `denied` (scope too small) or `rate_limited`. Argument values of secret-looking keys and credentials inside strings are masked before they are stored. The newest 10,000 entries are kept. Refused calls cannot flush the log: repeated `denied` calls of one key and tool, and repeated `rate_limited` calls of one key, are merged into one entry per 10 seconds whose `count` is the number of calls it stands for (`1` for every other entry).
+A REST entry has `transport` `rest`, the route pattern as `tool` (never the raw path, and `(no route)` when none matched), the path parameters as `arguments` (request bodies and queries are not stored) and the response status in `http_status`:
+
+```json
+{"id": 43, "time": "2026-09-25T10:16:10Z", "api_key_id": "key_9f8e7d6c5b4a3928", "api_key_name": "ci",
+ "transport": "rest", "tool": "DELETE /api/v1/backups/{id}", "arguments": {"id": "bkp_shop_20260901_030000_1a2b3c4d"},
+ "result": "denied", "error": "Forbidden", "duration_ms": 0, "http_status": 403, "count": 1}
+```
+
+`result` is `ok`, `error` (the call ran and failed; `error` holds the message the assistant saw, or the status text for REST), `denied` (scope too small; `403` for REST) or `rate_limited` (`429`). Argument values of secret-looking keys and credentials inside strings are masked before they are stored. The newest 10,000 entries are kept. Refused and polling clients cannot flush the log: repeated `denied` calls of one key and tool, repeated `rate_limited` calls of one key, and repeated REST reads or failed REST requests of one key, route and status are merged into one entry per 10 seconds whose `count` is the number of calls it stands for (`1` for every other entry).

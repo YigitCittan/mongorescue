@@ -9,7 +9,7 @@ flowchart TB
 
     subgraph core["Core"]
         OPS["operations<br/>backup, job and restore use cases"]
-        AUDIT["audit<br/>MCP tool call log"]
+        AUDIT["audit<br/>API key activity log"]
         AUTH["auth<br/>setup, users, sessions, API keys"]
         CONN["connections<br/>managed MongoDB servers"]
         SCHED["Scheduler<br/>cron jobs, retention"]
@@ -74,7 +74,7 @@ flowchart TB
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
 | `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`) |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, background runs, records and events; read models (`Status`, `Stats`) |
-| `internal/audit` | The audit log of MCP tool calls: argument redaction, pruning, listing |
+| `internal/audit` | The audit log of API key activity (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
 | `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober` |
@@ -192,7 +192,7 @@ Both are started and stopped by `internal/app` with the rest of the process, so 
 
 `internal/store` keeps jobs, backup and restore records, users, sessions, API keys, connections, storage targets, settings, and notification channels and rules in an embedded SQLite database, always `<data_dir>/mongorescue.db`. The driver, `modernc.org/sqlite`, is pure Go, so release binaries stay `CGO_ENABLED=0` and self-contained.
 
-- **Schema.** One table per entity (`jobs`, `backups`, `restores`, `connections`, `notification_channels`, `notification_rules`) plus `users`, `sessions`, `api_keys` (with their `scope`), `settings` and `audit_log` (MCP tool calls, pruned to the newest 10,000) with plain columns (a session belongs to its user with `ON DELETE CASCADE`). Each row stores the complete record as JSON in `data`, which is what the store reads back, so model fields can be added without a migration. Columns used for filtering and ordering (ID, name, database, job ID, status, start time) are copies rewritten on every save and indexed; lists come back newest first (backups, restores) or by name (jobs, channels, rules).
+- **Schema.** One table per entity (`jobs`, `backups`, `restores`, `connections`, `notification_channels`, `notification_rules`) plus `users`, `sessions`, `api_keys` (with their `scope`), `settings` and `audit_log` (API key activity, pruned to the newest 10,000) with plain columns (a session belongs to its user with `ON DELETE CASCADE`). Each row stores the complete record as JSON in `data`, which is what the store reads back, so model fields can be added without a migration. Columns used for filtering and ordering (ID, name, database, job ID, status, start time) are copies rewritten on every save and indexed; lists come back newest first (backups, restores) or by name (jobs, channels, rules).
 - **Migrations.** Versioned SQL files in `internal/store/migrations` are embedded in the binary and applied at startup, each in its own transaction together with its `schema_migrations` row, so reopening an up-to-date database is a no-op. A database migrated by a newer release is refused rather than downgraded.
 - **Transactions and concurrency.** Connections use WAL, `synchronous=NORMAL`, `foreign_keys=ON` and a 5 second `busy_timeout`, and write transactions take the lock at `BEGIN`. The pool holds a single connection, which serialises statements inside the process; multi-step operations (deleting a channel together with its references in rules, the legacy import) run in one transaction.
 - **Files.** The database is created with mode `0600` before SQLite opens it, and the database, `-wal` and `-shm` files are forced to `0600` after opening, independently of the umask. `secure_delete` overwrites deleted content. An advisory lock on `mongorescue.lock` (flock / LockFileEx) keeps a second instance off the same data directory.

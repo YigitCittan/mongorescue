@@ -1,6 +1,7 @@
-// Package audit records what automated clients did: every MCP tool call is stored
-// with the calling API key, the transport, the tool, its arguments (secrets
-// redacted), the outcome and the duration. The log is shown in the dashboard and
+// Package audit records what automated clients did: every MCP tool call, resource
+// read and prompt request, and every REST request authenticated by an API key, is
+// stored with the calling API key, the transport, the tool (or route), its arguments
+// (secrets redacted), the outcome and the duration. The log is shown in the dashboard and
 // served by GET /api/v1/audit.
 //
 // The package is the domain core; persistence is the Repository port implemented by
@@ -17,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,8 @@ const (
 	// TransportStdio is the stdio bridge (mongorescue mcp), which forwards to the
 	// HTTP endpoint and identifies itself.
 	TransportStdio = "stdio"
+	// TransportREST is the REST API (/api/v1/...) called with an API key.
+	TransportREST = "rest"
 )
 
 // Limits.
@@ -78,7 +82,8 @@ type Entry struct {
 	APIKeyName string `json:"api_key_name"`
 	// Transport is TransportHTTP or TransportStdio.
 	Transport string `json:"transport"`
-	// Tool is the MCP tool name.
+	// Tool is the MCP tool name, the MCP method (resources/read, prompts/get) or, for
+	// REST requests, the route pattern ("GET /api/v1/backups").
 	Tool string `json:"tool"`
 	// Arguments are the call arguments as JSON, secrets redacted.
 	Arguments json.RawMessage `json:"arguments"`
@@ -88,6 +93,8 @@ type Entry struct {
 	Error string `json:"error,omitempty"`
 	// DurationMS is how long the call took in milliseconds.
 	DurationMS int64 `json:"duration_ms"`
+	// HTTPStatus is the response status of a REST request (0 for MCP calls).
+	HTTPStatus int `json:"http_status,omitempty"`
 	// Count is the number of calls the entry stands for: 1, or more for an entry
 	// that coalesced repeated calls (see CoalesceWindow).
 	Count int `json:"count"`
@@ -212,7 +219,8 @@ func (s *Service) recordCoalesced(ctx context.Context, e *Entry) {
 	s.recent[key] = recentEntry{id: e.ID, since: e.Time}
 }
 
-// coalesceKey identifies the entries e may be merged with. Rate limits apply per API
+// coalesceKey identifies the entries e may be merged with (for REST requests also
+// by response status). Rate limits apply per API
 // key, so rate-limited calls are merged whatever the tool; the tool (a client-chosen
 // name for unknown tools) then cannot multiply the entries.
 func coalesceKey(e *Entry) string {
@@ -220,7 +228,7 @@ func coalesceKey(e *Entry) string {
 	if e.Result == ResultRateLimited {
 		tool = ""
 	}
-	return strings.Join([]string{e.APIKeyID, e.Transport, tool, e.Result}, "\x00")
+	return strings.Join([]string{e.APIKeyID, e.Transport, tool, e.Result, strconv.Itoa(e.HTTPStatus)}, "\x00")
 }
 
 // List returns up to limit entries, newest first (DefaultListLimit for limit <= 0,

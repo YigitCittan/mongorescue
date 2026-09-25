@@ -442,6 +442,42 @@ func TestResources(t *testing.T) {
 	}
 }
 
+// TestResourceReadsAndPromptsAreAudited proves resources/read and prompts/get leave
+// audit entries like tool calls.
+func TestResourceReadsAndPromptsAreAudited(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.RateLimit = RateLimit{PerMinute: 1, Burst: 3} })
+	cs := f.session(t, principal(auth.ScopeRead))
+	if _, err := cs.ReadResource(context.Background(), &sdk.ReadResourceParams{URI: StatusURI}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.ReadResource(context.Background(), &sdk.ReadResourceParams{URI: "mongorescue://backups/bkp_missing"}); err == nil {
+		t.Fatal("reading a missing backup must fail")
+	}
+	if _, err := cs.GetPrompt(context.Background(), &sdk.GetPromptParams{Name: PromptDiagnoseFailedBackup, Arguments: map[string]string{"backup_id": "bkp_1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.GetPrompt(context.Background(), &sdk.GetPromptParams{Name: PromptVerifyRecentBackups}); err == nil {
+		t.Fatal("a fourth request must be rate limited")
+	}
+	entries, _ := f.audit.List(context.Background(), 10)
+	var got []string
+	for _, e := range entries {
+		if e.APIKeyID != "key_read" || e.Transport != audit.TransportHTTP {
+			t.Fatalf("entry lacks principal or transport: %+v", e)
+		}
+		got = append(got, e.Tool+" "+e.Result+" "+string(e.Arguments))
+	}
+	want := []string{
+		`prompts/get rate_limited {"arguments":null,"prompt":"verify_recent_backups"}`,
+		`prompts/get ok {"arguments":{"backup_id":"bkp_1"},"prompt":"diagnose_failed_backup"}`,
+		`resources/read error {"resource":"mongorescue://backups/bkp_missing"}`,
+		`resources/read ok {"resource":"mongorescue://status"}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("audit = %q\nwant %q", got, want)
+	}
+}
+
 func TestPrompts(t *testing.T) {
 	f := newFixture(t, nil)
 	cs := f.session(t, principal(auth.ScopeRead))

@@ -63,7 +63,8 @@ func (s *Server) registerAuthRoutes(mux *router) {
 // authMiddleware authenticates every non-public request by API key (Authorization:
 // Bearer or X-API-Key) or session cookie, stores the principal in the request context,
 // enforces the CSRF token on cookie-authenticated unsafe requests and the scope the
-// matched route requires. /metrics and /mcp accept API keys only.
+// matched route requires, and audits REST requests made with an API key (see
+// auditREST). /metrics and /mcp accept API keys only.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -128,21 +129,37 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden: missing or invalid "+CSRFHeader+" header")
 			return
 		}
-		if err := s.checkScope(principal, r); err != nil {
+		req := r.WithContext(auth.WithPrincipal(r.Context(), principal))
+		pattern := s.routePattern(r)
+		if auditsREST(principal, path) {
+			rec := &statusRecorder{ResponseWriter: w}
+			defer s.auditREST(req, principal, pattern, rec, time.Now())
+			w = rec
+		}
+		if err := s.checkScope(principal, pattern); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
+		next.ServeHTTP(w, req)
 	})
 }
 
-// checkScope enforces the scope of the route r matches (see routeScopes). Requests
-// that match no route pass, so that the mux answers them with 404 or 405.
-func (s *Server) checkScope(p *auth.Principal, r *http.Request) error {
+// routePattern returns the ServeMux pattern r matches, or "" when none does.
+func (s *Server) routePattern(r *http.Request) string {
+	if s.mux == nil {
+		return ""
+	}
+	_, pattern := s.mux.Handler(r)
+	return pattern
+}
+
+// checkScope enforces the scope of the matched route pattern (see routeScopes).
+// Requests that match no route pass, so that the mux answers them with 404 or 405;
+// without a mux everything needs admin.
+func (s *Server) checkScope(p *auth.Principal, pattern string) error {
 	if s.mux == nil {
 		return p.Require(auth.ScopeAdmin)
 	}
-	_, pattern := s.mux.Handler(r)
 	if pattern == "" {
 		return nil
 	}
