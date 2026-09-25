@@ -572,10 +572,10 @@ func TestAPIKeys(t *testing.T) {
 	ctx := context.Background()
 	admin := f.session(t, res.Token)
 
-	if _, _, err := f.svc.CreateAPIKey(ctx, admin, "  "); !errors.Is(err, auth.ErrInvalidName) {
+	if _, _, err := f.svc.CreateAPIKey(ctx, admin, "  ", ""); !errors.Is(err, auth.ErrInvalidName) {
 		t.Fatalf("empty name: %v", err)
 	}
-	k, plain, err := f.svc.CreateAPIKey(ctx, admin, "ci pipeline")
+	k, plain, err := f.svc.CreateAPIKey(ctx, admin, "ci pipeline", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,6 +597,12 @@ func TestAPIKeys(t *testing.T) {
 	p, err := f.svc.AuthenticateAPIKey(ctx, plain)
 	if err != nil || p.Method != auth.MethodAPIKey || p.APIKeyID != k.ID || p.UserID() != admin.User.ID {
 		t.Fatalf("AuthenticateAPIKey = %+v, %v", p, err)
+	}
+	if k.Scope != auth.ScopeRead || p.Scope != auth.ScopeRead || p.APIKeyName != "ci pipeline" {
+		t.Fatalf("a key created without a scope must be read-only: key %q, principal %q (%q)", k.Scope, p.Scope, p.APIKeyName)
+	}
+	if admin.Scope != auth.ScopeAdmin {
+		t.Fatalf("session principals are admin, got %q", admin.Scope)
 	}
 	used, _ := f.store.GetAPIKeyByPrefix(ctx, k.Prefix)
 	if used.LastUsedAt == nil || !used.LastUsedAt.Equal(f.clock.Now()) {
@@ -667,11 +673,11 @@ func TestDeletingAUserRevokesTheirAPIKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	carolP := f.session(t, carolLogin.Token)
-	_, carolKey, err := f.svc.CreateAPIKey(ctx, carolP, "carol's script")
+	_, carolKey, err := f.svc.CreateAPIKey(ctx, carolP, "carol's script", auth.ScopeOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, adminKey, err := f.svc.CreateAPIKey(ctx, admin, "admin's script")
+	_, adminKey, err := f.svc.CreateAPIKey(ctx, admin, "admin's script", auth.ScopeAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +711,7 @@ func TestAPIKeyOfAMissingCreatorIsRefused(t *testing.T) {
 	f := newFixture(t)
 	res := f.setup(t)
 	ctx := context.Background()
-	_, plain, err := f.svc.CreateAPIKey(ctx, f.session(t, res.Token), "orphan")
+	_, plain, err := f.svc.CreateAPIKey(ctx, f.session(t, res.Token), "orphan", auth.ScopeAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}

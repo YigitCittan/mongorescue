@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -42,8 +43,9 @@ func newRestoreSafetyFixture(t *testing.T) *restoreSafetyFixture {
 	bEngine := backup.NewEngine(mockStorage, "mongodb://localhost:27017", backup.WithRunner(bRunner))
 	rEngine := restore.NewEngine(mockStorage, "mongodb://localhost:27017", restore.WithRunner(rRunner))
 	sched := scheduler.NewScheduler(metaStore, bEngine, mockStorage, nil)
-	f.mux = NewServer(bootConfig(), metaStore, bEngine, rEngine, mockStorage, sched, nil, nil,
-		withTestConnection(t, metaStore, nil)).buildRoutes()
+	// In-place restores need admin; the fixture acts as the administrator.
+	f.mux = asPrincipal(NewServer(bootConfig(), metaStore, bEngine, rEngine, mockStorage, sched, nil, nil,
+		withTestConnection(t, metaStore, nil)).buildRoutes(), auth.SystemPrincipal())
 
 	rec := httptest.NewRecorder()
 	f.mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/v1/backups", strings.NewReader(`{"connection_id":"conn_test","database":"shop"}`)))

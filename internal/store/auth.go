@@ -194,12 +194,17 @@ func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time, 
 }
 
 // apiKeyColumns lists column names only; key_hash holds SHA-256 digests.
-const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at" //nolint:gosec // G101: column names, not credentials.
+const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at, scope" //nolint:gosec // G101: column names, not credentials.
 
-// CreateAPIKey stores k.
+// CreateAPIKey stores k. A key without a scope is stored with the least privileged
+// one, auth.ScopeRead.
 func (s *SQLiteStore) CreateAPIKey(ctx context.Context, k *auth.APIKey) error {
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?)",
-		k.ID, k.Name, k.Prefix, k.Hash, k.CreatedBy, timeKey(k.CreatedAt), nullTime(k.LastUsedAt)); err != nil {
+	scope := k.Scope
+	if scope == "" {
+		scope = auth.ScopeRead
+	}
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		k.ID, k.Name, k.Prefix, k.Hash, k.CreatedBy, timeKey(k.CreatedAt), nullTime(k.LastUsedAt), string(scope)); err != nil {
 		return fmt.Errorf("store: create api key: %w", err)
 	}
 	return nil
@@ -267,13 +272,14 @@ func scanAPIKey(r rowScanner) (*auth.APIKey, error) {
 	var k auth.APIKey
 	var created int64
 	var lastUsed sql.NullInt64
-	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed); err != nil {
+	var scope string
+	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, auth.ErrAPIKeyNotFound
 		}
 		return nil, fmt.Errorf("store: scan api key: %w", err)
 	}
-	k.CreatedAt, k.LastUsedAt = fromKey(created), nullableKey(lastUsed)
+	k.CreatedAt, k.LastUsedAt, k.Scope = fromKey(created), nullableKey(lastUsed), auth.Scope(scope)
 	return &k, nil
 }
 

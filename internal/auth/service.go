@@ -365,7 +365,7 @@ func (s *Service) AuthenticateSession(ctx context.Context, token string) (*Princ
 			s.logger.Warn("failed to update session activity", slog.Any("error", err))
 		}
 	}
-	return &Principal{User: user, Method: MethodSession, SessionHash: hash, CSRFToken: sess.CSRFToken}, nil
+	return &Principal{User: user, Method: MethodSession, SessionHash: hash, CSRFToken: sess.CSRFToken, Scope: ScopeAdmin}, nil
 }
 
 // AuthenticateAPIKey resolves an API key (a key created in the dashboard, or one
@@ -397,7 +397,12 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 			s.logger.Warn("failed to update api key last use", slog.String("api_key_id", stored.ID), slog.Any("error", err))
 		}
 	}
-	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID}
+	scope := stored.Scope
+	if !scope.Valid() {
+		// Fail closed: a key with a scope this build does not know may only read.
+		scope = ScopeRead
+	}
+	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, Scope: scope}
 	if stored.CreatedBy != "" {
 		u, err := s.repo.GetUser(ctx, stored.CreatedBy)
 		switch {
@@ -513,11 +518,17 @@ func (s *Service) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 	return s.repo.ListAPIKeys(ctx)
 }
 
-// CreateAPIKey issues a key named name. The plaintext is returned only here.
-func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name string) (*APIKey, string, error) {
+// CreateAPIKey issues a key named name with the given scope (ScopeRead when empty).
+// The plaintext is returned only here. It returns ErrInvalidName for a bad name and
+// ErrInvalidScope for an unknown scope.
+func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name string, scope Scope) (*APIKey, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxKeyNameLength || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return nil, "", fmt.Errorf("%w: 1-%d printable characters", ErrInvalidName, maxKeyNameLength)
+	}
+	scope, err := ParseScope(string(scope))
+	if err != nil {
+		return nil, "", err
 	}
 	plain, prefix, err := newAPIKey()
 	if err != nil {
@@ -527,11 +538,12 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	if err != nil {
 		return nil, "", err
 	}
-	k := &APIKey{ID: id, Name: name, Prefix: prefix, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC()}
+	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC()}
 	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
 		return nil, "", err
 	}
-	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix), slog.String("by", actor.UserID()))
+	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
+		slog.String("scope", string(k.Scope)), slog.String("by", actor.UserID()))
 	return k, plain, nil
 }
 
@@ -570,7 +582,8 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Hash: HashToken(key), CreatedAt: s.now().UTC()}
+	// The imported key keeps the full rights it had before scopes existed.
+	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: HashToken(key), CreatedAt: s.now().UTC()}
 	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}

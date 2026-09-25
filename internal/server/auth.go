@@ -43,7 +43,7 @@ func WithAuth(svc *auth.Service) Option {
 }
 
 // registerAuthRoutes adds setup, login, session, user and API key endpoints.
-func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
+func (s *Server) registerAuthRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
 	mux.HandleFunc("POST /api/v1/setup", s.handleSetup)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
@@ -120,8 +120,37 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden: missing or invalid "+CSRFHeader+" header")
 			return
 		}
+		if err := s.checkScope(principal, r); err != nil {
+			writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 	})
+}
+
+// checkScope enforces the scope of the route r matches (see routeScopes). Requests
+// that match no route pass, so that the mux answers them with 404 or 405.
+func (s *Server) checkScope(p *auth.Principal, r *http.Request) error {
+	if s.mux == nil {
+		return p.Require(auth.ScopeAdmin)
+	}
+	_, pattern := s.mux.Handler(r)
+	if pattern == "" {
+		return nil
+	}
+	return p.Require(requiredScope(pattern))
+}
+
+// scopeMessage renders a scope error for API clients.
+func scopeMessage(err error) string {
+	var se *auth.ScopeError
+	switch {
+	case errors.As(err, &se) && se.Have != "":
+		return fmt.Sprintf("this API key has the %q scope; this request needs %q", se.Have, se.Need)
+	case errors.As(err, &se):
+		return fmt.Sprintf("this request needs the %q scope", se.Need)
+	}
+	return "insufficient scope"
 }
 
 // allowPublicWrite guards the unauthenticated POST endpoints (setup, login) against
@@ -257,8 +286,10 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrInvalidUsername),
-		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf):
+		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, auth.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
 	case errors.Is(err, auth.ErrUserNotFound):
 		writeError(w, http.StatusNotFound, "user not found")
 	case errors.Is(err, auth.ErrAPIKeyNotFound):
@@ -496,11 +527,13 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Name string `json:"name"`
+		// Scope is read, operator or admin; omitted means read.
+		Scope auth.Scope `json:"scope"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	k, plain, err := svc.CreateAPIKey(r.Context(), p, req.Name)
+	k, plain, err := svc.CreateAPIKey(r.Context(), p, req.Name, req.Scope)
 	if err != nil {
 		s.writeAuthError(w, err)
 		return

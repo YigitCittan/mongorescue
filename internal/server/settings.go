@@ -16,7 +16,7 @@ func WithSettings(svc *settings.Service) Option {
 }
 
 // registerSettingsRoutes adds the settings endpoints.
-func (s *Server) registerSettingsRoutes(mux *http.ServeMux) {
+func (s *Server) registerSettingsRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/v1/settings", s.handleUpdateSettings)
 	mux.HandleFunc("POST /api/v1/settings/encryption/generate-key", s.handleGenerateKey)

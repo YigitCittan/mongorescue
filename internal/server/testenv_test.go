@@ -171,3 +171,11 @@ func bootConfig() *config.Config {
 
 // errUnreachable simulates a server that cannot be reached.
 var errUnreachable = errors.New("server selection error: dial tcp 10.0.0.1:27017: i/o timeout, uri mongodb://admin:s3cret-pw@db.internal:27017")
+
+// asPrincipal serves h with p attached to every request, like the auth middleware
+// does, for tests that exercise the bare routes.
+func asPrincipal(h http.Handler, p *auth.Principal) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+	})
+}
