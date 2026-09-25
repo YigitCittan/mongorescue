@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Logins are never refused because other clients behind the same address are busy; bcrypt work is bounded by a global pool in which logins wait (up to 5 s).
 - A generated `secret.key` is made durable (file and directory fsync) before the database records its key check value.
 - `POST /api/v1/setup` and `/api/v1/auth/login` require `Content-Type: application/json` (415) and a same-origin or allowed `Origin` header when present (403), preventing login CSRF.
+- Retention can no longer be abused to delete good backups: it runs only after scheduled (cron) runs and only on the job's own scheduled backups. Backup records gain a `trigger` (`scheduled`, `on_demand`, `manual`, `mcp`; migration `0008` backfills existing records); on-demand, manual and MCP backups are never pruned automatically, the newest `retention_count` scheduled backups (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. The dashboard shows each backup's trigger.
+- MCP checks the per-key rate limit before the scope, and repeated denied, rate-limited and REST read calls are coalesced into one audit entry per 10 seconds with a `count` and their distinct IDs (up to 20), so no client can flush the audit log (migrations `0006`, `0007`).
+- The audit log also records MCP resource reads and prompt requests, and every REST request made with an API key (route pattern, path parameters, status, key).
+- The stdio bridge never follows redirects and sends the API key only to the configured scheme and host.
+- MCP tool text summaries carry only IDs, counts, statuses and timestamps; names and error messages stay in the structured result (prompt-injection hardening).
+- `GET /api/v1/users` needs admin, and a restore into another connection than the backup's needs admin (REST and MCP).
+- Values that clients can influence are stripped of control characters before they are logged.
+
+### Fixed
+- A job's `last_run` is stored before the run's final backup record, so a client that sees the run finished also sees the job updated.
 
 ## [Unreleased]
 
