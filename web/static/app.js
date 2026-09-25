@@ -24,13 +24,16 @@ const state = {
   connections: [],
   users: [],
   apikeys: [],
+  // Recent MCP tool calls (GET /api/v1/audit), loaded when Settings → Security opens.
+  audit: [],
+  auditError: "",
   storageTargets: [],
   // Settings groups as returned by GET /api/v1/settings (secrets masked).
   settings: null,
   settingsError: "",
   loaded: {
     jobs: false, backups: false, restores: false, channels: false, rules: false,
-    connections: false, users: false, apikeys: false, storageTargets: false, settings: false
+    connections: false, users: false, apikeys: false, storageTargets: false, settings: false, audit: false
   }
 };
 
@@ -242,6 +245,9 @@ function setupActions() {
         break;
       case "revoke-api-key":
         revokeApiKey(id);
+        break;
+      case "refresh-audit":
+        loadAudit();
         break;
       case "new-connection":
         openConnectionModal("");
@@ -618,6 +624,7 @@ function renderAll() {
   updateConnectionGating();
   renderUsers();
   renderApiKeys();
+  renderAudit();
   renderStorageTargets();
   renderSettingsLanguage();
 }
@@ -2415,6 +2422,8 @@ function showSettingsSection(name, focus) {
     const panel = document.getElementById(`settings-${s}`);
     if (panel) panel.hidden = s !== name;
   });
+  // The activity log is only fetched when someone looks at it.
+  if (name === "security") loadAudit();
 }
 
 function setupSettingsNav() {
@@ -2519,6 +2528,7 @@ function fillSecurity(sec) {
   document.getElementById("set-trust-proxy").checked = !!sec.trust_proxy_headers;
   setValue("set-cors-origins", (sec.cors_origins || []).join("\n"));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
+  document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
   updateDurationPreviews("form-security");
 }
 
@@ -2700,7 +2710,8 @@ function collectSecurity() {
     secure_cookies: getValue("set-secure-cookies"),
     trust_proxy_headers: document.getElementById("set-trust-proxy").checked,
     cors_origins: origins,
-    metrics_public: document.getElementById("set-metrics-public").checked
+    metrics_public: document.getElementById("set-metrics-public").checked,
+    mcp_enabled: document.getElementById("set-mcp-enabled").checked
   };
 }
 
@@ -3412,6 +3423,71 @@ async function loadApiKeys() {
   }
 }
 
+let auditInFlight = false;
+
+async function loadAudit() {
+  if (auditInFlight || !auth.user) return;
+  auditInFlight = true;
+  try {
+    const json = await apiJSON("/api/v1/audit?limit=200");
+    state.auditError = json.success ? "" : (json.error || t("toasts.request_failed"));
+    if (json.success) state.audit = json.data || [];
+    state.loaded.audit = true;
+    renderAudit();
+  } catch (err) {
+    state.auditError = err.message;
+    state.loaded.audit = true;
+    renderAudit();
+  } finally {
+    auditInFlight = false;
+  }
+}
+
+const AUDIT_RESULTS = {
+  ok: "success",
+  error: "danger",
+  denied: "neutral",
+  rate_limited: "neutral"
+};
+
+function auditResultCell(e) {
+  const kind = AUDIT_RESULTS[e.result] || "neutral";
+  const label = AUDIT_RESULTS[e.result] ? t(`settings.result_${e.result}`) : String(e.result || "");
+  const detail = e.error ? errorDetail(e.error, truncate(e.error, 60)) : "";
+  return `${statusBadge(kind, label)}${detail}`;
+}
+
+function auditArguments(e) {
+  let text = "";
+  try {
+    text = e.arguments && Object.keys(e.arguments).length ? JSON.stringify(e.arguments) : "";
+  } catch (err) {
+    text = "";
+  }
+  return text ? `<div class="cell-sub mono">${ellipsis(truncate(text, 120))}</div>` : "";
+}
+
+function renderAudit() {
+  const tbody = document.getElementById("audit-tbody");
+  if (!tbody || !state.loaded.audit) return;
+  if (state.auditError) {
+    setTbody(tbody, emptyRow(6, tf("settings.activity_load_failed", { error: state.auditError })));
+    return;
+  }
+  if (state.audit.length === 0) {
+    setTbody(tbody, emptyRow(6, t("settings.activity_empty")));
+    return;
+  }
+  setTbody(tbody, state.audit.map(e => `<tr>
+      <td>${timeCell(e.time)}</td>
+      <td class="cell-primary"><span title="${escapeHtml(e.api_key_id || "")}">${escapeHtml(e.api_key_name || e.api_key_id || "")}</span></td>
+      <td><span class="mono">${escapeHtml(e.tool || "")}</span>${auditArguments(e)}</td>
+      <td>${auditResultCell(e)}</td>
+      <td><span class="mono muted">${escapeHtml(e.transport || "")}</span></td>
+      <td><span class="muted">${escapeHtml(Number(e.duration_ms) >= 1 ? formatDuration(Number(e.duration_ms) / 1000) : "<1 ms")}</span></td>
+    </tr>`).join(""));
+}
+
 function userName(id) {
   const u = state.users.find(x => x.id === id || x.username === id);
   return u ? u.username : String(id || "");
@@ -3441,16 +3517,27 @@ function apiKeyDisplay(k) {
   return `${prefix.startsWith("mr_") ? prefix : `mr_${prefix}`}_…`;
 }
 
+const API_KEY_SCOPES = ["read", "operator", "admin"];
+
+// Scope chip of an API key; unknown scopes (from a newer server) are shown as-is.
+function scopeChip(scope) {
+  const s = API_KEY_SCOPES.includes(scope) ? scope : "read";
+  const label = API_KEY_SCOPES.includes(scope) ? t(`settings.scope_${s}`) : String(scope || "");
+  const cls = s === "admin" ? "chip chip-accent" : "chip";
+  return `<span class="${cls}" title="${escapeHtml(t("settings.key_scope_hint"))}">${escapeHtml(label)}</span>`;
+}
+
 function renderApiKeys() {
   const tbody = document.getElementById("apikeys-tbody");
   if (!tbody || !state.loaded.apikeys) return;
   if (state.apikeys.length === 0) {
-    setTbody(tbody, emptyRow(6, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(7, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key"), "", "btn-secondary"));
     return;
   }
   setTbody(tbody, state.apikeys.map(k => `<tr>
       <td class="cell-primary">${escapeHtml(k.name)}</td>
       <td><span class="mono muted">${escapeHtml(apiKeyDisplay(k))}</span></td>
+      <td>${scopeChip(k.scope)}</td>
       <td>${k.created_by ? escapeHtml(userName(k.created_by)) : mutedDash()}</td>
       <td>${timeCell(k.created_at)}</td>
       <td>${parseDate(k.last_used_at) ? timeCell(k.last_used_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
@@ -3590,11 +3677,13 @@ async function createApiKey(e) {
     document.getElementById("api-key-name").focus();
     return;
   }
+  const chosen = getValue("api-key-scope");
+  const scope = API_KEY_SCOPES.includes(chosen) ? chosen : "read";
   try {
     const json = await apiJSON("/api/v1/api-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, scope })
     });
     if (!json.success) {
       showToast(json.error || t("notify.toast_save_failed"), "error");

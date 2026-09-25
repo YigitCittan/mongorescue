@@ -681,6 +681,13 @@
                 <span class="form-hint" data-i18n="settings.metrics_public_hint">Allow Prometheus to scrape without an API key. Keep off unless the endpoint is on a private network.</span>
               </span>
             </label>
+            <label class="check" for="set-mcp-enabled">
+              <input type="checkbox" id="set-mcp-enabled">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.mcp_enabled">MCP server for AI assistants</span>
+                <span class="form-hint" data-i18n="settings.mcp_enabled_hint">Serve the Model Context Protocol at /mcp so assistants such as Claude, Copilot or Cursor can use MongoRescue with an API key. Browser sessions are never accepted there.</span>
+              </span>
+            </label>
           </fieldset>
           <p class="form-error" id="security-error" role="alert" hidden></p>
           <div class="settings-footer">
@@ -688,6 +695,36 @@
             <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
           </div>
         </form>
+
+        <div class="section-header section-spaced">
+          <div>
+            <h3 class="section-title" id="audit-title" data-i18n="settings.activity_title">Recent API/MCP activity</h3>
+            <p class="section-desc" data-i18n="settings.activity_desc">The last 200 tool calls made by AI assistants with API keys.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-audit">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>
+              <span data-i18n="settings.activity_refresh">Refresh</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" aria-labelledby="audit-title">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="settings.col_time">Time</th>
+                <th scope="col" data-i18n="settings.col_api_key">API key</th>
+                <th scope="col" data-i18n="settings.col_tool">Tool</th>
+                <th scope="col" data-i18n="settings.col_result">Result</th>
+                <th scope="col" data-i18n="settings.col_transport">Transport</th>
+                <th scope="col" data-i18n="settings.col_duration">Duration</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody">
+              <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Users -->
@@ -741,6 +778,7 @@
               <tr>
                 <th scope="col" data-i18n="settings.col_key_name">Name</th>
                 <th scope="col" data-i18n="settings.col_prefix">Key</th>
+                <th scope="col" data-i18n="settings.col_scope">Scope</th>
                 <th scope="col" data-i18n="settings.col_created_by">Created by</th>
                 <th scope="col" data-i18n="settings.col_created">Created</th>
                 <th scope="col" data-i18n="settings.col_last_used">Last used</th>
@@ -748,7 +786,7 @@
               </tr>
             </thead>
             <tbody id="apikeys-tbody">
-              <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+              <tr class="empty-row"><td colspan="7"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -1186,6 +1224,15 @@
           <div class="form-group">
             <label class="form-label" for="api-key-name" data-i18n="settings.key_name_label">Name</label>
             <input type="text" id="api-key-name" class="form-input" maxlength="128" data-i18n-placeholder="settings.key_name_placeholder" placeholder="e.g. ci-nightly-check" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="api-key-scope" data-i18n="settings.key_scope_label">Scope</label>
+            <select id="api-key-scope" class="form-select" aria-describedby="api-key-scope-hint">
+              <option value="read" selected data-i18n="settings.scope_read">Read only</option>
+              <option value="operator" data-i18n="settings.scope_operator">Operator</option>
+              <option value="admin" data-i18n="settings.scope_admin">Admin</option>
+            </select>
+            <span class="form-hint" id="api-key-scope-hint" data-i18n="settings.key_scope_hint">Read only: view everything (GET requests and read-only MCP tools). Operator: also start backups, run jobs and restore into safe clones. Admin: full access, including deletions and settings.</span>
           </div>
         </div>
         <div class="modal-body" id="api-key-step-secret" hidden>
