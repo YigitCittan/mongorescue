@@ -2,7 +2,7 @@
 # request per ecosystem; major updates arrive as individual pull requests.
 #
 # Note: Dependabot has no option to skip module updates that raise the `go`
-# directive in go.mod (currently 1.25.0). Such pull requests must be reviewed
+# directive in go.mod (currently 1.26.0). Such pull requests must be reviewed
 # against the supported Go versions before merging; CI tests the go.mod minimum.
 version: 2
 updates:

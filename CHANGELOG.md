@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A generated `secret.key` is made durable (file and directory fsync) before the database records its key check value.
 - `POST /api/v1/setup` and `/api/v1/auth/login` require `Content-Type: application/json` (415) and a same-origin or allowed `Origin` header when present (403), preventing login CSRF.
 
+## [Unreleased]
+
+### Changed
+- Building from source now requires Go 1.26 or newer; Go 1.25 is no longer supported upstream.
+- Updated golang.org/x dependencies; the container image is built with Go 1.27.
+
 ## [0.1.0] - 2026-09-25
 
 Requires Go 1.25+ to build.
