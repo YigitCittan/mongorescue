@@ -48,7 +48,8 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
 - Prometheus metrics, including the time of the last successful backup per job
-- User accounts with sessions and CSRF protection, API keys for automation, and a first-run setup with a one-time code
+- User accounts with sessions and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
+- An MCP server for AI assistants (Streamable HTTP and stdio) with read-only and safe-clone tools, per-key rate limits and an audit log
 - Connection strings and notification secrets are encrypted at rest, never logged and never returned by the API
 - One static binary for Linux, macOS and Windows, plus a multi-arch container image
 
@@ -94,7 +95,20 @@ curl -X POST http://localhost:8080/api/v1/restore \
   -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e"}'
 ```
 
-To restore over the original database, send `"safe_clone": false` together with `"confirm_in_place": true`. The full endpoint list is in [docs/api.md](docs/api.md).
+To restore over the original database, send `"safe_clone": false` together with `"confirm_in_place": true` (with an admin key). The full endpoint list is in [docs/api.md](docs/api.md).
+
+Every key has a scope: `read` (the default) can only look, `operator` can also start backups, run jobs and restore into safe clones, and `admin` can do everything. The examples above need an operator key.
+
+## Use it from AI assistants
+
+MongoRescue speaks the [Model Context Protocol](https://modelcontextprotocol.io), so Claude, GitHub Copilot in VS Code, Cursor or your own agents can check your backups, diagnose failures, start backups and rehearse restores for you. Create an API key (a `read` key to look, an `operator` key to act) and add the server to your assistant, for example in Claude Code:
+
+```bash
+claude mcp add --transport http mongorescue http://127.0.0.1:8080/mcp \
+  --header "Authorization: Bearer $MONGORESCUE_MCP_API_KEY"
+```
+
+or, for clients that start a local command (Claude Desktop), `mongorescue mcp` bridges stdio to a running instance, with the key in `MONGORESCUE_MCP_API_KEY`. Assistants can never delete anything or restore in place: restores through MCP always go into a new `<db>_rescue_<timestamp>` database, and every call is audited and rate limited. Configurations for Claude Desktop, Claude Code, VS Code and Cursor, the tool list and the security model are in [docs/mcp.md](docs/mcp.md).
 
 ## Configuration
 
@@ -115,6 +129,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 
 - [Configuration reference](docs/configuration.md)
 - [REST API](docs/api.md)
+- [AI assistants (MCP)](docs/mcp.md)
 - [Encryption and verified restores](docs/encryption.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
@@ -136,7 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 ## Known limitations
 
 - It runs as a single instance. Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance on the same directory refuses to start.
-- Every user and API key is an administrator, including settings, storage targets and the test endpoints that connect to hosts named in the request. Roles and single sign-on are not implemented yet.
+- Every user is an administrator, including settings, storage targets and the test endpoints that connect to hosts named in the request; only API keys can be limited (read, operator). Roles for users and single sign-on are not implemented yet.
 - Losing `secret.key` (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable: keep a copy, stored apart from database backups.
 - The dashboard has no automated browser tests yet; the API behind it is covered by Go tests.
 - Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only.
@@ -147,7 +162,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 Planned for upcoming releases:
 
 - Backup scope per server (all databases), per database or per collection, each schedulable separately
-- Roles (viewer, operator, admin) and single sign-on (OIDC)
+- Roles for users (viewer, operator, admin, as API keys already have) and single sign-on (OIDC)
 - Storage targets (local disk, S3-compatible buckets) and backup encryption managed in the dashboard
 - Scheduled restore drills and point-in-time recovery from the oplog
 - `backup` / `restore` / `list` CLI commands

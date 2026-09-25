@@ -9,7 +9,19 @@ There is no unauthenticated mode. Apart from the public routes below, every requ
 - a **session**: the `mr_session` cookie set by `POST /api/v1/setup` or `POST /api/v1/auth/login` (HttpOnly, `SameSite=Strict`, `Secure` over HTTPS). Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) must also send the session's CSRF token as `X-CSRF-Token`, or they are rejected with `403`; or
 - an **API key**: `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys are created under Settings → API keys (`mr_<prefix>_<secret>`, shown once); a `MONGORESCUE_API_KEY` of an earlier build is imported once as a key. API-key requests need no CSRF token.
 
-Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup` and `POST /api/v1/auth/login`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on.
+Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup` and `POST /api/v1/auth/login`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
+
+### API key scopes
+
+Every API key has a scope, chosen when it is created (`read` when omitted); sessions are always admin. The auth middleware checks the scope of every request against one route table (`internal/server/scopes.go`) and answers `403` with the key's and the required scope when it is too small:
+
+| Scope | Allowed |
+| :--- | :--- |
+| `read` | Every `GET` route except `GET /api/v1/audit`, `/metrics`, and the MCP endpoint (read tools only) |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone (and the MCP action tools) |
+| `admin` | Everything: deletions, in-place restores, jobs, connections, storage targets, notifications, settings, users, API keys and the audit log |
+
+An in-place restore (`"safe_clone": false` or a `target_database`) needs `admin` even though the route itself needs `operator`. Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
 
 Failed logins return a generic `401`. After 5 failures for the same (client IP, username), further attempts for that pair get `429 Too Many Requests` with `Retry-After`; the lockout starts at 30 seconds and doubles up to 15 minutes. Once an IP has 20 recent failures, each further username from it is locked after a single failure, but the correct password of a user that is not locked always works, so clients sharing one address (NAT, a proxy) cannot lock each other out. Only one attempt per (IP, username) is checked at a time, and at most four per IP for usernames that already failed; concurrent extras get `429` with `Retry-After: 2`. Password comparisons share a global pool (twice the number of CPUs): a login waits up to 5 seconds for a free slot rather than being refused. Wrong setup codes are throttled only after 100 per IP within 15 minutes, and the correct code is always accepted. Passwords longer than 72 bytes are rejected without a password check.
 
@@ -30,8 +42,9 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` / `POST` | `/api/v1/users` | List / create users `{username, password}` | 200 / 201 | 400, 409 username taken |
 | `DELETE` | `/api/v1/users/{id}` | Delete a user and revoke their sessions and API keys | 200 | 400 yourself, 404, 409 last user |
 | `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}` (current required for your own account) | 200 | 400, 403 wrong current password, 404 |
-| `GET` / `POST` | `/api/v1/api-keys` | List keys / create `{name}` → `{api_key, key}` (plaintext only here) | 200 / 201 | 400 |
+| `GET` / `POST` | `/api/v1/api-keys` | List keys / create `{name, scope}` (`scope`: `read` (default), `operator` or `admin`) → `{api_key, key}` (plaintext only here) | 200 / 201 | 400 |
 | `DELETE` | `/api/v1/api-keys/{id}` | Revoke a key | 200 | 404 |
+| `GET` | `/api/v1/audit` | Recent MCP tool calls, newest first (`?limit=` 1-1000, default 200); admin only | 200 | 400, 403 |
 | `GET` / `POST` | `/api/v1/connections` | List / create `{name, uri, description}` | 200 / 201 | 400 |
 | `GET` / `PUT` | `/api/v1/connections/{id}` | Get / update a connection | 200 | 400, 404 |
 | `DELETE` | `/api/v1/connections/{id}` | Delete a connection | 200 | 404, 409 used by jobs |
@@ -64,8 +77,9 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` / `POST` | `/api/v1/notifications/rules` | List / create notification rules | 200 / 201 | 400 |
 | `PUT` / `DELETE` | `/api/v1/notifications/rules/{id}` | Update / delete a rule | 200 | 400, 404 |
 | `GET` | `/metrics` | Prometheus metrics | 200 | 401 |
+| `POST` | `/mcp` | [MCP](mcp.md) Streamable HTTP endpoint (JSON-RPC; stateless, so `GET` and `DELETE` answer 405); API keys only | 200 | 401, 403 disabled or foreign origin |
 
-Every protected endpoint also answers `401` without valid credentials and `403` for a cookie request with a missing or wrong `X-CSRF-Token`.
+Every protected endpoint also answers `401` without valid credentials, `403` for a cookie request with a missing or wrong `X-CSRF-Token` and `403` for an API key whose scope is too small.
 
 ## Connections
 
@@ -90,7 +104,7 @@ To encrypt new backups with a fresh key pair, call `POST /api/v1/settings/encryp
 
 A target is `{id, name, type: "local"|"s3", is_default, local: {path}, s3: {endpoint, region, bucket, prefix, access_key_id, secret_access_key, use_path_style}, created_at, updated_at, last_test_at, last_test_ok, last_test_error}`. Create and update bodies contain only the sub-object of their type; the default is changed only with `POST /api/v1/storage-targets/{id}/default`. The secret access key is returned as `"******"`; sending it back keeps the stored key only while `endpoint`, `bucket` and `access_key_id` are unchanged. Tests answer `200` with `ok: false` and an `error` when the probe fails. `local.path` must be absolute and must not be `/`, the data directory or inside it. Updates are refused with `409` when the target changed meanwhile, and when they would move a target that holds completed or running backups (type, path, endpoint, bucket or prefix); create a new target instead.
 
-Every signed-in user and API key has full rights in v0.1.0, including settings, storage targets and the connection and storage test endpoints, which connect to hosts named in the request. Roles are on the roadmap.
+Every signed-in user, and every API key with the `admin` scope, has full rights, including settings, storage targets and the connection and storage test endpoints, which connect to hosts named in the request. Roles for users are on the roadmap.
 
 Jobs and manual backups take an optional `storage_target_id` (the default target when omitted). Backup records carry `storage_target_id` and a `storage_target_name` snapshot; restores, deletions and retention use the record's target. Deleting the default target, or a target still used by a job or holding a completed or running backup, answers `409` with the reason.
 
@@ -115,6 +129,19 @@ Restoring in place (into the source database, or into `target_database`) must be
 | `202 Accepted` | The operation started |
 | `400 Bad Request` | Invalid request, for example a missing `connection_id`, an unknown `storage_target_id` or an unconfirmed in-place restore |
 | `401 Unauthorized` | Not signed in and no valid API key |
+| `403 Forbidden` | The API key's scope does not allow the operation (for example a read key starting a backup, or an operator key restoring in place) |
 | `409 Conflict` | A backup of the same database on the same connection, or a restore into the same target, is already running |
 | `422 Unprocessable Entity` | The backup is encrypted and no decryption key is configured |
 | `503 Service Unavailable` | The server is shutting down |
+
+## Audit log
+
+`GET /api/v1/audit` (admin) returns the most recent [MCP](mcp.md) tool calls, newest first:
+
+```json
+{"id": 42, "time": "2026-09-25T10:15:03Z", "api_key_id": "key_1a2b3c4d5e6f7a8b", "api_key_name": "claude-desktop",
+ "transport": "stdio", "tool": "restore_to_safe_clone", "arguments": {"backup_id": "bkp_shop_20260924_030000_3f9a1c2e", "verify": true},
+ "result": "ok", "duration_ms": 18}
+```
+
+`result` is `ok`, `error` (the call ran and failed; `error` holds the message the assistant saw), `denied` (scope too small) or `rate_limited`. Argument values of secret-looking keys and credentials inside strings are masked before they are stored. The newest 10,000 entries are kept.

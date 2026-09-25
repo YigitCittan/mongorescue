@@ -18,6 +18,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure`, `dropped`) |
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
+| `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
 | `mongorescue_build_info` | gauge | `version`, `commit`, `go_version` | Always 1 |
 
 The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.

@@ -4,9 +4,12 @@ MongoRescue is a single Go binary that wraps the MongoDB Database Tools (`mongod
 
 ```mermaid
 flowchart TB
-    UI["Web UI (embedded)"] --> API["REST API<br/>logging, CORS, session / API-key auth, CSRF"]
+    UI["Web UI (embedded)"] --> API["REST API<br/>logging, CORS, session / API-key auth, CSRF, scopes"]
+    AI["AI assistants"] -- "Streamable HTTP /mcp<br/>or stdio bridge (mongorescue mcp)" --> MCP["MCP server<br/>API keys only, tool scopes,<br/>rate limit, audit"]
 
     subgraph core["Core"]
+        OPS["operations<br/>backup, job and restore use cases"]
+        AUDIT["audit<br/>MCP tool call log"]
         AUTH["auth<br/>setup, users, sessions, API keys"]
         CONN["connections<br/>managed MongoDB servers"]
         SCHED["Scheduler<br/>cron jobs, retention"]
@@ -17,14 +20,19 @@ flowchart TB
 
     API --> AUTH
     API --> CONN
+    API --> OPS
+    MCP --> OPS
+    MCP --> CONN
+    MCP --> AUDIT
+    OPS --> BE
+    OPS --> RE
+    OPS --> SCHED
     CONN --> PROBE["mongoconn<br/>MongoDB Go driver: ping, list"]
     PROBE <--> MONGO
     SCHED -- resolve URI --> CONN
     API --> SCHED
-    API --> BE
-    API --> RE
     SCHED --> BE
-    API -. events .-> BUS
+    OPS -. events .-> BUS
     SCHED -. events .-> BUS
 
     BE --> TOOLS["mongodump / mongorestore<br/>URI in a 0600 --config file"]
@@ -36,6 +44,8 @@ flowchart TB
     SCHED -- retention --> STORAGE
 
     API --> STORE["SQLiteStore<br/>mongorescue.db<br/>secrets sealed with secretbox"]
+    OPS --> STORE
+    AUDIT --> STORE
     SCHED --> STORE
     AUTH --> STORE
     CONN --> STORE
@@ -46,7 +56,7 @@ flowchart TB
 
 ## Design principles
 
-- **Hexagonal boundaries.** Business logic (`backup`, `restore`, `scheduler`, `notify`, `auth`, `connections`, `settings`, `targets`) does not know about HTTP, CLI flags or cloud SDKs. It depends on small interfaces (ports) such as `storage.Storage`, `auth.Repository`, `connections.Repository`, `connections.Prober`, `settings.Repository`, `targets.Repository` and `targets.Factory`; `server` and `cmd/mongorescue` are delivery adapters, `storage`, `store`, `mongoconn` and the tool runners are infrastructure adapters. Cookies and headers are handled in `server`; password, session, CSRF and throttling rules live in `auth`.
+- **Hexagonal boundaries.** Business logic (`backup`, `restore`, `scheduler`, `notify`, `auth`, `connections`, `settings`, `targets`, `operations`, `audit`) does not know about HTTP, CLI flags or cloud SDKs. It depends on small interfaces (ports) such as `storage.Storage`, `auth.Repository`, `connections.Repository`, `connections.Prober`, `settings.Repository`, `targets.Repository`, `targets.Factory` and `audit.Repository`; `server`, `mcp` and `cmd/mongorescue` are delivery adapters, `storage`, `store`, `mongoconn` and the tool runners are infrastructure adapters. Cookies and headers are handled in `server`; password, session, CSRF, throttling and scope rules live in `auth`. The REST API and the MCP server call the same `operations` service for backups, job runs and restores, so the two adapters cannot apply different rules.
 - **Stream-first I/O.** Dumps can be hundreds of gigabytes. Data moves through `io.Reader`/`io.Writer` pipes from the tool process to storage and back; it is never read into a `[]byte` or staged as a full copy on disk. Memory use does not grow with dump size. (Passphrase decryption is the one fixed exception: scrypt key derivation costs about 256 MiB, once per operation.)
 - **Explicit dependency injection.** No global singletons. Components receive their dependencies through constructors and functional options (`backup.WithEncryptor`, `restore.WithVerifyPolicy`, `server.WithMetricsHandler`), which keeps every engine testable with fakes.
 - **Standard library first.** `net/http` `ServeMux` with method patterns, `log/slog`, `context`, `crypto`. Third-party modules are limited to the AWS SDK v2, `filippo.io/age`, `robfig/cron/v3`, the Prometheus client, `modernc.org/sqlite`, `golang.org/x/crypto/bcrypt` and the MongoDB Go driver. The driver is confined to the `internal/mongoconn` adapter (connection tests and database/collection discovery); CI fails if any other production package imports it. Dumps and restores always go through `mongodump` and `mongorestore`.
@@ -56,13 +66,16 @@ flowchart TB
 
 | Package | Responsibility |
 | :--- | :--- |
-| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-log-level`, `-version`), logger setup, then hands off to `app` |
+| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge instead |
 | `internal/app` | Wires dependencies, starts the HTTP server and scheduler, coordinates graceful shutdown |
 | `internal/config` | Bootstrap options (data directory, listen address, log level, secret key) and the reader for deprecated environment variables and `<data_dir>/config.json` (one-time import) |
 | `internal/settings` | Dashboard-managed settings (general, security, encryption): validation, keep-secret rule, retired keys, the live snapshot engines and server read |
 | `internal/targets` | Storage targets: validation, keep-secret updates, probe tests, default target, one cached driver per target |
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
-| `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys |
+| `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`) |
+| `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, background runs, records and events; read models (`Status`, `Stats`) |
+| `internal/audit` | The audit log of MCP tool calls: argument redaction, pruning, listing |
+| `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
 | `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober` |
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
@@ -75,7 +88,7 @@ flowchart TB
 | `internal/events` | Domain events emitted when backups and restores finish, and the in-process event bus |
 | `internal/notify` | Notification channels (webhook, Telegram, SMTP, Twilio), rules, and the asynchronous delivery dispatcher |
 | `internal/metrics` | Prometheus metrics on a dedicated registry |
-| `internal/server` | REST API, authentication and CORS middleware, embedded dashboard serving |
+| `internal/server` | REST API, authentication, scope (route → scope table) and CORS middleware, the `/mcp` mount with its Origin and Host checks, embedded dashboard serving |
 | `internal/redact` | Dependency-free helpers that scrub credentials from URIs and free text |
 | `internal/mongouri` | Structural validation of MongoDB connection strings without the driver |
 | `internal/mongotools` | Helpers shared by the tool runners, chiefly passing the URI through a private `--config` file |
@@ -179,7 +192,7 @@ Both are started and stopped by `internal/app` with the rest of the process, so 
 
 `internal/store` keeps jobs, backup and restore records, users, sessions, API keys, connections, storage targets, settings, and notification channels and rules in an embedded SQLite database, always `<data_dir>/mongorescue.db`. The driver, `modernc.org/sqlite`, is pure Go, so release binaries stay `CGO_ENABLED=0` and self-contained.
 
-- **Schema.** One table per entity (`jobs`, `backups`, `restores`, `connections`, `notification_channels`, `notification_rules`) plus `users`, `sessions`, `api_keys` and `settings` with plain columns (a session belongs to its user with `ON DELETE CASCADE`). Each row stores the complete record as JSON in `data`, which is what the store reads back, so model fields can be added without a migration. Columns used for filtering and ordering (ID, name, database, job ID, status, start time) are copies rewritten on every save and indexed; lists come back newest first (backups, restores) or by name (jobs, channels, rules).
+- **Schema.** One table per entity (`jobs`, `backups`, `restores`, `connections`, `notification_channels`, `notification_rules`) plus `users`, `sessions`, `api_keys` (with their `scope`), `settings` and `audit_log` (MCP tool calls, pruned to the newest 10,000) with plain columns (a session belongs to its user with `ON DELETE CASCADE`). Each row stores the complete record as JSON in `data`, which is what the store reads back, so model fields can be added without a migration. Columns used for filtering and ordering (ID, name, database, job ID, status, start time) are copies rewritten on every save and indexed; lists come back newest first (backups, restores) or by name (jobs, channels, rules).
 - **Migrations.** Versioned SQL files in `internal/store/migrations` are embedded in the binary and applied at startup, each in its own transaction together with its `schema_migrations` row, so reopening an up-to-date database is a no-op. A database migrated by a newer release is refused rather than downgraded.
 - **Transactions and concurrency.** Connections use WAL, `synchronous=NORMAL`, `foreign_keys=ON` and a 5 second `busy_timeout`, and write transactions take the lock at `BEGIN`. The pool holds a single connection, which serialises statements inside the process; multi-step operations (deleting a channel together with its references in rules, the legacy import) run in one transaction.
 - **Files.** The database is created with mode `0600` before SQLite opens it, and the database, `-wal` and `-shm` files are forced to `0600` after opening, independently of the umask. `secure_delete` overwrites deleted content. An advisory lock on `mongorescue.lock` (flock / LockFileEx) keeps a second instance off the same data directory.
@@ -191,7 +204,8 @@ The store serves a single MongoRescue instance; the roadmap includes a pluggable
 
 ## Security boundaries
 
-- Everything under `/api/` except health, setup status, setup and login needs a session cookie or an API key; `/metrics` needs an API key unless made public. Cookie-authenticated unsafe requests must carry the session's CSRF token. There is no unauthenticated mode; a fresh instance is in setup mode until the first user is created with the one-time code from the logs.
+- Everything under `/api/` except health, setup status, setup and login needs a session cookie or an API key; `/metrics` needs an API key unless made public, and `/mcp` always needs an API key (sessions are never accepted there). Cookie-authenticated unsafe requests must carry the session's CSRF token. API keys are limited by their scope, checked for every request against one route table; sessions are admin.
+- The MCP server exposes no tool that deletes, restores in place or reconfigures anything, filters `tools/list` by the key's scope and checks the scope again on every call, rate limits each key and records every call in the audit log with redacted arguments. There is no unauthenticated mode; a fresh instance is in setup mode until the first user is created with the one-time code from the logs.
 - Session cookies are `HttpOnly` and `SameSite=Strict`, and `Secure` over TLS or behind a trusted proxy. Login attempts are reserved atomically before the password check and throttled per (IP, username), with a per-IP failure count that tightens the budget but never blocks a correct password; every login costs exactly one bcrypt comparison whether or not the user exists, public POSTs require a JSON body and a same-origin (or allowed) `Origin`, deleting a user revokes their API keys, and API keys and the static key are compared through SHA-256 digests in constant time.
 - MongoDB URIs are redacted (`internal/redact`) before logging, error messages and API serialization; other secrets are masked in API responses.
 - Tools are started with `exec.CommandContext` and separate argument slices; nothing is passed through a shell, and cancelling the context terminates the child process.
