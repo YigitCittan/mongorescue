@@ -87,7 +87,7 @@ curl -X POST http://localhost:8080/api/v1/backups \
   -d '{"connection_id": "conn_1a2b3c4d5e6f7a8b", "database": "shop"}'
 ```
 
-Restore it into a safe clone on the same server, or pass `"target_connection_id"` to restore it into another one:
+Restore it into a safe clone on the same server, or pass `"target_connection_id"` to restore it into another one (that needs an admin key or a session):
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/restore \

@@ -195,7 +195,7 @@ type runJobInput struct {
 
 type restoreInput struct {
 	BackupID           string   `json:"backup_id" jsonschema:"ID of a completed backup (see list_backups)"`
-	TargetConnectionID string   `json:"target_connection_id,omitempty" jsonschema:"connection to restore into (default: the backup's own connection)"`
+	TargetConnectionID string   `json:"target_connection_id,omitempty" jsonschema:"admin API keys only: another connection to restore into (default, and the only choice for operator keys: the backup's own connection)"`
 	Collections        []string `json:"collections,omitempty" jsonschema:"only restore these collections"`
 	Verify             *bool    `json:"verify,omitempty" jsonschema:"verify the archive checksum (and decryption) before restoring (default: the server's verify policy)"`
 }
@@ -421,7 +421,8 @@ func (s *Server) registerTools() {
 		Name: ToolRestoreSafeClone,
 		Description: "Restore a backup into a NEW database named <db>_rescue_<timestamp> (a safe clone); existing data is never overwritten. " +
 			"Returns immediately with the restore record (status in_progress); poll get_restore until completed or failed. " +
-			"In-place restores are not available through MCP.",
+			"In-place restores are not available through MCP. Operator keys restore into the backup's own connection only; " +
+			"target_connection_id (another server) needs an admin key.",
 		Annotations: additive("Restore to a safe clone"),
 		InputSchema: schemaFor[restoreInput](func(p map[string]*jsonschema.Schema) {
 			limitIDs(p, "backup_id", "target_connection_id")

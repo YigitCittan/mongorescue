@@ -11,15 +11,16 @@ import (
 // pattern up for every request; a route missing from the table requires admin, and a
 // test fails when a registered route is missing or an entry is stale.
 //
-// read covers every GET except the audit log; operator adds starting backups, running
-// jobs and safe-clone restores (in-place restores need admin, which the operations
-// service enforces because it depends on the request body); everything else is admin.
+// read covers every GET except the audit log and the user list (read keys must not enumerate// credentials' halves); operator adds starting backups, running jobs and safe-clone
+// restores into the backup's own connection (in-place and cross-connection restores
+// need admin, which the operations service enforces because it depends on the request
+// body); everything else is admin.
 // Public routes (publicPaths) and the dashboard assets need no credentials at all.
 var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/auth/logout": auth.ScopeAdmin,
 	"GET " + meRoute:           auth.ScopeRead,
 
-	"GET /api/v1/users":                  auth.ScopeRead,
+	"GET /api/v1/users":                  auth.ScopeAdmin,
 	"POST /api/v1/users":                 auth.ScopeAdmin,
 	"DELETE /api/v1/users/{id}":          auth.ScopeAdmin,
 	"PUT /api/v1/users/{id}/password":    auth.ScopeAdmin,

@@ -33,9 +33,9 @@ Create a key under **Settings → API keys** and pick its scope (read is the def
 
 | Scope | REST API | MCP tools |
 | :--- | :--- | :--- |
-| `read` | Every `GET` except the audit log | All read tools, resources and prompts |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and safe-clone `POST /api/v1/restore` | `read` tools plus `start_backup`, `run_job`, `restore_to_safe_clone` |
-| `admin` | Everything, including deletions, in-place restores, settings, users and keys | Same as `operator` (MCP has no admin-only tools) |
+| `read` | Every `GET` except the audit log and the user list | All read tools, resources and prompts |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and safe-clone `POST /api/v1/restore` into the backup's own connection | `read` tools plus `start_backup`, `run_job`, `restore_to_safe_clone` (into the backup's own connection) |
+| `admin` | Everything, including deletions, in-place and cross-connection restores, settings, users and keys | Same as `operator`, plus `restore_to_safe_clone` with `target_connection_id` (a clone on another server) |
 
 Browser sessions always have admin rights. See [api.md](api.md#api-key-scopes) for the route table.
 
@@ -209,7 +209,7 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `get_status` | read | | Health, version, counts, running operations, last successful backup per job, failures in the last 24 hours |
 | `start_backup` | operator | `connection_id`, `database`, optional `storage_target_id`, `collections`, `exclude_collections`, `gzip` | The new backup record (`in_progress`) |
 | `run_job` | operator | `job_id` | The new backup record (`in_progress`) |
-| `restore_to_safe_clone` | operator | `backup_id`, optional `target_connection_id`, `collections`, `verify` | The new restore record (`in_progress`) into `<db>_rescue_<timestamp>` |
+| `restore_to_safe_clone` | operator | `backup_id`, optional `target_connection_id` (admin keys only), `collections`, `verify` | The new restore record (`in_progress`) into `<db>_rescue_<timestamp>` |
 
 Backups and restores run in the background: the action tools return at once and tell the model to poll `get_backup` or `get_restore` until the status is `completed` or `failed`. The same rules as in the REST API apply, because both call the same services: one backup per database at a time, one restore per target database, validation of names and filters, and a missing decryption key reported before anything starts. List tools return at most 100 items per call with a `next_cursor` for the next page.
 

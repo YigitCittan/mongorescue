@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -187,6 +188,39 @@ func TestRestoreToolCannotRestoreInPlace(t *testing.T) {
 	if list, _ := f.store.ListRestoreRecords(context.Background()); len(list) != 0 {
 		t.Fatalf("rejected restores must not run: %+v", list)
 	}
+}
+
+// TestCrossConnectionRestoreNeedsAdmin proves an operator key may only safe-clone
+// into the backup's own connection.
+func TestCrossConnectionRestoreNeedsAdmin(t *testing.T) {
+	f := newFixture(t, nil)
+	now := time.Now().UTC()
+	if err := f.store.SaveConnection(context.Background(), &models.Connection{ID: "conn_other", Name: "other", URI: "mongodb://other:27017", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	op := f.session(t, principal(auth.ScopeOperator))
+	var started backupStarted
+	structured(t, ToolStartBackup, call(t, op, ToolStartBackup, map[string]any{"connection_id": testConnID, "database": "shop"}), &started)
+	done := awaitBackup(t, op, started.Backup.ID)
+
+	res := call(t, op, ToolRestoreSafeClone, map[string]any{"backup_id": done.ID, "target_connection_id": "conn_other"})
+	if !res.IsError || !strings.Contains(resultText(res), "admin") {
+		t.Fatalf("operator cross-connection restore = %+v; want a forbidden tool error", res)
+	}
+	if list, _ := f.store.ListRestoreRecords(context.Background()); len(list) != 0 {
+		t.Fatalf("a refused restore must not run: %+v", list)
+	}
+	var same restoreStarted
+	structured(t, ToolRestoreSafeClone, call(t, op, ToolRestoreSafeClone, map[string]any{"backup_id": done.ID, "target_connection_id": testConnID}), &same)
+	awaitRestore(t, op, same.Restore.ID)
+
+	admin := f.session(t, principal(auth.ScopeAdmin))
+	var cross restoreStarted
+	structured(t, ToolRestoreSafeClone, call(t, admin, ToolRestoreSafeClone, map[string]any{"backup_id": done.ID, "target_connection_id": "conn_other"}), &cross)
+	if cross.Restore.TargetConnectionID != "conn_other" {
+		t.Fatalf("admin cross-connection restore = %+v", cross.Restore)
+	}
+	awaitRestore(t, admin, cross.Restore.ID)
 }
 
 func TestReadTools(t *testing.T) {

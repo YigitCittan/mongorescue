@@ -9,6 +9,8 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -20,13 +22,14 @@ var operatorRoutes = []string{
 }
 
 // adminOnlyReads are GET routes that need more than the read scope.
-var adminOnlyReads = []string{"GET /api/v1/audit"}
+var adminOnlyReads = []string{"GET /api/v1/audit", "GET /api/v1/users"}
 
 // scopeFixture serves the full middleware chain with one API key per scope.
 type scopeFixture struct {
-	srv  *Server
-	h    http.Handler
-	keys map[auth.Scope]string
+	srv   *Server
+	h     http.Handler
+	keys  map[auth.Scope]string
+	store *store.SQLiteStore
 }
 
 func newScopeFixture(t *testing.T) *scopeFixture {
@@ -38,7 +41,7 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	srv := NewServer(bootConfig(), st, base.backupEngine, base.restoreEngine, base.storageDriver, base.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, newTestConfig().Security)),
 		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)))
-	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}}
+	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}, store: st}
 	for _, scope := range auth.Scopes() {
 		_, plain, err := svc.CreateAPIKey(context.Background(), auth.SystemPrincipal(), string(scope)+" key", scope)
 		if err != nil {
@@ -166,6 +169,39 @@ func TestInPlaceRestoreNeedsAdmin(t *testing.T) {
 	admin := map[string]string{"X-API-Key": f.keys[auth.ScopeAdmin], "Content-Type": "application/json"}
 	if rec := serve(f.h, "POST", "/api/v1/restore", body, admin); rec.Code != http.StatusNotFound {
 		t.Fatalf("admin in-place restore of a missing backup = %d %s; want 404", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserListNeedsAdmin(t *testing.T) {
+	f := newScopeFixture(t)
+	for scope, want := range map[auth.Scope]int{auth.ScopeRead: http.StatusForbidden, auth.ScopeOperator: http.StatusForbidden, auth.ScopeAdmin: http.StatusOK} {
+		rec := serve(f.h, "GET", "/api/v1/users", nil, map[string]string{"X-API-Key": f.keys[scope]})
+		if rec.Code != want {
+			t.Errorf("%s key listing users = %d %s; want %d", scope, rec.Code, rec.Body.String(), want)
+		}
+	}
+}
+
+func TestCrossConnectionRestoreNeedsAdmin(t *testing.T) {
+	f := newScopeFixture(t)
+	ctx := context.Background()
+	if err := f.store.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_src", Database: "shop", ConnectionID: testConnID,
+		Status: models.StatusCompleted, StorageKey: "shop/src"}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"backup_id":"bkp_src","target_connection_id":"conn_elsewhere"}`)
+	op := map[string]string{"X-API-Key": f.keys[auth.ScopeOperator], "Content-Type": "application/json"}
+	rec := serve(f.h, "POST", "/api/v1/restore", body, op)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "another connection") {
+		t.Fatalf("operator cross-connection restore = %d %s; want 403", rec.Code, rec.Body.String())
+	}
+	// Admin passes the scope check (and then fails on the unknown connection).
+	admin := map[string]string{"X-API-Key": f.keys[auth.ScopeAdmin], "Content-Type": "application/json"}
+	if rec := serve(f.h, "POST", "/api/v1/restore", body, admin); rec.Code != http.StatusBadRequest {
+		t.Fatalf("admin cross-connection restore to an unknown connection = %d %s; want 400", rec.Code, rec.Body.String())
+	}
+	if list, _ := f.store.ListRestoreRecords(ctx); len(list) != 0 {
+		t.Fatalf("refused restores must not run: %+v", list)
 	}
 }
 
