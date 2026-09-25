@@ -356,7 +356,12 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	target, err := s.ResolveConnection(ctx, targetID)
 	if err != nil {
 		if errors.Is(err, ErrConnectionRequired) {
-			err = fmt.Errorf("%w: the backup has no connection, choose a target_connection_id", ErrConnectionRequired)
+			// A legacy backup without a source connection can only be restored into a
+			// connection named explicitly, which needs admin (see above).
+			if auth.RequireScope(ctx, auth.ScopeAdmin) != nil {
+				return nil, public("this backup has no source connection recorded; an admin must choose the target connection", ErrConnectionRequired, err)
+			}
+			return nil, public("this backup has no source connection recorded; choose the target connection (target_connection_id)", ErrConnectionRequired, err)
 		}
 		return nil, err
 	}

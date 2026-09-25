@@ -11,7 +11,8 @@ import (
 // pattern up for every request; a route missing from the table requires admin, and a
 // test fails when a registered route is missing or an entry is stale.
 //
-// read covers every GET except the audit log and the user list (read keys must not enumerate// credentials' halves); operator adds starting backups, running jobs and safe-clone
+// read covers every GET except the audit log and the user list (read keys must not
+// enumerate usernames); operator adds starting backups, running jobs and safe-clone
 // restores into the backup's own connection (in-place and cross-connection restores
 // need admin, which the operations service enforces because it depends on the request
 // body); everything else is admin.
