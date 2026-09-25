@@ -37,12 +37,15 @@ func (r *memRepo) AppendAudit(ctx context.Context, e *audit.Entry, keep int) err
 	return nil
 }
 
-func (r *memRepo) AddAuditCount(_ context.Context, id int64, n int) error {
+func (r *memRepo) MergeAudit(_ context.Context, id int64, n int, arguments json.RawMessage) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, e := range r.entries {
 		if e.ID == id {
 			e.Count += n
+			if arguments != nil {
+				e.Arguments = arguments
+			}
 			return nil
 		}
 	}
@@ -199,5 +202,36 @@ func TestRefusedCallsAreCoalesced(t *testing.T) {
 	}
 	if list, _ = svc.List(ctx, 1); list[0].APIKeyID != "key_2" || list[0].Count != 3 {
 		t.Fatalf("coalesced entry = %+v; want count 3", list[0])
+	}
+}
+
+func TestCoalescedEntriesKeepDistinctValues(t *testing.T) {
+	repo := &memRepo{}
+	svc := audit.NewService(repo, nil)
+	t0 := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	read := func(i int, id string) {
+		svc.Record(context.Background(), audit.Entry{
+			Time: t0.Add(time.Duration(i) * time.Millisecond), APIKeyID: "key_1", Transport: audit.TransportREST,
+			Tool: "GET /api/v1/backups/{id}", Arguments: json.RawMessage(`{"id":"` + id + `"}`), Result: audit.ResultOK, Coalesce: true,
+		})
+	}
+	read(0, "bkp_a")
+	read(1, "bkp_b")
+	read(2, "bkp_a")
+	list, _ := svc.List(context.Background(), 10)
+	if len(list) != 1 || list[0].Count != 3 || string(list[0].Arguments) != `{"id":["bkp_a","bkp_b"]}` {
+		t.Fatalf("coalesced entry = %+v (%s); want count 3 and both IDs", list, list[0].Arguments)
+	}
+	for i := range 30 {
+		read(10+i, fmt.Sprintf("bkp_%02d", i))
+	}
+	list, _ = svc.List(context.Background(), 10)
+	var args struct {
+		ID   []string `json:"id"`
+		More bool     `json:"_more_values"`
+	}
+	if err := json.Unmarshal(list[0].Arguments, &args); err != nil || list[0].Count != 33 ||
+		len(args.ID) != audit.MaxDistinctValues || !args.More {
+		t.Fatalf("entry = count %d %s; want count 33, %d IDs and _more_values", list[0].Count, list[0].Arguments, audit.MaxDistinctValues)
 	}
 }

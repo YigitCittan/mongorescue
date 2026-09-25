@@ -51,20 +51,26 @@ func TestAuditLogAppendListPrune(t *testing.T) {
 	}
 }
 
-func TestAuditLogAddCount(t *testing.T) {
+func TestAuditLogMerge(t *testing.T) {
 	s := storetest.New(t)
 	ctx := context.Background()
 	e := &audit.Entry{Time: time.Now(), APIKeyID: "key_1", Tool: "start_backup", Result: audit.ResultDenied}
 	if err := s.AppendAudit(ctx, e, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddAuditCount(ctx, e.ID, 4); err != nil {
+	if err := s.MergeAudit(ctx, e.ID, 4, nil); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ := s.ListAudit(ctx, 1); list[0].Count != 5 {
-		t.Fatalf("count = %d; want 5", list[0].Count)
+	if list, _ := s.ListAudit(ctx, 1); list[0].Count != 5 || string(list[0].Arguments) != "{}" {
+		t.Fatalf("entry = %+v; want count 5 and the arguments kept", list[0])
 	}
-	if err := s.AddAuditCount(ctx, e.ID+1, 1); !errors.Is(err, audit.ErrEntryNotFound) {
+	if err := s.MergeAudit(ctx, e.ID, 1, json.RawMessage(`{"id":["a","b"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.ListAudit(ctx, 1); list[0].Count != 6 || string(list[0].Arguments) != `{"id":["a","b"]}` {
+		t.Fatalf("entry = %+v; want count 6 and the merged arguments", list[0])
+	}
+	if err := s.MergeAudit(ctx, e.ID+1, 1, nil); !errors.Is(err, audit.ErrEntryNotFound) {
 		t.Fatalf("missing entry: %v; want ErrEntryNotFound", err)
 	}
 }

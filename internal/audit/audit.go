@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +69,9 @@ const (
 	CoalesceWindow = 10 * time.Second
 	// maxCoalesceKeys bounds the in-memory index of recently coalesced entries.
 	maxCoalesceKeys = 4096
+	// MaxDistinctValues is how many distinct values of one argument a coalesced entry
+	// keeps (for example the IDs a polling client read).
+	MaxDistinctValues = 20
 )
 
 // Entry is one audited call.
@@ -100,7 +104,10 @@ type Entry struct {
 	Count int `json:"count"`
 	// Coalesce asks Record to merge the entry into an identical one (same API key,
 	// transport, tool and result) recorded less than CoalesceWindow earlier, instead
-	// of storing a new one. Denied and rate-limited entries are always coalesced.
+	// of storing a new one. Denied and rate-limited entries are always coalesced. The
+	// merged entry counts the calls and keeps the distinct values of each top-level
+	// string argument (up to MaxDistinctValues, as an array once there are several;
+	// "_more_values" is true when some were dropped).
 	Coalesce bool `json:"-"`
 }
 
@@ -110,16 +117,17 @@ type Repository interface {
 	AppendAudit(ctx context.Context, e *Entry, keep int) error
 	// ListAudit returns up to limit entries, newest first.
 	ListAudit(ctx context.Context, limit int) ([]*Entry, error)
-	// AddAuditCount adds n to the Count of entry id. It returns an error wrapping
-	// ErrEntryNotFound when the entry no longer exists (it was pruned).
-	AddAuditCount(ctx context.Context, id int64, n int) error
+	// MergeAudit adds n to the Count of entry id and, when arguments is not nil,
+	// replaces its arguments. It returns an error wrapping ErrEntryNotFound when the
+	// entry no longer exists (it was pruned).
+	MergeAudit(ctx context.Context, id int64, n int, arguments json.RawMessage) error
 }
 
 // Errors.
 var (
 	// ErrNoRepository is returned by List when the service has no repository.
 	ErrNoRepository = errors.New("audit: no repository configured")
-	// ErrEntryNotFound is returned by Repository.AddAuditCount for a missing entry.
+	// ErrEntryNotFound is returned by Repository.MergeAudit for a missing entry.
 	ErrEntryNotFound = errors.New("audit: entry not found")
 )
 
@@ -133,13 +141,75 @@ type Service struct {
 	// mu guards recent and serialises coalesced writes.
 	mu sync.Mutex
 	// recent indexes the latest stored entry of every coalescing key.
-	recent map[string]recentEntry
+	recent map[string]*recentEntry
 }
 
 // recentEntry is a stored entry later identical entries may be merged into.
 type recentEntry struct {
 	id    int64
 	since time.Time
+	// args are the stored entry's decoded arguments (nil when not a JSON object).
+	args map[string]any
+	// values are the distinct values seen per top-level string argument.
+	values map[string][]string
+	// more reports that distinct values were dropped (MaxDistinctValues).
+	more bool
+}
+
+// newRecentEntry indexes the stored entry e.
+func newRecentEntry(e *Entry) *recentEntry {
+	r := &recentEntry{id: e.ID, since: e.Time, values: map[string][]string{}}
+	if json.Unmarshal(e.Arguments, &r.args) != nil {
+		r.args = nil
+	}
+	for k, v := range r.args {
+		if str, ok := v.(string); ok {
+			r.values[k] = []string{str}
+		}
+	}
+	return r
+}
+
+// merge adds the top-level string arguments of raw to the distinct values and
+// returns the new arguments document, or nil when nothing changed.
+func (r *recentEntry) merge(raw json.RawMessage) json.RawMessage {
+	var args map[string]any
+	if r.args == nil || json.Unmarshal(raw, &args) != nil {
+		return nil
+	}
+	changed := false
+	for k, v := range args {
+		str, ok := v.(string)
+		seen, tracked := r.values[k]
+		if !ok || !tracked || slices.Contains(seen, str) {
+			continue
+		}
+		if len(seen) >= MaxDistinctValues {
+			changed = changed || !r.more
+			r.more = true
+			continue
+		}
+		r.values[k] = append(seen, str)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	out := make(map[string]any, len(r.args)+1)
+	for k, v := range r.args {
+		out[k] = v
+		if vals := r.values[k]; len(vals) > 1 {
+			out[k] = vals
+		}
+	}
+	if r.more {
+		out["_more_values"] = true
+	}
+	doc, err := json.Marshal(out)
+	if err != nil || len(doc) > maxArgumentsBytes {
+		return nil
+	}
+	return doc
 }
 
 // NewService returns a Service backed by repo. A nil logger means slog.Default().
@@ -147,7 +217,7 @@ func NewService(repo Repository, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: repo, logger: logger, now: time.Now, recent: map[string]recentEntry{}}
+	return &Service{repo: repo, logger: logger, now: time.Now, recent: map[string]*recentEntry{}}
 }
 
 // Record stores e after redacting its arguments and error. Denied, rate-limited and
@@ -181,7 +251,8 @@ func (s *Service) Record(ctx context.Context, e Entry) {
 // append stores e, logging failures. It reports whether e was stored.
 func (s *Service) append(ctx context.Context, e *Entry) bool {
 	if err := s.repo.AppendAudit(ctx, e, MaxEntries); err != nil {
-		s.logger.Error("failed to write audit entry", slog.String("tool", e.Tool), slog.String("api_key_id", e.APIKeyID), slog.Any("error", err))
+		// The entry's own fields stay out of the log: it is the audit log's job.
+		s.logger.Error("failed to write audit entry", slog.Any("error", err))
 		return false
 	}
 	return true
@@ -194,12 +265,12 @@ func (s *Service) recordCoalesced(ctx context.Context, e *Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r, ok := s.recent[key]; ok && !e.Time.Before(r.since) && e.Time.Sub(r.since) < CoalesceWindow {
-		err := s.repo.AddAuditCount(ctx, r.id, e.Count)
+		err := s.repo.MergeAudit(ctx, r.id, e.Count, r.merge(e.Arguments))
 		if err == nil {
 			return
 		}
 		if !errors.Is(err, ErrEntryNotFound) {
-			s.logger.Error("failed to update audit entry", slog.String("tool", e.Tool), slog.String("api_key_id", e.APIKeyID), slog.Any("error", err))
+			s.logger.Error("failed to update audit entry", slog.Int64("entry_id", r.id), slog.Any("error", err))
 			return
 		}
 	}
@@ -216,7 +287,7 @@ func (s *Service) recordCoalesced(ctx context.Context, e *Entry) {
 			clear(s.recent)
 		}
 	}
-	s.recent[key] = recentEntry{id: e.ID, since: e.Time}
+	s.recent[key] = newRecentEntry(e)
 }
 
 // coalesceKey identifies the entries e may be merged with (for REST requests also
