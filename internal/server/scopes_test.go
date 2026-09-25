@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
@@ -19,7 +20,7 @@ var operatorRoutes = []string{
 }
 
 // adminOnlyReads are GET routes that need more than the read scope.
-var adminOnlyReads = []string{}
+var adminOnlyReads = []string{"GET /api/v1/audit"}
 
 // scopeFixture serves the full middleware chain with one API key per scope.
 type scopeFixture struct {
@@ -33,10 +34,10 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	base, _, _ := setupTestServer(t)
 	st := storetest.New(t)
 	svc := newTestAuth(t, st, "")
-	metricsOK := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	srv := NewServer(bootConfig(), st, base.backupEngine, base.restoreEngine, base.storageDriver, base.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, newTestConfig().Security)),
-		WithMetricsHandler(metricsOK))
+		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)))
 	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}}
 	for _, scope := range auth.Scopes() {
 		_, plain, err := svc.CreateAPIKey(context.Background(), auth.SystemPrincipal(), string(scope)+" key", scope)
@@ -90,6 +91,10 @@ func TestEveryRouteHasAScope(t *testing.T) {
 		}
 		method, _ := concrete(p)
 		switch {
+		case strings.HasSuffix(p, " "+MCPPath):
+			if need != auth.ScopeRead {
+				t.Errorf("%q needs %q; the MCP endpoint needs read (tools check their own scope)", p, need)
+			}
 		case slices.Contains(operatorRoutes, p):
 			if need != auth.ScopeOperator {
 				t.Errorf("%q needs %q; operator routes need operator", p, need)

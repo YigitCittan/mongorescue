@@ -62,6 +62,8 @@ type Store interface {
 
 	// SaveRestoreRecord creates or replaces a restore record.
 	SaveRestoreRecord(ctx context.Context, record *models.RestoreRecord) error
+	// GetRestoreRecord returns a restore record or ErrNotFound.
+	GetRestoreRecord(ctx context.Context, id string) (*models.RestoreRecord, error)
 	// ListRestoreRecords returns all restore records, newest first.
 	ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error)
 }

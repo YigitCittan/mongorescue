@@ -148,6 +148,9 @@ type Security struct {
 	CORSOrigins []string `json:"cors_origins"`
 	// MetricsPublic serves /metrics without an API key.
 	MetricsPublic bool `json:"metrics_public"`
+	// MCPEnabled serves the MCP endpoint (/mcp) to API keys; when off it answers 403
+	// and the stdio bridge cannot connect.
+	MCPEnabled bool `json:"mcp_enabled"`
 }
 
 // Encryption configures age encryption.
@@ -197,6 +200,7 @@ func Defaults() Settings {
 			SessionAbsoluteTimeout: Duration(7 * 24 * time.Hour),
 			SecureCookies:          CookiesAuto,
 			CORSOrigins:            []string{},
+			MCPEnabled:             true,
 		},
 		Encryption: Encryption{
 			Mode:        ModeX25519,
@@ -269,6 +273,7 @@ type SecurityPatch struct {
 	TrustProxyHeaders      *bool         `json:"trust_proxy_headers,omitempty"`
 	CORSOrigins            *[]string     `json:"cors_origins,omitempty"`
 	MetricsPublic          *bool         `json:"metrics_public,omitempty"`
+	MCPEnabled             *bool         `json:"mcp_enabled,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -304,6 +309,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 			next.Security.CORSOrigins = slices.Clone(*sec.CORSOrigins)
 		}
 		setIf(&next.Security.MetricsPublic, sec.MetricsPublic)
+		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)

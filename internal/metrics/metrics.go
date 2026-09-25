@@ -54,6 +54,7 @@ type Metrics struct {
 	restoresTotal       *prometheus.CounterVec
 	notificationsTotal  *prometheus.CounterVec
 	eventsDropped       prometheus.Counter
+	mcpCalls            *prometheus.CounterVec
 	scheduledJobsSource atomic.Pointer[func() int]
 }
 
@@ -97,6 +98,11 @@ func New(info BuildInfo) *Metrics {
 			Name:      "events_dropped_total",
 			Help:      "Total number of events dropped because the event bus queue was full or stopped.",
 		}),
+		mcpCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "mcp_calls_total",
+			Help:      "Total number of MCP tool calls by tool and result (ok|error|denied|rate_limited).",
+		}, []string{"tool", "result"}),
 	}
 
 	scheduledJobs := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -127,6 +133,7 @@ func New(info BuildInfo) *Metrics {
 		m.restoresTotal,
 		m.notificationsTotal,
 		m.eventsDropped,
+		m.mcpCalls,
 		scheduledJobs,
 		buildInfo,
 	)
@@ -200,6 +207,13 @@ func (m *Metrics) ForgetJob(jobID string) {
 // ObserveNotification counts one notification outcome for a channel type.
 func (m *Metrics) ObserveNotification(channelType, outcome string) {
 	m.notificationsTotal.WithLabelValues(channelType, outcome).Inc()
+}
+
+// ObserveMCPCall counts one MCP tool call by tool and result (ok, error, denied,
+// rate_limited). Callers must pass known tool names only (the MCP server maps
+// unknown names to "unknown"), so the label cardinality stays bounded.
+func (m *Metrics) ObserveMCPCall(tool, result string) {
+	m.mcpCalls.WithLabelValues(tool, result).Inc()
 }
 
 // IncEventsDropped counts one dropped event; use it as the events.Bus drop hook.

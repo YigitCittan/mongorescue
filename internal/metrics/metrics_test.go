@@ -93,3 +93,19 @@ func TestScheduledJobsWithoutSource(t *testing.T) {
 		t.Error("clearing the source should report 0")
 	}
 }
+
+func TestObserveMCPCall(t *testing.T) {
+	m := New(BuildInfo{Version: "test"})
+	m.ObserveMCPCall("start_backup", "ok")
+	m.ObserveMCPCall("start_backup", "ok")
+	m.ObserveMCPCall("start_backup", "denied")
+	out := scrape(t, m)
+	for _, w := range []string{
+		`mongorescue_mcp_calls_total{result="ok",tool="start_backup"} 2`,
+		`mongorescue_mcp_calls_total{result="denied",tool="start_backup"} 1`,
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("scrape lacks %s", w)
+		}
+	}
+}

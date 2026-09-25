@@ -8,6 +8,8 @@
 #     and creating a connection (its password is never returned)
 #   - the default "Local disk" storage target, settings applied live through the
 #     API and an API key created through the API
+#   - API keys are read-only by default; the MCP endpoint (/mcp) takes API keys only
+#     and the stdio bridge (mongorescue mcp) forwards to it
 #   - the embedded dashboard is served at /
 #   - the server runs as UID 10001, can write its volumes and keeps its metadata
 #     database and secret key private
@@ -136,7 +138,30 @@ curl -fsS -b "$JAR2" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF
 API_KEY=$(json_field key < "$WORK/key.json")
 [ -n "$API_KEY" ] || fail "api key not created"
 [ "$(code -H "Authorization: Bearer $API_KEY" "$BASE/metrics")" = "200" ] || fail "/metrics with an api key not 200"
-log "API key created through the API works for /metrics"
+grep -q '"scope":"read"' "$WORK/key.json" || fail "a key created without a scope is not read-only: $(cat "$WORK/key.json")"
+[ "$(code -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' -d '{}' "$BASE/api/v1/backups")" = "403" ] \
+  || fail "a read-only key may start a backup"
+log "API key created through the API works for /metrics and is read-only by default"
+
+# MCP: Streamable HTTP at /mcp for API keys only, and the stdio bridge (mongorescue mcp).
+MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+MCP_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+mcp_post() { curl -s -o "$WORK/mcp.json" -w '%{http_code}' -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' "$@" "$BASE/mcp"; }
+[ "$(mcp_post -d "$MCP_INIT")" = "401" ] || fail "/mcp without credentials not 401"
+[ "$(mcp_post -b "$JAR2" -H "X-CSRF-Token: $CSRF" -d "$MCP_INIT")" = "401" ] || fail "/mcp accepted a session cookie"
+[ "$(mcp_post -H "Authorization: Bearer $API_KEY" -H 'Origin: https://evil.example' -d "$MCP_INIT")" = "403" ] \
+  || fail "/mcp accepted a cross-origin request"
+[ "$(mcp_post -H "Authorization: Bearer $API_KEY" -d "$MCP_INIT")" = "200" ] || fail "/mcp initialize failed: $(cat "$WORK/mcp.json")"
+grep -q '"name":"mongorescue"' "$WORK/mcp.json" || fail "/mcp initialize did not identify the server: $(cat "$WORK/mcp.json")"
+[ "$(mcp_post -H "Authorization: Bearer $API_KEY" -d "$MCP_LIST")" = "200" ] || fail "/mcp tools/list failed"
+grep -q '"get_status"' "$WORK/mcp.json" || fail "/mcp tools/list lacks get_status"
+grep -q '"start_backup"' "$WORK/mcp.json" && fail "/mcp lists start_backup to a read-only key"
+bridge_out=$({ printf '%s\n%s\n' "$MCP_INIT" "$MCP_LIST"; sleep 3; } | docker exec -i -e "MONGORESCUE_MCP_API_KEY=$API_KEY" "$NAME" \
+  mongorescue mcp --url http://127.0.0.1:8080 2>"$WORK/bridge.err" || true)
+printf '%s' "$bridge_out" | grep -q '"get_status"' || fail "stdio bridge did not list tools: $bridge_out $(cat "$WORK/bridge.err")"
+grep -qF "$API_KEY" "$WORK/bridge.err" && fail "the stdio bridge logged the API key"
+log "MCP: /mcp needs an API key (no cookies, no cross-origin), scopes filter tools, stdio bridge works"
 
 curl -fsS "$BASE/" | grep -q 'app.js' || fail "/ does not serve the embedded dashboard"
 log "GET / -> embedded dashboard"

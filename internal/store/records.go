@@ -138,6 +138,11 @@ func (s *SQLiteStore) SaveRestoreRecord(ctx context.Context, record *models.Rest
 	return putRestore(ctx, s.db, record)
 }
 
+// GetRestoreRecord returns a single restore record or ErrNotFound.
+func (s *SQLiteStore) GetRestoreRecord(ctx context.Context, id string) (*models.RestoreRecord, error) {
+	return getRecord[models.RestoreRecord](ctx, s.db, ErrNotFound, "SELECT data FROM restores WHERE id = ?", id)
+}
+
 // ListRestoreRecords returns all restore operations sorted by StartedAt descending.
 func (s *SQLiteStore) ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error) {
 	return listRecords[models.RestoreRecord](ctx, s.db,

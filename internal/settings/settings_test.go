@@ -60,7 +60,7 @@ func TestDefaultsAndMaskedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{`"backup_timeout":"6h0m0s"`, `"restore_verify_policy":"auto"`, `"session_idle_timeout":"12h0m0s"`,
-		`"secure_cookies":"auto"`, `"cors_origins":[]`, `"identity":""`, `"retired_keys":[]`, `"mode":"x25519"`, `"default_gzip":true`} {
+		`"secure_cookies":"auto"`, `"cors_origins":[]`, `"mcp_enabled":true`, `"identity":""`, `"retired_keys":[]`, `"mode":"x25519"`, `"default_gzip":true`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("defaults JSON lacks %s: %s", want, raw)
 		}
@@ -262,6 +262,23 @@ func TestSaveFailureKeepsSnapshot(t *testing.T) {
 	}
 }
 
+func TestMCPEnabledToggle(t *testing.T) {
+	repo := &memRepo{}
+	svc := newSvc(t, repo)
+	if !svc.Current().Security.MCPEnabled {
+		t.Fatal("the MCP endpoint is enabled by default")
+	}
+	if _, err := svc.Update(context.Background(), Patch{Security: &SecurityPatch{MCPEnabled: ptr(false)}}); err != nil {
+		t.Fatal(err)
+	}
+	if svc.Current().Security.MCPEnabled || repo.values[KeyMCPEnabled] != "false" {
+		t.Fatalf("mcp_enabled not switched off: %v", repo.values)
+	}
+	if newSvc(t, repo).Current().Security.MCPEnabled {
+		t.Fatal("a reload must keep mcp_enabled off")
+	}
+}
+
 func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyEncryptionIdentity) || !IsSecret(KeyEncryptionPassphrase) || !IsSecret(KeyEncryptionRetiredKeys) || IsSecret(KeyBackupTimeout) {
 		t.Fatal("secret key classification is wrong")
@@ -269,7 +286,7 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsKnown(KeyCORSOrigins) || !IsKnown("legacy_import.X") || IsKnown("secret_key_check") {
 		t.Fatal("known key classification is wrong")
 	}
-	if len(Keys()) != 19 {
+	if len(Keys()) != 20 || IsSecret(KeyMCPEnabled) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

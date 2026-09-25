@@ -3,18 +3,17 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 
-	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/targets"
 )
 
 // ErrUnknownStorageTarget is returned (as HTTP 400) when a job or backup names a
-// storage target that does not exist.
-var ErrUnknownStorageTarget = errors.New("unknown storage_target_id")
+// storage target that does not exist. It aliases operations.ErrUnknownStorageTarget.
+var ErrUnknownStorageTarget = operations.ErrUnknownStorageTarget
 
 // WithStorageTargets enables the /api/v1/storage-targets endpoints and makes jobs,
 // backups, deletions and restores use per-target storage drivers.
@@ -41,19 +40,6 @@ func (s *Server) requireTargets(w http.ResponseWriter) (*targets.Service, bool) 
 		return nil, false
 	}
 	return s.targets, true
-}
-
-// resolveTarget returns target id (the default target for ""). Without a targets
-// service it returns an anonymous local target served by the fixed storage driver.
-func (s *Server) resolveTarget(ctx context.Context, id string) (*models.StorageTarget, error) {
-	if s.targets == nil {
-		return &models.StorageTarget{Type: models.StorageLocal}, nil
-	}
-	t, err := s.targets.Resolve(ctx, id)
-	if errors.Is(err, targets.ErrNotFound) {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownStorageTarget, id)
-	}
-	return t, err
 }
 
 // storageFor returns the driver of target id, or the fixed driver without targets.
