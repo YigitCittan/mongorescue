@@ -445,17 +445,6 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancelPersist()
 
-	// Persist the backup record
-	if record != nil {
-		if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, record); saveErr != nil {
-			s.logger.Error("failed to persist backup record",
-				slog.String("job_id", job.ID),
-				slog.String("backup_id", record.ID),
-				slog.Any("error", saveErr),
-			)
-		}
-	}
-
 	// Update job last run time and next run time
 	now := time.Now().UTC()
 	job.LastRun = &now
@@ -470,6 +459,18 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 			slog.String("job_id", job.ID),
 			slog.Any("error", saveErr),
 		)
+	}
+
+	// Persist the backup record last: once a client sees the final status, the
+	// job's run timestamps are already stored.
+	if record != nil {
+		if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, record); saveErr != nil {
+			s.logger.Error("failed to persist backup record",
+				slog.String("job_id", job.ID),
+				slog.String("backup_id", record.ID),
+				slog.Any("error", saveErr),
+			)
+		}
 	}
 
 	// Emit the outcome once it is persisted; publishing is non-blocking by contract.
