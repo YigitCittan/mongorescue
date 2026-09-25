@@ -124,3 +124,20 @@ func TestErrorsAreClassified(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyBackupWithoutConnectionNeedsAnAdminToChooseTheTarget(t *testing.T) {
+	svc, st := newService(t)
+	if err := st.SaveBackupRecord(context.Background(), &models.BackupRecord{ID: "bkp_legacy", Database: "shop", Status: models.StatusCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	for scope, want := range map[auth.Scope]string{
+		auth.ScopeOperator: "an admin must choose the target connection",
+		auth.ScopeAdmin:    "choose the target connection (target_connection_id)",
+	} {
+		ctx := auth.WithPrincipal(context.Background(), &auth.Principal{Method: auth.MethodAPIKey, Scope: scope})
+		_, err := svc.StartRestore(ctx, models.RestoreRequest{BackupID: "bkp_legacy"})
+		if !errors.Is(err, operations.ErrConnectionRequired) || !strings.Contains(err.Error(), "no source connection recorded") || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s restore of a legacy backup = %v; want ErrConnectionRequired saying %q", scope, err, want)
+		}
+	}
+}
