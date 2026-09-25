@@ -23,6 +23,7 @@ const (
 	KeyTrustProxyHeaders      = "security.trust_proxy_headers"
 	KeyCORSOrigins            = "security.cors_origins"
 	KeyMetricsPublic          = "security.metrics_public"
+	KeyMCPEnabled             = "security.mcp_enabled"
 	KeyEncryptionEnabled      = "encryption.enabled"
 	KeyEncryptionMode         = "encryption.mode"
 	KeyEncryptionRecipients   = "encryption.recipients"
@@ -76,6 +77,7 @@ var keyDefs = []keyDef{
 	field(KeyTrustProxyHeaders, false, func(s *Settings) *bool { return &s.Security.TrustProxyHeaders }),
 	field(KeyCORSOrigins, false, func(s *Settings) *[]string { return &s.Security.CORSOrigins }),
 	field(KeyMetricsPublic, false, func(s *Settings) *bool { return &s.Security.MetricsPublic }),
+	field(KeyMCPEnabled, false, func(s *Settings) *bool { return &s.Security.MCPEnabled }),
 	field(KeyEncryptionEnabled, false, func(s *Settings) *bool { return &s.Encryption.Enabled }),
 	field(KeyEncryptionMode, false, func(s *Settings) *EncryptionMode { return &s.Encryption.Mode }),
 	field(KeyEncryptionRecipients, false, func(s *Settings) *[]string { return &s.Encryption.Recipients }),

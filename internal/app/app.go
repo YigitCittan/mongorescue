@@ -18,16 +18,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/mcp"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -272,7 +275,36 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		logger.Warn("failed to isolate embedded static web fs", slog.Any("error", err))
 	}
 
+	// 7. The backup, job and restore use cases are shared by the REST API and the MCP
+	// server, so both adapters apply exactly the same rules.
+	ops := operations.New(operations.Config{
+		Store:       metaStore,
+		Backup:      backupEngine,
+		Restore:     restoreEngine,
+		Jobs:        sched,
+		Runs:        runManager,
+		Connections: connSvc,
+		Targets:     targetSvc,
+		Settings:    settingsSvc.Current,
+		Publisher:   bus,
+		Logger:      logger,
+		Version:     o.version,
+	})
+	auditSvc := audit.NewService(metaStore, logger)
+	mcpSrv := mcp.New(mcp.Config{
+		Operations:  ops,
+		Connections: connSvc,
+		Targets:     targetSvc,
+		Audit:       auditSvc,
+		ObserveCall: metricSet.ObserveMCPCall,
+		Version:     o.version,
+		Logger:      logger,
+	})
+
 	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger,
+		server.WithOperations(ops),
+		server.WithMCPHandler(mcpSrv.Handler()),
+		server.WithAudit(auditSvc),
 		server.WithEventPublisher(bus),
 		server.WithNotifications(notifySvc),
 		server.WithMetricsHandler(metricSet.Handler()),

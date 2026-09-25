@@ -2,7 +2,8 @@
 //
 // Only bootstrap options are read here (data directory, listen address, log level and
 // the optional secret key); everything else is configured in the dashboard and stored
-// in the database.
+// in the database. "mongorescue mcp" runs the stdio bridge for AI assistants instead
+// of the server.
 package main
 
 import (
@@ -25,6 +26,9 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == mcpCommand {
+		os.Exit(runMCP(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 

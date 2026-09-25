@@ -11,7 +11,7 @@ import (
 // pattern up for every request; a route missing from the table requires admin, and a
 // test fails when a registered route is missing or an entry is stale.
 //
-// read covers every GET; operator adds starting backups, running
+// read covers every GET except the audit log; operator adds starting backups, running
 // jobs and safe-clone restores (in-place restores need admin, which the operations
 // service enforces because it depends on the request body); everything else is admin.
 // Public routes (publicPaths) and the dashboard assets need no credentials at all.
@@ -72,7 +72,12 @@ var routeScopes = map[string]auth.Scope{
 	"PUT /api/v1/notifications/rules/{id}":          auth.ScopeAdmin,
 	"DELETE /api/v1/notifications/rules/{id}":       auth.ScopeAdmin,
 
-	"GET /metrics": auth.ScopeRead,
+	"GET /metrics":      auth.ScopeRead,
+	"GET /api/v1/audit": auth.ScopeAdmin,
+	// MCP needs at least read; each tool then requires its own scope.
+	"POST " + MCPPath:   auth.ScopeRead,
+	"GET " + MCPPath:    auth.ScopeRead,
+	"DELETE " + MCPPath: auth.ScopeRead,
 }
 
 // requiredScope returns the scope pattern requires; unknown patterns require admin.

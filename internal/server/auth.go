@@ -61,12 +61,14 @@ func (s *Server) registerAuthRoutes(mux *router) {
 }
 
 // authMiddleware authenticates every non-public request by API key (Authorization:
-// Bearer or X-API-Key) or session cookie, stores the principal in the request context
-// and enforces the CSRF token on cookie-authenticated unsafe requests.
+// Bearer or X-API-Key) or session cookie, stores the principal in the request context,
+// enforces the CSRF token on cookie-authenticated unsafe requests and the scope the
+// matched route requires. /metrics and /mcp accept API keys only.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		isMetrics := path == "/metrics"
+		isMCP := path == MCPPath
 		switch {
 		case publicPaths[path]:
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowPublicWrite(w, r) {
@@ -75,7 +77,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		case isMetrics && s.security().MetricsPublic,
-			!isMetrics && !strings.HasPrefix(path, "/api/"):
+			!isMetrics && !isMCP && !strings.HasPrefix(path, "/api/"):
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -90,8 +92,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		)
 		if key := apiKeyFromRequest(r); key != "" {
 			principal, err = s.auth.AuthenticateAPIKey(r.Context(), key)
-		} else if isMetrics {
-			// Prometheus scrapes with bearer tokens; sessions are for the dashboard.
+		} else if isMetrics || isMCP {
+			// Prometheus and MCP clients use bearer tokens; sessions are for the
+			// dashboard (and never reach /mcp, so it has no CSRF surface).
 			err = auth.ErrUnauthenticated
 		} else if c, cerr := r.Cookie(SessionCookieName); cerr == nil {
 			principal, err = s.auth.AuthenticateSession(r.Context(), c.Value)
@@ -111,6 +114,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// session, so the dashboard needs no failing request to find out.
 			if path == meRoute && r.Method == http.MethodGet {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if isMCP {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="mongorescue"`)
+				writeError(w, http.StatusUnauthorized, "unauthorized: supply a valid API key (Authorization: Bearer)")
 				return
 			}
 			writeError(w, http.StatusUnauthorized, "unauthorized: log in or supply a valid API key")

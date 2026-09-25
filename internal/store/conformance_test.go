@@ -211,6 +211,13 @@ func testRestoreRecords(t *testing.T, s backend) {
 	if len(list) != 2 || list[0].Status != models.RestoreStatusFailed {
 		t.Fatalf("restore update lost: %+v", list)
 	}
+	got, getErr := s.GetRestoreRecord(ctx, "rst_2")
+	if getErr != nil || got.Status != models.RestoreStatusFailed || !got.DryRun {
+		t.Fatalf("GetRestoreRecord = %+v, %v", got, getErr)
+	}
+	if _, missErr := s.GetRestoreRecord(ctx, "rst_missing"); !errors.Is(missErr, store.ErrNotFound) {
+		t.Fatalf("GetRestoreRecord of a missing record: %v; want ErrNotFound", missErr)
+	}
 }
 
 func testChannels(t *testing.T, s backend) {

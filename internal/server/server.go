@@ -16,15 +16,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
-	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
-	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -41,12 +41,12 @@ var (
 	ErrInvalidID = models.ErrInvalidID
 
 	// ErrConnectionRequired is returned (as HTTP 400) when a job, backup or restore
-	// does not name a connection.
-	ErrConnectionRequired = errors.New("connection_id is required")
+	// does not name a connection. It aliases operations.ErrConnectionRequired.
+	ErrConnectionRequired = operations.ErrConnectionRequired
 
 	// ErrUnknownConnection is returned (as HTTP 400) when a request names a connection
-	// that does not exist.
-	ErrUnknownConnection = errors.New("unknown connection_id")
+	// that does not exist. It aliases operations.ErrUnknownConnection.
+	ErrUnknownConnection = operations.ErrUnknownConnection
 )
 
 // jobIDOverhead is the fixed length of the generated "job_<db>_<unix>_<random>"
@@ -74,6 +74,10 @@ type Server struct {
 	// outlive the HTTP request that triggered them.
 	runs *runs.Manager
 
+	// ops implements the backup, job and restore use cases the handlers delegate to
+	// (shared with the MCP server).
+	ops *operations.Service
+
 	// auth authenticates requests; connections manages MongoDB servers.
 	auth        *auth.Service
 	connections *connections.Service
@@ -91,6 +95,10 @@ type Server struct {
 	// registered route pattern.
 	mux      *http.ServeMux
 	patterns []string
+
+	// mcpHandler serves /mcp; audit backs GET /api/v1/audit.
+	mcpHandler http.Handler
+	audit      *audit.Service
 }
 
 // WithVersion sets the build version reported by GET /api/v1/health.
@@ -105,8 +113,12 @@ func WithRunManager(m *runs.Manager) Option {
 	return func(s *Server) { s.runs = m }
 }
 
-// persistTimeout bounds metadata writes of background runs after they finish.
-const persistTimeout = 5 * time.Second
+// WithOperations sets the operations service the backup, job and restore handlers
+// delegate to, so that the REST API and other adapters share one instance. Without it
+// the Server builds one from its own dependencies.
+func WithOperations(ops *operations.Service) Option {
+	return func(s *Server) { s.ops = ops }
+}
 
 // HTTP server timeouts.
 const (
@@ -172,6 +184,9 @@ func NewServer(
 	}
 	if s.runs == nil {
 		s.runs = runs.NewManager(logger)
+	}
+	if s.ops == nil {
+		s.ops = operations.New(s.operationsConfig())
 	}
 
 	mux := s.buildRoutes()
@@ -255,6 +270,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// API Notifications (channels & rule workflows)
 	s.registerNotificationRoutes(mux)
 
+	// MCP endpoint and the audit log of API/MCP activity
+	s.registerMCPRoutes(mux)
+
 	// Prometheus metrics
 	if s.metricsHandler != nil {
 		mux.Handle("GET /metrics", s.metricsHandler)
@@ -306,50 +324,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	backups, _ := s.metaStore.ListBackupRecords(ctx, "")
-	jobs, _ := s.metaStore.ListJobs(ctx)
-	activeJobs := 0
-	for _, j := range jobs {
-		if j.Enabled {
-			activeJobs++
-		}
-	}
-
-	var totalBytes int64
-	var completedCount int
-	var failedCount int
-
-	for _, b := range backups {
-		switch b.Status {
-		case models.StatusCompleted:
-			completedCount++
-			totalBytes += b.SizeBytes
-		case models.StatusFailed:
-			failedCount++
-		}
-	}
-
-	stats := map[string]any{
-		"total_backups":     len(backups),
-		"completed_backups": completedCount,
-		"failed_backups":    failedCount,
-		"total_bytes":       totalBytes,
-		"active_jobs":       activeJobs,
-	}
-	if s.targets != nil {
-		if def, err := s.targets.Resolve(ctx, ""); err == nil {
-			stats["storage_type"] = def.Type
-			stats["default_storage_target"] = map[string]any{"id": def.ID, "name": def.Name, "type": def.Type}
-		}
-	}
-	writeJSON(w, http.StatusOK, stats)
+	writeJSON(w, http.StatusOK, s.ops.Stats(r.Context()))
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.metaStore.ListJobs(r.Context())
+	jobs, err := s.ops.ListJobs(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeOperationError(w, err)
 		return
 	}
 
@@ -405,11 +386,11 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.resolveConnection(r.Context(), job.ConnectionID); err != nil {
+	if _, err := s.ops.ResolveConnection(r.Context(), job.ConnectionID); err != nil {
 		s.writeResolveError(w, err)
 		return
 	}
-	target, err := s.resolveTarget(r.Context(), job.StorageTargetID)
+	target, err := s.ops.ResolveTarget(r.Context(), job.StorageTargetID)
 	if err != nil {
 		s.writeTargetError(w, err)
 		return
@@ -487,135 +468,58 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "job id required")
 		return
 	}
-
-	if s.scheduler == nil {
-		writeError(w, http.StatusServiceUnavailable, "scheduler not initialized")
-		return
-	}
-
-	// Lookup-based: any stored job (including legacy-format IDs) may be triggered.
-	job, record, err := s.scheduler.PrepareJobRun(r.Context(), id)
+	record, err := s.ops.RunJob(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeOperationError(w, err)
 		return
 	}
-
-	// The scheduler persists the final record and publishes the outcome event.
-	s.startBackup(w, r, record, func(ctx context.Context) {
-		_, _ = s.scheduler.ExecuteJobRun(ctx, job, record)
-	})
+	writeJSON(w, http.StatusAccepted, record)
 }
 
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
-	dbFilter := r.URL.Query().Get("database")
-	backups, err := s.metaStore.ListBackupRecords(r.Context(), dbFilter)
+	backups, err := s.ops.ListBackups(r.Context(), operations.BackupFilter{Database: r.URL.Query().Get("database")})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeOperationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, backups)
 }
 
-// backupRequest is the body of POST /api/v1/backups; an omitted gzip takes the
-// general.default_gzip setting.
-type backupRequest struct {
-	models.BackupOptions
-	Gzip *bool `json:"gzip"`
-}
-
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
-	var req backupRequest
+	var req operations.BackupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request json")
 		return
 	}
-	opts := req.BackupOptions
-
-	conn, err := s.resolveConnection(r.Context(), opts.ConnectionID)
+	record, err := s.ops.StartBackup(r.Context(), req)
 	if err != nil {
-		s.writeResolveError(w, err)
+		s.writeOperationError(w, err)
 		return
 	}
-	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
-	target, err := s.resolveTarget(r.Context(), opts.StorageTargetID)
-	if err != nil {
-		s.writeTargetError(w, err)
-		return
-	}
-	opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
-	opts.Gzip = derefOr(req.Gzip, s.currentSettings().General.DefaultGzip)
-
-	record, err := s.backupEngine.Prepare(opts)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	jobID := s.knownJobID(r.Context(), opts.JobID)
-
-	s.startBackup(w, r, record, func(ctx context.Context) {
-		final, runErr := s.backupEngine.Execute(ctx, opts, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
-		defer cancel()
-		if saveErr := s.metaStore.SaveBackupRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist backup metadata record",
-				slog.String("backup_id", final.ID),
-				slog.Any("error", saveErr),
-			)
-		}
-		s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, opts.Database))
-	})
+	writeJSON(w, http.StatusAccepted, record)
 }
 
-// startBackup reserves the database, persists the in-progress record, runs execute in
-// the background under the application lifecycle (never the request context) and
-// answers 202 Accepted with a snapshot of the record. A backup of the same database
-// already running yields 409 Conflict.
-func (s *Server) startBackup(w http.ResponseWriter, r *http.Request, record *models.BackupRecord, execute func(ctx context.Context)) {
-	release, err := s.runs.Acquire(runs.BackupKey(record.ConnectionID, record.Database))
-	if err != nil {
-		writeRunError(w, err, "a backup of database "+record.Database+" is already running")
-		return
-	}
-	snapshot := *record
-	if err := s.metaStore.SaveBackupRecord(r.Context(), &snapshot); err != nil {
-		release()
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := s.runs.Go("", func(ctx context.Context) {
-		defer release()
-		execute(ctx)
-	}); err != nil {
-		release()
-		s.abandonBackup(r.Context(), &snapshot, err)
-		writeRunError(w, err, "")
-		return
-	}
-	writeJSON(w, http.StatusAccepted, snapshot)
-}
-
-// abandonBackup marks a persisted in-progress record failed when its run never started.
-func (s *Server) abandonBackup(ctx context.Context, record *models.BackupRecord, cause error) {
-	record.Status = models.StatusFailed
-	record.ErrorMessage = "backup not started: " + cause.Error()
-	if err := s.metaStore.SaveBackupRecord(context.WithoutCancel(ctx), record); err != nil {
-		s.logger.Error("failed to persist abandoned backup record", slog.String("backup_id", record.ID), slog.Any("error", err))
-	}
-}
-
-// writeRunError maps runs.Manager errors to HTTP responses (409 busy, 503 shutting down).
-func writeRunError(w http.ResponseWriter, err error, busyMessage string) {
+// writeOperationError maps operations errors to HTTP responses. Messages of expected
+// failures are shown as they are (they never carry credentials); anything else is
+// logged and answered with a generic 500.
+func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, runs.ErrBusy):
-		writeError(w, http.StatusConflict, busyMessage)
-	case errors.Is(err, runs.ErrShuttingDown):
-		writeError(w, http.StatusServiceUnavailable, "server is shutting down")
+	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrConnectionRequired),
+		errors.Is(err, operations.ErrUnknownConnection), errors.Is(err, operations.ErrUnknownStorageTarget):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, operations.ErrNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, operations.ErrBusy):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, operations.ErrKeyRequired):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, auth.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden: "+err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.logger.Error("operation failed", slog.Any("error", err))
+		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -661,9 +565,9 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListRestores(w http.ResponseWriter, r *http.Request) {
-	restores, err := s.metaStore.ListRestoreRecords(r.Context())
+	restores, err := s.ops.ListRestores(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		s.writeOperationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, restores)
@@ -675,103 +579,13 @@ func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request json")
 		return
 	}
-	if req.BackupID == "" {
-		writeError(w, http.StatusBadRequest, "backup_id required")
-		return
-	}
-	if err := req.ValidateTarget(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// The route needs operator; overwriting existing data in place needs admin.
-	if req.InPlace() {
-		if err := auth.RequireScope(r.Context(), auth.ScopeAdmin); err != nil {
-			writeError(w, http.StatusForbidden, "forbidden: in-place restores need an admin API key or a session ("+scopeMessage(err)+")")
-			return
-		}
-	}
-
-	// Lookup-based: any stored backup (including legacy-format IDs) may be restored.
-	sourceRecord, err := s.metaStore.GetBackupRecord(r.Context(), req.BackupID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "source backup not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// The target defaults to the server the backup was taken from; another connection
-	// restores across servers.
-	targetID := req.TargetConnectionID
-	if targetID == "" {
-		targetID = sourceRecord.ConnectionID
-	}
-	target, err := s.resolveConnection(r.Context(), targetID)
-	if err != nil {
-		if errors.Is(err, ErrConnectionRequired) {
-			err = fmt.Errorf("%w: the backup has no connection, choose a target_connection_id", ErrConnectionRequired)
-		}
-		s.writeResolveError(w, err)
-		return
-	}
-	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = target.ID, target.Name, target.URI
-
-	// Key material is checked synchronously so the client learns about it immediately.
-	if sourceRecord.Encrypted && !s.restoreEngine.CanDecrypt() {
-		writeError(w, http.StatusUnprocessableEntity, encryption.ErrEncryptionKeyRequired.Error())
-		return
-	}
-
-	// Request errors (e.g. models.ErrInPlaceNotConfirmed) are reported synchronously.
-	record, err := s.restoreEngine.Prepare(req, sourceRecord)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, redact.Text(err.Error()))
-		return
-	}
-	record.SourceConnectionID, record.SourceConnectionName = sourceRecord.ConnectionID, sourceRecord.ConnectionName
-	if sourceRecord.ConnectionID != "" && s.connections != nil {
-		if src, getErr := s.connections.Get(r.Context(), sourceRecord.ConnectionID); getErr == nil {
-			record.SourceConnectionName = src.Name
-		}
-	}
-
-	release, err := s.runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
-	if err != nil {
-		writeRunError(w, err, "a restore into database "+record.TargetDatabase+" is already running")
-		return
-	}
-	snapshot := *record
-	if err := s.metaStore.SaveRestoreRecord(r.Context(), &snapshot); err != nil {
-		release()
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	// The restore runs under the application lifecycle; clients poll GET /api/v1/restores.
-	if err := s.runs.Go("", func(ctx context.Context) {
-		defer release()
-		final, runErr := s.restoreEngine.Execute(ctx, req, sourceRecord, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
-		defer cancel()
-		if saveErr := s.metaStore.SaveRestoreRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist restore metadata record",
-				slog.String("restore_id", final.ID),
-				slog.Any("error", saveErr),
-			)
-		}
-		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
-	}); err != nil {
-		release()
-		snapshot.Status = models.RestoreStatusFailed
-		snapshot.ErrorMessage = "restore not started: " + err.Error()
-		_ = s.metaStore.SaveRestoreRecord(context.WithoutCancel(r.Context()), &snapshot)
-		writeRunError(w, err, "")
+	record, err := s.ops.StartRestore(r.Context(), req)
+	if err != nil {
+		s.writeOperationError(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusAccepted, snapshot)
+	writeJSON(w, http.StatusAccepted, record)
 }
 
 // currentSettings returns the live settings, or the defaults without a settings service.
@@ -795,23 +609,7 @@ func derefOr[T any](p *T, def T) T {
 	return *p
 }
 
-// resolveConnection returns the connection id with its full URI. It returns
-// ErrConnectionRequired for an empty id and ErrUnknownConnection for a missing one.
-func (s *Server) resolveConnection(ctx context.Context, id string) (*models.Connection, error) {
-	if id == "" {
-		return nil, ErrConnectionRequired
-	}
-	if s.connections == nil {
-		return nil, fmt.Errorf("%w: connections are not configured", ErrUnknownConnection)
-	}
-	c, err := s.connections.Resolve(ctx, id)
-	if errors.Is(err, connections.ErrNotFound) {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownConnection, id)
-	}
-	return c, err
-}
-
-// writeResolveError maps resolveConnection errors to HTTP responses.
+// writeResolveError maps connection resolution errors to HTTP responses.
 func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrConnectionRequired) || errors.Is(err, ErrUnknownConnection) {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -820,24 +618,29 @@ func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
 	s.writeConnectionError(w, err)
 }
 
-// publish emits e if a publisher is configured. It never blocks.
-func (s *Server) publish(ctx context.Context, e events.Event) {
-	if s.publisher != nil {
-		s.publisher.Publish(ctx, e)
+// operationsConfig wires the operations service from the server's dependencies. Nil
+// optional dependencies stay nil interfaces.
+func (s *Server) operationsConfig() operations.Config {
+	cfg := operations.Config{
+		Store:     s.metaStore,
+		Backup:    s.backupEngine,
+		Restore:   s.restoreEngine,
+		Runs:      s.runs,
+		Publisher: s.publisher,
+		Settings:  s.currentSettings,
+		Logger:    s.logger,
+		Version:   s.version,
 	}
-}
-
-// knownJobID returns id when it names a stored job and "" otherwise, so arbitrary
-// client-supplied job IDs on manual backups cannot inflate metric label cardinality
-// or spoof rule matching.
-func (s *Server) knownJobID(ctx context.Context, id string) string {
-	if id == "" {
-		return ""
+	if s.scheduler != nil {
+		cfg.Jobs = s.scheduler
 	}
-	if _, err := s.metaStore.GetJob(ctx, id); err != nil {
-		return ""
+	if s.connections != nil {
+		cfg.Connections = s.connections
 	}
-	return id
+	if s.targets != nil {
+		cfg.Targets = s.targets
+	}
+	return cfg
 }
 
 // loggingMiddleware logs HTTP request details.
@@ -878,7 +681,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, "+CSRFHeader)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, "+CSRFHeader+", Mcp-Protocol-Version, Mcp-Session-Id")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
