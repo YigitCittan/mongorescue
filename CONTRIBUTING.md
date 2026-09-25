@@ -41,7 +41,7 @@ When the branch is ready, open a pull request against `main` and fill in the tem
 
 ## Building and testing
 
-Requirements: Go 1.25+, `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.3.0+ for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
+Requirements: Go 1.26+, `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.3.0+ for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
 
 ```bash
 make build                       # local binary in bin/
@@ -70,7 +70,7 @@ The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only 
 On every push and pull request (`.github/workflows/ci.yml`):
 
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
-- **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.25.x (the `go.mod` minimum) and 1.26.x (the release toolchain); coverage gate and report upload on Ubuntu.
+- **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum and release toolchain) and 1.27.x; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
 - **Integration**: the integration suite against MongoDB 7 with MinIO and with LocalStack.
 - **Docker smoke test**: builds the image and checks health, auth, dashboard and bundled tools.

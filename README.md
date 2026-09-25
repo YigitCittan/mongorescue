@@ -123,7 +123,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 
 ## Development
 
-You need Go 1.25 or newer.
+You need Go 1.26 or newer.
 
 ```bash
 make build        # build ./bin/mongorescue
