@@ -482,7 +482,18 @@ func TestServerEndToEnd(t *testing.T) {
 		APIKey auth.APIKey `json:"api_key"`
 		Key    string      `json:"key"`
 	}
-	api.data("POST", "/api/v1/api-keys", map[string]string{"name": "ci"}, http.StatusCreated, &created)
+	// Keys default to the read scope: reads work, mutations are refused.
+	var readOnly struct {
+		Key string `json:"key"`
+	}
+	api.data("POST", "/api/v1/api-keys", map[string]string{"name": "ci-read"}, http.StatusCreated, &readOnly)
+	readClient := &apiClient{t: t, base: ts.URL, client: &http.Client{Timeout: opTimeout}, apiKey: readOnly.Key}
+	readClient.data("GET", "/api/v1/jobs", nil, http.StatusOK, nil)
+	if code, _ := readClient.do("DELETE", "/api/v1/backups/"+bkp.ID, nil); code != http.StatusForbidden {
+		t.Fatalf("delete with a read-scoped key: status %d, want 403", code)
+	}
+
+	api.data("POST", "/api/v1/api-keys", map[string]string{"name": "ci", "scope": "admin"}, http.StatusCreated, &created)
 	keyClient := &apiClient{t: t, base: ts.URL, client: &http.Client{Timeout: opTimeout}, apiKey: created.Key}
 	keyClient.data("GET", "/api/v1/jobs", nil, http.StatusOK, nil)
 	keyClient.data("DELETE", "/api/v1/backups/"+bkp.ID, nil, http.StatusOK, nil) // no CSRF needed
@@ -502,11 +513,12 @@ func TestServerEndToEnd(t *testing.T) {
 		t.Fatalf("after logout: status %d, want 401", code)
 	}
 
-	all := append(append(api.bodies, keyClient.bodies...), metricsClient.bodies...)
+	all := append(append(append(api.bodies, readClient.bodies...), keyClient.bodies...), metricsClient.bodies...)
 	assertNoSecret(t, env.Password, "API responses", all...)
 	assertNoSecret(t, env.Password, "server logs", logs.String())
 	assertNoSecret(t, password, "server logs", logs.String())
 	assertNoSecret(t, created.Key, "server logs", logs.String())
+	assertNoSecret(t, readOnly.Key, "server logs", logs.String())
 	// Identities appear only in the generate-key responses, never in settings or logs.
 	maskedJSON, _ := json.Marshal(masked)
 	for _, secret := range []string{key.Identity, strings.TrimPrefix(key.Identity, "AGE-SECRET-KEY-")} {
