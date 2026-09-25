@@ -247,8 +247,8 @@ All resources are JSON and need the `read` scope.
 
 ## Audit log, rate limit and metrics
 
-- **Audit log.** Every tool call is stored with time, API key (ID and name), transport (`http`, or `stdio` for the bridge), tool, arguments (values of secret-looking keys and credentials in strings are masked), result (`ok`, `error`, `denied`, `rate_limited`), the error shown to the assistant and the duration. The newest 10,000 entries are kept. See the last 200 under **Settings → Security → Recent API/MCP activity**, or call `GET /api/v1/audit?limit=200` with an admin key ([api.md](api.md#audit-log)).
-- **Rate limit.** Each API key may make 60 tool calls, resource reads or prompt requests per minute with bursts of 20. Beyond that the server answers with JSON-RPC error `-32029` and a retry hint.
+- **Audit log.** Every tool call is stored with time, API key (ID and name), transport (`http`, or `stdio` for the bridge), tool, arguments (values of secret-looking keys and credentials in strings are masked), result (`ok`, `error`, `denied`, `rate_limited`), the error shown to the assistant, the duration and a `count`. The newest 10,000 entries are kept; repeated `denied` calls of one key and tool, and repeated `rate_limited` calls of one key, are merged into one entry per 10 seconds (`count` says how many calls it stands for), so refused calls cannot flush the log. See the last 200 under **Settings → Security → Recent API/MCP activity**, or call `GET /api/v1/audit?limit=200` with an admin key ([api.md](api.md#audit-log)).
+- **Rate limit.** Each API key may make 60 tool calls, resource reads or prompt requests per minute with bursts of 20. Beyond that the server answers with JSON-RPC error `-32029` and a retry hint. The limit is checked before the scope, so calls refused for their scope count against it too.
 - **Metrics.** `mongorescue_mcp_calls_total{tool, result}` counts calls ([metrics.md](metrics.md)); unknown tool names are counted as `tool="unknown"`.
 
 ## Troubleshooting

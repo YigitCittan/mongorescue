@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,25 @@ func (r *memRepo) AppendAudit(ctx context.Context, e *audit.Entry, keep int) err
 		r.entries = r.entries[len(r.entries)-keep:]
 	}
 	return nil
+}
+
+func (r *memRepo) AddAuditCount(_ context.Context, id int64, n int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.ID == id {
+			e.Count += n
+			return nil
+		}
+	}
+	return audit.ErrEntryNotFound
+}
+
+// drop removes every stored entry, as pruning would.
+func (r *memRepo) drop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = nil
 }
 
 func (r *memRepo) ListAudit(_ context.Context, limit int) ([]*audit.Entry, error) {
@@ -128,5 +148,56 @@ func TestListLimits(t *testing.T) {
 	}
 	if list, _ = svc.List(context.Background(), 3); len(list) != 3 {
 		t.Fatalf("limit 3 = %d", len(list))
+	}
+}
+
+func TestRefusedCallsAreCoalesced(t *testing.T) {
+	repo := &memRepo{}
+	svc := audit.NewService(repo, nil)
+	ctx := context.Background()
+	t0 := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	rec := func(at time.Duration, tool, result string) {
+		svc.Record(ctx, audit.Entry{Time: t0.Add(at), APIKeyID: "key_1", Transport: audit.TransportHTTP, Tool: tool, Result: result})
+	}
+	for i := range 50 {
+		rec(time.Duration(i)*100*time.Millisecond, "start_backup", audit.ResultDenied) // 0 .. 4.9s
+	}
+	rec(time.Second, "run_job", audit.ResultDenied)
+	for i := range 20 {
+		// Rate limited calls merge whatever the (client-chosen) tool name.
+		rec(2*time.Second, fmt.Sprintf("tool_%d", i), audit.ResultRateLimited)
+	}
+	rec(3*time.Second, "get_status", audit.ResultOK)
+	rec(3*time.Second, "get_status", audit.ResultOK)
+	rec(11*time.Second, "start_backup", audit.ResultDenied) // a new window
+
+	counts := map[string][]int{}
+	list, _ := svc.List(ctx, 100)
+	for _, e := range list {
+		counts[e.Tool+"/"+e.Result] = append(counts[e.Tool+"/"+e.Result], e.Count)
+	}
+	want := map[string][]int{
+		"start_backup/denied": {1, 50},
+		"run_job/denied":      {1},
+		"tool_0/rate_limited": {20},
+		"get_status/ok":       {1, 1},
+	}
+	if fmt.Sprint(counts) != fmt.Sprint(want) {
+		t.Fatalf("entries by tool/result = %v; want %v", counts, want)
+	}
+
+	// An entry pruned meanwhile is replaced by a new one.
+	repo.drop()
+	rec(12*time.Second, "start_backup", audit.ResultDenied)
+	if list, _ = svc.List(ctx, 10); len(list) != 1 || list[0].Count != 1 {
+		t.Fatalf("after pruning = %+v; want one new entry", list)
+	}
+
+	// Coalesce merges other entries too, per key.
+	for range 3 {
+		svc.Record(ctx, audit.Entry{Time: t0.Add(13 * time.Second), APIKeyID: "key_2", Tool: "GET /api/v1/stats", Result: audit.ResultOK, Coalesce: true})
+	}
+	if list, _ = svc.List(ctx, 1); list[0].APIKeyID != "key_2" || list[0].Count != 3 {
+		t.Fatalf("coalesced entry = %+v; want count 3", list[0])
 	}
 }

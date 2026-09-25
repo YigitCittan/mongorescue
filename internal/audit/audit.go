@@ -6,6 +6,10 @@
 // The package is the domain core; persistence is the Repository port implemented by
 // internal/store. Recording never fails the audited operation: write errors are
 // logged, not returned.
+//
+// Refused calls cannot flush the log: repeated denied or rate-limited calls of one
+// API key (and entries marked Coalesce) are merged into a single entry per
+// CoalesceWindow whose Count says how many calls it stands for.
 package audit
 
 import (
@@ -14,6 +18,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -55,6 +60,10 @@ const (
 	maxErrorLength = 500
 	// writeTimeout bounds one audit write.
 	writeTimeout = 5 * time.Second
+	// CoalesceWindow is how long identical coalesced entries are merged into one.
+	CoalesceWindow = 10 * time.Second
+	// maxCoalesceKeys bounds the in-memory index of recently coalesced entries.
+	maxCoalesceKeys = 4096
 )
 
 // Entry is one audited call.
@@ -79,6 +88,13 @@ type Entry struct {
 	Error string `json:"error,omitempty"`
 	// DurationMS is how long the call took in milliseconds.
 	DurationMS int64 `json:"duration_ms"`
+	// Count is the number of calls the entry stands for: 1, or more for an entry
+	// that coalesced repeated calls (see CoalesceWindow).
+	Count int `json:"count"`
+	// Coalesce asks Record to merge the entry into an identical one (same API key,
+	// transport, tool and result) recorded less than CoalesceWindow earlier, instead
+	// of storing a new one. Denied and rate-limited entries are always coalesced.
+	Coalesce bool `json:"-"`
 }
 
 // Repository is the persistence port for audit entries.
@@ -87,10 +103,18 @@ type Repository interface {
 	AppendAudit(ctx context.Context, e *Entry, keep int) error
 	// ListAudit returns up to limit entries, newest first.
 	ListAudit(ctx context.Context, limit int) ([]*Entry, error)
+	// AddAuditCount adds n to the Count of entry id. It returns an error wrapping
+	// ErrEntryNotFound when the entry no longer exists (it was pruned).
+	AddAuditCount(ctx context.Context, id int64, n int) error
 }
 
-// ErrNoRepository is returned by List when the service has no repository.
-var ErrNoRepository = errors.New("audit: no repository configured")
+// Errors.
+var (
+	// ErrNoRepository is returned by List when the service has no repository.
+	ErrNoRepository = errors.New("audit: no repository configured")
+	// ErrEntryNotFound is returned by Repository.AddAuditCount for a missing entry.
+	ErrEntryNotFound = errors.New("audit: entry not found")
+)
 
 // Service records and lists audit entries. It is safe for concurrent use; a nil
 // *Service records nothing.
@@ -98,6 +122,17 @@ type Service struct {
 	repo   Repository
 	logger *slog.Logger
 	now    func() time.Time
+
+	// mu guards recent and serialises coalesced writes.
+	mu sync.Mutex
+	// recent indexes the latest stored entry of every coalescing key.
+	recent map[string]recentEntry
+}
+
+// recentEntry is a stored entry later identical entries may be merged into.
+type recentEntry struct {
+	id    int64
+	since time.Time
 }
 
 // NewService returns a Service backed by repo. A nil logger means slog.Default().
@@ -105,12 +140,15 @@ func NewService(repo Repository, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: repo, logger: logger, now: time.Now}
+	return &Service{repo: repo, logger: logger, now: time.Now, recent: map[string]recentEntry{}}
 }
 
-// Record stores e after redacting its arguments and error. It never fails the caller:
-// the write is detached from ctx's cancellation (so an aborted request is still
-// audited), bounded by a timeout, and errors are logged.
+// Record stores e after redacting its arguments and error. Denied, rate-limited and
+// Coalesce entries are merged into an identical entry stored less than CoalesceWindow
+// before (by e.Time), incrementing its Count, so that refused calls cannot flush the
+// log. Record never fails the caller: the write is detached from ctx's cancellation
+// (so an aborted request is still audited), bounded by a timeout, and errors are
+// logged.
 func (s *Service) Record(ctx context.Context, e Entry) {
 	if s == nil || s.repo == nil {
 		return
@@ -121,11 +159,68 @@ func (s *Service) Record(ctx context.Context, e Entry) {
 	e.Time = e.Time.UTC()
 	e.Arguments = RedactArguments(e.Arguments)
 	e.Error = truncate(redact.Text(e.Error), maxErrorLength)
+	if e.Count < 1 {
+		e.Count = 1
+	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
-	if err := s.repo.AppendAudit(writeCtx, &e, MaxEntries); err != nil {
-		s.logger.Error("failed to write audit entry", slog.String("tool", e.Tool), slog.String("api_key_id", e.APIKeyID), slog.Any("error", err))
+	if e.Coalesce || e.Result == ResultDenied || e.Result == ResultRateLimited {
+		s.recordCoalesced(writeCtx, &e)
+		return
 	}
+	s.append(writeCtx, &e)
+}
+
+// append stores e, logging failures. It reports whether e was stored.
+func (s *Service) append(ctx context.Context, e *Entry) bool {
+	if err := s.repo.AppendAudit(ctx, e, MaxEntries); err != nil {
+		s.logger.Error("failed to write audit entry", slog.String("tool", e.Tool), slog.String("api_key_id", e.APIKeyID), slog.Any("error", err))
+		return false
+	}
+	return true
+}
+
+// recordCoalesced merges e into the entry recently stored under the same key, or
+// stores it and remembers it for the next CoalesceWindow.
+func (s *Service) recordCoalesced(ctx context.Context, e *Entry) {
+	key := coalesceKey(e)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.recent[key]; ok && !e.Time.Before(r.since) && e.Time.Sub(r.since) < CoalesceWindow {
+		err := s.repo.AddAuditCount(ctx, r.id, e.Count)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrEntryNotFound) {
+			s.logger.Error("failed to update audit entry", slog.String("tool", e.Tool), slog.String("api_key_id", e.APIKeyID), slog.Any("error", err))
+			return
+		}
+	}
+	if !s.append(ctx, e) {
+		return
+	}
+	if len(s.recent) >= maxCoalesceKeys {
+		for k, r := range s.recent {
+			if e.Time.Sub(r.since) >= CoalesceWindow {
+				delete(s.recent, k)
+			}
+		}
+		if len(s.recent) >= maxCoalesceKeys {
+			clear(s.recent)
+		}
+	}
+	s.recent[key] = recentEntry{id: e.ID, since: e.Time}
+}
+
+// coalesceKey identifies the entries e may be merged with. Rate limits apply per API
+// key, so rate-limited calls are merged whatever the tool; the tool (a client-chosen
+// name for unknown tools) then cannot multiply the entries.
+func coalesceKey(e *Entry) string {
+	tool := e.Tool
+	if e.Result == ResultRateLimited {
+		tool = ""
+	}
+	return strings.Join([]string{e.APIKeyID, e.Transport, tool, e.Result}, "\x00")
 }
 
 // List returns up to limit entries, newest first (DefaultListLimit for limit <= 0,

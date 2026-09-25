@@ -72,8 +72,9 @@ func (s *Server) middleware(next sdk.MethodHandler) sdk.MethodHandler {
 	}
 }
 
-// callTool handles tools/call: scope, rate limit, then the tool, with one audit
-// entry and one metric sample per call.
+// callTool handles tools/call: rate limit, scope, then the tool, with one audit
+// entry and one metric sample per call. The rate limit comes first so that refused
+// calls are bounded too; repeated refusals are coalesced by the audit service.
 func (s *Server) callTool(ctx context.Context, p *auth.Principal, next sdk.MethodHandler, method string, req sdk.Request) (sdk.Result, error) {
 	start := s.now()
 	var name string
@@ -99,17 +100,17 @@ func (s *Server) callTool(ctx context.Context, p *auth.Principal, next sdk.Metho
 		}
 	}
 
+	if ok, wait := s.limiter.allow(p.APIKeyID); !ok {
+		rlErr := rateLimitError(wait)
+		finish(audit.ResultRateLimited, rlErr.Message)
+		return nil, rlErr
+	}
 	if known {
 		if err := p.Require(spec.scope); err != nil {
 			msg := fmt.Sprintf("forbidden: %s needs an API key with the %q scope; this key has %q", name, spec.scope, p.Scope)
 			finish(audit.ResultDenied, msg)
 			return errorResult(msg), nil
 		}
-	}
-	if ok, wait := s.limiter.allow(p.APIKeyID); !ok {
-		rlErr := rateLimitError(wait)
-		finish(audit.ResultRateLimited, rlErr.Message)
-		return nil, rlErr
 	}
 
 	res, err := next(ctx, method, req)

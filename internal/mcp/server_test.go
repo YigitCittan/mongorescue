@@ -354,6 +354,38 @@ func TestRateLimitPerAPIKey(t *testing.T) {
 	}
 }
 
+// TestRefusedCallsAreRateLimitedAndCoalesced proves that calls refused for their
+// scope count against the rate limit and cannot flush the audit log.
+func TestRefusedCallsAreRateLimitedAndCoalesced(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.RateLimit = RateLimit{PerMinute: 1, Burst: 5} })
+	cs := f.session(t, principal(auth.ScopeRead))
+	args := map[string]any{"connection_id": testConnID, "database": "shop"}
+	denied, limited := 0, 0
+	for range 12 {
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: ToolStartBackup, Arguments: args})
+		var wire *jsonrpc.Error
+		switch {
+		case errors.As(err, &wire) && wire.Code == CodeRateLimited:
+			limited++
+		case err == nil && res.IsError:
+			denied++
+		default:
+			t.Fatalf("call = %+v, %v", res, err)
+		}
+	}
+	if denied != 5 || limited != 7 {
+		t.Fatalf("denied=%d rate limited=%d; want 5/7 (the limit applies before the scope check)", denied, limited)
+	}
+	entries, _ := f.audit.List(context.Background(), 100)
+	got := map[string]int{}
+	for _, e := range entries {
+		got[e.Result] += e.Count
+	}
+	if len(entries) != 2 || got[audit.ResultDenied] != 5 || got[audit.ResultRateLimited] != 7 {
+		t.Fatalf("audit = %d entries %v; want one denied (count 5) and one rate_limited (count 7)", len(entries), got)
+	}
+}
+
 func TestUnauthenticatedSessionIsRefused(t *testing.T) {
 	f := newFixture(t, nil)
 	clientT, serverT := sdk.NewInMemoryTransports()
