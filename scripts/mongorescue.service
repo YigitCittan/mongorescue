@@ -1,0 +1,21 @@
+[Unit]
+Description=MongoRescue Disaster Recovery & Backup Dashboard
+After=network.target mongodb.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/mongorescue
+# Only bootstrap options: everything else is configured in the dashboard. The
+# default "Local disk" storage target is /var/lib/mongorescue/backups.
+ExecStart=/usr/local/bin/mongorescue -data-dir=/var/lib/mongorescue/data
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+# Security Hardening
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

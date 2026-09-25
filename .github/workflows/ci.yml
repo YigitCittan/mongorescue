@@ -1,0 +1,334 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs of the same pull request; runs on main and tags always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Toolchain for lint, build, integration and security jobs; releases and images use
+  # the same minor version, so govulncheck results match what ships.
+  GO_VERSION: '1.26'
+
+jobs:
+  # 1. Linting & Formatting Check
+  lint:
+    name: Lint & Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run go vet (integration build tag)
+        run: go vet -tags=integration ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          # The integration tag only adds test files, so this lints everything.
+          args: --build-tags=integration
+
+      - name: Verify the MongoDB driver is confined to internal/mongoconn
+        run: |
+          # Production code may import the driver only through the mongoconn adapter.
+          offenders=$(go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./... \
+            | grep 'go.mongodb.org/mongo-driver' \
+            | grep -v '^github.com/yigitcittan/mongorescue/internal/mongoconn:' || true)
+          if [ -n "$offenders" ]; then
+            echo "mongo-driver imported outside internal/mongoconn:"
+            echo "$offenders"
+            exit 1
+          fi
+
+      # Configuration lives in the database; only bootstrap flags/env remain.
+      - name: Verify no configuration files are shipped
+        run: |
+          for f in config.example.json .env.example; do
+            if [ -e "$f" ]; then echo "$f must not exist: settings are managed in the dashboard"; exit 1; fi
+          done
+
+      - name: Verify go.mod Tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  # 2. Multi-OS Test Matrix with Race Detector
+  test:
+    name: Test (${{ matrix.os }} - Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 1.25.x is the go.mod minimum; 1.26.x is the toolchain releases are built with.
+        go-version: ['1.25.x', '1.26.x']
+        # Windows binaries ship too: unit-test them with the release toolchain only.
+        # Integration and container jobs stay Linux-only.
+        include:
+          - os: windows-latest
+            go-version: '1.26.x'
+    defaults:
+      run:
+        # PowerShell would split "-coverprofile=coverage.out" at the dot.
+        shell: bash
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Run Unit Tests with Race Detector
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Enforce Coverage Threshold
+        if: matrix.os == 'ubuntu-latest'
+        run: make coverage-check COVERAGE_MIN=60
+
+      - name: Upload Test Coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26.x'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: code-coverage-report
+          path: coverage.out
+
+  # 3. Cross-Platform Compilation Check
+  build-check:
+    name: Cross-Compilation Verification
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Cross-Compile All Platforms
+        run: make cross-compile
+
+  # 4. Integration Tests against real MongoDB, mongodump/mongorestore and S3 emulators
+  integration:
+    name: Integration (${{ matrix.emulator }})
+    runs-on: ubuntu-latest
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        emulator: [minio, localstack]
+    env:
+      MONGO_TOOLS_VERSION: '100.12.2'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          echo "Downloading ${url}"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Run Integration Suite (MongoDB 7 + ${{ matrix.emulator }})
+        env:
+          IT_PROVIDERS: ${{ matrix.emulator }}
+          GOTESTFLAGS: -coverprofile=integration-coverage.out -covermode=atomic -coverpkg=./...
+        run: ./scripts/test-integration-docker.sh
+
+      - name: Upload Integration Coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-coverage-${{ matrix.emulator }}
+          path: integration-coverage.out
+          if-no-files-found: ignore
+
+  # 5. Integration Tests against real cloud object stores (maintainer secrets only).
+  #    Never runs for pull requests, so forks cannot reach the secrets. Providers
+  #    whose secrets are unset are skipped by the test suite.
+  integration-cloud:
+    name: Integration (cloud S3 providers)
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'push' && github.repository == 'YigitCittan/mongorescue'
+    env:
+      MONGO_TOOLS_VERSION: '100.12.2'
+      IT_PROVIDERS: none
+      MONGORESCUE_TEST_S3_AWS_ENDPOINT: ${{ secrets.MR_TEST_AWS_ENDPOINT }}
+      MONGORESCUE_TEST_S3_AWS_REGION: ${{ secrets.MR_TEST_AWS_REGION }}
+      MONGORESCUE_TEST_S3_AWS_BUCKET: ${{ secrets.MR_TEST_AWS_BUCKET }}
+      MONGORESCUE_TEST_S3_AWS_ACCESS_KEY: ${{ secrets.MR_TEST_AWS_ACCESS_KEY }}
+      MONGORESCUE_TEST_S3_AWS_SECRET_KEY: ${{ secrets.MR_TEST_AWS_SECRET_KEY }}
+      MONGORESCUE_TEST_S3_AWS_PATH_STYLE: ${{ secrets.MR_TEST_AWS_PATH_STYLE }}
+      MONGORESCUE_TEST_S3_R2_ENDPOINT: ${{ secrets.MR_TEST_R2_ENDPOINT }}
+      MONGORESCUE_TEST_S3_R2_REGION: ${{ secrets.MR_TEST_R2_REGION }}
+      MONGORESCUE_TEST_S3_R2_BUCKET: ${{ secrets.MR_TEST_R2_BUCKET }}
+      MONGORESCUE_TEST_S3_R2_ACCESS_KEY: ${{ secrets.MR_TEST_R2_ACCESS_KEY }}
+      MONGORESCUE_TEST_S3_R2_SECRET_KEY: ${{ secrets.MR_TEST_R2_SECRET_KEY }}
+      MONGORESCUE_TEST_S3_R2_PATH_STYLE: ${{ secrets.MR_TEST_R2_PATH_STYLE }}
+      MONGORESCUE_TEST_S3_B2_ENDPOINT: ${{ secrets.MR_TEST_B2_ENDPOINT }}
+      MONGORESCUE_TEST_S3_B2_REGION: ${{ secrets.MR_TEST_B2_REGION }}
+      MONGORESCUE_TEST_S3_B2_BUCKET: ${{ secrets.MR_TEST_B2_BUCKET }}
+      MONGORESCUE_TEST_S3_B2_ACCESS_KEY: ${{ secrets.MR_TEST_B2_ACCESS_KEY }}
+      MONGORESCUE_TEST_S3_B2_SECRET_KEY: ${{ secrets.MR_TEST_B2_SECRET_KEY }}
+      MONGORESCUE_TEST_S3_B2_PATH_STYLE: ${{ secrets.MR_TEST_B2_PATH_STYLE }}
+      MONGORESCUE_TEST_S3_SPACES_ENDPOINT: ${{ secrets.MR_TEST_SPACES_ENDPOINT }}
+      MONGORESCUE_TEST_S3_SPACES_REGION: ${{ secrets.MR_TEST_SPACES_REGION }}
+      MONGORESCUE_TEST_S3_SPACES_BUCKET: ${{ secrets.MR_TEST_SPACES_BUCKET }}
+      MONGORESCUE_TEST_S3_SPACES_ACCESS_KEY: ${{ secrets.MR_TEST_SPACES_ACCESS_KEY }}
+      MONGORESCUE_TEST_S3_SPACES_SECRET_KEY: ${{ secrets.MR_TEST_SPACES_SECRET_KEY }}
+      MONGORESCUE_TEST_S3_SPACES_PATH_STYLE: ${{ secrets.MR_TEST_SPACES_PATH_STYLE }}
+      MONGORESCUE_TEST_S3_WASABI_ENDPOINT: ${{ secrets.MR_TEST_WASABI_ENDPOINT }}
+      MONGORESCUE_TEST_S3_WASABI_REGION: ${{ secrets.MR_TEST_WASABI_REGION }}
+      MONGORESCUE_TEST_S3_WASABI_BUCKET: ${{ secrets.MR_TEST_WASABI_BUCKET }}
+      MONGORESCUE_TEST_S3_WASABI_ACCESS_KEY: ${{ secrets.MR_TEST_WASABI_ACCESS_KEY }}
+      MONGORESCUE_TEST_S3_WASABI_SECRET_KEY: ${{ secrets.MR_TEST_WASABI_SECRET_KEY }}
+      MONGORESCUE_TEST_S3_WASABI_PATH_STYLE: ${{ secrets.MR_TEST_WASABI_PATH_STYLE }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Run Integration Suite (MongoDB 7 + configured cloud providers)
+        env:
+          # Word-split by the script; keep the pattern free of spaces and quotes.
+          GOTESTFLAGS: -v -run TestStorageConformance|TestBackupRestoreRoundTrip|TestServerEndToEnd
+        run: ./scripts/test-integration-docker.sh
+
+  # 6. Container Image Smoke Test
+  docker-smoke:
+    name: Docker Image Smoke Test
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      actions: read # required for SARIF upload on private repositories
+      security-events: write # Trivy SARIF upload (push to main only)
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build Image
+        run: docker build -t mongorescue:smoke .
+
+      - name: Smoke Test Container (zero env; setup, settings and storage via the API, bundled tools >= 100.3)
+        run: ./scripts/docker-smoke.sh mongorescue:smoke
+
+      # The SARIF report is produced first (without failing) so code scanning is
+      # updated even when the gate below fails.
+      - name: Scan Image with Trivy (SARIF)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: mongorescue:smoke
+          format: sarif
+          output: trivy-results.sarif
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
+      - name: Upload Trivy Results to Code Scanning
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      - name: Fail on Fixable HIGH/CRITICAL Image Vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: mongorescue:smoke
+          format: table
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+  # 7. Supply-chain and workflow hygiene
+  security:
+    name: Security & Workflow Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # govulncheck reports standard library vulnerabilities for the Go version
+      # it runs under, so it must use the toolchain releases are built with.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Lint Workflows (actionlint)
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Lint Shell Scripts (shellcheck)
+        run: shellcheck scripts/*.sh

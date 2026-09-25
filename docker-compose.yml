@@ -1,0 +1,49 @@
+# MongoRescue: no configuration required.
+#
+#   docker compose up -d                  # pulls ghcr.io/yigitcittan/mongorescue
+#   docker compose up -d --build          # builds the image from this checkout instead
+#   docker compose logs mongorescue       # shows the one-time setup code
+#
+# Then open http://localhost:8080, enter the setup code, create the first admin user
+# and add your MongoDB servers under Connections. Backups go to the "Local disk"
+# storage target (the mongorescue_backups volume) until you add another target under
+# Settings > Storage. Everything else is stored in the mongorescue_data volume
+# (metadata database and the key encrypting stored credentials); back it up.
+#
+# The port is published on all interfaces. MongoRescue serves plain HTTP: put a
+# TLS-terminating reverse proxy in front of it before exposing it to a network (see
+# docs/production.md), or change the mapping to "127.0.0.1:8080:8080".
+#
+# Want a MongoDB to try it with?  docker compose -f docker-compose.yml -f examples/with-mongodb.yml up -d
+# Already running MongoDB in another Compose project? See examples/compose-existing-stack.yml.
+# Storage targets, encryption, security and limits are configured in the dashboard
+# (Settings) and stored in the database: there is nothing to set here.
+
+services:
+  mongorescue:
+    image: ghcr.io/yigitcittan/mongorescue:${MONGORESCUE_VERSION:-latest}
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${MONGORESCUE_PORT:-8080}:8080"
+    # Optional: supply the key that encrypts stored credentials from a secret manager
+    # instead of the generated /data/secret.key.
+    # environment:
+    #   MONGORESCUE_SECRET_KEY: ${MONGORESCUE_SECRET_KEY}
+    volumes:
+      - mongorescue_data:/data
+      - mongorescue_backups:/backups
+    # The process writes only to /data, /backups and /tmp (mongodump/mongorestore
+    # --config files), so the rest of the filesystem can be read-only.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The image's HEALTHCHECK (GET /api/v1/health) is used as-is.
+
+volumes:
+  mongorescue_data:
+  mongorescue_backups:

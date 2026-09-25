@@ -1,0 +1,13 @@
+# gitleaks configuration: default rules plus an allowlist for the exact fake
+# credentials used as unit-test fixtures. Keep this list to literal values;
+# never allowlist whole files or directories.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake API keys used in unit tests"
+regexes = [
+  '''^legacy-key-0123456789$''',
+  '''^notify-test-key-0123$''',
+  '''^cors-test-api-key-0123$''',
+]

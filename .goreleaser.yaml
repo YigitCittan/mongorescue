@@ -1,0 +1,64 @@
+# ==============================================================================
+# MongoRescue GoReleaser Specification
+# https://goreleaser.com
+# ==============================================================================
+
+version: 2
+
+project_name: mongorescue
+
+before:
+  hooks:
+    - go mod tidy
+    - go test -v -race ./...
+
+builds:
+  - id: mongorescue
+    main: ./cmd/mongorescue
+    binary: mongorescue
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{ .Version }}
+      - -X main.Commit={{ .Commit }}
+      - -X main.Date={{ .Date }}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - scripts/mongorescue.service
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# One SPDX JSON SBOM per archive (<archive>.sbom.json), generated with syft.
+sboms:
+  - id: archive-sboms
+    artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch

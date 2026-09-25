@@ -1,0 +1,85 @@
+# ==============================================================================
+# MongoRescue — .gitignore
+# Professional Open-Source Standard for Go & Embedded Web Application
+# ==============================================================================
+
+# Binaries and Output Artifacts
+bin/
+dist/
+build/
+/mongorescue
+/mongorescue.exe
+/mrescue
+/mrescue.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go Test & Profiling Artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+profile.out
+profile.pprof
+__debug_bin*
+
+# Local Backups, Dumps & Storage Dirs (Disaster Recovery & Test data)
+/backups/
+/storage/
+/data/
+*.dump
+*.archive
+*.gz
+*.tar.gz
+*.agz
+
+# Secrets, Configuration Overrides & Local Environments
+.env
+.env.*
+config.local.json
+*.local.json
+credentials.json
+secrets/
+
+# IDE & Editor Specific Files
+.claude/
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+*.iml
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Docker & Containerization Overrides
+docker-compose.override.yml
+*.sock
+
+# Temporary & Scratch Files
+tmp/
+temp/
+scratch/
+log/
+logs/
+*.log
+
+# Web & Node Artifacts (if local tooling is run)
+node_modules/
+.npm/
+.yarn/
+.parcel-cache/
+.vite/

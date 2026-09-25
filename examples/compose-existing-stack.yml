@@ -1,0 +1,45 @@
+# Add MongoRescue to an existing Compose project that already runs MongoDB.
+#
+# Option A: copy the `mongorescue` service and the two volumes into your own
+# docker-compose.yml. Services in the same project share a network, so drop the
+# `networks` sections.
+#
+# Option B: run this file as a separate project and join the network of the existing
+# one. Find its name with `docker network ls` (usually `<project>_default`), then:
+#
+#   APP_NETWORK=myapp_default docker compose -f examples/compose-existing-stack.yml up -d
+#
+# Open the dashboard, enter the setup code from `docker compose logs mongorescue`, and
+# add a connection using your MongoDB service name as the host, for example
+# mongodb://user:pass@mongodb:27017/?authSource=admin. Nothing needs to be configured
+# here: storage targets, encryption and proxy settings (Settings > Security > Trust
+# proxy headers) are managed in the dashboard.
+
+services:
+  mongorescue:
+    image: ghcr.io/yigitcittan/mongorescue:${MONGORESCUE_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      # Loopback only: the dashboard is reached through your reverse proxy.
+      - "127.0.0.1:${MONGORESCUE_PORT:-8080}:8080"
+    volumes:
+      - mongorescue_data:/data
+      - mongorescue_backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - app
+
+networks:
+  app:
+    external: true
+    name: ${APP_NETWORK:-myapp_default}
+
+volumes:
+  mongorescue_data:
+  mongorescue_backups:

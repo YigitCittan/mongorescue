@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="title">
+  <title id="title">mongorescue</title>
+  <rect width="128" height="128" rx="28" fill="#0f7b52"/>
+  <g transform="translate(17.25 20) scale(2.75)">
+    <path fill="#ffffff" d="M3 6A11 3 0 0 1 25 6V10A11 3 0 0 1 3 10Z"/>
+    <path fill="#a8e6c6" d="M9 13A11 3 0 0 0 31 13V18A11 3 0 0 1 9 18Z"/>
+    <path fill="#ffffff" d="M3 21A11 3 0 0 0 25 21V26A11 3 0 0 1 3 26Z"/>
+  </g>
+</svg>

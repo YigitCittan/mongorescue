@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/YigitCittan/mongorescue/security/advisories/new
+    about: Please report vulnerabilities privately through a security advisory, never in a public issue.
+  - name: Questions and ideas
+    url: https://github.com/YigitCittan/mongorescue/discussions
+    about: Ask usage questions and discuss ideas in GitHub Discussions.

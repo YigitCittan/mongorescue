@@ -1,0 +1,20 @@
+# Area labels applied by .github/workflows/labeler.yml (actions/labeler v5+ syntax).
+area/ui:
+  - changed-files:
+      - any-glob-to-any-file: 'web/**'
+
+area/storage:
+  - changed-files:
+      - any-glob-to-any-file: 'internal/storage/**'
+
+area/notify:
+  - changed-files:
+      - any-glob-to-any-file: 'internal/notify/**'
+
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: '**/*.md'

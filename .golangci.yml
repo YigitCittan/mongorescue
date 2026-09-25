@@ -1,0 +1,54 @@
+# ==============================================================================
+# MongoRescue — golangci-lint Configuration (v2)
+# https://golangci-lint.run/usage/configuration/
+# ==============================================================================
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # The "standard" set (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - gosec
+    - misspell
+    - revive
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    gosec:
+      excludes:
+        - G204 # Subprocess launched with variable (mongodump/mongorestore is core design)
+        - G304 # File path as taint input (checked by path traversal validator)
+        - G702 # Taint-analysis variant of G204 (argument slices, never a shell)
+        - G703 # Taint-analysis variant of G304 (keys are validated by the storage layer)
+  exclusions:
+    generated: lax
+    # Keep the v1 default exclusions so the migration does not change the baseline.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Tests use fixture credentials (redaction cases) and deliberate byte wraparound.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G101|G115"
+    paths:
+      - web
+      - dist
+      - build
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10

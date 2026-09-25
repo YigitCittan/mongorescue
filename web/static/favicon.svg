@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <style>
+    .m{fill:#0f7b52}.c{fill:#4cc08a}
+    @media (prefers-color-scheme:dark){.m{fill:#3fd494}.c{fill:#b4efd0}}
+  </style>
+  <path class="m" d="M2 6A11 2.5 0 0 1 24 6V10A11 2.5 0 0 1 2 10Z"/>
+  <path class="c" d="M8 14A11 2.5 0 0 0 30 14V19A11 2.5 0 0 1 8 19Z"/>
+  <path class="m" d="M2 23A11 2.5 0 0 0 24 23V27A11 2.5 0 0 1 2 27Z"/>
+</svg>

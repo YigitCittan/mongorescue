@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>mongorescue</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="is-booting">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <!-- Brand: mark + wordmark. Single element, swap here to rebrand. -->
+      <a class="brand" href="/" aria-label="mongorescue home">
+        <svg class="brand-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false">
+          <path fill="var(--brand-mark)" d="M2 6A11 2.5 0 0 1 24 6V10A11 2.5 0 0 1 2 10Z"/>
+          <path fill="var(--brand-mark-copy)" d="M8 14A11 2.5 0 0 0 30 14V19A11 2.5 0 0 1 8 19Z"/>
+          <path fill="var(--brand-mark)" d="M2 23A11 2.5 0 0 0 24 23V27A11 2.5 0 0 1 2 27Z"/>
+        </svg>
+        <span class="brand-name">mongorescue</span>
+      </a>
+      <span id="conn-status" class="conn-dot" data-status="unknown" role="img" aria-label="Checking connection" title="Checking connection"></span>
+
+      <div class="topbar-actions">
+        <label class="select-wrap" title="Language" data-i18n-title="nav.language">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c1.7 1.7 2.5 3.7 2.5 6S9.7 12.3 8 14c-1.7-1.7-2.5-3.7-2.5-6S6.3 3.7 8 2z"/></svg>
+          <select id="lang-select" class="select-bare" aria-label="Language" data-i18n-aria-label="nav.language">
+            <option value="en">English</option>
+            <option value="tr">Türkçe</option>
+            <option value="de">Deutsch</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="zh">简体中文</option>
+            <option value="ja">日本語</option>
+            <option value="ru">Русский</option>
+          </select>
+          <svg class="icon icon-chevron" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg>
+        </label>
+
+        <div class="segmented" role="group" aria-label="Theme" data-i18n-aria-label="nav.theme">
+          <button type="button" class="segmented-btn" data-action="set-theme" data-theme="system" aria-pressed="true" title="System" data-i18n-title="nav.theme_system" aria-label="System" data-i18n-aria-label="nav.theme_system">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="2.5" width="12" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11v3"/></svg>
+          </button>
+          <button type="button" class="segmented-btn" data-action="set-theme" data-theme="light" aria-pressed="false" title="Light" data-i18n-title="nav.theme_light" aria-label="Light" data-i18n-aria-label="nav.theme_light">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg>
+          </button>
+          <button type="button" class="segmented-btn" data-action="set-theme" data-theme="dark" aria-pressed="false" title="Dark" data-i18n-title="nav.theme_dark" aria-label="Dark" data-i18n-aria-label="nav.theme_dark">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 9.6A5.75 5.75 0 1 1 6.4 2.5a4.5 4.5 0 0 0 7.1 7.1z"/></svg>
+          </button>
+        </div>
+
+        <!-- User menu (visible once signed in) -->
+        <div class="user-menu" id="user-menu" hidden>
+          <button type="button" id="user-menu-btn" class="btn btn-secondary btn-sm" data-action="toggle-user-menu" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu-list" title="Account" data-i18n-title="nav.user_menu">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.5a5.25 5.25 0 0 1 10.5 0"/></svg>
+            <span class="user-menu-name" id="user-menu-name"></span>
+            <svg class="icon icon-caret" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg>
+          </button>
+          <div class="menu" id="user-menu-list" role="menu" aria-labelledby="user-menu-btn" hidden>
+            <div class="menu-header">
+              <span class="menu-caption" data-i18n="auth.signed_in_as">Signed in as</span>
+              <span class="menu-user" id="user-menu-fullname"></span>
+            </div>
+            <button type="button" role="menuitem" class="menu-item" data-action="change-own-password" data-i18n="auth.change_password">Change password</button>
+            <button type="button" role="menuitem" class="menu-item" data-action="logout" data-i18n="auth.logout">Log out</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Setup and sign-in (shown when no session) -->
+  <main id="auth-screen" class="auth-screen" hidden>
+    <section id="setup-card" class="auth-card" aria-labelledby="setup-title" hidden>
+      <h1 class="auth-title" id="setup-title" data-i18n="auth.setup_title">Set up mongorescue</h1>
+      <p class="auth-desc" data-i18n="auth.setup_desc">Create the first administrator account for this instance.</p>
+      <form id="form-setup" class="auth-form" novalidate>
+        <div class="form-group">
+          <label class="form-label" for="setup-code" data-i18n="auth.setup_code">Setup code</label>
+          <input type="text" id="setup-code" class="form-input mono" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" aria-describedby="setup-code-hint" required>
+          <div class="code-hint" id="setup-code-hint">
+            <span data-i18n="auth.setup_code_hint">Printed in the server log at startup. With Docker Compose, run:</span>
+            <code class="code-line">docker compose logs mongorescue</code>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-username" data-i18n="auth.username">Username</label>
+          <input type="text" id="setup-username" class="form-input" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-password" data-i18n="auth.password">Password</label>
+          <input type="password" id="setup-password" class="form-input" autocomplete="new-password" minlength="12" aria-describedby="setup-password-hint" required>
+          <span class="form-hint" id="setup-password-hint" data-i18n="auth.password_hint">At least 12 characters.</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setup-password-confirm" data-i18n="auth.confirm_password">Confirm password</label>
+          <input type="password" id="setup-password-confirm" class="form-input" autocomplete="new-password" minlength="12" required>
+        </div>
+        <p class="form-error" id="setup-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="auth.create_account">Create account</button>
+      </form>
+    </section>
+
+    <section id="login-card" class="auth-card" aria-labelledby="login-title" hidden>
+      <h1 class="auth-title" id="login-title" data-i18n="auth.login_title">Sign in</h1>
+      <p class="auth-desc" data-i18n="auth.login_desc">Sign in to manage backups and restores.</p>
+      <p class="form-notice" id="login-notice" role="status" hidden></p>
+      <form id="form-login" class="auth-form" novalidate>
+        <div class="form-group">
+          <label class="form-label" for="login-username" data-i18n="auth.username">Username</label>
+          <input type="text" id="login-username" class="form-input" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="login-password" data-i18n="auth.password">Password</label>
+          <input type="password" id="login-password" class="form-input" autocomplete="current-password" required>
+        </div>
+        <p class="form-error" id="login-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="auth.login_submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+
+  <main id="app-main" class="container" hidden>
+
+    <!-- First-run call to action -->
+    <section id="onboarding" class="callout" aria-labelledby="onboarding-title" hidden>
+      <div>
+        <h2 class="callout-title" id="onboarding-title" data-i18n="conn.onboarding_title">Add your first MongoDB connection</h2>
+        <p class="section-desc" data-i18n="conn.onboarding_desc">Jobs, backups and restores run against a saved connection. Its credentials are encrypted at rest.</p>
+      </div>
+      <button type="button" class="btn btn-primary" data-action="new-connection">
+        <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+        <span data-i18n="conn.add">Add connection</span>
+      </button>
+    </section>
+
+    <!-- Overview -->
+    <section class="stats" aria-label="Overview" data-i18n-aria-label="metrics.overview">
+      <div class="stat">
+        <div class="stat-label" data-i18n="metrics.storage_used">Storage used</div>
+        <div class="stat-value" id="stat-storage">—</div>
+        <div class="stat-sub truncate" id="stat-storage-sub"></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="metrics.backups">Backups</div>
+        <div class="stat-value" id="stat-backups">—</div>
+        <div class="stat-sub" id="stat-backups-sub"></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="metrics.scheduled_jobs">Scheduled jobs</div>
+        <div class="stat-value" id="stat-jobs">—</div>
+        <div class="stat-sub truncate" id="stat-jobs-sub"></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label" data-i18n="metrics.last_backup">Last backup</div>
+        <div class="stat-value stat-value-row" id="stat-last">—</div>
+        <div class="stat-sub truncate" id="stat-last-sub"></div>
+      </div>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" class="tab-btn active" role="tab" id="tabbtn-backups" aria-selected="true" aria-controls="tab-backups" data-tab="tab-backups"><span data-i18n="tabs.backups">Backups</span><span class="tab-count" id="count-backups"></span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-jobs" aria-selected="false" aria-controls="tab-jobs" tabindex="-1" data-tab="tab-jobs"><span data-i18n="tabs.jobs">Jobs</span><span class="tab-count" id="count-jobs"></span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-restores" aria-selected="false" aria-controls="tab-restores" tabindex="-1" data-tab="tab-restores"><span data-i18n="tabs.restores">Restores</span><span class="tab-count" id="count-restores"></span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-connections" aria-selected="false" aria-controls="tab-connections" tabindex="-1" data-tab="tab-connections"><span data-i18n="tabs.connections">Connections</span><span class="tab-count" id="count-connections"></span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-notifications" aria-selected="false" aria-controls="tab-notifications" tabindex="-1" data-tab="tab-notifications"><span data-i18n="tabs.notifications">Notifications</span><span class="tab-count" id="count-notifications"></span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-settings" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="tab-settings"><span data-i18n="tabs.settings">Settings</span></button>
+    </nav>
+
+    <!-- Backups -->
+    <section id="tab-backups" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-backups">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="tabs.backups">Backups</h2>
+          <p class="section-desc" data-i18n="tables.backups_desc">Archives in storage, newest first. Restores go to an isolated clone by default.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-secondary" data-action="refresh">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M13.5 2.5v3h-3"/></svg>
+            <span data-i18n="tables.refresh">Refresh</span>
+          </button>
+          <button type="button" class="btn btn-primary" data-action="backup-now" data-needs-connection><span data-i18n="nav.instant_backup">Back up now</span></button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="tables.backup_id">ID</th>
+              <th scope="col" data-i18n="tables.database">Database</th>
+              <th scope="col" data-i18n="tables.status">Status</th>
+              <th scope="col" data-i18n="tables.started_at">Started</th>
+              <th scope="col" class="num" data-i18n="tables.duration">Duration</th>
+              <th scope="col" class="num" data-i18n="tables.size">Size</th>
+              <th scope="col" data-i18n="tables.sha256">SHA-256</th>
+              <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="backups-tbody">
+            <tr class="empty-row"><td colspan="8"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Jobs -->
+    <section id="tab-jobs" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-jobs" hidden>
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="tabs.jobs">Jobs</h2>
+          <p class="section-desc" data-i18n="tables.jobs_desc">Recurring backups on a cron schedule, with automatic retention pruning.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-primary" data-action="new-job" data-needs-connection>
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span data-i18n="nav.new_job">New job</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="tables.job_name">Name</th>
+              <th scope="col" data-i18n="tables.connection">Connection</th>
+              <th scope="col" data-i18n="tables.database">Database</th>
+              <th scope="col" data-i18n="tables.schedule">Schedule</th>
+              <th scope="col" data-i18n="tables.retention_policy">Retention</th>
+              <th scope="col" data-i18n="tables.status">Status</th>
+              <th scope="col" data-i18n="tables.last_run">Last run</th>
+              <th scope="col" data-i18n="tables.next_run">Next run</th>
+              <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="jobs-tbody">
+            <tr class="empty-row"><td colspan="9"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Restores -->
+    <section id="tab-restores" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-restores" hidden>
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="tabs.restores">Restores</h2>
+          <p class="section-desc" data-i18n="tables.restores_desc">Every restore run, newest first. Start a restore from a backup.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-secondary" data-action="refresh">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M13.5 2.5v3h-3"/></svg>
+            <span data-i18n="tables.refresh">Refresh</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="tables.restore_id">ID</th>
+              <th scope="col" data-i18n="tables.source_db">Source</th>
+              <th scope="col" data-i18n="tables.target_db">Target</th>
+              <th scope="col" data-i18n="tables.status">Status</th>
+              <th scope="col" data-i18n="tables.started_at">Started</th>
+              <th scope="col" class="num" data-i18n="tables.duration">Duration</th>
+            </tr>
+          </thead>
+          <tbody id="restores-tbody">
+            <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Connections -->
+    <section id="tab-connections" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-connections" hidden>
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="conn.title">Connections</h2>
+          <p class="section-desc" data-i18n="conn.desc">MongoDB servers this instance backs up and restores. Connection strings are stored encrypted and shown without passwords.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-primary" data-action="new-connection">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span data-i18n="conn.add">Add connection</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="conn.col_name">Name</th>
+              <th scope="col" data-i18n="conn.col_host">Host</th>
+              <th scope="col" data-i18n="conn.col_status">Last test</th>
+              <th scope="col" data-i18n="conn.col_version">Server version</th>
+              <th scope="col" data-i18n="conn.col_tested">Tested</th>
+              <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="connections-tbody">
+            <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Notifications -->
+    <section id="tab-notifications" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-notifications" hidden>
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="notify.channels_title">Channels</h2>
+          <p class="section-desc" data-i18n="notify.channels_hint">Where alerts are delivered: webhook, Telegram, e-mail (SMTP) or SMS (Twilio).</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-primary" data-action="new-channel">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span data-i18n="notify.add_channel">Add channel</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="notify.col_name">Name</th>
+              <th scope="col" data-i18n="notify.col_type">Type</th>
+              <th scope="col" data-i18n="notify.col_enabled">Status</th>
+              <th scope="col" data-i18n="notify.col_last_delivery">Last delivery</th>
+              <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="channels-tbody">
+            <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section-header section-spaced">
+        <div>
+          <h2 class="section-title" data-i18n="notify.rules_title">Rules</h2>
+          <p class="section-desc" data-i18n="notify.rules_hint">When a matching event occurs, every channel of the rule receives a message.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-primary" data-action="new-rule">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span data-i18n="notify.add_rule">Add rule</span>
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="notify.col_name">Name</th>
+              <th scope="col" data-i18n="notify.col_events">Events</th>
+              <th scope="col" data-i18n="notify.col_jobs">Jobs</th>
+              <th scope="col" data-i18n="notify.col_channels">Channels</th>
+              <th scope="col" data-i18n="notify.col_enabled">Status</th>
+              <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="rules-tbody">
+            <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Settings: general, storage, encryption, security, users, API keys -->
+    <section id="tab-settings" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-settings" hidden>
+     <div class="settings-layout">
+      <nav class="settings-nav" aria-label="Settings" data-i18n-aria-label="tabs.settings">
+        <button type="button" class="settings-nav-btn active" data-action="settings-section" data-section="general" aria-current="page" data-i18n="settings.nav_general">General</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="storage" data-i18n="settings.nav_storage">Storage</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="encryption" data-i18n="settings.nav_encryption">Encryption</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title">Users</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
+      </nav>
+      <div class="settings-content">
+
+      <!-- General -->
+      <section class="settings-panel" id="settings-general" aria-labelledby="settings-general-title">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-general-title" data-i18n="settings.nav_general">General</h2>
+            <p class="section-desc" data-i18n="settings.general_desc">Defaults for new jobs and limits for backup and restore runs. Changes apply immediately.</p>
+          </div>
+        </div>
+        <form id="form-general" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="settings.group_retention">Retention defaults for new jobs</legend>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="set-retention-days" data-i18n="modal_job.days_label">Keep for (days)</label>
+                <input type="number" id="set-retention-days" class="form-input" min="0" step="1" aria-describedby="set-retention-days-hint">
+                <span class="form-hint" id="set-retention-days-hint" data-i18n="modal_job.days_hint">0 keeps backups indefinitely.</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="set-retention-count" data-i18n="modal_job.count_label">Keep at most</label>
+                <input type="number" id="set-retention-count" class="form-input" min="0" step="1" aria-describedby="set-retention-count-hint">
+                <span class="form-hint" id="set-retention-count-hint" data-i18n="modal_job.count_hint">Newest N backups. 0 means unlimited.</span>
+              </div>
+            </div>
+            <label class="check" for="set-gzip">
+              <input type="checkbox" id="set-gzip">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.gzip_label">Compress archives (gzip)</span>
+                <span class="form-hint" data-i18n="settings.gzip_hint">Smaller archives at the cost of some CPU during backup.</span>
+              </span>
+            </label>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="settings.group_timeouts">Timeouts</legend>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-backup-timeout" data-i18n="settings.backup_timeout">Backup timeout</label>
+              <div class="input-inline">
+                <input type="text" id="set-backup-timeout" class="form-input mono duration-input" data-duration placeholder="6h" autocomplete="off" spellcheck="false" aria-describedby="set-backup-timeout-hint set-backup-timeout-preview">
+                <span class="duration-preview" id="set-backup-timeout-preview" aria-live="polite"></span>
+              </div>
+              <span class="form-hint" id="set-backup-timeout-hint" data-i18n="settings.backup_timeout_hint">Maximum run time of one backup. 0 disables the limit.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-backup-stall-timeout" data-i18n="settings.backup_stall_timeout">Stall timeout</label>
+              <div class="input-inline">
+                <input type="text" id="set-backup-stall-timeout" class="form-input mono duration-input" data-duration placeholder="10m" autocomplete="off" spellcheck="false" aria-describedby="set-backup-stall-timeout-hint set-backup-stall-timeout-preview">
+                <span class="duration-preview" id="set-backup-stall-timeout-preview" aria-live="polite"></span>
+              </div>
+              <span class="form-hint" id="set-backup-stall-timeout-hint" data-i18n="settings.backup_stall_timeout_hint">Abort when no data arrives from mongodump for this long.</span>
+            </div>
+            </div>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-restore-timeout" data-i18n="settings.restore_timeout">Restore timeout</label>
+              <div class="input-inline">
+                <input type="text" id="set-restore-timeout" class="form-input mono duration-input" data-duration placeholder="6h" autocomplete="off" spellcheck="false" aria-describedby="set-restore-timeout-hint set-restore-timeout-preview">
+                <span class="duration-preview" id="set-restore-timeout-preview" aria-live="polite"></span>
+              </div>
+              <span class="form-hint" id="set-restore-timeout-hint" data-i18n="settings.restore_timeout_hint">Maximum run time of one restore. 0 disables the limit.</span>
+            </div>
+              <div class="form-group">
+                <label class="form-label" for="set-verify-policy" data-i18n="settings.verify_policy">Verify before restore</label>
+                <select id="set-verify-policy" class="form-select" aria-describedby="set-verify-policy-hint">
+                  <option value="auto" data-i18n="settings.verify_auto">Automatic (in-place restores)</option>
+                  <option value="always" data-i18n="settings.verify_always">Always</option>
+                  <option value="never" data-i18n="settings.verify_never">Never</option>
+                </select>
+                <span class="form-hint" id="set-verify-policy-hint" data-i18n="settings.verify_policy_hint">Default for the "Verify integrity first" option of the restore dialog.</span>
+              </div>
+            </div>
+            <p class="form-hint" data-i18n="settings.duration_help">Durations use Go syntax: 90s, 45m, 6h, 1h30m. There is no day unit: use 168h for 7 days.</p>
+          </fieldset>
+          <p class="form-error" id="general-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="general-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Storage -->
+      <section class="settings-panel" id="settings-storage" aria-labelledby="settings-storage-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-storage-title" data-i18n="storage.title">Storage targets</h2>
+            <p class="section-desc" data-i18n="storage.desc">Where backup archives are written. Each backup remembers its target, so restores keep working after you change the default.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-primary" data-action="new-storage">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+              <span data-i18n="storage.add">Add target</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="storage.col_name">Name</th>
+                <th scope="col" data-i18n="storage.col_type">Type</th>
+                <th scope="col" data-i18n="storage.col_location">Location</th>
+                <th scope="col" data-i18n="storage.col_status">Last test</th>
+                <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="storage-tbody">
+              <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Encryption -->
+      <section class="settings-panel" id="settings-encryption" aria-labelledby="settings-encryption-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-encryption-title" data-i18n="settings.nav_encryption">Encryption</h2>
+            <p class="section-desc" data-i18n="enc.desc">Encrypt new archives with age before they reach storage. Existing backups keep the keys they were written with.</p>
+          </div>
+        </div>
+        <form id="form-encryption" class="settings-form" novalidate>
+            <label class="check" for="enc-enabled">
+              <input type="checkbox" id="enc-enabled">
+              <span class="check-text">
+                <span class="check-title" data-i18n="enc.enabled_label">Encrypt new backups</span>
+                <span class="form-hint" data-i18n="enc.enabled_hint">Applies to backups started after saving. Restores decrypt automatically.</span>
+              </span>
+            </label>
+          <fieldset class="settings-group" id="enc-options">
+            <legend class="settings-group-title" data-i18n="enc.mode_label">Method</legend>
+            <div class="radio-cards" role="radiogroup" aria-label="Method" data-i18n-aria-label="enc.mode_label">
+              <label class="radio-card" for="enc-mode-x25519">
+                <input type="radio" id="enc-mode-x25519" name="enc-mode" value="x25519" checked>
+                <span class="check-text">
+                  <span class="check-title" data-i18n="enc.mode_x25519">Key pair (X25519)</span>
+                  <span class="form-hint" data-i18n="enc.mode_x25519_hint">Recommended. Encrypt to public recipients; only the private key can decrypt.</span>
+                </span>
+              </label>
+              <label class="radio-card" for="enc-mode-passphrase">
+                <input type="radio" id="enc-mode-passphrase" name="enc-mode" value="passphrase">
+                <span class="check-text">
+                  <span class="check-title" data-i18n="enc.mode_passphrase">Passphrase</span>
+                  <span class="form-hint" data-i18n="enc.mode_passphrase_hint">One shared secret for encrypting and decrypting.</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="enc-mode-fields" data-enc-mode="x25519">
+              <div class="form-group">
+                <label class="form-label" for="enc-recipients" data-i18n="enc.recipients_label">Recipients</label>
+                <textarea id="enc-recipients" class="form-input mono" rows="3" spellcheck="false" autocomplete="off" placeholder="age1..." aria-describedby="enc-recipients-hint"></textarea>
+                <span class="form-hint" id="enc-recipients-hint" data-i18n="enc.recipients_hint">Public keys (age1…), one per line. Every recipient can decrypt new backups with its private key.</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="enc-identity" data-i18n="enc.identity_label">Private key used for restores</label>
+                <input type="password" id="enc-identity" class="form-input mono" autocomplete="off" spellcheck="false" placeholder="AGE-SECRET-KEY-1..." aria-describedby="enc-identity-hint">
+                <span class="form-hint" id="enc-identity-hint" data-i18n="enc.identity_hint">Stored encrypted. Shown as ****** when set; leave it unchanged to keep it.</span>
+              </div>
+              <div class="generate-row">
+                <button type="button" class="btn btn-secondary" data-action="generate-key" data-i18n="enc.generate">Generate key pair</button>
+                <span class="form-hint" data-i18n="enc.generate_hint">Creates a new private key and adds its public key to the recipients.</span>
+              </div>
+
+              <div class="generated-key" id="enc-generated" hidden>
+                <p class="notice notice-danger" role="alert">
+                  <strong data-i18n="enc.warning_title">Save this private key now.</strong>
+                  <span data-i18n="enc.warning_body">It is shown only once. Without it, backups encrypted to this key cannot be restored by anyone, including you.</span>
+                </p>
+                <div class="form-group">
+                  <label class="form-label" for="enc-gen-identity" data-i18n="enc.private_key">Private key</label>
+                  <textarea id="enc-gen-identity" class="form-input mono" rows="2" readonly spellcheck="false"></textarea>
+                  <div class="button-row">
+                    <button type="button" class="btn btn-secondary btn-sm" data-action="copy-identity">
+                      <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.75A1.25 1.25 0 0 0 9.25 2.5h-5.5A1.25 1.25 0 0 0 2.5 3.75v5.5a1.25 1.25 0 0 0 1.25 1.25H5.5"/></svg>
+                      <span id="enc-copy-label" data-i18n="settings.copy">Copy</span>
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-action="download-identity">
+                      <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 2.5v8M4.75 7.5 8 10.75l3.25-3.25M3 13.5h10"/></svg>
+                      <span data-i18n="enc.download">Download .txt</span>
+                    </button>
+                  </div>
+                </div>
+                <dl class="kv">
+                  <dt data-i18n="enc.public_key">Public key</dt>
+                  <dd class="mono" id="enc-gen-recipient"></dd>
+                </dl>
+                <label class="check check-danger" for="enc-gen-saved">
+                  <input type="checkbox" id="enc-gen-saved">
+                  <span class="check-text"><span class="check-title" data-i18n="enc.saved_ack">I have stored the private key in a safe place.</span></span>
+                </label>
+                <div class="button-row">
+                  <button type="button" class="btn btn-primary" id="enc-use-key" data-action="use-generated-key" disabled data-i18n="enc.use_key">Use this key</button>
+                  <button type="button" class="btn btn-ghost" data-action="discard-generated-key" data-i18n="enc.discard">Discard</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="enc-mode-fields" data-enc-mode="passphrase" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="enc-passphrase" data-i18n="enc.passphrase_label">Passphrase</label>
+                  <input type="password" id="enc-passphrase" class="form-input" autocomplete="new-password" aria-describedby="enc-passphrase-hint">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="enc-passphrase-confirm" data-i18n="enc.passphrase_confirm">Confirm passphrase</label>
+                  <input type="password" id="enc-passphrase-confirm" class="form-input" autocomplete="new-password">
+                </div>
+              </div>
+              <span class="form-hint" id="enc-passphrase-hint" data-i18n="enc.passphrase_hint">At least 16 characters. Stored encrypted and shown as ******; leave it unchanged to keep it.</span>
+            </div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="enc.retired_title">Retired keys</legend>
+            <p class="form-hint" data-i18n="enc.retired_desc">Previous private keys are kept (encrypted) so older backups stay restorable. They are never shown.</p>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="enc.col_recipient">Public key</th>
+                    <th scope="col" data-i18n="enc.col_retired">Retired</th>
+                  </tr>
+                </thead>
+                <tbody id="retired-keys-tbody">
+                  <tr class="empty-row"><td colspan="2"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </fieldset>
+          <p class="form-error" id="encryption-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="encryption-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Security -->
+      <section class="settings-panel" id="settings-security" aria-labelledby="settings-security-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-security-title" data-i18n="settings.nav_security">Security</h2>
+            <p class="section-desc" data-i18n="settings.security_desc">Sessions, cookies and cross-origin access for this dashboard and API.</p>
+          </div>
+        </div>
+        <form id="form-security" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="settings.group_sessions">Sessions</legend>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-session-idle" data-i18n="settings.session_idle">Idle timeout</label>
+              <div class="input-inline">
+                <input type="text" id="set-session-idle" class="form-input mono duration-input" data-duration placeholder="12h" autocomplete="off" spellcheck="false" aria-describedby="set-session-idle-hint set-session-idle-preview">
+                <span class="duration-preview" id="set-session-idle-preview" aria-live="polite"></span>
+              </div>
+              <span class="form-hint" id="set-session-idle-hint" data-i18n="settings.session_idle_hint">Sign out after this long without activity.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-session-absolute" data-i18n="settings.session_absolute">Maximum session length</label>
+              <div class="input-inline">
+                <input type="text" id="set-session-absolute" class="form-input mono duration-input" data-duration placeholder="168h" autocomplete="off" spellcheck="false" aria-describedby="set-session-absolute-hint set-session-absolute-preview">
+                <span class="duration-preview" id="set-session-absolute-preview" aria-live="polite"></span>
+              </div>
+              <span class="form-hint" id="set-session-absolute-hint" data-i18n="settings.session_absolute_hint">Sign out after this long, even when active.</span>
+            </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-secure-cookies" data-i18n="settings.secure_cookies">Secure cookies</label>
+              <select id="set-secure-cookies" class="form-select" aria-describedby="set-secure-cookies-hint">
+                <option value="auto" data-i18n="settings.cookies_auto">Automatic (when served over HTTPS)</option>
+                <option value="always" data-i18n="settings.cookies_always">Always</option>
+                <option value="never" data-i18n="settings.cookies_never">Never</option>
+              </select>
+              <span class="form-hint" id="set-secure-cookies-hint" data-i18n="settings.secure_cookies_hint">"Always" is required behind a TLS-terminating proxy unless proxy headers are trusted.</span>
+            </div>
+            <label class="check" for="set-trust-proxy">
+              <input type="checkbox" id="set-trust-proxy">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.trust_proxy">Trust proxy headers</span>
+                <span class="form-hint" data-i18n="settings.trust_proxy_hint">Use X-Forwarded-Proto and X-Forwarded-For. Enable only behind a reverse proxy you control.</span>
+              </span>
+            </label>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="settings.group_access">API access</legend>
+            <div class="form-group">
+              <label class="form-label" for="set-cors-origins" data-i18n="settings.cors_origins">Allowed origins (CORS)</label>
+              <textarea id="set-cors-origins" class="form-input mono" rows="3" spellcheck="false" placeholder="https://grafana.example.com" aria-describedby="set-cors-origins-hint"></textarea>
+              <span class="form-hint" id="set-cors-origins-hint" data-i18n="settings.cors_hint">One origin per line, such as https://tools.example.com. Leave empty to allow same-origin requests only.</span>
+            </div>
+            <label class="check" for="set-metrics-public">
+              <input type="checkbox" id="set-metrics-public">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.metrics_public">Public /metrics endpoint</span>
+                <span class="form-hint" data-i18n="settings.metrics_public_hint">Allow Prometheus to scrape without an API key. Keep off unless the endpoint is on a private network.</span>
+              </span>
+            </label>
+          </fieldset>
+          <p class="form-error" id="security-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="security-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Users -->
+      <section class="settings-panel" id="settings-users" aria-labelledby="settings-users-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-users-title" data-i18n="settings.users_title">Users</h2>
+            <p class="section-desc" data-i18n="settings.users_desc">Everyone listed here can sign in with full administrative access.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-primary" data-action="new-user">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+              <span data-i18n="settings.add_user">Add user</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="settings.col_username">Username</th>
+                <th scope="col" data-i18n="settings.col_created">Created</th>
+                <th scope="col" data-i18n="settings.col_last_login">Last sign-in</th>
+                <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <tr class="empty-row"><td colspan="4"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- API keys -->
+      <section class="settings-panel" id="settings-apikeys" aria-labelledby="settings-apikeys-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-apikeys-title" data-i18n="settings.keys_title">API keys</h2>
+            <p class="section-desc" data-i18n="settings.keys_desc">For scripts and automation. Send the key as Authorization: Bearer &lt;key&gt; or X-API-Key.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-primary" data-action="new-api-key">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+              <span data-i18n="settings.create_key">Create API key</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="settings.col_key_name">Name</th>
+                <th scope="col" data-i18n="settings.col_prefix">Key</th>
+                <th scope="col" data-i18n="settings.col_created_by">Created by</th>
+                <th scope="col" data-i18n="settings.col_created">Created</th>
+                <th scope="col" data-i18n="settings.col_last_used">Last used</th>
+                <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="apikeys-tbody">
+              <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      </div>
+     </div>
+    </section>
+
+  </main>
+
+  <!-- Modal: New job -->
+  <div id="modal-new-job" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-new-job-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-new-job-title" data-i18n="modal_job.title">New backup job</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-new-job" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-new-job">
+        <div class="modal-body scrollable">
+          <div class="form-group">
+            <label class="form-label" for="job-name" data-i18n="modal_job.name_label">Name</label>
+            <input type="text" id="job-name" class="form-input" data-i18n-placeholder="modal_job.name_placeholder" placeholder="e.g. nightly-production" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="job-connection" data-i18n="picker.connection">Connection</label>
+              <select id="job-connection" class="form-select" required></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" id="job-database-label" for="job-database-select" data-i18n="picker.database">Database</label>
+              <select id="job-database-select" class="form-select"></select>
+              <input type="text" id="job-database" class="form-input" data-i18n-placeholder="picker.manual_placeholder" placeholder="Database name" autocomplete="off" spellcheck="false" hidden>
+              <div class="form-hint-row">
+                <span class="form-hint" id="job-database-hint" aria-live="polite"></span>
+                <button type="button" class="link-btn" data-action="picker-from-list" data-picker="job" data-i18n="picker.from_list" hidden>Choose from list</button>
+              </div>
+            </div>
+          </div>
+          <fieldset class="form-group fieldset">
+            <legend class="form-label" data-i18n="picker.collections">Collections</legend>
+            <div class="radio-group" role="radiogroup">
+              <label class="check-inline"><input type="radio" name="job-coll-mode" value="all" checked><span data-i18n="picker.coll_all">All collections</span></label>
+              <label class="check-inline"><input type="radio" name="job-coll-mode" value="include"><span data-i18n="picker.coll_include">Only selected</span></label>
+              <label class="check-inline"><input type="radio" name="job-coll-mode" value="exclude"><span data-i18n="picker.coll_exclude">All except selected</span></label>
+            </div>
+            <div class="collections-box" id="job-collections-box" hidden>
+              <select id="job-collections" class="form-select" multiple aria-labelledby="job-collections-label" aria-describedby="job-collections-hint"></select>
+              <input type="text" id="job-collections-manual" class="form-input mono" data-i18n-placeholder="picker.colls_manual_placeholder" placeholder="orders, customers" aria-describedby="job-collections-hint" hidden>
+              <span class="sr-only" id="job-collections-label" data-i18n="picker.collections">Collections</span>
+              <span class="form-hint" id="job-collections-hint" aria-live="polite"></span>
+            </div>
+          </fieldset>
+          <div class="form-group">
+            <label class="form-label" for="job-storage" data-i18n="storage.select_label">Storage target</label>
+            <select id="job-storage" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="job-cron" data-i18n="modal_job.cron_label">Schedule</label>
+            <input type="text" id="job-cron" class="form-input mono" value="@daily" placeholder="@daily or 0 2 * * *" aria-describedby="job-cron-hint" required>
+            <span class="form-hint" id="job-cron-hint" data-i18n="modal_job.cron_hint">Cron expression (5 fields) or @hourly, @daily, @every 6h.</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="job-retention-days" data-i18n="modal_job.days_label">Keep for (days)</label>
+              <input type="number" id="job-retention-days" class="form-input" value="14" min="0" aria-describedby="job-days-hint">
+              <span class="form-hint" id="job-days-hint" data-i18n="modal_job.days_hint">0 keeps backups indefinitely.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="job-retention-count" data-i18n="modal_job.count_label">Keep at most</label>
+              <input type="number" id="job-retention-count" class="form-input" value="10" min="0" aria-describedby="job-count-hint">
+              <span class="form-hint" id="job-count-hint" data-i18n="modal_job.count_hint">Newest N backups. 0 means unlimited.</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-new-job" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="modal_job.submit">Create job</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Back up now -->
+  <div id="modal-instant-backup" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-instant-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-instant-title" data-i18n="modal_instant.title">Back up now</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-instant-backup" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-instant-backup">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="instant-connection" data-i18n="picker.connection">Connection</label>
+              <select id="instant-connection" class="form-select" required></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" id="instant-database-label" for="instant-database-select" data-i18n="picker.database">Database</label>
+              <select id="instant-database-select" class="form-select"></select>
+              <input type="text" id="instant-database" class="form-input" data-i18n-placeholder="picker.manual_placeholder" placeholder="Database name" autocomplete="off" spellcheck="false" hidden>
+              <div class="form-hint-row">
+                <span class="form-hint" id="instant-database-hint" aria-live="polite"></span>
+                <button type="button" class="link-btn" data-action="picker-from-list" data-picker="instant" data-i18n="picker.from_list" hidden>Choose from list</button>
+              </div>
+            </div>
+          </div>
+          <fieldset class="form-group fieldset">
+            <legend class="form-label" data-i18n="picker.collections">Collections</legend>
+            <div class="radio-group" role="radiogroup">
+              <label class="check-inline"><input type="radio" name="instant-coll-mode" value="all" checked><span data-i18n="picker.coll_all">All collections</span></label>
+              <label class="check-inline"><input type="radio" name="instant-coll-mode" value="include"><span data-i18n="picker.coll_include">Only selected</span></label>
+              <label class="check-inline"><input type="radio" name="instant-coll-mode" value="exclude"><span data-i18n="picker.coll_exclude">All except selected</span></label>
+            </div>
+            <div class="collections-box" id="instant-collections-box" hidden>
+              <select id="instant-collections" class="form-select" multiple aria-labelledby="instant-collections-label" aria-describedby="instant-collections-hint"></select>
+              <input type="text" id="instant-collections-manual" class="form-input mono" data-i18n-placeholder="picker.colls_manual_placeholder" placeholder="orders, customers" aria-describedby="instant-collections-hint" hidden>
+              <span class="sr-only" id="instant-collections-label" data-i18n="picker.collections">Collections</span>
+              <span class="form-hint" id="instant-collections-hint" aria-live="polite"></span>
+            </div>
+          </fieldset>
+          <div class="form-group">
+            <label class="form-label" for="instant-storage" data-i18n="storage.select_label">Storage target</label>
+            <select id="instant-storage" class="form-select"></select>
+          </div>
+          <p class="form-hint" data-i18n="modal_instant.hint">Runs mongodump and streams the archive straight to storage.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-instant-backup" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="modal_instant.submit">Start backup</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Restore -->
+  <div id="modal-restore" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-restore-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-restore-title" data-i18n="modal_restore.title">Restore backup</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-restore" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-restore">
+        <input type="hidden" id="restore-backup-id">
+        <div class="modal-body scrollable">
+          <dl class="kv">
+            <dt data-i18n="modal_restore.backup_label">Backup</dt>
+            <dd class="mono" id="restore-backup-label">-</dd>
+            <dt data-i18n="modal_restore.source_label">Source database</dt>
+            <dd class="mono" id="restore-source-db">-</dd>
+            <dt data-i18n="storage.select_label">Storage target</dt>
+            <dd id="restore-storage">-</dd>
+          </dl>
+
+          <div class="form-group">
+            <label class="form-label" for="restore-target-connection" data-i18n="conn.target_label">Target connection</label>
+            <select id="restore-target-connection" class="form-select" aria-describedby="restore-target-connection-hint"></select>
+            <span class="form-hint" id="restore-target-connection-hint" data-i18n="conn.target_hint">Defaults to the server the backup came from. Pick another to restore across servers.</span>
+          </div>
+
+          <label class="check" for="restore-safe-clone">
+            <input type="checkbox" id="restore-safe-clone" checked>
+            <span class="check-text">
+              <span class="check-title" data-i18n="modal_restore.safe_clone_title">Restore into a safe clone (recommended)</span>
+              <span class="form-hint" data-i18n="modal_restore.safe_clone_hint">Writes to a new database named &lt;db&gt;_rescue_&lt;timestamp&gt; and leaves existing data untouched.</span>
+            </span>
+          </label>
+
+          <div id="restore-in-place" class="in-place" hidden>
+            <div class="form-group">
+              <label class="form-label" for="restore-target-db" data-i18n="modal_restore.target_db_label">Target database</label>
+              <input type="text" id="restore-target-db" class="form-input mono">
+            </div>
+            <label class="check check-danger" for="restore-confirm-in-place">
+              <input type="checkbox" id="restore-confirm-in-place">
+              <span class="check-text">
+                <span class="check-title" data-i18n="modal_restore.in_place_ack">I understand this writes into an existing database and may overwrite its data.</span>
+              </span>
+            </label>
+          </div>
+
+          <label class="check" for="restore-verify">
+            <input type="checkbox" id="restore-verify">
+            <span class="check-text">
+              <span class="check-title" data-i18n="modal_restore.verify_title">Verify integrity first</span>
+              <span class="form-hint" data-i18n="modal_restore.verify_hint">Reads the whole backup once to check its SHA-256 checksum (and decrypt it, if encrypted) before mongorestore touches the target.</span>
+            </span>
+          </label>
+
+          <label class="check" for="restore-dry-run">
+            <input type="checkbox" id="restore-dry-run">
+            <span class="check-text">
+              <span class="check-title" data-i18n="modal_restore.dry_run_title">Dry run</span>
+              <span class="form-hint" data-i18n="modal_restore.dry_run_hint">Check the archive without writing anything to MongoDB.</span>
+            </span>
+          </label>
+
+          <label class="check" for="restore-drop-target">
+            <input type="checkbox" id="restore-drop-target">
+            <span class="check-text">
+              <span class="check-title text-danger" data-i18n="modal_restore.drop_title">Drop target collections first</span>
+              <span class="form-hint" data-i18n="modal_restore.drop_hint">Deletes existing collections in the target database before importing.</span>
+            </span>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-restore" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" id="restore-submit" class="btn btn-primary" data-i18n="modal_restore.submit">Start restore</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Storage target -->
+  <div id="modal-storage" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="storage-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="storage-modal-title">New storage target</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-storage" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-storage" novalidate>
+        <input type="hidden" id="storage-id">
+        <div class="modal-body scrollable">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="storage-name" data-i18n="storage.name_label">Name</label>
+              <input type="text" id="storage-name" class="form-input" maxlength="128" data-i18n-placeholder="storage.name_placeholder" placeholder="e.g. offsite-b2" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="storage-provider" data-i18n="storage.provider_label">Provider</label>
+              <select id="storage-provider" class="form-select">
+                <option value="local" data-i18n="storage.provider_local">Local disk</option>
+                <option value="aws">AWS S3</option>
+                <option value="r2">Cloudflare R2</option>
+                <option value="b2">Backblaze B2</option>
+                <option value="minio">MinIO</option>
+                <option value="do">DigitalOcean Spaces</option>
+                <option value="wasabi">Wasabi</option>
+                <option value="s3" data-i18n="storage.provider_other">Other S3-compatible</option>
+              </select>
+            </div>
+          </div>
+          <p class="form-hint provider-hint" id="storage-provider-hint"></p>
+
+          <div class="storage-fields" data-storage-type="local">
+            <div class="form-group">
+              <label class="form-label" for="storage-path" data-i18n="storage.path_label">Directory</label>
+              <input type="text" id="storage-path" class="form-input mono" placeholder="/backups" spellcheck="false" autocomplete="off" aria-describedby="storage-path-hint">
+              <span class="form-hint" id="storage-path-hint" data-i18n="storage.path_hint">Absolute path, or relative to the parent of the data directory. Must be writable by mongorescue.</span>
+            </div>
+          </div>
+
+          <div class="storage-fields" data-storage-type="s3" hidden>
+            <div class="form-group">
+              <label class="form-label" for="storage-endpoint" data-i18n="storage.endpoint_label">Endpoint</label>
+              <input type="url" id="storage-endpoint" class="form-input mono" spellcheck="false" autocomplete="off" aria-describedby="storage-endpoint-hint">
+              <span class="form-hint" id="storage-endpoint-hint" data-i18n="storage.endpoint_hint">Leave empty for AWS S3.</span>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="storage-bucket" data-i18n="storage.bucket_label">Bucket</label>
+                <input type="text" id="storage-bucket" class="form-input mono" spellcheck="false" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="storage-region" data-i18n="storage.region_label">Region</label>
+                <input type="text" id="storage-region" class="form-input mono" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="storage-prefix" data-i18n="storage.prefix_label">Key prefix</label>
+              <input type="text" id="storage-prefix" class="form-input mono" spellcheck="false" autocomplete="off" placeholder="mongorescue/" aria-describedby="storage-prefix-hint">
+              <span class="form-hint" id="storage-prefix-hint" data-i18n="storage.prefix_hint">Optional folder inside the bucket.</span>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="storage-access-key" data-i18n="storage.access_key_label">Access key ID</label>
+                <input type="text" id="storage-access-key" class="form-input mono" spellcheck="false" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="storage-secret-key" data-i18n="storage.secret_key_label">Secret access key</label>
+                <input type="password" id="storage-secret-key" class="form-input mono" autocomplete="new-password" aria-describedby="storage-secret-hint">
+              </div>
+            </div>
+            <p class="form-hint form-hint-tight" id="storage-secret-hint" data-i18n="storage.secret_hint">Stored encrypted. Shown as ****** when set; leave it unchanged to keep it.</p>
+            <label class="check check-plain" for="storage-path-style">
+              <input type="checkbox" id="storage-path-style">
+              <span class="check-text"><span class="check-title" data-i18n="storage.path_style_label">Use path-style URLs</span></span>
+            </label>
+          </div>
+
+          <label class="check check-plain" for="storage-default" id="storage-default-row">
+            <input type="checkbox" id="storage-default">
+            <span class="check-text"><span class="check-title" data-i18n="storage.make_default">Use as default for new backups</span></span>
+          </label>
+
+          <div class="test-row">
+            <button type="button" class="btn btn-secondary" id="storage-test-btn" data-action="test-storage-form" data-i18n="storage.test">Test storage</button>
+            <span class="test-result" id="storage-test-result" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-storage" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="storage-submit" data-i18n="notify.save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Connection -->
+  <div id="modal-connection" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="connection-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="connection-modal-title">New connection</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-connection" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-connection">
+        <input type="hidden" id="connection-id">
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="connection-name" data-i18n="conn.name_label">Name</label>
+            <input type="text" id="connection-name" class="form-input" maxlength="128" data-i18n-placeholder="conn.name_placeholder" placeholder="e.g. production-cluster" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="connection-uri" data-i18n="conn.uri_label">Connection string</label>
+            <textarea id="connection-uri" class="form-input mono" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="mongodb://user:password@host:27017/?authSource=admin" aria-describedby="connection-uri-hint" required></textarea>
+            <span class="form-hint" id="connection-uri-hint" data-i18n="conn.uri_hint">mongodb:// or mongodb+srv:// URI. When editing, leave the masked password unchanged to keep the stored one.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="connection-description" data-i18n="conn.desc_label">Description</label>
+            <input type="text" id="connection-description" class="form-input" maxlength="256" data-i18n-placeholder="conn.desc_placeholder" placeholder="Optional">
+          </div>
+          <div class="test-row">
+            <button type="button" class="btn btn-secondary" id="connection-test-btn" data-action="test-connection-form" data-i18n="conn.test">Test connection</button>
+            <span class="test-result" id="connection-test-result" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-connection" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="connection-submit" data-i18n="notify.save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add user -->
+  <div id="modal-user" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="user-modal-title" data-i18n="settings.add_user">Add user</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-user" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-user" novalidate>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label" for="user-username" data-i18n="auth.username">Username</label>
+            <input type="text" id="user-username" class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="user-password" data-i18n="auth.password">Password</label>
+            <input type="password" id="user-password" class="form-input" autocomplete="new-password" minlength="12" aria-describedby="user-password-hint" required>
+            <span class="form-hint" id="user-password-hint" data-i18n="auth.password_hint">At least 12 characters.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="user-password-confirm" data-i18n="auth.confirm_password">Confirm password</label>
+            <input type="password" id="user-password-confirm" class="form-input" autocomplete="new-password" minlength="12" required>
+          </div>
+          <p class="form-error" id="user-error" role="alert" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-user" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="settings.add_user">Add user</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Change password -->
+  <div id="modal-password" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="password-modal-title">Change password</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-password" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-password" novalidate>
+        <input type="hidden" id="password-user-id">
+        <div class="modal-body">
+          <div class="form-group" id="password-current-group">
+            <label class="form-label" for="password-current" data-i18n="auth.current_password">Current password</label>
+            <input type="password" id="password-current" class="form-input" autocomplete="current-password">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="password-new" data-i18n="auth.new_password">New password</label>
+            <input type="password" id="password-new" class="form-input" autocomplete="new-password" minlength="12" aria-describedby="password-new-hint" required>
+            <span class="form-hint" id="password-new-hint" data-i18n="auth.password_hint">At least 12 characters.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="password-confirm" data-i18n="auth.confirm_password">Confirm password</label>
+            <input type="password" id="password-confirm" class="form-input" autocomplete="new-password" minlength="12" required>
+          </div>
+          <p class="form-error" id="password-error" role="alert" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-password" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="auth.change_password">Change password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Create API key (two steps: name, then the one-time plaintext) -->
+  <div id="modal-api-key" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="api-key-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="api-key-modal-title" data-i18n="settings.create_key">Create API key</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-api-key" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-api-key">
+        <div class="modal-body" id="api-key-step-name">
+          <div class="form-group">
+            <label class="form-label" for="api-key-name" data-i18n="settings.key_name_label">Name</label>
+            <input type="text" id="api-key-name" class="form-input" maxlength="128" data-i18n-placeholder="settings.key_name_placeholder" placeholder="e.g. ci-nightly-check" required>
+          </div>
+        </div>
+        <div class="modal-body" id="api-key-step-secret" hidden>
+          <p class="notice notice-warn" role="alert" data-i18n="settings.key_once_warning">Copy this key now. It won't be shown again.</p>
+          <div class="form-group">
+            <label class="form-label" for="api-key-secret" data-i18n="settings.key_label">API key</label>
+            <div class="input-with-btn">
+              <input type="text" id="api-key-secret" class="form-input mono" readonly spellcheck="false" autocomplete="off">
+              <button type="button" class="btn btn-secondary" data-action="copy-api-key">
+                <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.75A1.25 1.25 0 0 0 9.25 2.5h-5.5A1.25 1.25 0 0 0 2.5 3.75v5.5a1.25 1.25 0 0 0 1.25 1.25H5.5"/></svg>
+                <span id="api-key-copy-label" data-i18n="settings.copy">Copy</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer" id="api-key-footer-name">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-api-key" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="settings.create">Create</button>
+        </div>
+        <div class="modal-footer" id="api-key-footer-secret" hidden>
+          <button type="button" class="btn btn-primary" data-action="close-modal" data-target="modal-api-key" data-i18n="settings.done">Done</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Notification channel -->
+  <div id="modal-channel" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="channel-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="channel-modal-title" data-i18n="notify.modal_channel_title">New channel</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-channel" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-channel">
+        <input type="hidden" id="channel-id">
+        <div class="modal-body scrollable">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="channel-name" data-i18n="notify.name_label">Name</label>
+              <input type="text" id="channel-name" class="form-input" maxlength="128" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="channel-type" data-i18n="notify.type_label">Type</label>
+              <select id="channel-type" class="form-select">
+                <option value="webhook" data-i18n="notify.type_webhook">Webhook</option>
+                <option value="telegram" data-i18n="notify.type_telegram">Telegram</option>
+                <option value="email" data-i18n="notify.type_email">E-mail (SMTP)</option>
+                <option value="twilio" data-i18n="notify.type_twilio">SMS (Twilio)</option>
+              </select>
+            </div>
+          </div>
+          <label class="check check-plain" for="channel-enabled">
+            <input type="checkbox" id="channel-enabled" checked>
+            <span class="check-text"><span class="check-title" data-i18n="notify.enabled_label">Enabled</span></span>
+          </label>
+
+          <!-- Webhook -->
+          <div class="channel-fields" data-channel-type="webhook">
+            <p class="form-hint" data-i18n="notify.webhook_hint">Posts a versioned JSON payload. Also use this type for generic SMS gateways and chat tools that accept inbound webhooks.</p>
+            <div class="form-group">
+              <label class="form-label" for="webhook-url" data-i18n="notify.webhook_url">Endpoint URL</label>
+              <input type="url" id="webhook-url" class="form-input" placeholder="https://hooks.example.com/mongorescue">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="webhook-headers" data-i18n="notify.webhook_headers">Custom headers</label>
+              <textarea id="webhook-headers" class="form-input mono" rows="3" placeholder="Authorization: Bearer ..." aria-describedby="webhook-headers-hint"></textarea>
+              <span class="form-hint" id="webhook-headers-hint" data-i18n="notify.webhook_headers_hint">One header per line, as Name: value.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="webhook-secret" data-i18n="notify.webhook_secret">HMAC signing secret</label>
+              <input type="password" id="webhook-secret" class="form-input" autocomplete="new-password" aria-describedby="webhook-secret-hint">
+              <span class="form-hint" id="webhook-secret-hint" data-i18n="notify.webhook_secret_hint">Optional. Adds X-MongoRescue-Signature: sha256=&lt;hex&gt; over the request body.</span>
+            </div>
+          </div>
+
+          <!-- Telegram -->
+          <div class="channel-fields" data-channel-type="telegram" hidden>
+            <div class="form-group">
+              <label class="form-label" for="telegram-token" data-i18n="notify.telegram_token">Bot token</label>
+              <input type="password" id="telegram-token" class="form-input" autocomplete="new-password" placeholder="123456:ABC-DEF...">
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="telegram-chat" data-i18n="notify.telegram_chat">Chat ID</label>
+                <input type="text" id="telegram-chat" class="form-input" placeholder="-1001234567890 or @channel">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="telegram-parse-mode" data-i18n="notify.telegram_parse_mode">Message format</label>
+                <select id="telegram-parse-mode" class="form-select">
+                  <option value="" data-i18n="notify.parse_plain">Plain text</option>
+                  <option value="MarkdownV2">MarkdownV2</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- E-mail (SMTP) -->
+          <div class="channel-fields" data-channel-type="email" hidden>
+            <div class="form-row form-row-host">
+              <div class="form-group">
+                <label class="form-label" for="email-host" data-i18n="notify.email_host">SMTP host</label>
+                <input type="text" id="email-host" class="form-input" placeholder="smtp.example.com">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="email-port" data-i18n="notify.email_port">Port</label>
+                <input type="number" id="email-port" class="form-input" value="587" min="1" max="65535">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="email-security" data-i18n="notify.email_security">Connection security</label>
+              <select id="email-security" class="form-select">
+                <option value="starttls">STARTTLS</option>
+                <option value="tls" data-i18n="notify.sec_tls">Implicit TLS</option>
+                <option value="none" data-i18n="notify.sec_none">None (plain text)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="email-username" data-i18n="notify.email_username">Username</label>
+                <input type="text" id="email-username" class="form-input" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="email-password" data-i18n="notify.email_password">Password</label>
+                <input type="password" id="email-password" class="form-input" autocomplete="new-password">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="email-from" data-i18n="notify.email_from">From</label>
+              <input type="text" id="email-from" class="form-input" placeholder="MongoRescue &lt;alerts@example.com&gt;">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="email-to" data-i18n="notify.email_to">Recipients</label>
+              <input type="text" id="email-to" class="form-input" placeholder="oncall@example.com, dba@example.com" aria-describedby="email-to-hint">
+              <span class="form-hint" id="email-to-hint" data-i18n="notify.list_hint">Comma-separated list.</span>
+            </div>
+          </div>
+
+          <!-- SMS (Twilio) -->
+          <div class="channel-fields" data-channel-type="twilio" hidden>
+            <p class="form-hint" data-i18n="notify.sms_hint">Only Twilio is built in. For other SMS providers, create a Webhook channel pointing at the provider's HTTP API or a relay.</p>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="twilio-sid" data-i18n="notify.twilio_sid">Account SID</label>
+                <input type="text" id="twilio-sid" class="form-input" placeholder="AC...">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="twilio-token" data-i18n="notify.twilio_token">Auth token</label>
+                <input type="password" id="twilio-token" class="form-input" autocomplete="new-password">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="twilio-from" data-i18n="notify.twilio_from">From</label>
+              <input type="text" id="twilio-from" class="form-input" placeholder="+15551234567" aria-describedby="twilio-from-hint">
+              <span class="form-hint" id="twilio-from-hint" data-i18n="notify.twilio_from_hint">E.164 number or Messaging Service SID (MG...).</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="twilio-to" data-i18n="notify.twilio_to">Recipients</label>
+              <input type="text" id="twilio-to" class="form-input" placeholder="+905551112233, +15557654321" aria-describedby="twilio-to-hint">
+              <span class="form-hint" id="twilio-to-hint" data-i18n="notify.list_hint">Comma-separated list.</span>
+            </div>
+          </div>
+
+          <p class="form-hint" data-i18n="notify.secret_hint">Stored secrets are shown as ******. Leave them unchanged to keep the saved value.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-channel" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Notification rule -->
+  <div id="modal-rule" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="rule-modal-title" data-i18n="notify.modal_rule_title">New rule</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-rule" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-rule">
+        <input type="hidden" id="rule-id">
+        <div class="modal-body scrollable">
+          <div class="form-group">
+            <label class="form-label" for="rule-name" data-i18n="notify.name_label">Name</label>
+            <input type="text" id="rule-name" class="form-input" maxlength="128" required>
+          </div>
+          <label class="check check-plain" for="rule-enabled">
+            <input type="checkbox" id="rule-enabled" checked>
+            <span class="check-text"><span class="check-title" data-i18n="notify.enabled_label">Enabled</span></span>
+          </label>
+          <fieldset class="form-group fieldset">
+            <legend class="form-label" data-i18n="notify.events_label">Events</legend>
+            <div class="event-options">
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.failed" checked><span data-i18n="notify.events.backup_failed">Backup failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.succeeded"><span data-i18n="notify.events.backup_succeeded">Backup succeeded</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.failed"><span data-i18n="notify.events.restore_failed">Restore failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.succeeded"><span data-i18n="notify.events.restore_succeeded">Restore succeeded</span></label>
+            </div>
+          </fieldset>
+          <div class="form-group">
+            <label class="form-label" for="rule-jobs" data-i18n="notify.jobs_label">Jobs</label>
+            <select id="rule-jobs" class="form-select" multiple aria-describedby="rule-jobs-hint"></select>
+            <span class="form-hint" id="rule-jobs-hint" data-i18n="notify.jobs_hint">Select none to match every event, including manual backups and restores. Hold Ctrl/Cmd to select several.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="rule-channels" data-i18n="notify.channels_label">Channels</label>
+            <select id="rule-channels" class="form-select" multiple></select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-rule" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast-container" aria-live="polite"></div>
+
+  <script src="/i18n.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

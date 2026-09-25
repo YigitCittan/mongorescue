@@ -1,0 +1,40 @@
+# A throwaway MongoDB to try MongoRescue with. Layer it over the main compose file:
+#
+#   docker compose -f docker-compose.yml -f examples/with-mongodb.yml up -d
+#
+# In the dashboard, add a connection with this URI:
+#
+#   mongodb://root:demo-password@mongo:27017/?authSource=admin
+#
+# Set MONGO_ROOT_PASSWORD before the first start to use another password (it is part
+# of the URI, so avoid @ : / ? # or percent-encode them). This is for evaluation only:
+# for production, point MongoRescue at your real servers.
+
+services:
+  mongorescue:
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-demo-password}
+    # No host port: MongoRescue reaches it on the Compose network as "mongo".
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin --eval 'db.runCommand({ping:1}).ok'
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

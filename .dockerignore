@@ -1,0 +1,14 @@
+# Keep the build context small and free of secrets and local state.
+.git
+.github
+.claude
+.env
+.env.*
+bin
+dist
+build
+data
+backups
+coverage*
+*.out
+docs/assets

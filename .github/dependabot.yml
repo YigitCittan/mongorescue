@@ -1,0 +1,55 @@
+# Dependabot version updates. Minor and patch updates are grouped into one pull
+# request per ecosystem; major updates arrive as individual pull requests.
+#
+# Note: Dependabot has no option to skip module updates that raise the `go`
+# directive in go.mod (currently 1.25.0). Such pull requests must be reviewed
+# against the supported Go versions before merging; CI tests the go.mod minimum.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      go-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Workflow actions are pinned to commit SHAs; Dependabot bumps the SHA and the
+  # version comment together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Base images in the root Dockerfile (golang builder, alpine runtime).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      docker-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
