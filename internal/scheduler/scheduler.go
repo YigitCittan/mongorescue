@@ -284,7 +284,8 @@ func (s *Scheduler) UnregisterJob(jobID string) {
 	}
 }
 
-// TriggerJob executes a job immediately on demand and waits for it to finish.
+// TriggerJob executes a job immediately on demand and waits for it to finish. Like
+// every on-demand run it never applies retention (see ExecuteJobRun).
 func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) (*models.BackupRecord, error) {
 	job, record, err := s.PrepareJobRun(ctx, jobID)
 	if err != nil {
@@ -313,8 +314,11 @@ func (s *Scheduler) PrepareJobRun(ctx context.Context, jobID string) (*models.Jo
 }
 
 // ExecuteJobRun runs a job prepared by PrepareJobRun: it executes the backup, persists
-// the record and the job's run timestamps, publishes the outcome event and applies
-// retention after a successful run.
+// the record and the job's run timestamps and publishes the outcome event.
+//
+// On-demand runs never apply the job's retention policy: only cron-triggered runs
+// prune, so a caller that may run jobs (an operator API key, an assistant) cannot
+// delete good backups by running a job repeatedly.
 func (s *Scheduler) ExecuteJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord) (*models.BackupRecord, error) {
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
@@ -323,10 +327,10 @@ func (s *Scheduler) ExecuteJobRun(ctx context.Context, job *models.Job, record *
 	opts, err := s.jobOptions(ctx, job)
 	if err != nil {
 		record.Status, record.ErrorMessage = models.StatusFailed, err.Error()
-		return s.finishJobRun(ctx, job, record, err)
+		return s.finishJobRun(ctx, job, record, err, false)
 	}
 	record, err = s.backupEngine.Execute(ctx, opts, record)
-	return s.finishJobRun(ctx, job, record, err)
+	return s.finishJobRun(ctx, job, record, err, false)
 }
 
 // runScheduled is the cron callback. It reads the scheduler context under s.mu and
@@ -403,7 +407,8 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job) (models.Bac
 	return opts, nil
 }
 
-// runBackupForJob executes the backup, updates timestamps, and runs retention pruning.
+// runBackupForJob executes a scheduled (cron-triggered) run: the backup, the job's
+// timestamps and retention pruning.
 func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*models.BackupRecord, error) {
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
@@ -411,15 +416,15 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 	)
 	opts, err := s.jobOptions(ctx, job)
 	if err != nil {
-		return s.finishJobRun(ctx, job, nil, err)
+		return s.finishJobRun(ctx, job, nil, err, true)
 	}
 	record, err := s.backupEngine.Run(ctx, opts)
-	return s.finishJobRun(ctx, job, record, err)
+	return s.finishJobRun(ctx, job, record, err, true)
 }
 
-// finishJobRun persists a finished run, updates the job, publishes the outcome and
-// applies retention.
-func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord, err error) (*models.BackupRecord, error) {
+// finishJobRun persists a finished run, updates the job, publishes the outcome and,
+// for scheduled runs only, applies retention.
+func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord, err error, scheduled bool) (*models.BackupRecord, error) {
 	// A cancelled run must never be persisted as in-progress.
 	if record != nil && ctx.Err() != nil && record.Status == models.StatusInProgress {
 		record.Status = models.StatusFailed
@@ -473,8 +478,8 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 		return record, err
 	}
 
-	// Run retention pruning if backup completed successfully
-	if record.Status == models.StatusCompleted && (job.RetentionDays > 0 || job.RetentionCount > 0) {
+	// Retention runs after a successful scheduled run only; on-demand runs never prune.
+	if scheduled && record.Status == models.StatusCompleted && (job.RetentionDays > 0 || job.RetentionCount > 0) {
 		history, listErr := s.metadataStore.ListBackupRecords(ctx, job.Database)
 		if listErr == nil {
 			// The same database name on another server is a different dataset, and

@@ -81,7 +81,7 @@ flowchart TB
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
 | `internal/backup` | Backup engine: runs `mongodump`, hashes, optionally encrypts, streams to storage, cleans up on failure |
 | `internal/restore` | Restore engine: safe-clone namespace mapping, verify-before-restore, decryption, runs `mongorestore` |
-| `internal/scheduler` | Cron scheduling (`robfig/cron/v3`) and retention pruning after successful runs |
+| `internal/scheduler` | Cron scheduling (`robfig/cron/v3`) and retention pruning after successful scheduled runs (on-demand runs never prune) |
 | `internal/storage` | The `Storage` port and its drivers: local filesystem and S3-compatible (AWS SDK v2 multipart) |
 | `internal/store` | Metadata persistence (jobs, history, users, sessions, API keys, connections, notification settings) in an embedded SQLite database; data directory lock |
 | `internal/encryption` | Streaming age encryption and decryption (X25519 and scrypt), key generation, identity hygiene |
@@ -120,14 +120,14 @@ sequenceDiagram
         E-->>C: record with size and SHA-256
     end
     C->>C: save record, publish backup.succeeded or backup.failed
-    Note over C: the scheduler then applies retention
+    Note over C: after a scheduled run, the scheduler applies retention
 ```
 
 1. The engine writes the MongoDB URI to a short-lived `0600` YAML file and passes `--config=<file>` to `mongodump`, so credentials never appear in the process list. The file is removed afterwards, and stale ones are cleaned up at startup.
 2. `mongodump` writes an archive to stdout. With encryption enabled, a goroutine copies it through the age writer into an `io.Pipe`.
 3. The (possibly encrypted) stream is hashed and counted as it is read by `Storage.Save`. The recorded SHA-256 and size therefore describe the stored bytes.
 4. Errors propagate in both directions: a failed upload stops the dump instead of blocking on a full pipe, and a failed dump fails the upload. On any failure or cancellation the partially written object is deleted, so no truncated artifact is ever recorded as a backup.
-5. The backup record is saved to the store, a `backup.succeeded` or `backup.failed` event is published, and the scheduler applies retention for scheduled jobs.
+5. The backup record is saved to the store, a `backup.succeeded` or `backup.failed` event is published, and, after a scheduled (cron) run only, the scheduler applies retention; on-demand runs and manual backups never prune.
 
 ## Restore data flow
 

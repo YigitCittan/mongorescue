@@ -42,6 +42,8 @@ In v0.1.0 every signed-in user and every API key is a full administrator: they c
 | `restore_timeout` | `12h` | Maximum duration of one restore, verification included (`0s` = unlimited) |
 | `restore_verify_policy` | `auto` | `always`, `auto` (in-place restores only) or `never`; see [encryption.md](encryption.md#verify-before-restore) |
 
+Retention is applied only after a successful **scheduled** (cron) run of a job. Running a job on demand (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool) and manual backups never prune. Two floors protect good backups: the newest `retention_count` completed backups (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old.
+
 ### Security
 
 | Setting | Default | Description |

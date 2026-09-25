@@ -13,6 +13,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
+// MinCountPruneAge is the youngest a backup can be for count-based retention
+// (RetentionCount) to delete it. A burst of runs therefore cannot push good backups
+// out of the retention window: they are only pruned by count once they are a day old.
+const MinCountPruneAge = 24 * time.Hour
+
 // StorageFunc returns the storage driver of a storage target (the default target for
 // an empty ID).
 type StorageFunc func(ctx context.Context, targetID string) (storage.Storage, error)
@@ -34,6 +39,11 @@ func PruneBackups(
 // PruneBackupsOn executes retention policies against existing backups for a database
 // or job. It deletes expired archives from the storage target each record names
 // (resolved through storages) and marks the records as pruned in the metadata store.
+//
+// Only completed backups are considered, and two floors protect them: the
+// max(retentionCount, 1) most recent completed backups are never pruned (by either
+// rule), and count-based retention never prunes a backup younger than
+// MinCountPruneAge.
 func PruneBackupsOn(
 	ctx context.Context,
 	retentionDays int,
@@ -71,21 +81,25 @@ func PruneBackupsOn(
 
 	toPruneMap := make(map[string]*models.BackupRecord)
 	now := time.Now().UTC()
+	// The newest `floor` completed backups are always kept.
+	floor := max(retentionCount, 1)
 
 	// 1. Time-based retention (RetentionDays)
 	if retentionDays > 0 {
 		cutoff := now.AddDate(0, 0, -retentionDays)
-		for _, rec := range successful {
+		for _, rec := range successful[min(floor, len(successful)):] {
 			if rec.StartedAt.Before(cutoff) {
 				toPruneMap[rec.ID] = rec
 			}
 		}
 	}
 
-	// 2. Count-based retention (RetentionCount)
-	if retentionCount > 0 && len(successful) > retentionCount {
-		for i := retentionCount; i < len(successful); i++ {
-			toPruneMap[successful[i].ID] = successful[i]
+	// 2. Count-based retention (RetentionCount), for backups old enough only
+	if retentionCount > 0 {
+		for _, rec := range successful[min(floor, len(successful)):] {
+			if now.Sub(rec.StartedAt) >= MinCountPruneAge {
+				toPruneMap[rec.ID] = rec
+			}
 		}
 	}
 
