@@ -69,3 +69,15 @@ func TestRouteLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestCoalescedRESTReadsKeepTheIDs(t *testing.T) {
+	f := newScopeFixture(t)
+	hdr := map[string]string{"Authorization": "Bearer " + f.keys[auth.ScopeRead]}
+	for _, id := range []string{"conn_a", "conn_b", "conn_a"} {
+		serve(f.h, "GET", "/api/v1/connections/"+id, nil, hdr)
+	}
+	entries, _ := f.srv.audit.List(context.Background(), 10)
+	if len(entries) != 1 || entries[0].Count != 3 || string(entries[0].Arguments) != `{"id":["conn_a","conn_b"]}` {
+		t.Fatalf("audit = %+v; want one entry with count 3 and both IDs", entries)
+	}
+}

@@ -41,13 +41,21 @@ func (s *SQLiteStore) AppendAudit(ctx context.Context, e *audit.Entry, keep int)
 	})
 }
 
-// AddAuditCount adds n to the count of audit entry id. It returns an error wrapping
-// audit.ErrEntryNotFound when the entry does not exist (any more).
-func (s *SQLiteStore) AddAuditCount(ctx context.Context, id int64, n int) error {
+// MergeAudit adds n to the count of audit entry id and, when arguments is not nil,
+// replaces its arguments. It returns an error wrapping audit.ErrEntryNotFound when
+// the entry does not exist (any more).
+func (s *SQLiteStore) MergeAudit(ctx context.Context, id int64, n int, arguments json.RawMessage) error {
 	if n < 1 {
 		return fmt.Errorf("%w: audit count increment must be positive", ErrInvalidRecord)
 	}
-	res, err := s.db.ExecContext(ctx, "UPDATE audit_log SET count = count + ? WHERE id = ?", n, id)
+	if arguments != nil && !json.Valid(arguments) {
+		return fmt.Errorf("%w: audit arguments must be JSON", ErrInvalidRecord)
+	}
+	var args any // NULL keeps the stored arguments
+	if arguments != nil {
+		args = string(arguments)
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE audit_log SET count = count + ?, arguments = COALESCE(?, arguments) WHERE id = ?", n, args, id)
 	if err != nil {
 		return fmt.Errorf("store: update audit entry %d: %w", id, err)
 	}
