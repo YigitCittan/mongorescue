@@ -20,6 +20,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -231,8 +232,8 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 		defer cancel()
 		if saveErr := s.cfg.Store.SaveBackupRecord(persistCtx, final); saveErr != nil {
 			s.logger.Error("failed to persist backup metadata record",
-				slog.String("backup_id", final.ID),
-				slog.Any("error", saveErr),
+				logsafe.Attr("backup_id", final.ID),
+				logsafe.Error(saveErr),
 			)
 		}
 		s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, opts.Database))
@@ -290,7 +291,7 @@ func (s *Service) abandonBackup(ctx context.Context, record *models.BackupRecord
 	record.Status = models.StatusFailed
 	record.ErrorMessage = "backup not started: " + cause.Error()
 	if err := s.cfg.Store.SaveBackupRecord(context.WithoutCancel(ctx), record); err != nil {
-		s.logger.Error("failed to persist abandoned backup record", slog.String("backup_id", record.ID), slog.Any("error", err))
+		s.logger.Error("failed to persist abandoned backup record", logsafe.Attr("backup_id", record.ID), logsafe.Error(err))
 	}
 }
 
