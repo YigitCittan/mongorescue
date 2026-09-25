@@ -54,7 +54,7 @@ mongorescue mcp [--url http://127.0.0.1:8080] [--log-level warn]
 | API key | `--api-key` (discouraged: visible in the process list) | `MONGORESCUE_MCP_API_KEY` | required |
 | Log level | `--log-level` | | `warn` |
 
-Logs go to stderr only, because stdout carries the protocol. The bridge lists the tools once at start, so it shows exactly what the key's scope allows; restart the assistant after changing a key.
+The bridge sends the API key only to the configured scheme and host and never follows HTTP redirects: if the instance redirects (for example from `http` to `https`), set `--url` to the final address. Logs go to stderr only, because stdout carries the protocol. The bridge lists the tools once at start, so it shows exactly what the key's scope allows; restart the assistant after changing a key.
 
 With the container image, run the bridge inside the container: `docker exec -i -e MONGORESCUE_MCP_API_KEY mongorescue mongorescue mcp` (the `-e NAME` form passes the variable from the environment of the `docker` command without putting the key on the command line).
 

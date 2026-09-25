@@ -104,8 +104,16 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 			base = cfg.HTTPClient.Transport
 		}
 	}
-	creds := &credentialTransport{base: base, key: strings.TrimSpace(cfg.APIKey), userAgent: "mongorescue-mcp-bridge/" + cfg.Version}
+	endpointURL, _ := url.Parse(endpoint)
+	creds := &credentialTransport{
+		base: base, key: strings.TrimSpace(cfg.APIKey), userAgent: "mongorescue-mcp-bridge/" + cfg.Version,
+		scheme: endpointURL.Scheme, host: endpointURL.Host,
+	}
 	client.Transport = creds
+	// Never follow redirects: a 3xx could send the next request (and, with a
+	// forwarding transport, the API key) to another host. The 3xx response is
+	// returned as is and fails the MCP request.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	remoteClient := sdk.NewClient(&sdk.Implementation{Name: "mongorescue-mcp-bridge", Version: cfg.Version}, nil)
 	remote, err := remoteClient.Connect(ctx, &sdk.StreamableClientTransport{
@@ -146,6 +154,8 @@ func connectError(status int32, endpoint string, err error) error {
 		return fmt.Errorf("%w (401): check MONGORESCUE_MCP_API_KEY", ErrBridgeAuth)
 	case http.StatusForbidden:
 		return fmt.Errorf("%w (403): the MCP endpoint may be disabled (Settings → Security) or the request origin was refused", ErrBridgeAuth)
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return fmt.Errorf("%w at %s: the server answered with a redirect (%d), which the bridge does not follow; set --url to the final address", ErrBridgeConnect, endpoint, status)
 	}
 	return fmt.Errorf("%w at %s: %w", ErrBridgeConnect, endpoint, err)
 }
@@ -219,18 +229,24 @@ func forwardError(err error) error {
 }
 
 // credentialTransport adds the API key and the bridge's identity to every request
-// and remembers the last HTTP status, to explain refused connections.
+// for the configured endpoint (scheme and host) and remembers the last HTTP status,
+// to explain refused connections. Requests to any other origin never carry the key.
 type credentialTransport struct {
 	base       http.RoundTripper
 	key        string
 	userAgent  string
+	scheme     string
+	host       string
 	lastStatus atomic.Int32
 }
 
 // RoundTrip implements http.RoundTripper.
 func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
-	r.Header.Set("Authorization", "Bearer "+t.key)
+	r.Header.Del("Authorization")
+	if strings.EqualFold(r.URL.Scheme, t.scheme) && strings.EqualFold(r.URL.Host, t.host) {
+		r.Header.Set("Authorization", "Bearer "+t.key)
+	}
 	r.Header.Set(TransportHeader, "stdio")
 	r.Header.Set("User-Agent", t.userAgent)
 	resp, err := t.base.RoundTrip(r)

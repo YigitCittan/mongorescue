@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,6 +197,68 @@ func TestBridgeRefusedKey(t *testing.T) {
 		t.Fatalf("unreachable server = %v; want ErrBridgeConnect", err)
 	}
 }
+
+// TestBridgeDoesNotFollowRedirects proves a 3xx cannot send the API key to another
+// host: the bridge refuses to follow it and the other host sees no request.
+func TestBridgeDoesNotFollowRedirects(t *testing.T) {
+	const key = "mr_redirect_test_key"
+	var leaked, hits atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if strings.Contains(r.Header.Get("Authorization"), key) {
+			leaked.Add(1)
+		}
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	t.Cleanup(other.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/mcp", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+
+	err := RunBridge(context.Background(), BridgeConfig{URL: redirector.URL, APIKey: key, In: strings.NewReader(""), Out: io.Discard})
+	if !errors.Is(err, ErrBridgeConnect) || !strings.Contains(err.Error(), "redirect") || strings.Contains(err.Error(), key) {
+		t.Fatalf("redirected bridge = %v; want ErrBridgeConnect naming the redirect", err)
+	}
+	if hits.Load() != 0 || leaked.Load() != 0 {
+		t.Fatalf("the redirect target got %d request(s), %d with the API key; want none", hits.Load(), leaked.Load())
+	}
+}
+
+// TestCredentialTransportOnlyAuthenticatesTheEndpoint proves the key is only added
+// to requests for the configured scheme and host.
+func TestCredentialTransportOnlyAuthenticatesTheEndpoint(t *testing.T) {
+	var got []string
+	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = append(got, r.URL.String()+" "+r.Header.Get("Authorization"))
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})
+	tr := &credentialTransport{base: base, key: "k", scheme: "https", host: "backup.example:8443"}
+	for _, u := range []string{"https://backup.example:8443/mcp", "https://evil.example/mcp", "http://backup.example:8443/mcp", "https://backup.example/mcp"} {
+		req, _ := http.NewRequest(http.MethodPost, u, nil)
+		req.Header.Set("Authorization", "Bearer smuggled")
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	want := []string{
+		"https://backup.example:8443/mcp Bearer k",
+		"https://evil.example/mcp ",
+		"http://backup.example:8443/mcp ",
+		"https://backup.example/mcp ",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("requests = %q; want %q", got, want)
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip implements http.RoundTripper.
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestBridgeEndpoint(t *testing.T) {
 	for in, want := range map[string]string{
