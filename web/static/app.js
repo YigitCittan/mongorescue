@@ -3454,7 +3454,8 @@ function auditResultCell(e) {
   const kind = AUDIT_RESULTS[e.result] || "neutral";
   const label = AUDIT_RESULTS[e.result] ? t(`settings.result_${e.result}`) : String(e.result || "");
   const detail = e.error ? errorDetail(e.error, truncate(e.error, 60)) : "";
-  return `${statusBadge(kind, label)}${detail}`;
+  const count = Number(e.count) > 1 ? ` <span class="muted">×${Number(e.count)}</span>` : "";
+  return `${statusBadge(kind, label)}${count}${detail}`;
 }
 
 function auditArguments(e) {

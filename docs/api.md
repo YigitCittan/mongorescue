@@ -141,7 +141,7 @@ Restoring in place (into the source database, or into `target_database`) must be
 ```json
 {"id": 42, "time": "2026-09-25T10:15:03Z", "api_key_id": "key_1a2b3c4d5e6f7a8b", "api_key_name": "claude-desktop",
  "transport": "stdio", "tool": "restore_to_safe_clone", "arguments": {"backup_id": "bkp_shop_20260924_030000_3f9a1c2e", "verify": true},
- "result": "ok", "duration_ms": 18}
+ "result": "ok", "duration_ms": 18, "count": 1}
 ```
 
-`result` is `ok`, `error` (the call ran and failed; `error` holds the message the assistant saw), `denied` (scope too small) or `rate_limited`. Argument values of secret-looking keys and credentials inside strings are masked before they are stored. The newest 10,000 entries are kept.
+`result` is `ok`, `error` (the call ran and failed; `error` holds the message the assistant saw), `denied` (scope too small) or `rate_limited`. Argument values of secret-looking keys and credentials inside strings are masked before they are stored. The newest 10,000 entries are kept. Refused calls cannot flush the log: repeated `denied` calls of one key and tool, and repeated `rate_limited` calls of one key, are merged into one entry per 10 seconds whose `count` is the number of calls it stands for (`1` for every other entry).
