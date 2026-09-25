@@ -88,7 +88,7 @@ func TestRetentionPruningCount(t *testing.T) {
 			Database:   "analytics",
 			Status:     models.StatusCompleted,
 			StorageKey: "analytics/" + string(rune('0'+i)) + ".gz",
-			StartedAt:  now.Add(time.Duration(i) * time.Hour),
+			StartedAt:  now.Add(-time.Duration(i) * 25 * time.Hour),
 		}
 		records = append(records, r)
 		_ = metaStore.SaveBackupRecord(ctx, r)
@@ -358,14 +358,18 @@ func TestJobRunsUseTheirTargetAndRetentionCountsPerTarget(t *testing.T) {
 	sched := NewScheduler(metaStore, engine, nil, nil, WithStorageTargets(tg))
 	ctx := context.Background()
 
-	// An older completed backup of the same database kept on target a.
-	old := &models.BackupRecord{ID: "bkp_old_a", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old",
+	// Older completed backups of the same database kept on targets a and b.
+	oldA := &models.BackupRecord{ID: "bkp_old_a", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_a",
 		StorageTargetID: "stg_a", StartedAt: time.Now().Add(-48 * time.Hour)}
-	if _, err := tg.drivers["stg_a"].Save(ctx, old.StorageKey, strings.NewReader("x")); err != nil {
-		t.Fatal(err)
-	}
-	if err := metaStore.SaveBackupRecord(ctx, old); err != nil {
-		t.Fatal(err)
+	oldB := &models.BackupRecord{ID: "bkp_old_b", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/old_b",
+		StorageTargetID: "stg_b", StartedAt: time.Now().Add(-48 * time.Hour)}
+	for _, rec := range []*models.BackupRecord{oldA, oldB} {
+		if _, err := tg.drivers[rec.StorageTargetID].Save(ctx, rec.StorageKey, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+		if err := metaStore.SaveBackupRecord(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
 	}
 	job := &models.Job{ID: "job_b", Name: "b", Database: "shop", CronExpression: "@daily", RetentionCount: 1, StorageTargetID: "stg_b"}
 	if err := metaStore.SaveJob(ctx, job); err != nil {
@@ -375,23 +379,25 @@ func TestJobRunsUseTheirTargetAndRetentionCountsPerTarget(t *testing.T) {
 	if err != nil || first.StorageTargetID != "stg_b" || first.StorageTargetName != "target stg_b" || first.StorageType != models.StorageS3 {
 		t.Fatalf("run = %+v, %v", first, err)
 	}
+	if r, _ := metaStore.GetBackupRecord(ctx, oldB.ID); r.Status != models.StatusCompleted {
+		t.Fatalf("an on-demand run pruned %s", oldB.ID)
+	}
 	time.Sleep(1100 * time.Millisecond) // backup IDs have second resolution
-	second, err := sched.TriggerJob(ctx, job.ID)
-	if err != nil {
-		t.Fatal(err)
+	sched.executeJob(ctx, job.ID)       // a scheduled run applies retention
+
+	// Retention on target b pruned the old backup there (the on-demand run is under a
+	// day old and kept), not the backup on target a.
+	if r, _ := metaStore.GetBackupRecord(ctx, oldB.ID); r.Status != models.StatusPruned {
+		t.Fatalf("old backup on b = %s; want pruned", r.Status)
 	}
-	// Retention on target b pruned the first run there, not the backup on target a.
-	if r, _ := metaStore.GetBackupRecord(ctx, first.ID); r.Status != models.StatusPruned {
-		t.Fatalf("first run on b = %s; want pruned", r.Status)
-	}
-	if _, err := tg.drivers["stg_b"].Stat(ctx, first.StorageKey); err == nil {
+	if _, err := tg.drivers["stg_b"].Stat(ctx, oldB.StorageKey); err == nil {
 		t.Fatal("pruned artifact still on target b")
 	}
-	if r, _ := metaStore.GetBackupRecord(ctx, old.ID); r.Status != models.StatusCompleted {
+	if r, _ := metaStore.GetBackupRecord(ctx, oldA.ID); r.Status != models.StatusCompleted {
 		t.Fatalf("backup on another target = %s; want untouched", r.Status)
 	}
-	if r, _ := metaStore.GetBackupRecord(ctx, second.ID); r.Status != models.StatusCompleted {
-		t.Fatalf("latest run = %s", r.Status)
+	if r, _ := metaStore.GetBackupRecord(ctx, first.ID); r.Status != models.StatusCompleted {
+		t.Fatalf("recent on-demand run = %s; want kept", r.Status)
 	}
 }
 

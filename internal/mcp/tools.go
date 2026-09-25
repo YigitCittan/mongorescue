@@ -406,7 +406,8 @@ func (s *Server) registerTools() {
 	addTool(s, &sdk.Tool{
 		Name: ToolRunJob,
 		Description: "Run a scheduled backup job now. Returns immediately with the new backup record (status in_progress); " +
-			"poll get_backup with its id until the status is completed or failed.",
+			"poll get_backup with its id until the status is completed or failed. On-demand runs never delete older backups: " +
+			"the job's retention policy is applied by its scheduled runs only.",
 		Annotations: additive("Run job now"),
 		InputSchema: schemaFor[runJobInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "job_id") }),
 	}, s.runJob)

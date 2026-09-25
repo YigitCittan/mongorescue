@@ -105,9 +105,7 @@ func TestRetentionOnlyPrunesTheJobsConnection(t *testing.T) {
 	if err := st.SaveJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.TriggerJob(ctx, "job_a"); err != nil {
-		t.Fatal(err)
-	}
+	s.executeJob(ctx, "job_a") // a scheduled run: only those apply retention
 	a, _ := st.GetBackupRecord(ctx, "bkp_a_old")
 	b, _ := st.GetBackupRecord(ctx, "bkp_b_old")
 	if a.Status != models.StatusPruned || b.Status != models.StatusCompleted {
