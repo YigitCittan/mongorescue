@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,6 +34,8 @@ const (
 	maxNameLength = 255
 	// maxCollections bounds collection filters.
 	maxCollections = 1000
+	// maxSummaryName bounds an untrusted name quoted in a text summary, in runes.
+	maxSummaryName = 64
 )
 
 // errInvalidInput marks tool input rejected before any service is called.
@@ -96,7 +99,10 @@ func additive(title string) *sdk.ToolAnnotations {
 }
 
 // addTool registers a tool whose handler returns a value (the structured output)
-// and a one-line summary. The result carries the summary and the JSON text of the
+// and a one-line summary. Summaries are prose the model reads, so they carry only
+// IDs, counts, statuses and timestamps; untrusted strings (names chosen by users or
+// read from MongoDB, error messages) stay in the structured content, and the few
+// names a summary needs are passed through quoted. The result carries the summary and the JSON text of the
 // value, so clients without structured content support see the data too. Errors
 // become tool errors with a client-safe message.
 func addTool[In, Out any](s *Server, t *sdk.Tool, h func(ctx context.Context, in In) (Out, string, error)) {
@@ -449,6 +455,37 @@ func page(n, limit int, cursor string) (start, end int, next string, err error) 
 	return start, end, next, nil
 }
 
+// quoted renders an untrusted name (a database, for instance) for a text summary:
+// cut to maxSummaryName runes and Go-quoted, so it reads as a value and cannot add
+// lines, control characters or unbalanced quotes to the prose.
+func quoted(v string) string {
+	if utf8.RuneCountInString(v) > maxSummaryName {
+		v = string([]rune(v)[:maxSummaryName]) + "…"
+	}
+	return strconv.Quote(v)
+}
+
+// idText renders a record ID for a text summary: plain when it only has ID characters
+// (letters, digits, '_', '-', '.'), as new IDs do, else quoted like a name (legacy
+// IDs may embed raw database names).
+func idText(v string) string {
+	plain := v != "" && len(v) <= maxIDLength && strings.IndexFunc(v, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.'
+	}) < 0
+	if plain {
+		return v
+	}
+	return quoted(v)
+}
+
+// timestamp renders an optional time for a text summary.
+func timestamp(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return "never"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 // requireID validates a required identifier argument.
 func requireID(name, v string) error {
 	if strings.TrimSpace(v) == "" {
@@ -469,15 +506,15 @@ func (s *Server) listConnections(ctx context.Context, _ noInput) (connectionList
 	if err != nil {
 		return out, "", err
 	}
-	names := make([]string, 0, len(list))
+	ids := make([]string, 0, len(list))
 	for _, c := range list {
 		out.Connections = append(out.Connections, ConnectionView{
 			ID: c.ID, Name: c.Name, Hosts: connections.HostList(c.URI), Description: c.Description,
 			ServerVersion: c.ServerVersion, LastTestOK: c.LastTestOK, LastTestAt: c.LastTestAt,
 		})
-		names = append(names, c.Name+" ("+c.ID+")")
+		ids = append(ids, idText(c.ID))
 	}
-	return out, fmt.Sprintf("%d connection(s): %s", len(list), strings.Join(names, ", ")), nil
+	return out, fmt.Sprintf("%d connection(s): %s.", len(list), strings.Join(ids, ", ")), nil
 }
 
 func (s *Server) listDatabases(ctx context.Context, in connectionInput) (databaseList, string, error) {
@@ -493,7 +530,7 @@ func (s *Server) listDatabases(ctx context.Context, in connectionInput) (databas
 		return out, "", err
 	}
 	out.Databases = dbs
-	return out, fmt.Sprintf("%d database(s) on connection %s.", len(dbs), in.ConnectionID), nil
+	return out, fmt.Sprintf("%d database(s) on connection %s.", len(dbs), idText(in.ConnectionID)), nil
 }
 
 func (s *Server) listCollections(ctx context.Context, in collectionsInput) (collectionList, string, error) {
@@ -509,7 +546,7 @@ func (s *Server) listCollections(ctx context.Context, in collectionsInput) (coll
 		return out, "", err
 	}
 	out.Collections = cols
-	return out, fmt.Sprintf("%d collection(s) in %s.", len(cols), in.Database), nil
+	return out, fmt.Sprintf("%d collection(s) in database %s.", len(cols), quoted(in.Database)), nil
 }
 
 func (s *Server) listJobs(ctx context.Context, in pageInput) (jobList, string, error) {
@@ -533,7 +570,7 @@ func (s *Server) getJob(ctx context.Context, in idInput) (*models.Job, string, e
 	if err != nil {
 		return nil, "", err
 	}
-	return job, fmt.Sprintf("Job %s backs up %s on schedule %q (enabled: %v).", job.Name, job.Database, job.CronExpression, job.Enabled), nil
+	return job, fmt.Sprintf("Job %s (enabled: %v): last run %s, next run %s.", idText(job.ID), job.Enabled, timestamp(job.LastRun), timestamp(job.NextRun)), nil
 }
 
 func (s *Server) listBackups(ctx context.Context, in listBackupsInput) (backupList, string, error) {
@@ -562,15 +599,16 @@ func (s *Server) getBackup(ctx context.Context, in idInput) (*models.BackupRecor
 	return b, backupSummary(b), nil
 }
 
-// backupSummary describes a backup record in one sentence.
+// backupSummary describes a backup record in one sentence (no error message, which
+// is untrusted text; it is in the structured content).
 func backupSummary(b *models.BackupRecord) string {
 	switch b.Status {
 	case models.StatusCompleted:
-		return fmt.Sprintf("Backup %s of %s is completed (%d bytes, sha256 %s).", b.ID, b.Database, b.SizeBytes, b.SHA256)
+		return fmt.Sprintf("Backup %s of database %s is completed (%d bytes, sha256 %s).", idText(b.ID), quoted(b.Database), b.SizeBytes, b.SHA256)
 	case models.StatusFailed:
-		return fmt.Sprintf("Backup %s of %s failed: %s", b.ID, b.Database, b.ErrorMessage)
+		return fmt.Sprintf("Backup %s of database %s failed; error_message in the result has the details.", idText(b.ID), quoted(b.Database))
 	default:
-		return fmt.Sprintf("Backup %s of %s is %s.", b.ID, b.Database, b.Status)
+		return fmt.Sprintf("Backup %s of database %s is %s.", idText(b.ID), quoted(b.Database), b.Status)
 	}
 }
 
@@ -598,15 +636,16 @@ func (s *Server) getRestore(ctx context.Context, in idInput) (*models.RestoreRec
 	return r, restoreSummary(r), nil
 }
 
-// restoreSummary describes a restore record in one sentence.
+// restoreSummary describes a restore record in one sentence (no error message, which
+// is untrusted text; it is in the structured content).
 func restoreSummary(r *models.RestoreRecord) string {
 	switch r.Status {
 	case models.RestoreStatusCompleted:
-		return fmt.Sprintf("Restore %s of backup %s into %s is completed (verified: %v).", r.ID, r.BackupID, r.TargetDatabase, r.Verified)
+		return fmt.Sprintf("Restore %s of backup %s into database %s is completed (verified: %v).", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase), r.Verified)
 	case models.RestoreStatusFailed:
-		return fmt.Sprintf("Restore %s of backup %s into %s failed: %s", r.ID, r.BackupID, r.TargetDatabase, r.ErrorMessage)
+		return fmt.Sprintf("Restore %s of backup %s into database %s failed; error_message in the result has the details.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase))
 	default:
-		return fmt.Sprintf("Restore %s of backup %s into %s is %s.", r.ID, r.BackupID, r.TargetDatabase, r.Status)
+		return fmt.Sprintf("Restore %s of backup %s into database %s is %s.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase), r.Status)
 	}
 }
 
@@ -619,16 +658,16 @@ func (s *Server) listStorageTargets(ctx context.Context, _ noInput) (targetList,
 	if err != nil {
 		return out, "", err
 	}
-	def := ""
+	def := "none"
 	for _, t := range list {
 		out.StorageTargets = append(out.StorageTargets, TargetView{
 			ID: t.ID, Name: t.Name, Type: t.Type, IsDefault: t.IsDefault, Location: t.Location(), LastTestOK: t.LastTestOK,
 		})
 		if t.IsDefault {
-			def = t.Name
+			def = idText(t.ID)
 		}
 	}
-	return out, fmt.Sprintf("%d storage target(s); default: %s.", len(list), def), nil
+	return out, fmt.Sprintf("%d storage target(s); default target: %s.", len(list), def), nil
 }
 
 func (s *Server) getStatus(ctx context.Context, _ noInput) (*operations.Status, string, error) {
@@ -655,7 +694,7 @@ func (s *Server) startBackup(ctx context.Context, in startBackupInput) (backupSt
 		return backupStarted{}, "", err
 	}
 	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
-	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Backup %s of %s started; %s.", rec.ID, rec.Database, next), nil
+	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Backup %s of database %s started; %s.", idText(rec.ID), quoted(rec.Database), next), nil
 }
 
 func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, string, error) {
@@ -667,7 +706,7 @@ func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, str
 		return backupStarted{}, "", err
 	}
 	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
-	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Job %s started backup %s; %s.", in.JobID, rec.ID, next), nil
+	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Job %s started backup %s; %s.", idText(rec.JobID), idText(rec.ID), next), nil
 }
 
 func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restoreStarted, string, error) {
@@ -688,5 +727,5 @@ func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restore
 	}
 	next := fmt.Sprintf("poll get_restore with id %q until status is completed or failed", rec.ID)
 	return restoreStarted{Restore: rec, NextStep: next},
-		fmt.Sprintf("Restore %s of backup %s into the new database %s started; %s.", rec.ID, rec.BackupID, rec.TargetDatabase, next), nil
+		fmt.Sprintf("Restore %s of backup %s into the new database %s started; %s.", idText(rec.ID), idText(rec.BackupID), quoted(rec.TargetDatabase), next), nil
 }
