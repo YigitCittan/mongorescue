@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Desktop app: the window, taskbar, `.exe`, macOS `.app`, Linux window and the Windows installer and uninstaller show the MongoRescue logo instead of the Wails default.
+- Windows installer: no longer looks hung while it installs the Microsoft Edge WebView2 runtime (typical on Windows Server, which ships without it). It detects per-machine and per-user runtimes, shows what it is doing and the bootstrapper's progress window, and reports a failed runtime install instead of ignoring it. See [docs/desktop.md](docs/desktop.md#windows-installer-and-webview2).
 
 ## [0.3.1] - 2026-09-28
 
