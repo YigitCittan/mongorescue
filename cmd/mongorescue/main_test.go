@@ -28,6 +28,21 @@ func TestFlagsOverrideBootstrapEnvironment(t *testing.T) {
 	if err != nil || cfg.DataDir != filepath.FromSlash("/tmp/x") || cfg.Host != "::1" || cfg.Port != config.DefaultPort {
 		t.Fatalf("flags only = %+v, %v", cfg, err)
 	}
+	if cfg.Dashboard {
+		t.Fatal("dashboard enabled by default")
+	}
+	cfg, _, _, err = parseFlags(nil, env(map[string]string{config.EnvDashboard: "true"}), &stderr)
+	if err != nil || !cfg.Dashboard {
+		t.Fatalf("env dashboard = %+v, %v", cfg, err)
+	}
+	cfg, _, _, err = parseFlags([]string{"-dashboard=false"}, env(map[string]string{config.EnvDashboard: "true"}), &stderr)
+	if err != nil || cfg.Dashboard {
+		t.Fatalf("-dashboard=false over env = %+v, %v", cfg, err)
+	}
+	cfg, _, _, err = parseFlags([]string{"-dashboard"}, env(nil), &stderr)
+	if err != nil || !cfg.Dashboard {
+		t.Fatalf("-dashboard = %+v, %v", cfg, err)
+	}
 }
 
 func TestFlagErrors(t *testing.T) {
@@ -42,6 +57,7 @@ func TestFlagErrors(t *testing.T) {
 		{[]string{"-log-level", "loud"}, nil, "log level"},
 		{[]string{"extra"}, nil, "unexpected arguments"},
 		{nil, map[string]string{config.EnvPort: "http"}, "port"},
+		{nil, map[string]string{config.EnvDashboard: "maybe"}, config.EnvDashboard},
 		{nil, map[string]string{config.EnvSecretKey: "not-a-key"}, config.EnvSecretKey},
 	} {
 		var stderr bytes.Buffer

@@ -46,9 +46,11 @@ RUN mkdir -p /data /backups \
 # Bootstrap options only; everything else is configured in the dashboard. The default
 # "Local disk" storage target is created next to the data directory, i.e. /backups.
 # The port is set through the environment (not a -port flag) so the server and the
-# health check below always agree on it.
+# health check below always agree on it. The image is the only distribution that
+# serves the web dashboard over HTTP (installer-based installs use the desktop app).
 ENV MONGORESCUE_DATA_DIR=/data \
-    MONGORESCUE_SERVER_PORT=8080
+    MONGORESCUE_SERVER_PORT=8080 \
+    MONGORESCUE_DASHBOARD=true
 
 VOLUME ["/data", "/backups"]
 

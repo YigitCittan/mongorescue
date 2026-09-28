@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -55,6 +57,10 @@ const (
 	forceKillGrace   = 5 * time.Second
 )
 
+// ErrStarted is returned by Start when the App was already started (or stopped): its
+// background work runs at most once.
+var ErrStarted = errors.New("app: already started")
+
 // App manages the lifecycle of all MongoRescue core systems.
 type App struct {
 	cfg           *config.Config
@@ -81,6 +87,12 @@ type App struct {
 	// metadata database is then left open for the process exit to release, so no
 	// runner writes to a closed database.
 	runsAbandoned atomic.Bool
+
+	// lifeMu guards the Start/Stop state below.
+	lifeMu         sync.Mutex
+	started        bool
+	stopped        bool
+	stopBackground func()
 }
 
 // options holds optional App settings.
@@ -269,10 +281,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	)
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 
-	// 6. Initialize embedded web dashboard & HTTP API
-	subFS, err := web.GetSubFS()
-	if err != nil {
-		logger.Warn("failed to isolate embedded static web fs", slog.Any("error", err))
+	// 6. Initialize the embedded web dashboard (only with cfg.Dashboard) & HTTP API.
+	// Without it the server has no "/" route and serves only the API, MCP and metrics.
+	var subFS fs.FS
+	if cfg.Dashboard {
+		sub, err := web.GetSubFS()
+		if err != nil {
+			logger.Warn("failed to isolate embedded static web fs", slog.Any("error", err))
+		} else {
+			subFS = sub
+		}
 	}
 
 	// 7. The backup, job and restore use cases are shared by the REST API and the MCP
@@ -359,8 +377,14 @@ func checkLegacyDBPath(cfg *config.Config, legacyPath string) error {
 
 // Close releases the metadata database and the data directory lock. Run calls it on
 // exit after every run and notification has drained; callers that never Run the App
-// must call it themselves. Close is idempotent.
+// (or use Start and Stop) must call it themselves, after Stop. When Stop gave up
+// waiting for background runs, Close leaves the database open for the process exit
+// to release, so no runner writes to a closed database. Close is idempotent.
 func (a *App) Close() error {
+	if a.runsAbandoned.Load() {
+		a.logger.Warn("leaving the metadata database open for abandoned runs; the process exit releases it")
+		return nil
+	}
 	a.closeOnce.Do(func() {
 		var errs []error
 		if a.storeCloser != nil {
@@ -408,21 +432,32 @@ func (a *App) startBackground() (stop func()) {
 	}
 }
 
-// Run starts the scheduler, boots the HTTP server, and waits for termination signals.
-func (a *App) Run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	// Deferred first so it runs last: after runs are awaited and the notification
-	// queue (which records delivery status) has drained.
-	defer func() {
-		if a.runsAbandoned.Load() {
-			a.logger.Warn("leaving the metadata database open for abandoned runs; the process exit releases it")
-			return
-		}
-		if err := a.Close(); err != nil {
-			a.logger.Error("failed to close metadata store", slog.Any("error", err))
-		}
-	}()
+// Handler returns the composed HTTP handler (REST API, MCP, metrics and, with
+// config.Config.Dashboard, the embedded dashboard) without binding a listener. The
+// desktop app serves it in-process to its webview.
+func (a *App) Handler() http.Handler {
+	return a.server.Handler()
+}
+
+// SetupCode returns the one-time setup code while no user exists, or "" otherwise.
+// Run logs it; embedded hosts (the desktop app) show it to the operator.
+func (a *App) SetupCode() string {
+	return a.auth.SetupCode()
+}
+
+// Start runs the background work of the App without an HTTP listener: it removes
+// stale mongo tools config files, marks runs interrupted by a previous process as
+// failed, starts the event bus and notification workers and starts the scheduler
+// with ctx. Run calls it before starting the HTTP server; embedded hosts call it
+// directly and serve Handler themselves. Every goroutine started here is stopped by
+// Stop. Start may be called once; it returns ErrStarted afterwards.
+func (a *App) Start(ctx context.Context) error {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	if a.started || a.stopped {
+		return ErrStarted
+	}
+	a.started = true
 
 	// Purge credential-bearing tools config files left behind by a previous crash.
 	if removed, err := mongotools.CleanupStale("", staleToolsConfigAge); err != nil {
@@ -436,22 +471,69 @@ func (a *App) Run() error {
 
 	a.failInterruptedRuns(ctx)
 
+	// Start the event bus and notification workers. Stop drains them after the
+	// producers (scheduler, runs) have stopped.
+	a.stopBackground = a.startBackground()
+
+	// Start background cron scheduler. It is stopped by shutdownRuns.
+	if err := a.scheduler.Start(ctx); err != nil {
+		a.stopLocked()
+		return fmt.Errorf("start scheduler: %w", err)
+	}
+	return nil
+}
+
+// Stop stops what Start started: it cancels and awaits in-flight backups and restores
+// and the scheduler (force-killing mongo tools after the shutdown deadline), then
+// drains the event bus and the notification queue. It does not stop an HTTP server
+// and does not release the database: call Close afterwards. Stop is idempotent and a
+// no-op before Start.
+func (a *App) Stop() {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	a.stopLocked()
+}
+
+// stopLocked implements Stop; a.lifeMu must be held.
+func (a *App) stopLocked() {
+	if !a.started || a.stopped {
+		return
+	}
+	a.stopped = true
+	// Producers stop before the event-bus drain: cancel and await backups and
+	// restores so no mongodump/mongorestore outlives the process.
+	a.shutdownRuns()
+	if a.stopBackground != nil {
+		a.stopBackground()
+		a.stopBackground = nil
+	}
+}
+
+// Run starts the background work (see Start), boots the HTTP server, and waits for
+// termination signals.
+func (a *App) Run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Deferred first so it runs last: after runs are awaited and the notification
+	// queue (which records delivery status) has drained.
+	defer func() {
+		if err := a.Close(); err != nil {
+			a.logger.Error("failed to close metadata store", slog.Any("error", err))
+		}
+	}()
+
 	if sec := a.settings.Current().Security; !isLoopbackHost(a.cfg.Host) && sec.SecureCookies != settings.CookiesAlways && !sec.TrustProxyHeaders {
 		a.logger.Warn("listening on a non-loopback address over plain HTTP; put a TLS-terminating reverse proxy in front",
 			slog.String("host", a.cfg.Host),
 		)
 	}
 
-	// Start the event bus and notification workers. Deferred before the scheduler stop
-	// so that (LIFO) producers stop first and pending notifications are drained last.
-	stopBackground := a.startBackground()
-	defer stopBackground()
-
-	// Start background cron scheduler. It is stopped by shutdownRuns.
-	if err := a.scheduler.Start(ctx); err != nil {
-		a.shutdownRuns()
-		return fmt.Errorf("start scheduler: %w", err)
+	if err := a.Start(ctx); err != nil {
+		return err
 	}
+	// Stops runs, the scheduler and then the background workers, after the HTTP
+	// server has stopped producing events.
+	defer a.Stop()
 
 	// Start HTTP server in a managed goroutine
 	serverErrChan := make(chan error, 1)
@@ -460,12 +542,21 @@ func (a *App) Run() error {
 	}()
 
 	if code := a.auth.SetupCode(); code != "" {
-		url := a.server.SetupURL()
-		a.logger.Warn("Setup required: open "+url+" and enter setup code "+code,
-			slog.String("url", url), slog.String("setup_code", code))
+		if a.cfg.Dashboard {
+			url := a.server.SetupURL()
+			a.logger.Warn("Setup required: open "+url+" and enter setup code "+code,
+				slog.String("url", url), slog.String("setup_code", code))
+		} else {
+			a.logger.Warn("Setup required: create the first user with POST /api/v1/setup and setup code "+code,
+				slog.String("setup_code", code))
+		}
 	}
 
-	readyAttrs := []any{slog.String("dashboard_url", fmt.Sprintf("http://localhost:%d", a.cfg.Port))}
+	baseURL := fmt.Sprintf("http://localhost:%d", a.cfg.Port)
+	readyAttrs := []any{slog.String("api_url", baseURL)}
+	if a.cfg.Dashboard {
+		readyAttrs = []any{slog.String("dashboard_url", baseURL)}
+	}
 	if def, err := a.targets.Resolve(ctx, ""); err == nil {
 		readyAttrs = append(readyAttrs, slog.String("default_storage_target", def.Name), slog.String("storage_type", string(def.Type)))
 	}
@@ -481,10 +572,6 @@ func (a *App) Run() error {
 		cancel()
 	case runErr = <-serverErrChan:
 	}
-
-	// Producers stop before the deferred event-bus drain: cancel and await backups
-	// and restores so no mongodump/mongorestore outlives the process.
-	a.shutdownRuns()
 	return runErr
 }
 
