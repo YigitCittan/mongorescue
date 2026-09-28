@@ -11,6 +11,14 @@ DATE?=$(shell date -u +%Y-%m-%d)
 
 LDFLAGS=-s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.Date=$(DATE)
 
+# Desktop app (Wails v2, cmd/mongorescue-desktop). The frontend is web/static, served by
+# the Go handler, so the Wails npm steps and JS bindings are skipped. On Linux distros
+# that only ship WebKitGTK 4.1 (Ubuntu 24.04+), set DESKTOP_TAGS=desktop,webkit2_41.
+WAILS?=wails
+DESKTOP_DIR=cmd/mongorescue-desktop
+DESKTOP_TAGS?=desktop
+DESKTOP_FLAGS=-clean -trimpath -s -skipbindings -m -nosyncgomod -tags "$(DESKTOP_TAGS)" -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
+
 # Minimum total statement coverage (percent) enforced by coverage-check.
 COVERAGE_MIN?=60
 COVERAGE_FILE?=coverage.out
@@ -98,7 +106,20 @@ docker-smoke:
 run: build
 	./bin/$(BINARY_NAME)
 
-.PHONY: vulncheck lint-ci release-snapshot
+## desktop: Builds the desktop app for the host OS with the Wails CLI (CGO and the
+## platform webview are required: Xcode CLT on macOS, WebView2 on Windows,
+## libgtk-3-dev + libwebkit2gtk-4.0-dev (or 4.1, see DESKTOP_TAGS) on Linux).
+## Output: $(DESKTOP_DIR)/build/bin/
+desktop:
+	@echo "==> Building the desktop app..."
+	cd $(DESKTOP_DIR) && CGO_ENABLED=1 $(WAILS) build $(DESKTOP_FLAGS)
+
+## desktop-windows: Builds the Windows desktop app and its NSIS installer (run on Windows, needs makensis)
+desktop-windows:
+	@echo "==> Building the Windows desktop app and installer..."
+	cd $(DESKTOP_DIR) && CGO_ENABLED=1 $(WAILS) build $(DESKTOP_FLAGS) -platform windows/amd64 -nsis
+
+.PHONY: desktop desktop-windows vulncheck lint-ci release-snapshot
 
 ## vulncheck: Scans reachable code for known vulnerabilities (govulncheck)
 vulncheck:

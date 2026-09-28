@@ -55,3 +55,100 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+
+  # Desktop app (Wails v2, CGO): built natively on each OS after GoReleaser created
+  # the release, then uploaded to it. The plain server binaries above stay for
+  # headless API/MCP use.
+  desktop:
+    name: Desktop App (${{ matrix.name }})
+    needs: goreleaser
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # upload assets to the release
+      id-token: write # keyless signing of the provenance attestation
+      attestations: write # store the attestation
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            platform: windows/amd64
+            tags: desktop
+          - name: macos
+            os: macos-latest
+            platform: darwin/universal
+            tags: desktop
+          - name: linux
+            os: ubuntu-latest
+            platform: linux/amd64
+            # Ubuntu 24.04 ships WebKitGTK 4.1 only.
+            tags: desktop,webkit2_41
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+      WAILS_VERSION: v2.16.0 # keep in sync with github.com/wailsapp/wails/v2 in go.mod
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: true
+
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        run: command -v makensis || choco install nsis -y --no-progress
+
+      - name: Install Wails CLI
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
+
+      - name: Build desktop app
+        working-directory: cmd/mongorescue-desktop
+        env:
+          CGO_ENABLED: '1'
+          PLATFORM: ${{ matrix.platform }}
+          TAGS: ${{ matrix.tags }}
+        run: |
+          nsis=()
+          if [ "$RUNNER_OS" = "Windows" ]; then nsis=(-nsis); fi
+          wails build -clean -trimpath -s -skipbindings -m -nosyncgomod \
+            -platform "$PLATFORM" -tags "$TAGS" \
+            -ldflags "-X main.Version=${TAG#v} -X main.Commit=${GITHUB_SHA::7}" "${nsis[@]}"
+
+      - name: Package artifacts
+        working-directory: cmd/mongorescue-desktop/build/bin
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/desktop-dist"
+          out="$GITHUB_WORKSPACE/desktop-dist/MongoRescue-desktop_${TAG#v}"
+          case "$RUNNER_OS" in
+            Windows)
+              cp MongoRescue-amd64-installer.exe "${out}_windows_amd64_installer.exe"
+              7z a "${out}_windows_amd64_portable.zip" MongoRescue.exe ;;
+            macOS)
+              ditto -c -k --keepParent MongoRescue.app "${out}_macos_universal.zip" ;;
+            Linux)
+              tar -czf "${out}_linux_amd64.tar.gz" MongoRescue ;;
+          esac
+          ls -l "$GITHUB_WORKSPACE/desktop-dist"
+
+      - name: Attest Desktop Artifact Provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: desktop-dist/*
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" desktop-dist/* --clobber --repo "$GITHUB_REPOSITORY"

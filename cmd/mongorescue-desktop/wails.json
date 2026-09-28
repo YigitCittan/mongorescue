@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "MongoRescue",
+  "outputfilename": "MongoRescue",
+  "frontend:dir": ".",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "wailsjsdir": "./build/wailsjs",
+  "author": {
+    "name": "MongoRescue contributors"
+  },
+  "info": {
+    "companyName": "MongoRescue",
+    "productName": "MongoRescue",
+    "productVersion": "1.0.0",
+    "copyright": "MongoRescue contributors",
+    "comments": "MongoDB backup and restore"
+  }
+}
