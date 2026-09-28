@@ -236,8 +236,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	// 3. Engines read their settings and storage target for every run, so changes in
 	// the dashboard apply without a restart.
+	logToolPaths(logger, cfg.ToolsDir)
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
+		backup.WithToolsDir(cfg.ToolsDir),
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithRunConfig(func() backup.RunConfig {
 			g := settingsSvc.Current().General
@@ -246,6 +248,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	)
 	restoreEngine := restore.NewEngine(nil, "",
 		restore.WithLogger(logger),
+		restore.WithToolsDir(cfg.ToolsDir),
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
@@ -659,4 +662,19 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+// logToolPaths logs where mongodump and mongorestore were found, or warns with the
+// searched locations when one is missing, so a missing install is visible at startup
+// rather than at the first backup.
+func logToolPaths(logger *slog.Logger, toolsDir string) {
+	resolver := mongotools.NewResolver(toolsDir)
+	for _, tool := range []string{"mongodump", "mongorestore"} {
+		path, err := resolver.Resolve(tool)
+		if err != nil {
+			mongotools.LogNotFound(context.Background(), logger, err)
+			continue
+		}
+		logger.Info("MongoDB Database Tools binary found", slog.String("tool", tool), slog.String("path", path))
+	}
 }
