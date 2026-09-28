@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-28
+
 ### Breaking
 - **Breaking: the web dashboard is off by default outside Docker.** The server binary no longer serves it: `GET /` returns 404 and only the REST API, `/mcp` and `/metrics` are served. Pass `-dashboard` or set `MONGORESCUE_DASHBOARD=true` to serve it. The container image sets `MONGORESCUE_DASHBOARD=true`, so Docker and Compose deployments are unchanged; installs from the release binaries should switch to the desktop app or add the flag.
 

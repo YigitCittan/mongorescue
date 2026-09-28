@@ -121,6 +121,9 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           TAGS: ${{ matrix.tags }}
         run: |
+          # Stamp the release version into the installer and app metadata.
+          jq --arg v "${TAG#v}" '.info.productVersion = $v' wails.json > wails.json.tmp
+          mv wails.json.tmp wails.json
           nsis=()
           if [ "$RUNNER_OS" = "Windows" ]; then nsis=(-nsis); fi
           wails build -clean -trimpath -s -skipbindings -m -nosyncgomod \
