@@ -39,12 +39,19 @@ jobs:
       - name: Install Syft (SBOM generator used by GoReleaser)
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
+      # The release body is the CHANGELOG.md section of the tagged version; a
+      # missing or empty section fails the release.
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/changelog-section.sh "$TAG" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -57,8 +64,8 @@ jobs:
             dist/checksums.txt
 
   # Desktop app (Wails v2, CGO): built natively on each OS after GoReleaser created
-  # the release, then uploaded to it. The plain server binaries above stay for
-  # headless API/MCP use.
+  # the (draft) release, then uploaded to it. The plain server binaries above stay
+  # for headless API/MCP use. gh finds a draft release by its tag name.
   desktop:
     name: Desktop App (${{ matrix.name }})
     needs: goreleaser
@@ -162,3 +169,58 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$TAG" desktop-dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # CONTRACT (the desktop updater depends on it): once every desktop build is
+  # attached, MongoRescue-desktop_<version>_checksums.txt lists one
+  # "<sha256>  <file>" line (sha256sum format) per desktop asset of the release,
+  # itself excluded. The asset names must stay:
+  #   MongoRescue-desktop_<version>_windows_amd64_installer.exe
+  #   MongoRescue-desktop_<version>_windows_amd64_portable.zip
+  #   MongoRescue-desktop_<version>_macos_universal.zip
+  #   MongoRescue-desktop_<version>_linux_amd64.tar.gz
+  desktop-checksums:
+    name: Desktop App checksums
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # download and upload release assets
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Write and upload the desktop checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          prefix="MongoRescue-desktop_${version}_"
+          sums="${prefix}checksums.txt"
+          mkdir desktop-dist
+          cd desktop-dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p 'MongoRescue-desktop_*'
+          for suffix in windows_amd64_installer.exe windows_amd64_portable.zip macos_universal.zip linux_amd64.tar.gz; do
+            if [ ! -f "${prefix}${suffix}" ]; then
+              echo "::error::release $TAG lacks ${prefix}${suffix}"; exit 1
+            fi
+          done
+          # Every desktop asset of this version except the checksum file itself.
+          files=()
+          for f in "${prefix}"*; do
+            [ "$f" = "$sums" ] || files+=("$f")
+          done
+          sha256sum -- "${files[@]}" > "$sums"
+          cat "$sums"
+          gh release upload "$TAG" "$sums" --clobber --repo "$GITHUB_REPOSITORY"
+
+      # GoReleaser creates the release as a draft; it is published only now, with
+      # every desktop asset and the checksums attached, so the desktop updater
+      # (which reads releases/latest) never sees a release it cannot install.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          latest=()
+          if [ "$prerelease" != "true" ]; then latest=(--latest); fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${latest[@]}"

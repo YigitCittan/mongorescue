@@ -6,10 +6,16 @@
 //
 // Flags: -data-dir (default <user config dir>/MongoRescue/data) and -log-level. Logs go
 // to <data dir>/desktop.log.
+//
+// At startup the app checks GitHub for a newer release (see internal/update): a higher
+// MAJOR version blocks the window until the user updates, MINOR and PATCH updates are
+// offered. Builds without a release version (-ldflags "-X main.Version=X.Y.Z") skip
+// the check.
 package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +29,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -30,9 +37,10 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/desktop"
 )
 
-// Version metadata populated at build time via -ldflags.
+// Version metadata populated at build time via -ldflags. A Version that is not a
+// final release (X.Y.Z), such as the default, disables the update check.
 var (
-	Version = "1.0.0"
+	Version = "dev"
 	Commit  = "dev"
 )
 
@@ -43,6 +51,12 @@ const singleInstanceID = "io.github.yigitcittan.mongorescue.desktop"
 // quitGrace is how long a SIGINT/SIGTERM waits for the window to close normally before
 // the app stops its runs itself and exits.
 const quitGrace = 10 * time.Second
+
+// appIcon is the MongoRescue logo. wails build turns it into the macOS and Windows
+// icons; on Linux the window icon is set from it at run time.
+//
+//go:embed build/appicon.png
+var appIcon []byte
 
 // errStartFailed is returned by run when the background services did not start.
 var errStartFailed = errors.New("background services did not start")
@@ -74,6 +88,15 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		return 1
 	}
 	d := &desktopApp{app: application, logger: logger}
+	// The update check and downloads live until shutdown.
+	d.updateCtx, d.stopUpdates = context.WithCancel(context.Background())
+	defer d.stopUpdates()
+	d.updater = desktop.NewUpdater(desktop.UpdaterOptions{
+		Version: Version,
+		Logger:  logger,
+		Quit:    d.quit,
+		OpenURL: d.openURL,
+	})
 
 	// The signal watcher lives until run returns: done is closed after the shutdown.
 	sigCh := make(chan os.Signal, 2)
@@ -92,7 +115,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		MinWidth:  960,
 		MinHeight: 640,
 		// The handler serves the dashboard files as well as the API: no Assets FS.
-		AssetServer: &assetserver.Options{Handler: desktop.Handler(application.Handler())},
+		// The update endpoints are answered before the application handler.
+		AssetServer: &assetserver.Options{Handler: d.updater.Handler(desktop.Handler(application.Handler()))},
 		OnStartup:   d.startup,
 		OnDomReady:  d.domReady,
 		OnShutdown:  d.shutdown,
@@ -101,7 +125,13 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			OnSecondInstanceLaunch: d.secondInstance,
 		},
 		Mac: &mac.Options{
-			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version},
+			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version, Icon: appIcon},
+		},
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "mongorescue",
+			// Wails' default while Linux options are nil (wailsapp/wails#2977).
+			WebviewGpuPolicy: linux.WebviewGpuPolicyNever,
 		},
 	})
 	// OnShutdown normally stopped and closed the application; this covers wails.Run
@@ -129,11 +159,15 @@ type desktopApp struct {
 	// wg tracks the goroutines started here (signal watcher, quit requests).
 	wg sync.WaitGroup
 
+	updater     *desktop.Updater
+	updateCtx   context.Context // bounds the update check and downloads
+	stopUpdates context.CancelFunc
+
 	ctxMu    sync.Mutex
 	wailsCtx context.Context // set by startup, used by the runtime calls
 	startErr error
 
-	bannerOnce sync.Once
+	setupLogOnce sync.Once
 
 	mu   sync.Mutex // serializes shutdown
 	done bool
@@ -158,6 +192,28 @@ func (d *desktopApp) startup(ctx context.Context) {
 		return
 	}
 	d.logger.Info("mongorescue desktop ready")
+	d.updater.Start(d.updateCtx)
+}
+
+// quit asks the window to close without waiting for it: the updater calls it after
+// starting the installer, and the shutdown waits for the updater.
+func (d *desktopApp) quit() {
+	ctx := d.context()
+	if ctx == nil {
+		return
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		runtime.Quit(ctx)
+	}()
+}
+
+// openURL opens url in the system browser.
+func (d *desktopApp) openURL(url string) {
+	if ctx := d.context(); ctx != nil {
+		runtime.BrowserOpenURL(ctx, url)
+	}
 }
 
 // context returns the Wails context, or nil before startup.
@@ -174,19 +230,24 @@ func (d *desktopApp) startError() error {
 	return d.startErr
 }
 
-// domReady shows the one-time setup code in a non-modal banner, once per process,
-// since the desktop app has no console to print it to. The code is also copied to
-// the clipboard and logged.
+// domReady runs on every page load. It injects the update prompt, so a reload cannot
+// get around a mandatory update, and fills the one-time setup code into the
+// dashboard's setup form until the first administrator exists: the desktop app has
+// no console to print the code to, and its window is the only client. The server
+// still verifies the code. It is also logged, once per process.
 func (d *desktopApp) domReady(ctx context.Context) {
-	code := d.app.SetupCode()
-	if code == "" || d.startError() != nil {
+	if d.startError() != nil {
 		return
 	}
-	d.bannerOnce.Do(func() {
-		d.logger.Warn("Setup required: enter setup code "+code+" in the window", slog.String("setup_code", code))
-		copied := runtime.ClipboardSetText(ctx, code) == nil
-		runtime.WindowExecJS(ctx, desktop.SetupBannerScript(code, copied))
+	runtime.WindowExecJS(ctx, desktop.UpdateScript())
+	code := d.app.SetupCode()
+	if code == "" {
+		return
+	}
+	d.setupLogOnce.Do(func() {
+		d.logger.Warn("Setup required: the setup code "+code+" is filled in the window", slog.String("setup_code", code))
 	})
+	runtime.WindowExecJS(ctx, desktop.SetupCodeScript(code))
 }
 
 // secondInstance brings the window to the front when the app is launched again.
@@ -228,9 +289,9 @@ func (d *desktopApp) watchSignals(sigCh <-chan os.Signal, done <-chan struct{}) 
 	os.Exit(1)
 }
 
-// shutdown stops in-flight runs, the scheduler and the background workers, then
-// releases the database and the data directory lock. It runs once; concurrent calls
-// wait for the first to finish.
+// shutdown stops the updater, in-flight runs, the scheduler and the background
+// workers, then releases the database and the data directory lock. It runs once;
+// concurrent calls wait for the first to finish.
 func (d *desktopApp) shutdown(context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -238,6 +299,8 @@ func (d *desktopApp) shutdown(context.Context) {
 		return
 	}
 	d.done = true
+	d.stopUpdates()
+	d.updater.Wait()
 	d.app.Stop()
 	if err := d.app.Close(); err != nil {
 		d.logger.Error("failed to close metadata store", slog.Any("error", err))

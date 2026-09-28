@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+### Added
+- `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: an absolute directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
+- Dashboard: a "New" button next to the storage target list in the "Back up now" dialog and the job form opens the storage target form on top of the dialog and selects the new target once it is saved; cancelling leaves the choice unchanged.
+- Releases: `MongoRescue-desktop_<version>_checksums.txt`, the SHA-256 sums of the desktop installer and archives in `sha256sum` format. See [docs/desktop.md](docs/desktop.md#building).
+- Desktop app: checks GitHub for a new release at startup and every 6 hours, and updates itself. A higher major version with installable files is mandatory (a blocking "Update required" screen, also after a reload); minor and patch updates, and releases without a file for your system, are offered in a dismissible bar. Both show the release notes. The installer (Windows) or archive (macOS, Linux) is downloaded over HTTPS and verified against the release's SHA-256 checksums before it is used; on Windows it stays locked against changes until the installer has started. Offline, the app starts as usual. See [docs/desktop.md](docs/desktop.md#updates).
+- Release: GitHub releases are created as drafts and published once the desktop builds and their checksums are attached.
+
+### Changed
+- Releases: the GitHub release notes are the version's `CHANGELOG.md` section (`scripts/changelog-section.sh`) instead of a generated commit list; a release without a section fails.
+- Desktop app: the setup form fills in the one-time setup code itself and hides the field, so the first administrator only chooses a username and a password. The setup-code banner and the clipboard copy are gone; the server still verifies the code. If setup fails, the code field reappears and can be edited.
+
+### Fixed
+- Backups and restores no longer depend on the MongoDB Database Tools being on `PATH`: tools bundled next to the executable (such as with the desktop app on Windows) are found, and a missing tool fails with an actionable `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (searched locations are logged) instead of `executable file not found in %PATH%`.
+- Desktop app: the window, taskbar, `.exe`, macOS `.app`, Linux window and the Windows installer and uninstaller show the MongoRescue logo instead of the Wails default.
+- Windows installer: no longer looks hung while it installs the Microsoft Edge WebView2 runtime (typical on Windows Server, which ships without it). It detects per-machine and per-user runtimes, shows what it is doing and the bootstrapper's progress window, and reports a failed runtime install instead of ignoring it. See [docs/desktop.md](docs/desktop.md#windows-installer-and-webview2).
+
 ## [0.3.1] - 2026-09-28
 
 ### Fixed

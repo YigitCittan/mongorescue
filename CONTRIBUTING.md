@@ -163,7 +163,10 @@ Maintainers merge with **Squash and merge** or **Rebase and merge** to keep `mai
 
 MongoRescue follows [Semantic Versioning](https://semver.org): `MAJOR` for incompatible API, storage-format or flag changes; `MINOR` for backwards-compatible features; `PATCH` for fixes. While the version is `0.x`, minor releases may still contain breaking changes, which the changelog calls out.
 
-Releases are cut by pushing an **annotated** tag:
+To cut a release:
+
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section (leave an empty `## [Unreleased]` above it) and merge that to `main`. The section becomes the GitHub release notes: `scripts/changelog-section.sh x.y.z` prints it, and the release fails when it is missing or empty.
+2. Tag `vX.Y.Z` with an **annotated** tag and push it:
 
 ```bash
 git tag -a v0.2.0 -m "Release v0.2.0"
@@ -172,7 +175,7 @@ git push origin v0.2.0
 
 The tag triggers:
 
-- **GoReleaser** (`.github/workflows/release.yml`): static binaries for Linux, macOS (amd64, arm64) and Windows (amd64, arm64) with version metadata, archives named `mongorescue_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows) containing `README.md`, `LICENSE` and `scripts/`, a `checksums.txt` with SHA-256 sums, and the GitHub Release.
+- **GoReleaser** (`.github/workflows/release.yml`): static binaries for Linux, macOS (amd64, arm64) and Windows (amd64, arm64) with version metadata, archives named `mongorescue_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows) containing `README.md`, `LICENSE` and `scripts/`, a `checksums.txt` with SHA-256 sums, and the GitHub Release, whose notes are the version's `CHANGELOG.md` section. The release is created as a draft; the `desktop` jobs attach the desktop app builds and the `desktop-checksums` job adds their checksums and publishes it, so the desktop updater never offers a version before its files exist. A failed desktop build leaves the draft unpublished: fix it and re-run the jobs, or publish by hand.
 - **Container images** (`.github/workflows/docker.yml`): multi-arch (`linux/amd64`, `linux/arm64`) images at `ghcr.io/yigitcittan/mongorescue`, tagged `<version>` and `<major>.<minor>`. Pushes to `main` publish `latest`; every build also gets `sha-<commit>`.
 
 Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the version, and `git status` is clean.

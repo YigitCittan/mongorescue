@@ -5,19 +5,35 @@ import (
 	"testing"
 )
 
-func TestSetupBannerScript(t *testing.T) {
-	js := SetupBannerScript("ABCD-EFGH", true)
-	if !strings.Contains(js, `"ABCD-EFGH"`) || !strings.Contains(js, "copied to the clipboard") {
-		t.Fatalf("script lacks the code or the clipboard note:\n%s", js)
+func TestSetupCodeScript(t *testing.T) {
+	js := SetupCodeScript("ABCD-EFGH")
+	for _, want := range []string{
+		`})("ABCD-EFGH", 60000);`,      // the values are passed as literals
+		`el("setup-code")`,             // fills the code field
+		`new Event("input"`,            // and tells the page about it
+		`input.readOnly = true`,        // the code cannot be edited
+		`group.style.display = "none"`, // label, field and hint are hidden
+		`el("setup-username")`,         // the focus moves to the username
+		"observer.disconnect()",        // the observer does not outlive the fill
+		"setTimeout(stop,",             // nor the timeout
+		`el("setup-error")`,            // a setup error is watched for
+		`input.readOnly = false`,       // and makes the code editable again
+		`group.style.display = ""`,     // and visible
+		"errorObserver.disconnect()",   // the error watch ends too
+		`errorObserver.observe(card, { attributes: true, attributeFilter: ["hidden"] })`, // once the setup card is hidden
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("script lacks %q:\n%s", want, js)
+		}
 	}
-	if strings.Contains(js, "__CODE__") || strings.Contains(js, "__TEXT__") || strings.Contains(js, "innerHTML") {
-		t.Fatal("placeholders left or markup injection used")
+	for _, bad := range []string{"__CODE__", "__TIMEOUT__", "innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "clipboard"} {
+		if strings.Contains(js, bad) {
+			t.Errorf("script contains %q", bad)
+		}
 	}
-	if strings.Contains(SetupBannerScript("X", false), "clipboard") {
-		t.Fatal("clipboard note without a copy")
-	}
+
 	// A hostile value stays inside its string literal.
-	evil := SetupBannerScript(`"); alert(1); ("</script>`, false)
+	evil := SetupCodeScript(`"); alert(1); ("</script>`)
 	want := `"\"); alert(1); (\"` + "\\u003c/script\\u003e" + `"`
 	if !strings.Contains(evil, want) || strings.Contains(evil, "</script>") {
 		t.Fatalf("value escaped its literal:\n%s", evil)

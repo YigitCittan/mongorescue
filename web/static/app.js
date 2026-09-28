@@ -273,6 +273,9 @@ function setupActions() {
       case "new-storage":
         openStorageModal("");
         break;
+      case "new-storage-for":
+        openStorageModalFor(btn.dataset.select || "");
+        break;
       case "edit-storage":
         openStorageModal(id);
         break;
@@ -2956,16 +2959,42 @@ const STORAGE_PRESETS = {
 // Endpoint the form filled in itself, so region edits may keep it in sync.
 const storageAuto = { endpoint: "" };
 
+// Reloads the storage targets; the error of a failed reload is returned, or
+// "" once the list is up to date.
 async function loadStorageTargets() {
   try {
     const json = await apiJSON("/api/v1/storage-targets");
-    if (!json.success) return;
+    if (!json.success) {
+      const msg = json.error || t("toasts.request_failed");
+      console.error("Failed to load storage targets:", msg);
+      return msg;
+    }
     state.storageTargets = json.data || [];
     state.loaded.storageTargets = true;
     renderStorageTargets();
+    return "";
   } catch (err) {
     console.error("Failed to load storage targets:", err);
+    return err.message || t("toasts.request_failed");
   }
+}
+
+// Puts a saved target into the list when the reload after saving failed, so
+// the dialog it was created from can still select it.
+function rememberSavedTarget(target, makeDefault) {
+  if (!target || !target.id) return;
+  const list = state.storageTargets.filter(s => s.id !== target.id);
+  const saved = { ...target };
+  if (makeDefault) {
+    list.forEach(s => { s.is_default = false; });
+    saved.is_default = true;
+  }
+  const idx = state.storageTargets.findIndex(s => s.id === target.id);
+  if (idx >= 0) list.splice(idx, 0, saved);
+  else list.push(saved);
+  state.storageTargets = list;
+  state.loaded.storageTargets = true;
+  renderStorageTargets();
 }
 
 function defaultStorageTarget() {
@@ -3068,25 +3097,42 @@ function backupStorageCell(b) {
   return `<div class="cell-sub storage-sub" title="${escapeHtml(title)}">${escapeHtml(truncate(name, 24))}</div>`;
 }
 
-// Storage target select of the job form and "Back up now"; the default is preselected.
-function fillStorageSelect(select) {
+// Storage target select a storage form opened from its "New" button returns to.
+let storageReturn = null;
+
+// Storage target select of the job form and "Back up now"; the default is
+// preselected unless selectedId names an existing target.
+function fillStorageSelect(select, selectedId) {
   if (!select) return;
   select.textContent = "";
-  if (state.storageTargets.length === 0) {
+  const addOption = (value, label) => {
     const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = t("storage.default_target");
+    opt.value = value;
+    opt.textContent = label;
     select.appendChild(opt);
+  };
+  if (state.storageTargets.length === 0) {
+    addOption("", t("storage.default_target"));
     return;
   }
   state.storageTargets.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s.id;
-    opt.textContent = s.is_default ? tf("storage.default_named", { name: s.name }) : s.name;
-    select.appendChild(opt);
+    addOption(s.id, s.is_default ? tf("storage.default_named", { name: s.name }) : s.name);
   });
   const def = defaultStorageTarget();
-  select.value = def ? def.id : state.storageTargets[0].id;
+  if (selectedId && state.storageTargets.some(s => s.id === selectedId)) {
+    select.value = selectedId;
+  } else {
+    select.value = def ? def.id : state.storageTargets[0].id;
+  }
+}
+
+// Opens the storage form on top of a dialog; a target saved there is selected
+// in selectId, a cancelled form leaves the select as it was.
+function openStorageModalFor(selectId) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  openStorageModal("");
+  storageReturn = { select };
 }
 
 function storageSelection(selectId) {
@@ -3340,14 +3386,24 @@ async function saveStorageTarget(e) {
       return;
     }
     const savedId = (json.data && json.data.id) || id;
+    let defaultMoved = false;
     if (makeDefault && savedId) {
       const def = await apiJSON(`/api/v1/storage-targets/${encodeURIComponent(savedId)}/default`, { method: "POST" });
       if (!def.success) showToast(def.error || t("toasts.request_failed"), "error");
+      defaultMoved = !!def.success;
     }
     showToast(t("storage.saved"), "success");
+    // A target created from a dialog's "New" button is selected there once reloaded.
+    const ret = storageReturn;
+    storageReturn = null;
     closeModal("modal-storage");
-    await loadStorageTargets();
+    const loadError = await loadStorageTargets();
+    if (loadError) {
+      showToast(loadError, "error");
+      rememberSavedTarget(json.data, defaultMoved);
+    }
     renderStats();
+    if (ret && ret.select) fillStorageSelect(ret.select, savedId);
   } catch (err) {
     showToast(err.message, "error");
   } finally {
@@ -3831,6 +3887,7 @@ function closeModal(id) {
   el.classList.remove("open");
   el.setAttribute("aria-hidden", "true");
   if (id === "modal-api-key") showApiKeyStep("name");
+  if (id === "modal-storage") storageReturn = null;
   const idx = modalStack.findIndex(m => m.id === id);
   const entry = idx >= 0 ? modalStack.splice(idx, 1)[0] : null;
   if (modalStack.length === 0) document.body.classList.remove("modal-open");

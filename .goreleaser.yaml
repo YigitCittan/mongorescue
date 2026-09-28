@@ -43,6 +43,15 @@ archives:
       - CHANGELOG.md
       - scripts/mongorescue.service
 
+# The release is created as a draft: the desktop jobs of the release workflow
+# attach their builds and the desktop checksums, then publish it. Until then the
+# desktop updater (releases/latest) does not see it, so it never offers a version
+# whose installer is not there yet. Tags with a pre-release suffix (v1.2.0-rc.1)
+# are published as pre-releases.
+release:
+  draft: true
+  prerelease: auto
+
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
@@ -52,6 +61,9 @@ sboms:
   - id: archive-sboms
     artifacts: archive
 
+# Local runs only: the release workflow passes the CHANGELOG.md section of the
+# tag with --release-notes (scripts/changelog-section.sh), which replaces the
+# generated commit list in the GitHub release.
 changelog:
   sort: asc
   filters:

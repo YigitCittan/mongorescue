@@ -1,7 +1,8 @@
 // Package main is the entrypoint for MongoRescue CLI and embedded service.
 //
 // Only bootstrap options are read here (data directory, listen address, log level,
-// the optional secret key and whether the web dashboard is served); everything else
+// the optional secret key, the MongoDB Database Tools directory and whether the web
+// dashboard is served); everything else
 // is configured in the dashboard and stored in the database. "mongorescue mcp" runs
 // the stdio bridge for AI assistants instead of the server.
 package main
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/app"
 	"github.com/yigitcittan/mongorescue/internal/config"
@@ -75,6 +77,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	host := fs.String("host", "", "Listen address (env "+config.EnvHost+", default "+config.DefaultHost+")")
 	port := fs.Int("port", 0, fmt.Sprintf("Listen port (env %s, default %d)", config.EnvPort, config.DefaultPort))
 	dashboard := fs.Bool("dashboard", false, "Serve the embedded web dashboard (env "+config.EnvDashboard+", default false)")
+	toolsDir := fs.String("tools-dir", "", "Directory searched first for mongodump and mongorestore (env "+config.EnvToolsDir+", default <executable dir>/tools, then PATH)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -104,6 +107,12 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.Port = *port
 		case "dashboard":
 			cfg.Dashboard = *dashboard
+		case "tools-dir":
+			// An empty flag clears the directory; Clean would turn it into ".".
+			cfg.ToolsDir = ""
+			if v := strings.TrimSpace(*toolsDir); v != "" {
+				cfg.ToolsDir = filepath.Clean(v)
+			}
 		}
 	})
 	if err := cfg.Validate(); err != nil {

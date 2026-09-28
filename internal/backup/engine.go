@@ -46,6 +46,7 @@ type Engine struct {
 	logger     *slog.Logger
 	defaultURI string
 	runner     ProcessRunner
+	toolsDir   string
 	encryptor  *encryption.Encryptor
 
 	timeout      time.Duration
@@ -126,6 +127,14 @@ func WithRunner(runner ProcessRunner) Option {
 	}
 }
 
+// WithToolsDir makes the default runner look for mongodump in dir before the bundled
+// locations and PATH (see mongotools.Resolver). It has no effect with WithRunner.
+func WithToolsDir(dir string) Option {
+	return func(e *Engine) {
+		e.toolsDir = dir
+	}
+}
+
 // WithLogger specifies a custom structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(e *Engine) {
@@ -165,11 +174,13 @@ func NewEngine(store storage.Storage, defaultURI string, opts ...Option) *Engine
 		storage:    store,
 		logger:     slog.Default(),
 		defaultURI: defaultURI,
-		runner:     defaultProcessRunner,
 	}
 
 	for _, opt := range opts {
 		opt(e)
+	}
+	if e.runner == nil {
+		e.runner = newProcessRunner(mongotools.NewResolver(e.toolsDir), e.logger)
 	}
 
 	return e
@@ -675,11 +686,26 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// defaultProcessRunner starts an OS subprocess with piped stdout/stderr. The process
-// runs in its own process group and is terminated (SIGTERM, then SIGKILL after
-// mongotools.KillGracePeriod) together with any children when ctx is done.
-func defaultProcessRunner(ctx context.Context, name string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
-	cmd := mongotools.Command(ctx, name, args...)
+// newProcessRunner returns the default runner: it resolves the tool with tools
+// (failing with an error wrapping mongotools.ErrToolNotFound; the searched locations
+// are logged, not returned) and starts it with piped
+// stdout/stderr. The process runs in its own process group and is terminated (SIGTERM,
+// then SIGKILL after mongotools.KillGracePeriod) together with any children when ctx
+// is done.
+func newProcessRunner(tools *mongotools.Resolver, logger *slog.Logger) ProcessRunner {
+	return func(ctx context.Context, name string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		path, err := tools.Resolve(name)
+		if err != nil {
+			mongotools.LogNotFound(ctx, logger, err)
+			return nil, nil, nil, err
+		}
+		return startProcess(ctx, path, args...)
+	}
+}
+
+// startProcess starts the executable at path with piped stdout/stderr.
+func startProcess(ctx context.Context, path string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
+	cmd := mongotools.Command(ctx, path, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, nil, err

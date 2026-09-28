@@ -844,7 +844,13 @@
           </fieldset>
           <div class="form-group">
             <label class="form-label" for="job-storage" data-i18n="storage.select_label">Storage target</label>
-            <select id="job-storage" class="form-select"></select>
+            <div class="input-with-btn">
+              <select id="job-storage" class="form-select"></select>
+              <button type="button" class="btn btn-secondary" data-action="new-storage-for" data-select="job-storage" data-i18n-title="storage.new_target" data-i18n-aria-label="storage.new_target" title="New storage target" aria-label="New storage target">
+                <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10"/></svg>
+                <span data-i18n="storage.new_short">New</span>
+              </button>
+            </div>
           </div>
           <div class="form-group">
             <label class="form-label" for="job-cron" data-i18n="modal_job.cron_label">Schedule</label>
@@ -914,7 +920,13 @@
           </fieldset>
           <div class="form-group">
             <label class="form-label" for="instant-storage" data-i18n="storage.select_label">Storage target</label>
-            <select id="instant-storage" class="form-select"></select>
+            <div class="input-with-btn">
+              <select id="instant-storage" class="form-select"></select>
+              <button type="button" class="btn btn-secondary" data-action="new-storage-for" data-select="instant-storage" data-i18n-title="storage.new_target" data-i18n-aria-label="storage.new_target" title="New storage target" aria-label="New storage target">
+                <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10"/></svg>
+                <span data-i18n="storage.new_short">New</span>
+              </button>
+            </div>
           </div>
           <p class="form-hint" data-i18n="modal_instant.hint">Runs mongodump and streams the archive straight to storage.</p>
         </div>
