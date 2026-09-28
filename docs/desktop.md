@@ -14,7 +14,7 @@ Use the server binary or the image when other programs need the REST API or MCP 
 
 Download the file for your system from [Releases](https://github.com/YigitCittan/mongorescue/releases):
 
-- **Windows:** `MongoRescue-desktop_<version>_windows_amd64_installer.exe` (NSIS installer; a portable `.zip` is attached too). It needs the Microsoft Edge WebView2 runtime, which ships with Windows 10 and 11; the installer fetches it if it is missing.
+- **Windows:** `MongoRescue-desktop_<version>_windows_amd64_installer.exe` (NSIS installer; a portable `.zip` is attached too). It needs the Microsoft Edge WebView2 runtime, which ships with Windows 10 and 11 but not with Windows Server 2016–2022; the installer fetches it if it is missing ([details](#windows-installer-and-webview2)).
 - **macOS:** `MongoRescue-desktop_<version>_macos_universal.zip`, containing `MongoRescue.app` (Apple Silicon and Intel). The app is not notarized yet: open it with right-click → **Open** the first time.
 - **Linux:** `MongoRescue-desktop_<version>_linux_amd64.tar.gz`, a single binary. It needs GTK 3 and WebKitGTK 4.1 (`libgtk-3-0` and `libwebkit2gtk-4.1-0` on Debian and Ubuntu 24.04+).
 
@@ -22,7 +22,7 @@ Install the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools
 
 ## First start
 
-On first start the app shows the one-time setup code in a banner at the bottom of the window (once per launch; dismiss it with **Dismiss**) and copies it to the clipboard. Paste it into the setup form and create the administrator account. The code is also written to the log file.
+On first start the app fills the one-time setup code into the setup form itself and hides the field, since its window is the only client: choose a username and a password to create the administrator account. The server still checks the code as it does in the browser. The code is also written to the log file.
 
 Only one instance runs at a time: starting the app again brings the open window to the front.
 
@@ -70,8 +70,24 @@ make desktop            # app for this OS in cmd/mongorescue-desktop/build/bin/
 make desktop-windows    # on Windows: MongoRescue.exe and the NSIS installer
 ```
 
-The frontend is `web/static`, served by the Go handler, so the build skips the Wails frontend (npm) step and binding generation. Wails generates default icons and platform files under `cmd/mongorescue-desktop/build/` when they are missing.
+The frontend is `web/static`, served by the Go handler, so the build skips the Wails frontend (npm) step and binding generation.
+
+`cmd/mongorescue-desktop/build/` holds the committed build assets; Wails generates the other platform files there (`Info.plist`, `info.json`, `wails.exe.manifest`, `wails_tools.nsh`) and they stay untracked, as does the output in `build/bin` (the only directory `wails build -clean` empties):
+
+| File | Use |
+| :--- | :--- |
+| `appicon.png` | The logo (from `web/static/favicon.svg`, 1024×1024): the macOS `.app` icon, and the Linux window icon (embedded in the binary) |
+| `windows/icon.ico` | The `.exe`, window, taskbar, installer and uninstaller icon (16 to 256 px) |
+| `windows/installer/project.nsi` | The NSIS installer script, customized from the Wails template (see below) |
+
+After changing the logo, regenerate both icons; delete a file to get the Wails default back.
 
 For a quick compile check without the Wails CLI: `go vet -tags desktop ./cmd/mongorescue-desktop/...`. A binary built with plain `go build` needs the `desktop,production` tags; `wails build` adds them.
 
 Releases build the desktop app natively on Windows, macOS and Linux runners (`desktop` job in `.github/workflows/release.yml`) and attach the archives, with provenance attestations, to the GitHub release.
+
+## Windows installer and WebView2
+
+The app window needs the Microsoft Edge WebView2 runtime. Windows 10 and 11 include it; Windows Server 2016, 2019 and 2022 do not unless something installed it. The installer checks the per-machine registration (`HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`, and the key without `WOW6432Node`) and the per-user one (`HKCU\Software\Microsoft\EdgeUpdate\Clients\{…}`), skips the step when either names a version other than `0.0.0.0`, and otherwise runs Microsoft's online bootstrapper, which downloads the runtime (well over 100 MB). The status line reads *Installing Microsoft Edge WebView2 Runtime…* and the bootstrapper shows its own progress window; with `/S` it runs silently. If the runtime is still missing afterwards the installer says so, with the exit code and the [download link](https://go.microsoft.com/fwlink/p/?LinkId=2124703), and finishes the installation; the app offers the download again when it starts without the runtime. On machines without internet access, install the WebView2 runtime first (the offline "Evergreen Standalone Installer").
+
+v0.3.1 used the unmodified Wails template: it looked only at the per-machine key (the per-user key only for per-user installers) and ran the bootstrapper with `/silent`, ignoring its result. On a server without WebView2 the installer therefore sat on *Installing: WebView2 Runtime* with no progress for the whole download and installation, and looked hung. This is the likely cause of the long pause reported on Windows Server; it follows from the template and from Windows Server not shipping WebView2, but was not reproduced on a Windows machine. The installer's compression (NSIS default, zlib) is not a factor: extracting the files takes seconds. Antivirus scanning of the unsigned executable can add a short delay.

@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -43,6 +45,12 @@ const singleInstanceID = "io.github.yigitcittan.mongorescue.desktop"
 // quitGrace is how long a SIGINT/SIGTERM waits for the window to close normally before
 // the app stops its runs itself and exits.
 const quitGrace = 10 * time.Second
+
+// appIcon is the MongoRescue logo. wails build turns it into the macOS and Windows
+// icons; on Linux the window icon is set from it at run time.
+//
+//go:embed build/appicon.png
+var appIcon []byte
 
 // errStartFailed is returned by run when the background services did not start.
 var errStartFailed = errors.New("background services did not start")
@@ -101,7 +109,13 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			OnSecondInstanceLaunch: d.secondInstance,
 		},
 		Mac: &mac.Options{
-			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version},
+			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version, Icon: appIcon},
+		},
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "mongorescue",
+			// Wails' default while Linux options are nil (wailsapp/wails#2977).
+			WebviewGpuPolicy: linux.WebviewGpuPolicyNever,
 		},
 	})
 	// OnShutdown normally stopped and closed the application; this covers wails.Run
@@ -133,7 +147,7 @@ type desktopApp struct {
 	wailsCtx context.Context // set by startup, used by the runtime calls
 	startErr error
 
-	bannerOnce sync.Once
+	setupLogOnce sync.Once
 
 	mu   sync.Mutex // serializes shutdown
 	done bool
@@ -174,19 +188,19 @@ func (d *desktopApp) startError() error {
 	return d.startErr
 }
 
-// domReady shows the one-time setup code in a non-modal banner, once per process,
-// since the desktop app has no console to print it to. The code is also copied to
-// the clipboard and logged.
+// domReady fills the one-time setup code into the dashboard's setup form on every
+// page load until the first administrator exists: the desktop app has no console to
+// print the code to, and its window is the only client. The server still verifies
+// the code. It is also logged, once per process.
 func (d *desktopApp) domReady(ctx context.Context) {
 	code := d.app.SetupCode()
 	if code == "" || d.startError() != nil {
 		return
 	}
-	d.bannerOnce.Do(func() {
-		d.logger.Warn("Setup required: enter setup code "+code+" in the window", slog.String("setup_code", code))
-		copied := runtime.ClipboardSetText(ctx, code) == nil
-		runtime.WindowExecJS(ctx, desktop.SetupBannerScript(code, copied))
+	d.setupLogOnce.Do(func() {
+		d.logger.Warn("Setup required: the setup code "+code+" is filled in the window", slog.String("setup_code", code))
 	})
+	runtime.WindowExecJS(ctx, desktop.SetupCodeScript(code))
 }
 
 // secondInstance brings the window to the front when the app is launched again.
