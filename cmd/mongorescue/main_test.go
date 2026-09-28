@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -43,10 +44,6 @@ func TestFlagsOverrideBootstrapEnvironment(t *testing.T) {
 	if err != nil || !cfg.Dashboard {
 		t.Fatalf("-dashboard = %+v, %v", cfg, err)
 	}
-	cfg, _, _, err = parseFlags([]string{"-tools-dir", "/opt/flag"}, env(map[string]string{config.EnvToolsDir: "/opt/env"}), &stderr)
-	if err != nil || cfg.ToolsDir != filepath.FromSlash("/opt/flag") {
-		t.Fatalf("-tools-dir over env = %+v, %v", cfg, err)
-	}
 }
 
 func TestFlagErrors(t *testing.T) {
@@ -86,5 +83,39 @@ func TestVersionFlag(t *testing.T) {
 	}
 	if code := run([]string{"-bogus"}, env(nil), &stdout, &stderr); code != 2 {
 		t.Fatalf("unknown flag exit code = %d; want 2", code)
+	}
+}
+
+func TestToolsDirFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	abs := t.TempDir()
+	envAbs := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		want    string
+		wantErr bool
+	}{
+		{name: "unset", want: ""},
+		{name: "empty flag clears env", args: []string{"-tools-dir", ""}, env: map[string]string{config.EnvToolsDir: envAbs}, want: ""},
+		{name: "absolute flag over env", args: []string{"-tools-dir", abs}, env: map[string]string{config.EnvToolsDir: envAbs}, want: abs},
+		{name: "absolute env", env: map[string]string{config.EnvToolsDir: envAbs}, want: envAbs},
+		{name: "dot flag", args: []string{"-tools-dir", "."}, wantErr: true},
+		{name: "relative flag", args: []string{"-tools-dir", "tools"}, wantErr: true},
+		{name: "relative env", env: map[string]string{config.EnvToolsDir: "tools"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _, _, err := parseFlags(tc.args, env(tc.env), &stderr)
+			if tc.wantErr {
+				if !errors.Is(err, config.ErrInvalidToolsDir) {
+					t.Fatalf("err = %v, want ErrInvalidToolsDir", err)
+				}
+				return
+			}
+			if err != nil || cfg.ToolsDir != tc.want {
+				t.Fatalf("ToolsDir = %q, %v; want %q", cfg.ToolsDir, err, tc.want)
+			}
+		})
 	}
 }

@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: a directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
+- `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: an absolute directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
 
 ### Fixed
-- Backups and restores no longer depend on the MongoDB Database Tools being on `PATH`: tools bundled next to the executable (such as with the desktop app on Windows) are found, and a missing tool fails with an actionable `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR (searched: …)` instead of `executable file not found in %PATH%`.
+- Backups and restores no longer depend on the MongoDB Database Tools being on `PATH`: tools bundled next to the executable (such as with the desktop app on Windows) are found, and a missing tool fails with an actionable `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (searched locations are logged) instead of `executable file not found in %PATH%`.
 
 ## [0.3.1] - 2026-09-28
 

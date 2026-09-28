@@ -672,8 +672,7 @@ func logToolPaths(logger *slog.Logger, toolsDir string) {
 	for _, tool := range []string{"mongodump", "mongorestore"} {
 		path, err := resolver.Resolve(tool)
 		if err != nil {
-			logger.Warn("MongoDB Database Tools binary not found; backups or restores will fail",
-				slog.String("tool", tool), slog.Any("error", err))
+			mongotools.LogNotFound(context.Background(), logger, err)
 			continue
 		}
 		logger.Info("MongoDB Database Tools binary found", slog.String("tool", tool), slog.String("path", path))

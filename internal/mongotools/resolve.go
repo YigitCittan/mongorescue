@@ -1,8 +1,10 @@
 package mongotools
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,32 +30,51 @@ type ToolNotFoundError struct {
 	// Name is the tool that was looked up, e.g. "mongodump".
 	Name string
 	// Searched lists the candidate paths and PATH lookups that were tried, in order.
+	// It is meant for logs only: it may contain local paths (and user names), so
+	// Error leaves it out of the message that ends up in records and API responses.
 	Searched []string
 }
 
-// Error returns an actionable message naming the searched locations.
+// Error returns an actionable message without the searched paths.
 func (e *ToolNotFoundError) Error() string {
-	return fmt.Sprintf("%s not found: install MongoDB Database Tools or set %s (searched: %s)",
-		e.Name, EnvToolsDir, strings.Join(e.Searched, ", "))
+	return fmt.Sprintf("%s not found: install MongoDB Database Tools or set %s", e.Name, EnvToolsDir)
 }
 
 // Unwrap returns ErrToolNotFound.
 func (e *ToolNotFoundError) Unwrap() error { return ErrToolNotFound }
+
+// LogNotFound logs a warning with the searched locations when err is a
+// *ToolNotFoundError, and does nothing otherwise. The locations stay in the log and
+// out of error messages.
+func LogNotFound(ctx context.Context, logger *slog.Logger, err error) {
+	var nf *ToolNotFoundError
+	if !errors.As(err, &nf) {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "MongoDB Database Tools binary not found",
+		slog.String("tool", nf.Name), slog.String("searched", strings.Join(nf.Searched, ", ")),
+		slog.String("hint", "install MongoDB Database Tools or set "+EnvToolsDir))
+}
 
 // Resolver locates MongoDB Database Tools binaries. The zero value searches the
 // bundled locations and PATH; the function fields exist so tests can resolve
 // hermetically and default to the os/exec and runtime implementations when nil.
 //
 // Search order:
-//  1. Dir, when set (MONGORESCUE_TOOLS_DIR / -tools-dir);
+//  1. Dir, when set and absolute (MONGORESCUE_TOOLS_DIR / -tools-dir); a relative
+//     Dir is ignored so that the working directory can never supply a binary;
 //  2. <directory of the executable>/tools;
-//  3. on darwin, <directory of the executable>/../Resources/tools (inside a .app);
+//  3. on darwin, when the executable is <bundle>/Contents/MacOS/<name>,
+//     <bundle>/Contents/Resources/tools (inside a .app);
 //  4. exec.LookPath (PATH).
 //
 // Directory lookups append ".exe" on Windows and accept only regular files (outside
 // Windows, only those with an execute bit).
 type Resolver struct {
-	// Dir is the configured tools directory; empty skips it.
+	// Dir is the configured tools directory; empty or relative skips it.
 	Dir string
 	// Executable returns the path of the running binary (default os.Executable).
 	Executable func() (string, error)
@@ -118,7 +139,7 @@ func (r *Resolver) Resolve(name string) (string, error) {
 // searchDirs returns the directories searched before PATH, in order.
 func (r *Resolver) searchDirs(goos string) []string {
 	var dirs []string
-	if d := strings.TrimSpace(r.Dir); d != "" {
+	if d := strings.TrimSpace(r.Dir); d != "" && filepath.IsAbs(d) {
 		dirs = append(dirs, filepath.Clean(d))
 	}
 	executable := r.Executable
@@ -134,8 +155,9 @@ func (r *Resolver) searchDirs(goos string) []string {
 	}
 	exeDir := filepath.Dir(exe)
 	dirs = append(dirs, filepath.Join(exeDir, BundledToolsDirName))
-	if goos == "darwin" {
-		dirs = append(dirs, filepath.Join(exeDir, "..", "Resources", BundledToolsDirName))
+	if contents := filepath.Dir(exeDir); goos == "darwin" &&
+		filepath.Base(exeDir) == "MacOS" && filepath.Base(contents) == "Contents" {
+		dirs = append(dirs, filepath.Join(contents, "Resources", BundledToolsDirName))
 	}
 	return dirs
 }

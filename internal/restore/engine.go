@@ -185,7 +185,7 @@ func NewEngine(store storage.Storage, defaultURI string, opts ...Option) *Engine
 		opt(e)
 	}
 	if e.runner == nil {
-		e.runner = newProcessRunner(mongotools.NewResolver(e.toolsDir))
+		e.runner = newProcessRunner(mongotools.NewResolver(e.toolsDir), e.logger)
 	}
 
 	return e
@@ -551,14 +551,16 @@ func (t *errTrackingReader) Err() error {
 }
 
 // newProcessRunner returns the default runner: it resolves the tool with tools
-// (failing with an error wrapping mongotools.ErrToolNotFound) and starts it piping
+// (failing with an error wrapping mongotools.ErrToolNotFound; the searched locations
+// are logged, not returned) and starts it piping
 // stdin and capturing stderr. The process runs in its own process group and is
 // terminated (SIGTERM, then SIGKILL after mongotools.KillGracePeriod) together with
 // any children when ctx is done.
-func newProcessRunner(tools *mongotools.Resolver) ProcessRunner {
+func newProcessRunner(tools *mongotools.Resolver, logger *slog.Logger) ProcessRunner {
 	return func(ctx context.Context, name string, stdin io.Reader, args ...string) (io.Reader, func() error, error) {
 		path, err := tools.Resolve(name)
 		if err != nil {
+			mongotools.LogNotFound(ctx, logger, err)
 			return nil, nil, err
 		}
 		return startProcess(ctx, path, stdin, args...)

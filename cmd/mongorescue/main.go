@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/app"
 	"github.com/yigitcittan/mongorescue/internal/config"
@@ -107,7 +108,11 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 		case "dashboard":
 			cfg.Dashboard = *dashboard
 		case "tools-dir":
-			cfg.ToolsDir = filepath.Clean(*toolsDir)
+			// An empty flag clears the directory; Clean would turn it into ".".
+			cfg.ToolsDir = ""
+			if v := strings.TrimSpace(*toolsDir); v != "" {
+				cfg.ToolsDir = filepath.Clean(v)
+			}
 		}
 	})
 	if err := cfg.Validate(); err != nil {

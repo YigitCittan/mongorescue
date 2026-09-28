@@ -90,6 +90,16 @@ func TestResolverSearchOrder(t *testing.T) {
 			want:     "",
 		},
 		{
+			name: "darwin resources dir needs a Contents/MacOS executable",
+			goos: "darwin",
+			setup: func(t *testing.T, root string) {
+				writeTool(t, filepath.Join(root, "Resources", "tools", "mongodump"), 0o755)
+			},
+			exe:      "bin/mongorescue",
+			lookPath: notOnPath,
+			want:     "",
+		},
+		{
 			name: "directory with the tool name does not count",
 			goos: "linux",
 			setup: func(t *testing.T, root string) {
@@ -165,7 +175,7 @@ func TestToolNotFoundErrorMessage(t *testing.T) {
 	r := &Resolver{
 		Dir:        filepath.Join(root, "custom"),
 		GOOS:       "darwin",
-		Executable: func() (string, error) { return filepath.Join(root, "bin", "mongorescue"), nil },
+		Executable: func() (string, error) { return filepath.Join(root, "App.app", "Contents", "MacOS", "App"), nil },
 		LookPath:   func(string) (string, error) { return "", errors.New("no") },
 	}
 	_, err := r.Resolve("mongodump")
@@ -173,20 +183,35 @@ func TestToolNotFoundErrorMessage(t *testing.T) {
 	if !errors.As(err, &nf) || !errors.Is(err, ErrToolNotFound) {
 		t.Fatalf("err = %v, want *ToolNotFoundError wrapping ErrToolNotFound", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{
-		"mongodump not found: install MongoDB Database Tools or set " + EnvToolsDir,
-		filepath.Join(root, "custom", "mongodump"),
-		filepath.Join(root, "bin", "tools", "mongodump"),
-		filepath.Join(root, "bin", "..", "Resources", "tools", "mongodump"),
-		"PATH",
-	} {
-		if !strings.Contains(msg, filepath.Clean(want)) && !strings.Contains(msg, want) {
-			t.Errorf("message %q does not contain %q", msg, want)
-		}
+	if want := "mongodump not found: install MongoDB Database Tools or set " + EnvToolsDir; err.Error() != want {
+		t.Errorf("message = %q, want %q (no local paths)", err.Error(), want)
 	}
-	if len(nf.Searched) != 4 {
-		t.Errorf("Searched = %v, want 4 entries", nf.Searched)
+	// The executable does not exist, so its path is used without resolving symlinks.
+	want := []string{
+		filepath.Join(root, "custom", "mongodump"),
+		filepath.Join(root, "App.app", "Contents", "MacOS", "tools", "mongodump"),
+		filepath.Join(root, "App.app", "Contents", "Resources", "tools", "mongodump"),
+		"PATH",
+	}
+	if strings.Join(nf.Searched, "|") != strings.Join(want, "|") {
+		t.Errorf("Searched = %v, want %v", nf.Searched, want)
+	}
+}
+
+func TestResolverIgnoresRelativeDir(t *testing.T) {
+	root := t.TempDir()
+	writeTool(t, filepath.Join(root, "tools", "mongodump"), 0o755)
+	t.Chdir(root)
+	for _, dir := range []string{".", "tools", "./tools"} {
+		r := &Resolver{
+			Dir:        dir,
+			GOOS:       "linux",
+			Executable: func() (string, error) { return "", errors.New("no executable") },
+			LookPath:   func(string) (string, error) { return "", errors.New("no") },
+		}
+		if got, err := r.Resolve("mongodump"); !errors.Is(err, ErrToolNotFound) {
+			t.Errorf("Dir %q: Resolve = %q, %v; want ErrToolNotFound", dir, got, err)
+		}
 	}
 }
 

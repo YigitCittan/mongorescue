@@ -35,6 +35,13 @@ func TestFromEnvAndValidate(t *testing.T) {
 	if c, err := FromEnv(env(map[string]string{EnvToolsDir: " /opt/tools/ "})); err != nil || c.ToolsDir != filepath.FromSlash("/opt/tools") {
 		t.Fatalf("tools dir env = %+v, %v", c, err)
 	}
+	for dir, ok := range map[string]bool{"": true, t.TempDir(): true, ".": false, "tools": false} {
+		c := Default()
+		c.ToolsDir = dir
+		if err := c.Validate(); ok != (err == nil) || !ok && !errors.Is(err, ErrInvalidToolsDir) {
+			t.Errorf("Validate(ToolsDir=%q) = %v", dir, err)
+		}
+	}
 	if c, err := FromEnv(env(map[string]string{EnvDashboard: "1"})); err != nil || !c.Dashboard {
 		t.Fatalf("dashboard env = %+v, %v", c, err)
 	}

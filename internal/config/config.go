@@ -71,6 +71,9 @@ var (
 	// ErrInvalidDashboard is returned for a MONGORESCUE_DASHBOARD value that is not a
 	// boolean.
 	ErrInvalidDashboard = errors.New("config: dashboard must be a boolean (true or false)")
+	// ErrInvalidToolsDir is returned for a tools directory that is not an absolute
+	// path (a relative one would let the working directory supply the binaries).
+	ErrInvalidToolsDir = errors.New("config: tools directory must be an absolute path")
 )
 
 // Config is the bootstrap configuration.
@@ -89,8 +92,8 @@ type Config struct {
 	// Dashboard serves the embedded web dashboard at "/". Off by default: the REST
 	// API, MCP and metrics work without it.
 	Dashboard bool
-	// ToolsDir is searched first for mongodump and mongorestore. Empty means the
-	// bundled locations next to the executable, then PATH.
+	// ToolsDir is the absolute directory searched first for mongodump and
+	// mongorestore. Empty means the bundled locations next to the executable, then PATH.
 	ToolsDir string
 }
 
@@ -141,6 +144,8 @@ func (c *Config) Validate() error {
 		return ErrInvalidPort
 	case strings.ContainsAny(c.Host, " \t\r\n"):
 		return ErrInvalidHost
+	case c.ToolsDir != "" && !filepath.IsAbs(c.ToolsDir):
+		return fmt.Errorf("%s: %w", EnvToolsDir, ErrInvalidToolsDir)
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {

@@ -89,7 +89,7 @@ func spawnHelperGrandchild() {
 // realToolRunner runs the helper through the production process runner (process
 // group, SIGTERM-then-SIGKILL cancellation).
 func realToolRunner(ctx context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
-	return newProcessRunner(mongotools.NewResolver(""))(ctx, os.Args[0], "-test.run=^TestHelperProcess$")
+	return newProcessRunner(mongotools.NewResolver(""), nil)(ctx, os.Args[0], "-test.run=^TestHelperProcess$")
 }
 
 func TestBackupStallWatchdogAbortsSilentDump(t *testing.T) {

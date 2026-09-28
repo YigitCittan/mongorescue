@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func TestDefaultRunnerReportsMissingTool(t *testing.T) {
 		Executable: func() (string, error) { return filepath.Join(root, "mongorescue"), nil },
 		LookPath:   func(string) (string, error) { return "", errors.New("not on PATH") },
 	}
-	_, _, _, err := newProcessRunner(tools)(context.Background(), "mongodump", "--archive")
+	_, _, _, err := newProcessRunner(tools, slog.New(slog.DiscardHandler))(context.Background(), "mongodump", "--archive")
 	if !errors.Is(err, mongotools.ErrToolNotFound) {
 		t.Fatalf("err = %v, want ErrToolNotFound", err)
 	}
