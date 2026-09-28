@@ -67,7 +67,11 @@ Or, with Docker Compose, run `docker compose up -d` in a clone of this repositor
 2. Enter the one-time setup code printed in the logs (`docker logs mongorescue` or `docker compose logs mongorescue`) and create the admin account.
 3. Add a MongoDB connection, test it, and create your first backup job.
 
-The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/). To run the binary instead, download it from [Releases](https://github.com/YigitCittan/mongorescue/releases), put `mongodump` and `mongorestore` (100.3.0 or newer) on your `PATH`, and run `./mongorescue`.
+The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/). It is the only distribution that serves the dashboard over HTTP.
+
+**Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary), put `mongodump` and `mongorestore` (100.3.0 or newer) on your `PATH` and start it. It shows the same dashboard in a native window, without opening a network port, and displays the setup code on first start. See [docs/desktop.md](docs/desktop.md).
+
+**Server binary.** For headless use (REST API, MCP, metrics), download `mongorescue` from Releases, put the tools on your `PATH` and run `./mongorescue`. It serves no dashboard unless you pass `-dashboard` (or set `MONGORESCUE_DASHBOARD=true`); the setup code is printed in its log.
 
 MongoRescue serves plain HTTP. Before you expose the port to a network, put a TLS-terminating reverse proxy in front of it; see [docs/production.md](docs/production.md). No MongoDB to try it with? [examples/with-mongodb.yml](examples/with-mongodb.yml) adds a demo instance to the Compose setup.
 
@@ -120,6 +124,7 @@ Only a few bootstrap options are read at startup:
 | :--- | :--- | :--- |
 | `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) |
 | `-host` / `-port` | `MONGORESCUE_SERVER_HOST` / `MONGORESCUE_SERVER_PORT` | `0.0.0.0` / `8080` |
+| `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) |
 | `-log-level` | | `info` |
 | | `MONGORESCUE_SECRET_KEY` (optional) | generated `<data_dir>/secret.key` |
 
@@ -128,6 +133,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
+- [Desktop app](docs/desktop.md)
 - [REST API](docs/api.md)
 - [AI assistants (MCP)](docs/mcp.md)
 - [Encryption and verified restores](docs/encryption.md)
@@ -144,6 +150,7 @@ You need Go 1.26 or newer.
 make build        # build ./bin/mongorescue
 make test-race    # unit tests
 make test-integration-docker   # integration tests against MongoDB, MinIO and LocalStack in Docker
+make desktop      # desktop app for this OS (needs the Wails CLI and CGO, see docs/desktop.md)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to send a pull request.

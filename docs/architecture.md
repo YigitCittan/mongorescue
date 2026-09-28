@@ -60,15 +60,17 @@ flowchart TB
 - **Stream-first I/O.** Dumps can be hundreds of gigabytes. Data moves through `io.Reader`/`io.Writer` pipes from the tool process to storage and back; it is never read into a `[]byte` or staged as a full copy on disk. Memory use does not grow with dump size. (Passphrase decryption is the one fixed exception: scrypt key derivation costs about 256 MiB, once per operation.)
 - **Explicit dependency injection.** No global singletons. Components receive their dependencies through constructors and functional options (`backup.WithEncryptor`, `restore.WithVerifyPolicy`, `server.WithMetricsHandler`), which keeps every engine testable with fakes.
 - **Standard library first.** `net/http` `ServeMux` with method patterns, `log/slog`, `context`, `crypto`. Third-party modules are limited to the AWS SDK v2, `filippo.io/age`, `robfig/cron/v3`, the Prometheus client, `modernc.org/sqlite`, `golang.org/x/crypto/bcrypt` and the MongoDB Go driver. The driver is confined to the `internal/mongoconn` adapter (connection tests and database/collection discovery); CI fails if any other production package imports it. Dumps and restores always go through `mongodump` and `mongorestore`.
-- **Single binary.** The dashboard (`web/static`) is embedded with `//go:embed`; builds use `CGO_ENABLED=0` and cross-compile to Linux, macOS and Windows.
+- **Single binary.** The dashboard (`web/static`) is embedded with `//go:embed`; server builds use `CGO_ENABLED=0` and cross-compile to Linux, macOS and Windows. The server serves the dashboard only with `-dashboard` / `MONGORESCUE_DASHBOARD=true` (set in the container image). The desktop app (`cmd/mongorescue-desktop`, Wails v2, `desktop` build tag) is the one CGO build: it serves the same handler in-process to a native webview, with no TCP listener; see [desktop.md](desktop.md).
 
 ## Package map
 
 | Package | Responsibility |
 | :--- | :--- |
-| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge instead |
-| `internal/app` | Wires dependencies, starts the HTTP server and scheduler, coordinates graceful shutdown |
-| `internal/config` | Bootstrap options (data directory, listen address, log level, secret key) and the reader for deprecated environment variables and `<data_dir>/config.json` (one-time import) |
+| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-dashboard`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge instead |
+| `cmd/mongorescue-desktop` | Desktop entry point (`desktop` build tag, Wails v2): runs `app` without a listener (`App.Start`/`Stop`) and serves `App.Handler` to the webview |
+| `internal/app` | Wires dependencies, starts the HTTP server and scheduler (or, embedded, only the scheduler and background workers), coordinates graceful shutdown |
+| `internal/desktop` | Desktop adapters without Wails: bootstrap config and log file, the session cookie jar and the same-origin fix for the webview's custom scheme |
+| `internal/config` | Bootstrap options (data directory, listen address, dashboard switch, log level, secret key) and the reader for deprecated environment variables and `<data_dir>/config.json` (one-time import) |
 | `internal/settings` | Dashboard-managed settings (general, security, encryption): validation, keep-secret rule, retired keys, the live snapshot engines and server read |
 | `internal/targets` | Storage targets: validation, keep-secret updates, probe tests, default target, one cached driver per target |
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
@@ -157,7 +159,7 @@ flowchart TD
 
 ## Settings and storage targets
 
-Only bootstrap options (data directory, listen address, log level, optional secret key) come from flags or the environment. Everything else is dashboard-managed and lives in the database:
+Only bootstrap options (data directory, listen address, dashboard switch, log level, optional secret key) come from flags or the environment. Everything else is dashboard-managed and lives in the database:
 
 - **Settings** (`internal/settings`) are stored one row per key in the `settings` table, secrets sealed with secretbox. The service validates every change, persists only the keys that changed and swaps an in-memory snapshot, and rebuilds the age encryptor and decryptor (current plus retired keys). Engines, the scheduler, auth and the HTTP server read that snapshot for each operation or request (`backup.WithRunConfig`, `restore.WithRunConfig`, `auth.WithSessionPolicy`, `server.WithSettings`), so no restart is needed.
 - **Storage targets** (`internal/targets`) are rows of `storage_targets`, exactly one of them the default. The service builds one driver per target through the `storage.NewForTarget` factory, caches it by target and version, and rebuilds it when the target changes. The backup engine writes to the target named in the backup options (the default when none), and every backup record stores its `storage_target_id`: restores, deletions and retention use that target, never the current default. The store refuses to delete a target a job or a completed or running backup still references.

@@ -16,9 +16,12 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key` and the instance lock |
 | `-host` | `MONGORESCUE_SERVER_HOST` | `0.0.0.0` | Listen address |
 | `-port` | `MONGORESCUE_SERVER_PORT` | `8080` | Listen port |
+| `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) | Serve the web dashboard at `/`. Without it the server answers only the REST API, `/mcp` and `/metrics`, and `GET /` returns 404 |
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-version` | | | Print the version and exit |
+
+The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
 
 `mongorescue mcp`, the stdio bridge for AI assistants, reads only `--url`/`MONGORESCUE_MCP_URL` and `MONGORESCUE_MCP_API_KEY` and never opens the data directory; see [mcp.md](mcp.md#transports).
 
