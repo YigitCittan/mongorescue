@@ -1221,6 +1221,8 @@ function setupForms() {
   document.getElementById("form-api-key").addEventListener("submit", createApiKey);
   setupPicker("job");
   setupPicker("instant");
+  setupStorageSelect("job-storage");
+  setupStorageSelect("instant-storage");
   setupSettingsForms();
   setupStorageForm();
 
@@ -3068,30 +3070,71 @@ function backupStorageCell(b) {
   return `<div class="cell-sub storage-sub" title="${escapeHtml(title)}">${escapeHtml(truncate(name, 24))}</div>`;
 }
 
-// Storage target select of the job form and "Back up now"; the default is preselected.
-function fillStorageSelect(select) {
+// Value of the trailing "+ New storage target…" option of a storage select.
+const NEW_STORAGE_OPTION = "__new_storage__";
+
+// Storage target select a storage form opened from it returns to: the select,
+// its value before "+ New storage target…" was chosen, and the saved target.
+let storageReturn = null;
+
+// Storage target select of the job form and "Back up now"; the default is
+// preselected unless selectedId names an existing target. The last option
+// creates a new target without leaving the dialog.
+function fillStorageSelect(select, selectedId) {
   if (!select) return;
   select.textContent = "";
-  if (state.storageTargets.length === 0) {
+  const addOption = (value, label) => {
     const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = t("storage.default_target");
+    opt.value = value;
+    opt.textContent = label;
     select.appendChild(opt);
-    return;
+  };
+  if (state.storageTargets.length === 0) {
+    addOption("", t("storage.default_target"));
   }
   state.storageTargets.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s.id;
-    opt.textContent = s.is_default ? tf("storage.default_named", { name: s.name }) : s.name;
-    select.appendChild(opt);
+    addOption(s.id, s.is_default ? tf("storage.default_named", { name: s.name }) : s.name);
   });
+  addOption(NEW_STORAGE_OPTION, t("storage.new_option"));
   const def = defaultStorageTarget();
-  select.value = def ? def.id : state.storageTargets[0].id;
+  if (selectedId && state.storageTargets.some(s => s.id === selectedId)) {
+    select.value = selectedId;
+  } else if (state.storageTargets.length > 0) {
+    select.value = def ? def.id : state.storageTargets[0].id;
+  } else {
+    select.value = "";
+  }
+  select.dataset.prev = select.value;
+}
+
+// Wires a storage select: choosing "+ New storage target…" opens the storage
+// form on top of the dialog; any other choice is remembered for a cancel.
+function setupStorageSelect(selectId) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  select.addEventListener("change", () => {
+    if (select.value !== NEW_STORAGE_OPTION) {
+      select.dataset.prev = select.value;
+      return;
+    }
+    const prev = select.dataset.prev || "";
+    select.value = prev;
+    openStorageModal("");
+    storageReturn = { select, prev };
+  });
+}
+
+// Called when the storage form closes: a cancelled creation started from a
+// storage select leaves that select on its previous value.
+function storageModalClosed() {
+  const ret = storageReturn;
+  storageReturn = null;
+  if (ret && ret.select) ret.select.value = ret.prev;
 }
 
 function storageSelection(selectId) {
   const value = getValue(selectId);
-  return value ? { storage_target_id: value } : {};
+  return value && value !== NEW_STORAGE_OPTION ? { storage_target_id: value } : {};
 }
 
 function setupStorageForm() {
@@ -3345,9 +3388,13 @@ async function saveStorageTarget(e) {
       if (!def.success) showToast(def.error || t("toasts.request_failed"), "error");
     }
     showToast(t("storage.saved"), "success");
+    // A target created from a storage select is selected there once reloaded.
+    const ret = storageReturn;
+    storageReturn = null;
     closeModal("modal-storage");
     await loadStorageTargets();
     renderStats();
+    if (ret && ret.select) fillStorageSelect(ret.select, savedId || ret.prev);
   } catch (err) {
     showToast(err.message, "error");
   } finally {
@@ -3831,6 +3878,7 @@ function closeModal(id) {
   el.classList.remove("open");
   el.setAttribute("aria-hidden", "true");
   if (id === "modal-api-key") showApiKeyStep("name");
+  if (id === "modal-storage") storageModalClosed();
   const idx = modalStack.findIndex(m => m.id === id);
   const entry = idx >= 0 ? modalStack.splice(idx, 1)[0] : null;
   if (modalStack.length === 0) document.body.classList.remove("modal-open");
