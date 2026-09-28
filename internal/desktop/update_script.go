@@ -3,9 +3,11 @@ package desktop
 import "strings"
 
 // updateScript shows the update status of Updater in the dashboard. It polls
-// UpdatePath until the startup check is done (and while a download runs), then
-// shows either a blocking full-screen dialog for a mandatory update or a dismissible
-// bar at the bottom of the window for an optional one. The mandatory dialog is a
+// UpdatePath closely while a check or a download runs and every 10 minutes
+// otherwise, and shows either a blocking full-screen dialog for a mandatory update
+// or a dismissible bar at the bottom of the window for an optional one. A release
+// without a verifiable file for this platform only gets the bar, with the release
+// page instead of "Update". The mandatory dialog is a
 // modal <dialog> (the rest of the page is inert): Escape, the cancel event and a
 // close are all undone, and Tab stays inside it; engines without showModal get a
 // fixed overlay with the page's other top-level elements made inert. "Later" hides
@@ -29,6 +31,8 @@ const updateScript = `(function (paths, header) {
       hideNotes: "Hide release notes",
       later: "Later",
       releasePage: "Open the release page",
+      checking: "Checking the release…",
+      manual: "This release has no installer for your system yet. Download it from the release page.",
       downloading: "Downloading and verifying the update…",
       launching: "Starting the installer. MongoRescue will close.",
       saved: "Saved to your Downloads folder: {file}. Quit MongoRescue and replace it with the new version.",
@@ -49,6 +53,8 @@ const updateScript = `(function (paths, header) {
       hideNotes: "Sürüm notlarını gizle",
       later: "Daha sonra",
       releasePage: "Sürüm sayfasını aç",
+      checking: "Sürüm denetleniyor…",
+      manual: "Bu sürümde sisteminiz için henüz kurulum dosyası yok. Sürüm sayfasından indirin.",
       downloading: "Güncelleme indiriliyor ve doğrulanıyor…",
       launching: "Kurulum başlatılıyor. MongoRescue kapanacak.",
       saved: "İndirilenler klasörüne kaydedildi: {file}. MongoRescue'dan çıkın ve yeni sürümle değiştirin.",
@@ -58,7 +64,7 @@ const updateScript = `(function (paths, header) {
       noNotes: "Sürüm notu yok."
     }
   };
-  var POLL_MS = 1500, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
+  var POLL_MS = 1500, SLOW_POLL_MS = 600000, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
   var started = Date.now(), timer = null, ui = null, status = null;
 
   function language() {
@@ -103,13 +109,17 @@ const updateScript = `(function (paths, header) {
     if (timer) { clearTimeout(timer); }
     timer = setTimeout(poll, POLL_MS);
   }
+  // poll follows a check or a download closely, then looks again every
+  // SLOW_POLL_MS: the app checks for releases periodically while it runs.
   function poll() {
     timer = null;
     getStatus().then(function (s) {
       if (s) { render(s); }
       var state = s ? s.state : "";
-      if (state === "downloading" || ((!s || state === "checking") && Date.now() - started < CHECK_LIMIT_MS)) {
+      if (state === "downloading" || state === "checking" || (!s && Date.now() - started < CHECK_LIMIT_MS)) {
         schedule();
+      } else if (!timer) {
+        timer = setTimeout(poll, SLOW_POLL_MS);
       }
     });
   }
@@ -284,7 +294,7 @@ const updateScript = `(function (paths, header) {
   function render(s) {
     status = s;
     if (!s.available) { remove(); return; }
-    var active = s.state === "downloading" || s.state === "ready" || s.state === "error";
+    var active = s.state === "checking" || s.state === "downloading" || s.state === "ready" || s.state === "error";
     if (!s.mandatory && !active && later(s.latest)) { remove(); return; }
     if (ui && ui.mandatory !== !!s.mandatory) { remove(); }
     if (!ui) { ui = build(!!s.mandatory); }
@@ -300,6 +310,9 @@ const updateScript = `(function (paths, header) {
     ui.notes.textContent = plain(s.notes) || t("noNotes");
     var label = t(ui.mandatory ? "updateNow" : "update"), text = "";
     switch (s.state) {
+    case "checking":
+      text = t("checking");
+      break;
     case "downloading":
       text = t("downloading");
       break;
@@ -315,7 +328,14 @@ const updateScript = `(function (paths, header) {
     ui.state.style.display = text || ui.mandatory ? "" : "none";
     ui.update.textContent = label;
     ui.update.disabled = s.state === "downloading" || s.state === "checking" || (s.state === "ready" && s.action === "launch");
-    if (ui.pageRow) { ui.pageRow.hidden = s.state !== "error"; }
+    // Without a verifiable file for this platform (yet), only the release page
+    // is offered; "Try again" after an error checks for the files again.
+    ui.update.hidden = !s.installable && s.state !== "error";
+    if (!s.installable && s.state === "idle") {
+      ui.state.textContent = t("manual");
+      ui.state.style.display = "";
+    }
+    if (ui.pageRow) { ui.pageRow.hidden = s.installable && s.state !== "error"; }
   }
 
   poll();
