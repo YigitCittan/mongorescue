@@ -72,6 +72,9 @@ func ParseConfig(args []string, getenv func(string) string, stderr io.Writer) (*
 		}
 	}
 	cfg.SecretKey = strings.TrimSpace(getenv(config.EnvSecretKey))
+	if v := strings.TrimSpace(getenv(config.EnvToolsDir)); v != "" {
+		cfg.ToolsDir = filepath.Clean(v)
+	}
 	cfg.LogLevel = level
 	cfg.Dashboard = true
 	if err := cfg.Validate(); err != nil {

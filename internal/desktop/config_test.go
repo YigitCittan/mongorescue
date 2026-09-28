@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,6 +44,14 @@ func TestParseConfig(t *testing.T) {
 	cfg, err = ParseConfig(nil, envMap(map[string]string{config.EnvPort: "http", config.EnvDashboard: "maybe", config.EnvHost: "a b"}), &stderr)
 	if err != nil || !cfg.Dashboard || cfg.DataDir != def {
 		t.Fatalf("server-only env = %+v, %v", cfg, err)
+	}
+	tools := t.TempDir()
+	cfg, err = ParseConfig(nil, envMap(map[string]string{config.EnvToolsDir: tools}), &stderr)
+	if err != nil || cfg.ToolsDir != tools {
+		t.Fatalf("env tools dir = %+v, %v", cfg, err)
+	}
+	if _, err := ParseConfig(nil, envMap(map[string]string{config.EnvToolsDir: "tools"}), &stderr); !errors.Is(err, config.ErrInvalidToolsDir) {
+		t.Fatalf("relative MONGORESCUE_TOOLS_DIR: err = %v, want ErrInvalidToolsDir", err)
 	}
 	if _, err := ParseConfig(nil, envMap(map[string]string{config.EnvSecretKey: "short"}), &stderr); err == nil {
 		t.Fatal("invalid MONGORESCUE_SECRET_KEY accepted")
