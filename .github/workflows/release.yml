@@ -109,7 +109,10 @@ jobs:
 
       - name: Install NSIS
         if: runner.os == 'Windows'
-        run: command -v makensis || choco install nsis -y --no-progress
+        run: |
+          command -v makensis || choco install nsis -y --no-progress
+          # choco does not put NSIS on PATH for later steps.
+          echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
 
       - name: Install Wails CLI
         run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
@@ -129,6 +132,10 @@ jobs:
           wails build -clean -trimpath -s -skipbindings -m -nosyncgomod \
             -platform "$PLATFORM" -tags "$TAGS" \
             -ldflags "-X main.Version=${TAG#v} -X main.Commit=${GITHUB_SHA::7}" "${nsis[@]}"
+          # wails only warns when makensis is missing; fail instead.
+          if [ "$RUNNER_OS" = "Windows" ] && [ ! -f build/bin/MongoRescue-amd64-installer.exe ]; then
+            echo "::error::NSIS installer was not produced"; exit 1
+          fi
 
       - name: Package artifacts
         working-directory: cmd/mongorescue-desktop/build/bin
