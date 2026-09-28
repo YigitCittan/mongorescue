@@ -1,7 +1,8 @@
 // Package config holds the bootstrap options MongoRescue needs before it can open its
-// database: the data directory, the listen address, the log level and the optional
-// secret key. Everything else (storage targets, encryption, security, limits) is
-// managed in the dashboard and stored in the database (internal/settings).
+// database: the data directory, the listen address, the log level, the optional
+// secret key and whether the web dashboard is served. Everything else (storage
+// targets, encryption, security, limits) is managed in the dashboard and stored in
+// the database (internal/settings).
 //
 // The package also reads the environment variables and the <data_dir>/config.json
 // file of earlier releases (see LoadLegacy), so they can be imported into the database
@@ -31,6 +32,10 @@ const (
 	// EnvSecretKey supplies the base64 key that encrypts stored credentials instead of
 	// <data_dir>/secret.key.
 	EnvSecretKey = "MONGORESCUE_SECRET_KEY" //nolint:gosec // G101: a variable name, not a credential.
+	// EnvDashboard enables the embedded web dashboard on the HTTP server ("true",
+	// "1", ...; see strconv.ParseBool). The container image sets it; installer-based
+	// installs use the desktop app instead.
+	EnvDashboard = "MONGORESCUE_DASHBOARD"
 )
 
 // Defaults.
@@ -58,6 +63,9 @@ var (
 	ErrInvalidHost = errors.New("config: host must not contain whitespace")
 	// ErrInvalidLogLevel is returned for an unknown log level.
 	ErrInvalidLogLevel = errors.New("config: log level must be debug, info, warn or error")
+	// ErrInvalidDashboard is returned for a MONGORESCUE_DASHBOARD value that is not a
+	// boolean.
+	ErrInvalidDashboard = errors.New("config: dashboard must be a boolean (true or false)")
 )
 
 // Config is the bootstrap configuration.
@@ -73,6 +81,9 @@ type Config struct {
 	// SecretKey is the optional base64 key (MONGORESCUE_SECRET_KEY) that encrypts
 	// stored credentials. Empty means <DataDir>/secret.key, generated on first start.
 	SecretKey string
+	// Dashboard serves the embedded web dashboard at "/". Off by default: the REST
+	// API, MCP and metrics work without it.
+	Dashboard bool
 }
 
 // Default returns the defaults of the binary.
@@ -99,6 +110,13 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	}
 	if v := strings.TrimSpace(getenv(EnvSecretKey)); v != "" {
 		cfg.SecretKey = v
+	}
+	if v := strings.TrimSpace(getenv(EnvDashboard)); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvDashboard, ErrInvalidDashboard)
+		}
+		cfg.Dashboard = b
 	}
 	return cfg, nil
 }

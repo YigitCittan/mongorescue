@@ -26,6 +26,15 @@ func TestFromEnvAndValidate(t *testing.T) {
 	if err != nil || cfg.DataDir != filepath.FromSlash("/data") || cfg.Host != "127.0.0.1" || cfg.Port != 9000 || cfg.Validate() != nil {
 		t.Fatalf("env = %+v, %v", cfg, err)
 	}
+	if cfg.Dashboard {
+		t.Fatal("dashboard enabled without MONGORESCUE_DASHBOARD")
+	}
+	if c, err := FromEnv(env(map[string]string{EnvDashboard: "1"})); err != nil || !c.Dashboard {
+		t.Fatalf("dashboard env = %+v, %v", c, err)
+	}
+	if _, err := FromEnv(env(map[string]string{EnvDashboard: "yes please"})); !errors.Is(err, ErrInvalidDashboard) {
+		t.Fatalf("bad dashboard = %v", err)
+	}
 	if cfg.MetadataDBPath() != filepath.Join(filepath.FromSlash("/data"), DefaultDatabaseFileName) {
 		t.Fatalf("db path = %s", cfg.MetadataDBPath())
 	}

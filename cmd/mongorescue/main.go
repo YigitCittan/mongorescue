@@ -1,9 +1,9 @@
 // Package main is the entrypoint for MongoRescue CLI and embedded service.
 //
-// Only bootstrap options are read here (data directory, listen address, log level and
-// the optional secret key); everything else is configured in the dashboard and stored
-// in the database. "mongorescue mcp" runs the stdio bridge for AI assistants instead
-// of the server.
+// Only bootstrap options are read here (data directory, listen address, log level,
+// the optional secret key and whether the web dashboard is served); everything else
+// is configured in the dashboard and stored in the database. "mongorescue mcp" runs
+// the stdio bridge for AI assistants instead of the server.
 package main
 
 import (
@@ -74,6 +74,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	dataDir := fs.String("data-dir", "", "Data directory holding mongorescue.db and secret.key (env "+config.EnvDataDir+", default "+config.DefaultDataDir+")")
 	host := fs.String("host", "", "Listen address (env "+config.EnvHost+", default "+config.DefaultHost+")")
 	port := fs.Int("port", 0, fmt.Sprintf("Listen port (env %s, default %d)", config.EnvPort, config.DefaultPort))
+	dashboard := fs.Bool("dashboard", false, "Serve the embedded web dashboard (env "+config.EnvDashboard+", default false)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -101,6 +102,8 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.Host = *host
 		case "port":
 			cfg.Port = *port
+		case "dashboard":
+			cfg.Dashboard = *dashboard
 		}
 	})
 	if err := cfg.Validate(); err != nil {
