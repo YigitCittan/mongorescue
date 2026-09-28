@@ -18,6 +18,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
@@ -88,7 +89,7 @@ func spawnHelperGrandchild() {
 // realToolRunner runs the helper through the production process runner (process
 // group, SIGTERM-then-SIGKILL cancellation).
 func realToolRunner(ctx context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
-	return defaultProcessRunner(ctx, os.Args[0], "-test.run=^TestHelperProcess$")
+	return newProcessRunner(mongotools.NewResolver(""))(ctx, os.Args[0], "-test.run=^TestHelperProcess$")
 }
 
 func TestBackupStallWatchdogAbortsSilentDump(t *testing.T) {

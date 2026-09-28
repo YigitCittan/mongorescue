@@ -1,6 +1,7 @@
 // Package config holds the bootstrap options MongoRescue needs before it can open its
 // database: the data directory, the listen address, the log level, the optional
-// secret key and whether the web dashboard is served. Everything else (storage
+// secret key, the MongoDB Database Tools directory and whether the web dashboard is
+// served. Everything else (storage
 // targets, encryption, security, limits) is managed in the dashboard and stored in
 // the database (internal/settings).
 //
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
 
@@ -36,6 +38,9 @@ const (
 	// "1", ...; see strconv.ParseBool). The container image sets it; installer-based
 	// installs use the desktop app instead.
 	EnvDashboard = "MONGORESCUE_DASHBOARD"
+	// EnvToolsDir sets a directory searched first for mongodump and mongorestore
+	// (before <executable dir>/tools and PATH; see mongotools.Resolver).
+	EnvToolsDir = mongotools.EnvToolsDir
 )
 
 // Defaults.
@@ -84,6 +89,9 @@ type Config struct {
 	// Dashboard serves the embedded web dashboard at "/". Off by default: the REST
 	// API, MCP and metrics work without it.
 	Dashboard bool
+	// ToolsDir is searched first for mongodump and mongorestore. Empty means the
+	// bundled locations next to the executable, then PATH.
+	ToolsDir string
 }
 
 // Default returns the defaults of the binary.
@@ -110,6 +118,9 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	}
 	if v := strings.TrimSpace(getenv(EnvSecretKey)); v != "" {
 		cfg.SecretKey = v
+	}
+	if v := strings.TrimSpace(getenv(EnvToolsDir)); v != "" {
+		cfg.ToolsDir = filepath.Clean(v)
 	}
 	if v := strings.TrimSpace(getenv(EnvDashboard)); v != "" {
 		b, err := strconv.ParseBool(v)

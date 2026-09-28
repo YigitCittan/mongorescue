@@ -17,11 +17,23 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | `-host` | `MONGORESCUE_SERVER_HOST` | `0.0.0.0` | Listen address |
 | `-port` | `MONGORESCUE_SERVER_PORT` | `8080` | Listen port |
 | `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) | Serve the web dashboard at `/`. Without it the server answers only the REST API, `/mcp` and `/metrics`, and `GET /` returns 404 |
+| `-tools-dir` | `MONGORESCUE_TOOLS_DIR` | none | Directory searched first for `mongodump` and `mongorestore` (see [MongoDB Database Tools](#mongodb-database-tools)) |
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-version` | | | Print the version and exit |
 
 The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
+
+### MongoDB Database Tools
+
+Backups and restores run `mongodump` and `mongorestore`. MongoRescue uses the first match of:
+
+1. the directory given by `-tools-dir` / `MONGORESCUE_TOOLS_DIR`;
+2. `tools/` next to the MongoRescue executable (`<install dir>\tools\mongodump.exe` on Windows, `<dir>/tools/mongodump` on Linux and macOS);
+3. on macOS, `Contents/Resources/tools/` inside the `.app` bundle (`MongoRescue.app/Contents/Resources/tools/mongodump`);
+4. `PATH`.
+
+On Windows `.exe` is appended. Only regular, executable files count. The paths found are logged at startup; a missing tool is logged as a warning, and backups or restores then fail with `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR (searched: …)`.
 
 `mongorescue mcp`, the stdio bridge for AI assistants, reads only `--url`/`MONGORESCUE_MCP_URL` and `MONGORESCUE_MCP_API_KEY` and never opens the data directory; see [mcp.md](mcp.md#transports).
 

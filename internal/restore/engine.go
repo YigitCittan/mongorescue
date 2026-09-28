@@ -45,6 +45,7 @@ type Engine struct {
 	logger       *slog.Logger
 	defaultURI   string
 	runner       ProcessRunner
+	toolsDir     string
 	decryptor    *encryption.Decryptor
 	verifyPolicy models.VerifyPolicy
 	timeout      time.Duration
@@ -125,6 +126,15 @@ func WithRunner(runner ProcessRunner) Option {
 	}
 }
 
+// WithToolsDir makes the default runner look for mongorestore in dir before the
+// bundled locations and PATH (see mongotools.Resolver). It has no effect with
+// WithRunner.
+func WithToolsDir(dir string) Option {
+	return func(e *Engine) {
+		e.toolsDir = dir
+	}
+}
+
 // WithLogger specifies a custom structured logger.
 func WithLogger(logger *slog.Logger) Option {
 	return func(e *Engine) {
@@ -168,12 +178,14 @@ func NewEngine(store storage.Storage, defaultURI string, opts ...Option) *Engine
 		storage:      store,
 		logger:       slog.Default(),
 		defaultURI:   defaultURI,
-		runner:       defaultProcessRunner,
 		verifyPolicy: models.VerifyAuto,
 	}
 
 	for _, opt := range opts {
 		opt(e)
+	}
+	if e.runner == nil {
+		e.runner = newProcessRunner(mongotools.NewResolver(e.toolsDir))
 	}
 
 	return e
@@ -538,11 +550,24 @@ func (t *errTrackingReader) Err() error {
 	return t.err
 }
 
-// defaultProcessRunner starts an OS subprocess piping stdin and capturing stderr. The
-// process runs in its own process group and is terminated (SIGTERM, then SIGKILL after
-// mongotools.KillGracePeriod) together with any children when ctx is done.
-func defaultProcessRunner(ctx context.Context, name string, stdin io.Reader, args ...string) (io.Reader, func() error, error) {
-	cmd := mongotools.Command(ctx, name, args...)
+// newProcessRunner returns the default runner: it resolves the tool with tools
+// (failing with an error wrapping mongotools.ErrToolNotFound) and starts it piping
+// stdin and capturing stderr. The process runs in its own process group and is
+// terminated (SIGTERM, then SIGKILL after mongotools.KillGracePeriod) together with
+// any children when ctx is done.
+func newProcessRunner(tools *mongotools.Resolver) ProcessRunner {
+	return func(ctx context.Context, name string, stdin io.Reader, args ...string) (io.Reader, func() error, error) {
+		path, err := tools.Resolve(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		return startProcess(ctx, path, stdin, args...)
+	}
+}
+
+// startProcess starts the executable at path piping stdin and capturing stderr.
+func startProcess(ctx context.Context, path string, stdin io.Reader, args ...string) (io.Reader, func() error, error) {
+	cmd := mongotools.Command(ctx, path, args...)
 	cmd.Stdin = stdin
 
 	stderr, err := cmd.StderrPipe()

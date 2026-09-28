@@ -29,6 +29,12 @@ func TestFromEnvAndValidate(t *testing.T) {
 	if cfg.Dashboard {
 		t.Fatal("dashboard enabled without MONGORESCUE_DASHBOARD")
 	}
+	if cfg.ToolsDir != "" {
+		t.Fatalf("tools dir = %q without %s", cfg.ToolsDir, EnvToolsDir)
+	}
+	if c, err := FromEnv(env(map[string]string{EnvToolsDir: " /opt/tools/ "})); err != nil || c.ToolsDir != filepath.FromSlash("/opt/tools") {
+		t.Fatalf("tools dir env = %+v, %v", c, err)
+	}
 	if c, err := FromEnv(env(map[string]string{EnvDashboard: "1"})); err != nil || !c.Dashboard {
 		t.Fatalf("dashboard env = %+v, %v", c, err)
 	}

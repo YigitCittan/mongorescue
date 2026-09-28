@@ -43,6 +43,10 @@ func TestFlagsOverrideBootstrapEnvironment(t *testing.T) {
 	if err != nil || !cfg.Dashboard {
 		t.Fatalf("-dashboard = %+v, %v", cfg, err)
 	}
+	cfg, _, _, err = parseFlags([]string{"-tools-dir", "/opt/flag"}, env(map[string]string{config.EnvToolsDir: "/opt/env"}), &stderr)
+	if err != nil || cfg.ToolsDir != filepath.FromSlash("/opt/flag") {
+		t.Fatalf("-tools-dir over env = %+v, %v", cfg, err)
+	}
 }
 
 func TestFlagErrors(t *testing.T) {
