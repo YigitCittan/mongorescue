@@ -12,15 +12,47 @@ const setupFillTimeoutMS = 60000
 // field with its label and hint, and moves the focus to the username. The dashboard
 // shows the setup card after its first API calls, so the script watches the DOM with
 // a MutationObserver until the card is visible, then disconnects; it gives up after
-// setupFillTimeoutMS. It sets properties and CSSOM styles only: neither the code nor
-// the page's Content Security Policy can turn it into markup.
+// setupFillTimeoutMS. It then watches only the setup error and the setup card: the
+// first error shown reveals the code field again and makes it editable, so a
+// rejected code can be seen and corrected; that observer disconnects after the
+// reveal or once the setup card is hidden. It sets properties and CSSOM styles only:
+// neither the code nor the page's Content Security Policy can turn it into markup.
 const setupFillScript = `(function (code, timeoutMS) {
-  var observer = null, timer = null, done = false;
+  var observer = null, timer = null, done = false, errorObserver = null;
   function el(id) { return document.getElementById(id); }
   function stop() {
     done = true;
     if (observer) { observer.disconnect(); observer = null; }
     if (timer) { clearTimeout(timer); timer = null; }
+    watchError();
+  }
+  function stopError() {
+    if (errorObserver) { errorObserver.disconnect(); errorObserver = null; }
+  }
+  function reveal() {
+    var input = el("setup-code");
+    if (!input) { return; }
+    input.readOnly = false;
+    input.removeAttribute("aria-readonly");
+    var group = input.closest(".form-group");
+    if (group) { group.style.display = ""; }
+  }
+  function checkError() {
+    var error = el("setup-error"), card = el("setup-card");
+    if (error && !error.hidden && error.textContent.trim() !== "") {
+      stopError();
+      reveal();
+    } else if (!card || card.hidden) {
+      stopError();
+    }
+  }
+  function watchError() {
+    var error = el("setup-error"), card = el("setup-card");
+    if (!error || !card || typeof MutationObserver !== "function") { return; }
+    errorObserver = new MutationObserver(checkError);
+    errorObserver.observe(error, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
+    errorObserver.observe(card, { attributes: true, attributeFilter: ["hidden"] });
+    checkError();
   }
   function fill() {
     var input = el("setup-code");

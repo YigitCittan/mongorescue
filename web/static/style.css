@@ -1577,7 +1577,8 @@ input[type="radio"] {
   gap: 8px;
 }
 
-.input-with-btn .form-input {
+.input-with-btn .form-input,
+.input-with-btn .form-select {
   flex: 1;
   min-width: 0;
 }

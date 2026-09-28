@@ -16,6 +16,11 @@ func TestSetupCodeScript(t *testing.T) {
 		`el("setup-username")`,         // the focus moves to the username
 		"observer.disconnect()",        // the observer does not outlive the fill
 		"setTimeout(stop,",             // nor the timeout
+		`el("setup-error")`,            // a setup error is watched for
+		`input.readOnly = false`,       // and makes the code editable again
+		`group.style.display = ""`,     // and visible
+		"errorObserver.disconnect()",   // the error watch ends too
+		`errorObserver.observe(card, { attributes: true, attributeFilter: ["hidden"] })`, // once the setup card is hidden
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("script lacks %q:\n%s", want, js)

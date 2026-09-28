@@ -11,10 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: an absolute directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
-- Dashboard: the storage target list in the "Back up now" dialog and the job form ends with "+ New storage target…", which opens the storage target form and selects the new target once it is saved.
+- Dashboard: a "New" button next to the storage target list in the "Back up now" dialog and the job form opens the storage target form on top of the dialog and selects the new target once it is saved; cancelling leaves the choice unchanged.
 
 ### Changed
-- Desktop app: the setup form fills in the one-time setup code itself and hides the field, so the first administrator only chooses a username and a password. The setup-code banner and the clipboard copy are gone; the server still verifies the code.
+- Desktop app: the setup form fills in the one-time setup code itself and hides the field, so the first administrator only chooses a username and a password. The setup-code banner and the clipboard copy are gone; the server still verifies the code. If setup fails, the code field reappears and can be edited.
 
 ### Fixed
 - Backups and restores no longer depend on the MongoDB Database Tools being on `PATH`: tools bundled next to the executable (such as with the desktop app on Windows) are found, and a missing tool fails with an actionable `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (searched locations are logged) instead of `executable file not found in %PATH%`.
