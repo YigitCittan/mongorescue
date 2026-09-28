@@ -1,0 +1,407 @@
+package update
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+func TestParseVersion(t *testing.T) {
+	good := map[string]Version{
+		"1.2.3":     {1, 2, 3},
+		"v0.3.2":    {0, 3, 2},
+		"v10.0.100": {10, 0, 100},
+	}
+	for in, want := range good {
+		got, err := ParseVersion(in)
+		if err != nil || got != want {
+			t.Errorf("ParseVersion(%q) = %v, %v; want %v", in, got, err, want)
+		}
+		if got.String() != strings.TrimPrefix(in, "v") {
+			t.Errorf("String() = %q", got.String())
+		}
+	}
+	for _, in := range []string{"", "dev", "1.2", "1.2.3.4", "v1.2.3-rc.1", "1.2.3+build", "01.2.3", "1.-2.3", "vv1.2.3", "1..3", "1.2.x", "1.2.3 "} {
+		if _, err := ParseVersion(in); !errors.Is(err, ErrInvalidVersion) {
+			t.Errorf("ParseVersion(%q) err = %v; want ErrInvalidVersion", in, err)
+		}
+	}
+}
+
+func TestCompare(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0", "1.0.0", 0},
+		{"1.0.1", "1.0.0", 1},
+		{"1.1.0", "1.0.9", 1},
+		{"2.0.0", "1.9.9", 1},
+		{"0.3.2", "0.10.0", -1},
+	}
+	for _, c := range cases {
+		a, _ := ParseVersion(c.a)
+		b, _ := ParseVersion(c.b)
+		if got := a.Compare(b); got != c.want {
+			t.Errorf("%s vs %s = %d; want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestAssetName(t *testing.T) {
+	v := Version{1, 2, 3}
+	cases := map[[2]string]string{
+		{"windows", "amd64"}: "MongoRescue-desktop_1.2.3_windows_amd64_installer.exe",
+		{"darwin", "arm64"}:  "MongoRescue-desktop_1.2.3_macos_universal.zip",
+		{"darwin", "amd64"}:  "MongoRescue-desktop_1.2.3_macos_universal.zip",
+		{"linux", "amd64"}:   "MongoRescue-desktop_1.2.3_linux_amd64.tar.gz",
+	}
+	for p, want := range cases {
+		if got, err := AssetName(p[0], p[1], v); err != nil || got != want {
+			t.Errorf("AssetName(%v) = %q, %v; want %q", p, got, err, want)
+		}
+	}
+	for _, p := range [][2]string{{"linux", "arm64"}, {"windows", "arm64"}, {"freebsd", "amd64"}} {
+		if _, err := AssetName(p[0], p[1], v); !errors.Is(err, ErrUnsupportedPlatform) {
+			t.Errorf("AssetName(%v) err = %v; want ErrUnsupportedPlatform", p, err)
+		}
+	}
+	if got := ChecksumsName(v); got != "MongoRescue-desktop_1.2.3_checksums.txt" {
+		t.Errorf("ChecksumsName = %q", got)
+	}
+}
+
+// fakeGitHub serves the releases/latest API and the release downloads.
+type fakeGitHub struct {
+	srv       *httptest.Server
+	tag       string
+	status    int
+	pre       bool
+	files     map[string][]byte // download name -> content
+	checksums string            // "" : generated from files
+	userAgent atomic.Value
+	extraURL  string // an asset URL added verbatim
+}
+
+func newFakeGitHub(t *testing.T, tag string) *fakeGitHub {
+	t.Helper()
+	f := &fakeGitHub{tag: tag, status: http.StatusOK, files: map[string][]byte{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/YigitCittan/mongorescue/releases/latest", f.latest)
+	mux.HandleFunc("GET /YigitCittan/mongorescue/releases/download/{tag}/{name}", f.download)
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeGitHub) checker(goos, goarch string) *Checker {
+	return &Checker{
+		Client:         f.srv.Client(),
+		DownloadClient: f.srv.Client(),
+		BaseURL:        f.srv.URL,
+		DownloadPrefix: f.srv.URL + "/YigitCittan/mongorescue/releases/download/",
+		ReleasesPrefix: f.srv.URL + "/YigitCittan/mongorescue/releases/",
+		GOOS:           goos,
+		GOARCH:         goarch,
+	}
+}
+
+func (f *fakeGitHub) dl(name string) string {
+	return f.srv.URL + "/YigitCittan/mongorescue/releases/download/" + f.tag + "/" + name
+}
+
+func (f *fakeGitHub) latest(w http.ResponseWriter, r *http.Request) {
+	f.userAgent.Store(r.Header.Get("User-Agent"))
+	if f.status != http.StatusOK {
+		w.WriteHeader(f.status)
+		return
+	}
+	type asset struct {
+		Name string `json:"name"`
+		URL  string `json:"browser_download_url"`
+	}
+	rel := struct {
+		Tag        string  `json:"tag_name"`
+		Body       string  `json:"body"`
+		HTMLURL    string  `json:"html_url"`
+		Prerelease bool    `json:"prerelease"`
+		Assets     []asset `json:"assets"`
+	}{Tag: f.tag, Body: "## Added\n- things", HTMLURL: f.srv.URL + "/YigitCittan/mongorescue/releases/tag/" + f.tag, Prerelease: f.pre}
+	for name := range f.files {
+		rel.Assets = append(rel.Assets, asset{name, f.dl(name)})
+	}
+	if f.extraURL != "" {
+		rel.Assets = append(rel.Assets, asset{"MongoRescue-desktop_" + strings.TrimPrefix(f.tag, "v") + "_linux_amd64.tar.gz", f.extraURL})
+	}
+	_ = json.NewEncoder(w).Encode(rel)
+}
+
+func (f *fakeGitHub) download(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if strings.HasSuffix(name, "_checksums.txt") {
+		if f.checksums != "" {
+			_, _ = w.Write([]byte(f.checksums))
+			return
+		}
+		var b strings.Builder
+		for n, c := range f.files {
+			if !strings.HasSuffix(n, "_checksums.txt") {
+				sum := sha256.Sum256(c)
+				fmt.Fprintf(&b, "%s  %s\n", hex.EncodeToString(sum[:]), n)
+			}
+		}
+		_, _ = w.Write([]byte(b.String()))
+		return
+	}
+	c, ok := f.files[name]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	_, _ = w.Write(c)
+}
+
+// release adds the linux asset and a checksums file to f.
+func (f *fakeGitHub) release(content string) string {
+	v := strings.TrimPrefix(f.tag, "v")
+	name := "MongoRescue-desktop_" + v + "_linux_amd64.tar.gz"
+	f.files[name] = []byte(content)
+	f.files["MongoRescue-desktop_"+v+"_checksums.txt"] = nil
+	f.files["MongoRescue-desktop_"+v+"_windows_amd64_installer.exe"] = []byte("exe")
+	return name
+}
+
+func TestCheckPolicy(t *testing.T) {
+	cases := []struct {
+		current, tag         string
+		available, mandatory bool
+	}{
+		{"1.2.3", "v1.2.3", false, false},
+		{"1.2.3", "v1.2.4", true, false},
+		{"1.2.3", "v1.3.0", true, false},
+		{"v1.2.3", "v2.0.0", true, true},
+		{"2.0.0", "v1.9.9", false, false},
+	}
+	for _, c := range cases {
+		f := newFakeGitHub(t, c.tag)
+		name := f.release("data")
+		res, err := f.checker("linux", "amd64").Check(context.Background(), c.current)
+		if err != nil {
+			t.Fatalf("%s->%s: %v", c.current, c.tag, err)
+		}
+		if res.Available != c.available || res.Mandatory != c.mandatory {
+			t.Errorf("%s->%s: available=%v mandatory=%v; want %v %v", c.current, c.tag, res.Available, res.Mandatory, c.available, c.mandatory)
+		}
+		if res.Asset.Name != name || res.Asset.URL != f.dl(name) || res.ChecksumsURL == "" {
+			t.Errorf("asset = %+v checksums = %q", res.Asset, res.ChecksumsURL)
+		}
+		if res.Notes != "## Added\n- things" || !strings.HasSuffix(res.HTMLURL, "/releases/tag/"+c.tag) {
+			t.Errorf("notes %q url %q", res.Notes, res.HTMLURL)
+		}
+		if ua, _ := f.userAgent.Load().(string); ua != "MongoRescue/"+strings.TrimPrefix(c.current, "v") {
+			t.Errorf("User-Agent = %q", ua)
+		}
+	}
+}
+
+func TestCheckErrors(t *testing.T) {
+	f := newFakeGitHub(t, "v1.0.0")
+	ck := f.checker("linux", "amd64")
+	if _, err := ck.Check(context.Background(), "dev"); !errors.Is(err, ErrInvalidVersion) {
+		t.Errorf("dev: %v", err)
+	}
+	f.status = http.StatusNotFound
+	if _, err := ck.Check(context.Background(), "1.0.0"); !errors.Is(err, ErrNoRelease) {
+		t.Errorf("404: %v", err)
+	}
+	f.status = http.StatusForbidden
+	if _, err := ck.Check(context.Background(), "1.0.0"); !errors.Is(err, ErrUnexpectedStatus) {
+		t.Errorf("403: %v", err)
+	}
+	f.status = http.StatusOK
+	f.tag = "v2.0.0-rc.1"
+	if _, err := ck.Check(context.Background(), "1.0.0"); !errors.Is(err, ErrNoRelease) {
+		t.Errorf("pre-release tag: %v", err)
+	}
+	f.tag, f.pre = "v2.0.0", true
+	if _, err := ck.Check(context.Background(), "1.0.0"); !errors.Is(err, ErrNoRelease) {
+		t.Errorf("prerelease flag: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ck.Check(ctx, "1.0.0"); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled: %v", err)
+	}
+}
+
+func TestCheckIgnoresUntrustedURLs(t *testing.T) {
+	f := newFakeGitHub(t, "v1.1.0")
+	f.extraURL = "https://evil.example/YigitCittan/mongorescue/releases/download/v1.1.0/x"
+	res, err := f.checker("linux", "amd64").Check(context.Background(), "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Asset.URL != "" {
+		t.Errorf("untrusted asset accepted: %+v", res.Asset)
+	}
+	ck := &Checker{}
+	for _, u := range []string{
+		"https://github.com/YigitCittan/mongorescue/releases/download/v1/a.zip",
+	} {
+		if !ck.trusted(u, DefaultDownloadPrefix) {
+			t.Errorf("rejected %s", u)
+		}
+	}
+	for _, u := range []string{
+		"http://github.com/YigitCittan/mongorescue/releases/download/v1/a.zip",
+		"https://github.com.evil/YigitCittan/mongorescue/releases/download/v1/a.zip",
+		"https://github.com/YigitCittan/mongorescue/releases/download/../../../other/a.zip",
+		"https://github.com/YigitCittan/mongorescue/releases/download/",
+		"https://github.com/Other/mongorescue/releases/download/v1/a.zip",
+		"https://user@github.com/YigitCittan/mongorescue/releases/download/v1/a.zip",
+		"https://github.com/YigitCittan/mongorescue/releases/download/v1%2Fa.zip",
+		"https://github.com/YigitCittan/mongorescue/releases/download/v1/a.zip?x=1",
+		"/YigitCittan/mongorescue/releases/download/v1/a.zip",
+	} {
+		if ck.trusted(u, DefaultDownloadPrefix) {
+			t.Errorf("accepted %s", u)
+		}
+	}
+}
+
+func TestCheckUnsupportedPlatform(t *testing.T) {
+	f := newFakeGitHub(t, "v1.1.0")
+	f.release("x")
+	ck := f.checker("linux", "arm64")
+	res, err := ck.Check(context.Background(), "1.0.0")
+	if err != nil || !res.Available || res.Asset.URL != "" {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if _, err := ck.Download(context.Background(), res, t.TempDir()); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("Download err = %v", err)
+	}
+}
+
+func TestDownloadVerifies(t *testing.T) {
+	f := newFakeGitHub(t, "v1.1.0")
+	name := f.release("archive content")
+	ck := f.checker("linux", "amd64")
+	res, err := ck.Check(context.Background(), "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ck.Download(context.Background(), res, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != filepath.Join(dir, name) {
+		t.Errorf("path = %q", p)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || string(b) != "archive content" {
+		t.Errorf("content %q err %v", b, err)
+	}
+	if st, _ := os.Stat(p); st != nil && st.Mode().Perm() != 0o600 && os.PathSeparator == '/' {
+		t.Errorf("mode = %v", st.Mode())
+	}
+	assertOnly(t, dir, name)
+}
+
+func TestDownloadFailures(t *testing.T) {
+	f := newFakeGitHub(t, "v1.1.0")
+	name := f.release("archive content")
+	ck := f.checker("linux", "amd64")
+	res, err := ck.Check(context.Background(), "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := sha256.Sum256([]byte("other"))
+	cases := []struct {
+		checksums string
+		want      error
+	}{
+		{hex.EncodeToString(wrong[:]) + "  " + name + "\n", ErrChecksumMismatch},
+		{hex.EncodeToString(wrong[:]) + "  other.tar.gz\n", ErrNoChecksum},
+		{"zz  " + name + "\n", ErrNoChecksum},
+	}
+	for _, c := range cases {
+		f.checksums = c.checksums
+		dir := t.TempDir()
+		if _, err := ck.Download(context.Background(), res, dir); !errors.Is(err, c.want) {
+			t.Errorf("checksums %q: err = %v; want %v", c.checksums, err, c.want)
+		}
+		assertOnly(t, dir)
+	}
+	f.checksums = ""
+
+	noSums := res
+	noSums.ChecksumsURL = ""
+	if _, err := ck.Download(context.Background(), noSums, t.TempDir()); !errors.Is(err, ErrNoChecksum) {
+		t.Errorf("no checksums: %v", err)
+	}
+	evil := res
+	evil.Asset.URL = "https://evil.example/YigitCittan/mongorescue/releases/download/v1.1.0/" + name
+	if _, err := ck.Download(context.Background(), evil, t.TempDir()); !errors.Is(err, ErrUntrustedURL) {
+		t.Errorf("untrusted: %v", err)
+	}
+	renamed := res
+	renamed.Asset.Name = "../" + name
+	if _, err := ck.Download(context.Background(), renamed, t.TempDir()); !errors.Is(err, ErrUntrustedURL) {
+		t.Errorf("renamed: %v", err)
+	}
+	missing := res
+	missing.Asset.URL = f.dl("MongoRescue-desktop_9.9.9_linux_amd64.tar.gz")
+	dir := t.TempDir()
+	if _, err := ck.Download(context.Background(), missing, dir); !errors.Is(err, ErrUnexpectedStatus) {
+		t.Errorf("404 asset: %v", err)
+	}
+	assertOnly(t, dir)
+}
+
+func TestFindChecksumBinaryMode(t *testing.T) {
+	sum := sha256.Sum256([]byte("x"))
+	in := "# comment\n" + hex.EncodeToString(sum[:]) + " *a.zip\n"
+	got, err := findChecksum(strings.NewReader(in), "a.zip")
+	if err != nil || hex.EncodeToString(got) != hex.EncodeToString(sum[:]) {
+		t.Errorf("got %x err %v", got, err)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("abc", 5); got != "abc" {
+		t.Errorf("got %q", got)
+	}
+	if got := truncate("aşb", 2); got != "a…" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// assertOnly fails unless dir holds exactly the named files.
+func assertOnly(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if strings.Join(got, ",") != strings.Join(names, ",") {
+		t.Errorf("dir holds %v; want %v", got, names)
+	}
+}
