@@ -232,11 +232,11 @@ func isWindowsHost() bool { return os.PathSeparator == '\\' }
 
 func mustEval(t *testing.T, p string) string {
 	t.Helper()
-	real, err := filepath.EvalSymlinks(p)
+	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
 		t.Fatalf("EvalSymlinks(%q): %v", p, err)
 	}
-	return real
+	return resolved
 }
 
 func mustAbs(t *testing.T, p string) string {

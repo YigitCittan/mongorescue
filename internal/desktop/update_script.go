@@ -1,6 +1,9 @@
 package desktop
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // updateScript shows the update status of Updater in the dashboard. It polls
 // UpdatePath closely while a check or a download runs and every 10 minutes
@@ -347,7 +350,18 @@ const updateScript = `(function (paths, header) {
 // around a mandatory update.
 func UpdateScript() string {
 	return strings.NewReplacer(
-		"__PATHS__", `{"status":`+jsString(UpdatePath)+`,"install":`+jsString(UpdateInstallPath)+`,"release":`+jsString(UpdateReleasePagePath)+`}`,
+		"__PATHS__", updatePathsJSON(),
 		"__HEADER__", jsString(UpdateHeader),
 	).Replace(updateScript)
+}
+
+// updatePathsJSON returns the endpoint paths the update script uses as a JSON
+// object literal.
+func updatePathsJSON() string {
+	b, _ := json.Marshal(struct {
+		Status  string `json:"status"`
+		Install string `json:"install"`
+		Release string `json:"release"`
+	}{UpdatePath, UpdateInstallPath, UpdateReleasePagePath}) // a struct of strings always marshals
+	return string(b)
 }

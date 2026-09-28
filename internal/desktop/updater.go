@@ -511,7 +511,7 @@ func UpdateDir(goos string) (string, error) {
 			return "", fmt.Errorf("cache directory: %w", err)
 		}
 		base := filepath.Join(cache, AppDirName, "updates")
-		if err := os.MkdirAll(base, 0o700); err != nil {
+		if err = os.MkdirAll(base, 0o700); err != nil {
 			return "", fmt.Errorf("create %s: %w", base, err)
 		}
 		removeOldUpdateDirs(base)

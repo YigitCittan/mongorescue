@@ -220,8 +220,8 @@ func TestUpdaterRevealsOnUnix(t *testing.T) {
 	if err := u.Install(); err != nil {
 		t.Fatal(err)
 	}
-	if s := u.Status(); s.State != UpdateDownloading {
-		t.Errorf("state = %q", s.State)
+	if st := u.Status(); st.State != UpdateDownloading {
+		t.Errorf("state = %q", st.State)
 	}
 	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
 		t.Errorf("second Install = %v", err)
@@ -405,16 +405,16 @@ func TestUpdateDir(t *testing.T) {
 	if err != nil || dir != filepath.Join(home, "Downloads") {
 		t.Fatalf("darwin: %q %v", dir, err)
 	}
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		t.Fatalf("not created: %v", err)
+	if st, statErr := os.Stat(dir); statErr != nil || !st.IsDir() {
+		t.Fatalf("not created: %v", statErr)
 	}
 	xdg := filepath.Join(home, "dl")
 	t.Setenv("XDG_DOWNLOAD_DIR", xdg)
-	if dir, err := UpdateDir("linux"); err != nil || dir != xdg {
+	if dir, err = UpdateDir("linux"); err != nil || dir != xdg {
 		t.Errorf("linux: %q %v", dir, err)
 	}
 	t.Setenv("XDG_DOWNLOAD_DIR", "relative")
-	if dir, err := UpdateDir("linux"); err != nil || dir != filepath.Join(home, "Downloads") {
+	if dir, err = UpdateDir("linux"); err != nil || dir != filepath.Join(home, "Downloads") {
 		t.Errorf("linux relative: %q %v", dir, err)
 	}
 	t.Setenv("LocalAppData", filepath.Join(home, "local"))
@@ -428,14 +428,14 @@ func TestUpdateDir(t *testing.T) {
 	if err != nil || filepath.Dir(first) != base || !strings.HasPrefix(filepath.Base(first), updateDirPrefix) {
 		t.Fatalf("windows: %q %v; want a new directory in %s", first, err, base)
 	}
-	if st, err := os.Stat(first); err != nil || (os.PathSeparator == '/' && st.Mode().Perm() != 0o700) {
-		t.Fatalf("windows dir: %v %v", st, err)
+	if st, statErr := os.Stat(first); statErr != nil || (os.PathSeparator == '/' && st.Mode().Perm() != 0o700) {
+		t.Fatalf("windows dir: %v %v", st, statErr)
 	}
-	if err := os.WriteFile(filepath.Join(first, "old.exe"), []byte("x"), 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(first, "old.exe"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keep := filepath.Join(base, "other")
-	if err := os.Mkdir(keep, 0o700); err != nil {
+	if err = os.Mkdir(keep, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	second, err := UpdateDir("windows")

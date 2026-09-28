@@ -150,8 +150,8 @@ func (r *Resolver) searchDirs(goos string) []string {
 	if err != nil || exe == "" {
 		return dirs
 	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
 	}
 	exeDir := filepath.Dir(exe)
 	dirs = append(dirs, filepath.Join(exeDir, BundledToolsDirName))

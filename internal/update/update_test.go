@@ -373,7 +373,7 @@ func TestDownloadVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f2, err := ck.Download(context.Background(), res, dir)
