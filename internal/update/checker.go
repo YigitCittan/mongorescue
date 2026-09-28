@@ -68,9 +68,14 @@ type Result struct {
 	Current, Latest Version
 	// Available reports whether Latest is higher than Current.
 	Available bool
-	// Mandatory reports whether Latest has a higher MAJOR version than Current:
-	// the running version must not be used any more.
+	// Mandatory reports whether Latest has a higher MAJOR version than Current and
+	// is Installable: the running version must not be used any more. A major
+	// release without installable files for this platform is only Available.
 	Mandatory bool
+	// Installable reports whether Available is set and the release has both the
+	// desktop file for this platform and the checksums file, so Download can
+	// fetch and verify it.
+	Installable bool
 	// Notes are the release notes (markdown), cut to a bounded length.
 	Notes string
 	// HTMLURL is the release page, always under DefaultReleasesPrefix (or the
@@ -140,7 +145,6 @@ func (c *Checker) Check(ctx context.Context, current string) (Result, error) {
 		Current:   cur,
 		Latest:    latest,
 		Available: latest.Compare(cur) > 0,
-		Mandatory: latest.Major > cur.Major,
 		Notes:     truncate(rel.Body, maxNotes),
 		HTMLURL:   c.releasesPrefix() + "latest",
 	}
@@ -162,6 +166,8 @@ func (c *Checker) Check(ctx context.Context, current string) (Result, error) {
 			}
 		}
 	}
+	res.Installable = res.Available && res.Asset.URL != "" && res.ChecksumsURL != ""
+	res.Mandatory = res.Installable && latest.Major > cur.Major
 	return res, nil
 }
 
@@ -296,9 +302,33 @@ func (c *Checker) goarch() string {
 // Default clients. The download client has no overall timeout, only one for the
 // response headers: the context bounds the transfer.
 var (
-	defaultClient         = &http.Client{Timeout: DefaultCheckTimeout}
+	defaultClient         = &http.Client{Timeout: DefaultCheckTimeout, CheckRedirect: CheckRedirect}
 	defaultDownloadClient = newDownloadClient()
 )
+
+// maxRedirects bounds the redirects followed for one request.
+const maxRedirects = 5
+
+// ErrRedirect is returned for a redirect CheckRedirect refuses.
+var ErrRedirect = errors.New("refused redirect")
+
+// CheckRedirect is the redirect policy of the default clients: at most
+// maxRedirects hops, each to an https URL on github.com or a *.githubusercontent.com
+// host (GitHub's release file storage).
+func CheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("%w: more than %d redirects", ErrRedirect, maxRedirects)
+	}
+	u := req.URL
+	if u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return fmt.Errorf("%w: to %s://%s", ErrRedirect, u.Scheme, u.Host)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "github.com" && !strings.HasSuffix(host, ".githubusercontent.com") {
+		return fmt.Errorf("%w: to host %s", ErrRedirect, u.Host)
+	}
+	return nil
+}
 
 // newDownloadClient returns the default asset download client.
 func newDownloadClient() *http.Client {
@@ -308,7 +338,7 @@ func newDownloadClient() *http.Client {
 	}
 	t = t.Clone()
 	t.ResponseHeaderTimeout = 30 * time.Second
-	return &http.Client{Transport: t}
+	return &http.Client{Transport: t, CheckRedirect: CheckRedirect}
 }
 
 // truncate cuts s to at most n bytes on a rune boundary.

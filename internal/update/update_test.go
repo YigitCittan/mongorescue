@@ -292,6 +292,78 @@ func TestCheckUnsupportedPlatform(t *testing.T) {
 	}
 }
 
+func TestMandatoryNeedsInstallableFiles(t *testing.T) {
+	f := newFakeGitHub(t, "v2.0.0")
+	f.release("x")
+	res, err := f.checker("linux", "amd64").Check(context.Background(), "1.0.0")
+	if err != nil || !res.Mandatory || !res.Installable {
+		t.Fatalf("complete release: %+v %v", res, err)
+	}
+	// No asset for this platform.
+	res, err = f.checker("linux", "arm64").Check(context.Background(), "1.0.0")
+	if err != nil || !res.Available || res.Mandatory || res.Installable {
+		t.Errorf("no platform asset: %+v %v", res, err)
+	}
+	// Assets uploaded, checksums not yet.
+	delete(f.files, "MongoRescue-desktop_2.0.0_checksums.txt")
+	res, err = f.checker("linux", "amd64").Check(context.Background(), "1.0.0")
+	if err != nil || !res.Available || res.Mandatory || res.Installable || res.Asset.URL == "" {
+		t.Errorf("no checksums: %+v %v", res, err)
+	}
+	// No desktop files at all.
+	f.files = map[string][]byte{}
+	res, err = f.checker("windows", "amd64").Check(context.Background(), "1.0.0")
+	if err != nil || !res.Available || res.Mandatory || res.Installable {
+		t.Errorf("no files: %+v %v", res, err)
+	}
+}
+
+func TestCheckRedirect(t *testing.T) {
+	req := func(raw string) *http.Request {
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	via := []*http.Request{req("https://github.com/x")}
+	for _, u := range []string{
+		"https://github.com/YigitCittan/mongorescue/releases/download/v1/a.zip",
+		"https://objects.githubusercontent.com/github-production-release-asset/1",
+		"https://release-assets.githubusercontent.com/x",
+		"https://GitHub.com:443/x",
+	} {
+		if err := CheckRedirect(req(u), via); err != nil {
+			t.Errorf("%s refused: %v", u, err)
+		}
+	}
+	for _, u := range []string{
+		"http://objects.githubusercontent.com/x",
+		"https://evil.example/x",
+		"https://githubusercontent.com.evil.example/x",
+		"https://evilgithubusercontent.com/x",
+		"https://api.github.com.evil/x",
+		"https://user@github.com/x",
+		"https://github.com:8443/x",
+	} {
+		if err := CheckRedirect(req(u), via); !errors.Is(err, ErrRedirect) {
+			t.Errorf("%s: err = %v; want ErrRedirect", u, err)
+		}
+	}
+	long := make([]*http.Request, maxRedirects)
+	if err := CheckRedirect(req("https://github.com/x"), long); !errors.Is(err, ErrRedirect) {
+		t.Errorf("hop limit: %v", err)
+	}
+	if err := CheckRedirect(req("https://github.com/x"), long[:maxRedirects-1]); err != nil {
+		t.Errorf("under the hop limit: %v", err)
+	}
+	for _, c := range []*http.Client{defaultClient, defaultDownloadClient} {
+		if c.CheckRedirect == nil {
+			t.Error("a default client has no redirect policy")
+		}
+	}
+}
+
 func TestDownloadVerifies(t *testing.T) {
 	f := newFakeGitHub(t, "v1.1.0")
 	name := f.release("archive content")
