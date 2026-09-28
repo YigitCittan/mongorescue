@@ -4,8 +4,15 @@ package desktop
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
+
+// openLocked opens path for reading. Unlike on Windows, other processes of the user
+// can still change the file; the desktop app only launches installers on Windows.
+func openLocked(path string) (*os.File, error) {
+	return os.Open(path)
+}
 
 // LaunchInstaller starts the program at path without a shell and returns once it has
 // started; the program outlives the app. The desktop app only launches installers

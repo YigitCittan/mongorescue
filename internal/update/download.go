@@ -27,47 +27,56 @@ var (
 	ErrAssetTooLarge = errors.New("release asset too large")
 )
 
+// File is a downloaded and verified release file.
+type File struct {
+	// Path is the file's location.
+	Path string
+	// SHA256 is its published and verified digest; check it again right before
+	// using the file when others can write to its directory.
+	SHA256 []byte
+}
+
 // Download fetches the checksums file and the asset of res into dir, verifying the
 // asset's SHA-256 while it streams to a temporary file (mode 0600) in dir. On
-// success the file is renamed to the asset name, replacing an older copy, and its
-// path is returned; on failure nothing is left in dir. It returns an error wrapping
+// success the file is renamed to the asset name, replacing an older copy, and
+// returned; on failure nothing is left in dir. It returns an error wrapping
 // ErrUnsupportedPlatform when res has no asset, ErrNoChecksum or ErrChecksumMismatch
 // when the file cannot be verified.
-func (c *Checker) Download(ctx context.Context, res Result, dir string) (string, error) {
+func (c *Checker) Download(ctx context.Context, res Result, dir string) (File, error) {
 	if res.Asset.URL == "" {
-		return "", fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, c.goos(), c.goarch())
+		return File{}, fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, c.goos(), c.goarch())
 	}
 	name, err := AssetName(c.goos(), c.goarch(), res.Latest)
 	if err != nil {
-		return "", err
+		return File{}, err
 	}
 	if res.Asset.Name != name {
-		return "", fmt.Errorf("%w: asset %q, want %q", ErrUntrustedURL, res.Asset.Name, name)
+		return File{}, fmt.Errorf("%w: asset %q, want %q", ErrUntrustedURL, res.Asset.Name, name)
 	}
 	if !c.trusted(res.Asset.URL, c.downloadPrefix()) {
-		return "", fmt.Errorf("%w: %s", ErrUntrustedURL, res.Asset.URL)
+		return File{}, fmt.Errorf("%w: %s", ErrUntrustedURL, res.Asset.URL)
 	}
 	if res.ChecksumsURL == "" {
-		return "", ErrNoChecksum
+		return File{}, ErrNoChecksum
 	}
 	if !c.trusted(res.ChecksumsURL, c.downloadPrefix()) {
-		return "", fmt.Errorf("%w: %s", ErrUntrustedURL, res.ChecksumsURL)
+		return File{}, fmt.Errorf("%w: %s", ErrUntrustedURL, res.ChecksumsURL)
 	}
 	ua := UserAgent(res.Current.String())
 	want, err := c.checksum(ctx, res.ChecksumsURL, name, ua)
 	if err != nil {
-		return "", err
+		return File{}, err
 	}
 
 	body, err := c.get(ctx, c.downloadClient(), res.Asset.URL, ua)
 	if err != nil {
-		return "", fmt.Errorf("download %s: %w", name, err)
+		return File{}, fmt.Errorf("download %s: %w", name, err)
 	}
 	defer func() { _ = body.Close() }()
 
 	tmp, err := os.CreateTemp(dir, ".mongorescue-update-*.part")
 	if err != nil {
-		return "", fmt.Errorf("create download file: %w", err)
+		return File{}, fmt.Errorf("create download file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	ok := false
@@ -80,26 +89,26 @@ func (c *Checker) Download(ctx context.Context, res Result, dir string) (string,
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(body, MaxAssetSize+1))
 	if err != nil {
-		return "", fmt.Errorf("download %s: %w", name, err)
+		return File{}, fmt.Errorf("download %s: %w", name, err)
 	}
 	if n > MaxAssetSize {
-		return "", fmt.Errorf("download %s: %w", name, ErrAssetTooLarge)
+		return File{}, fmt.Errorf("download %s: %w", name, ErrAssetTooLarge)
 	}
 	if subtle.ConstantTimeCompare(h.Sum(nil), want) != 1 {
-		return "", fmt.Errorf("%s: %w", name, ErrChecksumMismatch)
+		return File{}, fmt.Errorf("%s: %w", name, ErrChecksumMismatch)
 	}
 	if err := tmp.Sync(); err != nil {
-		return "", fmt.Errorf("sync download file: %w", err)
+		return File{}, fmt.Errorf("sync download file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("close download file: %w", err)
+		return File{}, fmt.Errorf("close download file: %w", err)
 	}
 	final := filepath.Join(dir, name)
 	if err := os.Rename(tmpPath, final); err != nil {
-		return "", fmt.Errorf("save %s: %w", name, err)
+		return File{}, fmt.Errorf("save %s: %w", name, err)
 	}
 	ok = true
-	return final, nil
+	return File{Path: final, SHA256: want}, nil
 }
 
 // checksum returns the SHA-256 listed for name in the checksums file at rawURL.

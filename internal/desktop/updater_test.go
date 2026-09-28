@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/update"
 )
@@ -24,20 +26,39 @@ type fakeSource struct {
 	checkErr error
 	dlErr    error
 	release  chan struct{}
+	badSum   bool
 
 	mu      sync.Mutex
 	dlDirs  []string
 	current string
+	checks  int
 }
 
 func (f *fakeSource) Check(_ context.Context, current string) (update.Result, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.current = current
-	f.mu.Unlock()
+	f.checks++
 	return f.res, f.checkErr
 }
 
-func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string) (string, error) {
+// set replaces the canned check result.
+func (f *fakeSource) set(res update.Result, checkErr error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.res, f.checkErr = res, checkErr
+}
+
+// checkCount returns the number of checks so far.
+func (f *fakeSource) checkCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checks
+}
+
+// Download writes the asset into dir and returns it with its SHA-256 (a wrong one
+// when badSum is set).
+func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string) (update.File, error) {
 	f.mu.Lock()
 	f.dlDirs = append(f.dlDirs, dir)
 	f.mu.Unlock()
@@ -45,17 +66,28 @@ func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string
 		select {
 		case <-f.release:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return update.File{}, ctx.Err()
 		}
 	}
 	if f.dlErr != nil {
-		return "", f.dlErr
+		return update.File{}, f.dlErr
 	}
-	return filepath.Join(dir, res.Asset.Name), nil
+	p := filepath.Join(dir, res.Asset.Name)
+	content := []byte("installer " + res.Latest.String())
+	if err := os.WriteFile(p, content, 0o600); err != nil {
+		return update.File{}, err
+	}
+	sum := sha256.Sum256(content)
+	if f.badSum {
+		sum = sha256.Sum256([]byte("swapped"))
+	}
+	return update.File{Path: p, SHA256: sum[:]}, nil
 }
 
 // recorder records the calls of the injected install functions.
 type recorder struct {
+	dir string // the download directory
+
 	mu        sync.Mutex
 	launched  []string
 	revealed  []string
@@ -64,13 +96,18 @@ type recorder struct {
 	launchErr error
 }
 
+// newRecorder returns a recorder with a temporary download directory.
+func newRecorder(t *testing.T) *recorder {
+	return &recorder{dir: t.TempDir()}
+}
+
 func (r *recorder) options(src UpdateSource, version, goos string) UpdaterOptions {
 	return UpdaterOptions{
 		Source:  src,
 		Version: version,
 		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		GOOS:    goos,
-		Dir:     func(string) (string, error) { return "/downloads", nil },
+		Dir:     func(string) (string, error) { return r.dir, nil },
 		Launch: func(p string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -102,14 +139,23 @@ func available(mandatory bool) update.Result {
 		latest = update.Version{Major: 2}
 	}
 	return update.Result{
-		Current:   update.Version{Major: 1},
-		Latest:    latest,
-		Available: true,
-		Mandatory: mandatory,
-		Notes:     "## Added\n- x",
-		HTMLURL:   "https://github.com/YigitCittan/mongorescue/releases/tag/v" + latest.String(),
-		Asset:     update.Asset{Name: "MongoRescue-desktop_" + latest.String() + "_linux_amd64.tar.gz", URL: "https://github.com/x"},
+		Current:      update.Version{Major: 1},
+		Latest:       latest,
+		Available:    true,
+		Mandatory:    mandatory,
+		Installable:  true,
+		Notes:        "## Added\n- x",
+		HTMLURL:      "https://github.com/YigitCittan/mongorescue/releases/tag/v" + latest.String(),
+		Asset:        update.Asset{Name: "MongoRescue-desktop_" + latest.String() + "_linux_amd64.tar.gz", URL: "https://github.com/x"},
+		ChecksumsURL: "https://github.com/sums",
 	}
+}
+
+// notInstallable returns an available release without files for this platform.
+func notInstallable() update.Result {
+	res := available(false)
+	res.Installable, res.Asset, res.ChecksumsURL = false, update.Asset{}, ""
+	return res
 }
 
 // started returns an updater whose startup check has finished.
@@ -118,7 +164,7 @@ func started(t *testing.T, opts UpdaterOptions) (*Updater, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	u := NewUpdater(opts)
 	u.Start(ctx)
-	u.Wait()
+	waitState(t, u, func(s UpdateStatus) bool { return s.State != UpdateChecking })
 	t.Cleanup(func() {
 		cancel()
 		u.Wait()
@@ -128,7 +174,7 @@ func started(t *testing.T, opts UpdaterOptions) (*Updater, context.CancelFunc) {
 
 func TestUpdaterDevVersionSkipsCheck(t *testing.T) {
 	src := &fakeSource{res: available(true)}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "dev", "linux"))
 	if s := u.Status(); s.State != UpdateIdle || s.Available || s.Current != "dev" {
 		t.Fatalf("status = %+v", s)
@@ -143,7 +189,7 @@ func TestUpdaterDevVersionSkipsCheck(t *testing.T) {
 
 func TestUpdaterCheckFailureLeavesNoUpdate(t *testing.T) {
 	src := &fakeSource{checkErr: errors.New("offline")}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "1.0.0", "linux"))
 	if s := u.Status(); s.State != UpdateIdle || s.Available || s.Error != "" {
 		t.Fatalf("status = %+v", s)
@@ -165,7 +211,7 @@ func TestUpdaterBeforeStart(t *testing.T) {
 
 func TestUpdaterRevealsOnUnix(t *testing.T) {
 	src := &fakeSource{res: available(false), release: make(chan struct{})}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "1.0.0", "darwin"))
 	s := u.Status()
 	if !s.Available || s.Mandatory || s.Latest != "1.1.0" || s.Notes == "" || s.Action != ActionReveal {
@@ -181,12 +227,12 @@ func TestUpdaterRevealsOnUnix(t *testing.T) {
 		t.Errorf("second Install = %v", err)
 	}
 	close(src.release)
-	u.Wait()
+	u.ops.Wait()
 	s = u.Status()
 	if s.State != UpdateReady || s.File != "MongoRescue-desktop_1.1.0_linux_amd64.tar.gz" || s.Error != "" {
 		t.Fatalf("status = %+v", s)
 	}
-	want := filepath.Join("/downloads", s.File)
+	want := filepath.Join(r.dir, s.File)
 	if len(r.revealed) != 1 || r.revealed[0] != want || len(r.launched) != 0 || r.quits != 0 {
 		t.Fatalf("revealed %v launched %v quits %d", r.revealed, r.launched, r.quits)
 	}
@@ -194,7 +240,7 @@ func TestUpdaterRevealsOnUnix(t *testing.T) {
 	if err := u.Install(); err != nil {
 		t.Fatal(err)
 	}
-	u.Wait()
+	u.ops.Wait()
 	if len(r.revealed) != 2 || len(src.dlDirs) != 1 {
 		t.Errorf("revealed %v downloads %v", r.revealed, src.dlDirs)
 	}
@@ -202,7 +248,7 @@ func TestUpdaterRevealsOnUnix(t *testing.T) {
 
 func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	src := &fakeSource{res: available(true)}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "1.0.0", "windows"))
 	if s := u.Status(); !s.Mandatory || s.Action != ActionLaunch {
 		t.Fatalf("status = %+v", s)
@@ -210,7 +256,7 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	if err := u.Install(); err != nil {
 		t.Fatal(err)
 	}
-	u.Wait()
+	u.ops.Wait()
 	if len(r.launched) != 1 || r.quits != 1 || len(r.revealed) != 0 {
 		t.Fatalf("launched %v quits %d revealed %v", r.launched, r.quits, r.revealed)
 	}
@@ -221,12 +267,12 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 
 func TestUpdaterSurfacesErrors(t *testing.T) {
 	src := &fakeSource{res: available(false), dlErr: update.ErrChecksumMismatch}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "1.0.0", "windows"))
 	if err := u.Install(); err != nil {
 		t.Fatal(err)
 	}
-	u.Wait()
+	u.ops.Wait()
 	if s := u.Status(); s.State != UpdateError || !strings.Contains(s.Error, "checksum mismatch") {
 		t.Fatalf("status = %+v", s)
 	}
@@ -239,7 +285,7 @@ func TestUpdaterSurfacesErrors(t *testing.T) {
 	if err := u.Install(); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	u.Wait()
+	u.ops.Wait()
 	if s := u.Status(); s.State != UpdateError || !strings.Contains(s.Error, "denied") || r.quits != 0 {
 		t.Fatalf("status = %+v quits %d", s, r.quits)
 	}
@@ -247,7 +293,7 @@ func TestUpdaterSurfacesErrors(t *testing.T) {
 
 func TestUpdaterStopsWithContext(t *testing.T) {
 	src := &fakeSource{res: available(false), release: make(chan struct{})}
-	var r recorder
+	r := newRecorder(t)
 	u, cancel := started(t, r.options(src, "1.0.0", "linux"))
 	if err := u.Install(); err != nil {
 		t.Fatal(err)
@@ -264,7 +310,7 @@ func TestUpdaterStopsWithContext(t *testing.T) {
 
 func TestUpdaterHandler(t *testing.T) {
 	src := &fakeSource{res: available(false)}
-	var r recorder
+	r := newRecorder(t)
 	u, _ := started(t, r.options(src, "1.0.0", "linux"))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	h := u.Handler(next)
@@ -281,7 +327,7 @@ func TestUpdaterHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"current", "latest", "available", "mandatory", "notes", "html_url", "state", "error"} {
+	for _, k := range []string{"current", "latest", "available", "mandatory", "installable", "notes", "html_url", "state", "error"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("status lacks %q: %s", k, rec.Body)
 		}
@@ -328,7 +374,7 @@ func TestUpdaterHandler(t *testing.T) {
 	if rec := do(http.MethodPost, UpdateInstallPath, desktopHdr); rec.Code != http.StatusAccepted {
 		t.Errorf("install = %d %s", rec.Code, rec.Body)
 	}
-	u.Wait()
+	u.ops.Wait()
 	if s := u.Status(); s.State != UpdateReady || len(r.revealed) != 1 {
 		t.Errorf("status %+v revealed %v", s, r.revealed)
 	}
@@ -371,12 +417,156 @@ func TestUpdateDir(t *testing.T) {
 	if dir, err := UpdateDir("linux"); err != nil || dir != filepath.Join(home, "Downloads") {
 		t.Errorf("linux relative: %q %v", dir, err)
 	}
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	t.Setenv("TMP", tmp)
-	t.Setenv("TEMP", tmp)
-	if dir, err := UpdateDir("windows"); err != nil || dir != filepath.Join(tmp, "MongoRescue-update") {
-		t.Errorf("windows: %q %v", dir, err)
+	t.Setenv("LocalAppData", filepath.Join(home, "local"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(cache, AppDirName, "updates")
+	first, err := UpdateDir("windows")
+	if err != nil || filepath.Dir(first) != base || !strings.HasPrefix(filepath.Base(first), updateDirPrefix) {
+		t.Fatalf("windows: %q %v; want a new directory in %s", first, err, base)
+	}
+	if st, err := os.Stat(first); err != nil || (os.PathSeparator == '/' && st.Mode().Perm() != 0o700) {
+		t.Fatalf("windows dir: %v %v", st, err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "old.exe"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(base, "other")
+	if err := os.Mkdir(keep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	second, err := UpdateDir("windows")
+	if err != nil || second == first {
+		t.Fatalf("second windows dir: %q %v", second, err)
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Errorf("earlier download directory kept: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("unrelated directory removed: %v", err)
+	}
+}
+
+// waitState waits until the updater's status satisfies ok.
+func waitState(t *testing.T, u *Updater, ok func(UpdateStatus) bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok(u.Status()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("status %+v never reached", u.Status())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestUpdaterRechecksWhenNotInstallable(t *testing.T) {
+	src := &fakeSource{res: notInstallable()}
+	r := newRecorder(t)
+	u, _ := started(t, r.options(src, "1.0.0", "linux"))
+	if s := u.Status(); !s.Available || s.Installable || s.Mandatory {
+		t.Fatalf("status = %+v", s)
+	}
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.State != UpdateError || s.Error != ErrNotInstallable.Error() || len(src.dlDirs) != 0 {
+		t.Fatalf("status = %+v downloads %v", s, src.dlDirs)
+	}
+	if src.checkCount() != 2 {
+		t.Errorf("checks = %d; want 2", src.checkCount())
+	}
+
+	// The files are attached now: "Try again" checks, downloads and reveals.
+	src.set(available(false), nil)
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.State != UpdateReady || !s.Installable || len(r.revealed) != 1 || src.checkCount() != 3 {
+		t.Fatalf("status = %+v revealed %v checks %d", s, r.revealed, src.checkCount())
+	}
+
+	// A failed check on retry is reported.
+	src2 := &fakeSource{res: available(false), dlErr: errors.New("reset")}
+	u2, _ := started(t, r.options(src2, "1.0.0", "linux"))
+	if err := u2.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u2.ops.Wait()
+	src2.set(update.Result{}, errors.New("offline"))
+	if err := u2.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u2.ops.Wait()
+	if s := u2.Status(); s.State != UpdateError || !strings.Contains(s.Error, "offline") {
+		t.Errorf("status = %+v", s)
+	}
+}
+
+func TestUpdaterChecksPeriodically(t *testing.T) {
+	src := &fakeSource{res: update.Result{Latest: update.Version{Major: 1}}}
+	r := newRecorder(t)
+	opts := r.options(src, "1.0.0", "linux")
+	opts.Interval = 5 * time.Millisecond
+	u, _ := started(t, opts)
+	if s := u.Status(); s.Available {
+		t.Fatalf("status = %+v", s)
+	}
+	src.set(update.Result{}, errors.New("offline"))
+	n := src.checkCount()
+	waitState(t, u, func(UpdateStatus) bool { return src.checkCount() > n+1 })
+	if s := u.Status(); s.Available || s.State != UpdateIdle || s.Error != "" {
+		t.Fatalf("a failed periodic check changed the status: %+v", s)
+	}
+	src.set(available(true), nil)
+	waitState(t, u, func(s UpdateStatus) bool { return s.Mandatory && s.Latest == "2.0.0" })
+}
+
+func TestUpdaterRefusesSwappedInstaller(t *testing.T) {
+	src := &fakeSource{res: available(true), badSum: true}
+	r := newRecorder(t)
+	u, _ := started(t, r.options(src, "1.0.0", "windows"))
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.State != UpdateError || !strings.Contains(s.Error, "checksum mismatch") {
+		t.Fatalf("status = %+v", s)
+	}
+	if len(r.launched) != 0 || r.quits != 0 {
+		t.Fatal("a file that no longer matches its checksum was launched")
+	}
+}
+
+func TestVerifyAndLaunch(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "setup.exe")
+	if err := os.WriteFile(p, []byte("installer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("installer"))
+	var launched []string
+	launch := func(path string) error {
+		launched = append(launched, path)
+		return nil
+	}
+	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, launch); err != nil || len(launched) != 1 || launched[0] != p {
+		t.Fatalf("err %v launched %v", err, launched)
+	}
+	if err := os.WriteFile(p, []byte("swapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, launch); !errors.Is(err, update.ErrChecksumMismatch) || len(launched) != 1 {
+		t.Errorf("swapped file: err %v launched %v", err, launched)
+	}
+	if err := verifyAndLaunch(update.File{Path: p}, launch); !errors.Is(err, update.ErrChecksumMismatch) {
+		t.Errorf("no checksum: %v", err)
+	}
+	if err := verifyAndLaunch(update.File{Path: p + ".missing", SHA256: sum[:]}, launch); err == nil {
+		t.Error("missing file launched")
 	}
 }
 

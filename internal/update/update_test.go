@@ -376,9 +376,13 @@ func TestDownloadVerifies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p, err := ck.Download(context.Background(), res, dir)
+	f2, err := ck.Download(context.Background(), res, dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	p := f2.Path
+	if sum := sha256.Sum256([]byte("archive content")); hex.EncodeToString(f2.SHA256) != hex.EncodeToString(sum[:]) {
+		t.Errorf("SHA256 = %x", f2.SHA256)
 	}
 	if p != filepath.Join(dir, name) {
 		t.Errorf("path = %q", p)
