@@ -106,7 +106,7 @@ After changing the logo, regenerate both icons; delete a file to get the Wails d
 
 For a quick compile check without the Wails CLI: `go vet -tags desktop ./cmd/mongorescue-desktop/...`. A binary built with plain `go build` needs the `desktop,production` tags; `wails build` adds them.
 
-Releases build the desktop app natively on Windows, macOS and Linux runners (`desktop` job in `.github/workflows/release.yml`) and attach the archives, with provenance attestations, to the GitHub release. When all of them are attached, the `desktop-checksums` job adds `MongoRescue-desktop_<version>_checksums.txt` with one `<sha256>  <file>` line (`sha256sum` format) per desktop asset. The asset names and this file are a stable contract (the app's updater reads them):
+Releases build the desktop app natively on Windows, macOS and Linux runners (`desktop` job in `.github/workflows/release.yml`) and attach the archives, with provenance attestations, to the GitHub release. When all of them are attached, the `desktop-checksums` job adds `MongoRescue-desktop_<version>_checksums.txt` with one `<sha256>  <file>` line (`sha256sum` format) per desktop asset. GoReleaser creates the release as a **draft**; the `desktop-checksums` job publishes it only after the checksums are attached (marking it as latest unless the tag has a pre-release suffix), so the updater never sees a release without installable files. If a desktop build fails, the release stays a draft until it is fixed and published by hand. The asset names and this file are a stable contract (the app's updater reads them):
 
 | Asset | Contents |
 | :--- | :--- |
