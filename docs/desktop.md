@@ -30,6 +30,28 @@ Closing the window stops the app: in-flight backups and restores are cancelled (
 
 If the background services cannot start, the app logs the error to `desktop.log` and quits.
 
+## Updates
+
+When the window opens, the app asks GitHub for the latest release (`GET https://api.github.com/repos/YigitCittan/mongorescue/releases/latest`, once per start, 10 second timeout). Drafts, pre-releases and tags with a pre-release suffix (`v1.2.0-rc.1`) are ignored.
+
+| Latest release | What the app does |
+| :--- | :--- |
+| Higher **MAJOR** version (`1.x.y` → `2.0.0`) | **Mandatory.** A full-screen "Update required" screen covers the dashboard, with the release notes, **Update now** and a link to the release page. It cannot be closed (Escape does nothing, the dashboard behind it cannot be reached) and comes back on every reload until the new version is installed. |
+| Higher MINOR or PATCH version | **Optional.** A bar at the bottom of the window: **Update**, **Release notes** (shown in the bar) and **Later**, which hides the bar until the app is started again. |
+| Same or lower version | Nothing. |
+
+**Update** downloads the file for your system from the release and verifies it before using it:
+
+- **Windows:** the installer (`…_windows_amd64_installer.exe`) is saved in `%TEMP%\MongoRescue-update`, started (Windows asks for administrator rights when the installer needs them) and the app closes, cancelling in-flight runs as on a normal close. Finish the installer, then start MongoRescue again.
+- **macOS:** `…_macos_universal.zip` is saved in `~/Downloads` and shown in Finder. Quit MongoRescue and replace `MongoRescue.app` with the one in the archive.
+- **Linux:** `…_linux_amd64.tar.gz` is saved in `$XDG_DOWNLOAD_DIR` (when set to an absolute path) or `~/Downloads`, and the folder is opened. Quit MongoRescue and replace the binary.
+
+Integrity: the release lookup and the downloads use HTTPS, and only files under `https://github.com/YigitCittan/mongorescue/releases/download/` are accepted (GitHub redirects them to its file storage). The file is streamed to a temporary file (mode `0600`) while its SHA-256 is computed and compared with the release's `MongoRescue-desktop_<version>_checksums.txt`; a missing checksum or a mismatch discards the file and shows the error, with a **Try again** button and the release page link. Nothing is installed from an unverified file.
+
+Offline, rate-limited or when GitHub is unreachable, the check fails quietly: it is logged at `info` level in `desktop.log`, no update is offered and the app works as usual; the next start checks again. A mandatory update is therefore only enforced once the app has seen the new release. Builds without a release version (a plain `go build`, or a `git describe` version such as `v0.3.2-4-gabc123`) skip the check.
+
+The prompt talks to the app through `/desktop/update` endpoints answered in-process before the dashboard handler (`internal/desktop.Updater`): only same-origin requests from the app's own window are served, and the `POST` endpoints also require the `X-MongoRescue-Desktop: 1` header. The check and the download are bound to the app's lifetime and stop when it closes.
+
 ## Data and logs
 
 | | Default location |
