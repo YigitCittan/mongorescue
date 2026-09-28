@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: an absolute directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
 - Dashboard: a "New" button next to the storage target list in the "Back up now" dialog and the job form opens the storage target form on top of the dialog and selects the new target once it is saved; cancelling leaves the choice unchanged.
+- Releases: `MongoRescue-desktop_<version>_checksums.txt`, the SHA-256 sums of the desktop installer and archives in `sha256sum` format. See [docs/desktop.md](docs/desktop.md#building).
 
 ### Changed
+- Releases: the GitHub release notes are the version's `CHANGELOG.md` section (`scripts/changelog-section.sh`) instead of a generated commit list; a release without a section fails.
 - Desktop app: the setup form fills in the one-time setup code itself and hides the field, so the first administrator only chooses a username and a password. The setup-code banner and the clipboard copy are gone; the server still verifies the code. If setup fails, the code field reappears and can be edited.
 
 ### Fixed
