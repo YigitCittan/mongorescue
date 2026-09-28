@@ -70,7 +70,17 @@ make desktop            # app for this OS in cmd/mongorescue-desktop/build/bin/
 make desktop-windows    # on Windows: MongoRescue.exe and the NSIS installer
 ```
 
-The frontend is `web/static`, served by the Go handler, so the build skips the Wails frontend (npm) step and binding generation. Wails generates default icons and platform files under `cmd/mongorescue-desktop/build/` when they are missing.
+The frontend is `web/static`, served by the Go handler, so the build skips the Wails frontend (npm) step and binding generation.
+
+`cmd/mongorescue-desktop/build/` holds the committed build assets; Wails generates the other platform files there (`Info.plist`, `info.json`, `wails.exe.manifest`, `wails_tools.nsh`) and they stay untracked, as does the output in `build/bin` (the only directory `wails build -clean` empties):
+
+| File | Use |
+| :--- | :--- |
+| `appicon.png` | The logo (from `web/static/favicon.svg`, 1024×1024): the macOS `.app` icon, and the Linux window icon (embedded in the binary) |
+| `windows/icon.ico` | The `.exe`, window, taskbar, installer and uninstaller icon (16 to 256 px) |
+| `windows/installer/project.nsi` | The NSIS installer script, customized from the Wails template (see below) |
+
+After changing the logo, regenerate both icons; delete a file to get the Wails default back.
 
 For a quick compile check without the Wails CLI: `go vet -tags desktop ./cmd/mongorescue-desktop/...`. A binary built with plain `go build` needs the `desktop,production` tags; `wails build` adds them.
 

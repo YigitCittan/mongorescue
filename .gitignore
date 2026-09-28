@@ -7,6 +7,17 @@
 bin/
 dist/
 build/
+# Desktop app (Wails): keep the logo and the customized installer script; the
+# binaries (build/bin), wailsjs and the files Wails regenerates stay ignored.
+!/cmd/mongorescue-desktop/build/
+/cmd/mongorescue-desktop/build/*
+!/cmd/mongorescue-desktop/build/appicon.png
+!/cmd/mongorescue-desktop/build/windows/
+/cmd/mongorescue-desktop/build/windows/*
+!/cmd/mongorescue-desktop/build/windows/icon.ico
+!/cmd/mongorescue-desktop/build/windows/installer/
+/cmd/mongorescue-desktop/build/windows/installer/*
+!/cmd/mongorescue-desktop/build/windows/installer/project.nsi
 /mongorescue
 /mongorescue.exe
 /mrescue

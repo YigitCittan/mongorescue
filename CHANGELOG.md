@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Desktop app: the window, taskbar, `.exe`, macOS `.app`, Linux window and the Windows installer and uninstaller show the MongoRescue logo instead of the Wails default.
+
 ## [0.3.1] - 2026-09-28
 
 ### Fixed

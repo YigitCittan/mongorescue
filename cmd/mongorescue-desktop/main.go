@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -43,6 +45,12 @@ const singleInstanceID = "io.github.yigitcittan.mongorescue.desktop"
 // quitGrace is how long a SIGINT/SIGTERM waits for the window to close normally before
 // the app stops its runs itself and exits.
 const quitGrace = 10 * time.Second
+
+// appIcon is the MongoRescue logo. wails build turns it into the macOS and Windows
+// icons; on Linux the window icon is set from it at run time.
+//
+//go:embed build/appicon.png
+var appIcon []byte
 
 // errStartFailed is returned by run when the background services did not start.
 var errStartFailed = errors.New("background services did not start")
@@ -101,7 +109,13 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			OnSecondInstanceLaunch: d.secondInstance,
 		},
 		Mac: &mac.Options{
-			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version},
+			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version, Icon: appIcon},
+		},
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "mongorescue",
+			// Wails' default while Linux options are nil (wailsapp/wails#2977).
+			WebviewGpuPolicy: linux.WebviewGpuPolicyNever,
 		},
 	})
 	// OnShutdown normally stopped and closed the application; this covers wails.Run
