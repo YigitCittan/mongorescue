@@ -84,7 +84,17 @@ After changing the logo, regenerate both icons; delete a file to get the Wails d
 
 For a quick compile check without the Wails CLI: `go vet -tags desktop ./cmd/mongorescue-desktop/...`. A binary built with plain `go build` needs the `desktop,production` tags; `wails build` adds them.
 
-Releases build the desktop app natively on Windows, macOS and Linux runners (`desktop` job in `.github/workflows/release.yml`) and attach the archives, with provenance attestations, to the GitHub release.
+Releases build the desktop app natively on Windows, macOS and Linux runners (`desktop` job in `.github/workflows/release.yml`) and attach the archives, with provenance attestations, to the GitHub release. When all of them are attached, the `desktop-checksums` job adds `MongoRescue-desktop_<version>_checksums.txt` with one `<sha256>  <file>` line (`sha256sum` format) per desktop asset. The asset names and this file are a stable contract (the app's updater reads them):
+
+| Asset | Contents |
+| :--- | :--- |
+| `MongoRescue-desktop_<version>_windows_amd64_installer.exe` | NSIS installer |
+| `MongoRescue-desktop_<version>_windows_amd64_portable.zip` | `MongoRescue.exe` |
+| `MongoRescue-desktop_<version>_macos_universal.zip` | `MongoRescue.app` (Apple Silicon and Intel) |
+| `MongoRescue-desktop_<version>_linux_amd64.tar.gz` | `MongoRescue` binary |
+| `MongoRescue-desktop_<version>_checksums.txt` | SHA-256 of the four files above |
+
+Verify a download with `sha256sum --check --ignore-missing MongoRescue-desktop_<version>_checksums.txt` (macOS: `shasum -a 256 --check --ignore-missing …`).
 
 ## Windows installer and WebView2
 

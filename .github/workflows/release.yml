@@ -169,3 +169,45 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$TAG" desktop-dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # CONTRACT (the desktop updater depends on it): once every desktop build is
+  # attached, MongoRescue-desktop_<version>_checksums.txt lists one
+  # "<sha256>  <file>" line (sha256sum format) per desktop asset of the release,
+  # itself excluded. The asset names must stay:
+  #   MongoRescue-desktop_<version>_windows_amd64_installer.exe
+  #   MongoRescue-desktop_<version>_windows_amd64_portable.zip
+  #   MongoRescue-desktop_<version>_macos_universal.zip
+  #   MongoRescue-desktop_<version>_linux_amd64.tar.gz
+  desktop-checksums:
+    name: Desktop App checksums
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # download and upload release assets
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Write and upload the desktop checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          prefix="MongoRescue-desktop_${version}_"
+          sums="${prefix}checksums.txt"
+          mkdir desktop-dist
+          cd desktop-dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p 'MongoRescue-desktop_*'
+          for suffix in windows_amd64_installer.exe windows_amd64_portable.zip macos_universal.zip linux_amd64.tar.gz; do
+            if [ ! -f "${prefix}${suffix}" ]; then
+              echo "::error::release $TAG lacks ${prefix}${suffix}"; exit 1
+            fi
+          done
+          # Every desktop asset of this version except the checksum file itself.
+          files=()
+          for f in "${prefix}"*; do
+            [ "$f" = "$sums" ] || files+=("$f")
+          done
+          sha256sum -- "${files[@]}" > "$sums"
+          cat "$sums"
+          gh release upload "$TAG" "$sums" --clobber --repo "$GITHUB_REPOSITORY"
