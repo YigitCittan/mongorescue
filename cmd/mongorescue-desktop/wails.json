@@ -14,7 +14,7 @@
   "info": {
     "companyName": "MongoRescue",
     "productName": "MongoRescue",
-    "productVersion": "1.0.0",
+    "productVersion": "0.3.0",
     "copyright": "MongoRescue contributors",
     "comments": "MongoDB backup and restore"
   }
