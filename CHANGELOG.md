@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard: a "New" button next to the storage target list in the "Back up now" dialog and the job form opens the storage target form on top of the dialog and selects the new target once it is saved; cancelling leaves the choice unchanged.
 
 ### Changed
+- Releases: the GitHub release notes are the version's `CHANGELOG.md` section (`scripts/changelog-section.sh`) instead of a generated commit list; a release without a section fails.
 - Desktop app: the setup form fills in the one-time setup code itself and hides the field, so the first administrator only chooses a username and a password. The setup-code banner and the clipboard copy are gone; the server still verifies the code. If setup fails, the code field reappears and can be edited.
 
 ### Fixed

@@ -39,12 +39,19 @@ jobs:
       - name: Install Syft (SBOM generator used by GoReleaser)
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
 
+      # The release body is the CHANGELOG.md section of the tagged version; a
+      # missing or empty section fails the release.
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/changelog-section.sh "$TAG" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          args: release --clean --release-notes ${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

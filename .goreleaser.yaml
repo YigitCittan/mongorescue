@@ -52,6 +52,9 @@ sboms:
   - id: archive-sboms
     artifacts: archive
 
+# Local runs only: the release workflow passes the CHANGELOG.md section of the
+# tag with --release-notes (scripts/changelog-section.sh), which replaces the
+# generated commit list in the GitHub release.
 changelog:
   sort: asc
   filters:
