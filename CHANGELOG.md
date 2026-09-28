@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Added
 - `-tools-dir` flag and `MONGORESCUE_TOOLS_DIR` environment variable: an absolute directory searched first for `mongodump` and `mongorestore`. Without it, MongoRescue looks in `tools/` next to its executable, in `Contents/Resources/tools/` of a macOS `.app`, then on `PATH`, and logs the paths found at startup. See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
 - Dashboard: a "New" button next to the storage target list in the "Back up now" dialog and the job form opens the storage target form on top of the dialog and selects the new target once it is saved; cancelling leaves the choice unchanged.
