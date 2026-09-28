@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- **Breaking: the web dashboard is off by default outside Docker.** The server binary no longer serves it: `GET /` returns 404 and only the REST API, `/mcp` and `/metrics` are served. Pass `-dashboard` or set `MONGORESCUE_DASHBOARD=true` to serve it. The container image sets `MONGORESCUE_DASHBOARD=true`, so Docker and Compose deployments are unchanged; installs from the release binaries should switch to the desktop app or add the flag.
+
+### Added
+- Desktop app (`cmd/mongorescue-desktop`, Wails v2): the dashboard in a native window on Windows (NSIS installer), macOS (`.app`) and Linux, with the REST API served in-process to the webview and no TCP listener. Data lives in the per-user configuration directory, the setup code is shown in a banner in the window (and copied to the clipboard), and only one instance runs at a time. Built with `make desktop` / `make desktop-windows` (CGO, `desktop` build tag) and attached to every release. See [docs/desktop.md](docs/desktop.md).
+- `-dashboard` flag and `MONGORESCUE_DASHBOARD` environment variable.
+- `App.Handler`, `App.Start` and `App.Stop` in `internal/app` run the application without an HTTP listener.
+
 ## [0.2.0] - 2026-09-25
 
 ### Added
