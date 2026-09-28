@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-28
+
+### Fixed
+- Release: the Windows desktop job now finds NSIS and attaches the installer (`MongoRescue-desktop_<version>_windows_amd64_installer.exe`) and a portable `.zip`; v0.3.0 shipped without Windows desktop builds.
+
 ## [0.3.0] - 2026-09-28
 
 ### Breaking
