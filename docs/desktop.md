@@ -22,7 +22,7 @@ Install the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools
 
 ## First start
 
-On first start the app shows the one-time setup code in a banner at the bottom of the window (once per launch; dismiss it with **Dismiss**) and copies it to the clipboard. Paste it into the setup form and create the administrator account. The code is also written to the log file.
+On first start the app fills the one-time setup code into the setup form itself and hides the field, since its window is the only client: choose a username and a password to create the administrator account. The server still checks the code as it does in the browser. The code is also written to the log file.
 
 Only one instance runs at a time: starting the app again brings the open window to the front.
 

@@ -147,7 +147,7 @@ type desktopApp struct {
 	wailsCtx context.Context // set by startup, used by the runtime calls
 	startErr error
 
-	bannerOnce sync.Once
+	setupLogOnce sync.Once
 
 	mu   sync.Mutex // serializes shutdown
 	done bool
@@ -188,19 +188,19 @@ func (d *desktopApp) startError() error {
 	return d.startErr
 }
 
-// domReady shows the one-time setup code in a non-modal banner, once per process,
-// since the desktop app has no console to print it to. The code is also copied to
-// the clipboard and logged.
+// domReady fills the one-time setup code into the dashboard's setup form on every
+// page load until the first administrator exists: the desktop app has no console to
+// print the code to, and its window is the only client. The server still verifies
+// the code. It is also logged, once per process.
 func (d *desktopApp) domReady(ctx context.Context) {
 	code := d.app.SetupCode()
 	if code == "" || d.startError() != nil {
 		return
 	}
-	d.bannerOnce.Do(func() {
-		d.logger.Warn("Setup required: enter setup code "+code+" in the window", slog.String("setup_code", code))
-		copied := runtime.ClipboardSetText(ctx, code) == nil
-		runtime.WindowExecJS(ctx, desktop.SetupBannerScript(code, copied))
+	d.setupLogOnce.Do(func() {
+		d.logger.Warn("Setup required: the setup code "+code+" is filled in the window", slog.String("setup_code", code))
 	})
+	runtime.WindowExecJS(ctx, desktop.SetupCodeScript(code))
 }
 
 // secondInstance brings the window to the front when the app is launched again.
