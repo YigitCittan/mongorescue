@@ -123,7 +123,7 @@ jobs:
       - name: Install NSIS
         if: runner.os == 'Windows'
         run: |
-          command -v makensis || choco install nsis -y --no-progress
+          command -v makensis || choco install nsis --version 3.13.0 --require-checksums -y --no-progress
           # choco does not put NSIS on PATH for later steps.
           echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
 
