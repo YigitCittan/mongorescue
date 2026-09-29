@@ -3042,7 +3042,7 @@ function inferProvider(target) {
   if (!endpoint) return "aws";
   const host = endpointHostname(endpoint);
   const onDomain = d => host === d || host.endsWith("." + d);
-  if (onDomain("amazonaws.com")) return "aws";
+  if (onDomain("amazonaws.com") || onDomain("amazonaws.com.cn")) return "aws";
   if (onDomain("r2.cloudflarestorage.com")) return "r2";
   if (onDomain("backblazeb2.com")) return "b2";
   if (onDomain("digitaloceanspaces.com")) return "do";
