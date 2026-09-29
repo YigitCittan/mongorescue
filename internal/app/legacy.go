@@ -125,20 +125,20 @@ func (l *legacyImport) importMongoURI(ctx context.Context) error {
 // importAPIKey stores the former static API key as an API key.
 func (l *legacyImport) importAPIKey(ctx context.Context) error {
 	lg := l.legacy
-	if lg.APIKey == "" || l.settings.WasImported(lg.APIKeySource) {
+	if lg.APIKey == "" || l.settings.WasImported(lg.StaticAccessSource) {
 		return nil
 	}
 	if _, err := l.auth.ImportAPIKey(ctx, lg.APIKey); err != nil {
-		l.logger.Warn("could not import the deprecated static API key", slog.String("source", apiKeySourceName(lg.APIKeySource)), slog.Any("error", err))
+		l.logger.Warn("could not import the deprecated static API key", slog.String("source", staticAccessSourceName(lg.StaticAccessSource)), slog.Any("error", err))
 	} else {
-		l.imported = append(l.imported, lg.APIKeySource)
+		l.imported = append(l.imported, lg.StaticAccessSource)
 	}
-	return l.settings.MarkImported(ctx, lg.APIKeySource)
+	return l.settings.MarkImported(ctx, lg.StaticAccessSource)
 }
 
-// apiKeySourceName returns the name of the deprecated API key source as a constant,
+// staticAccessSourceName returns the name of the deprecated API key source as a constant,
 // so that no value read next to the key reaches a log call.
-func apiKeySourceName(source string) string {
+func staticAccessSourceName(source string) string {
 	if source == config.EnvAPIKey {
 		return config.EnvAPIKey
 	}

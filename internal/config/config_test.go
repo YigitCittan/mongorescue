@@ -100,7 +100,7 @@ func TestLoadLegacyEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.APIKey != "legacy-key-0123456789" || l.APIKeySource != EnvAPIKey || l.MongoURI != "mongodb://u:p@h/" {
+	if l.APIKey != "legacy-key-0123456789" || l.StaticAccessSource != EnvAPIKey || l.MongoURI != "mongodb://u:p@h/" {
 		t.Fatalf("legacy = %+v", l)
 	}
 	if v, src, _ := settingValue(l, settings.KeyBackupTimeout); v != "2h" || src != EnvBackupTimeout {

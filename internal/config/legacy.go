@@ -74,9 +74,9 @@ type Legacy struct {
 	// MongoURI and MongoURISource are the former default MongoDB connection string.
 	MongoURI       string
 	MongoURISource string
-	// APIKey and APIKeySource are the former static API key.
-	APIKey       string
-	APIKeySource string
+	// APIKey and StaticAccessSource are the former static API key.
+	APIKey             string
+	StaticAccessSource string
 	// DBPath is the former database path override (no longer supported).
 	DBPath string
 	// SecretKey is a secret_key found in the legacy file (bootstrap only).
@@ -224,7 +224,7 @@ func (b *legacyBuilder) readFile(path string) error {
 		// The source name is passed on directly, not read back from the field next
 		// to the key, so the key never flows into the "deprecated" log lines.
 		name := src("server.api_key")
-		b.out.APIKey, b.out.APIKeySource = *v, name
+		b.out.APIKey, b.out.StaticAccessSource = *v, name
 		b.present(name)
 	}
 	if v := f.Server.TrustProxyHeaders; v != nil {
@@ -332,7 +332,7 @@ func (b *legacyBuilder) readEnv(getenv func(string) string) {
 	same := func(v bool) any { return v }
 
 	if v := get(EnvAPIKey); v != "" {
-		b.out.APIKey, b.out.APIKeySource = v, EnvAPIKey
+		b.out.APIKey, b.out.StaticAccessSource = v, EnvAPIKey
 		b.present(EnvAPIKey)
 	}
 	if v := get(EnvMongoURI); v != "" {
