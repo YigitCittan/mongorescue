@@ -294,13 +294,63 @@ func TestDefaultWellKnownDirs(t *testing.T) {
 
 func TestDefaultWellKnownDirsWindows(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("ProgramFiles", root)
-	bin := filepath.Join(root, "MongoDB", "Tools", "100", "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
+	programW6432 := filepath.Join(root, "Program Files")
+	programFiles := filepath.Join(root, "Program Files (x86)")
+	bin64 := filepath.Join(programW6432, "MongoDB", "Tools", "100", "bin")
+	bin32 := filepath.Join(programFiles, "MongoDB", "Tools", "100", "bin")
+	for _, dir := range []string{bin64, bin32} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got := DefaultWellKnownDirs("windows"); len(got) != 1 || got[0] != bin {
-		t.Errorf("DefaultWellKnownDirs(windows) = %v, want [%s]", got, bin)
+
+	t.Setenv("ProgramW6432", programW6432)
+	t.Setenv("ProgramFiles", programFiles)
+	if got, want := DefaultWellKnownDirs("windows"), []string{bin64, bin32}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("DefaultWellKnownDirs(windows) = %v, want %v (ProgramW6432 first)", got, want)
+	}
+
+	t.Setenv("ProgramFiles", programW6432)
+	if got := DefaultWellKnownDirs("windows"); len(got) != 1 || got[0] != bin64 {
+		t.Errorf("DefaultWellKnownDirs(windows) = %v, want [%s] once", got, bin64)
+	}
+
+	t.Setenv("ProgramW6432", "")
+	t.Setenv("ProgramFiles", programFiles)
+	if got := DefaultWellKnownDirs("windows"); len(got) != 1 || got[0] != bin32 {
+		t.Errorf("DefaultWellKnownDirs(windows) = %v, want [%s]", got, bin32)
+	}
+}
+
+func TestResolverIgnoresRelativeWellKnownDirs(t *testing.T) {
+	root := t.TempDir()
+	writeTool(t, filepath.Join(root, "tools", "mongodump"), 0o755)
+	writeTool(t, filepath.Join(root, "MongoDB", "Tools", "100", "bin", "mongodump.exe"), 0o755)
+	t.Chdir(root)
+	t.Setenv("ProgramW6432", "")
+	t.Setenv("ProgramFiles", ".")
+	notOnPath := func(string) (string, error) { return "", errors.New("no") }
+	noExe := func() (string, error) { return "", errors.New("no executable") }
+
+	r := &Resolver{
+		GOOS:          "linux",
+		Executable:    noExe,
+		LookPath:      notOnPath,
+		WellKnownDirs: func(string) []string { return []string{".", "tools", "./tools"} },
+	}
+	_, err := r.Resolve("mongodump")
+	var nf *ToolNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("err = %v, want *ToolNotFoundError", err)
+	}
+	if want := []string{"PATH"}; strings.Join(nf.Searched, "|") != strings.Join(want, "|") {
+		t.Errorf("Searched = %v, want %v (relative dirs skipped)", nf.Searched, want)
+	}
+
+	// A relative ProgramFiles must not let the working directory supply a binary.
+	r = &Resolver{GOOS: "windows", Executable: noExe, LookPath: notOnPath}
+	if got, err := r.Resolve("mongodump"); !errors.Is(err, ErrToolNotFound) {
+		t.Errorf("Resolve with ProgramFiles=. = %q, %v; want ErrToolNotFound", got, err)
 	}
 }
 

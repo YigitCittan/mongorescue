@@ -148,6 +148,11 @@ func (r *Resolver) Resolve(name string) (string, error) {
 		wellKnownDirs = DefaultWellKnownDirs
 	}
 	for _, dir := range wellKnownDirs(goos) {
+		// As with Dir, a relative directory would let the working directory supply
+		// a binary.
+		if !filepath.IsAbs(dir) {
+			continue
+		}
 		candidate := filepath.Join(dir, file)
 		searched = append(searched, candidate)
 		if isExecutableFile(candidate) {
@@ -160,18 +165,31 @@ func (r *Resolver) Resolve(name string) (string, error) {
 // DefaultWellKnownDirs returns the directories where package managers and installers
 // usually put the MongoDB Database Tools on goos, searched after PATH:
 // /opt/homebrew/bin, /usr/local/bin and /opt/local/bin (MacPorts) on darwin;
-// %ProgramFiles%\MongoDB\Tools\<version>\bin on windows, highest version first;
-// /usr/local/bin, /usr/bin and /snap/bin elsewhere.
+// <Program Files>\MongoDB\Tools\<version>\bin on windows, highest version first,
+// under %ProgramW6432% (the 64-bit Program Files, set for 32-bit processes too) and
+// then %ProgramFiles%, each once, or C:\Program Files when neither is set;
+// /usr/local/bin, /usr/bin and /snap/bin elsewhere. Resolve ignores relative
+// directories.
 func DefaultWellKnownDirs(goos string) []string {
 	switch goos {
 	case "darwin":
 		return []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
 	case "windows":
-		programFiles := os.Getenv("ProgramFiles")
-		if programFiles == "" {
-			programFiles = `C:\Program Files`
+		var bases []string
+		for _, env := range []string{"ProgramW6432", "ProgramFiles"} {
+			base := strings.TrimSpace(os.Getenv(env))
+			if base != "" && !slices.ContainsFunc(bases, func(b string) bool { return strings.EqualFold(b, base) }) {
+				bases = append(bases, base)
+			}
 		}
-		return windowsToolsDirs(programFiles)
+		if len(bases) == 0 {
+			bases = []string{`C:\Program Files`}
+		}
+		var dirs []string
+		for _, base := range bases {
+			dirs = append(dirs, windowsToolsDirs(base)...)
+		}
+		return dirs
 	default:
 		return []string{"/usr/local/bin", "/usr/bin", "/snap/bin"}
 	}
