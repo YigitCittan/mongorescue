@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mongodump not found` when the MongoDB Database Tools are installed but not on the app's `PATH` (the Windows MSI installs them to `C:\Program Files\MongoDB\Tools\<version>\bin` without adding it to `PATH`; the macOS desktop app launched from Finder gets a minimal `PATH` without Homebrew): after `PATH`, MongoRescue also searches well-known install directories (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` on macOS; `%ProgramW6432%` / `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows, newest version first; `/usr/local/bin`, `/usr/bin`, `/snap/bin` on Linux). See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
 - Windows desktop shortcuts and taskbar pins kept showing the default Wails "W" icon of an older install: the installer (and uninstaller) now tells the shell to refresh its icon cache (`SHChangeNotify(SHCNE_ASSOCCHANGED)`). See [docs/desktop.md](docs/desktop.md#windows-installer-and-webview2).
 
+### Security
+- Dashboard: the storage provider shown for an S3 target is derived from the endpoint's host name (exact domain or subdomain match) instead of a substring anywhere in the URL.
+- Stored credentials: sealing a value larger than 16 MiB fails with `secretbox.ErrTooLarge` instead of risking an oversized allocation.
+- Logs: importing the deprecated static API key no longer logs the key's lookup prefix, and the "deprecated" warnings take the source name from constants rather than from the configuration next to the key.
+- Docker image: the `golang` and `alpine` base images are pinned by digest; the release workflow installs a fixed NSIS version with checksums required.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added

@@ -34,6 +34,10 @@ const Prefix = "sb2:"
 // value to its location. Such values are only opened by OpenLegacy.
 const LegacyPrefix = "sb1:"
 
+// MaxPlaintextSize is the largest value Seal accepts. Stored credentials are far
+// smaller; the bound keeps the size of the sealed buffer from overflowing.
+const MaxPlaintextSize = 16 << 20
+
 // Format version bytes (the first byte of every sealed payload).
 const (
 	formatVersion       byte = 2
@@ -52,6 +56,8 @@ var (
 	// ErrDecrypt is returned when authentication fails: the value was tampered with or
 	// sealed with a different key.
 	ErrDecrypt = errors.New("secretbox: decryption failed (wrong key or tampered value)")
+	// ErrTooLarge is returned by Seal for a plaintext longer than MaxPlaintextSize.
+	ErrTooLarge = errors.New("secretbox: value is too large to seal")
 	// ErrSecretKeyMismatch is returned at startup when the database holds values
 	// encrypted with a key other than the configured one (or the key is missing).
 	ErrSecretKeyMismatch = errors.New("secretbox: the secret key does not match the key this database was encrypted with")
@@ -156,6 +162,9 @@ func IsLegacySealed(s string) bool {
 // Seal encrypts plaintext for the location at, with a fresh random nonce. Every value
 // is sealed, including one that happens to look like a sealed value already.
 func (b *Box) Seal(at Binding, plaintext string) (string, error) {
+	if len(plaintext) > MaxPlaintextSize {
+		return "", ErrTooLarge
+	}
 	aad, err := at.aad(formatVersion)
 	if err != nil {
 		return "", err

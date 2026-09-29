@@ -3026,14 +3026,27 @@ function storageTargetName(id) {
   return s ? s.name : "";
 }
 
+// endpointHostname returns the host name of an S3 endpoint ("" when it cannot be
+// parsed); an endpoint without a scheme is read as https.
+function endpointHostname(endpoint) {
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//.test(endpoint) ? endpoint : "https://" + endpoint).hostname;
+  } catch {
+    return "";
+  }
+}
+
 function inferProvider(target) {
   if (!target || target.type === "local") return "local";
   const endpoint = String((target.s3 && target.s3.endpoint) || "").toLowerCase();
-  if (!endpoint || endpoint.includes("amazonaws.com")) return "aws";
-  if (endpoint.includes("r2.cloudflarestorage.com")) return "r2";
-  if (endpoint.includes("backblazeb2.com")) return "b2";
-  if (endpoint.includes("digitaloceanspaces.com")) return "do";
-  if (endpoint.includes("wasabisys.com")) return "wasabi";
+  if (!endpoint) return "aws";
+  const host = endpointHostname(endpoint);
+  const onDomain = d => host === d || host.endsWith("." + d);
+  if (onDomain("amazonaws.com")) return "aws";
+  if (onDomain("r2.cloudflarestorage.com")) return "r2";
+  if (onDomain("backblazeb2.com")) return "b2";
+  if (onDomain("digitaloceanspaces.com")) return "do";
+  if (onDomain("wasabisys.com")) return "wasabi";
   if (endpoint.includes("minio") || /:9000(\/|$)/.test(endpoint)) return "minio";
   return "s3";
 }
