@@ -283,6 +283,17 @@ time,
   background: var(--danger);
 }
 
+.app-version {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .topbar-actions {
   margin-left: auto;
   display: flex;

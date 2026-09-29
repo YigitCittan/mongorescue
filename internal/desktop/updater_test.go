@@ -587,7 +587,7 @@ func TestRevealCommand(t *testing.T) {
 
 func TestUpdateScript(t *testing.T) {
 	s := UpdateScript()
-	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli"} {
+	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
