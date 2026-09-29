@@ -14,7 +14,9 @@ import (
 // modal <dialog> (the rest of the page is inert): Escape, the cancel event and a
 // close are all undone, and Tab stays inside it; engines without showModal get a
 // fixed overlay with the page's other top-level elements made inert. "Later" hides
-// the bar for the session (sessionStorage). Release notes are set with textContent
+// the bar for the session (sessionStorage); an "Update" button in the dashboard
+// header stays while an optional update is available and shows the bar again
+// (or opens the release page without an installable file). Release notes are set with textContent
 // only, after stripping common markdown marks; nothing is ever parsed as markup.
 // Strings are in English, or Turkish when the dashboard's saved language (or,
 // without one, navigator.language) starts with "tr".
@@ -29,6 +31,7 @@ const updateScript = `(function (paths, header) {
       available: "Version {latest} is available",
       yours: "(you have {current})",
       update: "Update",
+      headerTitle: "Update to v{latest}",
       updateNow: "Update now",
       notes: "Release notes",
       hideNotes: "Hide release notes",
@@ -51,6 +54,7 @@ const updateScript = `(function (paths, header) {
       available: "{latest} sürümü yayımlandı",
       yours: "(kullanılan: {current})",
       update: "Güncelle",
+      headerTitle: "v{latest} sürümüne güncelle",
       updateNow: "Şimdi güncelle",
       notes: "Sürüm notları",
       hideNotes: "Sürüm notlarını gizle",
@@ -68,7 +72,8 @@ const updateScript = `(function (paths, header) {
     }
   };
   var POLL_MS = 1500, SLOW_POLL_MS = 600000, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
-  var started = Date.now(), timer = null, ui = null, status = null;
+  var HEADER_BUTTON_ID = "mr-update-header", HEADER_RETRY_MS = 1000, HEADER_RETRIES = 30;
+  var started = Date.now(), timer = null, ui = null, status = null, headerTimer = null, headerTries = 0;
 
   function language() {
     var saved = "";
@@ -96,6 +101,9 @@ const updateScript = `(function (paths, header) {
   }
   function setLater(latest) {
     try { window.sessionStorage.setItem(LATER_KEY, latest); } catch (e) { /* not persisted */ }
+  }
+  function clearLater() {
+    try { window.sessionStorage.removeItem(LATER_KEY); } catch (e) { /* nothing stored */ }
   }
 
   function getStatus() {
@@ -163,6 +171,48 @@ const updateScript = `(function (paths, header) {
   }
   function openReleasePage() {
     post(paths.release).catch(function () { /* nothing else to try */ });
+  }
+
+  // headerButton keeps an "Update" button in the dashboard header while an
+  // optional update is available, also after "Later" hid the bar. The header may
+  // not exist yet (or at all, on other pages): it is looked for again a few times.
+  function headerButton(s) {
+    var existing = document.getElementById(HEADER_BUTTON_ID);
+    if (!s || !s.available || s.mandatory) {
+      if (existing) { existing.remove(); }
+      return;
+    }
+    var b = existing;
+    if (!b) {
+      var actions = document.querySelector(".topbar-actions");
+      if (!actions) {
+        if (!headerTimer && headerTries < HEADER_RETRIES) {
+          headerTries++;
+          headerTimer = setTimeout(function () { headerTimer = null; headerButton(status); }, HEADER_RETRY_MS);
+        }
+        return;
+      }
+      b = button("btn btn-primary btn-sm", t("update"), headerClick);
+      b.id = HEADER_BUTTON_ID;
+      actions.insertBefore(b, actions.firstChild);
+    }
+    var title = t("headerTitle", { latest: s.latest });
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    b.disabled = s.state === "downloading" || s.state === "checking" || (s.state === "ready" && s.action === "launch");
+  }
+  // headerClick runs the bar's action: it shows the bar again (even after
+  // "Later") and installs, or opens the release page when there is nothing to
+  // install for this platform.
+  function headerClick() {
+    if (!status || !status.available || status.mandatory) { return; }
+    if (!status.installable && status.state !== "error") {
+      openReleasePage();
+      return;
+    }
+    clearLater();
+    render(status);
+    install();
   }
 
   function build(mandatory) {
@@ -296,6 +346,7 @@ const updateScript = `(function (paths, header) {
 
   function render(s) {
     status = s;
+    headerButton(s);
     if (!s.available) { remove(); return; }
     var active = s.state === "checking" || s.state === "downloading" || s.state === "ready" || s.state === "error";
     if (!s.mandatory && !active && later(s.latest)) { remove(); return; }

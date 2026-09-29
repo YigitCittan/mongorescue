@@ -377,13 +377,33 @@ async function checkHealth() {
 }
 
 function setConnection(dot, status, version) {
+  if (status === "ok") setAppVersion(version);
   if (!dot) return;
   dot.dataset.status = status;
+  const shown = formatVersion(version);
   let label = t("nav.conn_checking");
-  if (status === "ok") label = version ? `${t("nav.conn_ok")} (v${version})` : t("nav.conn_ok");
+  if (status === "ok") label = shown ? `${t("nav.conn_ok")} (${shown})` : t("nav.conn_ok");
   if (status === "down") label = t("nav.conn_down");
   dot.title = label;
   dot.setAttribute("aria-label", label);
+}
+
+// formatVersion returns the build version as shown in the header: "v0.4.1" for a
+// release, other builds (such as "dev") as they are, "" when unknown.
+function formatVersion(version) {
+  const v = String(version || "").trim();
+  if (!v) return "";
+  return /^\d/.test(v) ? `v${v}` : v;
+}
+
+// setAppVersion shows the build version next to the brand. It keeps the last
+// known version while the server is unreachable.
+function setAppVersion(version) {
+  const el = document.getElementById("app-version");
+  if (!el) return;
+  const shown = formatVersion(version);
+  el.textContent = shown;
+  el.hidden = !shown;
 }
 
 // Wrapper for authenticated API requests. Sends the session cookie, adds the CSRF

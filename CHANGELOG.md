@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dashboard: the build version (for example `v0.4.1`, as reported by `GET /api/v1/health`) is shown next to the brand in the header.
+- Desktop app: while an optional update is available, an **Update** button stays in the header, also after **Later** hid the bar; it shows the bar again and starts the update, or opens the release page when the release has no file for your system. See [docs/desktop.md](docs/desktop.md#updates).
+
 ### Changed
 - Release workflow: can sign the Windows desktop exe and installer through SignPath once the `SIGNPATH_API_TOKEN` secret and `SIGNPATH_ORGANIZATION_ID` variable are configured; until then Windows builds stay unsigned as before. See [docs/desktop.md](docs/desktop.md#code-signing).
 
