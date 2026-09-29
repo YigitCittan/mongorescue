@@ -74,6 +74,7 @@ jobs:
       contents: write # upload assets to the release
       id-token: write # keyless signing of the provenance attestation
       attestations: write # store the attestation
+      actions: read # SignPath reads the job details and downloads the unsigned workflow artifact
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +98,11 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
       WAILS_VERSION: v2.16.0 # keep in sync with github.com/wailsapp/wails/v2 in go.mod
+      # Windows code signing through SignPath (docs/desktop.md, "Code signing"). Off
+      # until the SIGNPATH_API_TOKEN secret and the SIGNPATH_ORGANIZATION_ID variable
+      # exist; while off, every signing step is skipped and the Windows build is the
+      # unsigned `wails build -nsis` output, as before.
+      SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,6 +149,97 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ] && [ ! -f build/bin/MongoRescue-amd64-installer.exe ]; then
             echo "::error::NSIS installer was not produced"; exit 1
           fi
+
+      # Windows signing (only when SIGNING_ENABLED): sign MongoRescue.exe, rebuild
+      # the installer around the signed exe, then sign the installer. Each SignPath
+      # request carries a single PE file. The signed files replace the unsigned ones
+      # in build/bin, so the packaging, attestation and checksum steps below are the
+      # same with and without signing. The uninstaller inside the installer stays
+      # unsigned (see docs/desktop.md).
+      - name: Upload the unsigned exe for signing
+        id: upload-exe
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-exe-unsigned
+          path: cmd/mongorescue-desktop/build/bin/MongoRescue.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the exe (SignPath)
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'mongorescue' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          # Leaves time for a manual approval of the signing request.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ github.workspace }}/signpath-out/exe
+
+      # Same makensis call as `wails build -nsis` (pkg/commands/build/nsis_installer.go
+      # in Wails v2.16.0): run in build/windows/installer with ARG_WAILS_AMD64_BINARY,
+      # reusing the wails_tools.nsh and WebView2 bootstrapper the build step wrote.
+      - name: Rebuild the installer around the signed exe
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        working-directory: cmd/mongorescue-desktop/build
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/signpath-out/exe/MongoRescue.exe" bin/MongoRescue.exe
+          rm -f bin/MongoRescue-amd64-installer.exe
+          cd windows/installer
+          makensis '-DARG_WAILS_AMD64_BINARY=..\..\bin\MongoRescue.exe' project.nsi
+          if [ ! -f ../../bin/MongoRescue-amd64-installer.exe ]; then
+            echo "::error::NSIS installer was not produced"; exit 1
+          fi
+
+      - name: Upload the unsigned installer for signing
+        id: upload-installer
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer-unsigned
+          path: cmd/mongorescue-desktop/build/bin/MongoRescue-amd64-installer.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the installer (SignPath)
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'mongorescue' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ github.workspace }}/signpath-out/installer
+
+      - name: Use the signed installer
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        working-directory: cmd/mongorescue-desktop/build/bin
+        run: cp "$GITHUB_WORKSPACE/signpath-out/installer/MongoRescue-amd64-installer.exe" MongoRescue-amd64-installer.exe
+
+      - name: Verify the Authenticode signatures
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        working-directory: cmd/mongorescue-desktop/build/bin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in 'MongoRescue.exe', 'MongoRescue-amd64-installer.exe') {
+            $sig = Get-AuthenticodeSignature -FilePath $file
+            Write-Output "${file}: $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Output "::error::$file is not validly signed ($($sig.Status))"
+              exit 1
+            }
+          }
 
       - name: Package artifacts
         working-directory: cmd/mongorescue-desktop/build/bin
