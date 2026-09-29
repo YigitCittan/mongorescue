@@ -69,7 +69,7 @@ Or, with Docker Compose, run `docker compose up -d` in a clone of this repositor
 
 The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/). It is the only distribution that serves the dashboard over HTTP.
 
-**Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary), put `mongodump` and `mongorestore` (100.3.0 or newer) on your `PATH` and start it. It shows the same dashboard in a native window, without opening a network port, and displays the setup code on first start. See [docs/desktop.md](docs/desktop.md).
+**Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary), put `mongodump` and `mongorestore` (100.3.0 or newer) on your `PATH` and start it. It shows the same dashboard in a native window, without opening a network port, fills in the setup code on first start and updates itself from GitHub Releases. See [docs/desktop.md](docs/desktop.md).
 
 **Server binary.** For headless use (REST API, MCP, metrics), download `mongorescue` from Releases, put the tools on your `PATH` and run `./mongorescue`. It serves no dashboard unless you pass `-dashboard` (or set `MONGORESCUE_DASHBOARD=true`); the setup code is printed in its log.
 
@@ -176,6 +176,19 @@ Planned for upcoming releases:
 - A shared metadata store for running several instances
 
 Ideas and help are welcome in [issues](https://github.com/YigitCittan/mongorescue/issues).
+
+## Code signing policy
+
+Windows releases are signed with free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: [members of this repository](https://github.com/YigitCittan/mongorescue/graphs/contributors)
+- Approvers: [owners](https://github.com/YigitCittan)
+
+Only artifacts built by the [release workflow](.github/workflows/release.yml) from a tagged commit of this repository are signed.
+
+## Privacy
+
+MongoRescue does not collect telemetry or send data about you or your databases anywhere except to the MongoDB servers, storage targets and notification channels you configure. The desktop app checks GitHub Releases for updates. See [docs/privacy.md](docs/privacy.md).
 
 ## License
 
