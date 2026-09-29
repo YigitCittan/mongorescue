@@ -145,6 +145,10 @@ Section
     !insertmacro wails.associateCustomProtocols
 
     !insertmacro wails.writeUninstaller
+
+    # Tell the shell that icons may have changed (SHCNE_ASSOCCHANGED), so shortcuts and
+    # taskbar pins of older installs drop their cached icon (such as the default Wails "W").
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd
 
 Section "uninstall"
@@ -161,4 +165,7 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+
+    # Refresh the shell's icon cache (SHCNE_ASSOCCHANGED) for the removed shortcuts.
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

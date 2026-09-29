@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `mongodump not found` in the macOS desktop app launched from Finder, whose minimal `PATH` leaves out Homebrew: after `PATH`, MongoRescue also searches well-known install directories (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` on macOS; `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows; `/usr/local/bin`, `/usr/bin`, `/snap/bin` on Linux). See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
+- Windows desktop shortcuts and taskbar pins kept showing the default Wails "W" icon of an older install: the installer (and uninstaller) now tells the shell to refresh its icon cache (`SHChangeNotify(SHCNE_ASSOCCHANGED)`). See [docs/desktop.md](docs/desktop.md#windows-installer-and-webview2).
 
 ## [0.4.0] - 2026-09-28
 
