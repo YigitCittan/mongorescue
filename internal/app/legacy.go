@@ -129,11 +129,20 @@ func (l *legacyImport) importAPIKey(ctx context.Context) error {
 		return nil
 	}
 	if _, err := l.auth.ImportAPIKey(ctx, lg.APIKey); err != nil {
-		l.logger.Warn("could not import the deprecated static API key", slog.String("source", lg.APIKeySource), slog.Any("error", err))
+		l.logger.Warn("could not import the deprecated static API key", slog.String("source", apiKeySourceName(lg.APIKeySource)), slog.Any("error", err))
 	} else {
 		l.imported = append(l.imported, lg.APIKeySource)
 	}
 	return l.settings.MarkImported(ctx, lg.APIKeySource)
+}
+
+// apiKeySourceName returns the name of the deprecated API key source as a constant,
+// so that no value read next to the key reaches a log call.
+func apiKeySourceName(source string) string {
+	if source == config.EnvAPIKey {
+		return config.EnvAPIKey
+	}
+	return config.LegacyFileName + ":server.api_key"
 }
 
 // report warns about every deprecated source that is still set.

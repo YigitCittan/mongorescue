@@ -589,7 +589,7 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}
-	s.logger.Info("api key imported", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix))
+	s.logger.Info("api key imported", slog.String("api_key_id", k.ID))
 	return true, nil
 }
 

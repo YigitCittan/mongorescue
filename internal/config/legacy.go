@@ -221,8 +221,11 @@ func (b *legacyBuilder) readFile(path string) error {
 	src := func(key string) string { return LegacyFileName + ":" + key }
 
 	if v := f.Server.APIKey; v != nil && *v != "" {
-		b.out.APIKey, b.out.APIKeySource = *v, src("server.api_key")
-		b.present(b.out.APIKeySource)
+		// The source name is passed on directly, not read back from the field next
+		// to the key, so the key never flows into the "deprecated" log lines.
+		name := src("server.api_key")
+		b.out.APIKey, b.out.APIKeySource = *v, name
+		b.present(name)
 	}
 	if v := f.Server.TrustProxyHeaders; v != nil {
 		b.setting(settings.KeyTrustProxyHeaders, *v, src("server.trust_proxy_headers"))

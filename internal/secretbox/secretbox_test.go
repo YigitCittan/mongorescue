@@ -49,6 +49,16 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSealRejectsOversizedPlaintext(t *testing.T) {
+	b := newBox(t)
+	if _, err := b.Seal(here, strings.Repeat("x", MaxPlaintextSize)); err != nil {
+		t.Fatalf("Seal at the limit: %v", err)
+	}
+	if _, err := b.Seal(here, strings.Repeat("x", MaxPlaintextSize+1)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("Seal over the limit = %v, want ErrTooLarge", err)
+	}
+}
+
 func TestSealedValuesAreBoundToTheirLocation(t *testing.T) {
 	b := newBox(t)
 	sealed, err := b.Seal(here, "mongodb://prod")
