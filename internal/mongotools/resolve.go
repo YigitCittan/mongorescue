@@ -1,6 +1,7 @@
 package mongotools
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -60,7 +63,7 @@ func LogNotFound(ctx context.Context, logger *slog.Logger, err error) {
 }
 
 // Resolver locates MongoDB Database Tools binaries. The zero value searches the
-// bundled locations and PATH; the function fields exist so tests can resolve
+// bundled locations, PATH and well-known install directories; the function fields exist so tests can resolve
 // hermetically and default to the os/exec and runtime implementations when nil.
 //
 // Search order:
@@ -69,7 +72,10 @@ func LogNotFound(ctx context.Context, logger *slog.Logger, err error) {
 //  2. <directory of the executable>/tools;
 //  3. on darwin, when the executable is <bundle>/Contents/MacOS/<name>,
 //     <bundle>/Contents/Resources/tools (inside a .app);
-//  4. exec.LookPath (PATH).
+//  4. exec.LookPath (PATH);
+//  5. well-known install directories (WellKnownDirs, default DefaultWellKnownDirs),
+//     for processes started with a minimal PATH, such as a macOS app launched from
+//     Finder that does not see Homebrew's /opt/homebrew/bin.
 //
 // Directory lookups append ".exe" on Windows and accept only regular files (outside
 // Windows, only those with an execute bit).
@@ -82,6 +88,9 @@ type Resolver struct {
 	LookPath func(string) (string, error)
 	// GOOS is the target operating system (default runtime.GOOS).
 	GOOS string
+	// WellKnownDirs returns the install directories searched after PATH for goos
+	// (default DefaultWellKnownDirs).
+	WellKnownDirs func(goos string) []string
 }
 
 // NewResolver returns a Resolver that searches dir first (empty means none).
@@ -133,7 +142,87 @@ func (r *Resolver) Resolve(name string) (string, error) {
 	if p, err := lookPath(name); err == nil && p != "" {
 		return absOrSelf(p), nil
 	}
+
+	wellKnownDirs := r.WellKnownDirs
+	if wellKnownDirs == nil {
+		wellKnownDirs = DefaultWellKnownDirs
+	}
+	for _, dir := range wellKnownDirs(goos) {
+		candidate := filepath.Join(dir, file)
+		searched = append(searched, candidate)
+		if isExecutableFile(candidate) {
+			return absOrSelf(candidate), nil
+		}
+	}
 	return "", &ToolNotFoundError{Name: name, Searched: searched}
+}
+
+// DefaultWellKnownDirs returns the directories where package managers and installers
+// usually put the MongoDB Database Tools on goos, searched after PATH:
+// /opt/homebrew/bin, /usr/local/bin and /opt/local/bin (MacPorts) on darwin;
+// %ProgramFiles%\MongoDB\Tools\<version>\bin on windows, highest version first;
+// /usr/local/bin, /usr/bin and /snap/bin elsewhere.
+func DefaultWellKnownDirs(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		return windowsToolsDirs(programFiles)
+	default:
+		return []string{"/usr/local/bin", "/usr/bin", "/snap/bin"}
+	}
+}
+
+// windowsToolsDirs returns <programFiles>/MongoDB/Tools/<version>/bin for every
+// version directory, highest version first.
+func windowsToolsDirs(programFiles string) []string {
+	toolsDir := filepath.Join(programFiles, "MongoDB", "Tools")
+	entries, err := os.ReadDir(toolsDir)
+	if err != nil {
+		return nil
+	}
+	var versions []string
+	for _, e := range entries {
+		if e.IsDir() {
+			versions = append(versions, e.Name())
+		}
+	}
+	slices.SortFunc(versions, func(a, b string) int { return compareVersions(b, a) })
+	dirs := make([]string, 0, len(versions))
+	for _, v := range versions {
+		dirs = append(dirs, filepath.Join(toolsDir, v, "bin"))
+	}
+	return dirs
+}
+
+// compareVersions compares dot-separated versions such as "100" and "99.1" segment
+// by segment: numerically where both segments are numbers, a number above a
+// non-number, and as strings otherwise.
+func compareVersions(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		an, aErr := strconv.Atoi(as[i])
+		bn, bErr := strconv.Atoi(bs[i])
+		var c int
+		switch {
+		case aErr == nil && bErr == nil:
+			c = cmp.Compare(an, bn)
+		case aErr == nil:
+			c = 1
+		case bErr == nil:
+			c = -1
+		default:
+			c = strings.Compare(as[i], bs[i])
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(as), len(bs))
 }
 
 // searchDirs returns the directories searched before PATH, in order.

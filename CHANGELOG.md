@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Release workflow: can sign the Windows desktop exe and installer through SignPath once the `SIGNPATH_API_TOKEN` secret and `SIGNPATH_ORGANIZATION_ID` variable are configured; until then Windows builds stay unsigned as before. See [docs/desktop.md](docs/desktop.md#code-signing).
 
+### Fixed
+- `mongodump not found` in the macOS desktop app launched from Finder, whose minimal `PATH` leaves out Homebrew: after `PATH`, MongoRescue also searches well-known install directories (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` on macOS; `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows; `/usr/local/bin`, `/usr/bin`, `/snap/bin` on Linux). See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
+
 ## [0.4.0] - 2026-09-28
 
 ### Added
