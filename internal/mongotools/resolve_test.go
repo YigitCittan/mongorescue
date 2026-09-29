@@ -258,7 +258,7 @@ func TestResolverWellKnownDirs(t *testing.T) {
 	}
 
 	r.LookPath = func(name string) (string, error) { return "/opt/bin/" + name, nil }
-	if got, err := r.Resolve("mongodump"); err != nil || got != mustAbs(t, "/opt/bin/mongodump") {
+	if got, err = r.Resolve("mongodump"); err != nil || got != mustAbs(t, "/opt/bin/mongodump") {
 		t.Fatalf("Resolve = %q, %v; want the PATH result before well-known dirs", got, err)
 	}
 
