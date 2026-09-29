@@ -120,6 +120,43 @@ Releases build the desktop app natively on Windows, macOS and Linux runners (`de
 
 Verify a download with `sha256sum --check --ignore-missing MongoRescue-desktop_<version>_checksums.txt` (macOS: `shasum -a 256 --check --ignore-missing …`).
 
+## Code signing
+
+The release workflow can sign the Windows desktop build through [SignPath](https://signpath.io) (free for open source through [SignPath Foundation](https://signpath.org); see the code signing policy in the [README](../README.md#code-signing-policy)). Signing is **off** until it is configured: without the secret and the organization variable below, every signing step of the `desktop` job is skipped and the release ships the unsigned `wails build -nsis` output, exactly as before. macOS and Linux builds are not signed.
+
+When it is on, the Windows leg of the `desktop` job:
+
+1. builds `MongoRescue.exe` and the installer with `wails build -nsis` (the same step as without signing);
+2. uploads `MongoRescue.exe` as a workflow artifact, submits it to SignPath and waits for the signed file, which replaces the unsigned one in `build/bin`;
+3. rebuilds the installer around the signed exe with the same `makensis` call Wails makes (`makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\MongoRescue.exe project.nsi` in `build/windows/installer`, reusing the `wails_tools.nsh` and WebView2 bootstrapper the first step wrote);
+4. uploads the installer, has SignPath sign it and replaces it;
+5. checks both files with `Get-AuthenticodeSignature` and fails unless both are `Valid`.
+
+The portable zip then contains the signed exe and the installer asset is the signed installer. Provenance attestations and `MongoRescue-desktop_<version>_checksums.txt` are made from the uploaded release assets after signing, so they cover the signed files.
+
+The uninstaller (`uninstall.exe`, written by the installer) stays unsigned: NSIS builds it while compiling the installer and can only sign it then, through `!uninstfinalize` with a signing command available on the build machine, and SignPath signs only files submitted to it. Windows SmartScreen evaluates the downloaded installer, which is signed.
+
+### Maintainer setup
+
+In SignPath (once the SignPath Foundation application is approved):
+
+1. Create the project (slug `mongorescue` by default) and link it to this repository as a trusted GitHub build system, so only artifacts from the release workflow on GitHub-hosted runners are accepted.
+2. Create the signing policy (slug `release-signing` by default). If it requires manual approval, approve each release's two requests (the exe, then the installer) within an hour: each step waits up to 3600 seconds.
+3. Use an artifact configuration that accepts a ZIP archive with a single PE file at its root and signs it with Authenticode: every request contains exactly one file, `MongoRescue.exe` or `MongoRescue-amd64-installer.exe` (GitHub wraps workflow artifacts in a ZIP archive). Make it the project's default, or name it with the variable below.
+4. Create an API token for a CI user that may submit requests with this policy.
+
+In the GitHub repository (**Settings → Secrets and variables → Actions**):
+
+| Name | Kind | Value |
+| :--- | :--- | :--- |
+| `SIGNPATH_API_TOKEN` | Secret | The SignPath API token (required) |
+| `SIGNPATH_ORGANIZATION_ID` | Variable | The SignPath organization ID (required) |
+| `SIGNPATH_PROJECT_SLUG` | Variable | Project slug; defaults to `mongorescue` |
+| `SIGNPATH_SIGNING_POLICY_SLUG` | Variable | Signing policy slug; defaults to `release-signing` |
+| `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` | Variable | Artifact configuration slug; optional, the project default is used when unset |
+
+Signing turns on with the next tag once the secret and the organization ID exist; delete either to turn it off. The `desktop` job's token gets `actions: read` so SignPath can read the job and download the artifact; the unsigned artifacts are kept for one day.
+
 ## Windows installer and WebView2
 
 The app window needs the Microsoft Edge WebView2 runtime. Windows 10 and 11 include it; Windows Server 2016, 2019 and 2022 do not unless something installed it. The installer checks the per-machine registration (`HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`, and the key without `WOW6432Node`) and the per-user one (`HKCU\Software\Microsoft\EdgeUpdate\Clients\{…}`), skips the step when either names a version other than `0.0.0.0`, and otherwise runs Microsoft's online bootstrapper, which downloads the runtime (well over 100 MB). The status line reads *Installing Microsoft Edge WebView2 Runtime…* and the bootstrapper shows its own progress window; with `/S` it runs silently. If the runtime is still missing afterwards the installer says so, with the exit code and the [download link](https://go.microsoft.com/fwlink/p/?LinkId=2124703), and finishes the installation; the app offers the download again when it starts without the runtime. On machines without internet access, install the WebView2 runtime first (the offline "Evergreen Standalone Installer").

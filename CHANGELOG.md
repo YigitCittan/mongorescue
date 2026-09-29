@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Release workflow: can sign the Windows desktop exe and installer through SignPath once the `SIGNPATH_API_TOKEN` secret and `SIGNPATH_ORGANIZATION_ID` variable are configured; until then Windows builds stay unsigned as before. See [docs/desktop.md](docs/desktop.md#code-signing).
+
 ## [0.4.0] - 2026-09-28
 
 ### Added
