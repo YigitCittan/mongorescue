@@ -14,9 +14,10 @@ import (
 func TestDefaultRunnerReportsMissingTool(t *testing.T) {
 	root := t.TempDir()
 	tools := &mongotools.Resolver{
-		Dir:        filepath.Join(root, "custom"),
-		Executable: func() (string, error) { return filepath.Join(root, "mongorescue"), nil },
-		LookPath:   func(string) (string, error) { return "", errors.New("not on PATH") },
+		Dir:           filepath.Join(root, "custom"),
+		Executable:    func() (string, error) { return filepath.Join(root, "mongorescue"), nil },
+		LookPath:      func(string) (string, error) { return "", errors.New("not on PATH") },
+		WellKnownDirs: func(string) []string { return nil },
 	}
 	_, _, err := newProcessRunner(tools, slog.New(slog.DiscardHandler))(context.Background(), "mongorestore", strings.NewReader(""), "--archive")
 	if !errors.Is(err, mongotools.ErrToolNotFound) {

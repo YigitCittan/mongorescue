@@ -31,7 +31,8 @@ Backups and restores run `mongodump` and `mongorestore`. MongoRescue uses the fi
 1. the directory given by `-tools-dir` / `MONGORESCUE_TOOLS_DIR` (must be an absolute path; a relative one is rejected at startup);
 2. `tools/` next to the MongoRescue executable (`<install dir>\tools\mongodump.exe` on Windows, `<dir>/tools/mongodump` on Linux and macOS);
 3. on macOS, when MongoRescue runs from `<name>.app/Contents/MacOS/`, `Contents/Resources/tools/` inside the bundle (`MongoRescue.app/Contents/Resources/tools/mongodump`);
-4. `PATH`.
+4. `PATH`;
+5. well-known install directories, for when MongoRescue starts with a minimal `PATH` (such as the macOS desktop app launched from Finder, which sees only `/usr/bin:/bin:/usr/sbin:/sbin`): `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin` on macOS; `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows (highest version first); `/usr/local/bin`, `/usr/bin` and `/snap/bin` on Linux.
 
 On Windows `.exe` is appended. Only regular, executable files count. The paths found are logged at startup; a missing tool is logged as a warning with the searched locations, and backups or restores then fail with `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (the searched paths appear only in the log).
 

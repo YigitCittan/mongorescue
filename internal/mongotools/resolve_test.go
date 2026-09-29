@@ -127,9 +127,10 @@ func TestResolverSearchOrder(t *testing.T) {
 			root := t.TempDir()
 			tc.setup(t, root)
 			r := &Resolver{
-				GOOS:       tc.goos,
-				Executable: func() (string, error) { return filepath.Join(root, filepath.FromSlash(tc.exe)), nil },
-				LookPath:   tc.lookPath,
+				GOOS:          tc.goos,
+				Executable:    func() (string, error) { return filepath.Join(root, filepath.FromSlash(tc.exe)), nil },
+				LookPath:      tc.lookPath,
+				WellKnownDirs: noWellKnownDirs,
 			}
 			if tc.dir != "" {
 				r.Dir = filepath.Join(root, tc.dir)
@@ -161,9 +162,10 @@ func TestResolverSkipsNonExecutable(t *testing.T) {
 	root := t.TempDir()
 	writeTool(t, filepath.Join(root, "tools", "mongorestore"), 0o644)
 	r := &Resolver{
-		GOOS:       "linux",
-		Executable: func() (string, error) { return filepath.Join(root, "mongorescue"), nil },
-		LookPath:   func(string) (string, error) { return "", errors.New("no") },
+		GOOS:          "linux",
+		Executable:    func() (string, error) { return filepath.Join(root, "mongorescue"), nil },
+		LookPath:      func(string) (string, error) { return "", errors.New("no") },
+		WellKnownDirs: noWellKnownDirs,
 	}
 	if _, err := r.Resolve("mongorestore"); !errors.Is(err, ErrToolNotFound) {
 		t.Fatalf("Resolve err = %v, want ErrToolNotFound", err)
@@ -177,6 +179,12 @@ func TestToolNotFoundErrorMessage(t *testing.T) {
 		GOOS:       "darwin",
 		Executable: func() (string, error) { return filepath.Join(root, "App.app", "Contents", "MacOS", "App"), nil },
 		LookPath:   func(string) (string, error) { return "", errors.New("no") },
+		WellKnownDirs: func(goos string) []string {
+			if goos != "darwin" {
+				t.Errorf("WellKnownDirs goos = %q, want darwin", goos)
+			}
+			return []string{filepath.Join(root, "homebrew")}
+		},
 	}
 	_, err := r.Resolve("mongodump")
 	var nf *ToolNotFoundError
@@ -192,6 +200,7 @@ func TestToolNotFoundErrorMessage(t *testing.T) {
 		filepath.Join(root, "App.app", "Contents", "MacOS", "tools", "mongodump"),
 		filepath.Join(root, "App.app", "Contents", "Resources", "tools", "mongodump"),
 		"PATH",
+		filepath.Join(root, "homebrew", "mongodump"),
 	}
 	if strings.Join(nf.Searched, "|") != strings.Join(want, "|") {
 		t.Errorf("Searched = %v, want %v", nf.Searched, want)
@@ -204,10 +213,11 @@ func TestResolverIgnoresRelativeDir(t *testing.T) {
 	t.Chdir(root)
 	for _, dir := range []string{".", "tools", "./tools"} {
 		r := &Resolver{
-			Dir:        dir,
-			GOOS:       "linux",
-			Executable: func() (string, error) { return "", errors.New("no executable") },
-			LookPath:   func(string) (string, error) { return "", errors.New("no") },
+			Dir:           dir,
+			GOOS:          "linux",
+			Executable:    func() (string, error) { return "", errors.New("no executable") },
+			LookPath:      func(string) (string, error) { return "", errors.New("no") },
+			WellKnownDirs: noWellKnownDirs,
 		}
 		if got, err := r.Resolve("mongodump"); !errors.Is(err, ErrToolNotFound) {
 			t.Errorf("Dir %q: Resolve = %q, %v; want ErrToolNotFound", dir, got, err)
@@ -227,6 +237,95 @@ func TestResolveExplicitPath(t *testing.T) {
 		t.Fatalf("missing explicit path err = %v, want ErrToolNotFound", err)
 	}
 }
+
+func TestResolverWellKnownDirs(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing")
+	homebrew := filepath.Join(root, "homebrew")
+	writeTool(t, filepath.Join(homebrew, "mongodump"), 0o755)
+	wellKnown := func(string) []string { return []string{missing, homebrew} }
+	exe := func() (string, error) { return filepath.Join(root, "app", "mongorescue"), nil }
+
+	r := &Resolver{
+		GOOS:          "darwin",
+		Executable:    exe,
+		LookPath:      func(string) (string, error) { return "", errors.New("not on PATH") },
+		WellKnownDirs: wellKnown,
+	}
+	got, err := r.Resolve("mongodump")
+	if want := mustEval(t, filepath.Join(homebrew, "mongodump")); err != nil || mustEval(t, got) != want {
+		t.Fatalf("Resolve = %q, %v; want %q", got, err, want)
+	}
+
+	r.LookPath = func(name string) (string, error) { return "/opt/bin/" + name, nil }
+	if got, err := r.Resolve("mongodump"); err != nil || got != mustAbs(t, "/opt/bin/mongodump") {
+		t.Fatalf("Resolve = %q, %v; want the PATH result before well-known dirs", got, err)
+	}
+
+	r.LookPath = func(string) (string, error) { return "", errors.New("not on PATH") }
+	_, err = r.Resolve("mongorestore")
+	var nf *ToolNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("err = %v, want *ToolNotFoundError", err)
+	}
+	want := []string{
+		filepath.Join(root, "app", "tools", "mongorestore"),
+		"PATH",
+		filepath.Join(missing, "mongorestore"),
+		filepath.Join(homebrew, "mongorestore"),
+	}
+	if strings.Join(nf.Searched, "|") != strings.Join(want, "|") {
+		t.Errorf("Searched = %v, want %v", nf.Searched, want)
+	}
+}
+
+func TestDefaultWellKnownDirs(t *testing.T) {
+	cases := map[string][]string{
+		"darwin":  {"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"},
+		"linux":   {"/usr/local/bin", "/usr/bin", "/snap/bin"},
+		"freebsd": {"/usr/local/bin", "/usr/bin", "/snap/bin"},
+	}
+	for goos, want := range cases {
+		if got := DefaultWellKnownDirs(goos); strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("DefaultWellKnownDirs(%q) = %v, want %v", goos, got, want)
+		}
+	}
+}
+
+func TestDefaultWellKnownDirsWindows(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ProgramFiles", root)
+	bin := filepath.Join(root, "MongoDB", "Tools", "100", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultWellKnownDirs("windows"); len(got) != 1 || got[0] != bin {
+		t.Errorf("DefaultWellKnownDirs(windows) = %v, want [%s]", got, bin)
+	}
+}
+
+func TestWindowsToolsDirsSortsVersions(t *testing.T) {
+	root := t.TempDir()
+	tools := filepath.Join(root, "MongoDB", "Tools")
+	for _, v := range []string{"99", "100", "100.9.4", "9", "beta"} {
+		if err := os.MkdirAll(filepath.Join(tools, v, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTool(t, filepath.Join(tools, "README"), 0o644)
+	var want []string
+	for _, v := range []string{"100.9.4", "100", "99", "9", "beta"} {
+		want = append(want, filepath.Join(tools, v, "bin"))
+	}
+	if got := windowsToolsDirs(root); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("windowsToolsDirs = %v, want %v", got, want)
+	}
+	if got := windowsToolsDirs(filepath.Join(root, "missing")); len(got) != 0 {
+		t.Errorf("windowsToolsDirs(missing) = %v, want none", got)
+	}
+}
+
+func noWellKnownDirs(string) []string { return nil }
 
 func isWindowsHost() bool { return os.PathSeparator == '\\' }
 
