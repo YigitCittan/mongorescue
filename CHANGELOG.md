@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 ### Added
 - Dashboard: the build version (for example `v0.4.1`, as reported by `GET /api/v1/health`) is shown next to the brand in the header.
 - Desktop app: while an optional update is available, an **Update** button stays in the header, also after **Later** hid the bar; it shows the bar again and starts the update, or opens the release page when the release has no file for your system. See [docs/desktop.md](docs/desktop.md#updates).
@@ -17,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: can sign the Windows desktop exe and installer through SignPath once the `SIGNPATH_API_TOKEN` secret and `SIGNPATH_ORGANIZATION_ID` variable are configured; until then Windows builds stay unsigned as before. See [docs/desktop.md](docs/desktop.md#code-signing).
 
 ### Fixed
-- `mongodump not found` in the macOS desktop app launched from Finder, whose minimal `PATH` leaves out Homebrew: after `PATH`, MongoRescue also searches well-known install directories (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` on macOS; `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows; `/usr/local/bin`, `/usr/bin`, `/snap/bin` on Linux). See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
+- `mongodump not found` when the MongoDB Database Tools are installed but not on the app's `PATH` (the Windows MSI installs them to `C:\Program Files\MongoDB\Tools\<version>\bin` without adding it to `PATH`; the macOS desktop app launched from Finder gets a minimal `PATH` without Homebrew): after `PATH`, MongoRescue also searches well-known install directories (`/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` on macOS; `%ProgramW6432%` / `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows, newest version first; `/usr/local/bin`, `/usr/bin`, `/snap/bin` on Linux). See [docs/configuration.md](docs/configuration.md#mongodb-database-tools).
 - Windows desktop shortcuts and taskbar pins kept showing the default Wails "W" icon of an older install: the installer (and uninstaller) now tells the shell to refresh its icon cache (`SHChangeNotify(SHCNE_ASSOCCHANGED)`). See [docs/desktop.md](docs/desktop.md#windows-installer-and-webview2).
 
 ## [0.4.0] - 2026-09-28
