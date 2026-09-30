@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fuzz tests for every parser and validator that handles untrusted input, and `make fuzz` (`FUZZTIME`, default `30s` per target). A plain `go test` runs only the seed corpora. See [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
 
 ### Fixed
+- Notification destinations written as NAT64 IPv6 addresses (`64:ff9b::a9fe:a9fe` for `169.254.169.254`) are refused like the IPv4 address they embed.
 - Safe-clone restores of a database with a name longer than 40 bytes failed, because `<db>_rescue_<timestamp>` exceeded MongoDB's 63-byte limit; the source part of the clone name is now shortened.
 - New or changed connection strings with an invalid percent escape (`p%zz`), invalid UTF-8, Unicode whitespace or control characters (such as U+2028), host characters outside RFC 3986 or an empty option name are rejected when saved or tested. Connections stored by earlier releases and a `MONGORESCUE_MONGO_URI` imported at startup keep the earlier rules (`mongouri.ValidateStored`), so they can still be renamed, tested, backed up and restored.
 - The tools configuration file writes a URI containing NEL, U+2028, U+2029, the byte order mark or another C1 control as a double-quoted YAML scalar with escapes; before, YAML folded such line breaks into a space, changing the password the tools used.
