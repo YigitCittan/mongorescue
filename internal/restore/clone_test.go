@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
@@ -149,7 +150,7 @@ func TestMissingDocumentSummaryIsRecorded(t *testing.T) {
 func TestStderrTailBoundsLines(t *testing.T) {
 	long := "E11000 duplicate key error dup key: { email: \"" + strings.Repeat("x", 1000) + "\" }"
 	got := stderrTail("start\n" + long + "\n")
-	if len(got) > maxStderrLine+20 || !strings.HasSuffix(got, "...") {
+	if len(got) > mongotools.QuotedLineMax+20 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("stderrTail kept %d bytes: %q", len(got), got)
 	}
 }

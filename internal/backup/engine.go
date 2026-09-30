@@ -540,7 +540,7 @@ func (e *Engine) classifyFailure(ctx context.Context, saveErr, waitErr, stageErr
 	}
 	stderrNote := ""
 	if logs := strings.TrimSpace(stderrLogs); logs != "" {
-		stderrNote = " (stderr: " + redact.Text(logs) + ")"
+		stderrNote = " (stderr: " + mongotools.QuoteTail(logs) + ")"
 	}
 	dumpErr := func() error {
 		return fmt.Errorf("%w: %w%s", ErrDumpFailed, waitErr, stderrNote)
