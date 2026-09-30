@@ -398,6 +398,19 @@ func TestTrayTexts(t *testing.T) {
 		{TextsFor("de").Quit, "Quit"},
 		{en.ShuttingDown, "MongoRescue is shutting down: new backups and restores are refused"},
 		{tr.ShuttingDown, "MongoRescue kapanıyor: yeni yedekleme ve geri yüklemeler başlatılmıyor"},
+		{en.CheckUpdates, "Check for updates"},
+		{tr.CheckUpdates, "Güncellemeleri denetle"},
+		{en.CheckingUpdates, "Checking for updates…"},
+		{tr.CheckingUpdates, "Güncellemeler denetleniyor…"},
+		{en.UpToDate("0.7.0"), "MongoRescue is up to date (v0.7.0)"},
+		{tr.UpToDate("0.7.0"), "MongoRescue güncel (v0.7.0)"},
+		{en.UpdateTo("0.8.0"), "Update to v0.8.0"},
+		{tr.UpdateTo("0.8.0"), "v0.8.0 sürümüne güncelle"},
+		{en.UpToDate("dev"), "MongoRescue is up to date (dev)"},
+		{en.CheckFailed, "Could not check for updates"},
+		{tr.CheckFailed, "Güncellemeler denetlenemedi"},
+		{en.Updating, "Updating MongoRescue…"},
+		{tr.Updating, "MongoRescue güncelleniyor…"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -520,4 +533,149 @@ func TestAutostartReflectsAndChangesTheEntry(t *testing.T) {
 	if err := a.SetEnabled(true); err == nil {
 		t.Fatal("SetEnabled() hid a registry error")
 	}
+}
+
+// fakeTrayUpdater is a TrayUpdater with a settable status. Checks wait for gate
+// when it is not nil.
+type fakeTrayUpdater struct {
+	mu       sync.Mutex
+	status   UpdateStatus
+	checkErr error
+	gate     chan struct{}
+	checks   int
+	installs int
+	pages    int
+}
+
+func (f *fakeTrayUpdater) Status() UpdateStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+func (f *fakeTrayUpdater) CheckNow(ctx context.Context) error {
+	f.mu.Lock()
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	return f.checkErr
+}
+
+func (f *fakeTrayUpdater) Install() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.installs++
+	return nil
+}
+
+func (f *fakeTrayUpdater) OpenReleasePage() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pages++
+}
+
+// update changes f under its lock.
+func (f *fakeTrayUpdater) update(fn func(*fakeTrayUpdater)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+// counts returns the checks, installs and release page openings so far.
+func (f *fakeTrayUpdater) counts() (checks, installs, pages int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checks, f.installs, f.pages
+}
+
+func TestBackgroundUpdateItem(t *testing.T) {
+	b0, _ := newBackgroundForTest(t, &fakeRuns{}, BackgroundOptions{})
+	if title, _ := b0.UpdateItem(); title != "" {
+		t.Errorf("item without an updater: %q", title)
+	}
+	b0.UpdateClicked() // does nothing
+
+	var mu sync.Mutex
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	up := &fakeTrayUpdater{status: UpdateStatus{Current: "0.7.0", Latest: "0.7.0", State: UpdateIdle}}
+	runs := &fakeRuns{}
+	var changes atomic.Int32
+	b, _ := newBackgroundForTest(t, runs, BackgroundOptions{Updates: up, now: clock, Changed: func() { changes.Add(1) }})
+	item := func(wantTitle string, wantEnabled bool) {
+		t.Helper()
+		if title, enabled := b.UpdateItem(); title != wantTitle || enabled != wantEnabled {
+			t.Errorf("item = %q enabled %v; want %q %v", title, enabled, wantTitle, wantEnabled)
+		}
+	}
+	status := func(want string) {
+		t.Helper()
+		waitFor(t, func() bool { return b.Status() == want })
+	}
+	item("Check for updates", true)
+
+	// The check shows in the status line, then its result.
+	gate := make(chan struct{})
+	up.update(func(f *fakeTrayUpdater) { f.gate = gate })
+	b.UpdateClicked()
+	status("Checking for updates…")
+	item("Check for updates", false)
+	b.UpdateClicked() // coalesced with the running check
+	close(gate)
+	status("MongoRescue is up to date (v0.7.0)")
+	item("Check for updates", true)
+	if checks, _, _ := up.counts(); checks != 1 || changes.Load() < 2 {
+		t.Errorf("checks %d changes %d", checks, changes.Load())
+	}
+	runs.set("backup:c/a")
+	status("Running: 1 backup")
+	runs.set()
+	status("MongoRescue is up to date (v0.7.0)")
+	mu.Lock()
+	now = now.Add(checkResultShown)
+	mu.Unlock()
+	status("Idle")
+
+	up.update(func(f *fakeTrayUpdater) { f.gate, f.checkErr = nil, errors.New("offline") })
+	b.CheckForUpdates()
+	status("Could not check for updates")
+
+	// A newer version: the item starts the update, or opens the release page
+	// without a file for this platform.
+	up.update(func(f *fakeTrayUpdater) {
+		f.status.Latest, f.status.Available, f.status.Installable = "0.8.0", true, true
+	})
+	item("Update to v0.8.0", true)
+	b.UpdateClicked()
+	if checks, installs, pages := up.counts(); installs != 1 || pages != 0 || checks != 2 {
+		t.Errorf("installs %d pages %d checks %d", installs, pages, checks)
+	}
+	up.update(func(f *fakeTrayUpdater) { f.status.State = UpdateDownloading })
+	item("Update to v0.8.0", false)
+	status("Updating MongoRescue…")
+	up.update(func(f *fakeTrayUpdater) { f.status.State, f.status.Installable = UpdateIdle, false })
+	b.UpdateClicked()
+	if _, installs, pages := up.counts(); installs != 1 || pages != 1 {
+		t.Errorf("installs %d pages %d", installs, pages)
+	}
+
+	// Close ends a check in progress.
+	up.update(func(f *fakeTrayUpdater) { f.status.Available, f.gate = false, make(chan struct{}) })
+	b.CheckForUpdates()
+	status("Checking for updates…")
+	b.Close()
+	b.CheckForUpdates() // after Close: nothing
 }

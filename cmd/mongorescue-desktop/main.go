@@ -14,8 +14,10 @@
 // --hidden, which the "Start with Windows" entry passes, starts it hidden in the
 // tray.
 //
-// At startup the app checks GitHub for a newer release (see internal/update): a higher
-// MAJOR version blocks the window until the user updates, MINOR and PATCH updates are
+// At startup, every 30 minutes while it runs, when the window is shown again after
+// 5 minutes and on request (the tray's "Check for updates", the dashboard header),
+// the app checks GitHub for a newer release (see internal/update): a higher MAJOR
+// version blocks the window until the user updates, MINOR and PATCH updates are
 // offered. Builds without a release version (-ldflags "-X main.Version=X.Y.Z") skip
 // the check.
 package main

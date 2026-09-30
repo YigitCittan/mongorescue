@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -531,5 +533,56 @@ func assertOnly(t *testing.T, dir string, names ...string) {
 	}
 	if strings.Join(got, ",") != strings.Join(names, ",") {
 		t.Errorf("dir holds %v; want %v", got, names)
+	}
+}
+
+func TestCheckRateLimited(t *testing.T) {
+	type reply struct {
+		status int
+		hdr    map[string]string
+	}
+	var current atomic.Pointer[reply]
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		r := current.Load()
+		for k, v := range r.hdr {
+			w.Header().Set(k, v)
+		}
+		w.WriteHeader(r.status)
+	}))
+	t.Cleanup(srv.Close)
+	ck := &Checker{Client: srv.Client(), BaseURL: srv.URL}
+
+	reset := time.Now().Add(42 * time.Minute).Truncate(time.Second)
+	cases := []struct {
+		name  string
+		reply reply
+		want  func(time.Time) bool // checks the reset time; nil: not a rate limit
+	}{
+		{"primary", reply{http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10)}},
+			func(got time.Time) bool { return got.Equal(reset) }},
+		{"secondary", reply{http.StatusTooManyRequests, map[string]string{"Retry-After": "120"}},
+			func(got time.Time) bool { d := time.Until(got); return d > 100*time.Second && d <= 120*time.Second }},
+		{"unknown reset", reply{http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}},
+			func(got time.Time) bool { return got.IsZero() }},
+		{"other 403", reply{http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "12"}}, nil},
+	}
+	for _, c := range cases {
+		current.Store(&c.reply)
+		_, err := ck.Check(context.Background(), "1.0.0")
+		if !errors.Is(err, ErrUnexpectedStatus) {
+			t.Errorf("%s: %v; want ErrUnexpectedStatus", c.name, err)
+		}
+		var rl *RateLimitError
+		isLimit := errors.As(err, &rl)
+		if isLimit != (c.want != nil) || isLimit != errors.Is(err, ErrRateLimited) {
+			t.Errorf("%s: rate limit = %v (%v)", c.name, isLimit, err)
+			continue
+		}
+		if c.want != nil && !c.want(rl.Reset) {
+			t.Errorf("%s: reset %v", c.name, rl.Reset)
+		}
+		if c.want != nil && !strings.Contains(err.Error(), "rate limit") {
+			t.Errorf("%s: message %q", c.name, err)
+		}
 	}
 }

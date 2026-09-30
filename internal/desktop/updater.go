@@ -29,6 +29,9 @@ const (
 	UpdateInstallPath = "/desktop/update/install"
 	// UpdateReleasePagePath opens the release page in the system browser (POST).
 	UpdateReleasePagePath = "/desktop/update/release-page"
+	// UpdateCheckPath checks for a new release now and answers with the status once
+	// the check is done (POST; see Updater.CheckNow).
+	UpdateCheckPath = "/desktop/update/check"
 	// UpdateRemoveLegacyPath starts the uninstaller of a per-machine copy left in
 	// Program Files (POST; Windows).
 	UpdateRemoveLegacyPath = "/desktop/update/remove-legacy"
@@ -37,9 +40,20 @@ const (
 	UpdateHeader = "X-MongoRescue-Desktop"
 )
 
-// UpdateCheckInterval is how often the updater checks again after the startup
-// check, while the app runs.
-const UpdateCheckInterval = 6 * time.Hour
+// Check timing of the updater.
+const (
+	// UpdateCheckInterval is how often the updater checks again after the startup
+	// check while the app runs, which can be for days in the tray: GitHub allows
+	// 60 unauthenticated API requests an hour per address.
+	UpdateCheckInterval = 30 * time.Minute
+	// UpdateCheckMaxBackoff bounds the wait after failed checks (offline, rate
+	// limited), which doubles from twice UpdateCheckInterval with each failure in a
+	// row; the first successful check returns to UpdateCheckInterval.
+	UpdateCheckMaxBackoff = 6 * time.Hour
+	// UpdateRecheckAge is how old the last check must be for Updater.WindowShown
+	// to check again.
+	UpdateRecheckAge = 5 * time.Minute
+)
 
 // Update states reported in UpdateStatus.State.
 const (
@@ -94,8 +108,11 @@ var (
 	// ErrUpdateBusy is returned by Install while a check, a download or an install
 	// runs.
 	ErrUpdateBusy = errors.New("update check or download in progress")
-	// ErrUpdaterNotStarted is returned by Install before Start.
+	// ErrUpdaterNotStarted is returned by Install and CheckNow before Start.
 	ErrUpdaterNotStarted = errors.New("updater not started")
+	// ErrUpdatesDisabled is returned by CheckNow for a development build, which
+	// never checks for updates.
+	ErrUpdatesDisabled = errors.New("update checks are disabled for a development build")
 	// ErrNotInstallable is reported when the newest release has no verifiable file
 	// for this platform (yet).
 	ErrNotInstallable = errors.New("the release has no verified file for this platform yet")
@@ -127,6 +144,9 @@ type UpdaterOptions struct {
 	// Interval is the time between checks after the startup check; 0 means
 	// UpdateCheckInterval.
 	Interval time.Duration
+	// MaxBackoff bounds the wait after failed checks; 0 means
+	// UpdateCheckMaxBackoff. It is at least Interval.
+	MaxBackoff time.Duration
 	// Dir returns the directory an update is downloaded to; nil means UpdateDir.
 	Dir func(goos string) (string, error)
 	// Executable returns the running executable, symlinks resolved; nil means
@@ -174,6 +194,28 @@ type UpdaterOptions struct {
 
 	// fs replaces the file system calls of the swap in tests.
 	fs *fileOps
+	// clock replaces the time source of the check loop in tests.
+	clock clock
+}
+
+// clock is the time source of the check loop.
+type clock interface {
+	Now() time.Time
+	// NewTimer returns a channel that receives once d has passed, and a function
+	// that stops the timer.
+	NewTimer(d time.Duration) (<-chan time.Time, func() bool)
+}
+
+// realClock is the system clock.
+type realClock struct{}
+
+// Now implements clock.
+func (realClock) Now() time.Time { return time.Now() }
+
+// NewTimer implements clock.
+func (realClock) NewTimer(d time.Duration) (<-chan time.Time, func() bool) {
+	t := time.NewTimer(d)
+	return t.C, t.Stop
 }
 
 // UpdateStatus is the JSON body of GET UpdatePath.
@@ -188,7 +230,10 @@ type UpdateStatus struct {
 	Notes       string `json:"notes"`
 	HTMLURL     string `json:"html_url"`
 	State       string `json:"state"`
-	Error       string `json:"error"`
+	// Checking reports that a release check of the check loop runs (the startup,
+	// periodic or requested one; see Updater.CheckNow).
+	Checking bool   `json:"checking"`
+	Error    string `json:"error"`
 	// Percent is the download progress, 0 to 100, while State is
 	// UpdateDownloading; -1 when the size is unknown.
 	Percent int `json:"percent"`
@@ -214,14 +259,18 @@ type LegacyStatus struct {
 	Error string `json:"error"`
 }
 
-// Updater checks for a new desktop release at startup and then every Interval, and
-// installs it on request. Its goroutines are bound to the context passed to Start;
-// Wait returns once they have finished. It is safe for concurrent use.
+// Updater checks for a new desktop release at startup and then every Interval,
+// backing off after failures, checks on request (CheckNow) and installs an update
+// on request. All checks run in one loop. Its goroutines are bound to the context
+// passed to Start; Wait returns once they have finished. It is safe for concurrent
+// use.
 type Updater struct {
 	opts    UpdaterOptions
 	fs      fileOps
 	goos    string
 	enabled bool
+	clock   clock
+	trigger chan struct{} // wakes the check loop for a requested check
 
 	wg  sync.WaitGroup // the check loop
 	ops sync.WaitGroup // installs, reveals and uninstaller starts
@@ -232,6 +281,23 @@ type Updater struct {
 	result update.Result
 	path   string // the verified download, once ready
 	legacy LegacyStatus
+
+	round     *checkRound // the requested check, until it is done
+	checking  bool        // a check of the loop runs
+	lastCheck time.Time   // when the last check of the loop was done
+	failures  int         // failed checks in a row
+	next      time.Time   // when the loop checks next
+	// limited is when GitHub accepts requests again after a rate limit, and
+	// limitErr the error of that check: checks before then do not ask GitHub.
+	limited  time.Time
+	limitErr error
+}
+
+// checkRound is a requested check shared by every request made until it is done.
+type checkRound struct {
+	done     chan struct{} // closed once the check is done
+	err      error         // the check's error, set before done is closed
+	requests int           // the requests it serves
 }
 
 // NewUpdater returns an idle updater for opts.Version.
@@ -244,6 +310,13 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	}
 	if opts.Interval <= 0 {
 		opts.Interval = UpdateCheckInterval
+	}
+	if opts.MaxBackoff <= 0 {
+		opts.MaxBackoff = UpdateCheckMaxBackoff
+	}
+	opts.MaxBackoff = max(opts.MaxBackoff, opts.Interval)
+	if opts.clock == nil {
+		opts.clock = realClock{}
 	}
 	if opts.Dir == nil {
 		opts.Dir = UpdateDir
@@ -286,7 +359,8 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	if opts.fs != nil {
 		fsOps = *opts.fs
 	}
-	u := &Updater{opts: opts, fs: fsOps, goos: goos, status: UpdateStatus{Current: opts.Version, State: UpdateIdle, Action: ActionReveal}}
+	u := &Updater{opts: opts, fs: fsOps, goos: goos, clock: opts.clock, trigger: make(chan struct{}, 1),
+		status: UpdateStatus{Current: opts.Version, State: UpdateIdle, Action: ActionReveal}}
 	if goos == "windows" {
 		u.status.Action = ActionLaunch
 		if _, ok := u.swapTarget(); ok {
@@ -309,7 +383,8 @@ func (u *Updater) swapTarget() (string, bool) {
 }
 
 // Start begins the checks in a goroutine bound to ctx: one now, then one every
-// Interval. Later downloads are bound to ctx too. It does nothing for a development
+// Interval (see UpdaterOptions.MaxBackoff for failures), and one whenever CheckNow
+// asks. Later downloads are bound to ctx too. It does nothing for a development
 // version or when called again.
 func (u *Updater) Start(ctx context.Context) {
 	u.mu.Lock()
@@ -337,50 +412,168 @@ func (u *Updater) Wait() {
 	u.ops.Wait()
 }
 
-// run checks now and then every Interval until ctx ends.
+// run checks now, then again after the wait each check returns or when CheckNow
+// asks, until ctx ends.
 func (u *Updater) run(ctx context.Context) {
-	u.check(ctx, true)
-	t := time.NewTicker(u.opts.Interval)
-	defer t.Stop()
+	wait := u.check(ctx, true)
 	for {
+		c, stop := u.clock.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			stop()
 			return
-		case <-t.C:
-			u.check(ctx, false)
+		case <-c:
+		case <-u.trigger:
+			stop()
 		}
+		wait = u.check(ctx, false)
 	}
 }
 
-// check runs a release check. A failure (typically offline) is logged at info
-// level and keeps the previous result. A periodic check is skipped, and its result
-// dropped, while a check or a download runs or a download is ready.
-func (u *Updater) check(ctx context.Context, startup bool) {
-	if !startup && u.busy() {
-		return
+// check runs a release check and returns the wait until the next one. A failure
+// (typically offline) is logged at info level and keeps the previous result. A
+// later check is skipped, and its result dropped, while a check or a download runs
+// or a download is ready; until a rate limit ends, it fails at once with the rate
+// limit's error. Either way it completes the requested check (see CheckNow).
+func (u *Updater) check(ctx context.Context, startup bool) time.Duration {
+	u.mu.Lock()
+	if !startup && u.busyLocked() {
+		u.finishRoundLocked(nil)
+		u.next = u.clock.Now().Add(u.opts.Interval)
+		u.mu.Unlock()
+		return u.opts.Interval
 	}
+	if now := u.clock.Now(); now.Before(u.limited) {
+		u.finishRoundLocked(u.limitErr)
+		wait := max(u.next.Sub(now), u.limited.Sub(now))
+		u.mu.Unlock()
+		return wait
+	}
+	u.checking = true
+	u.mu.Unlock()
+
 	res, err := u.opts.Source.Check(ctx, u.opts.Version)
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.checking = false
 	if startup {
 		u.status.State = UpdateIdle
 	}
+	wait := u.backoffLocked(err)
+	u.finishRoundLocked(err)
 	if err != nil {
-		u.opts.Logger.Info("update check failed", slog.Any("error", err))
-		return
+		u.opts.Logger.Info("update check failed", slog.Any("error", err), slog.Duration("next_check", wait))
+		return wait
 	}
 	if !startup && u.busyLocked() {
-		return
+		return wait
 	}
 	u.apply(res)
+	return wait
 }
 
-// busy reports whether a check, a download or an install runs or a download is
-// ready.
-func (u *Updater) busy() bool {
+// backoffLocked records a check's outcome and returns the wait until the next
+// check: Interval after a success, and after failures in a row twice Interval,
+// doubled with each further failure, up to MaxBackoff. A rate limit that ends
+// later extends the wait to its end, up to MaxBackoff. u.mu must be held.
+func (u *Updater) backoffLocked(err error) time.Duration {
+	now := u.clock.Now()
+	u.lastCheck = now
+	if err == nil {
+		u.failures, u.limited, u.limitErr = 0, time.Time{}, nil
+		u.next = now.Add(u.opts.Interval)
+		return u.opts.Interval
+	}
+	u.failures++
+	wait := u.opts.Interval
+	for i := 0; i < u.failures && wait < u.opts.MaxBackoff; i++ {
+		wait *= 2
+	}
+	var rl *update.RateLimitError
+	if errors.As(err, &rl) && rl.Reset.After(now) {
+		wait = max(wait, rl.Reset.Sub(now))
+		u.limited, u.limitErr = now.Add(min(rl.Reset.Sub(now), u.opts.MaxBackoff)), err
+	}
+	wait = min(wait, u.opts.MaxBackoff)
+	u.next = now.Add(wait)
+	return wait
+}
+
+// finishRoundLocked completes the requested check, if any, with err. u.mu must be
+// held.
+func (u *Updater) finishRoundLocked(err error) {
+	select {
+	case <-u.trigger:
+	default:
+	}
+	if u.round == nil {
+		return
+	}
+	u.round.err = err
+	close(u.round.done)
+	u.round = nil
+}
+
+// CheckNow asks the check loop for a release check now and waits until it is done
+// or ctx ends; it returns the check's error. Requests made while a check is asked
+// for or runs share that check: no second check, and no second loop, is started.
+// A check is skipped, returning nil, while an update is downloaded or installed;
+// until a rate limit ends it returns the rate limit's error without asking GitHub.
+// It returns ErrUpdaterNotStarted before Start and ErrUpdatesDisabled for a
+// development build. It is safe to call from any goroutine.
+func (u *Updater) CheckNow(ctx context.Context) error {
+	u.mu.Lock()
+	r, err := u.requestLocked()
+	loop := u.ctx
+	u.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	select {
+	case <-r.done:
+		return r.err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-loop.Done():
+		return fmt.Errorf("updater stopped: %w", loop.Err())
+	}
+}
+
+// WindowShown asks for a check without waiting for it (see CheckNow) when the
+// last check was done more than UpdateRecheckAge ago and none runs, and reports
+// whether it asked. Call it when the window is shown again, such as from the tray
+// or by a second launch. It does not block.
+func (u *Updater) WindowShown() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.busyLocked()
+	if u.checking || u.round != nil || u.lastCheck.IsZero() || u.clock.Now().Sub(u.lastCheck) <= UpdateRecheckAge {
+		return false
+	}
+	_, err := u.requestLocked()
+	return err == nil
+}
+
+// requestLocked returns the requested check, asking the loop for one when none is
+// pending. u.mu must be held.
+func (u *Updater) requestLocked() (*checkRound, error) {
+	switch {
+	case u.ctx == nil:
+		return nil, ErrUpdaterNotStarted
+	case !u.enabled:
+		return nil, ErrUpdatesDisabled
+	case u.ctx.Err() != nil:
+		return nil, fmt.Errorf("updater stopped: %w", u.ctx.Err())
+	}
+	if u.round == nil {
+		u.round = &checkRound{done: make(chan struct{})}
+		select {
+		case u.trigger <- struct{}{}:
+		default:
+		}
+	}
+	u.round.requests++
+	return u.round, nil
 }
 
 // busyLocked is busy with u.mu held.
@@ -423,6 +616,7 @@ func (u *Updater) Status() UpdateStatus {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	s := u.status
+	s.Checking = u.checking
 	s.Legacy = u.legacy
 	s.Legacy.Found, s.Legacy.Dir = legacy != "", windowsDir(legacy)
 	if legacy == "" {
@@ -747,8 +941,8 @@ func verifyAndLaunch(file update.File, args []string, launch func(string, []stri
 	return launch(file.Path, args)
 }
 
-// openReleasePage opens the release page, when known, in the system browser.
-func (u *Updater) openReleasePage() {
+// OpenReleasePage opens the release page, when known, in the system browser.
+func (u *Updater) OpenReleasePage() {
 	u.mu.Lock()
 	page := u.status.HTMLURL
 	u.mu.Unlock()
@@ -769,7 +963,7 @@ func (u *Updater) Handler(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case UpdatePath:
 			method = http.MethodGet
-		case UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath:
+		case UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath, UpdateCheckPath:
 			method = http.MethodPost
 		default:
 			next.ServeHTTP(w, r)
@@ -789,6 +983,8 @@ func (u *Updater) Handler(next http.Handler) http.Handler {
 			return
 		}
 		switch r.URL.Path {
+		case UpdateCheckPath:
+			u.serveCheck(w, r)
 		case UpdateInstallPath:
 			if err := u.Install(); err != nil {
 				writeJSONError(w, http.StatusConflict, err.Error())
@@ -802,13 +998,29 @@ func (u *Updater) Handler(next http.Handler) http.Handler {
 			}
 			writeJSON(w, http.StatusAccepted, u.Status())
 		case UpdateReleasePagePath:
-			u.openReleasePage()
+			u.OpenReleasePage()
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeJSON(w, http.StatusOK, u.Status())
 		}
 	})
+}
+
+// serveCheck answers POST UpdateCheckPath: it checks now (CheckNow, bound to the
+// request) and writes the status; 409 when the updater does not check (not
+// started, a development build, stopped or the request ended) and 502 when the
+// check failed.
+func (u *Updater) serveCheck(w http.ResponseWriter, r *http.Request) {
+	err := u.CheckNow(r.Context())
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, u.Status())
+	case errors.Is(err, ErrUpdaterNotStarted), errors.Is(err, ErrUpdatesDisabled), errors.Is(err, context.Canceled):
+		writeJSONError(w, http.StatusConflict, err.Error())
+	default:
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 // writeJSON writes v as a JSON response that is never cached.
