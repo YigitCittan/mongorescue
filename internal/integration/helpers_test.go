@@ -17,6 +17,10 @@
 //	MONGORESCUE_TEST_S3_<PROVIDER>_SECRET_KEY   secret access key
 //	MONGORESCUE_TEST_S3_<PROVIDER>_PATH_STYLE   "true" for path-style addressing (MinIO, LocalStack)
 //	MONGORESCUE_TEST_S3_<PROVIDER>_CREATE_BUCKET "true" to create the bucket if missing (emulators)
+//	MONGORESCUE_TEST_LARGE                      "1" runs TestThroughputAndMemory with ~2 GiB and a memory limit
+//	MONGORESCUE_TEST_LARGE_MB                   size of that test's generated data in MiB
+//
+// docs/testing.md describes what each test guarantees.
 package integration
 
 import (
