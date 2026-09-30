@@ -140,6 +140,7 @@ const translations = {
       submit: "Start restore",
     },
     ui: {
+      more_actions: "More actions",
       edit: "Edit",
       enable: "Enable",
       disable: "Disable",
@@ -200,6 +201,7 @@ const translations = {
       col_backup: "Backup",
     },
     job_edit: {
+      conflict: "The job was changed meanwhile. The list has been refreshed; open it again and retry.",
       title: "Edit backup job",
       save: "Save changes",
       enabled_label: "Enabled",
@@ -791,6 +793,7 @@ const translations = {
       submit: "Geri yüklemeyi başlat",
     },
     ui: {
+      more_actions: "Diğer işlemler",
       edit: "Düzenle",
       enable: "Etkinleştir",
       disable: "Devre dışı bırak",
@@ -851,6 +854,7 @@ const translations = {
       col_backup: "Yedek",
     },
     job_edit: {
+      conflict: "Görev bu arada değiştirildi. Liste yenilendi; görevi yeniden açıp tekrar deneyin.",
       title: "Yedekleme görevini düzenle",
       save: "Değişiklikleri kaydet",
       enabled_label: "Etkin",
@@ -1442,6 +1446,7 @@ const translations = {
       submit: "Wiederherstellung starten",
     },
     ui: {
+      more_actions: "Weitere Aktionen",
       edit: "Bearbeiten",
       enable: "Aktivieren",
       disable: "Deaktivieren",
@@ -1502,6 +1507,7 @@ const translations = {
       col_backup: "Backup",
     },
     job_edit: {
+      conflict: "Der Auftrag wurde zwischenzeitlich geändert. Die Liste wurde aktualisiert; öffnen Sie ihn erneut und versuchen Sie es noch einmal.",
       title: "Backup-Auftrag bearbeiten",
       save: "Änderungen speichern",
       enabled_label: "Aktiv",
@@ -2093,6 +2099,7 @@ const translations = {
       submit: "Iniciar restauración",
     },
     ui: {
+      more_actions: "Más acciones",
       edit: "Editar",
       enable: "Activar",
       disable: "Desactivar",
@@ -2153,6 +2160,7 @@ const translations = {
       col_backup: "Copia",
     },
     job_edit: {
+      conflict: "La tarea se modificó mientras tanto. La lista se ha actualizado; ábrela de nuevo y vuelve a intentarlo.",
       title: "Editar tarea de copia",
       save: "Guardar cambios",
       enabled_label: "Activa",
@@ -2744,6 +2752,7 @@ const translations = {
       submit: "Lancer la restauration",
     },
     ui: {
+      more_actions: "Plus d'actions",
       edit: "Modifier",
       enable: "Activer",
       disable: "Désactiver",
@@ -2804,6 +2813,7 @@ const translations = {
       col_backup: "Sauvegarde",
     },
     job_edit: {
+      conflict: "La tâche a été modifiée entre-temps. La liste a été actualisée ; rouvrez-la et réessayez.",
       title: "Modifier la tâche de sauvegarde",
       save: "Enregistrer les modifications",
       enabled_label: "Activée",
@@ -3395,6 +3405,7 @@ const translations = {
       submit: "开始恢复",
     },
     ui: {
+      more_actions: "更多操作",
       edit: "编辑",
       enable: "启用",
       disable: "停用",
@@ -3455,6 +3466,7 @@ const translations = {
       col_backup: "备份",
     },
     job_edit: {
+      conflict: "该任务已被他人修改。列表已刷新，请重新打开后再试。",
       title: "编辑备份任务",
       save: "保存更改",
       enabled_label: "已启用",
@@ -4046,6 +4058,7 @@ const translations = {
       submit: "リストアを開始",
     },
     ui: {
+      more_actions: "その他の操作",
       edit: "編集",
       enable: "有効にする",
       disable: "無効にする",
@@ -4106,6 +4119,7 @@ const translations = {
       col_backup: "バックアップ",
     },
     job_edit: {
+      conflict: "このジョブは他で変更されました。一覧を更新しました。もう一度開いてやり直してください。",
       title: "バックアップジョブを編集",
       save: "変更を保存",
       enabled_label: "有効",
@@ -4697,6 +4711,7 @@ const translations = {
       submit: "Начать восстановление",
     },
     ui: {
+      more_actions: "Другие действия",
       edit: "Изменить",
       enable: "Включить",
       disable: "Выключить",
@@ -4757,6 +4772,7 @@ const translations = {
       col_backup: "Бэкап",
     },
     job_edit: {
+      conflict: "Задача была изменена за это время. Список обновлён; откройте её снова и повторите попытку.",
       title: "Изменить задачу бэкапа",
       save: "Сохранить изменения",
       enabled_label: "Включена",

@@ -865,6 +865,13 @@ time,
   max-width: 280px;
 }
 
+/* Short values that may break onto a second line (e.g. "14 days · max 7"). */
+.cell-wrap-sm {
+  white-space: normal !important;
+  min-width: 80px;
+  max-width: 120px;
+}
+
 .id-cell {
   display: inline-flex;
   align-items: center;
@@ -1665,6 +1672,49 @@ input[type="radio"] {
   outline: none;
 }
 
+.menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
+
+.menu-item-danger {
+  color: var(--danger);
+}
+
+.menu-item-danger:hover,
+.menu-item-danger:focus-visible {
+  background: var(--danger-subtle);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+/* Row action menu: fixed, so a scrolling table never clips it; below modals. */
+.row-menu {
+  position: fixed;
+  top: 0;
+  right: auto;
+  left: 0;
+  z-index: 90;
+  min-width: 160px;
+}
+
+/* Square icon-only button (the row "⋯" menu). */
+.btn-icon {
+  padding: 0;
+  width: 32px;
+}
+
+.btn-sm.btn-icon {
+  width: 28px;
+}
+
+.btn[aria-expanded="true"] {
+  background: var(--neutral-bg);
+}
+
 /* --------------------------------------------------------------------------
    Connections, picker, settings
    -------------------------------------------------------------------------- */
@@ -2022,6 +2072,50 @@ input[type="radio"] {
 /* --------------------------------------------------------------------------
    Responsive
    -------------------------------------------------------------------------- */
+/* Laptop widths (1024 px windows): tighter cells and truncation keep the tables
+   inside their card without scrolling sideways. */
+@media (max-width: 1180px) {
+  .table th,
+  .table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  /* Two-word headers ("Next run", "Sonraki çalışma") may take two lines. */
+  .table th {
+    white-space: normal;
+  }
+
+  .ellipsis {
+    max-width: 150px;
+  }
+
+  .ellipsis.cell-id {
+    max-width: 130px;
+  }
+
+  .ellipsis.ell-md {
+    max-width: 110px;
+  }
+
+  .ellipsis.ell-sm {
+    max-width: 104px;
+  }
+
+  #backups-tbody .cell-error,
+  #backups-tbody .retry-link {
+    max-width: 150px;
+  }
+
+  #backups-tbody .error-full {
+    width: 150px;
+  }
+
+  .cell-wrap {
+    max-width: 200px;
+  }
+}
+
 @media (max-width: 960px) {
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
