@@ -303,6 +303,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Backup:      backupEngine,
 		Restore:     restoreEngine,
 		Jobs:        sched,
+		Scheduler:   sched,
 		Runs:        runManager,
 		Connections: connSvc,
 		Targets:     targetSvc,

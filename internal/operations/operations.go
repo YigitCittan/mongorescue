@@ -128,6 +128,9 @@ type Config struct {
 	// Jobs runs scheduled jobs on demand; nil makes RunJob fail with
 	// ErrSchedulerUnavailable.
 	Jobs JobRunner
+	// Scheduler reschedules jobs after UpdateJob; nil means an updated job is only
+	// stored (the schedule takes effect when the scheduler next loads it).
+	Scheduler JobScheduler
 	// Runs owns the background runs and their per-database concurrency keys.
 	Runs *runs.Manager
 	// Connections resolves connections; nil means none are configured.

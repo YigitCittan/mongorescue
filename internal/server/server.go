@@ -256,6 +256,8 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// API Jobs (Cron & Retention)
 	mux.HandleFunc("GET /api/v1/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/v1/jobs", s.handleSaveJob)
+	mux.HandleFunc("GET /api/v1/jobs/{id}", s.handleGetJob)
+	mux.HandleFunc("PUT /api/v1/jobs/{id}", s.handleUpdateJob)
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.handleDeleteJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/run", s.handleTriggerJob)
 
@@ -388,22 +390,13 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.ops.ResolveConnection(r.Context(), job.ConnectionID); err != nil {
-		s.writeResolveError(w, err)
+	if err := s.ops.ValidateJob(r.Context(), &job); err != nil {
+		s.writeJobError(w, err)
 		return
 	}
-	target, err := s.ops.ResolveTarget(r.Context(), job.StorageTargetID)
-	if err != nil {
-		s.writeTargetError(w, err)
-		return
-	}
-	job.StorageTargetID, job.StorageType = target.ID, target.Type
 	if existing != nil {
 		// Run history is owned by the scheduler, not by clients.
 		job.LastRun, job.NextRun, job.CreatedAt = existing.LastRun, existing.NextRun, existing.CreatedAt
-	}
-	if job.CronExpression == "" {
-		job.CronExpression = "@daily"
 	}
 
 	// A new job is inserted and never overwrites another; an existing one is updated
@@ -436,6 +429,47 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, job)
+}
+
+// handleGetJob returns a job with its next activations.
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	details, err := s.ops.GetJobDetails(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, details)
+}
+
+// handleUpdateJob replaces the editable fields of a job, validated like a new job, and
+// reschedules it at once. The id, creation time and run history are kept.
+func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
+	var req operations.JobUpdate
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request json")
+		return
+	}
+	job, err := s.ops.UpdateJob(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		s.writeJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+// writeJobError maps job validation and save errors to HTTP responses: storage target
+// and connection lookup failures keep the statuses of their own endpoints.
+func (s *Server) writeJobError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound),
+		errors.Is(err, ErrConnectionRequired), errors.Is(err, ErrUnknownConnection),
+		errors.Is(err, operations.ErrUnknownStorageTarget):
+		s.writeOperationError(w, err)
+	case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrNoDefault), errors.Is(err, targets.ErrInvalid):
+		s.writeTargetError(w, err)
+	default:
+		s.writeConnectionError(w, err)
+	}
 }
 
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
@@ -479,7 +513,8 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
-	backups, err := s.ops.ListBackups(r.Context(), operations.BackupFilter{Database: r.URL.Query().Get("database")})
+	q := r.URL.Query()
+	backups, err := s.ops.ListBackups(r.Context(), operations.BackupFilter{Database: q.Get("database"), JobID: q.Get("job_id")})
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
@@ -627,15 +662,6 @@ func derefOr[T any](p *T, def T) T {
 	return *p
 }
 
-// writeResolveError maps connection resolution errors to HTTP responses.
-func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrConnectionRequired) || errors.Is(err, ErrUnknownConnection) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.writeConnectionError(w, err)
-}
-
 // operationsConfig wires the operations service from the server's dependencies. Nil
 // optional dependencies stay nil interfaces.
 func (s *Server) operationsConfig() operations.Config {
@@ -651,6 +677,7 @@ func (s *Server) operationsConfig() operations.Config {
 	}
 	if s.scheduler != nil {
 		cfg.Jobs = s.scheduler
+		cfg.Scheduler = s.scheduler
 	}
 	if s.connections != nil {
 		cfg.Connections = s.connections
