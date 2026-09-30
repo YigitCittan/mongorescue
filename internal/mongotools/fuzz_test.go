@@ -143,7 +143,7 @@ func FuzzWriteURIConfig(f *testing.F) {
 }
 
 // parseSingleQuoted parses the "uri: '<scalar>'\n" document WriteURIConfig writes,
-// following the YAML rules for a single-line single-quoted scalar: "''" is a quote,
+// following the YAML rules for a single-line single-quoted scalar: a doubled quote is one quote,
 // a lone quote ends the scalar and no line break may appear inside it.
 func parseSingleQuoted(doc string) (string, error) {
 	body, ok := strings.CutPrefix(doc, "uri: '")
