@@ -32,3 +32,12 @@ func TestOpenLockedDeniesWriteAndDelete(t *testing.T) {
 	}
 	_ = r.Close()
 }
+
+func TestInstallerParams(t *testing.T) {
+	if got := installerParams(silentInstallerArgs()); got != "/S /RELAUNCH" {
+		t.Errorf("params = %q", got)
+	}
+	if got := installerParams([]string{"/S", `C:\Program Files\x`}); got != `/S "C:\Program Files\x"` {
+		t.Errorf("quoted params = %q", got)
+	}
+}

@@ -87,7 +87,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		logger.Error("application bootstrap failed", slog.Any("error", err))
 		return 1
 	}
-	d := &desktopApp{app: application, logger: logger}
+	d := &desktopApp{app: application, logger: logger, closed: make(chan struct{})}
 	// The update check and downloads live until shutdown.
 	d.updateCtx, d.stopUpdates = context.WithCancel(context.Background())
 	defer d.stopUpdates()
@@ -101,7 +101,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	// The signal watcher lives until run returns: done is closed after the shutdown.
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	done := make(chan struct{})
+	done := d.closed
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -158,6 +158,8 @@ type desktopApp struct {
 	logger *slog.Logger
 	// wg tracks the goroutines started here (signal watcher, quit requests).
 	wg sync.WaitGroup
+	// closed is closed once the window has closed and the shutdown has run.
+	closed chan struct{}
 
 	updater     *desktop.Updater
 	updateCtx   context.Context // bounds the update check and downloads
@@ -196,7 +198,12 @@ func (d *desktopApp) startup(ctx context.Context) {
 }
 
 // quit asks the window to close without waiting for it: the updater calls it after
-// starting the installer, and the shutdown waits for the updater.
+// starting the installer, and the shutdown waits for the updater. The window's
+// shutdown stops the runs and releases the database and the data directory lock;
+// the installer waits for MongoRescue.exe to exit before it replaces it, then starts
+// the new version. When the window has not closed within quitGrace, the app stops
+// the runs and releases the database itself and exits, so the installer is not left
+// waiting.
 func (d *desktopApp) quit() {
 	ctx := d.context()
 	if ctx == nil {
@@ -206,6 +213,17 @@ func (d *desktopApp) quit() {
 	go func() {
 		defer d.wg.Done()
 		runtime.Quit(ctx)
+		timer := time.NewTimer(quitGrace)
+		defer timer.Stop()
+		select {
+		case <-d.closed:
+			return
+		case <-timer.C:
+		}
+		d.logger.Warn("the window did not close in time for the update, stopping now", slog.Duration("grace", quitGrace))
+		d.shutdown(context.Background())
+		d.logger.Info("mongorescue desktop stopped for the update")
+		os.Exit(0)
 	}()
 }
 

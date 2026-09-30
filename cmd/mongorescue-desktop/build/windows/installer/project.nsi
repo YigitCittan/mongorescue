@@ -18,6 +18,9 @@ Unicode true
 ##    files, staged by the release workflow) are installed to $INSTDIR\tools, where MongoRescue finds them before PATH,
 ##    replacing the tools of an earlier install. Without build\bin\tools\mongodump.exe (a local build) the
 ##    installer is built without them and makensis prints a warning.
+##  - Updates: the desktop app starts the installer with "/S /RELAUNCH" and quits. Before the files are copied, the
+##    installer waits (about 30 s) for a running ${PRODUCT_EXECUTABLE} to exit; after a silent install with /RELAUNCH it
+##    starts the new version, without administrator rights. Interactive installs are unchanged.
 ##
 ## For development first make a wails nsis build to populate "wails_tools.nsh":
 ## > wails build -platform windows/amd64 -nsis
@@ -26,6 +29,7 @@ Unicode true
 ####
 !include "wails_tools.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -142,6 +146,53 @@ FunctionEnd
     !endif
 !macroend
 
+# Waits up to about 30 s for a running ${PRODUCT_EXECUTABLE} to exit, so it can be replaced: the desktop app quits
+# right after it starts the installer for an update. A running executable cannot be opened for writing, so the file
+# is opened for append (which leaves it unchanged) every 500 ms. When it still runs, an interactive install asks to
+# close it and retry; a silent install aborts, and the installed version stays as it was.
+Function WaitForApp
+    ${IfNot} ${FileExists} "$INSTDIR\${PRODUCT_EXECUTABLE}"
+        Return
+    ${EndIf}
+    StrCpy $R1 0
+    ${Do}
+        ClearErrors
+        FileOpen $R0 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
+        ${IfNot} ${Errors}
+            FileClose $R0
+            Return
+        ${EndIf}
+        ${If} $R1 == 0
+            DetailPrint "Waiting for ${INFO_PRODUCTNAME} to close..."
+        ${EndIf}
+        IntOp $R1 $R1 + 1
+        ${If} $R1 >= 60
+            MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is still running.$\r$\n$\r$\nClose it and click Retry to continue the installation." /SD IDCANCEL IDRETRY wait_retry
+            Abort "${INFO_PRODUCTNAME} is still running."
+            wait_retry:
+            StrCpy $R1 1
+        ${EndIf}
+        Sleep 500
+    ${Loop}
+FunctionEnd
+
+# Starts the installed app after a silent install with /RELAUNCH (the update started by the desktop app). The
+# installer runs elevated; explorer.exe hands the start to the signed-in user's shell, so the app runs without
+# administrator rights, as when it is started from the Start menu.
+Function RelaunchApp
+    ${IfNot} ${Silent}
+        Return
+    ${EndIf}
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/RELAUNCH" $R1
+    ${If} ${Errors}
+        Return
+    ${EndIf}
+    DetailPrint "Starting ${INFO_PRODUCTNAME}..."
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
+FunctionEnd
+
 Function .onInit
    !insertmacro wails.checkArchitecture
 FunctionEnd
@@ -153,6 +204,8 @@ Section
 
     DetailPrint "Installing ${INFO_PRODUCTNAME} ${INFO_PRODUCTVERSION}..."
     SetOutPath $INSTDIR
+
+    Call WaitForApp
 
     !insertmacro wails.files
 
@@ -169,6 +222,8 @@ Section
     # Tell the shell that icons may have changed (SHCNE_ASSOCCHANGED), so shortcuts and
     # taskbar pins of older installs drop their cached icon (such as the default Wails "W").
     System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+
+    Call RelaunchApp
 SectionEnd
 
 Section "uninstall"
