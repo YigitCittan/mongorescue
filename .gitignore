@@ -46,6 +46,8 @@ __debug_bin*
 *.gz
 *.tar.gz
 *.agz
+# Golden test artifacts (tiny fake archives, TEST ONLY keys) are committed.
+!internal/restore/testdata/compat/**
 
 # Secrets, Configuration Overrides & Local Environments
 .env
