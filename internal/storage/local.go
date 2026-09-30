@@ -330,10 +330,10 @@ func (s *LocalStorage) confine(fullPath string) error {
 		return fmt.Errorf("resolve base directory: %w", err)
 	}
 	for p := fullPath; ; {
-		real, err := filepath.EvalSymlinks(p)
+		resolved, err := filepath.EvalSymlinks(p)
 		if err == nil {
-			rel, err := filepath.Rel(base, real)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			rel, relErr := filepath.Rel(base, resolved)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 				return fmt.Errorf("%w: symbolic link leads outside the storage root", ErrPathTraversal)
 			}
 			return nil
