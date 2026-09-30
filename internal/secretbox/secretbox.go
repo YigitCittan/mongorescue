@@ -206,7 +206,9 @@ func (b *Box) OpenLegacy(sealed string) (string, error) {
 func (b *Box) open(payload string, version byte, aad []byte) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(payload)
 	nonceSize := b.aead.NonceSize()
-	if err != nil || len(raw) < 1+nonceSize+b.aead.Overhead() {
+	// Only the canonical encoding Seal produces is accepted: the decoder skips CR and
+	// LF and ignores unused trailing bits, so an altered payload could otherwise open.
+	if err != nil || len(raw) < 1+nonceSize+b.aead.Overhead() || base64.StdEncoding.EncodeToString(raw) != payload {
 		return "", ErrMalformed
 	}
 	if raw[0] != version {

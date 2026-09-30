@@ -110,6 +110,33 @@ func TestOpenRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNonCanonicalEncoding(t *testing.T) {
+	b := newBox(t)
+	sealed, _ := b.Seal(here, "bot-token-123")
+	payload := strings.TrimPrefix(sealed, Prefix)
+	raw, _ := base64.StdEncoding.DecodeString(payload)
+	variants := []string{
+		Prefix + payload[:8] + "\n" + payload[8:],
+		Prefix + payload + "\r\n",
+	}
+	// Flipping unused trailing bits of the last quantum decodes to the same bytes.
+	if pad := strings.Count(payload, "="); pad > 0 {
+		last := strings.IndexByte(base64Alphabet, payload[len(payload)-pad-1])
+		alt := payload[:len(payload)-pad-1] + string(base64Alphabet[last^1]) + payload[len(payload)-pad:]
+		if got, err := base64.StdEncoding.DecodeString(alt); err == nil && bytes.Equal(got, raw) {
+			variants = append(variants, Prefix+alt)
+		}
+	}
+	for _, v := range variants {
+		if _, err := b.Open(here, v); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Open(%q) = %v; want ErrMalformed", v, err)
+		}
+	}
+}
+
+// base64Alphabet is the standard base64 alphabet.
+const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
 func TestOpenWithWrongKeyFails(t *testing.T) {
 	sealed, _ := newBox(t).Seal(here, "secret")
 	if _, err := newBox(t).Open(here, sealed); !errors.Is(err, ErrDecrypt) {
