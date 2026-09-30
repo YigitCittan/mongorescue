@@ -14,11 +14,11 @@ func openLocked(path string) (*os.File, error) {
 	return os.Open(path)
 }
 
-// LaunchInstaller starts the program at path without a shell and returns once it has
-// started; the program outlives the app. The desktop app only launches installers
-// on Windows.
-func LaunchInstaller(path string) error {
-	cmd := exec.Command(path) //nolint:noctx // the installer must outlive the app, so it is not bound to a context.
+// LaunchInstaller starts the program at path with args without a shell and returns
+// once it has started; the program outlives the app. The desktop app only launches
+// installers on Windows.
+func LaunchInstaller(path string, args []string) error {
+	cmd := exec.Command(path, args...) //nolint:noctx // the installer must outlive the app, so it is not bound to a context.
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", path, err)
 	}

@@ -44,12 +44,16 @@ const (
 	UpdateChecking    = "checking"
 	UpdateDownloading = "downloading"
 	UpdateReady       = "ready"
-	UpdateError       = "error"
+	// UpdateInstalling reports that the verified installer is being started, or
+	// runs (Windows): the app quits and the installer starts the new version.
+	UpdateInstalling = "installing"
+	UpdateError      = "error"
 )
 
 // Update actions reported in UpdateStatus.Action: what Install does with the file.
 const (
-	// ActionLaunch runs the installer and quits the app (Windows).
+	// ActionLaunch runs the installer silently and quits the app; the installer
+	// starts the new version once it is done (Windows).
 	ActionLaunch = "launch"
 	// ActionReveal saves the archive and shows it in the file manager (macOS, Linux).
 	ActionReveal = "reveal"
@@ -59,14 +63,25 @@ const (
 var (
 	// ErrNoUpdate is returned by Install when no newer version is available.
 	ErrNoUpdate = errors.New("no update available")
-	// ErrUpdateBusy is returned by Install while a check or a download runs.
+	// ErrUpdateBusy is returned by Install while a check, a download or an install
+	// runs.
 	ErrUpdateBusy = errors.New("update check or download in progress")
 	// ErrUpdaterNotStarted is returned by Install before Start.
 	ErrUpdaterNotStarted = errors.New("updater not started")
 	// ErrNotInstallable is reported when the newest release has no verifiable file
 	// for this platform (yet).
 	ErrNotInstallable = errors.New("the release has no verified file for this platform yet")
+	// ErrInstallerCancelled is reported when the user declines the Windows UAC
+	// prompt for the installer.
+	ErrInstallerCancelled = errors.New("the installation was cancelled")
 )
+
+// silentInstallerArgs returns the installer's command-line arguments: /S runs the
+// NSIS installer without its wizard, and /RELAUNCH makes it start the new version
+// once the files are installed (see build/windows/installer/project.nsi).
+func silentInstallerArgs() []string {
+	return []string{"/S", "/RELAUNCH"}
+}
 
 // UpdateSource looks up and downloads releases; *update.Checker implements it.
 type UpdateSource interface {
@@ -90,12 +105,15 @@ type UpdaterOptions struct {
 	Interval time.Duration
 	// Dir returns the directory an update is downloaded to; nil means UpdateDir.
 	Dir func(goos string) (string, error)
-	// Launch starts the downloaded installer (Windows); nil means LaunchInstaller.
-	Launch func(path string) error
+	// Launch starts the downloaded installer with args (Windows). It returns once
+	// the installer runs, or with an error when it could not be started, such as
+	// ErrInstallerCancelled after a declined UAC prompt; nil means LaunchInstaller.
+	Launch func(path string, args []string) error
 	// Reveal shows the downloaded archive (macOS, Linux); nil means RevealFile.
 	Reveal func(ctx context.Context, path string) error
-	// Quit asks the app to quit once the installer runs. It must not block on the
-	// updater (Wait); nil does nothing.
+	// Quit asks the app to quit once the installer runs, so the installer can
+	// replace its files; it is not called when the installer did not start. It must
+	// not block on the updater (Wait); nil does nothing.
 	Quit func()
 	// OpenURL opens the release page in the system browser; nil does nothing.
 	OpenURL func(url string)
@@ -238,7 +256,8 @@ func (u *Updater) check(ctx context.Context, startup bool) {
 	u.apply(res)
 }
 
-// busy reports whether a check or a download runs or a download is ready.
+// busy reports whether a check, a download or an install runs or a download is
+// ready.
 func (u *Updater) busy() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -248,7 +267,7 @@ func (u *Updater) busy() bool {
 // busyLocked is busy with u.mu held.
 func (u *Updater) busyLocked() bool {
 	switch u.status.State {
-	case UpdateChecking, UpdateDownloading, UpdateReady:
+	case UpdateChecking, UpdateDownloading, UpdateReady, UpdateInstalling:
 		return true
 	}
 	return false
@@ -286,8 +305,10 @@ func (u *Updater) Status() UpdateStatus {
 }
 
 // Install downloads and verifies the update in a goroutine bound to the Start
-// context, then installs it: on Windows it launches the installer and quits the app,
-// elsewhere it leaves the file in the download directory and reveals it. After a
+// context, then installs it: on Windows it starts the installer silently (/S
+// /RELAUNCH, after the UAC prompt) and quits the app, and the installer starts the
+// new version once it is done; if the installer does not start, the app keeps
+// running and reports the error. Elsewhere it leaves the file in the download directory and reveals it. After a
 // failure, or when the last check found no installable file, it checks for the
 // release again first. Progress and errors are reported through Status. Once
 // ready, Install reveals the file again. Install never replaces files itself: the
@@ -301,7 +322,7 @@ func (u *Updater) Install() error {
 		return ErrUpdaterNotStarted
 	case u.ctx.Err() != nil:
 		return fmt.Errorf("updater stopped: %w", u.ctx.Err())
-	case u.status.State == UpdateChecking || u.status.State == UpdateDownloading:
+	case u.status.State == UpdateChecking || u.status.State == UpdateDownloading || u.status.State == UpdateInstalling:
 		return ErrUpdateBusy
 	case !u.status.Available:
 		return ErrNoUpdate
@@ -371,12 +392,14 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 		u.reveal(ctx, file.Path)
 		return
 	}
-	if err := verifyAndLaunch(file, u.opts.Launch); err != nil {
+	// The app keeps running when the installer does not start (UAC prompt declined,
+	// file changed): the error is shown with a retry and the release page.
+	u.installing(file.Path)
+	if err := verifyAndLaunch(file, silentInstallerArgs(), u.opts.Launch); err != nil {
 		u.fail(fmt.Errorf("start the installer: %w", err))
 		return
 	}
-	u.ready(file.Path)
-	u.opts.Logger.Info("installer started, quitting", slog.String("path", file.Path))
+	u.opts.Logger.Info("installer started, quitting for the update", slog.String("path", file.Path))
 	if u.opts.Quit != nil {
 		u.opts.Quit()
 	}
@@ -388,6 +411,14 @@ func (u *Updater) ready(path string) {
 	defer u.mu.Unlock()
 	u.path = path
 	u.status.State, u.status.File = UpdateReady, filepath.Base(path)
+}
+
+// installing records that the verified installer at path is being started.
+func (u *Updater) installing(path string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.path = path
+	u.status.State, u.status.File = UpdateInstalling, filepath.Base(path)
 }
 
 // reveal shows path in the file manager; a failure is logged only, since the file
@@ -408,9 +439,9 @@ func (u *Updater) fail(err error) {
 
 // verifyAndLaunch opens file.Path with openLocked, which on Windows keeps others
 // from writing, replacing or deleting it while the handle is open, checks its
-// SHA-256 again through that handle and launches it before closing the handle. The
-// file cannot be swapped between the check and the launch.
-func verifyAndLaunch(file update.File, launch func(string) error) error {
+// SHA-256 again through that handle and launches it with args before closing the
+// handle. The file cannot be swapped between the check and the launch.
+func verifyAndLaunch(file update.File, args []string, launch func(string, []string) error) error {
 	f, err := openLocked(file.Path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", file.Path, err)
@@ -423,7 +454,7 @@ func verifyAndLaunch(file update.File, launch func(string) error) error {
 	if len(file.SHA256) != sha256.Size || subtle.ConstantTimeCompare(h.Sum(nil), file.SHA256) != 1 {
 		return fmt.Errorf("%s: %w", filepath.Base(file.Path), update.ErrChecksumMismatch)
 	}
-	return launch(file.Path)
+	return launch(file.Path, args)
 }
 
 // openReleasePage opens the release page, when known, in the system browser.

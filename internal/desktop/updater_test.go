@@ -90,6 +90,7 @@ type recorder struct {
 
 	mu        sync.Mutex
 	launched  []string
+	args      [][]string // the arguments of each launch
 	revealed  []string
 	quits     int
 	opened    []string
@@ -108,10 +109,11 @@ func (r *recorder) options(src UpdateSource, version, goos string) UpdaterOption
 		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		GOOS:    goos,
 		Dir:     func(string) (string, error) { return r.dir, nil },
-		Launch: func(p string) error {
+		Launch: func(p string, args []string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.launched = append(r.launched, p)
+			r.args = append(r.args, args)
 			return r.launchErr
 		},
 		Reveal: func(_ context.Context, p string) error {
@@ -249,7 +251,19 @@ func TestUpdaterRevealsOnUnix(t *testing.T) {
 func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	src := &fakeSource{res: available(true)}
 	r := newRecorder(t)
-	u, _ := started(t, r.options(src, "1.0.0", "windows"))
+	opts := r.options(src, "1.0.0", "windows")
+	var u *Updater
+	var during UpdateStatus
+	quitsDuring := -1
+	launch := opts.Launch
+	opts.Launch = func(p string, args []string) error {
+		during = u.Status()
+		r.mu.Lock()
+		quitsDuring = r.quits
+		r.mu.Unlock()
+		return launch(p, args)
+	}
+	u, _ = started(t, opts)
 	if s := u.Status(); !s.Mandatory || s.Action != ActionLaunch {
 		t.Fatalf("status = %+v", s)
 	}
@@ -260,8 +274,47 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	if len(r.launched) != 1 || r.quits != 1 || len(r.revealed) != 0 {
 		t.Fatalf("launched %v quits %d revealed %v", r.launched, r.quits, r.revealed)
 	}
-	if s := u.Status(); s.State != UpdateReady {
-		t.Errorf("state = %q", s.State)
+	if got := strings.Join(r.args[0], " "); got != "/S /RELAUNCH" {
+		t.Errorf("installer args = %q; want silent install and relaunch", got)
+	}
+	if during.State != UpdateInstalling || during.File != filepath.Base(r.launched[0]) || quitsDuring != 0 {
+		t.Errorf("while launching: status %+v quits %d", during, quitsDuring)
+	}
+	if s := u.Status(); s.State != UpdateInstalling || s.Error != "" {
+		t.Errorf("status = %+v", s)
+	}
+	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
+		t.Errorf("Install while installing = %v; want ErrUpdateBusy", err)
+	}
+}
+
+func TestUpdaterKeepsRunningWhenInstallerDoesNotStart(t *testing.T) {
+	src := &fakeSource{res: available(true)}
+	r := newRecorder(t)
+	r.launchErr = ErrInstallerCancelled
+	u, _ := started(t, r.options(src, "1.0.0", "windows"))
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	s := u.Status()
+	if s.State != UpdateError || !strings.Contains(s.Error, ErrInstallerCancelled.Error()) || !s.Available || s.HTMLURL == "" {
+		t.Fatalf("status = %+v", s)
+	}
+	if len(r.launched) != 1 || r.quits != 0 {
+		t.Fatalf("launched %v quits %d; the app must not quit", r.launched, r.quits)
+	}
+
+	// "Try again" checks again, downloads and starts the installer.
+	r.mu.Lock()
+	r.launchErr = nil
+	r.mu.Unlock()
+	if err := u.Install(); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.State != UpdateInstalling || len(r.launched) != 2 || r.quits != 1 {
+		t.Fatalf("after retry: status %+v launched %v quits %d", s, r.launched, r.quits)
 	}
 }
 
@@ -549,23 +602,29 @@ func TestVerifyAndLaunch(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte("installer"))
 	var launched []string
-	launch := func(path string) error {
+	var gotArgs []string
+	launch := func(path string, args []string) error {
 		launched = append(launched, path)
+		gotArgs = args
 		return nil
 	}
-	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, launch); err != nil || len(launched) != 1 || launched[0] != p {
+	args := []string{"/S", "/RELAUNCH"}
+	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, args, launch); err != nil || len(launched) != 1 || launched[0] != p {
 		t.Fatalf("err %v launched %v", err, launched)
+	}
+	if strings.Join(gotArgs, " ") != "/S /RELAUNCH" {
+		t.Errorf("args = %q", gotArgs)
 	}
 	if err := os.WriteFile(p, []byte("swapped"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, launch); !errors.Is(err, update.ErrChecksumMismatch) || len(launched) != 1 {
+	if err := verifyAndLaunch(update.File{Path: p, SHA256: sum[:]}, args, launch); !errors.Is(err, update.ErrChecksumMismatch) || len(launched) != 1 {
 		t.Errorf("swapped file: err %v launched %v", err, launched)
 	}
-	if err := verifyAndLaunch(update.File{Path: p}, launch); !errors.Is(err, update.ErrChecksumMismatch) {
+	if err := verifyAndLaunch(update.File{Path: p}, args, launch); !errors.Is(err, update.ErrChecksumMismatch) {
 		t.Errorf("no checksum: %v", err)
 	}
-	if err := verifyAndLaunch(update.File{Path: p + ".missing", SHA256: sum[:]}, launch); err == nil {
+	if err := verifyAndLaunch(update.File{Path: p + ".missing", SHA256: sum[:]}, args, launch); err == nil {
 		t.Error("missing file launched")
 	}
 }
@@ -587,7 +646,7 @@ func TestRevealCommand(t *testing.T) {
 
 func TestUpdateScript(t *testing.T) {
 	s := UpdateScript()
-	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions"} {
+	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions", `case "installing":`, `state === "installing"`, "restarts on the new version", "yeni sürümle yeniden açılacak"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}

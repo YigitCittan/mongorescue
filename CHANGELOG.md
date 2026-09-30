@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Desktop app on Windows: **Update** installs the new version silently instead of opening the setup wizard. After the download and SHA-256 check, the app starts the installer with `/S /RELAUNCH` (Windows still asks for administrator rights), shows *Installing the update…* and closes; the installer waits for `MongoRescue.exe` to exit, installs and starts the new version again. If the administrator prompt is declined or the installer does not start, the app stays open and offers **Try again** and the release page. Mandatory updates use the same path; interactive installs are unchanged. See [docs/desktop.md](docs/desktop.md#updates).
+
 ## [0.6.0] - 2026-09-30
 
 ### Added

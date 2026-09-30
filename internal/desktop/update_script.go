@@ -6,7 +6,8 @@ import (
 )
 
 // updateScript shows the update status of Updater in the dashboard. It polls
-// UpdatePath closely while a check or a download runs and every 10 minutes
+// UpdatePath closely while a check, a download or the start of the installer runs
+// (so a declined UAC prompt shows up as an error with "Try again") and every 10 minutes
 // otherwise, and shows either a blocking full-screen dialog for a mandatory update
 // or a dismissible bar at the bottom of the window for an optional one. A release
 // without a verifiable file for this platform only gets the bar, with the release
@@ -40,7 +41,7 @@ const updateScript = `(function (paths, header) {
       checking: "Checking the release…",
       manual: "This release has no installer for your system yet. Download it from the release page.",
       downloading: "Downloading and verifying the update…",
-      launching: "Starting the installer. MongoRescue will close.",
+      installing: "Installing the update. Allow the Windows prompt if asked; MongoRescue closes and restarts on the new version.",
       saved: "Saved to your Downloads folder: {file}. Quit MongoRescue and replace it with the new version.",
       showFile: "Show file",
       failed: "Update failed: {error}",
@@ -63,7 +64,7 @@ const updateScript = `(function (paths, header) {
       checking: "Sürüm denetleniyor…",
       manual: "Bu sürümde sisteminiz için henüz kurulum dosyası yok. Sürüm sayfasından indirin.",
       downloading: "Güncelleme indiriliyor ve doğrulanıyor…",
-      launching: "Kurulum başlatılıyor. MongoRescue kapanacak.",
+      installing: "Güncelleme kuruluyor. Windows onay isterse izin verin; MongoRescue kapanıp yeni sürümle yeniden açılacak.",
       saved: "İndirilenler klasörüne kaydedildi: {file}. MongoRescue'dan çıkın ve yeni sürümle değiştirin.",
       showFile: "Dosyayı göster",
       failed: "Güncelleme başarısız: {error}",
@@ -127,7 +128,7 @@ const updateScript = `(function (paths, header) {
     getStatus().then(function (s) {
       if (s) { render(s); }
       var state = s ? s.state : "";
-      if (state === "downloading" || state === "checking" || (!s && Date.now() - started < CHECK_LIMIT_MS)) {
+      if (state === "downloading" || state === "checking" || state === "installing" || (!s &&Date.now() - started < CHECK_LIMIT_MS)) {
         schedule();
       } else if (!timer) {
         timer = setTimeout(poll, SLOW_POLL_MS);
@@ -199,7 +200,7 @@ const updateScript = `(function (paths, header) {
     var title = t("headerTitle", { latest: s.latest });
     b.title = title;
     b.setAttribute("aria-label", title);
-    b.disabled = s.state === "downloading" || s.state === "checking" || (s.state === "ready" && s.action === "launch");
+    b.disabled = s.state === "downloading" || s.state === "checking" || s.state === "installing";
   }
   // headerClick runs the bar's action: it shows the bar again (even after
   // "Later") and installs, or opens the release page when there is nothing to
@@ -348,7 +349,7 @@ const updateScript = `(function (paths, header) {
     status = s;
     headerButton(s);
     if (!s.available) { remove(); return; }
-    var active = s.state === "checking" || s.state === "downloading" || s.state === "ready" || s.state === "error";
+    var active = s.state === "checking" || s.state === "downloading" || s.state === "ready" || s.state === "installing" || s.state === "error";
     if (!s.mandatory && !active && later(s.latest)) { remove(); return; }
     if (ui && ui.mandatory !== !!s.mandatory) { remove(); }
     if (!ui) { ui = build(!!s.mandatory); }
@@ -371,7 +372,11 @@ const updateScript = `(function (paths, header) {
       text = t("downloading");
       break;
     case "ready":
-      if (s.action === "launch") { text = t("launching"); } else { text = t("saved", vars); label = t("showFile"); }
+      text = t("saved", vars);
+      label = t("showFile");
+      break;
+    case "installing":
+      text = t("installing");
       break;
     case "error":
       text = t("failed", vars);
@@ -381,7 +386,7 @@ const updateScript = `(function (paths, header) {
     ui.state.textContent = text;
     ui.state.style.display = text || ui.mandatory ? "" : "none";
     ui.update.textContent = label;
-    ui.update.disabled = s.state === "downloading" || s.state === "checking" || (s.state === "ready" && s.action === "launch");
+    ui.update.disabled = s.state === "downloading" || s.state === "checking" || s.state === "installing";
     // Without a verifiable file for this platform (yet), only the release page
     // is offered; "Try again" after an error checks for the files again.
     ui.update.hidden = !s.installable && s.state !== "error";
