@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-30
+
 ### Added
 - Retry a failed backup: `POST /api/v1/backups/{id}/retry` (operator scope) starts a new manual backup with the failed backup's connection, database, collections and storage target (and its job's exclusions and compression when the job still exists), through the same use case as "Back up now". It answers `409` for a backup that has not failed and `422` when its connection or storage target was deleted. The failed record is kept unchanged; the new record's `retry_of` names it (schema migration `0009_backup_retry_of`). See [docs/api.md](docs/api.md#retrying-a-failed-backup).
 - Dashboard: failed backups get a **Retry** button, rows note "Retry of …" and "Retried at … → …", and a **Details** dialog shows the full error message, absolute start and end times, duration, trigger, connection, database, storage target and the retry chain.
