@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Safe-clone restores of a database with a name longer than 40 bytes failed, because `<db>_rescue_<timestamp>` exceeded MongoDB's 63-byte limit; the source part of the clone name is now shortened.
-- Connection strings with an invalid percent escape (`p%zz`), invalid UTF-8, Unicode whitespace or control characters (such as U+2028), host characters outside RFC 3986 or an empty option name are rejected when saved, instead of failing in the Database Tools; such characters also no longer reach the tools configuration file, where a YAML line break could change the URI.
+- New or changed connection strings with an invalid percent escape (`p%zz`), invalid UTF-8, Unicode whitespace or control characters (such as U+2028), host characters outside RFC 3986 or an empty option name are rejected when saved or tested. Connections stored by earlier releases and a `MONGORESCUE_MONGO_URI` imported at startup keep the earlier rules (`mongouri.ValidateStored`), so they can still be renamed, tested, backed up and restored.
+- The tools configuration file writes a URI containing NEL, U+2028, U+2029, the byte order mark or another C1 control as a double-quoted YAML scalar with escapes; before, YAML folded such line breaks into a space, changing the password the tools used.
 - `authSource` injected for the Database Tools is derived from the database path as the driver decodes it (`/my+db` is `my db`), and a percent-escaped option name such as `auth%53ource` is recognised.
 - A sealed credential with an inserted line break or altered final base64 character was still accepted; only the exact encoding is now opened.
 - A cron expression that is only a time zone (`TZ=UTC`, `CRON_TZ=...`) crashed schedule validation instead of being rejected.

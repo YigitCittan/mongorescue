@@ -47,7 +47,27 @@ const maxPortDigits = 5
 //     not a valid host:port;
 //   - a database path containing '/' or '@' (for example the "/ss@h/db" remainder above);
 //   - a query option that is not of the form key=value with a non-empty key.
+//
+// Validate is for URIs entered by a user (create, update, test). Values stored or
+// imported by earlier releases are re-checked with ValidateStored instead, so that a
+// stricter release never stops a connection that used to work.
 func Validate(uri string) error {
+	return validate(uri, true)
+}
+
+// ValidateStored applies the structural rules of earlier releases, which Validate
+// extends: the scheme, ASCII whitespace and control characters, a raw '#', a raw '@'
+// in the userinfo, the host list and ports, the database path and key=value options.
+// It accepts what Validate additionally rejects (invalid UTF-8, Unicode whitespace
+// and control characters, malformed percent escapes, unusual host characters and
+// empty option names). Use it for URIs that are already stored or imported from a
+// former configuration, never for new input. It returns ErrInvalidMongoURI.
+func ValidateStored(uri string) error {
+	return validate(uri, false)
+}
+
+// validate implements Validate (strict) and ValidateStored.
+func validate(uri string, strict bool) error {
 	var rest string
 	switch {
 	case strings.HasPrefix(uri, SchemeStandard):
@@ -58,8 +78,10 @@ func Validate(uri string) error {
 		return ErrInvalidMongoURI
 	}
 
-	if !utf8.ValidString(rest) || strings.ContainsFunc(rest, isSpace) || strings.ContainsRune(rest, '#') ||
-		!validEscapes(rest) {
+	if strings.ContainsFunc(rest, isASCIISpace) || strings.ContainsRune(rest, '#') {
+		return ErrInvalidMongoURI
+	}
+	if strict && (!utf8.ValidString(rest) || strings.ContainsFunc(rest, isSpace) || !validEscapes(rest)) {
 		return ErrInvalidMongoURI
 	}
 
@@ -76,7 +98,7 @@ func Validate(uri string) error {
 		}
 		hosts = authority[at+1:]
 	}
-	if !validHostList(hosts) {
+	if !validHostList(hosts, strict) {
 		return ErrInvalidMongoURI
 	}
 
@@ -88,7 +110,7 @@ func Validate(uri string) error {
 		return ErrInvalidMongoURI
 	}
 	for _, opt := range strings.Split(query, "&") {
-		if opt != "" && (!strings.Contains(opt, "=") || opt[0] == '=') {
+		if opt != "" && (!strings.Contains(opt, "=") || (strict && opt[0] == '=')) {
 			return ErrInvalidMongoURI
 		}
 	}
@@ -97,13 +119,14 @@ func Validate(uri string) error {
 }
 
 // validHostList reports whether hosts is a non-empty, comma-separated list of
-// host[:port] or [ipv6][:port] entries with numeric ports.
-func validHostList(hosts string) bool {
+// host[:port] or [ipv6][:port] entries with numeric ports. strict also checks the
+// host characters (validHostName).
+func validHostList(hosts string, strict bool) bool {
 	if hosts == "" {
 		return false
 	}
 	for _, h := range strings.Split(hosts, ",") {
-		if !validHost(h) {
+		if !validHost(h, strict) {
 			return false
 		}
 	}
@@ -111,7 +134,7 @@ func validHostList(hosts string) bool {
 }
 
 // validHost reports whether h is a single host[:port] or [ipv6][:port] entry.
-func validHost(h string) bool {
+func validHost(h string, strict bool) bool {
 	name, port := h, ""
 	if strings.HasPrefix(h, "[") {
 		end := strings.IndexByte(h, ']')
@@ -135,7 +158,7 @@ func validHost(h string) bool {
 		}
 	}
 
-	if name == "" || !validHostName(name, strings.HasPrefix(h, "[")) {
+	if name == "" || strings.ContainsAny(name, "@[]") || (strict && !validHostName(name, strings.HasPrefix(h, "["))) {
 		return false
 	}
 	return port == "" || isPort(port)
@@ -195,5 +218,10 @@ func isPort(p string) bool {
 // isSpace reports whether r is a whitespace or control character (ASCII or Unicode,
 // such as U+0085 or U+2028).
 func isSpace(r rune) bool {
-	return r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r)
+	return isASCIISpace(r) || unicode.IsSpace(r) || unicode.IsControl(r)
+}
+
+// isASCIISpace reports whether r is an ASCII whitespace or control character.
+func isASCIISpace(r rune) bool {
+	return r <= ' ' || r == 0x7f
 }

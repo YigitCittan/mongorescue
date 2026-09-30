@@ -2,9 +2,11 @@ package mongotools
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -49,10 +51,10 @@ func FuzzWithConnectionDefaults(f *testing.F) {
 		if !strings.HasPrefix(out, uri) {
 			t.Fatalf("WithConnectionDefaults(%q) = %q changed the input", uri, out)
 		}
-		if mongouri.Validate(uri) != nil {
+		if mongouri.ValidateStored(uri) != nil {
 			return
 		}
-		if err := mongouri.Validate(out); err != nil {
+		if err := mongouri.ValidateStored(out); err != nil {
 			t.Fatalf("WithConnectionDefaults(%q) = %q is no longer valid: %v", uri, out, err)
 		}
 		if again := WithConnectionDefaults(out); again != out {
@@ -88,33 +90,36 @@ func optionCounts(t *testing.T, uri string) map[string]int {
 		if !ok {
 			continue
 		}
-		unescaped, err := url.QueryUnescape(key)
-		if err != nil {
-			t.Fatalf("undecodable option %q in %q: %v", key, uri, err)
+		// Undecodable names (allowed in stored URIs) are counted raw, as the code does.
+		if unescaped, err := url.QueryUnescape(key); err == nil {
+			key = unescaped
 		}
-		counts[strings.ToLower(unescaped)]++
+		counts[strings.ToLower(key)]++
 	}
 	return counts
 }
 
-// FuzzWriteURIConfig checks that WriteURIConfig rejects exactly the URIs that cannot be
-// written verbatim and that the file is a YAML single-quoted scalar holding uri.
+// FuzzWriteURIConfig checks that WriteURIConfig rejects exactly the URIs with ASCII
+// control characters (as earlier releases did, so no stored URI is newly rejected) and
+// that the file is a YAML quoted scalar holding uri, with no character YAML forbids
+// verbatim.
 func FuzzWriteURIConfig(f *testing.F) {
 	for _, s := range fuzzURIs {
 		f.Add(s)
 	}
+	f.Add("mongodb://u:p\\\"\u2028@h")
 	f.Fuzz(func(t *testing.T, uri string) {
 		dir := t.TempDir()
 		arg, cleanup, err := WriteURIConfig(dir, uri)
-		unsafe := !utf8.ValidString(uri) || strings.ContainsFunc(uri, unsafeInYAML)
+		control := strings.ContainsFunc(uri, func(r rune) bool { return r < 0x20 || r == 0x7f })
 		if err != nil {
-			if !errors.Is(err, ErrInvalidURI) || !unsafe {
+			if !errors.Is(err, ErrInvalidURI) || !control {
 				t.Fatalf("WriteURIConfig(%q) = %v", uri, err)
 			}
 			return
 		}
 		defer cleanup()
-		if unsafe {
+		if control {
 			t.Fatalf("WriteURIConfig(%q) accepted a control character", uri)
 		}
 		path, ok := strings.CutPrefix(arg, "--config=")
@@ -132,7 +137,10 @@ func FuzzWriteURIConfig(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := parseSingleQuoted(string(data))
+		if utf8.Valid(data) && strings.ContainsFunc(string(data[:len(data)-1]), unsafeInYAML) {
+			t.Fatalf("config %q holds a character YAML forbids verbatim", data)
+		}
+		got, err := parseQuoted(string(data))
 		if err != nil {
 			t.Fatalf("config %q: %v", data, err)
 		}
@@ -142,29 +150,55 @@ func FuzzWriteURIConfig(f *testing.F) {
 	})
 }
 
-// parseSingleQuoted parses the "uri: '<scalar>'\n" document WriteURIConfig writes,
-// following the YAML rules for a single-line single-quoted scalar: a doubled quote is one quote,
-// a lone quote ends the scalar and no line break may appear inside it.
-func parseSingleQuoted(doc string) (string, error) {
-	body, ok := strings.CutPrefix(doc, "uri: '")
+// parseQuoted parses the "uri: <scalar>\n" document WriteURIConfig writes, following
+// the YAML rules for a single-line quoted scalar. Single-quoted: a doubled quote is
+// one quote and a lone quote ends the scalar. Double-quoted: '\' starts an escape
+// (\\, \" and \uXXXX are the ones WriteURIConfig uses) and '"' ends the scalar.
+func parseQuoted(doc string) (string, error) {
+	body, ok := strings.CutPrefix(doc, "uri: ")
 	if !ok {
-		return "", errors.New("missing key or opening quote")
+		return "", errors.New("missing key")
 	}
-	body, ok = strings.CutSuffix(body, "'\n")
-	if !ok {
-		return "", errors.New("missing closing quote")
+	body, ok = strings.CutSuffix(body, "\n")
+	if !ok || len(body) < 2 || body[0] != body[len(body)-1] || (body[0] != '\'' && body[0] != '"') {
+		return "", errors.New("not a quoted scalar")
 	}
+	quote, body := body[0], body[1:len(body)-1]
 	var b strings.Builder
 	for i := 0; i < len(body); i++ {
-		switch c := body[i]; c {
-		case '\'':
+		c := body[i]
+		switch {
+		case c == '\n' || c == '\r':
+			return "", errors.New("line break inside the scalar")
+		case quote == '\'' && c == '\'':
 			if i+1 >= len(body) || body[i+1] != '\'' {
 				return "", errors.New("unescaped quote inside the scalar")
 			}
 			b.WriteByte('\'')
 			i++
-		case '\n', '\r':
-			return "", errors.New("line break inside the scalar")
+		case quote == '"' && c == '"':
+			return "", errors.New("unescaped quote inside the scalar")
+		case quote == '"' && c == '\\':
+			if i+1 >= len(body) {
+				return "", errors.New("dangling escape")
+			}
+			switch body[i+1] {
+			case '\\', '"':
+				b.WriteByte(body[i+1])
+				i++
+			case 'u':
+				if i+6 > len(body) {
+					return "", errors.New("short \\u escape")
+				}
+				n, err := strconv.ParseUint(body[i+2:i+6], 16, 32)
+				if err != nil {
+					return "", err
+				}
+				b.WriteRune(rune(n))
+				i += 5
+			default:
+				return "", fmt.Errorf("unexpected escape \\%c", body[i+1])
+			}
 		default:
 			b.WriteByte(c)
 		}

@@ -186,13 +186,19 @@ func (s *Service) Resolve(ctx context.Context, id string) (*models.Connection, e
 
 // Create validates in and stores a new connection. It returns the redacted result.
 func (s *Service) Create(ctx context.Context, in Input) (*models.Connection, error) {
+	return s.create(ctx, in, mongouri.Validate)
+}
+
+// create stores a new connection whose URI passes checkURI: mongouri.Validate for
+// user input, mongouri.ValidateStored for a URI imported from a former configuration.
+func (s *Service) create(ctx context.Context, in Input, checkURI func(string) error) (*models.Connection, error) {
 	if err := validateInput(&in); err != nil {
 		return nil, err
 	}
 	if strings.Contains(in.URI, redact.Mask) {
 		return nil, ErrMaskedURI
 	}
-	if err := mongouri.Validate(in.URI); err != nil {
+	if err := checkURI(in.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	id, err := NewID()
@@ -210,7 +216,9 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.Connection, err
 
 // Update replaces the editable fields of connection id. A URI equal to the redacted
 // form of the stored URI keeps the stored credentials; any other masked URI is
-// rejected with ErrMaskedURI. Changing the URI clears the last test result.
+// rejected with ErrMaskedURI. Changing the URI clears the last test result. A new URI
+// must pass mongouri.Validate; the stored one (kept or re-entered unchanged) only
+// mongouri.ValidateStored, so editing the name of an older connection keeps working.
 func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Connection, error) {
 	existing, err := s.repo.GetConnection(ctx, id)
 	if err != nil {
@@ -223,7 +231,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	if err != nil {
 		return nil, err
 	}
-	if err := mongouri.Validate(uri); err != nil {
+	if err := checkURI(uri, existing.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	updated := *existing
@@ -236,6 +244,15 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 		return nil, err
 	}
 	return updated.Redacted(), nil
+}
+
+// checkURI validates uri with mongouri.Validate, or with mongouri.ValidateStored when
+// it is the stored URI of the connection (so a stricter release never rejects it).
+func checkURI(uri, stored string) error {
+	if stored != "" && uri == stored {
+		return mongouri.ValidateStored(uri)
+	}
+	return mongouri.Validate(uri)
 }
 
 // KeepSecret resolves an incoming URI against the stored one: the exact redacted form
@@ -281,6 +298,7 @@ func (s *Service) Test(ctx context.Context, id string) (TestResult, error) {
 // uri is the redacted form of that connection's stored URI, the stored URI is used, so
 // an edit form can be re-tested without re-entering the password.
 func (s *Service) TestURI(ctx context.Context, uri, id string) (TestResult, error) {
+	stored := ""
 	if id != "" && strings.Contains(uri, redact.Mask) {
 		existing, err := s.repo.GetConnection(ctx, id)
 		if err != nil {
@@ -289,11 +307,18 @@ func (s *Service) TestURI(ctx context.Context, uri, id string) (TestResult, erro
 		if uri, err = KeepSecret(uri, existing.URI); err != nil {
 			return TestResult{}, err
 		}
+		stored = existing.URI
+	} else if id != "" {
+		// The unchanged URI of a stored connection (one without a password) is not
+		// new input either; a lookup failure just means the strict rules apply.
+		if existing, err := s.repo.GetConnection(ctx, id); err == nil {
+			stored = existing.URI
+		}
 	}
 	if strings.Contains(uri, redact.Mask) {
 		return TestResult{}, ErrMaskedURI
 	}
-	if err := mongouri.Validate(uri); err != nil {
+	if err := checkURI(uri, stored); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return s.probe(ctx, uri), nil
@@ -360,7 +385,8 @@ func (s *Service) EnsureDefault(ctx context.Context, uri string) (bool, error) {
 	if len(list) > 0 {
 		return false, nil
 	}
-	if _, err := s.Create(ctx, Input{Name: "default", URI: uri, Description: "Created from MONGORESCUE_MONGO_URI"}); err != nil {
+	// The URI comes from a former configuration: the rules of earlier releases apply.
+	if _, err := s.create(ctx, Input{Name: "default", URI: uri, Description: "Created from MONGORESCUE_MONGO_URI"}, mongouri.ValidateStored); err != nil {
 		return false, err
 	}
 	return true, nil
