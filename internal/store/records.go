@@ -16,12 +16,12 @@ const (
 			connection_id = excluded.connection_id, storage_target_id = excluded.storage_target_id,
 			data = excluded.data`
 
-	upsertBackupSQL = `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	upsertBackupSQL = `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET job_id = excluded.job_id, database_name = excluded.database_name,
 			status = excluded.status, started_at = excluded.started_at,
 			connection_id = excluded.connection_id, storage_target_id = excluded.storage_target_id,
-			data = excluded.data`
+			retry_of = excluded.retry_of, data = excluded.data`
 
 	upsertRestoreSQL = `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, data)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -169,7 +169,7 @@ func putBackup(ctx context.Context, e execer, record *models.BackupRecord) error
 		return err
 	}
 	if _, err := e.ExecContext(ctx, upsertBackupSQL,
-		record.ID, record.JobID, record.Database, string(record.Status), timeKey(record.StartedAt), record.ConnectionID, record.StorageTargetID, data); err != nil {
+		record.ID, record.JobID, record.Database, string(record.Status), timeKey(record.StartedAt), record.ConnectionID, record.StorageTargetID, record.RetryOf, data); err != nil {
 		return fmt.Errorf("store: save backup record %s: %w", record.ID, err)
 	}
 	return nil

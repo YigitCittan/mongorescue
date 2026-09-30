@@ -263,6 +263,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/backups", s.handleListBackups)
 	mux.HandleFunc("POST /api/v1/backups", s.handleCreateBackup)
 	mux.HandleFunc("DELETE /api/v1/backups/{id}", s.handleDeleteBackup)
+	mux.HandleFunc("POST /api/v1/backups/{id}/retry", s.handleRetryBackup)
 
 	// API Disaster Recovery / Restores
 	mux.HandleFunc("GET /api/v1/restores", s.handleListRestores)
@@ -500,11 +501,27 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, record)
 }
 
+// handleRetryBackup starts a new manual backup with the parameters of a failed one.
+// The failed record is kept as it is; the new record's retry_of names it.
+func (s *Server) handleRetryBackup(w http.ResponseWriter, r *http.Request) {
+	record, err := s.ops.RetryBackup(r.Context(), r.PathValue("id"), models.TriggerManual)
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, record)
+}
+
 // writeOperationError maps operations errors to HTTP responses. Messages of expected
 // failures are shown as they are (they never carry credentials); anything else is
 // logged and answered with a generic 500.
 func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	switch {
+	// Retry errors come first: they also wrap the connection and target sentinels.
+	case errors.Is(err, operations.ErrNotRetryable):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, operations.ErrRetryUnavailable):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrConnectionRequired),
 		errors.Is(err, operations.ErrUnknownConnection), errors.Is(err, operations.ErrUnknownStorageTarget):
 		writeError(w, http.StatusBadRequest, err.Error())

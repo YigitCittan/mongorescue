@@ -18,7 +18,7 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 | Scope | Allowed |
 | :--- | :--- |
 | `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone on the backup's own connection (and the MCP action tools) |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone on the backup's own connection (and the MCP action tools) |
 | `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
 An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`. Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
@@ -69,6 +69,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/backups` | List backups (`?database=` filter) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
+| `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `target_connection_id` (admin), `verify`) | 202 | 400, 403, 404, 409, 422 |
 | `GET` | `/api/v1/restores` | Restore audit history | 200 | |
 | `GET` / `POST` | `/api/v1/notifications/channels` | List / create notification channels | 200 / 201 | 400 |
@@ -120,11 +121,30 @@ curl -s -X POST http://localhost:8080/api/v1/restore \
 
 Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are verified first under the default `auto` verify policy. A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started.
 
+## Retrying a failed backup
+
+`POST /api/v1/backups/{id}/retry` (operator scope, like starting a backup) starts a new manual backup with the parameters of the failed backup `{id}`: the same connection, database, collections and storage target (the default target for records written without one). When the backup belongs to a job that still exists, the job's `exclude_collections` and `gzip` are used; otherwise compression follows the failed backup's storage key. Encryption follows the current settings. The retry is started exactly like `POST /api/v1/backups` (same concurrency limit per database, events and notifications) and the response is the new in-progress record with `"trigger": "manual"` and `"retry_of": "{id}"`.
+
+The failed record is never changed or deleted by a retry: its status, `error_message`, `started_at` and `completed_at` stay in the list, and every attempt links to the one it retries through `retry_of` (omitted for backups that are not retries). A failed retry can be retried again, forming a chain.
+
+| Status | When |
+| --- | --- |
+| `404 Not Found` | No backup `{id}` |
+| `409 Conflict` | The backup has not failed (only `failed` backups can be retried), or a backup of the same database is already running |
+| `422 Unprocessable Entity` | The backup's connection or storage target no longer exists, or the backup has no connection recorded |
+
+```bash
+curl -X POST http://localhost:8080/api/v1/backups/bkp_shop_20260924_030000_3f9a1c2e/retry \
+  -H "X-API-Key: $MONGORESCUE_OPERATOR_KEY"
+```
+
+In the dashboard, a failed backup that has not been retried yet shows a **Retry** button, and **Details** opens the full error message (including `mongodump`'s stderr, which the server stores in the redacted error message), the absolute start and end times, the duration, the trigger, connection, database, storage target and the retry chain.
+
 ## Asynchronous operations
 
 Every backup record has a `trigger`: `scheduled` (a cron run of `job_id`), `on_demand` (`POST /api/v1/jobs/{id}/run`), `manual` (`POST /api/v1/backups`) or `mcp` (an assistant's `start_backup` or `run_job`). It is set by the server, never taken from the request, and retention only prunes a job's `scheduled` backups ([configuration.md](configuration.md#general)).
 
-`POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed` or `failed`. Operations keep running if the client disconnects.
+`POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed` or `failed`. Operations keep running if the client disconnects.
 
 | Status | Meaning |
 | --- | --- |

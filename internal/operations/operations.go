@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -56,6 +58,12 @@ var (
 	// ErrKeyRequired is returned when an encrypted backup is restored without a
 	// decryption key. It aliases encryption.ErrEncryptionKeyRequired.
 	ErrKeyRequired = encryption.ErrEncryptionKeyRequired
+	// ErrNotRetryable is returned by RetryBackup for a backup that has not failed.
+	ErrNotRetryable = errors.New("operations: only failed backups can be retried")
+	// ErrRetryUnavailable is returned by RetryBackup when the failed backup cannot be
+	// repeated as recorded: its connection or storage target no longer exists, or it
+	// has no connection recorded.
+	ErrRetryUnavailable = errors.New("operations: backup cannot be retried as recorded")
 )
 
 // persistTimeout bounds metadata writes of background runs after they finish.
@@ -204,6 +212,81 @@ type BackupRequest struct {
 // the outcome. Expected failures: ErrConnectionRequired, ErrUnknownConnection,
 // ErrUnknownStorageTarget, ErrInvalid, ErrBusy and ErrShuttingDown.
 func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.BackupRecord, error) {
+	return s.startManualBackup(ctx, req, "")
+}
+
+// RetryBackup starts a new backup with the parameters of the failed backup id: the
+// same connection, database, collections and storage target, the job's excluded
+// collections and compression when the backup belongs to a job that still exists, and
+// otherwise the compression recorded in its storage key. It runs exactly like
+// StartBackup (same concurrency keys, events and bookkeeping) and returns a snapshot
+// of the new in-progress record, whose RetryOf is id. The failed record is never
+// modified. trigger is models.TriggerMCP for MCP and otherwise recorded as
+// models.TriggerManual. Expected failures: ErrNotFound, ErrNotRetryable,
+// ErrRetryUnavailable, ErrInvalid, ErrBusy and ErrShuttingDown.
+func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.BackupTrigger) (*models.BackupRecord, error) {
+	original, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, public("backup not found", ErrNotFound, err)
+		}
+		return nil, fmt.Errorf("load backup: %w", err)
+	}
+	if original.Status != models.StatusFailed {
+		return nil, public(fmt.Sprintf("only failed backups can be retried; backup %s is %s", original.ID, original.Status), ErrNotRetryable)
+	}
+	if original.ConnectionID == "" {
+		return nil, public("this backup has no source connection recorded; start a new backup instead", ErrRetryUnavailable, ErrConnectionRequired)
+	}
+
+	req := BackupRequest{
+		BackupOptions: models.BackupOptions{
+			Database:        original.Database,
+			Collections:     slices.Clone(original.Collections),
+			StorageTargetID: original.StorageTargetID,
+			ConnectionID:    original.ConnectionID,
+		},
+		Trigger: trigger,
+	}
+	if gzip, ok := gzipFromKey(original.StorageKey); ok {
+		req.Gzip = &gzip
+	}
+	if original.JobID != "" {
+		if job, jobErr := s.cfg.Store.GetJob(ctx, original.JobID); jobErr == nil {
+			req.JobID = job.ID
+			req.ExcludeCollections = slices.Clone(job.ExcludeCollections)
+			gzip := job.Gzip
+			req.Gzip = &gzip
+		}
+	}
+
+	record, err := s.startManualBackup(ctx, req, original.ID)
+	switch {
+	case errors.Is(err, ErrUnknownConnection):
+		return nil, public("the connection of backup "+original.ID+" no longer exists", ErrRetryUnavailable, err)
+	case errors.Is(err, ErrUnknownStorageTarget):
+		return nil, public("the storage target of backup "+original.ID+" no longer exists", ErrRetryUnavailable, err)
+	}
+	return record, err
+}
+
+// gzipFromKey reports whether the archive at a default storage key was compressed
+// (".archive.gz", optionally encrypted). ok is false for custom keys.
+func gzipFromKey(key string) (gzip, ok bool) {
+	key = strings.TrimSuffix(key, encryption.FileExtension)
+	switch {
+	case strings.HasSuffix(key, ".archive.gz"):
+		return true, true
+	case strings.HasSuffix(key, ".archive"):
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// startManualBackup implements StartBackup; a non-empty retryOf is recorded as the
+// new record's RetryOf.
+func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retryOf string) (*models.BackupRecord, error) {
 	opts := req.BackupOptions
 	conn, err := s.ResolveConnection(ctx, opts.ConnectionID)
 	if err != nil {
@@ -225,6 +308,7 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 	if err != nil {
 		return nil, invalid(err)
 	}
+	record.RetryOf = retryOf
 	jobID := s.knownJobID(ctx, opts.JobID)
 	return s.startBackup(ctx, record, func(runCtx context.Context) {
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
