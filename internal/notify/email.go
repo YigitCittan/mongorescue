@@ -115,7 +115,9 @@ func (n *EmailNotifier) buildMessage(msg Message) ([]byte, error) {
 // context deadline and the connection is closed if ctx is cancelled mid-dialogue.
 func (n *EmailNotifier) deliver(ctx context.Context, raw []byte) error {
 	addr := net.JoinHostPort(n.cfg.Host, strconv.Itoa(n.cfg.Port))
-	dialer := &net.Dialer{Timeout: SendTimeout}
+	// controlDestination refuses blocked addresses after resolution (see
+	// ErrBlockedDestination).
+	dialer := &net.Dialer{Timeout: SendTimeout, Control: controlDestination}
 
 	var (
 		conn net.Conn

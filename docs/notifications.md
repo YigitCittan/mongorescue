@@ -20,6 +20,8 @@ MongoRescue sends a message when a backup or restore finishes. Channels and rule
 
 Secrets are masked (`******`) in every API response. When you update a channel, sending a masked value back keeps the stored secret. Changing a channel's type or destination requires re-entering its secrets, so a stored credential can never be redirected to a new endpoint without being supplied again.
 
+Webhook and e-mail destinations may be public hosts, `localhost` or private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), since self-hosted receivers usually live there. Addresses that are never a receiver are refused: link-local addresses, including the cloud metadata services (`169.254.169.254`, `fd00:ec2::254`, `100.100.100.200`), unspecified, multicast and broadcast addresses, in any form (IPv4-mapped IPv6 included). Numeric hosts must be written in dotted decimal (`127.0.0.1`, not `2130706433`, `0x7f000001` or `127.1`). The check runs when a channel is saved and again on every connection after DNS resolution, so a host name that resolves to a refused address fails as well. Webhook redirects are never followed.
+
 Each channel has a **Send test** button (`POST /api/v1/notifications/channels/{id}/test`) that delivers a `notification.test` event and reports the result immediately. The last delivery outcome is shown on the channel (`last_delivery`).
 
 ## Rules
