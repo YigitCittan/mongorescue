@@ -43,10 +43,21 @@ AGE-SECRET-KEY-1...
 ## Behaviour
 
 - **Storage keys** of encrypted backups end in `.age`. The recorded `size_bytes` and `sha256` describe the stored ciphertext, not the plaintext dump. Backup records carry `encrypted` and `encryption_mode` (`x25519` or `scrypt`).
+- **Layer detection.** A stored backup is `mongodump --archive` output, optionally gzip-compressed (`--gzip`), optionally wrapped in age. Restores treat a backup as encrypted when its record says so, its key ends in `.age` or its content starts with the age header, so ciphertext is never handed to `mongorestore` as a dump. Compression is taken from the archive's own signature (falling back to a `.gz` key suffix), so backups stored under a custom `target_key` restore with the right `--gzip` flag. The first encrypted chunk is authenticated before `mongorestore` starts.
 - **Backup-only instances.** An instance configured with recipients but no identity can create encrypted backups but cannot restore them. This is intentional: the host that takes backups does not need the private key.
 - **Turning encryption off** only affects new backups. Decryption uses the identity, the passphrase and every retired key regardless of `enabled`, so existing encrypted backups stay restorable.
 - **Existing unencrypted backups** restore unchanged after encryption is enabled.
-- A restore of an encrypted backup without a matching key fails with `422 Unprocessable Entity` before `mongorestore` starts.
+- A restore of an encrypted backup without a matching key fails with `422 Unprocessable Entity` before `mongorestore` starts; the message says which key to add under **Settings → Encryption**.
+
+## Key management and loss
+
+**A lost identity (or passphrase) means lost backups.** age has no recovery mechanism, and MongoRescue keeps no copy of your private key outside its own database. If the identity an encrypted backup was made for is gone, that backup cannot be restored by anyone, including you: a restore fails with `encryption: key material required` (no key configured) or `encryption: decryption failed` (a different key), and `mongorestore` is never started.
+
+- **Escrow the private key offline**, separately from the backups and from the MongoRescue host: a password manager, a hardware-backed vault, or a printed copy in a safe. Keep one copy per key you ever used, not just the current one. With X25519 you can also encrypt to a second recipient whose private key never leaves offline storage, so either key can restore.
+- **The database copy is not a backup of the key.** The identity stored in MongoRescue's database is sealed with the secret key (`secret.key` or `MONGORESCUE_SECRET_KEY`, see [production.md](production.md#data-directory)); losing the secret key or the data directory loses that copy too.
+- **Rotating keys is safe.** Replacing the identity or the passphrase retires the old one; restores keep trying retired keys, so backups made before a rotation still restore. Deleting the data directory, or starting a new instance without importing the old keys, drops the retired keys as well: paste every escrowed identity into *Identity* (one per line) on the new instance before restoring old backups.
+- **Test restores regularly** on an instance that holds only the escrowed key, so a missing key is discovered before it is needed.
+- **Passphrase mode** has the same property: a forgotten passphrase cannot be recovered or reset.
 
 ## Verify-before-restore
 

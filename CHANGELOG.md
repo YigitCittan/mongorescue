@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - The session cookie's `Max-Age` is measured on the same clock as its `Expires` and the session's lifetime, so the two attributes always agree.
+### Added
+- Documentation: *Key management and loss* in [docs/encryption.md](docs/encryption.md#key-management-and-loss). A lost age identity or passphrase makes its backups unrecoverable; escrow every key offline.
+- Compatibility tests: fixtures of every earlier metadata schema version must upgrade without losing a field, a database from a newer release is refused untouched, and golden backup artifacts in every stored layout (plain, gzip, age over either, X25519 and passphrase) must keep restoring. The artifacts use TEST ONLY keys.
+
+### Fixed
+- Upgrading from the deprecated configuration now enables backup encryption. `MONGORESCUE_ENCRYPTION_ENABLED` and `encryption.enabled` in `config.json` were logged as imported, but only the encryption mode was stored, so new backups were written unencrypted. **If you upgraded from environment or `config.json` settings with encryption on, check Settings → Encryption and turn it back on.** The import runs only once, so it will not fix an existing installation by itself.
+- Restores now detect encryption and compression from the backup itself. Before, a backup stored under a custom `target_key` without the `.gz` suffix was restored without `--gzip`. A record that had lost its encryption flag sent age ciphertext to `mongorestore`. Damage in the first encrypted chunk was only noticed after `mongorestore` had started.
+- An age identity file that starts with a UTF-8 byte order mark (as some Windows editors save it) is accepted.
+
+### Changed
+- The error for restoring an encrypted backup without a key (`422`) now says which key to add under Settings → Encryption.
 
 ## [0.7.1] - 2026-09-30
 

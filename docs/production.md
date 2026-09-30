@@ -50,9 +50,9 @@ The channel **test** endpoint and the connection test make outbound requests to 
 | :--- | :--- |
 | `mongorescue.db` (+ `-wal`, `-shm`) | SQLite metadata database: jobs, backup and restore history, users, sessions, API key hashes, connections and notification settings. Mode `0600`. |
 | `secret.key` | The key encrypting connection strings and notification channel secrets inside the database (unless `MONGORESCUE_SECRET_KEY` is set). Mode `0600`. |
-| `mongorescue.lock` | Advisory lock that stops a second instance from using the same directory. |
+| `mongorescue.lock` | Advisory lock that stops a second instance from using the same directory. The operating system holds the lock for the process, not the file: after a crash it is released with the process, so a leftover `mongorescue.lock` never has to be deleted. |
 
-Connection strings and channel secrets are encrypted with AES-256-GCM. **Losing the key loses them**: MongoRescue refuses to start when the key does not match the database (`the secret key does not match the key this database was encrypted with`). Store a copy of `secret.key`, or set `MONGORESCUE_SECRET_KEY` from your secret manager, and keep it apart from database backups so one leaked backup does not reveal both.
+Connection strings and channel secrets are encrypted with AES-256-GCM. **Losing the key loses them**: MongoRescue refuses to start when the key does not match the database (`the secret key does not match the key this database was encrypted with`). Store a copy of `secret.key`, or set `MONGORESCUE_SECRET_KEY` from your secret manager, and keep it apart from database backups so one leaked backup does not reveal both. A refused start changes nothing in the database: put the original key back (file or variable) and the stored credentials open again. `MONGORESCUE_SECRET_KEY` takes precedence over `secret.key` when both exist, and a damaged `secret.key` is reported, never replaced. The age identity used for backup encryption is one of these stored secrets; escrow it separately as well (see [encryption.md](encryption.md#key-management-and-loss)).
 
 Back up the database consistently. It runs in WAL mode, so copying `mongorescue.db` alone while the server is running can miss recent changes or produce a torn copy. Use one of:
 
