@@ -94,8 +94,8 @@ func checkExtract(t *testing.T, data []byte) {
 		if p == root || p == app || p == staging {
 			return nil
 		}
-		rel, err := filepath.Rel(staging, p)
-		if err != nil || !filepath.IsLocal(rel) {
+		rel, relErr := filepath.Rel(staging, p)
+		if relErr != nil || !filepath.IsLocal(rel) {
 			t.Errorf("%s written outside the staging directory", p)
 			return nil
 		}

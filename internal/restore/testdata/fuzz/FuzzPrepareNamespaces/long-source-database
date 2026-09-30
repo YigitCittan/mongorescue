@@ -1,0 +1,5 @@
+go test fuzz v1
+string("ecommerce_production_eu_west_1_analytics_2026")
+string("")
+string("")
+bool(false)

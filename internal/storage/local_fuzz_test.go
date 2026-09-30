@@ -41,12 +41,12 @@ func FuzzLocalKey(f *testing.F) {
 		}
 
 		ctx := context.Background()
-		if _, err := s.Save(ctx, key, strings.NewReader("data")); err == nil {
-			if _, err := s.Stat(ctx, key); err != nil {
-				t.Fatalf("Stat(%q) after Save: %v", key, err)
+		if _, saveErr := s.Save(ctx, key, strings.NewReader("data")); saveErr == nil {
+			if _, statErr := s.Stat(ctx, key); statErr != nil {
+				t.Fatalf("Stat(%q) after Save: %v", key, statErr)
 			}
-			if err := s.Delete(ctx, key); err != nil {
-				t.Fatalf("Delete(%q) after Save: %v", key, err)
+			if delErr := s.Delete(ctx, key); delErr != nil {
+				t.Fatalf("Delete(%q) after Save: %v", key, delErr)
 			}
 		}
 		err = filepath.WalkDir(root, func(p string, _ fs.DirEntry, walkErr error) error {
