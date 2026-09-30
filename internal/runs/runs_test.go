@@ -101,3 +101,35 @@ func TestPanicReleasesKey(t *testing.T) {
 		t.Fatal("key leaked after panic")
 	}
 }
+
+func TestRefuseAndAccept(t *testing.T) {
+	m := NewManager(nil)
+	release, err := m.Acquire(BackupKey("c", "running"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Refuse()
+	if _, err = m.Acquire(BackupKey("c", "new")); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("Acquire while refusing: %v; want ErrShuttingDown", err)
+	}
+	if err = m.Go("", func(context.Context) {}); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("Go while refusing: %v; want ErrShuttingDown", err)
+	}
+	if !m.Running(BackupKey("c", "running")) {
+		t.Fatal("Refuse ended a running operation")
+	}
+	release()
+	m.Accept()
+	again, err := m.Acquire(BackupKey("c", "new"))
+	if err != nil {
+		t.Fatalf("Acquire after Accept: %v", err)
+	}
+	again()
+	if err = m.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m.Accept()
+	if _, err = m.Acquire("k"); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("Accept reopened a shut down Manager: %v", err)
+	}
+}

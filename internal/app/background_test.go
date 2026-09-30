@@ -44,14 +44,22 @@ func TestAppRunHooks(t *testing.T) {
 		t.Fatalf("ActiveRuns() = %v; want [%s]", got, key)
 	}
 
-	a.PauseScheduling()
+	a.PauseRuns()
 	if !a.scheduler.Paused() {
-		t.Fatal("PauseScheduling did not pause the scheduler")
+		t.Fatal("PauseRuns did not pause the scheduler")
 	}
-	a.ResumeScheduling()
+	if _, err := a.runs.Acquire(runs.RestoreKey("c", "other")); !errors.Is(err, runs.ErrShuttingDown) {
+		t.Fatalf("a new run while paused: %v; want ErrShuttingDown", err)
+	}
+	a.ResumeRuns()
 	if a.scheduler.Paused() {
-		t.Fatal("ResumeScheduling did not resume the scheduler")
+		t.Fatal("ResumeRuns did not resume the scheduler")
 	}
+	release2, err := a.runs.Acquire(runs.RestoreKey("c", "other"))
+	if err != nil {
+		t.Fatalf("a new run after ResumeRuns: %v", err)
+	}
+	release2()
 
 	if !a.Busy() {
 		t.Fatal("Busy() = false while a backup runs")
@@ -116,15 +124,15 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Status != models.StatusFailed || b.ErrorMessage != reason {
-		t.Fatalf("cancelled backup = %s %q; want failed %q", b.Status, b.ErrorMessage, reason)
+	if want := reason + " (backup cancelled: context canceled)"; b.Status != models.StatusFailed || b.ErrorMessage != want {
+		t.Fatalf("cancelled backup = %s %q; want failed %q", b.Status, b.ErrorMessage, want)
 	}
 	r, err := a.metaStore.GetRestoreRecord(ctx, restore.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Status != models.RestoreStatusFailed || r.ErrorMessage != reason {
-		t.Fatalf("cancelled restore = %s %q; want failed %q", r.Status, r.ErrorMessage, reason)
+	if want := reason + " (restore aborted: context canceled)"; r.Status != models.RestoreStatusFailed || r.ErrorMessage != want {
+		t.Fatalf("cancelled restore = %s %q; want failed %q", r.Status, r.ErrorMessage, want)
 	}
 	if d, _ := a.metaStore.GetBackupRecord(ctx, done.ID); d.Status != models.StatusCompleted || d.ErrorMessage != "" {
 		t.Fatalf("completed backup modified: %+v", d)
@@ -132,4 +140,19 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	// ForceStop and Stop are idempotent.
 	a.ForceStop(reason)
 	a.Stop()
+}
+
+func TestWithReason(t *testing.T) {
+	const reason = "cancelled: application force quit"
+	cases := map[string]string{
+		"":                             reason,
+		reason:                         reason,
+		reason + " (x)":                reason + " (x)",
+		"backup cancelled: ctx closed": reason + " (backup cancelled: ctx closed)",
+	}
+	for detail, want := range cases {
+		if got := withReason(reason, detail); got != want {
+			t.Errorf("withReason(%q) = %q; want %q", detail, got, want)
+		}
+	}
 }

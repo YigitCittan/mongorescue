@@ -22,7 +22,8 @@ var (
 	// ErrBusy indicates that an operation with the same key is already running.
 	ErrBusy = errors.New("runs: operation already running")
 
-	// ErrShuttingDown indicates that the Manager no longer accepts new operations.
+	// ErrShuttingDown indicates that the Manager no longer accepts new operations:
+	// after Shutdown, or while Refuse is in effect.
 	ErrShuttingDown = errors.New("runs: shutting down")
 )
 
@@ -47,7 +48,9 @@ type Manager struct {
 	mu     sync.Mutex
 	active map[string]struct{}
 	closed bool
-	wg     sync.WaitGroup
+	// refusing makes Acquire and Go return ErrShuttingDown until Accept.
+	refusing bool
+	wg       sync.WaitGroup
 }
 
 // NewManager returns a Manager whose operations run under a context detached from any
@@ -66,7 +69,7 @@ func NewManager(logger *slog.Logger) *Manager {
 func (m *Manager) Acquire(key string) (release func(), err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed {
+	if m.closed || m.refusing {
 		return nil, ErrShuttingDown
 	}
 	if err := m.reserveLocked(key); err != nil {
@@ -80,7 +83,7 @@ func (m *Manager) Acquire(key string) (release func(), err error) {
 // already in use and ErrShuttingDown after Shutdown has begun.
 func (m *Manager) Go(key string, fn func(ctx context.Context)) error {
 	m.mu.Lock()
-	if m.closed {
+	if m.closed || m.refusing {
 		m.mu.Unlock()
 		return ErrShuttingDown
 	}
@@ -103,6 +106,22 @@ func (m *Manager) Go(key string, fn func(ctx context.Context)) error {
 		fn(m.ctx)
 	}()
 	return nil
+}
+
+// Refuse makes Acquire and Go return ErrShuttingDown, like after Shutdown, until
+// Accept; running operations continue. A host that quits once the running
+// operations end (the desktop app's soft quit) refuses new ones meanwhile.
+func (m *Manager) Refuse() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refusing = true
+}
+
+// Accept undoes Refuse; it does not reopen a Manager after Shutdown.
+func (m *Manager) Accept() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refusing = false
 }
 
 // Running reports whether an operation holds key.

@@ -385,7 +385,7 @@ func runError(err error, busyMessage string) error {
 	case errors.Is(err, runs.ErrBusy):
 		return public(busyMessage, err)
 	case errors.Is(err, runs.ErrShuttingDown):
-		return public("server is shutting down", err)
+		return public("MongoRescue is shutting down", err)
 	default:
 		return fmt.Errorf("start background run: %w", err)
 	}
