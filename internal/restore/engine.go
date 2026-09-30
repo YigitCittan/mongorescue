@@ -234,7 +234,7 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 	restoreID := fmt.Sprintf("rst_%s_%s_%s", idDB, startTime.Format("20060102_150405"), suffix)
 
 	// Determine destination database name: a fresh clone unless in place was confirmed.
-	targetDB := fmt.Sprintf("%s_rescue_%s", sourceRecord.Database, startTime.Format("20060102_150405"))
+	targetDB := models.RescueDatabaseName(sourceRecord.Database, startTime)
 	if req.InPlace() {
 		targetDB = strings.TrimSpace(req.TargetDatabase)
 		if targetDB == "" {
