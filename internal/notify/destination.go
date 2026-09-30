@@ -30,9 +30,17 @@ var metadataAddrs = []netip.Addr{
 // thisNetwork is 0.0.0.0/8, which some stacks route to the local host.
 var thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
 
+// nat64Prefix is the well-known NAT64 prefix (RFC 6052): on an IPv6-only network with
+// a NAT64 gateway, 64:ff9b::a9fe:a9fe reaches 169.254.169.254.
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
 // blockedAddr reports whether a notification must never be sent to ip.
 func blockedAddr(ip netip.Addr) bool {
 	ip = ip.Unmap() // ::ffff:169.254.169.254 is 169.254.169.254
+	if ip.Is6() && nat64Prefix.Contains(ip) {
+		b := ip.As16()
+		ip = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
 	switch {
 	case !ip.IsValid(),
 		ip.IsUnspecified(),
