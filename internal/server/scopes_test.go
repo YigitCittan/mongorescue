@@ -31,6 +31,7 @@ type scopeFixture struct {
 	h     http.Handler
 	keys  map[auth.Scope]string
 	store *store.SQLiteStore
+	auth  *auth.Service
 }
 
 func newScopeFixture(t *testing.T) *scopeFixture {
@@ -42,7 +43,7 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	srv := NewServer(bootConfig(), st, base.backupEngine, base.restoreEngine, base.storageDriver, base.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, newTestConfig().Security)),
 		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)))
-	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}, store: st}
+	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}, store: st, auth: svc}
 	for _, scope := range auth.Scopes() {
 		_, plain, err := svc.CreateAPIKey(context.Background(), auth.SystemPrincipal(), string(scope)+" key", scope)
 		if err != nil {
