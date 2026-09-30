@@ -48,7 +48,12 @@ func TestDumpArgumentsNeverCarryInjectedFlags(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &captureRunner{}
-			e := NewEngine(storage.NewMockStorage(), "", WithRunner(runner.run))
+			// Several collections are expressed as exclusions of the others, so the
+			// database listing holds the requested names and one more.
+			lister := func(context.Context, string, string) ([]string, error) {
+				return append(slices.Clone(tc.colls), "--other"), nil
+			}
+			e := NewEngine(storage.NewMockStorage(), "", WithRunner(runner.run), WithCollectionLister(lister))
 			rec, err := e.Run(context.Background(), models.BackupOptions{
 				Database: tc.db, Collections: tc.colls, ExcludeCollections: tc.excludes, MongoURI: uri, Gzip: true,
 			})
@@ -59,10 +64,14 @@ func TestDumpArgumentsNeverCarryInjectedFlags(t *testing.T) {
 				t.Fatalf("ran %q", runner.name)
 			}
 			want := []string{"--archive", "--gzip", "--db=" + tc.db}
-			for _, c := range tc.colls {
-				want = append(want, "--collection="+c)
+			excludes := slices.Clone(tc.excludes)
+			switch {
+			case len(tc.colls) == 1:
+				want = append(want, "--collection="+tc.colls[0])
+			case len(tc.colls) > 1:
+				excludes = append(excludes, "--other")
 			}
-			for _, c := range tc.excludes {
+			for _, c := range excludes {
 				want = append(want, "--excludeCollection="+c)
 			}
 			got := runner.args
