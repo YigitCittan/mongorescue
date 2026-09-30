@@ -82,7 +82,7 @@ func TestBackupAndRestoreIDsAreUniqueWithinASecond(t *testing.T) {
 	e := NewEngine(storage.NewMockStorage(), "mongodb://h")
 	seen := map[string]bool{}
 	for range 50 {
-		rec, err := e.Prepare(models.BackupOptions{Database: strings.Repeat("d", 80)})
+		rec, err := e.Prepare(models.BackupOptions{Database: strings.Repeat("d", models.MaxDatabaseNameLength)})
 		if err != nil {
 			t.Fatal(err)
 		}

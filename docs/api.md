@@ -84,6 +84,8 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 
 Every protected endpoint also answers `401` without valid credentials, `403` for a cookie request with a missing or wrong `X-CSRF-Token` and `403` for an API key whose scope is too small.
 
+Database and collection names in jobs, backups and restores must be names MongoDB accepts: a database name has 1 to 63 bytes and none of `/ \ . " $ *`, a space or a control character; a collection name is not empty and has no `$`, `*` or control character. Other names are refused with `400` (*invalid namespace*). Backups are always stored under a key the server derives from the database name; clients cannot choose it.
+
 ## Connections
 
 Connection strings are validated, encrypted at rest and only ever returned redacted (`mongodb://user:******@host/...`). To keep the stored password when editing, send the URI back exactly as it was returned; any other value containing `******` is rejected. A connection test succeeds or fails with HTTP `200` (`ok: false` plus a redacted `error`) and times out after 10 seconds.

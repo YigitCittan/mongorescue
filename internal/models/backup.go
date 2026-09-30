@@ -160,8 +160,10 @@ type BackupOptions struct {
 	// It is filled by the server or scheduler, never read from clients.
 	StorageTargetName string `json:"-"`
 
-	// TargetKey is an optional custom path or key for the stored archive.
-	TargetKey string `json:"target_key,omitempty"`
+	// TargetKey is an optional custom path or key for the stored archive. It is set
+	// by code only and never read from clients: a client-chosen key could overwrite
+	// another backup's archive.
+	TargetKey string `json:"-"`
 
 	// ConnectionID selects the managed Connection to back up from (required by the API).
 	ConnectionID string `json:"connection_id"`

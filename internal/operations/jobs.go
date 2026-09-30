@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -95,6 +96,15 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if strings.TrimSpace(job.Database) == "" {
 		return invalid(ErrDatabaseRequired)
+	}
+	if err := models.ValidateDatabaseName(job.Database); err != nil {
+		return invalid(err)
+	}
+	if err := models.ValidateCollectionNames(job.Collections); err != nil {
+		return invalid(fmt.Errorf("collections: %w", err))
+	}
+	if err := models.ValidateCollectionNames(job.ExcludeCollections); err != nil {
+		return invalid(fmt.Errorf("exclude_collections: %w", err))
 	}
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)

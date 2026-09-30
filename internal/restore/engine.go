@@ -220,6 +220,14 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 	if err := req.ValidateTarget(); err != nil {
 		return nil, fmt.Errorf("restore: %w", err)
 	}
+	if target := strings.TrimSpace(req.TargetDatabase); req.InPlace() && target != "" {
+		if err := models.ValidateDatabaseName(target); err != nil {
+			return nil, fmt.Errorf("restore: target_database: %w", err)
+		}
+	}
+	if err := models.ValidateCollectionNames(req.SelectedCollections); err != nil {
+		return nil, fmt.Errorf("restore: selected_collections: %w", err)
+	}
 
 	startTime := time.Now().UTC()
 	// Sanitize the database component so the derived ID satisfies models.ValidateID.
