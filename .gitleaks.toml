@@ -11,3 +11,9 @@ regexes = [
   '''^notify-test-key-0123$''',
   '''^cors-test-api-key-0123$''',
 ]
+
+[[allowlists]]
+description = "TEST ONLY age identity of the golden restore fixtures (internal/restore/testdata/compat)"
+regexes = [
+  '''^AGE-SECRET-KEY-19J3DWER8ED985HNSHV8YEKTMRSRVTTTQKZ54P4GVAFMCWT2C8NKSTCJDMM$''',
+]

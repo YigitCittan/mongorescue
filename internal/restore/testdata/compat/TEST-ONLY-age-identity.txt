@@ -1,0 +1,4 @@
+# TEST ONLY - NEVER USE FOR REAL BACKUPS.
+# This age identity is public: it decrypts the golden fixtures in this directory.
+# public key: age1svv7l7csa9sjrvwxtlnputhuxfpa2hnpq04lpefjhs3n7msad4pqsqd8er
+AGE-SECRET-KEY-19J3DWER8ED985HNSHV8YEKTMRSRVTTTQKZ54P4GVAFMCWT2C8NKSTCJDMM
