@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,15 @@ const (
 
 // WithConnectionDefaults returns uri with serverSelectionTimeoutMS and connectTimeoutMS
 // appended when the caller has not set them (option names match case-insensitively).
+//
+// It also appends authSource to a "mongodb://" URI that has credentials, no authSource
+// and no authMechanism other than SCRAM-SHA-1 or SCRAM-SHA-256. The value is the URI path
+// database, or "admin" when the path is empty, which is the Go driver's default. Without
+// it the Database Tools authenticate against the --db database, so a connection that
+// passes the driver-based test could fail with AuthenticationFailed. "mongodb+srv://"
+// URIs are left alone because their SRV TXT records may provide authSource, and so are
+// mechanisms that authenticate against $external.
+//
 // The result carries the same credentials as uri: pass it only to WriteURIConfig and
 // never log or persist it. uri is assumed to satisfy mongouri.Validate, which forbids a
 // raw '/' or '?' before the host list ends.
@@ -90,13 +100,21 @@ func WithConnectionDefaults(uri string) string {
 		query = rest[i+1:]
 	}
 	present := make(map[string]bool)
+	mechanism := ""
 	for _, opt := range strings.Split(query, "&") {
-		if key, _, ok := strings.Cut(opt, "="); ok {
-			present[strings.ToLower(key)] = true
+		if key, value, ok := strings.Cut(opt, "="); ok {
+			key = strings.ToLower(key)
+			present[key] = true
+			if key == "authmechanism" {
+				mechanism = value
+			}
 		}
 	}
 
 	var add []string
+	if source, ok := defaultAuthSource(uri[:schemeEnd], rest, mechanism, present["authsource"]); ok {
+		add = append(add, "authSource="+url.QueryEscape(source))
+	}
 	if !present["serverselectiontimeoutms"] {
 		add = append(add, fmt.Sprintf("serverSelectionTimeoutMS=%d", DefaultServerSelectionTimeoutMS))
 	}
@@ -119,6 +137,47 @@ func WithConnectionDefaults(uri string) string {
 	default:
 		return uri + "/?" + extra
 	}
+}
+
+// defaultAuthSource returns the authSource the Go driver would use for a URI with the
+// given scheme and remainder after "://", and whether the Database Tools need it spelled
+// out: the URI has credentials, no authSource, a SCRAM (or unset) authMechanism and the
+// "mongodb" scheme. The source is the unescaped path database, or "admin".
+func defaultAuthSource(scheme, rest, mechanism string, hasAuthSource bool) (string, bool) {
+	if scheme != "mongodb" || hasAuthSource {
+		return "", false
+	}
+	if mechanism != "" {
+		m, err := url.QueryUnescape(mechanism)
+		if err != nil {
+			return "", false
+		}
+		if !strings.EqualFold(m, "SCRAM-SHA-1") && !strings.EqualFold(m, "SCRAM-SHA-256") {
+			return "", false
+		}
+	}
+
+	authority, path := rest, ""
+	if i := strings.IndexAny(rest, "/?"); i != -1 {
+		authority = rest[:i]
+		if rest[i] == '/' {
+			path = rest[i+1:]
+		}
+	}
+	if !strings.Contains(authority, "@") {
+		return "", false
+	}
+	if i := strings.IndexByte(path, '?'); i != -1 {
+		path = path[:i]
+	}
+	if path == "" {
+		return "admin", true
+	}
+	db, err := url.PathUnescape(path)
+	if err != nil || db == "" {
+		return "", false
+	}
+	return db, true
 }
 
 // CleanupStale removes leftover tools configuration files (ConfigFilePattern) in dir

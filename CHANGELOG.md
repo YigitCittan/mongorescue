@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Backups and restores of a connection whose URI has credentials but no `authSource` (for example `mongodb://user:pass@host:27017`) failed with `AuthenticationFailed`, although the connection test passed: `mongodump`/`mongorestore` authenticated against the database being backed up or restored. The tools now authenticate against the same database as the driver, the URI path database or `admin`. URIs with an explicit `authSource`, `mongodb+srv://` URIs and `$external` mechanisms (`MONGODB-X509`, `GSSAPI`, `PLAIN`, `MONGODB-AWS`) are unchanged.
+
 ## [0.5.1] - 2026-09-30
 
 ### Fixed
