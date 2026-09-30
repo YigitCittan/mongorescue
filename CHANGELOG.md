@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Desktop app: check for updates on request. The Windows tray menu has **Check for updates** (*Güncellemeleri denetle*): the status line shows *Checking for updates…*, then *MongoRescue is up to date (vX)* or *Could not check for updates*, and once a newer version is available the item reads **Update to vX** and starts the in-app update. In the dashboard, clicking the version label in the header opens a popover with **Check for updates**, which calls the new `POST /desktop/update/check` (same-origin, `X-MongoRescue-Desktop: 1`, like the other `/desktop/update` endpoints) and shows *Up to date (vX)* or brings the update bar back. See [docs/desktop.md](docs/desktop.md#updates).
+
+### Changed
+- Desktop app: the update check runs every 30 minutes instead of every 6 hours, so an app left in the tray for days notices new releases, and again when the window is shown from the tray or by a second launch after more than 5 minutes. Failed checks back off to 1, 2, 4 and at most 6 hours, returning to 30 minutes after a success; a GitHub rate limit (`X-RateLimit-Reset`, `Retry-After`) is waited out, up to 6 hours, without further requests. All checks share one loop, and concurrent requests share one check.
+
 ## [0.7.0] - 2026-09-30
 
 ### Added

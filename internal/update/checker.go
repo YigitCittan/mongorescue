@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -54,7 +55,54 @@ var (
 	// ErrUnsupportedPlatform is returned when no desktop asset exists for the
 	// operating system and architecture.
 	ErrUnsupportedPlatform = errors.New("no desktop release for this platform")
+	// ErrRateLimited is wrapped by the error of a check that GitHub refused because
+	// its API rate limit is used up (see RateLimitError).
+	ErrRateLimited = errors.New("GitHub API rate limit exceeded")
 )
+
+// RateLimitError reports a release lookup that GitHub refused for its rate limit
+// (403 or 429 with X-RateLimit-Remaining: 0 or Retry-After). It wraps
+// ErrRateLimited and ErrUnexpectedStatus.
+type RateLimitError struct {
+	// Status is the HTTP status line.
+	Status string
+	// Reset is when GitHub accepts requests again, from X-RateLimit-Reset or
+	// Retry-After; zero when the response did not say.
+	Reset time.Time
+}
+
+// Error implements error.
+func (e *RateLimitError) Error() string {
+	msg := "fetch latest release: " + ErrRateLimited.Error() + ": " + e.Status
+	if !e.Reset.IsZero() {
+		msg += " (until " + e.Reset.UTC().Format(time.RFC3339) + ")"
+	}
+	return msg
+}
+
+// Unwrap returns ErrRateLimited and ErrUnexpectedStatus.
+func (e *RateLimitError) Unwrap() []error {
+	return []error{ErrRateLimited, ErrUnexpectedStatus}
+}
+
+// rateLimit returns a *RateLimitError when resp is GitHub's refusal for its rate
+// limit, or nil. now is the time the response was received.
+func rateLimit(resp *http.Response, now time.Time) error {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return nil
+	}
+	retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if resp.Header.Get("X-RateLimit-Remaining") != "0" && retryAfter == "" {
+		return nil // another 403, such as a blocked request
+	}
+	e := &RateLimitError{Status: resp.Status}
+	if secs, err := strconv.ParseInt(retryAfter, 10, 64); err == nil && secs >= 0 {
+		e.Reset = now.Add(time.Duration(secs) * time.Second)
+	} else if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
+		e.Reset = time.Unix(reset, 0)
+	}
+	return e
+}
 
 // Asset is a downloadable release file.
 type Asset struct {
@@ -203,6 +251,9 @@ func (c *Checker) fetchLatest(ctx context.Context, cur Version) (release, error)
 	case http.StatusNotFound:
 		return release{}, ErrNoRelease
 	default:
+		if err := rateLimit(resp, time.Now()); err != nil {
+			return release{}, err
+		}
 		return release{}, fmt.Errorf("fetch latest release: %w: %s", ErrUnexpectedStatus, resp.Status)
 	}
 	var rel release

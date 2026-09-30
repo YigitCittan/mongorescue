@@ -46,6 +46,7 @@ func (d *desktopApp) initBackground(dataDir string) {
 		UpdateWaiting: func() bool {
 			return d.updater.Status().State == desktop.UpdateWaiting
 		},
+		Updates: d.updater,
 		Changed: func() { d.platform.tray.Refresh() },
 		Logger:  d.logger,
 	})
@@ -103,9 +104,11 @@ func (d *desktopApp) forceQuit() {
 }
 
 // showWindow shows the window, also when it is hidden in the tray, and brings it
-// to the front.
+// to the front. It checks for updates when the last check is older than
+// desktop.UpdateRecheckAge.
 func (d *desktopApp) showWindow() {
 	if ctx := d.context(); ctx != nil {
 		runtime.WindowShow(ctx)
+		d.updater.WindowShown()
 	}
 }

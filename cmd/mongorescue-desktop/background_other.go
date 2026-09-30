@@ -26,7 +26,8 @@ func (*platformState) start() {}
 // stop does nothing.
 func (*platformState) stop() {}
 
-// showWindow brings the window to the front.
+// showWindow brings the window to the front. It checks for updates when the last
+// check is older than desktop.UpdateRecheckAge.
 func (d *desktopApp) showWindow() {
 	ctx := d.context()
 	if ctx == nil {
@@ -34,4 +35,5 @@ func (d *desktopApp) showWindow() {
 	}
 	runtime.WindowUnminimise(ctx)
 	runtime.Show(ctx)
+	d.updater.WindowShown()
 }

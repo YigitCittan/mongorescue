@@ -82,6 +82,14 @@ type TrayTexts struct {
 	Notice      string
 	// ShuttingDown is shown under the status line while a soft quit waits.
 	ShuttingDown string
+	// CheckUpdates is the update item while no update is available.
+	CheckUpdates string
+	// CheckingUpdates is the status line while a check from the tray runs.
+	CheckingUpdates string
+	// CheckFailed is the status line after a check from the tray failed.
+	CheckFailed string
+	// Updating is the status line while an update is downloaded or installed.
+	Updating string
 
 	lang Language
 }
@@ -99,8 +107,12 @@ func TextsFor(lang Language) TrayTexts {
 			NoticeTitle: "MongoRescue",
 			Notice:      "MongoRescue arka planda çalışmaya devam ediyor",
 			// The same wording as the API's refusal.
-			ShuttingDown: "MongoRescue kapanıyor: yeni yedekleme ve geri yüklemeler başlatılmıyor",
-			lang:         Turkish,
+			ShuttingDown:    "MongoRescue kapanıyor: yeni yedekleme ve geri yüklemeler başlatılmıyor",
+			CheckUpdates:    "Güncellemeleri denetle",
+			CheckingUpdates: "Güncellemeler denetleniyor…",
+			CheckFailed:     "Güncellemeler denetlenemedi",
+			Updating:        "MongoRescue güncelleniyor…",
+			lang:            Turkish,
 		}
 	}
 	return TrayTexts{
@@ -113,9 +125,39 @@ func TextsFor(lang Language) TrayTexts {
 		NoticeTitle: "MongoRescue",
 		Notice:      "MongoRescue keeps running in the background",
 		// The same wording as the API's refusal of new runs.
-		ShuttingDown: "MongoRescue is shutting down: new backups and restores are refused",
-		lang:         English,
+		ShuttingDown:    "MongoRescue is shutting down: new backups and restores are refused",
+		CheckUpdates:    "Check for updates",
+		CheckingUpdates: "Checking for updates…",
+		CheckFailed:     "Could not check for updates",
+		Updating:        "Updating MongoRescue…",
+		lang:            English,
 	}
+}
+
+// UpdateTo is the update item while version is available, such as "Update to
+// v1.2.0".
+func (t TrayTexts) UpdateTo(version string) string {
+	if t.lang == Turkish {
+		return vPrefix(version) + " sürümüne güncelle"
+	}
+	return "Update to " + vPrefix(version)
+}
+
+// UpToDate is the status line after a check from the tray found no newer version
+// than version, such as "MongoRescue is up to date (v1.2.0)".
+func (t TrayTexts) UpToDate(version string) string {
+	if t.lang == Turkish {
+		return "MongoRescue güncel (" + vPrefix(version) + ")"
+	}
+	return "MongoRescue is up to date (" + vPrefix(version) + ")"
+}
+
+// vPrefix returns version with a leading "v" when it starts with a digit.
+func vPrefix(version string) string {
+	if version != "" && version[0] >= '0' && version[0] <= '9' {
+		return "v" + version
+	}
+	return version
 }
 
 // RunCounts counts the backups and restores among the concurrency keys of the
@@ -248,8 +290,24 @@ type RunController interface {
 	ResumeRuns()
 }
 
+// TrayUpdater is the part of the updater the tray drives; *Updater implements it.
+type TrayUpdater interface {
+	// Status returns the update status.
+	Status() UpdateStatus
+	// CheckNow checks for a new release and waits for the result.
+	CheckNow(ctx context.Context) error
+	// Install downloads and installs the available update.
+	Install() error
+	// OpenReleasePage opens the release page in the system browser.
+	OpenReleasePage()
+}
+
 // defaultQuitPoll is how often a soft quit checks again whether the runs ended.
 const defaultQuitPoll = time.Second
+
+// checkResultShown is how long the status line shows the result of a check from
+// the tray.
+const checkResultShown = 2 * time.Minute
 
 // BackgroundOptions configures NewBackground. Runs, Quit and ForceQuit are
 // required.
@@ -281,6 +339,9 @@ type BackgroundOptions struct {
 	// backups and restores (UpdateWaiting); the status line then says so. Nil
 	// means never.
 	UpdateWaiting func() bool
+	// Updates backs the tray's update item, "Check for updates" or, once a newer
+	// version is available, "Update to vX"; nil leaves the item out.
+	Updates TrayUpdater
 	// Changed is called after the state shown in the tray menu changed; nil does
 	// nothing. It must not block on Background.
 	Changed func()
@@ -289,6 +350,9 @@ type BackgroundOptions struct {
 	Poll time.Duration
 	// Logger receives the log records; nil means slog.Default().
 	Logger *slog.Logger
+
+	// now replaces the clock of the check result in tests; nil means time.Now.
+	now func() time.Time
 }
 
 // Background implements the background mode: the soft quit, which waits for the
@@ -308,6 +372,9 @@ type Background struct {
 	quitting    bool
 	waitCancel  context.CancelCauseFunc // set while a soft quit waits
 	noticeShown bool
+	checking    bool      // a check from the tray runs
+	checkedAt   time.Time // when the last check from the tray was done
+	checkErr    error     // its error
 }
 
 // NewBackground returns the background mode for opts.
@@ -317,6 +384,9 @@ func NewBackground(opts BackgroundOptions) *Background {
 	}
 	if opts.Poll <= 0 {
 		opts.Poll = defaultQuitPoll
+	}
+	if opts.now == nil {
+		opts.now = time.Now
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Background{opts: opts, texts: TextsFor(opts.Language), ctx: ctx, cancel: cancel}
@@ -340,12 +410,21 @@ func (b *Background) Close() {
 	b.wg.Wait()
 }
 
-// Status returns the status line of the tray menu.
+// Status returns the status line of the tray menu. After a check from the tray
+// it shows "Checking for updates…" and then, for a while and when nothing runs,
+// "MongoRescue is up to date (vX)" or that the check failed; while an update is
+// downloaded or installed, "Updating MongoRescue…".
 func (b *Background) Status() string {
 	backups, restores := RunCounts(b.opts.Runs.ActiveRuns())
 	b.mu.Lock()
-	waiting, quitting := b.waitCancel != nil, b.quitting
+	waiting, quitting, checking := b.waitCancel != nil, b.quitting, b.checking
+	result := !b.checkedAt.IsZero() && b.opts.now().Sub(b.checkedAt) < checkResultShown
+	checkErr := b.checkErr
 	b.mu.Unlock()
+	var upd UpdateStatus
+	if b.opts.Updates != nil {
+		upd = b.opts.Updates.Status()
+	}
 	switch {
 	case waiting:
 		return b.texts.QuittingAfter(backups, restores)
@@ -353,9 +432,97 @@ func (b *Background) Status() string {
 		return b.texts.Quitting()
 	case b.opts.UpdateWaiting != nil && b.opts.UpdateWaiting():
 		return b.texts.UpdatingAfter(backups, restores)
+	case checking:
+		return b.texts.CheckingUpdates
+	case upd.State == UpdateDownloading || upd.State == UpdateInstalling || upd.State == UpdateRestarting:
+		return b.texts.Updating
+	case result && backups+restores == 0 && checkErr != nil:
+		return b.texts.CheckFailed
+	case result && backups+restores == 0 && !upd.Available:
+		return b.texts.UpToDate(upd.Current)
 	default:
 		return b.texts.Running(backups, restores)
 	}
+}
+
+// UpdateItem returns the title of the tray's update item and whether it can be
+// clicked: "Update to vX" while a newer version is available, "Check for updates"
+// otherwise, disabled while a check, a download or an install runs. The title is
+// "" without an updater (BackgroundOptions.Updates).
+func (b *Background) UpdateItem() (title string, enabled bool) {
+	if b.opts.Updates == nil {
+		return "", false
+	}
+	s := b.opts.Updates.Status()
+	b.mu.Lock()
+	checking := b.checking
+	b.mu.Unlock()
+	busy := checking || s.Checking || updateRunning(s.State)
+	if s.Available {
+		return b.texts.UpdateTo(s.Latest), !busy
+	}
+	return b.texts.CheckUpdates, !busy
+}
+
+// updateRunning reports whether state is that of a check, a download or an
+// install in progress.
+func updateRunning(state string) bool {
+	switch state {
+	case UpdateChecking, UpdateDownloading, UpdateInstalling, UpdateRestarting, UpdateWaiting:
+		return true
+	}
+	return false
+}
+
+// UpdateClicked runs the tray's update item: while a newer version is available
+// it starts the in-app update (or opens the release page when the release has no
+// file for this platform), otherwise it checks for updates (CheckForUpdates).
+func (b *Background) UpdateClicked() {
+	up := b.opts.Updates
+	if up == nil {
+		return
+	}
+	s := up.Status()
+	if !s.Available {
+		b.CheckForUpdates()
+		return
+	}
+	if !s.Installable && s.State != UpdateError {
+		up.OpenReleasePage()
+		return
+	}
+	if err := up.Install(); err != nil {
+		b.opts.Logger.Warn("could not start the update from the tray", slog.Any("error", err))
+	}
+	b.changed()
+}
+
+// CheckForUpdates checks for a new release (TrayUpdater.CheckNow) in a goroutine
+// that Close ends; Status reports the check and then its result. It does nothing
+// while a check from the tray runs, after Close or without an updater.
+func (b *Background) CheckForUpdates() {
+	b.mu.Lock()
+	if b.closed || b.checking || b.opts.Updates == nil {
+		b.mu.Unlock()
+		return
+	}
+	b.checking = true
+	b.checkedAt, b.checkErr = time.Time{}, nil
+	b.wg.Add(1)
+	b.mu.Unlock()
+	b.changed()
+	go func() {
+		defer b.wg.Done()
+		err := b.opts.Updates.CheckNow(b.ctx)
+		if err != nil {
+			b.opts.Logger.Info("update check from the tray failed", slog.Any("error", err))
+		}
+		b.mu.Lock()
+		b.checking = false
+		b.checkedAt, b.checkErr = b.opts.now(), err
+		b.mu.Unlock()
+		b.changed()
+	}()
 }
 
 // Waiting reports whether a soft quit waits for the running backups and

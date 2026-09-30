@@ -32,12 +32,23 @@ type fakeSource struct {
 	zip      []byte
 
 	mu      sync.Mutex
+	gate    chan struct{} // checks wait for it when not nil
 	dlDirs  []string
 	current string
 	checks  int
 }
 
-func (f *fakeSource) Check(_ context.Context, current string) (update.Result, error) {
+func (f *fakeSource) Check(ctx context.Context, current string) (update.Result, error) {
+	f.mu.Lock()
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return update.Result{}, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.current = current
@@ -1072,7 +1083,9 @@ func TestUpdateScript(t *testing.T) {
 	s := UpdateScript()
 	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions", `case "installing":`, `state === "installing"`, "restarts on the new version", "yeni sürümle yeniden açılacak",
 		`"removeLegacy":"/desktop/update/remove-legacy"`, `case "restarting":`, "Downloading {percent}%", "İndiriliyor %{percent}", "Restarting…", "Yeniden başlatılıyor…", `case "waiting":`, "Update will install after the running backup finishes", "çalışan yedekleme bitince kurulacak",
-		"mr-legacy-bar", "mongorescue_legacy_dismissed", "installed in Program Files", "Program Files klasöründe kurulu"} {
+		"mr-legacy-bar", "mongorescue_legacy_dismissed", "installed in Program Files", "Program Files klasöründe kurulu",
+		`"check":"/desktop/update/check"`, `"app-version"`, "mr-update-popover", "Check for updates", "Güncellemeleri denetle", "Up to date ({version})", "Güncel ({version})",
+		"s.checking", "visibilitychange"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}

@@ -194,7 +194,7 @@ type TrayOptions struct {
 
 // trayItems are the menu items.
 type trayItems struct {
-	open, status, shuttingDown, autostart, quit, cancelQuit, forceQuit *systray.MenuItem
+	open, status, shuttingDown, update, autostart, quit, cancelQuit, forceQuit *systray.MenuItem
 }
 
 // Tray is the notification area icon of the app, with its menu, built on
@@ -304,6 +304,12 @@ func (t *Tray) onReady() {
 	it.shuttingDown = systray.AddMenuItem(t.texts.ShuttingDown, "")
 	it.shuttingDown.Disable()
 	it.shuttingDown.Hide()
+	if title, enabled := t.opts.Background.UpdateItem(); title != "" {
+		it.update = systray.AddMenuItem(title, "")
+		if !enabled {
+			it.update.Disable()
+		}
+	}
 	if t.opts.Autostart != nil {
 		on, err := t.opts.Autostart.Enabled()
 		if err != nil {
@@ -332,6 +338,7 @@ func (t *Tray) loop(ctx context.Context) {
 		view    trayView
 		open    <-chan struct{}
 		auto    <-chan struct{}
+		upd     <-chan struct{}
 		quit    <-chan struct{}
 		cancelQ <-chan struct{}
 		force   <-chan struct{}
@@ -353,6 +360,10 @@ func (t *Tray) loop(ctx context.Context) {
 				auto = it.autostart.ClickedCh
 			}
 			view = trayView{quitShown: true}
+			if it.update != nil {
+				upd = it.update.ClickedCh
+				view.update, view.updateEnabled = t.opts.Background.UpdateItem()
+			}
 		case <-ticker.C:
 		case <-t.refresh:
 		case <-t.tapped:
@@ -361,6 +372,8 @@ func (t *Tray) loop(ctx context.Context) {
 			t.opts.Open()
 		case <-auto:
 			t.toggleAutostart(items)
+		case <-upd:
+			t.opts.Background.UpdateClicked()
 		case <-quit:
 			t.opts.Background.SoftQuit()
 		case <-cancelQ:
@@ -374,8 +387,10 @@ func (t *Tray) loop(ctx context.Context) {
 
 // trayView is the state last shown in the menu.
 type trayView struct {
-	status    string
-	quitShown bool
+	status        string
+	quitShown     bool
+	update        string
+	updateEnabled bool
 }
 
 // update shows the current state in the menu.
@@ -387,6 +402,21 @@ func (t *Tray) update(items *trayItems, view *trayView) {
 	if s := bg.Status(); s != view.status {
 		items.status.SetTitle(s)
 		view.status = s
+	}
+	if items.update != nil {
+		title, enabled := bg.UpdateItem()
+		if title != view.update {
+			items.update.SetTitle(title)
+			view.update = title
+		}
+		if enabled != view.updateEnabled {
+			if enabled {
+				items.update.Enable()
+			} else {
+				items.update.Disable()
+			}
+			view.updateEnabled = enabled
+		}
 	}
 	if showQuit := !bg.Waiting(); showQuit != view.quitShown {
 		if showQuit {

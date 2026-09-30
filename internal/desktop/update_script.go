@@ -8,7 +8,8 @@ import (
 // updateScript shows the update status of Updater in the dashboard. It polls
 // UpdatePath closely while a check, a download (with its percentage), the install or
 // the restart runs (so a failed swap or a declined UAC prompt shows up as an error
-// with "Try again") and every 10 minutes otherwise, and shows either a blocking full-screen dialog for a mandatory update
+// with "Try again"), shortly after the window becomes visible again and every 10
+// minutes otherwise, and shows either a blocking full-screen dialog for a mandatory update
 // or a dismissible bar at the bottom of the window for an optional one. A release
 // without a verifiable file for this platform only gets the bar, with the release
 // page instead of "Update". The mandatory dialog is a
@@ -22,7 +23,10 @@ import (
 // for a running backup). On Windows, a
 // per-machine copy left in Program Files gets a separate bar with "Remove", which
 // starts its uninstaller, and "Dismiss", which hides the bar for good
-// (localStorage). Release notes are set with textContent
+// (localStorage). The version label in the header (#app-version) opens a small
+// popover with "Check for updates", which posts to UpdateCheckPath and shows "Up
+// to date (vX)", the error, or the new version (and the update bar, also after
+// "Later"). Release notes are set with textContent
 // only, after stripping common markdown marks; nothing is ever parsed as markup.
 // Strings are in English, or Turkish when the dashboard's saved language (or,
 // without one, navigator.language) starts with "tr".
@@ -67,7 +71,11 @@ const updateScript = `(function (paths, header) {
       showFile: "Show file",
       failed: "Update failed: {error}",
       retry: "Try again",
-      noNotes: "No release notes."
+      noNotes: "No release notes.",
+      checkUpdates: "Check for updates",
+      checkingUpdates: "Checking for updates…",
+      upToDate: "Up to date ({version})",
+      checkFailed: "Could not check for updates: {error}"
     },
     tr: {
       required: "Güncelleme gerekli",
@@ -106,13 +114,19 @@ const updateScript = `(function (paths, header) {
       showFile: "Dosyayı göster",
       failed: "Güncelleme başarısız: {error}",
       retry: "Tekrar dene",
-      noNotes: "Sürüm notu yok."
+      noNotes: "Sürüm notu yok.",
+      checkUpdates: "Güncellemeleri denetle",
+      checkingUpdates: "Güncellemeler denetleniyor…",
+      upToDate: "Güncel ({version})",
+      checkFailed: "Güncellemeler denetlenemedi: {error}"
     }
   };
   var POLL_MS = 1000, SLOW_POLL_MS = 600000, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
   var HEADER_BUTTON_ID = "mr-update-header", HEADER_RETRY_MS = 1000, HEADER_RETRIES = 30;
   var LEGACY_KEY = "mongorescue_legacy_dismissed", LEGACY_BAR_ID = "mr-legacy-bar";
+  var VERSION_ID = "app-version", POPOVER_ID = "mr-update-popover", VISIBLE_POLL_MS = 1500;
   var started = Date.now(), timer = null, ui = null, status = null, headerTimer = null, headerTries = 0;
+  var versionTimer = null, versionTries = 0, pop = null;
   var legacyUI = null, legacySince = 0, legacyHidden = false;
 
   function language() {
@@ -126,6 +140,10 @@ const updateScript = `(function (paths, header) {
     return S[key].replace(/\{(\w+)\}/g, function (m, name) {
       return vars && vars[name] != null ? String(vars[name]) : m;
     });
+  }
+  function vname(v) {
+    v = String(v || "");
+    return /^\d/.test(v) ? "v" + v : v;
   }
   function plain(md) {
     return String(md || "").replace(/\r\n?/g, "\n")
@@ -186,12 +204,20 @@ const updateScript = `(function (paths, header) {
     getStatus().then(function (s) {
       if (s) { render(s); }
       var state = s ? s.state : "";
-      if (busyState(state) || legacyBusy(s) || (!s && Date.now() - started < CHECK_LIMIT_MS)) {
+      if (busyState(state) || (s && s.checking) || legacyBusy(s) || (!s && Date.now() - started < CHECK_LIMIT_MS)) {
         schedule();
       } else if (!timer) {
         timer = setTimeout(poll, SLOW_POLL_MS);
       }
     });
+  }
+
+  // pollSoon looks at the status shortly after the window is shown again: the app
+  // then checks for releases when its last check is a few minutes old.
+  function pollSoon() {
+    if (document.visibilityState !== "visible") { return; }
+    if (timer) { clearTimeout(timer); }
+    timer = setTimeout(poll, VISIBLE_POLL_MS);
   }
 
   function el(tag, css, text) {
@@ -355,6 +381,95 @@ const updateScript = `(function (paths, header) {
     clearLater();
     render(status);
     install();
+  }
+
+  // versionLabel makes the header's version label open the check popover. The
+  // label may not exist yet: it is looked for again a few times.
+  function versionLabel() {
+    var v = document.getElementById(VERSION_ID);
+    if (!v) {
+      if (!versionTimer && versionTries < HEADER_RETRIES) {
+        versionTries++;
+        versionTimer = setTimeout(function () { versionTimer = null; versionLabel(); }, HEADER_RETRY_MS);
+      }
+      return;
+    }
+    if (v.getAttribute("data-mr-check") === "1") { return; }
+    v.setAttribute("data-mr-check", "1");
+    v.setAttribute("role", "button");
+    v.setAttribute("aria-haspopup", "dialog");
+    v.setAttribute("aria-expanded", "false");
+    v.tabIndex = 0;
+    v.title = t("checkUpdates");
+    v.style.cursor = "pointer";
+    v.addEventListener("click", function () { togglePopover(v); });
+    v.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePopover(v); }
+    });
+  }
+  function closePopover(focusBack) {
+    if (!pop) { return; }
+    var p = pop;
+    pop = null;
+    p.root.remove();
+    document.removeEventListener("click", p.outside, true);
+    document.removeEventListener("keydown", p.keys, true);
+    p.anchor.setAttribute("aria-expanded", "false");
+    if (focusBack) { p.anchor.focus(); }
+  }
+  // togglePopover opens, under the version label, a popover with "Check for
+  // updates" and the check's result; a click outside it or Escape closes it.
+  function togglePopover(anchor) {
+    if (pop) { closePopover(true); return; }
+    var r = anchor.getBoundingClientRect();
+    var p = { anchor: anchor };
+    p.root = el("div", "position:fixed;z-index:2147482500;top:" + Math.round(r.bottom + 6) + "px;left:" + Math.round(Math.max(8, r.left)) + "px;" +
+      "min-width:220px;max-width:320px;box-sizing:border-box;padding:10px 12px;display:flex;flex-direction:column;gap:8px;" +
+      "background:var(--surface,#f5f8f6);border:1px solid var(--border,#d3dcd6);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);" +
+      "color:var(--text,#1a211d);font:inherit;");
+    p.root.id = POPOVER_ID;
+    p.root.setAttribute("role", "dialog");
+    p.root.setAttribute("aria-label", t("checkUpdates"));
+    p.check = button("btn btn-secondary btn-sm", t("checkUpdates"), function () { checkNow(p); });
+    p.state = el("span", "min-height:1.2em;color:var(--muted,#56625b);");
+    p.state.setAttribute("role", "status");
+    p.state.setAttribute("aria-live", "polite");
+    p.root.appendChild(p.check);
+    p.root.appendChild(p.state);
+    p.outside = function (e) {
+      if (!p.root.contains(e.target) && !anchor.contains(e.target)) { closePopover(false); }
+    };
+    p.keys = function (e) {
+      if (e.key === "Escape" || e.key === "Esc") { closePopover(true); }
+    };
+    document.addEventListener("click", p.outside, true);
+    document.addEventListener("keydown", p.keys, true);
+    document.body.appendChild(p.root);
+    anchor.setAttribute("aria-expanded", "true");
+    pop = p;
+    p.check.focus();
+  }
+  // checkNow asks the app to check for releases now and shows the result in the
+  // popover p; a newer version also shows the update bar, even after "Later".
+  function checkNow(p) {
+    p.check.disabled = true;
+    p.state.textContent = t("checkingUpdates");
+    post(paths.check).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        p.check.disabled = false;
+        if (!r.ok) { p.state.textContent = t("checkFailed", { error: body.error || r.status }); return; }
+        if (body.available) {
+          p.state.textContent = t("available", { latest: body.latest });
+          clearLater();
+        } else {
+          p.state.textContent = t("upToDate", { version: vname(body.current) });
+        }
+        render(body);
+      });
+    }, function (err) {
+      p.check.disabled = false;
+      p.state.textContent = t("checkFailed", { error: err });
+    });
   }
 
   function build(mandatory) {
@@ -549,11 +664,14 @@ const updateScript = `(function (paths, header) {
     if (ui.pageRow) { ui.pageRow.hidden = s.installable && s.state !== "error"; }
   }
 
+  document.addEventListener("visibilitychange", pollSoon);
+  versionLabel();
   poll();
 })(__PATHS__, __HEADER__);`
 
 // UpdateScript returns JavaScript that shows the Updater's status in the dashboard:
-// a blocking dialog for a mandatory update, a dismissible bar for an optional one.
+// a blocking dialog for a mandatory update, a dismissible bar for an optional one,
+// and "Check for updates" behind the header's version label.
 // Inject it on every page load (it runs once per page), so a reload cannot get
 // around a mandatory update.
 func UpdateScript() string {
@@ -571,6 +689,7 @@ func updatePathsJSON() string {
 		Install      string `json:"install"`
 		Release      string `json:"release"`
 		RemoveLegacy string `json:"removeLegacy"`
-	}{UpdatePath, UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath}) // a struct of strings always marshals
+		Check        string `json:"check"`
+	}{UpdatePath, UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath, UpdateCheckPath}) // a struct of strings always marshals
 	return string(b)
 }
