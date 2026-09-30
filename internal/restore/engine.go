@@ -9,8 +9,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +38,11 @@ var (
 	// ErrTimeout indicates that the restore exceeded its maximum run duration
 	// (see WithTimeout) and was aborted.
 	ErrTimeout = errors.New("restore: exceeded maximum run duration")
+
+	// ErrDocumentsFailed indicates that mongorestore finished but reported documents
+	// it could not insert (e.g. duplicate keys in a target that already held data), so
+	// the target does not match the backup.
+	ErrDocumentsFailed = errors.New("restore: documents failed to restore")
 )
 
 // ProcessRunner abstracts subprocess execution for restore commands.
@@ -280,7 +288,11 @@ func (e *Engine) resolveURI(req models.RestoreRequest) string {
 // mongorestore only starts if it matches the recorded checksum, otherwise
 // ErrChecksumMismatch is returned. Without verification, a stream that fails midway
 // may leave partial data in the target namespace, which the record's ErrorMessage
-// states. The whole run is bounded by WithTimeout.
+// states. The stored bytes are hashed while they stream as well: a restore whose
+// artifact does not match the recorded SHA-256 fails with ErrChecksumMismatch once
+// mongorestore has exited (the data it applied must not be trusted). A mongorestore
+// run that reports documents it could not insert fails with ErrDocumentsFailed.
+// The whole run is bounded by WithTimeout.
 func (e *Engine) Execute(ctx context.Context, req models.RestoreRequest, sourceRecord *models.BackupRecord, record *models.RestoreRecord) (*models.RestoreRecord, error) {
 	if sourceRecord == nil {
 		return failRestore(record, errors.New("restore: source backup record must be provided"), "source backup record missing")
@@ -343,7 +355,12 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 	defer stream.Close()
 
-	stored := bufio.NewReader(stream)
+	// The stored bytes are hashed while they stream, so an artifact that changed at
+	// rest fails the restore even without a verification pass. The buffered reader
+	// sits on top of the hash so every stored byte is hashed exactly once, including
+	// the header bytes peeked to detect encryption.
+	hashed := &hashingReader{r: stream, h: sha256.New()}
+	stored := bufio.NewReader(hashed)
 	if !encrypted {
 		if encrypted, err = e.detectUnrecordedEncryption(stored, sourceRecord); err != nil {
 			return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error())
@@ -428,6 +445,21 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 			fmt.Sprintf("mongorestore failed: %v, stderr: %s", waitErr, stderrLogs))
 	}
 
+	// mongorestore has exited and os/exec has finished copying its stdin, so the
+	// stream is no longer read concurrently: hash what it did not consume and compare.
+	if err := verifyStreamed(ctx, hashed, sourceRecord.SHA256); err != nil {
+		err = e.withCause(ctx, err)
+		return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err),
+			fmt.Sprintf("%v; the data restored into %s.* does not match the backup and must not be trusted", err, targetDB))
+	}
+
+	if failed, ok := failedDocuments(string(stderrLogs)); ok && failed > 0 {
+		err := fmt.Errorf("%w: %d document(s) failed to restore", ErrDocumentsFailed, failed)
+		return failRestore(record, err,
+			fmt.Sprintf("%v (e.g. duplicate keys in a target that already held data)%s; mongorestore output: %s",
+				err, partialNote, stderrTail(string(stderrLogs))))
+	}
+
 	record.Status = models.RestoreStatusCompleted
 	e.logger.Info("mongodb streaming restore finished successfully",
 		slog.String("restore_id", restoreID),
@@ -473,6 +505,11 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 	if req.DropTarget {
 		args = append(args, "--drop")
 	}
+
+	// A backup is restored as it was taken: documents that predate a collection's
+	// validator (or were written with validationAction "warn") would otherwise be
+	// rejected by it and missing from the target.
+	args = append(args, "--bypassDocumentValidation")
 
 	// Handle namespace renaming (e.g. restoring to safe clone or custom database)
 	if targetDB != "" && targetDB != sourceDB {
@@ -566,6 +603,69 @@ func (e *Engine) detectUnrecordedEncryption(stored *bufio.Reader, rec *models.Ba
 		return false, fmt.Errorf("%w: %s", encryption.ErrEncryptionKeyRequired, KeyRequiredHint)
 	}
 	return true, nil
+}
+
+// hashingReader hashes the bytes read through it. It is not safe for concurrent use.
+type hashingReader struct {
+	r io.Reader
+	h hash.Hash
+}
+
+func (hr *hashingReader) Read(p []byte) (int, error) {
+	n, err := hr.r.Read(p)
+	if n > 0 {
+		hr.h.Write(p[:n])
+	}
+	return n, err
+}
+
+// verifyStreamed reads the part of the stored artifact that mongorestore did not
+// consume (normally nothing) through stored and compares the SHA-256 of all stored
+// bytes with expected. Records without a checksum (from older releases) are not
+// checked. A mismatch wraps ErrChecksumMismatch.
+func verifyStreamed(ctx context.Context, stored *hashingReader, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	if _, err := io.Copy(io.Discard, &ctxReader{ctx: ctx, r: stored}); err != nil {
+		return fmt.Errorf("read backup stream for checksum: %w", err)
+	}
+	if actual := hex.EncodeToString(stored.h.Sum(nil)); !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("%w: recorded %s, streamed artifact %s", ErrChecksumMismatch, expected, actual)
+	}
+	return nil
+}
+
+// failedDocumentsPattern matches mongorestore's summary line, e.g.
+// "10 document(s) restored successfully. 2 document(s) failed to restore."
+var failedDocumentsPattern = regexp.MustCompile(`(\d+) document\(s\) failed to restore`)
+
+// failedDocuments returns the number of documents mongorestore reported as failed; ok
+// is false when its output has no summary line.
+func failedDocuments(stderr string) (failed int64, ok bool) {
+	m := failedDocumentsPattern.FindAllStringSubmatch(stderr, -1)
+	if len(m) == 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(m[len(m)-1][1], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// maxStderrTail bounds the mongorestore output quoted in a failure message.
+const maxStderrTail = 1024
+
+// stderrTail returns the last lines of mongorestore's output, redacted and bounded.
+func stderrTail(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	tail := strings.Join(lines[max(len(lines)-5, 0):], " | ")
+	if len(tail) > maxStderrTail {
+		tail = "..." + tail[len(tail)-maxStderrTail:]
+	}
+	return redact.Text(tail)
 }
 
 // ctxReader aborts a long verification pass promptly once ctx is cancelled.
