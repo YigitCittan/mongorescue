@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"errors"
 	"io"
 	"slices"
 	"strings"
@@ -82,41 +81,21 @@ func TestDumpArgumentsNeverCarryInjectedFlags(t *testing.T) {
 	}
 }
 
-// TestInvalidNamespacesNeverReachMongodump checks that names MongoDB cannot have, and
-// those with newlines, NUL or wildcards, are refused before any tool runs.
-func TestInvalidNamespacesNeverReachMongodump(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		opts  models.BackupOptions
-		field string
-	}{
-		{"newline in database", models.BackupOptions{Database: "shop\n--drop"}, "database"},
-		{"carriage return in database", models.BackupOptions{Database: "shop\r"}, "database"},
-		{"NUL in database", models.BackupOptions{Database: "shop\x00admin"}, "database"},
-		{"space in database", models.BackupOptions{Database: "shop --drop"}, "database"},
-		{"dot in database", models.BackupOptions{Database: "shop.orders"}, "database"},
-		{"slash in database", models.BackupOptions{Database: "../etc"}, "database"},
-		{"backslash in database", models.BackupOptions{Database: `..\etc`}, "database"},
-		{"dollar in database", models.BackupOptions{Database: "$(id)"}, "database"},
-		{"quote in database", models.BackupOptions{Database: `shop"`}, "database"},
-		{"wildcard database", models.BackupOptions{Database: "*"}, "database"},
-		{"overlong database", models.BackupOptions{Database: strings.Repeat("d", models.MaxDatabaseNameLength+1)}, "database"},
-		{"newline in collection", models.BackupOptions{Database: "shop", Collections: []string{"orders\n--drop"}}, "collections"},
-		{"NUL in collection", models.BackupOptions{Database: "shop", Collections: []string{"a\x00b"}}, "collections"},
-		{"dollar in collection", models.BackupOptions{Database: "shop", Collections: []string{"$cmd"}}, "collections"},
-		{"newline in excluded collection", models.BackupOptions{Database: "shop", ExcludeCollections: []string{"x\ny"}}, "exclude_collections"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			runner := &captureRunner{}
-			e := NewEngine(storage.NewMockStorage(), "mongodb://h", WithRunner(runner.run))
-			_, err := e.Run(context.Background(), tc.opts)
-			if !errors.Is(err, models.ErrInvalidNamespace) || !strings.Contains(err.Error(), tc.field) {
-				t.Fatalf("Run = %v; want ErrInvalidNamespace naming %s", err, tc.field)
-			}
-			if runner.runs != 0 {
-				t.Fatalf("mongodump ran with %q", runner.args)
-			}
-		})
+// TestEngineRunsExistingJobsWhateverTheirNames checks that the engine itself does not
+// validate names: client input is validated by the operations layer, and a scheduled
+// run of an existing job (possibly created before validation existed) must not start
+// failing. Such names still reach mongodump only inside --db=.
+func TestEngineRunsExistingJobsWhateverTheirNames(t *testing.T) {
+	for _, db := range []string{"legacy db", "shop\n--drop", "--drop"} {
+		runner := &captureRunner{}
+		e := NewEngine(storage.NewMockStorage(), "mongodb://h", WithRunner(runner.run))
+		rec, err := e.Run(context.Background(), models.BackupOptions{Database: db})
+		if err != nil || rec.Status != models.StatusCompleted {
+			t.Fatalf("run of %q = %+v, %v", db, rec, err)
+		}
+		if !slices.Contains(runner.args, "--db="+db) {
+			t.Fatalf("args %q lack --db=%s", runner.args, db)
+		}
 	}
 }
 

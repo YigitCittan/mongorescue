@@ -215,7 +215,27 @@ type BackupRequest struct {
 // the outcome. Expected failures: ErrConnectionRequired, ErrUnknownConnection,
 // ErrUnknownStorageTarget, ErrInvalid, ErrBusy and ErrShuttingDown.
 func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.BackupRecord, error) {
+	if strings.TrimSpace(req.Database) != "" {
+		if err := validateNamespaces(req.Database, req.Collections, req.ExcludeCollections); err != nil {
+			return nil, err
+		}
+	}
 	return s.startManualBackup(ctx, req, "")
+}
+
+// validateNamespaces checks client-supplied database and collection names (see
+// models.ErrInvalidNamespace), as an ErrInvalid error.
+func validateNamespaces(database string, collections, excluded []string) error {
+	if err := models.ValidateDatabaseName(database); err != nil {
+		return invalid(err)
+	}
+	if err := models.ValidateCollectionNames(collections); err != nil {
+		return invalid(fmt.Errorf("collections: %w", err))
+	}
+	if err := models.ValidateCollectionNames(excluded); err != nil {
+		return invalid(fmt.Errorf("exclude_collections: %w", err))
+	}
+	return nil
 }
 
 // RetryBackup starts a new backup with the parameters of the failed backup id: the
@@ -411,6 +431,16 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	}
 	if err := req.ValidateTarget(); err != nil {
 		return nil, invalid(err)
+	}
+	// Client-supplied names are checked; the backup's own database name is not, so
+	// every existing backup stays restorable.
+	if target := strings.TrimSpace(req.TargetDatabase); req.InPlace() && target != "" {
+		if err := models.ValidateDatabaseName(target); err != nil {
+			return nil, invalid(fmt.Errorf("target_database: %w", err))
+		}
+	}
+	if err := models.ValidateCollectionNames(req.SelectedCollections); err != nil {
+		return nil, invalid(fmt.Errorf("selected_collections: %w", err))
 	}
 	// Restores need operator (checked by the adapters); overwriting existing data in
 	// place needs admin.

@@ -84,7 +84,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 
 Every protected endpoint also answers `401` without valid credentials, `403` for a cookie request with a missing or wrong `X-CSRF-Token` and `403` for an API key whose scope is too small.
 
-Database and collection names in jobs, backups and restores must be names MongoDB accepts: a database name has 1 to 63 bytes and none of `/ \ . " $ *`, a space or a control character; a collection name is not empty and has no `$`, `*` or control character. Other names are refused with `400` (*invalid namespace*). Backups are always stored under a key the server derives from the database name; clients cannot choose it.
+Database and collection names sent to create or update a job, start a backup, or name an in-place restore target and selected collections must follow MongoDB's cross-platform rules: a database name has 1 to 63 bytes, none of `/ \ . " $`, a space or a control character, and does not start with `-`; a collection name is not empty and has no `$` or control character. Other names are refused with `400` (*invalid namespace*). Scheduled runs of existing jobs, retries and restores of existing backups are never refused for their names. Backups are always stored under a key the server derives from the database name; clients cannot choose it.
 
 ## Connections
 

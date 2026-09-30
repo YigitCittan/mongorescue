@@ -203,15 +203,6 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 	if strings.TrimSpace(opts.Database) == "" {
 		return nil, errors.New("backup: target database name is required")
 	}
-	if err := models.ValidateDatabaseName(opts.Database); err != nil {
-		return nil, fmt.Errorf("backup: %w", err)
-	}
-	if err := models.ValidateCollectionNames(opts.Collections); err != nil {
-		return nil, fmt.Errorf("backup: collections: %w", err)
-	}
-	if err := models.ValidateCollectionNames(opts.ExcludeCollections); err != nil {
-		return nil, fmt.Errorf("backup: exclude_collections: %w", err)
-	}
 	if e.resolveURI(opts) == "" {
 		return nil, errors.New("backup: mongo connection uri is required")
 	}
