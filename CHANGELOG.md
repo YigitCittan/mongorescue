@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Upgrading from the deprecated configuration now enables backup encryption. `MONGORESCUE_ENCRYPTION_ENABLED` and `encryption.enabled` in `config.json` were logged as imported, but only the encryption mode was stored, so new backups were written unencrypted. Installations already affected are detected at startup. MongoRescue logs a warning, shows a dashboard banner that opens Settings → Encryption, and sends one alert to every enabled notification channel. It does not turn encryption on by itself; check the recipients and enable it, or dismiss the banner.
-- Restores now detect encryption and compression from the backup itself. Before, a backup stored under a custom `target_key` without the `.gz` suffix was restored without `--gzip`. A record that had lost its encryption flag sent age ciphertext to `mongorestore`. Damage in the first encrypted chunk was only noticed after `mongorestore` had started.
+- Restores now detect encryption and compression from the backup itself. Before, a backup that an earlier release stored under a custom `target_key` without the `.gz` suffix was restored without `--gzip`. A record that had lost its encryption flag sent age ciphertext to `mongorestore`. Damage in the first encrypted chunk was only noticed after `mongorestore` had started.
 - An age identity file that starts with a UTF-8 byte order mark (as some Windows editors save it) is accepted.
 
 ### Changed
