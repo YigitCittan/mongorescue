@@ -462,17 +462,20 @@ func (a *App) ActiveRuns() []string {
 	return a.runs.Active()
 }
 
-// PauseScheduling keeps the scheduler from starting scheduled runs until
-// ResumeScheduling. Runs in progress continue, and runs started from the dashboard
-// or the API are not affected.
-func (a *App) PauseScheduling() {
+// PauseRuns keeps new backups and restores from starting until ResumeRuns: the
+// scheduler skips its triggers, and runs started from the dashboard, the API or
+// MCP are refused with runs.ErrShuttingDown (operations.ErrShuttingDown, "MongoRescue
+// is shutting down", 503). Runs in progress continue. The desktop app pauses runs
+// while it waits for the running ones to finish before it quits.
+func (a *App) PauseRuns() {
+	a.runs.Refuse()
 	a.scheduler.Pause()
 }
 
-// ResumeScheduling lets the scheduler start scheduled runs again after
-// PauseScheduling.
-func (a *App) ResumeScheduling() {
+// ResumeRuns lets backups and restores start again after PauseRuns.
+func (a *App) ResumeRuns() {
 	a.scheduler.Resume()
+	a.runs.Accept()
 }
 
 // forceStopPersistTimeout bounds the writes ForceStop makes after the runs stopped.
@@ -480,7 +483,8 @@ const forceStopPersistTimeout = 5 * time.Second
 
 // ForceStop is Stop for a forced quit: the backups and restores still in progress
 // are cancelled like in Stop, and each one is then recorded as failed with reason
-// as its error message (and logged), so the history says why it did not finish.
+// in front of the engine's error message, as in "reason (backup cancelled: context
+// canceled)", and logged, so the history says why it did not finish.
 // Like Stop it is idempotent and a no-op before Start; call Close afterwards.
 func (a *App) ForceStop(reason string) {
 	a.lifeMu.Lock()
@@ -507,7 +511,7 @@ func (a *App) ForceStop(reason string) {
 		if err != nil || (b.Status != models.StatusFailed && b.Status != models.StatusInProgress) {
 			continue
 		}
-		b.Status, b.ErrorMessage = models.StatusFailed, reason
+		b.Status, b.ErrorMessage = models.StatusFailed, withReason(reason, b.ErrorMessage)
 		if err = a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 			a.logger.Warn("failed to record the cancelled backup", slog.String("backup_id", id), slog.Any("error", err))
 			continue
@@ -519,13 +523,24 @@ func (a *App) ForceStop(reason string) {
 		if err != nil || (r.Status != models.RestoreStatusFailed && r.Status != models.RestoreStatusInProgress) {
 			continue
 		}
-		r.Status, r.ErrorMessage = models.RestoreStatusFailed, reason
+		r.Status, r.ErrorMessage = models.RestoreStatusFailed, withReason(reason, r.ErrorMessage)
 		if err = a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
 			a.logger.Warn("failed to record the cancelled restore", slog.String("restore_id", id), slog.Any("error", err))
 			continue
 		}
 		a.logger.Warn("restore cancelled", slog.String("restore_id", id), slog.String("target_db", r.TargetDatabase), slog.String("reason", reason))
 	}
+}
+
+// withReason puts reason in front of a run's error message: "reason (detail)".
+func withReason(reason, detail string) string {
+	switch {
+	case detail == "" || detail == reason:
+		return reason
+	case strings.HasPrefix(detail, reason+" ("):
+		return detail
+	}
+	return reason + " (" + detail + ")"
 }
 
 // inProgressRuns returns the IDs of the backup and restore records in progress.

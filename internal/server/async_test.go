@@ -184,6 +184,21 @@ func TestShutdownCancelsBackgroundBackup(t *testing.T) {
 	}
 }
 
+func TestNewRunsAreRefusedWhileTheAppQuits(t *testing.T) {
+	f := newAsyncFixture(t)
+	f.runs.Refuse()
+	resp := f.post(context.Background(), "/api/v1/backups", `{"connection_id":"conn_test","database":"shop"}`)
+	if resp.Code != http.StatusServiceUnavailable || !strings.Contains(resp.Body.String(), "MongoRescue is shutting down") {
+		t.Fatalf("new run while refusing: got %d %s; want 503 with the reason", resp.Code, resp.Body.String())
+	}
+	f.runs.Accept()
+	id := acceptedID(t, f.post(context.Background(), "/api/v1/backups", `{"connection_id":"conn_test","database":"shop"}`))
+	if id == "" {
+		t.Fatal("no run after Accept")
+	}
+	f.waitStarted(t)
+}
+
 func TestRestoreOfEncryptedBackupWithoutKeyIsRejectedSynchronously(t *testing.T) {
 	f := newAsyncFixture(t)
 	src := &models.BackupRecord{ID: "bkp_enc", Database: "shop", ConnectionID: testConnID, Status: models.StatusCompleted, StorageKey: "shop/x.archive.age", Encrypted: true}

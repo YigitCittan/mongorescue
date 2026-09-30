@@ -178,7 +178,7 @@ Every backup record has a `trigger`: `scheduled` (a cron run of `job_id`), `on_d
 | `403 Forbidden` | The API key's scope does not allow the operation (for example a read key starting a backup, or an operator key restoring in place) |
 | `409 Conflict` | A backup of the same database on the same connection, or a restore into the same target, is already running |
 | `422 Unprocessable Entity` | The backup is encrypted and no decryption key is configured |
-| `503 Service Unavailable` | The server is shutting down |
+| `503 Service Unavailable` | The server is shutting down, or the desktop app is quitting once its running backups and restores finish (*MongoRescue is shutting down*) |
 
 ## Audit log
 
