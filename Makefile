@@ -25,7 +25,36 @@ COVERAGE_FILE?=coverage.out
 # Extra flags for integration runs (e.g. INTEGRATION_FLAGS="-coverprofile=integration-coverage.out").
 INTEGRATION_FLAGS?=
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker cross-compile docker-build docker-smoke run
+# Fuzzing: time per fuzz target, and the <package>:<FuzzFunc> targets make fuzz runs
+# (override FUZZ_TARGETS to run a subset).
+FUZZTIME?=30s
+FUZZ_TARGETS?= \
+	./internal/config:FuzzLoadLegacy \
+	./internal/desktop:FuzzArchiveTarget \
+	./internal/desktop:FuzzExtractArchive \
+	./internal/desktop:FuzzExtractArchiveNames \
+	./internal/encryption:FuzzDecrypt \
+	./internal/encryption:FuzzRoundTrip \
+	./internal/models:FuzzRescueDatabaseName \
+	./internal/models:FuzzValidateNamespace \
+	./internal/mongotools:FuzzWithConnectionDefaults \
+	./internal/mongotools:FuzzWriteURIConfig \
+	./internal/mongouri:FuzzValidate \
+	./internal/notify:FuzzValidateEmail \
+	./internal/notify:FuzzValidateWebhook \
+	./internal/redact:FuzzTextPassword \
+	./internal/redact:FuzzURI \
+	./internal/redact:FuzzURIPassword \
+	./internal/restore:FuzzPrepareNamespaces \
+	./internal/scheduler:FuzzValidateCron \
+	./internal/secretbox:FuzzOpen \
+	./internal/secretbox:FuzzSealOpen \
+	./internal/storage:FuzzLocalKey \
+	./internal/update:FuzzCompare \
+	./internal/update:FuzzFindChecksum \
+	./internal/update:FuzzParseVersion
+
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker fuzz cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -70,6 +99,14 @@ test-integration:
 ## test-integration-docker: Runs integration tests against disposable MongoDB, MinIO and LocalStack containers
 test-integration-docker:
 	./scripts/test-integration-docker.sh
+
+## fuzz: Runs each fuzz target in FUZZ_TARGETS for FUZZTIME (default 30s), one after another
+fuzz:
+	@set -e; for target in $(FUZZ_TARGETS); do \
+		pkg=$${target%%:*}; name=$${target##*:}; \
+		echo "==> Fuzzing $$name in $$pkg for $(FUZZTIME)..."; \
+		go test -run='^$$' -fuzz="^$$name\$$" -fuzztime=$(FUZZTIME) $$pkg; \
+	done
 
 ## clean: Removes build artifacts
 clean:
