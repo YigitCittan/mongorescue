@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
+	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -139,5 +142,185 @@ func TestLegacyBackupWithoutConnectionNeedsAnAdminToChooseTheTarget(t *testing.T
 		if !errors.Is(err, operations.ErrConnectionRequired) || !strings.Contains(err.Error(), "no source connection recorded") || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s restore of a legacy backup = %v; want ErrConnectionRequired saying %q", scope, err, want)
 		}
+	}
+}
+
+// fakeConnections resolves the connections in its map.
+type fakeConnections map[string]*models.Connection
+
+func (f fakeConnections) Resolve(_ context.Context, id string) (*models.Connection, error) {
+	if c, ok := f[id]; ok {
+		cp := *c
+		return &cp, nil
+	}
+	return nil, connections.ErrNotFound
+}
+
+func (f fakeConnections) Get(ctx context.Context, id string) (*models.Connection, error) {
+	return f.Resolve(ctx, id)
+}
+
+func (f fakeConnections) List(context.Context) ([]*models.Connection, error) { return nil, nil }
+
+// retryFixture is a service with one connection whose mongodump invocations are recorded.
+type retryFixture struct {
+	svc  *operations.Service
+	st   *store.SQLiteStore
+	mu   sync.Mutex
+	args [][]string
+}
+
+func newRetryFixture(t *testing.T) *retryFixture {
+	t.Helper()
+	f := &retryFixture{st: storetest.New(t)}
+	runner := func(_ context.Context, _ string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		f.mu.Lock()
+		f.args = append(f.args, args)
+		f.mu.Unlock()
+		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
+	}
+	mock := storage.NewMockStorage()
+	manager := runs.NewManager(nil)
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	f.svc = operations.New(operations.Config{
+		Store:       f.st,
+		Backup:      backup.NewEngine(mock, "", backup.WithRunner(runner)),
+		Restore:     restore.NewEngine(mock, ""),
+		Runs:        manager,
+		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "primary", URI: "mongodb://u:pw@db.internal/"}},
+	})
+	return f
+}
+
+// save stores records.
+func (f *retryFixture) save(t *testing.T, records ...*models.BackupRecord) {
+	t.Helper()
+	for _, r := range records {
+		if err := f.st.SaveBackupRecord(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// await polls backup id until it leaves the in-progress state.
+func (f *retryFixture) await(t *testing.T, id string) *models.BackupRecord {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := f.svc.GetBackup(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Status != models.StatusInProgress || time.Now().After(deadline) {
+			return rec
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// lastArgs returns the arguments of the latest mongodump invocation.
+func (f *retryFixture) lastArgs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.args) == 0 {
+		return nil
+	}
+	return f.args[len(f.args)-1]
+}
+
+func TestRetryBackupRepeatsTheFailedBackupAndKeepsItsRecord(t *testing.T) {
+	f := newRetryFixture(t)
+	ctx := context.Background()
+	failedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	original := &models.BackupRecord{
+		ID: "bkp_failed", Trigger: models.TriggerManual, Database: "shop", ConnectionID: "conn_a", ConnectionName: "primary",
+		Status: models.StatusFailed, StorageType: models.StorageLocal, StorageKey: "shop/2026/09/bkp_failed.archive",
+		Collections: []string{"orders"}, StartedAt: failedAt.Add(-time.Minute), CompletedAt: &failedAt,
+		DurationSeconds: 60, ErrorMessage: "start mongodump: mongodump not found",
+	}
+	f.save(t, original)
+
+	rec, err := f.svc.RetryBackup(ctx, "bkp_failed", models.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ID == original.ID || rec.RetryOf != original.ID || rec.Database != "shop" || rec.ConnectionID != "conn_a" ||
+		rec.Trigger != models.TriggerManual || !slices.Equal(rec.Collections, []string{"orders"}) ||
+		strings.HasSuffix(rec.StorageKey, ".gz") || rec.Status != models.StatusInProgress {
+		t.Fatalf("retry = %+v; want an in-progress copy of the failed backup", rec)
+	}
+	if done := f.await(t, rec.ID); done.Status != models.StatusCompleted || done.RetryOf != original.ID {
+		t.Fatalf("retry outcome = %+v; want completed with retry_of", done)
+	}
+	if args := f.lastArgs(); !slices.Contains(args, "--collection=orders") || slices.Contains(args, "--gzip") {
+		t.Fatalf("mongodump args = %v; want the original collection without gzip", args)
+	}
+
+	kept, err := f.svc.GetBackup(ctx, "bkp_failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Status != models.StatusFailed || kept.ErrorMessage != original.ErrorMessage || kept.CompletedAt == nil ||
+		!kept.CompletedAt.Equal(failedAt) || kept.RetryOf != "" {
+		t.Fatalf("original after retry = %+v; want it unchanged", kept)
+	}
+
+	// A failed retry can itself be retried, forming a chain.
+	f.save(t, &models.BackupRecord{ID: "bkp_failed_retry", Database: "shop", ConnectionID: "conn_a", Status: models.StatusFailed, RetryOf: "bkp_failed"})
+	again, err := f.svc.RetryBackup(ctx, "bkp_failed_retry", models.TriggerMCP)
+	if err != nil || again.RetryOf != "bkp_failed_retry" || again.Trigger != models.TriggerMCP {
+		t.Fatalf("retry of a retry = %+v, %v", again, err)
+	}
+	f.await(t, again.ID)
+}
+
+func TestRetryOfAJobBackupUsesTheJobOptions(t *testing.T) {
+	f := newRetryFixture(t)
+	ctx := context.Background()
+	if err := f.st.SaveJob(ctx, &models.Job{ID: "job_a", Name: "nightly", Database: "shop", ConnectionID: "conn_a", Gzip: true, ExcludeCollections: []string{"logs"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.save(t, &models.BackupRecord{ID: "bkp_job_failed", JobID: "job_a", Trigger: models.TriggerScheduled, Database: "shop", ConnectionID: "conn_a", Status: models.StatusFailed})
+
+	rec, err := f.svc.RetryBackup(ctx, "bkp_job_failed", models.TriggerManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.JobID != "job_a" || rec.Trigger != models.TriggerManual || !strings.HasSuffix(rec.StorageKey, ".archive.gz") {
+		t.Fatalf("retry = %+v; want a manual backup of the job's database, compressed", rec)
+	}
+	f.await(t, rec.ID)
+	if args := f.lastArgs(); !slices.Contains(args, "--excludeCollection=logs") || !slices.Contains(args, "--gzip") {
+		t.Fatalf("mongodump args = %v; want the job's exclusions and gzip", args)
+	}
+}
+
+func TestRetryBackupRefusals(t *testing.T) {
+	f := newRetryFixture(t)
+	ctx := context.Background()
+	f.save(t,
+		&models.BackupRecord{ID: "bkp_ok", Database: "shop", ConnectionID: "conn_a", Status: models.StatusCompleted},
+		&models.BackupRecord{ID: "bkp_running", Database: "shop", ConnectionID: "conn_a", Status: models.StatusInProgress},
+		&models.BackupRecord{ID: "bkp_gone_conn", Database: "shop", ConnectionID: "conn_deleted", Status: models.StatusFailed},
+		&models.BackupRecord{ID: "bkp_no_conn", Database: "shop", Status: models.StatusFailed},
+	)
+	for _, tc := range []struct {
+		id   string
+		want error
+		msg  string
+	}{
+		{"bkp_missing", operations.ErrNotFound, "backup not found"},
+		{"bkp_ok", operations.ErrNotRetryable, "only failed backups can be retried"},
+		{"bkp_running", operations.ErrNotRetryable, "in_progress"},
+		{"bkp_gone_conn", operations.ErrRetryUnavailable, "connection of backup bkp_gone_conn no longer exists"},
+		{"bkp_no_conn", operations.ErrRetryUnavailable, "no source connection recorded"},
+	} {
+		rec, err := f.svc.RetryBackup(ctx, tc.id, models.TriggerManual)
+		if rec != nil || !errors.Is(err, tc.want) || !strings.Contains(err.Error(), tc.msg) {
+			t.Errorf("retry %s = %+v, %v; want %v mentioning %q", tc.id, rec, err, tc.want, tc.msg)
+		}
+	}
+	if list, err := f.svc.ListBackups(ctx, operations.BackupFilter{}); err != nil || len(list) != 4 {
+		t.Fatalf("backups after refused retries = %d, %v; want no new records", len(list), err)
 	}
 }

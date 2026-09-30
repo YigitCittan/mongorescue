@@ -1154,6 +1154,33 @@
     </div>
   </div>
 
+  <!-- Modal: Backup details -->
+  <div id="modal-backup-details" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="backup-details-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="backup-details-title" data-i18n="backup_details.title">Backup details</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-backup-details" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="modal-body scrollable">
+        <dl class="kv" id="backup-details-list"></dl>
+        <div class="form-group" id="backup-details-error" hidden>
+          <span class="form-label" data-i18n="backup_details.error">Error</span>
+          <pre class="error-full detail-error" id="backup-details-error-text"></pre>
+        </div>
+        <div class="form-group" id="backup-details-chain-group" hidden>
+          <span class="form-label" data-i18n="backup_details.retry_chain">Retry chain</span>
+          <ol class="retry-chain" id="backup-details-chain"></ol>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-backup-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-primary" id="backup-details-retry" data-action="retry-backup" data-i18n="actions.retry" hidden>Retry</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Add user -->
   <div id="modal-user" class="modal-backdrop" aria-hidden="true">
     <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">

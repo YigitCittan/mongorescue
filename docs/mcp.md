@@ -34,7 +34,7 @@ Create a key under **Settings → API keys** and pick its scope (read is the def
 | Scope | REST API | MCP tools |
 | :--- | :--- | :--- |
 | `read` | Every `GET` except the audit log and the user list | All read tools, resources and prompts |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/jobs/{id}/run` and safe-clone `POST /api/v1/restore` into the backup's own connection | `read` tools plus `start_backup`, `run_job`, `restore_to_safe_clone` (into the backup's own connection) |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and safe-clone `POST /api/v1/restore` into the backup's own connection | `read` tools plus `start_backup`, `run_job`, `restore_to_safe_clone` (into the backup's own connection) |
 | `admin` | Everything, including deletions, in-place and cross-connection restores, settings, users and keys | Same as `operator`, plus `restore_to_safe_clone` with `target_connection_id` (a clone on another server) |
 
 Browser sessions always have admin rights. See [api.md](api.md#api-key-scopes) for the route table.

@@ -17,6 +17,7 @@ import (
 // operatorRoutes are the only routes an operator key may call beyond reads.
 var operatorRoutes = []string{
 	"POST /api/v1/backups",
+	"POST /api/v1/backups/{id}/retry",
 	"POST /api/v1/jobs/{id}/run",
 	"POST /api/v1/restore",
 }

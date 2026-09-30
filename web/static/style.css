@@ -831,6 +831,34 @@ time,
   width: 200px;
 }
 
+#backups-tbody .retry-link {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The details dialog shows the full error, however long. */
+.detail-error {
+  width: auto;
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+}
+
+.retry-chain {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.retry-chain [aria-current="true"] {
+  font-weight: 600;
+}
+
 .cell-wrap {
   white-space: normal !important;
   min-width: 140px;

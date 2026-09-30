@@ -75,6 +75,10 @@ const ACTIVE_STATUSES = ["pending", "in_progress"];
 // Operations started from this browser, keyed by record ID, so their outcome can be
 // reported once the background run finishes (the API answers 202 Accepted).
 const trackedOps = { backups: new Map(), restores: new Map() };
+// Failed backups whose retry request is in flight (their Retry buttons stay disabled).
+const retryingBackups = new Set();
+// Backup shown in the details dialog, re-rendered when the list refreshes.
+let detailsBackupId = "";
 let activePollTimer = null;
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -332,6 +336,12 @@ function setupActions() {
         break;
       case "delete-backup":
         deleteBackup(id);
+        break;
+      case "retry-backup":
+        retryBackup(id);
+        break;
+      case "backup-details":
+        openBackupDetails(id);
         break;
       case "new-channel":
         openChannelModal("");
@@ -832,6 +842,7 @@ function renderBackups() {
   const tbody = document.getElementById("backups-tbody");
   if (!tbody) return;
   if (!state.loaded.backups) return;
+  renderBackupDetails();
 
   if (state.backups.length === 0) {
     setTbody(tbody, state.loaded.connections && state.connections.length === 0
@@ -859,8 +870,14 @@ function renderBackups() {
     const restoreBtn = restorable
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="restore-backup" data-id="${escapeHtml(b.id)}" data-db="${escapeHtml(b.database)}">${escapeHtml(t("actions.rescue_restore"))}</button>`
       : "";
+    // The latest failed attempt of a chain carries the retry action; the others
+    // show which attempt retried them.
+    const retries = backupRetries(b.id);
+    const retryBtn = failed && retries.length === 0
+      ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
+      : "";
     return `<tr>
-      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${lock}</div></td>
+      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${lock}</div>${retryLinks(b, retries)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
       <td>${statusBadge(kind, label, b.error_message)}${errorLine}</td>
       <td>${timeCell(b.started_at)}</td>
@@ -869,6 +886,8 @@ function renderBackups() {
       <td>${sha}</td>
       <td class="col-actions"><div class="row-actions">
         ${restoreBtn}
+        ${retryBtn}
+        <button type="button" class="btn btn-ghost btn-sm" data-action="backup-details" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.details"))}</button>
         <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-backup" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.delete"))}</button>
       </div></td>
     </tr>`;
@@ -879,6 +898,33 @@ function durationCell(item) {
   const secs = Number(item.duration_seconds);
   if (!secs && item.status !== "completed") return mutedDash();
   return escapeHtml(formatDuration(secs || 0));
+}
+
+// Backups that retry backup id (retry_of), oldest first.
+function backupRetries(id) {
+  return state.backups
+    .filter(x => x.retry_of && x.retry_of === id)
+    .sort((a, b) => String(a.started_at || "").localeCompare(String(b.started_at || "")));
+}
+
+// Compact form of a backup ID for "retry of" notes; the full ID is in the title.
+function shortBackupId(id) {
+  const s = String(id || "");
+  return s.length > 16 ? `…${s.slice(-12)}` : s;
+}
+
+// "Retry of …" and "Retried at … → …" notes under a backup's ID.
+function retryLinks(b, retries) {
+  const lines = [];
+  if (b.retry_of) {
+    lines.push(`<div class="cell-sub retry-link" title="${escapeHtml(b.retry_of)}">${escapeHtml(tf("backup_details.retry_of", { id: shortBackupId(b.retry_of) }))}</div>`);
+  }
+  retries.forEach(r => {
+    const d = parseDate(r.started_at);
+    const text = tf("backup_details.retried", { time: d ? formatAbsolute(d) : "?", id: shortBackupId(r.id) });
+    lines.push(`<div class="cell-sub retry-link" title="${escapeHtml(r.id)}">${escapeHtml(text)}</div>`);
+  });
+  return lines.join("");
 }
 
 function renderRestores() {
@@ -1368,6 +1414,150 @@ async function deleteBackup(backupID) {
   } catch (err) {
     showToast(err.message, "error");
   }
+}
+
+// Starts a new backup with the parameters of failed backup backupID. The failed
+// record stays in the list; the new one links to it through retry_of.
+async function retryBackup(backupID) {
+  if (!backupID || retryingBackups.has(backupID)) return;
+  retryingBackups.add(backupID);
+  setRetryButtonsDisabled(backupID, true);
+  try {
+    const json = await apiJSON(`/api/v1/backups/${encodeURIComponent(backupID)}/retry`, { method: "POST" });
+    if (json.success) {
+      showToast(t("toasts.retry_started"), "info");
+      trackBackup(json.data);
+    } else {
+      showToast(json.error || t("toasts.retry_failed"), "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    retryingBackups.delete(backupID);
+    setRetryButtonsDisabled(backupID, false);
+    refreshAll();
+  }
+}
+
+function setRetryButtonsDisabled(backupID, disabled) {
+  document.querySelectorAll('[data-action="retry-backup"]').forEach(btn => {
+    if (btn.dataset.id === backupID) btn.disabled = disabled;
+  });
+}
+
+function openBackupDetails(backupID) {
+  if (!state.backups.some(b => b.id === backupID)) return;
+  detailsBackupId = backupID;
+  renderBackupDetails();
+  openModal("modal-backup-details");
+}
+
+// Every attempt of the retry chain backup b belongs to, oldest first: the first
+// attempt found by following retry_of, then every retry of an attempt in the chain.
+function backupRetryChain(b) {
+  const byId = new Map(state.backups.map(x => [x.id, x]));
+  let root = b;
+  const seen = new Set([b.id]);
+  while (root.retry_of && byId.has(root.retry_of) && !seen.has(root.retry_of)) {
+    root = byId.get(root.retry_of);
+    seen.add(root.id);
+  }
+  const chain = [root];
+  const ids = new Set([root.id]);
+  for (let i = 0; i < chain.length; i++) {
+    backupRetries(chain[i].id).forEach(r => {
+      if (!ids.has(r.id)) {
+        ids.add(r.id);
+        chain.push(r);
+      }
+    });
+  }
+  return chain.sort((x, y) => String(x.started_at || "").localeCompare(String(y.started_at || "")));
+}
+
+// Fills the details dialog of detailsBackupId. Everything the server sent is set
+// through textContent; error messages are already redacted by the server.
+function renderBackupDetails() {
+  const modal = document.getElementById("modal-backup-details");
+  if (!modal || !modal.classList.contains("open") || !detailsBackupId) return;
+  const b = state.backups.find(x => x.id === detailsBackupId);
+  const list = document.getElementById("backup-details-list");
+  const errorBox = document.getElementById("backup-details-error");
+  const chainList = document.getElementById("backup-details-chain");
+  const retryBtn = document.getElementById("backup-details-retry");
+  if (!b) {
+    closeModal("modal-backup-details");
+    return;
+  }
+
+  list.textContent = "";
+  const row = (label, value, mono) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    if (mono) dd.className = "mono";
+    dd.textContent = value === undefined || value === null || value === "" ? "—" : String(value);
+    list.append(dt, dd);
+  };
+  const absolute = value => {
+    const d = parseDate(value);
+    return d ? `${formatAbsolute(d)} (${formatRelative(d)})` : "";
+  };
+  const failed = b.status === "failed";
+  const [, statusLabel] = backupStatus(b.status);
+  const secs = Number(b.duration_seconds);
+  const conn = b.connection_name || connectionName(b.connection_id);
+  row(t("backup_details.id"), b.id, true);
+  row(t("backup_details.status"), statusLabel);
+  row(t("backup_details.trigger"), backupTrigger(b));
+  if (b.job_id) row(t("backup_details.job"), jobLabel(b.job_id));
+  row(t("backup_details.connection"), conn);
+  row(t("backup_details.database"), b.database, true);
+  row(t("backup_details.collections"), (b.collections || []).length > 0 ? b.collections.join(", ") : t("backup_details.all_collections"));
+  row(t("backup_details.target"), backupStorageName(b) || b.storage_type);
+  row(t("backup_details.started"), absolute(b.started_at));
+  row(failed ? t("backup_details.failed_at") : t("backup_details.finished"), absolute(b.completed_at));
+  row(t("backup_details.duration"), secs > 0 ? formatDuration(secs) : "");
+  if (b.status === "completed") {
+    row(t("tables.size"), formatBytes(b.size_bytes));
+    if (b.sha256) row(t("tables.sha256"), b.sha256, true);
+  }
+
+  errorBox.hidden = !b.error_message;
+  document.getElementById("backup-details-error-text").textContent = b.error_message || "";
+
+  chainList.textContent = "";
+  const chain = backupRetryChain(b);
+  if (b.retry_of && !chain.some(x => x.id === b.retry_of)) {
+    // The first attempt was deleted; keep its ID visible.
+    const li = document.createElement("li");
+    li.className = "mono muted";
+    li.textContent = b.retry_of;
+    chainList.appendChild(li);
+  }
+  chain.forEach(x => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "link-btn mono";
+    btn.dataset.action = "backup-details";
+    btn.dataset.id = x.id;
+    btn.textContent = shortBackupId(x.id);
+    btn.title = x.id;
+    if (x.id === b.id) btn.setAttribute("aria-current", "true");
+    const [, label] = backupStatus(x.status);
+    const d = parseDate(x.started_at);
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = ` · ${label}${d ? ` · ${formatAbsolute(d)}` : ""}`;
+    li.append(btn, meta);
+    chainList.appendChild(li);
+  });
+  document.getElementById("backup-details-chain-group").hidden = chainList.children.length < 2;
+
+  retryBtn.hidden = !(failed && backupRetries(b.id).length === 0);
+  retryBtn.dataset.id = b.id;
+  retryBtn.disabled = retryingBackups.has(b.id);
 }
 
 // ---------------------------------------------------------------------------

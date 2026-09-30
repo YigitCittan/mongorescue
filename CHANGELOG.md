@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Retry a failed backup: `POST /api/v1/backups/{id}/retry` (operator scope) starts a new manual backup with the failed backup's connection, database, collections and storage target (and its job's exclusions and compression when the job still exists), through the same use case as "Back up now". It answers `409` for a backup that has not failed and `422` when its connection or storage target was deleted. The failed record is kept unchanged; the new record's `retry_of` names it (schema migration `0009_backup_retry_of`). See [docs/api.md](docs/api.md#retrying-a-failed-backup).
+- Dashboard: failed backups get a **Retry** button, rows note "Retry of …" and "Retried at … → …", and a **Details** dialog shows the full error message, absolute start and end times, duration, trigger, connection, database, storage target and the retry chain.
+
 ### Fixed
 - Backups and restores of a connection whose URI has credentials but no `authSource` (for example `mongodb://user:pass@host:27017`) failed with `AuthenticationFailed`, although the connection test passed: `mongodump`/`mongorestore` authenticated against the database being backed up or restored. The tools now authenticate against the same database as the driver, the URI path database or `admin`. URIs with an explicit `authSource`, `mongodb+srv://` URIs and `$external` mechanisms (`MONGODB-X509`, `GSSAPI`, `PLAIN`, `MONGODB-AWS`) are unchanged.
 
