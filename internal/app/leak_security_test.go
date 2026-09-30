@@ -222,9 +222,18 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	s.data("POST", "/api/v1/connections", map[string]string{"name": "prod",
 		"uri": "mongodb://admin:" + leakConnPassword + "@127.0.0.1:1/?authSource=admin&" + fast}, http.StatusCreated, &conn)
 
+	// A fake S3 endpoint that refuses every request with a non-retryable 403, so the
+	// storage tests fail at once instead of retrying against a closed port.
+	s3stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`)
+	}))
+	t.Cleanup(s3stub.Close)
+
 	var target models.StorageTarget
 	s.data("POST", "/api/v1/storage-targets", map[string]any{"name": "offsite", "type": "s3", "s3": map[string]any{
-		"endpoint": "http://127.0.0.1:1", "region": "us-east-1", "bucket": "backups", "use_path_style": true,
+		"endpoint": s3stub.URL, "region": "us-east-1", "bucket": "backups", "use_path_style": true,
 		"access_key_id": leakS3Access, "secret_access_key": leakS3Secret,
 	}}, http.StatusCreated, &target)
 
@@ -272,7 +281,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	// and mcp packages.)
 	s.do("POST", "/api/v1/storage-targets/"+target.ID+"/test", nil)
 	s.do("POST", "/api/v1/storage-targets/test", map[string]any{"name": "adhoc", "type": "s3", "s3": map[string]any{
-		"endpoint": "http://127.0.0.1:1", "region": "us-east-1", "bucket": "b", "use_path_style": true,
+		"endpoint": s3stub.URL, "region": "us-east-1", "bucket": "b", "use_path_style": true,
 		"access_key_id": "adhoc", "secret_access_key": leakTestPassword,
 	}})
 	for _, id := range []string{"hook", "mail"} {
