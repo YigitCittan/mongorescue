@@ -16,9 +16,9 @@ Download the file for your system from [Releases](https://github.com/YigitCittan
 
 - **Windows:** `MongoRescue-desktop_<version>_windows_amd64_installer.exe` (NSIS installer; a portable `.zip` is attached too). It needs the Microsoft Edge WebView2 runtime, which ships with Windows 10 and 11 but not with Windows Server 2016–2022; the installer fetches it if it is missing ([details](#windows-installer-and-webview2)).
 - **macOS:** `MongoRescue-desktop_<version>_macos_universal.zip`, containing `MongoRescue.app` (Apple Silicon and Intel). The app is not notarized yet: open it with right-click → **Open** the first time.
-- **Linux:** `MongoRescue-desktop_<version>_linux_amd64.tar.gz`, a single binary. It needs GTK 3 and WebKitGTK 4.1 (`libgtk-3-0` and `libwebkit2gtk-4.1-0` on Debian and Ubuntu 24.04+).
+- **Linux:** `MongoRescue-desktop_<version>_linux_amd64.tar.gz`, the `MongoRescue` binary and its `tools/` directory; keep them together. It needs GTK 3 and WebKitGTK 4.1 (`libgtk-3-0` and `libwebkit2gtk-4.1-0` on Debian and Ubuntu 24.04+); the bundled tools need glibc 2.34+ and `libgssapi_krb5.so.2` (`libgssapi-krb5-2`).
 
-Install the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) (`mongodump`, `mongorestore`, 100.3.0 or newer) and make sure they are on the `PATH` the app sees. On macOS, apps started from Finder do not read your shell profile; Homebrew's `/opt/homebrew/bin` may not be on their `PATH`.
+Every package includes `mongodump` and `mongorestore` from the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) (100.12.2, Apache License 2.0; `LICENSE.md` and `THIRD-PARTY-NOTICES` sit next to them): `<install dir>\tools\` on Windows (installer and portable zip), `MongoRescue.app/Contents/Resources/tools/` on macOS (universal binaries) and `tools/` next to the binary on Linux. The app finds them before `PATH`, so nothing else needs to be installed. To use other tools, set `MONGORESCUE_TOOLS_DIR` to their directory ([search order](configuration.md#mongodb-database-tools)).
 
 ## First start
 
@@ -45,8 +45,10 @@ A major release is mandatory only when it has the file for your system and the c
 **Update** downloads the file for your system from the release and verifies it before using it:
 
 - **Windows:** the installer (`…_windows_amd64_installer.exe`) is saved in a new directory under `%LocalAppData%\MongoRescue\updates` (earlier ones are removed), opened so that nothing can change or delete it, checked against its SHA-256 again through that handle, started (Windows asks for administrator rights when the installer needs them) and the app closes, cancelling in-flight runs as on a normal close. Finish the installer, then start MongoRescue again.
-- **macOS:** `…_macos_universal.zip` is saved in `~/Downloads` and shown in Finder. Quit MongoRescue and replace `MongoRescue.app` with the one in the archive.
-- **Linux:** `…_linux_amd64.tar.gz` is saved in `$XDG_DOWNLOAD_DIR` (when set to an absolute path) or `~/Downloads`, and the folder is opened. Quit MongoRescue and replace the binary.
+- **macOS:** `…_macos_universal.zip` is saved in `~/Downloads` and shown in Finder. Quit MongoRescue and replace `MongoRescue.app` with the one in the archive; its bundled tools come with it.
+- **Linux:** `…_linux_amd64.tar.gz` is saved in `$XDG_DOWNLOAD_DIR` (when set to an absolute path) or `~/Downloads`, and the folder is opened. Quit MongoRescue and replace the binary and its `tools/` directory with the ones in the archive.
+
+The Windows installer replaces `<install dir>\tools` with the tools of the new version; the app never replaces files itself.
 
 Integrity: the release lookup and the downloads use HTTPS, and only files under `https://github.com/YigitCittan/mongorescue/releases/download/` are accepted (GitHub redirects them to its file storage; at most 5 redirects are followed, each to `https` on `github.com` or a `*.githubusercontent.com` host). The file is streamed to a temporary file (mode `0600`) while its SHA-256 is computed and compared with the release's `MongoRescue-desktop_<version>_checksums.txt`; a missing checksum or a mismatch discards the file and shows the error, with a **Try again** button and the release page link. Nothing is installed from an unverified file.
 
@@ -112,13 +114,15 @@ Releases build the desktop app natively on Windows, macOS and Linux runners (`de
 
 | Asset | Contents |
 | :--- | :--- |
-| `MongoRescue-desktop_<version>_windows_amd64_installer.exe` | NSIS installer |
-| `MongoRescue-desktop_<version>_windows_amd64_portable.zip` | `MongoRescue.exe` |
-| `MongoRescue-desktop_<version>_macos_universal.zip` | `MongoRescue.app` (Apple Silicon and Intel) |
-| `MongoRescue-desktop_<version>_linux_amd64.tar.gz` | `MongoRescue` binary |
+| `MongoRescue-desktop_<version>_windows_amd64_installer.exe` | NSIS installer (installs `MongoRescue.exe` and `tools\`) |
+| `MongoRescue-desktop_<version>_windows_amd64_portable.zip` | `MongoRescue.exe`, `tools\` |
+| `MongoRescue-desktop_<version>_macos_universal.zip` | `MongoRescue.app` (Apple Silicon and Intel), tools in `Contents/Resources/tools/` |
+| `MongoRescue-desktop_<version>_linux_amd64.tar.gz` | `MongoRescue` binary, `tools/` |
 | `MongoRescue-desktop_<version>_checksums.txt` | SHA-256 of the four files above |
 
 Verify a download with `sha256sum --check --ignore-missing MongoRescue-desktop_<version>_checksums.txt` (macOS: `shasum -a 256 --check --ignore-missing …`).
+
+Before building, the `desktop` job downloads the MongoDB Database Tools archive for the runner's platform from `fastdl.mongodb.org` (version `MONGO_TOOLS_VERSION`, the same as in `ci.yml`), checks it against the SHA-256 pinned in the workflow and fails on a mismatch, and stages `mongodump`, `mongorestore`, `LICENSE.md` and `THIRD-PARTY-NOTICES` in `build/bin/tools` (on macOS the arm64 and x86_64 binaries are merged with `lipo`; Linux uses the `ubuntu2204-x86_64` build). `wails build -nsis` packs that directory into the installer (`project.nsi` installs it to `$INSTDIR\tools` and the uninstaller removes it), the portable zip and the Linux archive include it, and on macOS it is moved into `MongoRescue.app/Contents/Resources/tools/` before the app is zipped. The build runs without `-clean`, which would delete `build/bin`. To bump the tools, change `MONGO_TOOLS_VERSION` and the four `MONGO_TOOLS_SHA256_*` values together. A local `wails build -nsis` without `build/bin/tools` builds an installer without the tools (makensis warns).
 
 ## Code signing
 
@@ -132,7 +136,7 @@ When it is on, the Windows leg of the `desktop` job:
 4. uploads the installer, has SignPath sign it and replaces it;
 5. checks both files with `Get-AuthenticodeSignature` and fails unless both are `Valid`.
 
-The portable zip then contains the signed exe and the installer asset is the signed installer. Provenance attestations and `MongoRescue-desktop_<version>_checksums.txt` are made from the uploaded release assets after signing, so they cover the signed files.
+The portable zip then contains the signed exe and the installer asset is the signed installer. The bundled `mongodump.exe` and `mongorestore.exe` are not submitted to SignPath: they ship as MongoDB signed them. Provenance attestations and `MongoRescue-desktop_<version>_checksums.txt` are made from the uploaded release assets after signing, so they cover the signed files.
 
 The uninstaller (`uninstall.exe`, written by the installer) stays unsigned: NSIS builds it while compiling the installer and can only sign it then, through `!uninstfinalize` with a signing command available on the build machine, and SignPath signs only files submitted to it. Windows SmartScreen evaluates the downloaded installer, which is signed.
 

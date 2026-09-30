@@ -34,7 +34,7 @@ Backups and restores run `mongodump` and `mongorestore`. MongoRescue uses the fi
 4. `PATH`;
 5. well-known install directories, for when MongoRescue starts with a minimal `PATH` (such as the macOS desktop app launched from Finder, which sees only `/usr/bin:/bin:/usr/sbin:/sbin`): `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin` on macOS; `%ProgramFiles%\MongoDB\Tools\<version>\bin` on Windows (highest version first); `/usr/local/bin`, `/usr/bin` and `/snap/bin` on Linux.
 
-On Windows `.exe` is appended. Only regular, executable files count. The paths found are logged at startup; a missing tool is logged as a warning with the searched locations, and backups or restores then fail with `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (the searched paths appear only in the log).
+The desktop app packages ship `mongodump` and `mongorestore` in the locations of steps 2 and 3 ([details](desktop.md#install)), so they are found without any setup. On Windows `.exe` is appended. Only regular, executable files count. The paths found are logged at startup; a missing tool is logged as a warning with the searched locations, and backups or restores then fail with `mongodump not found: install MongoDB Database Tools or set MONGORESCUE_TOOLS_DIR` (the searched paths appear only in the log).
 
 `mongorescue mcp`, the stdio bridge for AI assistants, reads only `--url`/`MONGORESCUE_MCP_URL` and `MONGORESCUE_MCP_API_KEY` and never opens the data directory; see [mcp.md](mcp.md#transports).
 
