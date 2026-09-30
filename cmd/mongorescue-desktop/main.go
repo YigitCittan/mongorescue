@@ -80,11 +80,11 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	// exit (it holds the data directory lock and the single instance lock) before
 	// the log file is truncated and the data directory opened.
 	oldPID, args := desktop.ParseAfterUpdate(args)
-	deadline := time.Now().Add(desktop.AfterUpdateWait)
 	oldExited := true
 	if oldPID > 0 {
 		oldExited = desktop.WaitForProcessExit(oldPID, desktop.AfterUpdateWait)
 	}
+	deadline := time.Now().Add(desktop.AfterUpdateLockWait)
 	cfg, err := desktop.ParseConfig(args, getenv, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -101,11 +101,14 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	if oldPID > 0 {
 		logger.Info("started after an update", slog.Int("old_pid", oldPID), slog.Bool("old_exited", oldExited))
 	}
-	desktop.RemoveUpdateLeftovers(logger)
 
 	application, err := newApp(cfg, logger, getenv, oldPID > 0, deadline)
 	if err != nil {
 		logger.Error("application bootstrap failed", slog.Any("error", err))
+		if oldPID > 0 && errors.Is(err, store.ErrDataDirLocked) {
+			desktop.ShowError("MongoRescue", "MongoRescue was updated, but the new version could not start: the previous version still holds the data directory "+
+				cfg.DataDir+".\r\n\r\nClose MongoRescue (or end MongoRescue.exe in Task Manager) and start it again.")
+		}
 		return 1
 	}
 	d := &desktopApp{app: application, logger: logger, closed: make(chan struct{})}
@@ -118,6 +121,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		Args:    args,
 		Quit:    d.quit,
 		OpenURL: d.openURL,
+		Busy:    application.Busy,
 	})
 	// A new version whose old process has not exited in time must not hand its
 	// start over to it as a second instance.
@@ -219,6 +223,9 @@ type desktopApp struct {
 // failure is logged and quits the app; no dialog is opened, since the window's run
 // loop is not up yet.
 func (d *desktopApp) startup(ctx context.Context) {
+	// The single instance and data directory locks are held now: repair and remove
+	// what an in-app update left (Windows).
+	desktop.RemoveUpdateLeftovers(d.logger)
 	// The scheduler lives until Stop, not until the Wails context ends.
 	err := d.app.Start(context.Background())
 	d.ctxMu.Lock()

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -428,6 +429,63 @@ func TestUpdaterSwapsInPlace(t *testing.T) {
 	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
 		t.Errorf("Install while restarting = %v; want ErrUpdateBusy", err)
 	}
+}
+
+func TestUpdaterWaitsForRunningBackups(t *testing.T) {
+	for _, writable := range []bool{true, false} {
+		t.Run(fmt.Sprint("writable=", writable), func(t *testing.T) {
+			src := &fakeSource{res: withPortable(available(false)), zip: portableZip(t, "2")}
+			r := inAppRecorder(t)
+			r.writable = writable
+			var running atomic.Bool
+			running.Store(true)
+			opts := r.options(src, "1.0.0", "windows")
+			opts.Busy = running.Load
+			opts.IdlePoll = time.Millisecond
+			u, _ := started(t, opts)
+			if err := u.Install(); err != nil {
+				t.Fatal(err)
+			}
+			waitState(t, u, func(s UpdateStatus) bool { return s.State == UpdateWaiting })
+			r.mu.Lock()
+			early := len(r.started) + len(r.launched) + r.quits
+			r.mu.Unlock()
+			if early != 0 {
+				t.Fatal("the update went ahead while a backup runs")
+			}
+			if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
+				t.Errorf("Install while waiting = %v", err)
+			}
+			running.Store(false)
+			u.ops.Wait()
+			if r.quits != 1 || len(r.started)+len(r.launched) != 1 {
+				t.Fatalf("started %v launched %v quits %d", r.started, r.launched, r.quits)
+			}
+		})
+	}
+}
+
+func TestUpdaterStopsWaitingWithContext(t *testing.T) {
+	src := &fakeSource{res: withPortable(available(false)), zip: portableZip(t, "2")}
+	r := inAppRecorder(t)
+	opts := r.options(src, "1.0.0", "windows")
+	opts.Busy = func() bool { return true }
+	opts.IdlePoll = time.Millisecond
+	u, cancel := started(t, opts)
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, u, func(s UpdateStatus) bool { return s.State == UpdateWaiting })
+	cancel()
+	u.Wait()
+	if s := u.Status(); s.State != UpdateError || len(r.started) != 0 || r.quits != 0 {
+		t.Fatalf("status %+v started %v quits %d", s, r.started, r.quits)
+	}
+	assertFiles(t, filepath.Dir(r.exe), map[string]string{
+		"MongoRescue.exe":        "exe 1",
+		"tools/mongodump.exe":    "dump 1",
+		"tools/mongorestore.exe": "restore 1",
+	})
 }
 
 func TestUpdaterReportsDownloadProgress(t *testing.T) {
@@ -1013,7 +1071,7 @@ func TestRevealCommand(t *testing.T) {
 func TestUpdateScript(t *testing.T) {
 	s := UpdateScript()
 	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions", `case "installing":`, `state === "installing"`, "restarts on the new version", "yeni sürümle yeniden açılacak",
-		`"removeLegacy":"/desktop/update/remove-legacy"`, `case "restarting":`, "Downloading {percent}%", "İndiriliyor %{percent}", "Restarting…", "Yeniden başlatılıyor…",
+		`"removeLegacy":"/desktop/update/remove-legacy"`, `case "restarting":`, "Downloading {percent}%", "İndiriliyor %{percent}", "Restarting…", "Yeniden başlatılıyor…", `case "waiting":`, "Update will install after the running backup finishes", "çalışan yedekleme bitince kurulacak",
 		"mr-legacy-bar", "mongorescue_legacy_dismissed", "installed in Program Files", "Program Files klasöründe kurulu"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)

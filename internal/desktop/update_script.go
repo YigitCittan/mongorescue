@@ -18,7 +18,8 @@ import (
 // the bar for the session (sessionStorage); an "Update" button in the dashboard
 // header stays while an optional update is available and shows the bar again
 // (or opens the release page without an installable file); while an update runs it
-// shows the progress (Downloading x%, Installing…, Restarting…). On Windows, a
+// shows the progress (Downloading x%, Installing…, Restarting…, or that it waits
+// for a running backup). On Windows, a
 // per-machine copy left in Program Files gets a separate bar with "Remove", which
 // starts its uninstaller, and "Dismiss", which hides the bar for good
 // (localStorage). Release notes are set with textContent
@@ -49,6 +50,8 @@ const updateScript = `(function (paths, header) {
       installing: "Installing the update…",
       installingSetup: "Installing the update. MongoRescue closes and restarts on the new version.",
       restarting: "Restarting on the new version…",
+      waiting: "Update will install after the running backup finishes.",
+      headerWaiting: "Waiting for the backup…",
       headerDownloading: "Downloading {percent}%",
       headerDownloadingUnknown: "Downloading…",
       headerInstalling: "Installing…",
@@ -86,6 +89,8 @@ const updateScript = `(function (paths, header) {
       installing: "Güncelleme kuruluyor…",
       installingSetup: "Güncelleme kuruluyor. MongoRescue kapanıp yeni sürümle yeniden açılacak.",
       restarting: "Yeni sürümle yeniden başlatılıyor…",
+      waiting: "Güncelleme, çalışan yedekleme bitince kurulacak.",
+      headerWaiting: "Yedekleme bekleniyor…",
       headerDownloading: "İndiriliyor %{percent}",
       headerDownloadingUnknown: "İndiriliyor…",
       headerInstalling: "Kuruluyor…",
@@ -149,7 +154,7 @@ const updateScript = `(function (paths, header) {
     legacyHidden = true;
   }
   function busyState(state) {
-    return state === "downloading" || state === "checking" || state === "installing" || state === "restarting";
+    return state === "downloading" || state === "checking" || state === "installing" || state === "restarting" || state === "waiting";
   }
   // legacyBusy follows the start of the uninstaller, and the uninstall itself for a
   // minute, closely.
@@ -328,6 +333,9 @@ const updateScript = `(function (paths, header) {
       break;
     case "restarting":
       label = t("headerRestarting");
+      break;
+    case "waiting":
+      label = t("headerWaiting");
       break;
     }
     b.textContent = label;
@@ -518,6 +526,9 @@ const updateScript = `(function (paths, header) {
       break;
     case "restarting":
       text = t("restarting");
+      break;
+    case "waiting":
+      text = t("waiting");
       break;
     case "error":
       text = t("failed", vars);

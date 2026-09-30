@@ -3,6 +3,7 @@ package desktop
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/update"
 )
@@ -104,21 +106,24 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 // exactly want.
 func assertFiles(t *testing.T, dir string, want map[string]string) {
 	t.Helper()
-	got := map[string]string{}
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+	fsys := os.DirFS(dir)
+	var names []string
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			names = append(names, p)
 		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(dir, p)
-		got[filepath.ToSlash(rel)] = string(b)
-		return nil
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, name := range names {
+		b, rerr := fs.ReadFile(fsys, name)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		got[name] = string(b)
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("files in %s:\n got %v\nwant %v", dir, got, want)
@@ -199,6 +204,8 @@ func TestVerifyAndExtract(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFiles(t, staging, map[string]string{
+		".mongorescue-staging":      "",
+		".complete":                 "",
 		"MongoRescue.exe":           "exe 2",
 		"tools/mongodump.exe":       "dump 2",
 		"tools/mongorestore.exe":    "restore 2",
@@ -213,6 +220,39 @@ func TestVerifyAndExtract(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(renamed, "MongoRescue (1).exe")); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestExtractAcceptsOtherTools(t *testing.T) {
+	file := writeArchive(t, t.TempDir(), "portable.zip", zipBytes(t,
+		zipEntry{name: "MongoRescue.exe", body: "exe"},
+		zipEntry{name: "tools/mongodump.exe", body: "d"},
+		zipEntry{name: "tools/bsondump.exe", body: "b"},
+		zipEntry{name: "tools/libcrypto-3-x64.dll", body: "c"},
+		zipEntry{name: "tools/" + strings.Repeat("a", 64), body: "long"},
+		zipEntry{name: "tools/CONSOLE.txt", body: "not a device"},
+	))
+	staging := filepath.Join(t.TempDir(), "s")
+	if err := verifyAndExtract(file, staging, "MongoRescue.exe"); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"bsondump.exe", "libcrypto-3-x64.dll", strings.Repeat("a", 64), "CONSOLE.txt"} {
+		if _, err := os.Stat(filepath.Join(staging, "tools", n)); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestValidToolName(t *testing.T) {
+	for _, n := range []string{"mongodump.exe", "THIRD-PARTY-NOTICES", "LICENSE.md", "a", "x_y-z.1.dll", "COM10", "LPT0.txt", "nulls"} {
+		if !validToolName(n) {
+			t.Errorf("%q refused", n)
+		}
+	}
+	for _, n := range []string{"", ".", "..", ".x", "-x", "_x", "a/b", `a\b`, "a:b", "a b", "x.", "aux", "Aux.log", "PRN.a.b", "lpt9", "COM1", strings.Repeat("a", 65), "a..b"} {
+		if validToolName(n) {
+			t.Errorf("%q accepted", n)
+		}
 	}
 }
 
@@ -240,20 +280,30 @@ func TestVerifyAndExtractChecksumMismatch(t *testing.T) {
 func TestExtractRejectsUnexpectedEntries(t *testing.T) {
 	exe := zipEntry{name: "MongoRescue.exe", body: "exe"}
 	cases := map[string][]zipEntry{
-		"zip slip":           {exe, {name: "../evil.exe", body: "x"}},
-		"zip slip in tools":  {exe, {name: "tools/../../evil.exe", body: "x"}},
-		"backslash slip":     {exe, {name: `..\evil.exe`, body: "x"}},
-		"absolute":           {exe, {name: "/etc/evil", body: "x"}},
-		"drive letter":       {exe, {name: "C:/Windows/evil.exe", body: "x"}},
-		"unknown file":       {exe, {name: "evil.dll", body: "x"}},
-		"unknown tool":       {exe, {name: "tools/evil.exe", body: "x"}},
-		"nested dir":         {exe, {name: "tools/sub/mongodump.exe", body: "x"}},
-		"other dir":          {exe, {name: "sub/"}},
-		"duplicate":          {exe, {name: "MongoRescue.exe", body: "again"}},
-		"case duplicate":     {exe, {name: "tools/mongodump.exe", body: "a"}, {name: "tools/mongodump.exe", body: "b"}},
-		"symlink":            {{name: "MongoRescue.exe", body: "/bin/sh", mode: fs.ModeSymlink | 0o777}},
-		"exe as a directory": {{name: "MongoRescue.exe", mode: fs.ModeDir | 0o755}},
-		"no executable":      {{name: "tools/mongodump.exe", body: "x"}},
+		"zip slip":            {exe, {name: "../evil.exe", body: "x"}},
+		"zip slip in tools":   {exe, {name: "tools/../../evil.exe", body: "x"}},
+		"backslash slip":      {exe, {name: `..\evil.exe`, body: "x"}},
+		"absolute":            {exe, {name: "/etc/evil", body: "x"}},
+		"drive letter":        {exe, {name: "C:/Windows/evil.exe", body: "x"}},
+		"unknown file":        {exe, {name: "evil.dll", body: "x"}},
+		"device name":         {exe, {name: "tools/CON", body: "x"}},
+		"device name ext":     {exe, {name: "tools/nul.txt", body: "x"}},
+		"device name COM":     {exe, {name: "tools/com1.tar.gz", body: "x"}},
+		"stream":              {exe, {name: "tools/a.exe:evil", body: "x"}},
+		"hidden":              {exe, {name: "tools/.hidden", body: "x"}},
+		"trailing dot":        {exe, {name: "tools/mongodump.exe.", body: "x"}},
+		"dot dot":             {exe, {name: "tools/..", body: "x"}},
+		"space":               {exe, {name: "tools/a b.exe", body: "x"}},
+		"too long":            {exe, {name: "tools/" + strings.Repeat("a", 65), body: "x"}},
+		"tool case duplicate": {exe, {name: "tools/Mongodump.exe", body: "a"}, {name: "tools/mongodump.EXE", body: "b"}},
+		"exe in tools only":   {{name: "tools/MongoRescue.exe", body: "x"}},
+		"nested dir":          {exe, {name: "tools/sub/mongodump.exe", body: "x"}},
+		"other dir":           {exe, {name: "sub/"}},
+		"duplicate":           {exe, {name: "MongoRescue.exe", body: "again"}},
+		"case duplicate":      {exe, {name: "tools/mongodump.exe", body: "a"}, {name: "tools/mongodump.exe", body: "b"}},
+		"symlink":             {{name: "MongoRescue.exe", body: "/bin/sh", mode: fs.ModeSymlink | 0o777}},
+		"exe as a directory":  {{name: "MongoRescue.exe", mode: fs.ModeDir | 0o755}},
+		"no executable":       {{name: "tools/mongodump.exe", body: "x"}},
 	}
 	for name, entries := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -403,41 +453,181 @@ func TestSwapInFilesNeedsStagedExecutable(t *testing.T) {
 	}
 }
 
+// stage writes a staging directory of version v next to exe with files and the
+// markers named in markers.
+func stage(t *testing.T, exe, v string, files map[string]string, markers ...string) string {
+	t.Helper()
+	dir := filepath.Join(filepath.Dir(exe), ".update-"+v)
+	all := map[string]string{}
+	for k, b := range files {
+		all[k] = b
+	}
+	for _, m := range markers {
+		all[m] = ""
+	}
+	writeFiles(t, dir, all)
+	return dir
+}
+
 func TestRemoveLeftovers(t *testing.T) {
 	root := t.TempDir()
+	exe := filepath.Join(root, "MongoRescue.exe")
 	writeFiles(t, root, map[string]string{
-		"MongoRescue.exe":                 "exe 2",
-		"MongoRescue.exe.old":             "exe 1",
-		"tools/mongodump.exe":             "dump 2",
-		"tools.old/mongodump.exe":         "dump 1",
-		".update-2.0.0/MongoRescue.exe":   "exe 2",
-		".update-1.9.0/tools/LICENSE.md":  "x",
-		"notes.old":                       "user file",
-		"Other.exe.old":                   "user file",
-		".update-notes":                   "a file, not a staging directory",
-		"backups/.update-3.0.0/keep.txt":  "nested",
-		"MongoRescue.exe.old.config/keep": "user dir",
+		"MongoRescue.exe":                     "exe 2",
+		"MongoRescue.exe.old":                 "exe 1",
+		"tools/mongodump.exe":                 "dump 2",
+		"tools.old/mongodump.exe":             "dump 1",
+		"notes.old":                           "user file",
+		"Other.exe.old":                       "user file",
+		".update-notes":                       "a file, not a staging directory",
+		"backups/.update-3.0.0/keep.txt":      "nested",
+		"MongoRescue.exe.old.config/keep":     "user dir",
+		".update-4.0.0/keep.txt":              "no marker: not ours",
+		".update-latest/.mongorescue-staging": "not a version",
+		".update-01.2.3/.mongorescue-staging": "not a canonical version",
 	})
-	removed := removeLeftovers(osFileOps(), filepath.Join(root, "MongoRescue.exe"))
+	stage(t, exe, "2.0.0", map[string]string{"MongoRescue.exe": "exe 2"}, stagingMarker, completeMarker)
+	stage(t, exe, "1.9.0", map[string]string{"tools/LICENSE.md": "x"}, stagingMarker)
+	removed := removeLeftovers(osFileOps(), exe)
 	if len(removed) != 4 {
 		t.Errorf("removed %v", removed)
 	}
 	assertFiles(t, root, map[string]string{
-		"MongoRescue.exe":                 "exe 2",
-		"tools/mongodump.exe":             "dump 2",
-		"notes.old":                       "user file",
-		"Other.exe.old":                   "user file",
-		".update-notes":                   "a file, not a staging directory",
-		"backups/.update-3.0.0/keep.txt":  "nested",
-		"MongoRescue.exe.old.config/keep": "user dir",
+		"MongoRescue.exe":                     "exe 2",
+		"tools/mongodump.exe":                 "dump 2",
+		"notes.old":                           "user file",
+		"Other.exe.old":                       "user file",
+		".update-notes":                       "a file, not a staging directory",
+		"backups/.update-3.0.0/keep.txt":      "nested",
+		"MongoRescue.exe.old.config/keep":     "user dir",
+		".update-4.0.0/keep.txt":              "no marker: not ours",
+		".update-latest/.mongorescue-staging": "not a version",
+		".update-01.2.3/.mongorescue-staging": "not a canonical version",
 	})
 	// Best effort: a file that cannot be removed (the old process still runs) is
 	// skipped.
 	writeFiles(t, root, map[string]string{"MongoRescue.exe.old": "exe 1"})
 	ops := osFileOps()
 	ops.removeAll = func(string) error { return fs.ErrPermission }
-	if removed := removeLeftovers(ops, filepath.Join(root, "MongoRescue.exe")); len(removed) != 0 {
+	if removed := removeLeftovers(ops, exe); len(removed) != 0 {
 		t.Errorf("removed %v", removed)
+	}
+}
+
+func TestRemoveLeftoversKeepsTheOnlyCopy(t *testing.T) {
+	// Without the executable or tools, *.old is the only copy: it is kept.
+	root := t.TempDir()
+	exe := filepath.Join(root, "MongoRescue.exe")
+	writeFiles(t, root, map[string]string{"MongoRescue.exe.old": "exe 1", "tools.old/mongodump.exe": "dump 1"})
+	if removed := removeLeftovers(osFileOps(), exe); len(removed) != 0 {
+		t.Errorf("removed %v", removed)
+	}
+}
+
+// TestRecoverSwap covers a crash (power loss, kill) after each rename of the swap
+// and of its rollback: the recovery leaves a working exe and tools.
+func TestRecoverSwap(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, exe string)
+		want  map[string]string // after recovery and cleanup
+	}{
+		{"extraction cut short", func(t *testing.T, exe string) {
+			stage(t, exe, "2.0.0", map[string]string{"MongoRescue.exe": "exe 2"}, stagingMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 1", "tools/mongodump.exe": "dump 1"}},
+		{"after exe -> exe.old", func(t *testing.T, exe string) {
+			mustRename(t, exe, exe+".old")
+			stage(t, exe, "2.0.0", map[string]string{"MongoRescue.exe": "exe 2", "tools/mongodump.exe": "dump 2"}, stagingMarker, completeMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 1", "tools/mongodump.exe": "dump 1"}},
+		{"after the new exe moved in", func(t *testing.T, exe string) {
+			mustRename(t, exe, exe+".old")
+			writeFiles(t, filepath.Dir(exe), map[string]string{"MongoRescue.exe": "exe 2"})
+			stage(t, exe, "2.0.0", map[string]string{"tools/mongodump.exe": "dump 2"}, stagingMarker, completeMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 2", "tools/mongodump.exe": "dump 1"}},
+		{"after tools -> tools.old", func(t *testing.T, exe string) {
+			dir := filepath.Dir(exe)
+			mustRename(t, exe, exe+".old")
+			writeFiles(t, dir, map[string]string{"MongoRescue.exe": "exe 2"})
+			mustRename(t, filepath.Join(dir, "tools"), filepath.Join(dir, "tools.old"))
+			stage(t, exe, "2.0.0", map[string]string{"tools/mongodump.exe": "dump 2"}, stagingMarker, completeMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 2", "tools/mongodump.exe": "dump 2"}},
+		{"tools missing, staging incomplete", func(t *testing.T, exe string) {
+			dir := filepath.Dir(exe)
+			mustRename(t, filepath.Join(dir, "tools"), filepath.Join(dir, "tools.old"))
+			stage(t, exe, "2.0.0", map[string]string{"tools/mongodump.exe": "partial"}, stagingMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 1", "tools/mongodump.exe": "dump 1"}},
+		{"swap complete, old process gone", func(t *testing.T, exe string) {
+			dir := filepath.Dir(exe)
+			mustRename(t, exe, exe+".old")
+			mustRename(t, filepath.Join(dir, "tools"), filepath.Join(dir, "tools.old"))
+			writeFiles(t, dir, map[string]string{"MongoRescue.exe": "exe 2", "tools/mongodump.exe": "dump 2"})
+			stage(t, exe, "2.0.0", nil, stagingMarker, completeMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 2", "tools/mongodump.exe": "dump 2"}},
+		{"rollback cut after restoring tools", func(t *testing.T, exe string) {
+			mustRename(t, exe, exe+".old")
+			stage(t, exe, "2.0.0", map[string]string{"MongoRescue.exe": "exe 2"}, stagingMarker, completeMarker)
+		}, map[string]string{"MongoRescue.exe": "exe 1", "tools/mongodump.exe": "dump 1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			exe := filepath.Join(root, "MongoRescue.exe")
+			writeFiles(t, root, map[string]string{"MongoRescue.exe": "exe 1", "tools/mongodump.exe": "dump 1"})
+			c.setup(t, exe)
+			ops := osFileOps()
+			if _, err := recoverSwap(ops, exe); err != nil {
+				t.Fatal(err)
+			}
+			removeLeftovers(ops, exe)
+			assertFiles(t, root, c.want)
+		})
+	}
+}
+
+func TestRecoverSwapReportsFailure(t *testing.T) {
+	root := t.TempDir()
+	exe := filepath.Join(root, "MongoRescue.exe")
+	writeFiles(t, root, map[string]string{"MongoRescue.exe.old": "exe 1", "tools/x": "x"})
+	ops := osFileOps()
+	ops.rename = func(string, string) error { return fs.ErrPermission }
+	if done, err := recoverSwap(ops, exe); !errors.Is(err, fs.ErrPermission) || len(done) != 0 {
+		t.Errorf("done %v err %v", done, err)
+	}
+}
+
+func TestCanonicalExe(t *testing.T) {
+	for in, want := range map[string]string{
+		`C:\A\MongoRescue.exe`:     `C:\A\MongoRescue.exe`,
+		`C:\A\MongoRescue.exe.old`: `C:\A\MongoRescue.exe`,
+		`C:\A\notes.old`:           `C:\A\notes.old`,
+	} {
+		if got := canonicalExe(in); got != want {
+			t.Errorf("canonicalExe(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestWaitIdle(t *testing.T) {
+	if err := WaitIdle(context.Background(), nil, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	busy := func() bool { calls++; return calls < 3 }
+	if err := WaitIdle(context.Background(), busy, time.Millisecond); err != nil || calls != 3 {
+		t.Fatalf("err %v calls %d", err, calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := WaitIdle(ctx, func() bool { return true }, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// mustRename renames from to to.
+func mustRename(t *testing.T, from, to string) {
+	t.Helper()
+	if err := os.Rename(from, to); err != nil {
+		t.Fatal(err)
 	}
 }
 

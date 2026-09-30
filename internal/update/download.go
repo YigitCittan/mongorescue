@@ -105,7 +105,7 @@ func (c *Checker) DownloadAsset(ctx context.Context, res Result, asset Asset, di
 		}
 	}()
 	h := sha256.New()
-	var w io.Writer = io.MultiWriter(tmp, h)
+	var w = io.MultiWriter(tmp, h)
 	if progress != nil {
 		progress(0, size)
 		w = &progressWriter{w: w, total: size, report: progress}
