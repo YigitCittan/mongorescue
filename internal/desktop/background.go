@@ -80,6 +80,8 @@ type TrayTexts struct {
 	ForceQuit   string
 	NoticeTitle string
 	Notice      string
+	// ShuttingDown is shown under the status line while a soft quit waits.
+	ShuttingDown string
 
 	lang Language
 }
@@ -96,7 +98,9 @@ func TextsFor(lang Language) TrayTexts {
 			ForceQuit:   "Zorla çık",
 			NoticeTitle: "MongoRescue",
 			Notice:      "MongoRescue arka planda çalışmaya devam ediyor",
-			lang:        Turkish,
+			// The same wording as the API's refusal.
+			ShuttingDown: "MongoRescue kapanıyor: yeni yedekleme ve geri yüklemeler başlatılmıyor",
+			lang:         Turkish,
 		}
 	}
 	return TrayTexts{
@@ -108,7 +112,9 @@ func TextsFor(lang Language) TrayTexts {
 		ForceQuit:   "Force quit",
 		NoticeTitle: "MongoRescue",
 		Notice:      "MongoRescue keeps running in the background",
-		lang:        English,
+		// The same wording as the API's refusal of new runs.
+		ShuttingDown: "MongoRescue is shutting down: new backups and restores are refused",
+		lang:         English,
 	}
 }
 
@@ -235,10 +241,11 @@ type RunController interface {
 	ActiveRuns() []string
 	// Busy reports whether a backup or restore runs.
 	Busy() bool
-	// PauseScheduling keeps scheduled runs from starting.
-	PauseScheduling()
-	// ResumeScheduling lets scheduled runs start again.
-	ResumeScheduling()
+	// PauseRuns keeps new backups and restores from starting: scheduled ones
+	// are skipped and on-demand ones refused ("MongoRescue is shutting down").
+	PauseRuns()
+	// ResumeRuns lets backups and restores start again.
+	ResumeRuns()
 }
 
 // defaultQuitPoll is how often a soft quit checks again whether the runs ended.
@@ -263,6 +270,10 @@ type BackgroundOptions struct {
 	HideWindow func()
 	// Notify shows a notification from the tray icon; nil does nothing.
 	Notify func(title, message string) error
+	// TrayReady reports whether the tray icon is shown and its menu works. While
+	// it reports false, closing the window closes the app, since a hidden window
+	// could not be opened again. Nil means always ready.
+	TrayReady func() bool
 	// NoticeFile records that the background notice was shown; "" shows it once
 	// per process.
 	NoticeFile string
@@ -273,8 +284,8 @@ type BackgroundOptions struct {
 	// Changed is called after the state shown in the tray menu changed; nil does
 	// nothing. It must not block on Background.
 	Changed func()
-	// Poll is how often a soft quit checks again whether the runs ended; 0 means
-	// one second.
+	// Poll is how often a soft quit checks again whether the runs ended, and
+	// ShowIfNoTray whether the tray came up; 0 means one second.
 	Poll time.Duration
 	// Logger receives the log records; nil means slog.Default().
 	Logger *slog.Logger
@@ -379,7 +390,7 @@ func (b *Background) SoftQuit() {
 	ctx, cancel := context.WithCancelCause(b.ctx)
 	b.waitCancel = cancel
 	// Paused under b.mu, so CancelQuit cannot resume before the pause.
-	b.opts.Runs.PauseScheduling()
+	b.opts.Runs.PauseRuns()
 	b.wg.Add(1)
 	b.mu.Unlock()
 
@@ -393,7 +404,7 @@ func (b *Background) SoftQuit() {
 		b.mu.Lock()
 		b.waitCancel = nil
 		if err != nil && !b.quitting {
-			b.opts.Runs.ResumeScheduling()
+			b.opts.Runs.ResumeRuns()
 		}
 		b.mu.Unlock()
 		cancel(nil)
@@ -440,9 +451,51 @@ func (b *Background) ForceQuit() {
 	b.opts.ForceQuit()
 }
 
-// WindowClosing hides the window instead of closing it. The first time, it shows
-// a notice that the app keeps running, and records that in NoticeFile.
-func (b *Background) WindowClosing() {
+// trayReady reports whether the tray works.
+func (b *Background) trayReady() bool {
+	return b.opts.TrayReady == nil || b.opts.TrayReady()
+}
+
+// ShowIfNoTray calls show when the tray is not ready within timeout, so a window
+// started hidden (HiddenFlag) does not stay out of reach. It returns at once; the
+// check runs in a goroutine that Close ends.
+func (b *Background) ShowIfNoTray(timeout time.Duration, show func()) {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	b.wg.Add(1)
+	b.mu.Unlock()
+	go func() {
+		defer b.wg.Done()
+		deadline := time.NewTimer(timeout)
+		defer deadline.Stop()
+		tick := time.NewTicker(min(b.opts.Poll, timeout))
+		defer tick.Stop()
+		for !b.trayReady() {
+			select {
+			case <-b.ctx.Done():
+				return
+			case <-deadline.C:
+				b.opts.Logger.Warn("the tray icon did not come up; showing the window", slog.Duration("timeout", timeout))
+				show()
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+}
+
+// WindowClosing hides the window instead of closing it and reports true, while
+// the tray is ready; otherwise it reports false and the window closes, which
+// quits the app. The first time it hides the window, it shows a notice that the
+// app keeps running, and records that in NoticeFile.
+func (b *Background) WindowClosing() bool {
+	if !b.trayReady() {
+		b.opts.Logger.Warn("the tray icon is not available; closing the window quits the app")
+		return false
+	}
 	if b.opts.HideWindow != nil {
 		b.opts.HideWindow()
 	}
@@ -450,7 +503,15 @@ func (b *Background) WindowClosing() {
 	shown := b.noticeShown
 	b.noticeShown = true
 	b.mu.Unlock()
-	if shown || b.opts.Notify == nil {
+	if !shown {
+		b.showNotice()
+	}
+	return true
+}
+
+// showNotice shows the background notice unless NoticeFile records it.
+func (b *Background) showNotice() {
+	if b.opts.Notify == nil {
 		return
 	}
 	if b.opts.NoticeFile != "" {

@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"path/filepath"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -40,6 +41,7 @@ func (d *desktopApp) initBackground(dataDir string) {
 			}
 		},
 		Notify:     func(title, message string) error { return d.platform.tray.Notify(title, message) },
+		TrayReady:  func() bool { return d.platform.tray.Ready() },
 		NoticeFile: filepath.Join(dataDir, desktop.BackgroundNoticeFile),
 		UpdateWaiting: func() bool {
 			return d.updater.Status().State == desktop.UpdateWaiting
@@ -56,9 +58,17 @@ func (d *desktopApp) initBackground(dataDir string) {
 	})
 }
 
-// startBackground shows the tray icon once the app runs.
+// trayStartTimeout is how long a window started hidden waits for the tray icon
+// before it is shown.
+const trayStartTimeout = 10 * time.Second
+
+// startBackground shows the tray icon once the app runs. A window started hidden
+// is shown when the icon does not come up in time.
 func (d *desktopApp) startBackground() {
 	d.platform.start()
+	if d.startHidden && d.background != nil {
+		d.background.ShowIfNoTray(trayStartTimeout, d.showWindow)
+	}
 }
 
 // stopBackground ends a soft quit or a confirmation in progress, then removes the

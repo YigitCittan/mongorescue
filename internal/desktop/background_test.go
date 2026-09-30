@@ -31,14 +31,14 @@ func (f *fakeRuns) Busy() bool {
 	return len(f.ActiveRuns()) > 0
 }
 
-func (f *fakeRuns) PauseScheduling() {
+func (f *fakeRuns) PauseRuns() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.paused = true
 	f.pauses++
 }
 
-func (f *fakeRuns) ResumeScheduling() {
+func (f *fakeRuns) ResumeRuns() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.paused = false
@@ -274,8 +274,11 @@ func TestWindowClosingHidesAndShowsTheNoticeOnce(t *testing.T) {
 		NoticeFile: notice,
 	}
 	b, _ := newBackgroundForTest(t, &fakeRuns{}, opts)
-	b.WindowClosing()
-	b.WindowClosing()
+	for range 2 {
+		if !b.WindowClosing() {
+			t.Fatal("WindowClosing let the window close with the tray ready")
+		}
+	}
 	if hides.Load() != 2 || notices.Load() != 1 {
 		t.Fatalf("hides=%d notices=%d; want 2/1", hides.Load(), notices.Load())
 	}
@@ -291,6 +294,54 @@ func TestWindowClosingHidesAndShowsTheNoticeOnce(t *testing.T) {
 	if hides.Load() != 3 || notices.Load() != 1 {
 		t.Fatalf("hides=%d notices=%d after a restart; want 3/1", hides.Load(), notices.Load())
 	}
+}
+
+func TestWindowClosesWithoutATray(t *testing.T) {
+	ready := false
+	var hides atomic.Int32
+	b, _ := newBackgroundForTest(t, &fakeRuns{}, BackgroundOptions{
+		TrayReady:  func() bool { return ready },
+		HideWindow: func() { hides.Add(1) },
+	})
+	if b.WindowClosing() || hides.Load() != 0 {
+		t.Fatal("the window was hidden although the tray is not ready")
+	}
+	ready = true
+	if !b.WindowClosing() || hides.Load() != 1 {
+		t.Fatal("the window was not hidden with the tray ready")
+	}
+}
+
+func TestShowIfNoTray(t *testing.T) {
+	var ready atomic.Bool
+	shown := make(chan struct{}, 2)
+	show := func() { shown <- struct{}{} }
+
+	// The tray never comes up: the window is shown after the timeout.
+	b, _ := newBackgroundForTest(t, &fakeRuns{}, BackgroundOptions{TrayReady: ready.Load})
+	b.ShowIfNoTray(30*time.Millisecond, show)
+	select {
+	case <-shown:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hidden window was not shown without a tray")
+	}
+
+	// The tray comes up in time: the window stays hidden.
+	b2, _ := newBackgroundForTest(t, &fakeRuns{}, BackgroundOptions{TrayReady: ready.Load})
+	b2.ShowIfNoTray(200*time.Millisecond, show)
+	ready.Store(true)
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case <-shown:
+		t.Fatal("the window was shown although the tray came up")
+	default:
+	}
+
+	// Close ends the check.
+	ready.Store(false)
+	b3, _ := newBackgroundForTest(t, &fakeRuns{}, BackgroundOptions{TrayReady: ready.Load})
+	b3.ShowIfNoTray(time.Hour, show)
+	b3.Close()
 }
 
 func TestWindowClosingRetriesTheNoticeAfterAFailure(t *testing.T) {
@@ -345,6 +396,8 @@ func TestTrayTexts(t *testing.T) {
 		{en.Open, "Open MongoRescue"},
 		{en.Autostart, "Start with Windows"},
 		{TextsFor("de").Quit, "Quit"},
+		{en.ShuttingDown, "MongoRescue is shutting down: new backups and restores are refused"},
+		{tr.ShuttingDown, "MongoRescue kapanıyor: yeni yedekleme ve geri yüklemeler başlatılmıyor"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -441,10 +494,24 @@ func TestAutostartReflectsAndChangesTheEntry(t *testing.T) {
 	if _, ok := key.values[AutostartValueName]; ok {
 		t.Fatal("Run value not removed")
 	}
-	// An entry written elsewhere (by the installer, another copy) is reflected.
-	key.values[AutostartValueName] = `"D:\MongoRescue.exe" --hidden`
+	// The entry of this copy is recognised whatever the case and quoting.
+	key.values[AutostartValueName] = `"c:\apps\mongo rescue\MONGORESCUE.EXE" --hidden`
 	if on, _ := a.Enabled(); !on {
-		t.Fatal("an existing entry is not reflected")
+		t.Fatal("the entry of this copy is not recognised")
+	}
+	// An entry for another copy shows unticked; ticking rewrites it.
+	key.values[AutostartValueName] = `"D:\Old\MongoRescue.exe" --hidden`
+	if on, _ := a.Enabled(); on {
+		t.Fatal("an entry for another copy is reported as enabled")
+	}
+	if err := a.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := key.values[AutostartValueName], `"C:\Apps\Mongo Rescue\MongoRescue.exe" --hidden`; got != want {
+		t.Fatalf("Run value = %q after ticking; want %q", got, want)
+	}
+	if on, _ := a.Enabled(); !on {
+		t.Fatal("the rewritten entry is not reported as enabled")
 	}
 	key.err = errors.New("access denied")
 	if _, err := a.Enabled(); err == nil {

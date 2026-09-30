@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -45,13 +46,51 @@ type Autostart struct {
 	Executable func() (string, error)
 }
 
-// Enabled reports whether the autostart entry exists.
+// Enabled reports whether the autostart entry starts the running executable. An
+// entry for another path (another copy, an old install location) reports false,
+// so turning autostart on rewrites it for this copy.
 func (a *Autostart) Enabled() (bool, error) {
 	v, ok, err := a.Key.Get(AutostartValueName)
 	if err != nil {
 		return false, fmt.Errorf("read the autostart entry: %w", err)
 	}
-	return ok && strings.TrimSpace(v) != "", nil
+	if !ok || strings.TrimSpace(v) == "" {
+		return false, nil
+	}
+	exe, err := a.executable()()
+	if err != nil {
+		return false, fmt.Errorf("find the executable: %w", err)
+	}
+	return sameExecutable(commandExecutable(v), exe), nil
+}
+
+// executable returns the Executable function or ExecutablePath.
+func (a *Autostart) executable() func() (string, error) {
+	if a.Executable != nil {
+		return a.Executable
+	}
+	return ExecutablePath
+}
+
+// commandExecutable returns the program of a Run key command line: the quoted
+// first part, or the part before the first space.
+func commandExecutable(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if rest, ok := strings.CutPrefix(cmd, `"`); ok {
+		if i := strings.IndexByte(rest, '"'); i >= 0 {
+			return rest[:i]
+		}
+		return rest
+	}
+	if i := strings.IndexAny(cmd, " \t"); i >= 0 {
+		return cmd[:i]
+	}
+	return cmd
+}
+
+// sameExecutable compares two Windows paths, which are case-insensitive.
+func sameExecutable(a, b string) bool {
+	return a != "" && strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // SetEnabled writes the autostart entry for the running executable, or removes
@@ -63,11 +102,7 @@ func (a *Autostart) SetEnabled(on bool) error {
 		}
 		return nil
 	}
-	executable := a.Executable
-	if executable == nil {
-		executable = ExecutablePath
-	}
-	exe, err := executable()
+	exe, err := a.executable()()
 	if err != nil {
 		return fmt.Errorf("find the executable: %w", err)
 	}
