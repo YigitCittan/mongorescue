@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,15 +21,18 @@ func TestClientsCannotChooseTheStorageKey(t *testing.T) {
 	if err := st.SaveBackupRecord(context.Background(), victim); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{victim.StorageKey, "../../../../tmp/owned", "/etc/cron.d/x"} {
-		body, _ := json.Marshal(map[string]any{"connection_id": testConnID, "database": "shop", "target_key": key})
+	// Each attempt backs up its own database so that one attempt's run lock, which is
+	// released just after its record completes, never makes the next one busy.
+	for i, key := range []string{victim.StorageKey, "../../../../tmp/owned", "/etc/cron.d/x"} {
+		db := fmt.Sprintf("shop%d", i)
+		body, _ := json.Marshal(map[string]any{"connection_id": testConnID, "database": db, "target_key": key})
 		rec := serve(h, "POST", "/api/v1/backups", body, map[string]string{"Content-Type": "application/json"})
 		if rec.Code != http.StatusAccepted {
 			t.Fatalf("backup with target_key %q: %d %s", key, rec.Code, rec.Body)
 		}
 		var started models.BackupRecord
 		decodeData(t, rec, &started)
-		if started.StorageKey == key || !strings.HasPrefix(started.StorageKey, "shop/") || strings.Contains(started.StorageKey, "..") {
+		if started.StorageKey == key || !strings.HasPrefix(started.StorageKey, db+"/") || strings.Contains(started.StorageKey, "..") {
 			t.Fatalf("target_key %q was honoured: storage key %q", key, started.StorageKey)
 		}
 		awaitRecord(t, h, "/api/v1/backups", started.ID)
