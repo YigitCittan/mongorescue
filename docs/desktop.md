@@ -62,6 +62,19 @@ Offline, rate-limited or when GitHub is unreachable, the check fails quietly: it
 
 The prompt talks to the app through `/desktop/update` endpoints answered in-process before the dashboard handler (`internal/desktop.Updater`): only same-origin requests from the app's own window are served (`GET /desktop/update` for the status with the download percentage and the legacy copy, `POST /desktop/update/install`, `/desktop/update/release-page` and `/desktop/update/remove-legacy`), and the `POST` endpoints also require the `X-MongoRescue-Desktop: 1` header. The check and the download are bound to the app's lifetime and stop when it closes.
 
+## Running in the background
+
+On Windows the app keeps running with a MongoRescue icon in the notification area (system tray), so scheduled backups continue while its window is closed. macOS and Linux are unchanged: closing the window quits the app.
+
+- **Closing the window** (X or Alt+F4) hides it. The first time, a notification says *MongoRescue keeps running in the background*; `<data dir>/background-notice-shown` records that it was shown.
+- **Clicking the tray icon**, **Open MongoRescue**, or starting the app again shows the window and brings it to the front.
+- The menu shows the current state, refreshed every few seconds: *Idle*, *Running: 1 backup*, or *Quitting after 1 running backup finishes…*.
+- **Start with Windows** (a checkbox) writes, or removes, the value `MongoRescue` = `"<path to MongoRescue.exe>" --hidden` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The checkbox shows whether the value exists. `--hidden` starts the app with its window hidden in the tray.
+- **Quit** quits at once when no backup or restore runs. Otherwise scheduled runs stop starting and the app quits once the running ones have finished, however long they take. Until then the menu offers **Cancel quit**, which lets scheduled runs start again.
+- **Force quit** asks for confirmation while runs are active (*1 backup is running and will be cancelled. Quit anyway?*). It then cancels them and quits right away. Cancelled runs are recorded as failed with the message `cancelled: application force quit`, which shows in the history and in `desktop.log`.
+
+The menu is in Turkish when the Windows display language is Turkish and in English otherwise. An in-app update also waits for running backups and restores before it installs (the tray then shows *Updating after …*). The new version it starts always shows its window, even if the old one was started with `--hidden`.
+
 ## Data and logs
 
 | | Default location |

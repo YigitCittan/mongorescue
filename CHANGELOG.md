@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Desktop app on Windows: the app keeps running in the background with a tray icon, so scheduled backups continue while the window is closed. Closing the window hides it (a one-time notification says so), and clicking the icon shows it again. The tray menu (Turkish or English, following the Windows display language) offers **Open MongoRescue**, a status line (*Idle*, *Running: 1 backup*), **Start with Windows** (`HKCU\…\Run` value `MongoRescue` = `"<exe>" --hidden`), **Quit** and **Force quit**. **Quit** waits for running backups and restores with scheduling paused, and can be cancelled. **Force quit** asks for confirmation, then cancels the runs and records them as failed with `cancelled: application force quit`. `--hidden` starts the app hidden in the tray. macOS and Linux are unchanged. See [docs/desktop.md](docs/desktop.md#running-in-the-background).
 - Desktop app on Windows: when an older per-machine copy is still installed in Program Files, a one-time bar offers **Remove** (runs that copy's uninstaller silently; Windows asks for administrator rights) or **Dismiss**. Both copies share the data in `%APPDATA%\MongoRescue`, so nothing is migrated; the update moves a per-machine copy to a per-user one, and the old copy's shortcuts remain until it is removed. See [docs/desktop.md](docs/desktop.md#updates).
 
 ### Changed
