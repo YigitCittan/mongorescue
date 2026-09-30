@@ -79,7 +79,7 @@ flowchart TB
 | `internal/audit` | The audit log of API key activity (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
-| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober` |
+| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups and checks the restore privilege |
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
 | `internal/backup` | Backup engine: runs `mongodump`, hashes, optionally encrypts, streams to storage, cleans up on failure |
 | `internal/restore` | Restore engine: safe-clone namespace mapping, verify-before-restore, decryption, runs `mongorestore` |
@@ -154,8 +154,9 @@ flowchart TD
 
 1. The target namespace is resolved: `<db>_rescue_<timestamp>` by default (an omitted `safe_clone` means true). An in-place restore into the source database or an explicit `target_database` requires `safe_clone: false` and `confirm_in_place: true`; otherwise the request is rejected with `ErrInPlaceNotConfirmed` (HTTP 400). The source part of a clone name is shortened so that it fits MongoDB's 63-byte limit. A client-supplied target database and selected collections must be valid MongoDB names (`models.ErrInvalidNamespace`, HTTP 400); the backup's own database name is never refused.
 2. If the verify policy applies (`always`, or `auto` for in-place restores), the artifact is streamed once into `io.Discard` while its SHA-256 is compared with the record and, for encrypted backups, the age stream is fully authenticated. On any failure the restore stops before `mongorestore` starts.
-3. The artifact is streamed again, decrypted if needed, into `mongorestore`'s stdin. Namespace rewriting (`--nsFrom`/`--nsTo`) implements safe clones; `--nsInclude` implements collection-level restores.
-4. The restore record is saved and a `restore.succeeded` or `restore.failed` event is published.
+3. The artifact is streamed again, decrypted if needed, into `mongorestore`'s stdin, and hashed on the way. Namespace rewriting (`--nsFrom`/`--nsTo`) implements safe clones; `--nsInclude` implements collection-level restores. `--bypassDocumentValidation` is added when the user holds that privilege on the target (checked through `mongoconn`).
+4. After `mongorestore` exits, the unread rest of the artifact is hashed and the SHA-256 compared with the record: a mismatch fails the restore (*backup checksum mismatch*), and so does a `mongorestore` summary with documents that failed to restore (`ErrDocumentsFailed`), although `mongorestore` exits 0 then.
+5. The restore record is saved and a `restore.succeeded` or `restore.failed` event is published.
 
 ## Settings and storage targets
 

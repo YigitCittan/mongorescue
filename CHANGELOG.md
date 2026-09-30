@@ -42,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A sealed credential with an inserted line break or altered final base64 character was still accepted; only the exact encoding is now opened.
 - A cron expression that is only a time zone (`TZ=UTC`, `CRON_TZ=...`) crashed schedule validation instead of being rejected.
 - The one-time import of the legacy configuration hung on an identity file that is a device or FIFO (such as `/dev/zero`); legacy files must be regular files and are read with a size limit.
+- Backups of several selected collections dumped only the last one: `mongodump` honours a single `--collection` flag. The selection is now expressed as exclusions after listing the database, so every selected collection is backed up; without a way to list the database such a backup fails (`ErrCollectionFilter`) instead of silently missing data.
+- A restore of a corrupted artifact could be reported as successful when `mongorestore` accepted the damage (for example a changed byte in the archive's index or collection metadata) and no verification pass ran, which is the default for safe clones. The stored bytes are now hashed while they stream and compared with the recorded SHA-256 once `mongorestore` exits; a mismatch fails the restore with *backup checksum mismatch*.
+- `mongorestore` exits successfully when it cannot insert documents (duplicate keys in a target that already held data, documents rejected by a validator); such restores were reported as successful. They now fail with *N document(s) failed to restore* and the reason.
+- Documents that predate a collection's validator were dropped by restores. When the MongoDB user holds the `bypassDocumentValidation` privilege on the target (the `restore`, `dbAdmin`, `dbOwner` or `root` role), restores now run with `--bypassDocumentValidation`; with only `readWrite`, a rejected document fails the restore (see above).
+- A cancelled, timed-out or stalled backup to S3 left its multipart upload (the parts already uploaded) in the bucket, invisible and billed: the SDK aborted it with the cancelled context. The upload is now aborted with a detached context.
+
+### Added
+- [docs/testing.md](docs/testing.md): what the unit, security, fuzz, integration and nightly suites guarantee, how to run them and the known limits (users and roles are not in per-database backups, no point-in-time recovery).
+- Integration tests for round-trip fidelity (every BSON type, index type and collection option, gzip, encryption, filters), corrupted and truncated artifacts, interrupted backups (no leftovers, no incomplete multipart uploads, retention keeps the last good backup), concurrency, users and roles, and throughput and memory. CI runs them against MongoDB 5.0, 6.0, 7.0 and 8.0 and an 8.0 replica set; a nightly workflow adds about 2 GiB of data with a 256 MiB memory limit, and the fuzz targets.
 
 ## [0.7.1] - 2026-09-30
 

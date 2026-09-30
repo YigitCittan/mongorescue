@@ -59,6 +59,7 @@ make cross-compile               # Linux, macOS, Windows
 ```bash
 make test-integration-docker                 # MongoDB 7 + MinIO + LocalStack in Docker
 IT_PROVIDERS=minio make test-integration-docker
+MONGO_IMAGE=mongo:8.0 MONGO_TOPOLOGY=replset make test-integration-docker   # another version, a replica set
 make test-integration                        # against services you configured yourself
 make docker-smoke                            # build the image and smoke-test it
 ```
@@ -82,7 +83,7 @@ On every push and pull request (`.github/workflows/ci.yml`):
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
 - **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum and release toolchain) and 1.27.x; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
-- **Integration**: the integration suite against MongoDB 7 with MinIO and with LocalStack.
+- **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, and the fuzz targets; see [docs/testing.md](docs/testing.md).
 - **Docker smoke test**: builds the image and checks health, auth, dashboard and bundled tools.
 
 The cloud provider suite runs only on pushes to `main` and on `v*` tags in `YigitCittan/mongorescue`, never on pull requests. You do not need cloud credentials to contribute.
@@ -206,7 +207,7 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | `make fuzz` | Each fuzz target in `FUZZ_TARGETS` for `FUZZTIME` (default `30s`), one after another | Go |
 | `make docker-smoke` | Builds the image and checks health, auth, dashboard and bundled tools | Docker, curl |
 
-The integration suite (`internal/integration`) drives the real `mongodump`/`mongorestore` binaries: backup and safe-clone restore, collection filters, gzip on and off, the full HTTP API in-process, and a storage conformance suite run against local disk and every configured S3 provider. Every test also asserts that the MongoDB password never appears in API responses, records or logs.
+The integration suite (`internal/integration`) drives the real `mongodump`/`mongorestore` binaries: round-trip fidelity (options, indexes, every BSON type, document hashes) with gzip, encryption and collection filters, corruption and interruption handling, concurrency, the full HTTP API in-process, and a storage conformance suite run against local disk and every configured S3 provider; [docs/testing.md](docs/testing.md) lists what each test guarantees. Every test also asserts that the MongoDB password never appears in API responses, records or logs.
 
 | Variable | Purpose |
 |---|---|
@@ -214,4 +215,5 @@ The integration suite (`internal/integration`) drives the real `mongodump`/`mong
 | `MONGORESCUE_TEST_S3_<PROVIDER>_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY` | Enables a provider (`MINIO`, `LOCALSTACK`, `AWS`, `R2`, `B2`, `SPACES`, `WASABI`) |
 | `MONGORESCUE_TEST_S3_<PROVIDER>_ENDPOINT` / `_REGION` / `_PATH_STYLE` | Endpoint, region (`auto` for R2) and path-style addressing (`true` for MinIO/LocalStack) |
 | `MONGORESCUE_TEST_S3_<PROVIDER>_CREATE_BUCKET` | `true` creates the bucket if missing (emulators) |
+| `MONGORESCUE_TEST_LARGE` / `MONGORESCUE_TEST_LARGE_MB` | `1` runs the throughput test with about 2 GiB and enforces the 256 MiB memory limit; `_MB` sets the size |
 
