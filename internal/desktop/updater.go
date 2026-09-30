@@ -78,9 +78,46 @@ var (
 
 // silentInstallerArgs returns the installer's command-line arguments: /S runs the
 // NSIS installer without its wizard, and /RELAUNCH makes it start the new version
-// once the files are installed (see build/windows/installer/project.nsi).
-func silentInstallerArgs() []string {
-	return []string{"/S", "/RELAUNCH"}
+// once the files are installed (see build/windows/installer/project.nsi). A
+// non-empty installDir is passed as /D=<installDir>, last and unquoted as NSIS
+// requires, so the update replaces that install instead of going to the default
+// directory.
+func silentInstallerArgs(installDir string) []string {
+	args := []string{"/S", "/RELAUNCH"}
+	if installDir != "" {
+		args = append(args, installDirArg+installDir)
+	}
+	return args
+}
+
+// installDirArg starts the NSIS argument that sets the install directory.
+const installDirArg = "/D="
+
+// UninstallerName is the file the NSIS installer writes next to MongoRescue.exe;
+// its presence marks an installed copy, as opposed to a portable one.
+const UninstallerName = "uninstall.exe"
+
+// InstallDir returns the directory of the running executable, with symlinks
+// resolved, when it is an installed copy (UninstallerName sits next to it), and ""
+// otherwise, such as for a portable copy or when the executable cannot be found.
+func InstallDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return installDirOf(exe)
+}
+
+// installDirOf is InstallDir for the executable at exe.
+func installDirOf(exe string) string {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Dir(exe)
+	if fi, err := os.Stat(filepath.Join(dir, UninstallerName)); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return dir
 }
 
 // UpdateSource looks up and downloads releases; *update.Checker implements it.
@@ -105,6 +142,9 @@ type UpdaterOptions struct {
 	Interval time.Duration
 	// Dir returns the directory an update is downloaded to; nil means UpdateDir.
 	Dir func(goos string) (string, error)
+	// InstallDir returns the directory the Windows installer installs the update
+	// to, or "" for its default directory; nil means InstallDir.
+	InstallDir func() string
 	// Launch starts the downloaded installer with args (Windows). It returns once
 	// the installer runs, or with an error when it could not be started, such as
 	// ErrInstallerCancelled after a declined UAC prompt; nil means LaunchInstaller.
@@ -169,6 +209,9 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	}
 	if opts.Dir == nil {
 		opts.Dir = UpdateDir
+	}
+	if opts.InstallDir == nil {
+		opts.InstallDir = InstallDir
 	}
 	if opts.Launch == nil {
 		opts.Launch = LaunchInstaller
@@ -395,7 +438,7 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 	// The app keeps running when the installer does not start (UAC prompt declined,
 	// file changed): the error is shown with a retry and the release page.
 	u.installing(file.Path)
-	if err := verifyAndLaunch(file, silentInstallerArgs(), u.opts.Launch); err != nil {
+	if err := verifyAndLaunch(file, silentInstallerArgs(u.opts.InstallDir()), u.opts.Launch); err != nil {
 		u.fail(fmt.Errorf("start the installer: %w", err))
 		return
 	}

@@ -104,11 +104,12 @@ func newRecorder(t *testing.T) *recorder {
 
 func (r *recorder) options(src UpdateSource, version, goos string) UpdaterOptions {
 	return UpdaterOptions{
-		Source:  src,
-		Version: version,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		GOOS:    goos,
-		Dir:     func(string) (string, error) { return r.dir, nil },
+		Source:     src,
+		Version:    version,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		GOOS:       goos,
+		Dir:        func(string) (string, error) { return r.dir, nil },
+		InstallDir: func() string { return "" },
 		Launch: func(p string, args []string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -285,6 +286,56 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	}
 	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
 		t.Errorf("Install while installing = %v; want ErrUpdateBusy", err)
+	}
+}
+
+func TestUpdaterInstallsIntoCurrentInstallDir(t *testing.T) {
+	src := &fakeSource{res: available(false)}
+	r := newRecorder(t)
+	opts := r.options(src, "1.0.0", "windows")
+	dir := `D:\My Apps\Mongo Rescue`
+	opts.InstallDir = func() string { return dir }
+	u, _ := started(t, opts)
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	want := []string{"/S", "/RELAUNCH", "/D=" + dir}
+	if len(r.args) != 1 || strings.Join(r.args[0], "|") != strings.Join(want, "|") {
+		t.Fatalf("installer args = %q; want %q", r.args, want)
+	}
+}
+
+func TestInstallDirOf(t *testing.T) {
+	installed := filepath.Join(t.TempDir(), "Program Files", "MongoRescue")
+	portable := filepath.Join(t.TempDir(), "portable copy")
+	for _, d := range []string{installed, portable} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "MongoRescue.exe"), []byte("exe"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(installed, UninstallerName), []byte("uninstaller"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installDirOf(filepath.Join(installed, "MongoRescue.exe")); got != want {
+		t.Errorf("installed copy: %q; want %q", got, want)
+	}
+	if got := installDirOf(filepath.Join(portable, "MongoRescue.exe")); got != "" {
+		t.Errorf("portable copy: %q; want \"\"", got)
+	}
+	link := filepath.Join(portable, "link.exe")
+	if err := os.Symlink(filepath.Join(installed, "MongoRescue.exe"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if got := installDirOf(link); got != want {
+		t.Errorf("symlink to the installed copy: %q; want %q", got, want)
 	}
 }
 
