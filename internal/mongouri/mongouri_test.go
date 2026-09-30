@@ -25,6 +25,13 @@ func TestValidate(t *testing.T) {
 		{name: "unix socket host", uri: "mongodb://%2Ftmp%2Fmongodb-27017.sock/db", valid: true},
 		{name: "trailing slash no db", uri: "mongodb://h:27017/", valid: true},
 		{name: "empty query", uri: "mongodb://h/?", valid: true},
+		{name: "ipv6 zone", uri: "mongodb://[fe80::1%25en0]:27017/db", valid: true},
+		{name: "invalid escape in password", uri: "mongodb://u:p%zz@h/db", valid: false},
+		{name: "truncated escape", uri: "mongodb://u:p@h/db%4", valid: false},
+		{name: "unicode line separator", uri: "mongodb://u:p\u2028x@h/db", valid: false},
+		{name: "c1 control", uri: "mongodb://u:p\u0085x@h/db", valid: false},
+		{name: "invalid utf-8", uri: "mongodb://u:p\xffx@h/db", valid: false},
+		{name: "invalid host character", uri: "mongodb://h{x}/db", valid: false},
 
 		{name: "empty", uri: "", valid: false},
 		{name: "wrong scheme", uri: "postgres://u:p@h/db", valid: false},

@@ -9,6 +9,8 @@ package mongouri
 import (
 	"errors"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrInvalidMongoURI is returned when a connection string is structurally invalid.
@@ -34,8 +36,12 @@ const maxPortDigits = 5
 // any) separates the userinfo from the host list, so '@' characters in the database path
 // or query options do not affect credential parsing. The following are rejected:
 //   - a scheme other than mongodb:// or mongodb+srv://;
-//   - whitespace, control characters, or a raw '#' anywhere;
+//   - invalid UTF-8, whitespace, control characters, or a raw '#' anywhere;
+//   - a '%' that does not start a two-digit hexadecimal escape, which the driver
+//     cannot unescape;
 //   - a raw '@' inside the userinfo;
+//   - a host character outside the RFC 3986 host syntax (letters, digits,
+//     percent escapes, "-._~!$&'()*+;=" and ':' inside IPv6 brackets);
 //   - an empty host list, an empty host, or a non-numeric port. This is what catches
 //     passwords with a raw '/' or '?': "u:pa/ss@h" cuts the authority to "u:pa", which is
 //     not a valid host:port;
@@ -52,7 +58,8 @@ func Validate(uri string) error {
 		return ErrInvalidMongoURI
 	}
 
-	if strings.ContainsFunc(rest, isSpace) || strings.ContainsRune(rest, '#') {
+	if !utf8.ValidString(rest) || strings.ContainsFunc(rest, isSpace) || strings.ContainsRune(rest, '#') ||
+		!validEscapes(rest) {
 		return ErrInvalidMongoURI
 	}
 
@@ -128,10 +135,48 @@ func validHost(h string) bool {
 		}
 	}
 
-	if name == "" || strings.ContainsAny(name, "@[]") {
+	if name == "" || !validHostName(name, strings.HasPrefix(h, "[")) {
 		return false
 	}
 	return port == "" || isPort(port)
+}
+
+// validHostName reports whether every ASCII character of name belongs to the RFC 3986
+// host syntax: unreserved characters, percent escapes and sub-delimiters other than
+// ',' (the host separator), plus ':' inside IPv6 brackets. Non-ASCII characters
+// (internationalized names) are left to the resolver.
+func validHostName(name string, bracketed bool) bool {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= utf8.RuneSelf,
+			'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9',
+			strings.IndexByte("-._~%!$&'()*+;=", c) != -1,
+			bracketed && c == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validEscapes reports whether every '%' in s starts a "%XX" hexadecimal escape.
+func validEscapes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' {
+			continue
+		}
+		if i+2 >= len(s) || !isHex(s[i+1]) || !isHex(s[i+2]) {
+			return false
+		}
+		i += 2
+	}
+	return true
+}
+
+// isHex reports whether c is a hexadecimal digit.
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // isPort reports whether p is a 1-5 digit decimal port number.
@@ -147,7 +192,8 @@ func isPort(p string) bool {
 	return true
 }
 
-// isSpace reports whether r is an ASCII whitespace or control character.
+// isSpace reports whether r is a whitespace or control character (ASCII or Unicode,
+// such as U+0085 or U+2028).
 func isSpace(r rune) bool {
-	return r <= ' ' || r == 0x7f
+	return r <= ' ' || r == 0x7f || unicode.IsSpace(r) || unicode.IsControl(r)
 }
