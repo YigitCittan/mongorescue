@@ -27,6 +27,13 @@ var sensitiveQueryKeys = map[string]struct{}{
 	"secretkey":                     {},
 	"secret_key":                    {},
 	"aws_session_token":             {},
+	// Webhook and API URLs commonly carry their credential in the query.
+	"token":        {},
+	"access_token": {},
+	"api_key":      {},
+	"apikey":       {},
+	"sig":          {},
+	"signature":    {},
 }
 
 // schemePattern locates the start of every "scheme://" occurrence in free text.
@@ -49,15 +56,24 @@ func URI(rawURI string) string {
 // Text masks credentials in free-form text (for example subprocess stderr or error
 // messages) containing any number of connection strings. Each "scheme://" occurrence is
 // treated independently: the token running from the scheme to the next whitespace (or the
-// next "scheme://") is passed through URI.
+// next "scheme://") is passed through URI. A "scheme://" glued to the preceding
+// connection string (such as a raw "pa://ss" inside its password) does not start a new
+// token, so it cannot split a connection string before its '@'.
 //
 // Limitation: tokens are whitespace-delimited, so a password containing raw whitespace is
 // masked only up to the first space (best effort). Valid connection strings always
 // percent-encode such characters.
 func Text(s string) string {
-	matches := schemePattern.FindAllStringIndex(s, -1)
-	if len(matches) == 0 {
+	all := schemePattern.FindAllStringIndex(s, -1)
+	if len(all) == 0 {
 		return s
+	}
+	matches := make([][]int, 0, len(all))
+	for _, m := range all {
+		if n := len(matches); n > 0 && gluedToURI(s[m[0]-1]) && !strings.ContainsFunc(s[matches[n-1][0]:m[0]], isSpace) {
+			continue // inside the previous connection string
+		}
+		matches = append(matches, m)
 	}
 
 	var b strings.Builder
@@ -82,6 +98,13 @@ func Text(s string) string {
 	}
 	b.WriteString(s[prev:])
 	return b.String()
+}
+
+// gluedToURI reports whether c, the byte before a "scheme://" match, can be part of
+// a URI's userinfo or host, so that the match may continue the preceding token.
+func gluedToURI(c byte) bool {
+	return strings.IndexByte(":@/%.+-_", c) >= 0 ||
+		(c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // isSpace reports whether r is an ASCII whitespace character.
