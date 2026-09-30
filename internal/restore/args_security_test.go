@@ -3,7 +3,6 @@ package restore
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"slices"
 	"strings"
@@ -89,36 +88,17 @@ func TestRestoreArgumentsNeverCarryInjectedFlags(t *testing.T) {
 	}
 }
 
-// TestInvalidRestoreNamespacesAreRefused checks that a target database or selected
-// collection MongoDB cannot have (newlines, NUL, dots, wildcards) is refused before
-// mongorestore runs.
-func TestInvalidRestoreNamespacesAreRefused(t *testing.T) {
-	inPlace := func(target string) models.RestoreRequest {
-		return models.RestoreRequest{SafeClone: new(bool), ConfirmInPlace: true, TargetDatabase: target}
-	}
-	for _, tc := range []struct {
-		name string
-		req  models.RestoreRequest
-	}{
-		{"newline in target", inPlace("shop\n--drop")},
-		{"NUL in target", inPlace("shop\x00")},
-		{"dot in target", inPlace("shop.orders")},
-		{"wildcard target", inPlace("*")},
-		{"space in target", inPlace("shop --drop")},
-		{"newline in collection", models.RestoreRequest{SelectedCollections: []string{"orders\n--drop"}}},
-		{"wildcard collection", models.RestoreRequest{SelectedCollections: []string{"*"}}},
-		{"dollar collection", models.RestoreRequest{SelectedCollections: []string{"$cmd"}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e, runner, src := restoreFixture(t, "shop")
-			req := tc.req
-			req.BackupID = src.ID
-			if _, err := e.Run(context.Background(), req, src); !errors.Is(err, models.ErrInvalidNamespace) {
-				t.Fatalf("Run = %v; want ErrInvalidNamespace", err)
-			}
-			if runner.runs != 0 {
-				t.Fatalf("mongorestore ran with %q", runner.args)
-			}
-		})
+// TestExistingBackupsRestoreWhateverTheirNames checks that the engine does not
+// validate the backup's own database name: every existing backup stays restorable.
+func TestExistingBackupsRestoreWhateverTheirNames(t *testing.T) {
+	for _, db := range []string{"legacy db", "a*b"} {
+		e, runner, src := restoreFixture(t, db)
+		rec, err := e.Run(context.Background(), models.RestoreRequest{BackupID: src.ID}, src)
+		if err != nil || rec.Status != models.RestoreStatusCompleted {
+			t.Fatalf("restore of %q = %+v, %v", db, rec, err)
+		}
+		if !slices.Contains(runner.args, "--nsFrom="+db+".*") {
+			t.Fatalf("args %q", runner.args)
+		}
 	}
 }

@@ -50,6 +50,10 @@ func TestHostileNamespacesAreRefusedByTheAPI(t *testing.T) {
 		Status: models.StatusCompleted, StorageKey: "shop/src.archive"}); err != nil {
 		t.Fatal(err)
 	}
+	// A job saved before validation existed, with a name the API now refuses.
+	if err := st.SaveJob(ctx, &models.Job{ID: "job_existing", Name: "legacy", Database: "legacy db", ConnectionID: testConnID, CronExpression: "@daily"}); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, method, path string
 		body               map[string]any
@@ -58,11 +62,14 @@ func TestHostileNamespacesAreRefusedByTheAPI(t *testing.T) {
 		{"backup, NUL", "POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "shop\x00"}},
 		{"backup, traversal", "POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "../../etc"}},
 		{"backup, flag after space", "POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "shop --drop"}},
+		{"backup, leading dash", "POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "--drop"}},
+		{"job update, leading dash", "PUT", "/api/v1/jobs/job_existing", map[string]any{"connection_id": testConnID, "database": "-h", "cron_expression": "@daily"}},
 		{"backup, collection newline", "POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "shop", "collections": []string{"a\nb"}}},
 		{"job, dot", "POST", "/api/v1/jobs", map[string]any{"connection_id": testConnID, "database": "shop.orders", "cron_expression": "@daily"}},
 		{"job, excluded collection NUL", "POST", "/api/v1/jobs", map[string]any{"connection_id": testConnID, "database": "shop", "cron_expression": "@daily", "exclude_collections": []string{"a\x00"}}},
 		{"in-place restore, newline", "POST", "/api/v1/restore", map[string]any{"backup_id": "bkp_src", "safe_clone": false, "confirm_in_place": true, "verify": false, "target_database": "prod\n--drop"}},
-		{"restore, wildcard collection", "POST", "/api/v1/restore", map[string]any{"backup_id": "bkp_src", "selected_collections": []string{"*"}}},
+		{"restore, dollar collection", "POST", "/api/v1/restore", map[string]any{"backup_id": "bkp_src", "selected_collections": []string{"$cmd"}}},
+		{"in-place restore, leading dash", "POST", "/api/v1/restore", map[string]any{"backup_id": "bkp_src", "safe_clone": false, "confirm_in_place": true, "verify": false, "target_database": "--drop"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _ := json.Marshal(tc.body)
@@ -78,7 +85,7 @@ func TestHostileNamespacesAreRefusedByTheAPI(t *testing.T) {
 	if list, _ := st.ListRestoreRecords(ctx); len(list) != 0 {
 		t.Fatalf("refused restores were recorded: %+v", list)
 	}
-	if jobs, _ := st.ListJobs(ctx); len(jobs) != 0 {
-		t.Fatalf("refused jobs were saved: %+v", jobs)
+	if jobs, _ := st.ListJobs(ctx); len(jobs) != 1 || jobs[0].Database != "legacy db" {
+		t.Fatalf("refused jobs were saved or changed: %+v", jobs)
 	}
 }
