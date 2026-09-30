@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,19 +20,39 @@ func unsafeMethod(method string) bool {
 	return true
 }
 
+// wrongToken returns a token of the same length as token that differs from it in
+// the first character, whatever that character is.
+func wrongToken(token string) string {
+	if strings.HasPrefix(token, "0") {
+		return "1" + token[1:]
+	}
+	return "0" + token[1:]
+}
+
+// newSession signs the admin in and returns a fresh session cookie and its CSRF
+// token, so a case that ends its session cannot affect the next one.
+func newSession(t *testing.T, f *scopeFixture) (cookie, csrf string) {
+	t.Helper()
+	res, err := f.auth.Login(context.Background(), "192.0.2.1", "admin", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SessionCookieName + "=" + res.Token, res.CSRFToken
+}
+
 // TestRouteSecurityMatrix walks every registered route and checks the whole access
 // matrix against routeScopes: no credentials, every scope below the required one, a
 // session cookie without or with a wrong CSRF token, and the required scope. A route
 // registered without an entry in routeScopes fails here, so the table cannot fall
-// behind the router.
+// behind the router. Routes run in sorted order and every session case signs in
+// afresh, so no route can end the session another one relies on.
 func TestRouteSecurityMatrix(t *testing.T) {
 	f := newScopeFixture(t)
-	res, err := f.auth.Setup(context.Background(), "192.0.2.1", f.auth.SetupCode(), "admin", testPassword)
-	if err != nil {
+	if _, err := f.auth.Setup(context.Background(), "192.0.2.1", f.auth.SetupCode(), "admin", testPassword); err != nil {
 		t.Fatal(err)
 	}
-	cookie := SessionCookieName + "=" + res.Token
 	patterns := f.authenticatedPatterns()
+	slices.Sort(patterns)
 	if len(patterns) < len(routeScopes) {
 		t.Fatalf("%d authenticated routes registered; routeScopes lists %d", len(patterns), len(routeScopes))
 	}
@@ -86,9 +107,18 @@ func TestRouteSecurityMatrix(t *testing.T) {
 
 			// 3. A session cookie on an unsafe method needs the CSRF token.
 			if unsafeMethod(method) {
-				for name, token := range map[string]string{"no": "", "a wrong": "0" + res.CSRFToken[1:], "a truncated": res.CSRFToken[:8]} {
+				for _, c := range []struct {
+					name  string
+					token func(csrf string) string
+				}{
+					{"no", func(string) string { return "" }},
+					{"a wrong", wrongToken},
+					{"a truncated", func(csrf string) string { return csrf[:8] }},
+				} {
+					name := c.name
+					cookie, csrf := newSession(t, f)
 					h := with(map[string]string{"Cookie": cookie})
-					if token != "" {
+					if token := c.token(csrf); token != "" {
 						h[CSRFHeader] = token
 					}
 					rec = serve(f.h, method, path, []byte(`{}`), h)
@@ -108,6 +138,38 @@ func TestRouteSecurityMatrix(t *testing.T) {
 				t.Errorf("%s key: %d %s; want the handler's answer", need, rec.Code, rec.Body)
 			}
 		})
+	}
+}
+
+// TestLogoutRequiresCSRF checks that logout, like every unsafe cookie-authenticated
+// request, is refused without the session's CSRF token and leaves the session valid,
+// so a cross-site request cannot sign the user out.
+func TestLogoutRequiresCSRF(t *testing.T) {
+	f := newScopeFixture(t)
+	if _, err := f.auth.Setup(context.Background(), "192.0.2.1", f.auth.SetupCode(), "admin", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := newSession(t, f)
+	for _, c := range []struct{ name, token string }{{"no", ""}, {"a wrong", wrongToken(csrf)}, {"a truncated", csrf[:8]}} {
+		h := map[string]string{"Cookie": cookie, "Content-Type": "application/json"}
+		if c.token != "" {
+			h[CSRFHeader] = c.token
+		}
+		if rec := serve(f.h, "POST", "/api/v1/auth/logout", []byte(`{}`), h); rec.Code != http.StatusForbidden {
+			t.Errorf("logout with %s CSRF token: %d %s; want 403", c.name, rec.Code, rec.Body)
+		}
+		if rec := serve(f.h, "GET", "/api/v1/jobs", nil, map[string]string{"Cookie": cookie}); rec.Code != http.StatusOK {
+			t.Fatalf("after logout with %s CSRF token: %d %s; want the session still valid", c.name, rec.Code, rec.Body)
+		}
+	}
+	rec := serve(f.h, "POST", "/api/v1/auth/logout", []byte(`{}`), map[string]string{
+		"Cookie": cookie, CSRFHeader: csrf, "Content-Type": "application/json",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout with the CSRF token: %d %s; want 200", rec.Code, rec.Body)
+	}
+	if rec := serve(f.h, "GET", "/api/v1/jobs", nil, map[string]string{"Cookie": cookie}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("after logout: %d; want 401", rec.Code)
 	}
 }
 

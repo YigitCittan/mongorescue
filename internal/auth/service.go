@@ -97,6 +97,10 @@ func WithSessionPolicy(fn func() (idle, absolute time.Duration)) Option {
 	return func(s *Service) { s.sessionPolicy = fn }
 }
 
+// Now returns the current time on the service's clock (see WithClock), the clock
+// session lifetimes and expiry times are measured on.
+func (s *Service) Now() time.Time { return s.now() }
+
 // sessionTimeouts returns the current idle and absolute session lifetimes.
 func (s *Service) sessionTimeouts() (idle, absolute time.Duration) {
 	if s.sessionPolicy != nil {

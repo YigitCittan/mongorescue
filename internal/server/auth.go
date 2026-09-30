@@ -261,13 +261,18 @@ func (s *Server) secureRequest(r *http.Request) bool {
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
 	// Secure follows the security.secure_cookies policy: by default whenever the request
 	// arrived over TLS (directly or via a trusted proxy); plain-HTTP localhost setups
-	// must still work.
+	// must still work. Max-Age is measured on the auth service's clock, the one that
+	// set expires, so the two attributes always agree.
+	now := time.Now()
+	if s.auth != nil {
+		now = s.auth.Now()
+	}
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is decided per request.
 		Name:     SessionCookieName,
 		Value:    token,
 		Path:     "/",
 		Expires:  expires,
-		MaxAge:   int(time.Until(expires).Seconds()),
+		MaxAge:   int(expires.Sub(now).Seconds()),
 		HttpOnly: true,
 		Secure:   s.secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
