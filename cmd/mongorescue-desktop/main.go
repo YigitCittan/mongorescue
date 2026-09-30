@@ -9,6 +9,11 @@
 // Windows when it starts the new version: the app then waits for the old process to
 // exit before it opens the data directory.
 //
+// On Windows the app keeps running in the background with a tray icon: closing the
+// window hides it, so scheduled backups continue, and the tray menu quits the app.
+// --hidden, which the "Start with Windows" entry passes, starts it hidden in the
+// tray.
+//
 // At startup the app checks GitHub for a newer release (see internal/update): a higher
 // MAJOR version blocks the window until the user updates, MINOR and PATCH updates are
 // offered. Builds without a release version (-ldflags "-X main.Version=X.Y.Z") skip
@@ -25,6 +30,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -80,6 +86,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	// exit (it holds the data directory lock and the single instance lock) before
 	// the log file is truncated and the data directory opened.
 	oldPID, args := desktop.ParseAfterUpdate(args)
+	// A relaunch after an update always shows the window.
+	hidden, args := desktop.ParseHidden(args, oldPID > 0)
 	oldExited := true
 	if oldPID > 0 {
 		oldExited = desktop.WaitForProcessExit(oldPID, desktop.AfterUpdateWait)
@@ -123,6 +131,15 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		OpenURL: d.openURL,
 		Busy:    application.Busy,
 	})
+	// Windows: the tray icon and hiding the window on close.
+	d.initBackground(cfg.DataDir)
+	var beforeClose func(context.Context) bool
+	if d.background != nil {
+		beforeClose = d.beforeClose
+	} else if hidden {
+		logger.Info("ignoring " + desktop.HiddenFlag + ": the app runs in the background on Windows only")
+		hidden = false
+	}
 	// A new version whose old process has not exited in time must not hand its
 	// start over to it as a second instance.
 	singleInstance := &options.SingleInstanceLock{
@@ -155,6 +172,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		OnStartup:          d.startup,
 		OnDomReady:         d.domReady,
 		OnShutdown:         d.shutdown,
+		OnBeforeClose:      beforeClose,
+		StartHidden:        hidden,
 		SingleInstanceLock: singleInstance,
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version, Icon: appIcon},
@@ -215,6 +234,16 @@ type desktopApp struct {
 
 	setupLogOnce sync.Once
 
+	// background is the background mode (Windows): nil elsewhere, where closing
+	// the window quits the app.
+	background *desktop.Background
+	platform   platformState
+	// quitting is set once the app quits for real, so closing the window no
+	// longer only hides it.
+	quitting atomic.Bool
+	// forced is set by the force quit: the shutdown records the runs it cancels.
+	forced atomic.Bool
+
 	mu   sync.Mutex // serializes shutdown
 	done bool
 }
@@ -233,6 +262,7 @@ func (d *desktopApp) startup(ctx context.Context) {
 	d.ctxMu.Unlock()
 	if err != nil {
 		d.logger.Error("failed to start background services; quitting", slog.Any("error", err))
+		d.quitting.Store(true)
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
@@ -242,11 +272,12 @@ func (d *desktopApp) startup(ctx context.Context) {
 	}
 	d.logger.Info("mongorescue desktop ready")
 	d.updater.Start(d.updateCtx)
+	d.startBackground()
 }
 
 // quit asks the window to close without waiting for it: the updater calls it after
 // starting the new version (in-app update) or the installer, and the shutdown waits
-// for the updater. The window's shutdown stops the runs and releases the database
+// for the updater; the tray's Quit and Force quit call it too (Windows). The window's shutdown stops the runs and releases the database
 // and the data directory lock; the new version, or the installer, waits for this
 // process to exit. When the window has not closed within quitGrace, the app stops
 // the runs and releases the database itself and exits, so the new version is not
@@ -256,6 +287,7 @@ func (d *desktopApp) quit() {
 	if ctx == nil {
 		return
 	}
+	d.quitting.Store(true)
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -267,11 +299,21 @@ func (d *desktopApp) quit() {
 			return
 		case <-timer.C:
 		}
-		d.logger.Warn("the window did not close in time for the update, stopping now", slog.Duration("grace", quitGrace))
+		d.logger.Warn("the window did not close in time, stopping now", slog.Duration("grace", quitGrace))
 		d.shutdown(context.Background())
-		d.logger.Info("mongorescue desktop stopped for the update")
+		d.logger.Info("mongorescue desktop stopped")
 		os.Exit(0)
 	}()
+}
+
+// beforeClose hides the window instead of closing it while the app runs in the
+// background (Windows), and lets it close once the app quits.
+func (d *desktopApp) beforeClose(context.Context) bool {
+	if d.background == nil || d.quitting.Load() || d.startError() != nil {
+		return false
+	}
+	d.background.WindowClosing()
+	return true
 }
 
 // openURL opens url in the system browser.
@@ -315,14 +357,10 @@ func (d *desktopApp) domReady(ctx context.Context) {
 	runtime.WindowExecJS(ctx, desktop.SetupCodeScript(code))
 }
 
-// secondInstance brings the window to the front when the app is launched again.
+// secondInstance brings the window to the front when the app is launched again,
+// also when it is hidden in the tray.
 func (d *desktopApp) secondInstance(options.SecondInstanceData) {
-	ctx := d.context()
-	if ctx == nil {
-		return
-	}
-	runtime.WindowUnminimise(ctx)
-	runtime.Show(ctx)
+	d.showWindow()
 }
 
 // watchSignals quits the window on the first SIGINT/SIGTERM. When the window has not
@@ -337,6 +375,7 @@ func (d *desktopApp) watchSignals(sigCh <-chan os.Signal, done <-chan struct{}) 
 		d.logger.Info("signal received, closing the window", slog.String("signal", sig.String()))
 	}
 	if ctx := d.context(); ctx != nil {
+		d.quitting.Store(true)
 		runtime.Quit(ctx)
 	}
 	timer := time.NewTimer(quitGrace)
@@ -354,9 +393,11 @@ func (d *desktopApp) watchSignals(sigCh <-chan os.Signal, done <-chan struct{}) 
 	os.Exit(1)
 }
 
-// shutdown stops the updater, in-flight runs, the scheduler and the background
-// workers, then releases the database and the data directory lock. It runs once;
-// concurrent calls wait for the first to finish.
+// shutdown stops the tray, the updater, in-flight runs, the scheduler and the
+// background workers, then releases the database and the data directory lock.
+// After a force quit, the cancelled runs are recorded with
+// desktop.ForceQuitReason. It runs once; concurrent calls wait for the first to
+// finish.
 func (d *desktopApp) shutdown(context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -364,9 +405,15 @@ func (d *desktopApp) shutdown(context.Context) {
 		return
 	}
 	d.done = true
+	d.quitting.Store(true)
+	d.stopBackground()
 	d.stopUpdates()
 	d.updater.Wait()
-	d.app.Stop()
+	if d.forced.Load() {
+		d.app.ForceStop(desktop.ForceQuitReason)
+	} else {
+		d.app.Stop()
+	}
 	if err := d.app.Close(); err != nil {
 		d.logger.Error("failed to close metadata store", slog.Any("error", err))
 	}
