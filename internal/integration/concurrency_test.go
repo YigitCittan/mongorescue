@@ -79,7 +79,7 @@ func TestConcurrentRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first backup: %v", err)
 	}
-	if _, err := svc.StartBackup(ctx, backupReq); !errors.Is(err, operations.ErrBusy) {
+	if _, err = svc.StartBackup(ctx, backupReq); !errors.Is(err, operations.ErrBusy) {
 		t.Fatalf("second backup of the same database: want ErrBusy, got %v", err)
 	}
 	done := waitBackup(t, svc, first.ID)
@@ -113,7 +113,7 @@ func TestConcurrentRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("in-place restore: %v", err)
 	}
-	if _, err := svc.StartRestore(ctx, inPlace); !errors.Is(err, operations.ErrBusy) {
+	if _, err = svc.StartRestore(ctx, inPlace); !errors.Is(err, operations.ErrBusy) {
 		t.Fatalf("second restore into the same target: want ErrBusy, got %v", err)
 	}
 	if r := waitRestore(t, svc, a.ID); r.Status != models.RestoreStatusCompleted {

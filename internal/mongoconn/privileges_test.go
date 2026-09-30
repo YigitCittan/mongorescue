@@ -4,9 +4,9 @@ import "testing"
 
 func TestGrantsBypass(t *testing.T) {
 	str := func(s string) *string { return &s }
-	priv := func(db, coll *string, any bool, actions ...string) privilege {
+	priv := func(db, coll *string, anyResource bool, actions ...string) privilege {
 		var p privilege
-		p.Resource.DB, p.Resource.Collection, p.Resource.AnyResource = db, coll, any
+		p.Resource.DB, p.Resource.Collection, p.Resource.AnyResource = db, coll, anyResource
 		p.Actions = actions
 		return p
 	}
