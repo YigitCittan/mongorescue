@@ -18,15 +18,35 @@ Unicode true
 ##    files, staged by the release workflow) are installed to $INSTDIR\tools, where MongoRescue finds them before PATH,
 ##    replacing the tools of an earlier install. Without build\bin\tools\mongodump.exe (a local build) the
 ##    installer is built without them and makensis prints a warning.
-##  - Updates: the desktop app starts the installer with "/S /RELAUNCH" and quits. Before the files are copied, the
-##    installer waits (about 30 s) for a running ${PRODUCT_EXECUTABLE} to exit; after a silent install with /RELAUNCH it
-##    starts the new version, without administrator rights. Interactive installs are unchanged.
+##  - Per-user install by default: WAILS_INSTALL_SCOPE defaults to "user" and REQUEST_EXECUTION_LEVEL to "user", so
+##    the installer runs without a UAC prompt, installs to $LOCALAPPDATA\Programs\${INFO_PRODUCTNAME} and writes the
+##    shortcuts (SetShellVarContext current) and the uninstall key under HKCU; the desktop app then updates itself in
+##    place. Build with -DWAILS_INSTALL_SCOPE=machine for the former per-machine install in Program Files. The WebView2
+##    bootstrapper may still ask for administrator rights.
+##  - Updates of a copy the user cannot write to (a per-machine install in Program Files): the desktop app starts the
+##    installer with "/S /RELAUNCH=<DOMAIN\user> /WAITPID=<pid>" and quits. Before the files are copied, the installer
+##    waits up to 180 s for that process to exit, then up to 180 s for a running ${PRODUCT_EXECUTABLE} in $INSTDIR,
+##    which outlasts the app's shutdown budget; after a silent install it starts the new version only when it runs
+##    as the user named by /RELAUNCH (compared case-insensitively), so an administrator who answered the UAC prompt
+##    with their own credentials does not get the app started under their account. Interactive installs are unchanged.
 ##
 ## For development first make a wails nsis build to populate "wails_tools.nsh":
 ## > wails build -platform windows/amd64 -nsis
 ## Then call makensis on this file with the path to the binary:
 ## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\MongoRescue.exe project.nsi
 ####
+
+# Per-user install unless the build asks for another scope (see above). wails_tools.nsh only defines
+# REQUEST_EXECUTION_LEVEL ("admin") when it is not defined yet.
+!ifndef WAILS_INSTALL_SCOPE
+    !define WAILS_INSTALL_SCOPE "user"
+!endif
+!if "${WAILS_INSTALL_SCOPE}" == "user"
+    !ifndef REQUEST_EXECUTION_LEVEL
+        !define REQUEST_EXECUTION_LEVEL "user"
+    !endif
+!endif
+
 !include "wails_tools.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
@@ -146,11 +166,28 @@ FunctionEnd
     !endif
 !macroend
 
-# Waits up to about 30 s for a running ${PRODUCT_EXECUTABLE} to exit, so it can be replaced: the desktop app quits
-# right after it starts the installer for an update. A running executable cannot be opened for writing, so the file
-# is opened for append (which leaves it unchanged) every 500 ms. When it still runs, an interactive install asks to
-# close it and retry; a silent install aborts, and the installed version stays as it was.
+# Waits for the desktop app to exit, so it can be replaced and does not hold the data directory when the new version
+# starts: the app quits right after it starts the installer for an update. With /WAITPID=<pid> it first waits up to
+# 180 s for that process (a PID that no longer exists returns at once). Then it waits up to 180 s for a running
+# ${PRODUCT_EXECUTABLE} in $INSTDIR: a running executable cannot be opened for writing, so the file is opened for
+# append (which leaves it unchanged) every 500 ms. Both waits outlast the app's shutdown (30 s for the runs plus the
+# drains). When it still runs, an interactive install asks to close it and retry; a silent install aborts, and the
+# installed version stays as it was.
 Function WaitForApp
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/WAITPID=" $R2
+    ${IfNot} ${Errors}
+    ${AndIf} $R2 != ""
+        # SYNCHRONIZE (0x00100000): enough to wait for the process.
+        System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i $R2) p .R3'
+        ${If} $R3 <> 0
+            DetailPrint "Waiting for ${INFO_PRODUCTNAME} to close..."
+            System::Call 'kernel32::WaitForSingleObject(p R3, i 180000) i .R4'
+            System::Call 'kernel32::CloseHandle(p R3)'
+        ${EndIf}
+    ${EndIf}
+    ClearErrors
     ${IfNot} ${FileExists} "$INSTDIR\${PRODUCT_EXECUTABLE}"
         Return
     ${EndIf}
@@ -166,7 +203,7 @@ Function WaitForApp
             DetailPrint "Waiting for ${INFO_PRODUCTNAME} to close..."
         ${EndIf}
         IntOp $R1 $R1 + 1
-        ${If} $R1 >= 60
+        ${If} $R1 >= 360
             MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is still running.$\r$\n$\r$\nClose it and click Retry to continue the installation." /SD IDCANCEL IDRETRY wait_retry
             Abort "${INFO_PRODUCTNAME} is still running."
             wait_retry:
@@ -176,17 +213,39 @@ Function WaitForApp
     ${Loop}
 FunctionEnd
 
-# Starts the installed app after a silent install with /RELAUNCH (the update started by the desktop app). The
-# installer runs elevated; explorer.exe hands the start to the signed-in user's shell, so the app runs without
-# administrator rights, as when it is started from the Start menu.
+# Sets $R2 to the account the installer runs as, DOMAIN\user (GetUserNameExW with NameSamCompatible = 2, the form
+# the desktop app passes), falling back to %USERDOMAIN%\%USERNAME%.
+Function InstallerUser
+    StrCpy $R2 ""
+    System::Call 'secur32::GetUserNameExW(i 2, w .R2, *i ${NSIS_MAX_STRLEN}) i .R3'
+    ${If} $R3 == 0
+    ${OrIf} $R2 == ""
+        ReadEnvStr $R2 "USERDOMAIN"
+        ReadEnvStr $R3 "USERNAME"
+        StrCpy $R2 "$R2\$R3"
+    ${EndIf}
+FunctionEnd
+
+# Starts the installed app after a silent install with /RELAUNCH=<DOMAIN\user> (the update started by the desktop
+# app), but only when the installer runs as that user (LogicLib's == ignores case): when another administrator
+# answered the UAC prompt of a per-machine installer, the installer runs as them, and the app must not. explorer.exe
+# hands the start to the signed-in user's shell, so the app runs without administrator rights, as when it is started
+# from the Start menu.
 Function RelaunchApp
     ${IfNot} ${Silent}
         Return
     ${EndIf}
     ${GetParameters} $R0
     ClearErrors
-    ${GetOptions} $R0 "/RELAUNCH" $R1
+    ${GetOptions} $R0 "/RELAUNCH=" $R1
     ${If} ${Errors}
+    ${OrIf} $R1 == ""
+        ClearErrors
+        Return
+    ${EndIf}
+    Call InstallerUser
+    ${If} $R1 != $R2
+        DetailPrint "Not starting ${INFO_PRODUCTNAME}: the installer runs as $R2, the update was started by $R1."
         Return
     ${EndIf}
     DetailPrint "Starting ${INFO_PRODUCTNAME}..."
