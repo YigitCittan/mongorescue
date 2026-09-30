@@ -60,6 +60,9 @@ var (
 type Asset struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// Size is the size GitHub reports for the file, in bytes; 0 when unknown. It
+	// only serves the download progress: the checksum decides what is accepted.
+	Size int64 `json:"size"`
 }
 
 // Result is the outcome of a check.
@@ -83,6 +86,10 @@ type Result struct {
 	HTMLURL string
 	// Asset is the desktop file for this platform; zero when the release has none.
 	Asset Asset
+	// Portable is the Windows portable archive (MongoRescue.exe and tools/), which
+	// the desktop app unpacks to update itself in place; zero on other platforms or
+	// when the release has none.
+	Portable Asset
 	// ChecksumsURL is the release's checksums file; "" when it has none.
 	ChecksumsURL string
 }
@@ -119,6 +126,7 @@ type release struct {
 	Assets     []struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
+		Size int64  `json:"size"`
 	} `json:"assets"`
 }
 
@@ -152,18 +160,19 @@ func (c *Checker) Check(ctx context.Context, current string) (Result, error) {
 		res.HTMLURL = rel.HTMLURL
 	}
 	name, platErr := AssetName(c.goos(), c.goarch(), latest)
+	portable, portableErr := PortableAssetName(c.goos(), c.goarch(), latest)
 	checksums := ChecksumsName(latest)
 	for _, a := range rel.Assets {
 		if !c.trusted(a.URL, c.downloadPrefix()) {
 			continue
 		}
-		switch a.Name {
-		case checksums:
+		switch {
+		case a.Name == checksums:
 			res.ChecksumsURL = a.URL
-		case name:
-			if platErr == nil {
-				res.Asset = Asset{Name: a.Name, URL: a.URL}
-			}
+		case a.Name == name && platErr == nil:
+			res.Asset = Asset{Name: a.Name, URL: a.URL, Size: a.Size}
+		case a.Name == portable && portableErr == nil:
+			res.Portable = Asset{Name: a.Name, URL: a.URL, Size: a.Size}
 		}
 	}
 	res.Installable = res.Available && res.Asset.URL != "" && res.ChecksumsURL != ""
@@ -219,6 +228,16 @@ func AssetName(goos, goarch string, v Version) (string, error) {
 		return "", fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, goos, goarch)
 	}
 	return assetPrefix + v.String() + "_" + suffix, nil
+}
+
+// PortableAssetName returns the Windows portable archive of version v, which holds
+// MongoRescue.exe and tools/ at its root. Other platforms return
+// ErrUnsupportedPlatform.
+func PortableAssetName(goos, goarch string, v Version) (string, error) {
+	if goos != "windows" || goarch != "amd64" {
+		return "", fmt.Errorf("%w: no portable archive for %s/%s", ErrUnsupportedPlatform, goos, goarch)
+	}
+	return assetPrefix + v.String() + "_windows_amd64_portable.zip", nil
 }
 
 // ChecksumsName returns the name of the checksums file of version v.
