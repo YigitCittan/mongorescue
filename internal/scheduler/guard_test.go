@@ -53,6 +53,47 @@ func TestScheduledRunSkippedWhileDatabaseBusy(t *testing.T) {
 	}
 }
 
+func TestPausedSchedulerSkipsScheduledRuns(t *testing.T) {
+	metaStore := storetest.New(t)
+	var dumps atomic.Int32
+	runner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		dumps.Add(1)
+		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
+	}
+	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", backup.WithRunner(runner))
+	s := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil)
+	job := &models.Job{ID: "job_shop", Database: "shop", CronExpression: "@daily"}
+	if err := metaStore.SaveJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Pause()
+	s.Pause()
+	if !s.Paused() {
+		t.Fatal("Paused() = false after Pause")
+	}
+	s.runScheduled(job.ID)
+	if dumps.Load() != 0 {
+		t.Fatal("a scheduled run must not start while the scheduler is paused")
+	}
+	// On-demand runs are not paused.
+	if _, err := s.TriggerJob(context.Background(), job.ID); err != nil {
+		t.Fatalf("TriggerJob while paused: %v", err)
+	}
+	if dumps.Load() != 1 {
+		t.Fatalf("dumps = %d after an on-demand run; want 1", dumps.Load())
+	}
+
+	s.Resume()
+	if s.Paused() {
+		t.Fatal("Paused() = true after Resume")
+	}
+	s.runScheduled(job.ID)
+	if dumps.Load() != 2 {
+		t.Fatalf("dumps = %d after Resume; want 2", dumps.Load())
+	}
+}
+
 func TestPrepareAndExecuteJobRun(t *testing.T) {
 	metaStore := storetest.New(t)
 	runner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {

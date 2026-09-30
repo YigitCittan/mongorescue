@@ -454,6 +454,98 @@ func (a *App) SetupCode() string {
 	return a.auth.SetupCode()
 }
 
+// ActiveRuns returns the concurrency keys (runs.BackupKey, runs.RestoreKey) of the
+// backups and restores in progress, sorted: manual, job-triggered and scheduled
+// runs alike.
+func (a *App) ActiveRuns() []string {
+	return a.runs.Active()
+}
+
+// PauseScheduling keeps the scheduler from starting scheduled runs until
+// ResumeScheduling. Runs in progress continue, and runs started from the dashboard
+// or the API are not affected.
+func (a *App) PauseScheduling() {
+	a.scheduler.Pause()
+}
+
+// ResumeScheduling lets the scheduler start scheduled runs again after
+// PauseScheduling.
+func (a *App) ResumeScheduling() {
+	a.scheduler.Resume()
+}
+
+// forceStopPersistTimeout bounds the writes ForceStop makes after the runs stopped.
+const forceStopPersistTimeout = 5 * time.Second
+
+// ForceStop is Stop for a forced quit: the backups and restores still in progress
+// are cancelled like in Stop, and each one is then recorded as failed with reason
+// as its error message (and logged), so the history says why it did not finish.
+// Like Stop it is idempotent and a no-op before Start; call Close afterwards.
+func (a *App) ForceStop(reason string) {
+	a.lifeMu.Lock()
+	defer a.lifeMu.Unlock()
+	if !a.started || a.stopped {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), forceStopPersistTimeout)
+	defer cancel()
+	backups, restores := a.inProgressRuns(ctx)
+	a.stopLocked()
+	if len(backups) == 0 && len(restores) == 0 {
+		return
+	}
+	if a.runsAbandoned.Load() {
+		a.logger.Warn("runs did not stop in time; the next start records them as interrupted",
+			slog.Int("backups", len(backups)), slog.Int("restores", len(restores)))
+		return
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), forceStopPersistTimeout)
+	defer cancel()
+	for _, id := range backups {
+		b, err := a.metaStore.GetBackupRecord(ctx, id)
+		if err != nil || (b.Status != models.StatusFailed && b.Status != models.StatusInProgress) {
+			continue
+		}
+		b.Status, b.ErrorMessage = models.StatusFailed, reason
+		if err = a.metaStore.SaveBackupRecord(ctx, b); err != nil {
+			a.logger.Warn("failed to record the cancelled backup", slog.String("backup_id", id), slog.Any("error", err))
+			continue
+		}
+		a.logger.Warn("backup cancelled", slog.String("backup_id", id), slog.String("database", b.Database), slog.String("reason", reason))
+	}
+	for _, id := range restores {
+		r, err := a.metaStore.GetRestoreRecord(ctx, id)
+		if err != nil || (r.Status != models.RestoreStatusFailed && r.Status != models.RestoreStatusInProgress) {
+			continue
+		}
+		r.Status, r.ErrorMessage = models.RestoreStatusFailed, reason
+		if err = a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
+			a.logger.Warn("failed to record the cancelled restore", slog.String("restore_id", id), slog.Any("error", err))
+			continue
+		}
+		a.logger.Warn("restore cancelled", slog.String("restore_id", id), slog.String("target_db", r.TargetDatabase), slog.String("reason", reason))
+	}
+}
+
+// inProgressRuns returns the IDs of the backup and restore records in progress.
+func (a *App) inProgressRuns(ctx context.Context) (backups, restores []string) {
+	if list, err := a.metaStore.ListBackupRecords(ctx, ""); err == nil {
+		for _, b := range list {
+			if b.Status == models.StatusInProgress {
+				backups = append(backups, b.ID)
+			}
+		}
+	}
+	if list, err := a.metaStore.ListRestoreRecords(ctx); err == nil {
+		for _, r := range list {
+			if r.Status == models.RestoreStatusInProgress {
+				restores = append(restores, r.ID)
+			}
+		}
+	}
+	return backups, restores
+}
+
 // Start runs the background work of the App without an HTTP listener: it removes
 // stale mongo tools config files, marks runs interrupted by a previous process as
 // failed, starts the event bus and notification workers and starts the scheduler
