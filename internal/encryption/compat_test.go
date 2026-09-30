@@ -107,12 +107,12 @@ func (p *patternSource) Read(b []byte) (int, error) {
 }
 
 // TestStreamingRoundTrip100MB encrypts and decrypts 100 MB through a pipe and
-// checks the plaintext hash and that heap usage stays bounded.
+// checks the plaintext hash and that heap usage stays bounded (16 MB in -short mode).
 func TestStreamingRoundTrip100MB(t *testing.T) {
+	var payloadSize int64 = 100 << 20
 	if testing.Short() {
-		t.Skip("large payload test skipped in -short mode")
+		payloadSize = 16 << 20
 	}
-	const payloadSize = 100 << 20
 	const maxHeapGrowth = 16 << 20
 
 	id, r := genKey(t)
