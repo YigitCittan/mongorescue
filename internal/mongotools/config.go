@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-// ErrInvalidURI is returned when a connection string contains control characters that
-// cannot be represented safely in the tools configuration file.
+// ErrInvalidURI is returned when a connection string contains control characters (or
+// invalid UTF-8) that cannot be represented safely in the tools configuration file.
 var ErrInvalidURI = errors.New("mongotools: connection uri contains control characters")
 
 // configFilePerm restricts the config file to the current user.
@@ -32,7 +34,7 @@ const ConfigFilePattern = "mongorescue-tools-*.yaml"
 // argument together with a cleanup function that removes the file. Callers must invoke
 // cleanup once the subprocess has exited; it is safe to call more than once.
 func WriteURIConfig(dir, uri string) (arg string, cleanup func(), err error) {
-	if strings.ContainsFunc(uri, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+	if !utf8.ValidString(uri) || strings.ContainsFunc(uri, unsafeInYAML) {
 		return "", nil, ErrInvalidURI
 	}
 
@@ -62,6 +64,18 @@ func WriteURIConfig(dir, uri string) (arg string, cleanup func(), err error) {
 	}
 
 	return "--config=" + path, cleanup, nil
+}
+
+// unsafeInYAML reports whether r cannot appear verbatim in a YAML single-quoted
+// scalar: a control character (C0, DEL or C1, which includes the NEL line break), a
+// Unicode line or paragraph separator (YAML 1.1 line breaks, folded into a space), the
+// byte order mark or a non-character outside the YAML printable set.
+func unsafeInYAML(r rune) bool {
+	switch r {
+	case '\u2028', '\u2029', '\ufeff', '\ufffe', '\uffff':
+		return true
+	}
+	return unicode.IsControl(r)
 }
 
 // Default connection timeouts injected by WithConnectionDefaults. They bound how long a
@@ -103,6 +117,10 @@ func WithConnectionDefaults(uri string) string {
 	mechanism := ""
 	for _, opt := range strings.Split(query, "&") {
 		if key, value, ok := strings.Cut(opt, "="); ok {
+			// The driver unescapes option names, so "auth%53ource" is authSource too.
+			if unescaped, err := url.QueryUnescape(key); err == nil {
+				key = unescaped
+			}
 			key = strings.ToLower(key)
 			present[key] = true
 			if key == "authmechanism" {
@@ -142,7 +160,8 @@ func WithConnectionDefaults(uri string) string {
 // defaultAuthSource returns the authSource the Go driver would use for a URI with the
 // given scheme and remainder after "://", and whether the Database Tools need it spelled
 // out: the URI has credentials, no authSource, a SCRAM (or unset) authMechanism and the
-// "mongodb" scheme. The source is the unescaped path database, or "admin".
+// "mongodb" scheme. The source is the path database, unescaped as the driver does, or
+// "admin".
 func defaultAuthSource(scheme, rest, mechanism string, hasAuthSource bool) (string, bool) {
 	if scheme != "mongodb" || hasAuthSource {
 		return "", false
@@ -173,7 +192,8 @@ func defaultAuthSource(scheme, rest, mechanism string, hasAuthSource bool) (stri
 	if path == "" {
 		return "admin", true
 	}
-	db, err := url.PathUnescape(path)
+	// Unescaped like the driver does (QueryUnescape, so '+' is a space).
+	db, err := url.QueryUnescape(path)
 	if err != nil || db == "" {
 		return "", false
 	}

@@ -38,7 +38,7 @@ var fuzzSeeds = []string{
 	"mongodb://h/?replicaSet",
 	"mongodb://u:p%zz@h/db",
 	"mongodb://u:p%4@h/db",
-	"mongodb://u:p x@h/db",
+	"mongodb://u:p\u2028x@h/db",
 	"mongodb://u:p\u0085x@h/db",
 	"mongodb://u:p\xffx@h/db",
 	"mongodb://h{x}/db",

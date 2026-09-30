@@ -46,7 +46,7 @@ const maxPortDigits = 5
 //     passwords with a raw '/' or '?': "u:pa/ss@h" cuts the authority to "u:pa", which is
 //     not a valid host:port;
 //   - a database path containing '/' or '@' (for example the "/ss@h/db" remainder above);
-//   - a query option that is not of the form key=value.
+//   - a query option that is not of the form key=value with a non-empty key.
 func Validate(uri string) error {
 	var rest string
 	switch {
@@ -88,7 +88,7 @@ func Validate(uri string) error {
 		return ErrInvalidMongoURI
 	}
 	for _, opt := range strings.Split(query, "&") {
-		if opt != "" && !strings.Contains(opt, "=") {
+		if opt != "" && (!strings.Contains(opt, "=") || opt[0] == '=') {
 			return ErrInvalidMongoURI
 		}
 	}
