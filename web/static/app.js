@@ -79,6 +79,16 @@ const trackedOps = { backups: new Map(), restores: new Map() };
 const retryingBackups = new Set();
 // Backup shown in the details dialog, re-rendered when the list refreshes.
 let detailsBackupId = "";
+// Job shown in the job details dialog, and its next activations from
+// GET /api/v1/jobs/{id} (refetched when the job's schedule changes).
+let detailsJobId = "";
+const jobNextRuns = { key: "", runs: null, failed: false, seq: 0 };
+// Job being edited in the job form ("" while creating a new job).
+let editingJobId = "";
+// Jobs whose enable/disable request is in flight.
+const togglingJobs = new Set();
+// Runs listed in a job's run history.
+const JOB_HISTORY_LIMIT = 20;
 let activePollTimer = null;
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -214,10 +224,44 @@ function activateTab(id, focus) {
 // Delegated actions
 // ---------------------------------------------------------------------------
 
+// Rows with data-row-action open their details on click, Enter or Space. Clicks on
+// controls inside the row (buttons, links, expandable errors) and text selections
+// keep their own behaviour.
+function runRowAction(row) {
+  const id = row.dataset.id || "";
+  switch (row.dataset.rowAction) {
+    case "job-details":
+      openJobDetails(id);
+      break;
+    case "backup-details":
+      openBackupDetails(id);
+      break;
+  }
+}
+
+function handleRowClick(e) {
+  const row = e.target.closest("tr[data-row-action]");
+  if (!row || e.target.closest("a, button, input, select, textarea, label, details, summary")) return;
+  const selection = window.getSelection ? String(window.getSelection()) : "";
+  if (selection.trim() !== "") return;
+  runRowAction(row);
+}
+
 function setupActions() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target instanceof Element && e.target.matches("tr[data-row-action]") ? e.target : null;
+    if (!row) return;
+    e.preventDefault();
+    runRowAction(row);
+  });
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-action]");
-    if (!btn || btn.disabled) return;
+    if (!btn) {
+      handleRowClick(e);
+      return;
+    }
+    if (btn.disabled) return;
     const id = btn.dataset.id || "";
     switch (btn.dataset.action) {
       case "set-theme":
@@ -330,6 +374,18 @@ function setupActions() {
         break;
       case "delete-job":
         deleteJob(id);
+        break;
+      case "job-details":
+        openJobDetails(id);
+        break;
+      case "edit-job":
+        openJobModal(id);
+        break;
+      case "toggle-job":
+        toggleJob(id, btn);
+        break;
+      case "copy-id":
+        copyText(btn.dataset.copy || "", btn);
         break;
       case "restore-backup":
         openRestoreModal(id, btn.dataset.db || "");
@@ -795,21 +851,92 @@ function renderJobs() {
       lastDot = statusMark(kind, label);
     }
     const enabled = job.enabled !== false;
-    return `<tr>
-      <td class="cell-primary">${ellipsis(job.name, "ell-md")}<div class="cell-sub mono">${ellipsis(job.id, "ell-md")}</div></td>
+    const meaning = describeCron(job.cron_expression);
+    const id = escapeHtml(job.id);
+    return `<tr class="row-clickable" data-row-action="job-details" data-id="${id}" tabindex="0">
+      <td class="cell-primary">${ellipsis(job.name || job.id, "ell-md")}${idCopy(job.id, "cell-sub")}</td>
       <td>${job.connection_id ? ellipsis(connectionName(job.connection_id), "ell-sm") : mutedDash()}</td>
       <td>${ellipsis(job.database, "mono ell-sm")}${collectionScope(job)}</td>
-      <td><span class="mono">${escapeHtml(job.cron_expression)}</span></td>
+      <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
       <td>${escapeHtml(retentionText(job))}</td>
-      <td>${enabled ? statusBadge("success", t("status.enabled")) : statusBadge("neutral", t("status.disabled"))}</td>
+      <td>${enabledBadge(enabled)}</td>
       <td>${lastDot}${timeCell(job.last_run)}</td>
       <td>${enabled ? timeCell(job.next_run) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
-        <button type="button" class="btn btn-secondary btn-sm" data-action="trigger-job" data-id="${escapeHtml(job.id)}">${escapeHtml(t("actions.run_now"))}</button>
-        <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-job" data-id="${escapeHtml(job.id)}">${escapeHtml(t("actions.delete"))}</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="trigger-job" data-id="${id}">${escapeHtml(t("actions.run_now"))}</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="job-details" data-id="${id}">${escapeHtml(t("actions.details"))}</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="edit-job" data-id="${id}">${escapeHtml(t("ui.edit"))}</button>
+        <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-job" data-id="${id}">${escapeHtml(t("actions.delete"))}</button>
       </div></td>
     </tr>`;
   }).join(""));
+  renderJobDetails();
+}
+
+// Human-readable form of a cron expression, or "" when it has no simple reading
+// (the expression itself is always shown next to it). Times are the server's.
+function describeCron(expr) {
+  const s = String(expr || "").trim();
+  if (!s) return "";
+  const descriptors = {
+    "@yearly": "cron.yearly", "@annually": "cron.yearly", "@monthly": "cron.monthly",
+    "@weekly": "cron.weekly", "@daily": "cron.daily", "@midnight": "cron.daily", "@hourly": "cron.hourly"
+  };
+  if (descriptors[s]) return t(descriptors[s]);
+  if (s.startsWith("@every ")) {
+    const ms = parseGoDuration(s.substring(7));
+    return Number.isFinite(ms) && ms > 0 ? tf("cron.every", { d: humanDuration(ms) }) : "";
+  }
+  const f = s.split(/\s+/);
+  if (f.length !== 5) return "";
+  const [min, hour, dom, mon, dow] = f;
+  const num = v => /^\d{1,2}$/.test(v);
+  const step = v => { const m = /^\*\/(\d{1,2})$/.exec(v); return m ? Number(m[1]) : 0; };
+  const pad = v => String(v).padStart(2, "0");
+  const time = `${pad(hour)}:${pad(min)}`;
+  if (mon !== "*") return "";
+  if (min === "*" && hour === "*" && dom === "*" && dow === "*") return t("cron.every_minute");
+  if (step(min) && hour === "*" && dom === "*" && dow === "*") return tf("cron.every_n_minutes", { n: step(min) });
+  if (!num(min) || (dom !== "*" && dow !== "*")) return "";
+  if (hour === "*" && dom === "*" && dow === "*") return Number(min) === 0 ? t("cron.hourly") : tf("cron.every_hour_at", { m: pad(min) });
+  if (step(hour) && Number(min) === 0 && dom === "*" && dow === "*") return tf("cron.every_n_hours", { n: step(hour) });
+  if (!num(hour)) return "";
+  if (dom === "*" && dow === "*") return tf("cron.daily_at", { time });
+  if (num(dom) && dow === "*") return tf("cron.monthly_at", { day: Number(dom), time });
+  const days = cronWeekdays(dow);
+  if (!days) return "";
+  // Some languages start the sentence with the (lower-case) weekday name.
+  const text = tf("cron.weekdays_at", { days, time });
+  return text.charAt(0).toLocaleUpperCase(uiLocale()) + text.slice(1);
+}
+
+// Localised names of a cron day-of-week field such as "1-5" or "0,6", or "".
+function cronWeekdays(field) {
+  let fmt;
+  try {
+    fmt = new Intl.DateTimeFormat(uiLocale(), { weekday: "long", timeZone: "UTC" });
+  } catch (err) {
+    return "";
+  }
+  // 4 January 2026 is a Sunday (day 0; cron also accepts 7 for Sunday).
+  const name = d => fmt.format(new Date(Date.UTC(2026, 0, 4 + (Number(d) % 7))));
+  const parts = field.split(",");
+  const out = [];
+  for (const part of parts) {
+    const range = /^([0-7])-([0-7])$/.exec(part);
+    if (range) {
+      out.push(`${name(range[1])}–${name(range[2])}`);
+    } else if (/^[0-7]$/.test(part)) {
+      out.push(name(part));
+    } else {
+      return "";
+    }
+  }
+  try {
+    return new Intl.ListFormat(uiLocale(), { style: "long", type: "conjunction" }).format(out);
+  } catch (err) {
+    return out.join(", ");
+  }
 }
 
 function retentionText(job) {
@@ -876,8 +1003,8 @@ function renderBackups() {
     const retryBtn = failed && retries.length === 0
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
       : "";
-    return `<tr>
-      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${lock}</div>${retryLinks(b, retries)}</td>
+    return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
+      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}</div>${retryLinks(b, retries)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
       <td>${statusBadge(kind, label, b.error_message)}${errorLine}</td>
       <td>${timeCell(b.started_at)}</td>
@@ -887,7 +1014,7 @@ function renderBackups() {
       <td class="col-actions"><div class="row-actions">
         ${restoreBtn}
         ${retryBtn}
-        <button type="button" class="btn btn-ghost btn-sm" data-action="backup-details" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.details"))}</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="backup-details" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.details"))}</button>
         <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-backup" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.delete"))}</button>
       </div></td>
     </tr>`;
@@ -933,7 +1060,7 @@ function renderRestores() {
   if (!state.loaded.restores) return;
 
   if (state.restores.length === 0) {
-    setTbody(tbody, emptyRow(6, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups", "btn-secondary"));
+    setTbody(tbody, emptyRow(6, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
     return;
   }
 
@@ -951,7 +1078,7 @@ function renderRestores() {
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
       : "";
     return `<tr>
-      <td>${ellipsis(r.id, "mono muted cell-id")}</td>
+      <td><div class="id-cell">${ellipsis(r.id, "mono muted cell-id")}${copyButton(r.id)}</div></td>
       <td>${ellipsis(r.source_database)}${source ? `<div class="cell-sub">${ellipsis(source)}</div>` : ""}</td>
       <td>${ellipsis(r.target_database, "mono")}${cross}</td>
       <td><div class="status-line">${statusBadge(kind, label, r.error_message)}${chips.join("")}</div>${errorLine}</td>
@@ -1005,10 +1132,13 @@ function renderChannels() {
       const kind = ld.success ? "success" : "danger";
       const label = ld.success ? t("notify.delivered") : t("notify.delivery_failed");
       const title = ld.success ? (d ? formatAbsolute(d) : "") : String(ld.error || "");
-      delivery = `<span class="delivery${ld.success ? "" : " text-danger"}" title="${escapeHtml(title)}">${statusMark(kind, "")}${escapeHtml(label)}${d ? ` <span class="muted">· ${escapeHtml(formatRelative(d))}</span>` : ""}</span>`;
+      const when = d
+        ? ` <span class="muted">· <time datetime="${escapeHtml(d.toISOString())}" title="${escapeHtml(formatAbsolute(d))}">${escapeHtml(formatRelative(d))}</time></span>`
+        : "";
+      delivery = `<span class="delivery${ld.success ? "" : " text-danger"}" title="${escapeHtml(title)}">${statusMark(kind, "")}${escapeHtml(label)}${when}</span>`;
     }
     return `<tr>
-      <td class="cell-primary">${escapeHtml(ch.name)}<div class="cell-sub mono">${escapeHtml(ch.id)}</div></td>
+      <td class="cell-primary">${escapeHtml(ch.name)}${idCopy(ch.id, "cell-sub")}</td>
       <td>${escapeHtml(channelTypeLabel(ch.type))}</td>
       <td>${enabledBadge(ch.enabled)}</td>
       <td>${delivery}</td>
@@ -1066,7 +1196,8 @@ const ICON_PATHS = {
   plus: '<path d="M8 3.5v9M3.5 8h9"/>',
   check: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
   x: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>',
-  lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>'
+  lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/>'
 };
 
 function icon(name, extraClass) {
@@ -1108,6 +1239,61 @@ function emptyRow(colspan, text, action, iconName, label, tab, variant) {
 function ellipsis(text, extraClass) {
   const cls = extraClass ? `ellipsis ${extraClass}` : "ellipsis";
   return `<span class="${cls}" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
+}
+
+// Small icon button that copies value (an ID) to the clipboard.
+function copyButton(value) {
+  const label = escapeHtml(t("ui.copy_id"));
+  return `<button type="button" class="copy-btn" data-action="copy-id" data-copy="${escapeHtml(value)}" title="${label}" aria-label="${label}">${icon("copy")}</button>`;
+}
+
+// A truncated monospace ID (full ID on hover) followed by its copy button.
+function idCopy(id, extraClass) {
+  const cls = extraClass ? `id-copy ${extraClass}` : "id-copy";
+  return `<div class="${cls}">${ellipsis(id, "mono ell-md")}${copyButton(id)}</div>`;
+}
+
+// Copies text to the clipboard (falling back to execCommand outside secure
+// contexts) and briefly marks the button that asked for it.
+async function copyText(text, btn) {
+  if (!text) return;
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }
+  } catch (err) {
+    copied = false;
+  }
+  if (!copied) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.className = "sr-only";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      copied = document.execCommand("copy");
+    } catch (err) {
+      copied = false;
+    }
+    area.remove();
+    if (btn && document.contains(btn)) btn.focus();
+  }
+  if (!copied) {
+    showToast(t("ui.copy_failed"), "error");
+    return;
+  }
+  showToast(t("ui.copied"), "success");
+  if (btn) {
+    btn.classList.add("copied");
+    btn.innerHTML = icon("check");
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.innerHTML = icon("copy");
+    }, 1500);
+  }
 }
 
 // Error line of a table cell: a short summary that expands (click, Enter or
@@ -1178,28 +1364,37 @@ function setupForms() {
     if (!source) return;
     const payload = {
       name: getValue("job-name"),
+      collections: [],
+      exclude_collections: [],
       ...source,
       cron_expression: getValue("job-cron"),
       retention_days: parseInt(getValue("job-retention-days"), 10) || 0,
       retention_count: parseInt(getValue("job-retention-count"), 10) || 0,
       ...storageSelection("job-storage"),
-      enabled: true
+      enabled: document.getElementById("job-enabled").checked
     };
+    // Editing replaces the job in place (PUT keeps its id, history and gzip setting).
+    const editing = editingJobId;
+    const url = editing ? `/api/v1/jobs/${encodeURIComponent(editing)}` : "/api/v1/jobs";
+    const submit = e.submitter || document.getElementById("job-submit");
+    if (submit) submit.disabled = true;
     try {
-      const json = await apiJSON("/api/v1/jobs", {
-        method: "POST",
+      const json = await apiJSON(url, {
+        method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (json.success) {
-        showToast(t("toasts.job_created"), "success");
+        showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
         closeModal("modal-new-job");
         refreshAll();
       } else {
-        showToast(json.error || t("toasts.job_failed"), "error");
+        showToast(json.error || (editing ? t("job_edit.update_failed") : t("toasts.job_failed")), "error");
       }
     } catch (err) {
       showToast(err.message, "error");
+    } finally {
+      if (submit) submit.disabled = false;
     }
   });
 
@@ -1299,16 +1494,277 @@ function setupForms() {
   document.getElementById("form-rule").addEventListener("submit", saveRule);
 }
 
-function openJobModal() {
+// Opens the job form: empty for a new job, or prefilled with job jobID to edit it.
+function openJobModal(jobID) {
+  const job = jobID ? state.jobs.find(j => j.id === jobID) : null;
+  if (jobID && !job) return;
   const form = document.getElementById("form-new-job");
   if (form) form.reset();
-  // New jobs start from the retention defaults configured under Settings > General.
-  const general = settingsGroup("general");
-  if (general.default_retention_days !== undefined) setValue("job-retention-days", general.default_retention_days);
-  if (general.default_retention_count !== undefined) setValue("job-retention-count", general.default_retention_count);
-  resetPicker("job", "");
-  fillStorageSelect(document.getElementById("job-storage"));
+  editingJobId = job ? job.id : "";
+  setI18nText("modal-new-job-title", job ? "job_edit.title" : "modal_job.title");
+  setI18nText("job-submit", job ? "job_edit.save" : "modal_job.submit");
+  if (job) {
+    // Editing replaces the details dialog, which would otherwise sit on top.
+    closeModal("modal-job-details");
+    setValue("job-name", job.name || "");
+    setValue("job-cron", job.cron_expression || "");
+    setValue("job-retention-days", Number(job.retention_days) || 0);
+    setValue("job-retention-count", Number(job.retention_count) || 0);
+    document.getElementById("job-enabled").checked = job.enabled !== false;
+    presetPicker("job", job);
+    fillStorageSelect(document.getElementById("job-storage"), job.storage_target_id);
+  } else {
+    // New jobs start from the retention defaults configured under Settings > General.
+    const general = settingsGroup("general");
+    if (general.default_retention_days !== undefined) setValue("job-retention-days", general.default_retention_days);
+    if (general.default_retention_count !== undefined) setValue("job-retention-count", general.default_retention_count);
+    document.getElementById("job-enabled").checked = true;
+    resetPicker("job", "");
+    fillStorageSelect(document.getElementById("job-storage"));
+  }
   openModal("modal-new-job");
+}
+
+// Sets an element's text from translation key and keeps it translated when the
+// language changes (applyTranslations reads data-i18n).
+function setI18nText(id, key) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.dataset.i18n = key;
+  el.textContent = t(key);
+}
+
+// Enables or disables job jobID; the rest of the job is sent back unchanged.
+async function toggleJob(jobID, btn) {
+  const job = state.jobs.find(j => j.id === jobID);
+  if (!job || togglingJobs.has(jobID)) return;
+  const enable = job.enabled === false;
+  togglingJobs.add(jobID);
+  if (btn) btn.disabled = true;
+  try {
+    const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: job.name || "",
+        cron_expression: job.cron_expression || "",
+        database: job.database || "",
+        collections: job.collections || [],
+        exclude_collections: job.exclude_collections || [],
+        connection_id: job.connection_id || "",
+        storage_target_id: job.storage_target_id || "",
+        enabled: enable
+      })
+    });
+    if (json.success) {
+      showToast(enable ? t("job_edit.enabled_toast") : t("job_edit.disabled_toast"), "success");
+    } else {
+      showToast(json.error || t("job_edit.update_failed"), "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    togglingJobs.delete(jobID);
+    if (btn) btn.disabled = false;
+    refreshAll();
+  }
+}
+
+function openJobDetails(jobID) {
+  if (!state.jobs.some(j => j.id === jobID)) return;
+  // Opened from a backup's details, the job dialog comes back to the front.
+  closeModal("modal-backup-details");
+  if (detailsJobId !== jobID) {
+    jobNextRuns.key = "";
+    jobNextRuns.runs = null;
+  }
+  detailsJobId = jobID;
+  openModal("modal-job-details");
+  renderJobDetails();
+}
+
+// Fetches the next activations of the job in the details dialog when its schedule
+// changed since the last fetch or the first listed run has passed.
+function refreshJobNextRuns(job) {
+  const key = `${job.id}|${job.cron_expression}|${job.enabled !== false}|${job.updated_at || ""}`;
+  const first = jobNextRuns.runs && jobNextRuns.runs.length > 0 ? parseDate(jobNextRuns.runs[0]) : null;
+  const stale = first && first.getTime() <= Date.now();
+  if (jobNextRuns.key === key && !stale) return;
+  jobNextRuns.key = key;
+  jobNextRuns.failed = false;
+  const seq = ++jobNextRuns.seq;
+  apiJSON(`/api/v1/jobs/${encodeURIComponent(job.id)}`)
+    .then(json => {
+      if (seq !== jobNextRuns.seq) return;
+      if (!json.success) throw new Error(json.error || "");
+      jobNextRuns.runs = (json.data && json.data.next_runs) || [];
+    })
+    .catch(() => {
+      if (seq !== jobNextRuns.seq) return;
+      jobNextRuns.runs = null;
+      jobNextRuns.failed = true;
+    })
+    .finally(() => {
+      if (seq === jobNextRuns.seq) renderJobDetails();
+    });
+}
+
+// Appends a label/value pair to a <dl class="kv">. value is text (set through
+// textContent) or a Node built with textContent; empty values show a dash.
+function appendKv(list, label, value, mono) {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  if (mono) dd.className = "mono";
+  if (value instanceof Node) {
+    dd.appendChild(value);
+  } else {
+    dd.textContent = value === undefined || value === null || value === "" ? "—" : String(value);
+  }
+  list.append(dt, dd);
+}
+
+// "<absolute> (<relative>)" for a timestamp, or "".
+function absoluteWithRelative(value) {
+  const d = parseDate(value);
+  return d ? `${formatAbsolute(d)} (${formatRelative(d)})` : "";
+}
+
+// Element holding the HTML of a render helper that escapes every dynamic value.
+function htmlNode(html, tag) {
+  const el = document.createElement(tag || "span");
+  el.innerHTML = html;
+  return el;
+}
+
+// Fills the job details dialog of detailsJobId from the loaded jobs and backups.
+// Server values are set through textContent or escapeHtml.
+function renderJobDetails() {
+  const modal = document.getElementById("modal-job-details");
+  if (!modal || !modal.classList.contains("open") || !detailsJobId) return;
+  const job = state.jobs.find(j => j.id === detailsJobId);
+  if (!job) {
+    closeModal("modal-job-details");
+    return;
+  }
+  const enabled = job.enabled !== false;
+  setText("job-details-name", job.name || job.id);
+
+  const overview = document.getElementById("job-details-overview");
+  overview.textContent = "";
+  appendKv(overview, t("job_details.name"), job.name);
+  const idLine = htmlNode(idCopy(job.id), "div");
+  appendKv(overview, t("job_details.id"), idLine.firstElementChild || job.id);
+  appendKv(overview, t("job_details.state"), htmlNode(enabledBadge(enabled)));
+  appendKv(overview, t("job_details.connection"), job.connection_id ? connectionName(job.connection_id) : "");
+  appendKv(overview, t("job_details.database"), job.database, true);
+  const include = job.collections || [];
+  const exclude = job.exclude_collections || [];
+  appendKv(overview, t("job_details.collections"), include.length > 0
+    ? tf("job_details.only", { list: include.join(", ") })
+    : exclude.length > 0 ? tf("job_details.except", { list: exclude.join(", ") }) : t("job_details.all_collections"));
+  appendKv(overview, t("job_details.target"), job.storage_target_id ? storageTargetName(job.storage_target_id) : storageDescription(job.storage_type));
+
+  const schedule = document.getElementById("job-details-schedule");
+  schedule.textContent = "";
+  appendKv(schedule, t("job_details.cron"), job.cron_expression, true);
+  appendKv(schedule, t("job_details.meaning"), describeCron(job.cron_expression) || t("job_details.custom"));
+  refreshJobNextRuns(job);
+  let next;
+  if (!enabled) {
+    next = t("job_details.paused");
+  } else if (jobNextRuns.runs && jobNextRuns.runs.length > 0) {
+    next = document.createElement("ol");
+    next.className = "next-runs";
+    jobNextRuns.runs.forEach(value => {
+      const d = parseDate(value);
+      if (!d) return;
+      const li = document.createElement("li");
+      const time = document.createElement("time");
+      time.dateTime = d.toISOString();
+      time.title = formatRelative(d);
+      time.textContent = formatAbsolute(d);
+      li.appendChild(time);
+      next.appendChild(li);
+    });
+  } else {
+    next = jobNextRuns.failed || jobNextRuns.runs ? "" : t("tables.loading");
+  }
+  appendKv(schedule, t("job_details.next_runs"), next);
+  appendKv(schedule, t("job_details.last_run"), absoluteWithRelative(job.last_run) || t("job_details.never"));
+
+  const options = document.getElementById("job-details-options");
+  options.textContent = "";
+  appendKv(options, t("job_details.retention"), retentionText(job));
+  appendKv(options, t("job_details.compression"), job.gzip ? t("job_details.gzip_on") : t("job_details.off"));
+  const enc = settingsGroup("encryption");
+  appendKv(options, t("job_details.encryption"), !state.loaded.settings
+    ? ""
+    : enc.enabled ? tf("job_details.enc_on", { mode: enc.mode === "passphrase" ? t("job_details.enc_passphrase") : "age (X25519)" }) : t("job_details.off"));
+  appendKv(options, t("job_details.created"), absoluteWithRelative(job.created_at));
+  appendKv(options, t("job_details.updated"), absoluteWithRelative(job.updated_at));
+
+  renderJobHistory(job);
+
+  const toggle = document.getElementById("job-details-toggle");
+  setI18nText("job-details-toggle", enabled ? "ui.disable" : "ui.enable");
+  toggle.dataset.id = job.id;
+  toggle.disabled = togglingJobs.has(job.id);
+  document.getElementById("job-details-run").dataset.id = job.id;
+  document.getElementById("job-details-empty-run").dataset.id = job.id;
+  document.getElementById("job-details-edit").dataset.id = job.id;
+}
+
+// Run history of the job details dialog: its last JOB_HISTORY_LIMIT backups with
+// the success rate of the finished ones.
+function renderJobHistory(job) {
+  const runs = state.backups.filter(b => b.job_id === job.id).slice(0, JOB_HISTORY_LIMIT);
+  const finished = runs.filter(b => ["completed", "pruned", "failed"].includes(b.status));
+  const ok = finished.filter(b => b.status !== "failed").length;
+  const rate = document.getElementById("job-details-rate");
+  rate.textContent = finished.length > 0
+    ? tf("job_details.success_rate", { pct: Math.round((ok / finished.length) * 100), ok, n: finished.length })
+    : "";
+  rate.className = `detail-meta${finished.length > 0 && ok < finished.length ? " text-danger" : ""}`;
+  document.getElementById("job-details-history-wrap").hidden = runs.length === 0;
+  document.getElementById("job-details-history-empty").hidden = runs.length > 0;
+  setTbody(document.getElementById("job-details-runs"), runs.map(b => {
+    const [kind, label] = backupStatus(b.status);
+    const d = parseDate(b.started_at);
+    const started = d
+      ? `<time datetime="${escapeHtml(d.toISOString())}" title="${escapeHtml(formatRelative(d))}">${escapeHtml(formatAbsolute(d))}</time>`
+      : mutedDash();
+    const size = b.status === "completed" || Number(b.size_bytes) > 0 ? escapeHtml(formatBytes(b.size_bytes)) : mutedDash();
+    const error = b.status === "failed" && b.error_message
+      ? `<span class="cell-error" title="${escapeHtml(b.error_message)}">${escapeHtml(truncate(errorSummary(b.error_message), 60))}</span>`
+      : mutedDash();
+    return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
+      <td><button type="button" class="link-btn mono" data-action="backup-details" data-id="${escapeHtml(b.id)}" title="${escapeHtml(b.id)}">${escapeHtml(shortBackupId(b.id))}</button></td>
+      <td>${statusBadge(kind, label)}</td>
+      <td>${started}</td>
+      <td class="num">${durationCell(b)}</td>
+      <td class="num">${size}</td>
+      <td>${error}</td>
+    </tr>`;
+  }).join(""));
+}
+
+// Preselects a job's source in picker prefix: its connection, database and
+// collection filter. The database and collections are applied once their lists
+// have loaded (or typed into the manual fields when a list cannot be loaded).
+function presetPicker(prefix, job) {
+  const p = pickers[prefix];
+  const include = job.collections || [];
+  const exclude = job.exclude_collections || [];
+  const mode = include.length > 0 ? "include" : exclude.length > 0 ? "exclude" : "all";
+  const names = mode === "include" ? include : exclude;
+  p.preset = { database: job.database || "", names };
+  fillConnectionSelect(pickerEl(p, "connection"), job.connection_id);
+  setValue(`${prefix}-database`, job.database || "");
+  setValue(`${prefix}-collections-manual`, names.join(", "));
+  document.querySelectorAll(`input[name="${prefix}-coll-mode"]`).forEach(r => { r.checked = r.value === mode; });
+  updatePickerCollectionsBox(p);
+  loadPickerDatabases(p);
 }
 
 function openBackupNowModal() {
@@ -1491,26 +1947,27 @@ function renderBackupDetails() {
   }
 
   list.textContent = "";
-  const row = (label, value, mono) => {
-    const dt = document.createElement("dt");
-    dt.textContent = label;
-    const dd = document.createElement("dd");
-    if (mono) dd.className = "mono";
-    dd.textContent = value === undefined || value === null || value === "" ? "—" : String(value);
-    list.append(dt, dd);
-  };
-  const absolute = value => {
-    const d = parseDate(value);
-    return d ? `${formatAbsolute(d)} (${formatRelative(d)})` : "";
-  };
+  const row = (label, value, mono) => appendKv(list, label, value, mono);
+  const absolute = absoluteWithRelative;
   const failed = b.status === "failed";
-  const [, statusLabel] = backupStatus(b.status);
+  const [statusKind, statusLabel] = backupStatus(b.status);
   const secs = Number(b.duration_seconds);
   const conn = b.connection_name || connectionName(b.connection_id);
-  row(t("backup_details.id"), b.id, true);
-  row(t("backup_details.status"), statusLabel);
+  row(t("backup_details.id"), htmlNode(idCopy(b.id), "div").firstElementChild || b.id);
+  row(t("backup_details.status"), htmlNode(statusBadge(statusKind, statusLabel)));
   row(t("backup_details.trigger"), backupTrigger(b));
-  if (b.job_id) row(t("backup_details.job"), jobLabel(b.job_id));
+  if (b.job_id && state.jobs.some(j => j.id === b.job_id)) {
+    // The job links back to its details (the dialog underneath, when opened from there).
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "link-btn";
+    link.dataset.action = "job-details";
+    link.dataset.id = b.job_id;
+    link.textContent = jobLabel(b.job_id);
+    row(t("backup_details.job"), link);
+  } else if (b.job_id) {
+    row(t("backup_details.job"), jobLabel(b.job_id));
+  }
   row(t("backup_details.connection"), conn);
   row(t("backup_details.database"), b.database, true);
   row(t("backup_details.collections"), (b.collections || []).length > 0 ? b.collections.join(", ") : t("backup_details.all_collections"));
@@ -2438,10 +2895,16 @@ function pickerEl(p, suffix) {
 }
 
 function setupPicker(prefix) {
-  const p = { prefix, manual: false, dbs: null, dbSeq: 0, collSeq: 0, dbError: "" };
+  // preset holds the database and collections of a job being edited until the
+  // lists they are picked from have loaded; any user choice discards it.
+  const p = { prefix, manual: false, dbs: null, dbSeq: 0, collSeq: 0, dbError: "", preset: null };
   pickers[prefix] = p;
-  pickerEl(p, "connection").addEventListener("change", () => loadPickerDatabases(p));
+  pickerEl(p, "connection").addEventListener("change", () => {
+    p.preset = null;
+    loadPickerDatabases(p);
+  });
   pickerEl(p, "database-select").addEventListener("change", (e) => {
+    p.preset = null;
     if (e.target.value === PICKER_MANUAL) {
       setPickerManual(p, true);
       pickerEl(p, "database").focus();
@@ -2449,7 +2912,10 @@ function setupPicker(prefix) {
       loadPickerCollections(p);
     }
   });
-  pickerEl(p, "database").addEventListener("change", () => loadPickerCollections(p));
+  pickerEl(p, "database").addEventListener("change", () => {
+    p.preset = null;
+    loadPickerCollections(p);
+  });
   document.querySelectorAll(`input[name="${prefix}-coll-mode"]`).forEach(radio => {
     radio.addEventListener("change", () => updatePickerCollectionsBox(p));
   });
@@ -2457,6 +2923,7 @@ function setupPicker(prefix) {
 
 function resetPicker(prefix, connectionId) {
   const p = pickers[prefix];
+  p.preset = null;
   fillConnectionSelect(pickerEl(p, "connection"), connectionId);
   setValue(`${prefix}-database`, "");
   setValue(`${prefix}-collections-manual`, "");
@@ -2529,15 +2996,34 @@ async function loadPickerDatabases(p) {
     select.appendChild(manual);
     select.disabled = false;
     setPickerManual(p, p.dbs.length === 0);
+    applyPickerPreset(p);
   } catch (err) {
     if (seq !== p.dbSeq) return;
     select.disabled = false;
     p.dbError = tf("picker.dbs_failed", { error: truncate(errorSummary(err.message), 120) || "?" });
     setPickerManual(p, true);
+    applyPickerPreset(p);
   }
 }
 
+// Selects the preset database once the database list has loaded (typing it into
+// the manual field when the list does not have it) and loads its collections.
+function applyPickerPreset(p) {
+  const preset = p.preset;
+  if (!preset || !preset.database) return;
+  if (p.dbs && p.dbs.some(db => db.name === preset.database)) {
+    setPickerManual(p, false);
+    pickerEl(p, "database-select").value = preset.database;
+  } else {
+    setPickerManual(p, true);
+    setValue(`${p.prefix}-database`, preset.database);
+  }
+  loadPickerCollections(p);
+}
+
 function pickerDatabase(p) {
+  // While an edited job's lists are still loading, its own database stands.
+  if (p.preset && p.preset.database) return p.preset.database;
   if (p.manual) return pickerEl(p, "database").value.trim();
   const value = pickerEl(p, "database-select").value;
   return value === PICKER_MANUAL ? "" : value;
@@ -2580,12 +3066,32 @@ async function loadPickerCollections(p) {
       select.appendChild(opt);
     });
     setText(`${p.prefix}-collections-hint`, t("picker.colls_hint"));
+    applyCollectionsPreset(p, select);
   } catch (err) {
     if (seq !== p.collSeq) return;
     pickerEl(p, "collections").hidden = true;
     pickerEl(p, "collections-manual").hidden = false;
     setText(`${p.prefix}-collections-hint`, t("picker.colls_failed"));
+    applyCollectionsPreset(p, null);
   }
+}
+
+// Selects the preset collections in the loaded list; names the list does not
+// have (or a list that failed to load) go to the manual field instead.
+function applyCollectionsPreset(p, select) {
+  const preset = p.preset;
+  p.preset = null;
+  if (!preset || preset.names.length === 0) return;
+  const manual = pickerEl(p, "collections-manual");
+  const options = select ? Array.from(select.options) : [];
+  const available = new Set(options.map(o => o.value));
+  if (select && preset.names.every(n => available.has(n))) {
+    options.forEach(o => { o.selected = preset.names.includes(o.value); });
+    return;
+  }
+  if (select) select.hidden = true;
+  manual.hidden = false;
+  manual.value = preset.names.join(", ");
 }
 
 // Returns the picker selection, or null after focusing the first invalid field.
@@ -2605,9 +3111,10 @@ function pickerValue(prefix) {
   }
   const mode = pickerMode(p);
   const manualInput = pickerEl(p, "collections-manual");
-  const names = manualInput.hidden
+  let names = manualInput.hidden
     ? selectedValues(`${prefix}-collections`)
     : parseList(manualInput.value);
+  if (p.preset) names = p.preset.names;
   if (mode !== "all" && names.length === 0) {
     (manualInput.hidden ? pickerEl(p, "collections") : manualInput).focus();
     showToast(t("picker.need_collections"), "error");
@@ -3819,7 +4326,7 @@ function renderApiKeys() {
   const tbody = document.getElementById("apikeys-tbody");
   if (!tbody || !state.loaded.apikeys) return;
   if (state.apikeys.length === 0) {
-    setTbody(tbody, emptyRow(7, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(7, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key")));
     return;
   }
   setTbody(tbody, state.apikeys.map(k => `<tr>

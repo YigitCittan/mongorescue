@@ -870,10 +870,17 @@
               <span class="form-hint" id="job-count-hint" data-i18n="modal_job.count_hint">Newest N backups. 0 means unlimited.</span>
             </div>
           </div>
+          <label class="check" for="job-enabled">
+            <input type="checkbox" id="job-enabled" checked>
+            <span class="check-text">
+              <span class="check-title" data-i18n="job_edit.enabled_label">Enabled</span>
+              <span class="form-hint" data-i18n="job_edit.enabled_hint">Disabled jobs keep their settings and history but do not run on schedule.</span>
+            </span>
+          </label>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-new-job" data-i18n="actions.cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary" data-i18n="modal_job.submit">Create job</button>
+          <button type="submit" class="btn btn-primary" id="job-submit" data-i18n="modal_job.submit">Create job</button>
         </div>
       </form>
     </div>
@@ -1154,6 +1161,67 @@
     </div>
   </div>
 
+  <!-- Modal: Job details (before the backup details, which open on top of it) -->
+  <div id="modal-job-details" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-lg" role="dialog" aria-modal="true" aria-labelledby="job-details-title" aria-describedby="job-details-name">
+      <div class="modal-header">
+        <div class="modal-heading">
+          <h3 class="modal-title" id="job-details-title" data-i18n="job_details.title">Job details</h3>
+          <p class="modal-subtitle" id="job-details-name"></p>
+        </div>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-job-details" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="modal-body scrollable">
+        <section class="detail-section" aria-labelledby="job-details-h-overview">
+          <h4 class="detail-heading" id="job-details-h-overview" data-i18n="job_details.overview">Overview</h4>
+          <dl class="kv" id="job-details-overview"></dl>
+        </section>
+        <section class="detail-section" aria-labelledby="job-details-h-schedule">
+          <h4 class="detail-heading" id="job-details-h-schedule" data-i18n="job_details.schedule">Schedule</h4>
+          <dl class="kv" id="job-details-schedule"></dl>
+          <p class="form-hint" data-i18n="job_details.server_tz">Times in the cron expression use the server's time zone; the next runs are shown in your local time.</p>
+        </section>
+        <section class="detail-section" aria-labelledby="job-details-h-options">
+          <h4 class="detail-heading" id="job-details-h-options" data-i18n="job_details.options">Retention and options</h4>
+          <dl class="kv" id="job-details-options"></dl>
+        </section>
+        <section class="detail-section" aria-labelledby="job-details-h-history">
+          <div class="detail-heading-row">
+            <h4 class="detail-heading" id="job-details-h-history" data-i18n="job_details.history">Recent runs</h4>
+            <span class="detail-meta" id="job-details-rate"></span>
+          </div>
+          <div class="table-wrap" id="job-details-history-wrap" hidden>
+            <table class="table table-compact">
+              <thead>
+                <tr>
+                  <th scope="col" data-i18n="job_details.col_backup">Backup</th>
+                  <th scope="col" data-i18n="tables.status">Status</th>
+                  <th scope="col" data-i18n="tables.started_at">Started</th>
+                  <th scope="col" class="num" data-i18n="tables.duration">Duration</th>
+                  <th scope="col" class="num" data-i18n="tables.size">Size</th>
+                  <th scope="col" data-i18n="backup_details.error">Error</th>
+                </tr>
+              </thead>
+              <tbody id="job-details-runs"></tbody>
+            </table>
+          </div>
+          <div class="empty-state empty-inline" id="job-details-history-empty" hidden>
+            <p data-i18n="job_details.no_runs">No runs yet. Run the job now to take its first backup.</p>
+            <button type="button" class="btn btn-primary btn-sm" id="job-details-empty-run" data-action="trigger-job" data-i18n="actions.run_now">Run now</button>
+          </div>
+        </section>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-job-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary" id="job-details-toggle" data-action="toggle-job" data-i18n="ui.disable">Disable</button>
+        <button type="button" class="btn btn-secondary" id="job-details-run" data-action="trigger-job" data-i18n="actions.run_now">Run now</button>
+        <button type="button" class="btn btn-primary" id="job-details-edit" data-action="edit-job" data-i18n="ui.edit">Edit</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Backup details -->
   <div id="modal-backup-details" class="modal-backdrop" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="backup-details-title">
@@ -1164,15 +1232,17 @@
         </button>
       </div>
       <div class="modal-body scrollable">
-        <dl class="kv" id="backup-details-list"></dl>
-        <div class="form-group" id="backup-details-error" hidden>
-          <span class="form-label" data-i18n="backup_details.error">Error</span>
+        <section class="detail-section">
+          <dl class="kv" id="backup-details-list"></dl>
+        </section>
+        <section class="detail-section" id="backup-details-error" aria-labelledby="backup-details-h-error" hidden>
+          <h4 class="detail-heading" id="backup-details-h-error" data-i18n="backup_details.error">Error</h4>
           <pre class="error-full detail-error" id="backup-details-error-text"></pre>
-        </div>
-        <div class="form-group" id="backup-details-chain-group" hidden>
-          <span class="form-label" data-i18n="backup_details.retry_chain">Retry chain</span>
+        </section>
+        <section class="detail-section" id="backup-details-chain-group" aria-labelledby="backup-details-h-chain" hidden>
+          <h4 class="detail-heading" id="backup-details-h-chain" data-i18n="backup_details.retry_chain">Retry chain</h4>
           <ol class="retry-chain" id="backup-details-chain"></ol>
-        </div>
+        </section>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-backup-details" data-i18n="actions.close">Close</button>
