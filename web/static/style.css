@@ -1297,6 +1297,161 @@ input[type="radio"] {
 
 .kv dd {
   overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.kv dd .id-copy .ellipsis {
+  max-width: 100%;
+}
+
+/* Details dialogs: titled sections separated by hairlines */
+.modal-lg {
+  max-width: 760px;
+}
+
+/* One label column for every section of a large details dialog. */
+.modal-lg .kv {
+  grid-template-columns: 180px minmax(0, 1fr);
+}
+
+.modal-heading {
+  min-width: 0;
+}
+
+.modal-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-subtitle:empty {
+  display: none;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail-section + .detail-section {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.detail-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.detail-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.detail-meta.text-danger {
+  color: var(--danger);
+}
+
+.next-runs {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modal-body .table-wrap {
+  box-shadow: none;
+}
+
+.table-compact th,
+.table-compact td {
+  padding: 6px 10px;
+}
+
+.table-compact .cell-error {
+  max-width: 220px;
+  margin-top: 0;
+}
+
+.empty-state.empty-inline {
+  padding: 20px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+/* Clickable rows open their details; controls inside keep their own action. */
+.table tbody tr.row-clickable {
+  cursor: pointer;
+}
+
+.table tbody tr.row-clickable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.table tbody tr.row-clickable:focus-visible td {
+  background: var(--hover);
+}
+
+.table tbody tr.row-clickable:focus-visible td.col-actions::before {
+  background: linear-gradient(to right, transparent, var(--hover));
+}
+
+/* Truncated IDs with a copy button */
+.id-copy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.id-copy .ellipsis {
+  min-width: 0;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+}
+
+.copy-btn .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.copy-btn:hover {
+  background: var(--neutral-bg);
+  color: var(--text);
+}
+
+.copy-btn.copied {
+  color: var(--success);
 }
 
 .channel-fields {
@@ -1938,6 +2093,21 @@ input[type="radio"] {
 
   .modal-backdrop {
     padding-top: 16px;
+  }
+
+  /* Details dialogs stack labels above values on narrow screens. */
+  .kv,
+  .modal-lg .kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .kv dd + dt {
+    margin-top: 8px;
+  }
+
+  .modal-footer {
+    flex-wrap: wrap;
   }
 }
 
