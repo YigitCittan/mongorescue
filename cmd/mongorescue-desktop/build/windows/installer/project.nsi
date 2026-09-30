@@ -14,6 +14,10 @@ Unicode true
 ##    what it is doing, runs the bootstrapper with its own progress window (silent only for /S installs) and
 ##    reports the result instead of ignoring it.
 ##  - Icons: MUI_ICON/MUI_UNICON use build\windows\icon.ico, the MongoRescue logo.
+##  - MongoDB Database Tools: the files in build\bin\tools (mongodump.exe, mongorestore.exe and MongoDB's license
+##    files, staged by the release workflow) are installed to $INSTDIR\tools, where MongoRescue finds them before PATH,
+##    replacing the tools of an earlier install. Without build\bin\tools\mongodump.exe (a local build) the
+##    installer is built without them and makensis prints a warning.
 ##
 ## For development first make a wails nsis build to populate "wails_tools.nsh":
 ## > wails build -platform windows/amd64 -nsis
@@ -124,6 +128,20 @@ FunctionEnd
     ${EndIf}
 !macroend
 
+# Installs the bundled MongoDB Database Tools to $INSTDIR\tools, removing the tools of an earlier install first.
+# Paths are relative to this script (build\windows\installer).
+!macro mongorescue.tools
+    !if /FileExists "..\..\bin\tools\mongodump.exe"
+        DetailPrint "Installing the MongoDB Database Tools (mongodump, mongorestore)..."
+        RMDir /r "$INSTDIR\tools"
+        SetOutPath "$INSTDIR\tools"
+        File /r "..\..\bin\tools\*"
+        SetOutPath $INSTDIR
+    !else
+        !warning "..\..\bin\tools\mongodump.exe not found: building the installer without the MongoDB Database Tools"
+    !endif
+!macroend
+
 Function .onInit
    !insertmacro wails.checkArchitecture
 FunctionEnd
@@ -137,6 +155,8 @@ Section
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
+
+    !insertmacro mongorescue.tools
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -156,6 +176,7 @@ Section "uninstall"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
+    RMDir /r "$INSTDIR\tools" # The bundled MongoDB Database Tools
     RMDir /r $INSTDIR
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"

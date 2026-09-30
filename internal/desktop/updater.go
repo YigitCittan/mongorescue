@@ -290,7 +290,9 @@ func (u *Updater) Status() UpdateStatus {
 // elsewhere it leaves the file in the download directory and reveals it. After a
 // failure, or when the last check found no installable file, it checks for the
 // release again first. Progress and errors are reported through Status. Once
-// ready, Install reveals the file again.
+// ready, Install reveals the file again. Install never replaces files itself: the
+// installer, or the user unpacking the archive, installs the app together with its
+// bundled MongoDB Database Tools (tools/, or Contents/Resources/tools in the .app).
 func (u *Updater) Install() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()

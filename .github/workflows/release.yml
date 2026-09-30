@@ -103,6 +103,15 @@ jobs:
       # exist; while off, every signing step is skipped and the Windows build is the
       # unsigned `wails build -nsis` output, as before.
       SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+      # MongoDB Database Tools (Apache-2.0) bundled with the desktop app, so users do
+      # not have to install mongodump and mongorestore. Keep the version in sync with
+      # MONGO_TOOLS_VERSION in ci.yml; the SHA-256 of each archive changes with it
+      # (curl -fsSL -O <url> && sha256sum <file>).
+      MONGO_TOOLS_VERSION: '100.12.2'
+      MONGO_TOOLS_SHA256_WINDOWS_X86_64: 7f53efa9ef65b466c354219a2d29ea6cc8d2861833356851253f03bf96f8bf6f
+      MONGO_TOOLS_SHA256_MACOS_ARM64: 40189a68db848bd152e040b4f19af59ff1787ab7850773d5a080c403d6edf9e7
+      MONGO_TOOLS_SHA256_MACOS_X86_64: b7546c4fb22de2786c44d9fec6a4d52df7dcaf6bdf236beb7ed9172f068e50e1
+      MONGO_TOOLS_SHA256_UBUNTU2204_X86_64: 944fbc6ed2a383ea5cb5acb77ca67d4b4415875c63f15f6b61650a0d5fe903d2
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,6 +139,67 @@ jobs:
       - name: Install Wails CLI
         run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
 
+      # Stages mongodump, mongorestore and MongoDB's license files in build/bin/tools,
+      # where the resolver (internal/mongotools) finds them next to the executable.
+      # Each archive is checked against its pinned SHA-256 before it is unpacked.
+      # The binaries are used as MongoDB ships them: the Windows ones are signed by
+      # MongoDB, and on macOS lipo keeps each slice's MongoDB signature. This runs
+      # before the build, since `wails build -nsis` packs build/bin/tools into the
+      # installer.
+      - name: Stage MongoDB Database Tools
+        working-directory: cmd/mongorescue-desktop
+        run: |
+          set -euo pipefail
+          dl="$RUNNER_TEMP/mongo-tools"
+          tools=build/bin/tools
+          mkdir -p "$dl"
+          rm -rf "$tools"
+          mkdir -p "$tools"
+          # fetch <platform> <ext> <sha256>: downloads, verifies and unpacks one
+          # archive into $dl and sets $unpacked to the directory it unpacked to. It
+          # is not called in $(...), where bash ignores set -e.
+          fetch() {
+            local name="mongodb-database-tools-$1-${MONGO_TOOLS_VERSION}"
+            local file="$dl/$name.$2"
+            curl -fsSL --retry 3 -o "$file" "https://fastdl.mongodb.org/tools/db/$name.$2"
+            local sum=(shasum -a 256)
+            if command -v sha256sum >/dev/null; then sum=(sha256sum); fi
+            (cd "$dl" && echo "$3  $name.$2" | "${sum[@]}" -c -)
+            case "$2" in
+              zip) if [ "$RUNNER_OS" = "Windows" ]; then 7z x -y -bso0 -o"$dl" "$file"; else unzip -q -o "$file" -d "$dl"; fi ;;
+              tgz) tar -xzf "$file" -C "$dl" ;;
+            esac
+            unpacked="$dl/$name"
+          }
+          ext=""
+          case "$RUNNER_OS" in
+            Windows)
+              fetch windows-x86_64 zip "$MONGO_TOOLS_SHA256_WINDOWS_X86_64"
+              src="$unpacked"
+              ext=.exe
+              cp "$src/bin/mongodump.exe" "$src/bin/mongorestore.exe" "$tools/" ;;
+            macOS)
+              fetch macos-arm64 zip "$MONGO_TOOLS_SHA256_MACOS_ARM64"
+              src="$unpacked"
+              fetch macos-x86_64 zip "$MONGO_TOOLS_SHA256_MACOS_X86_64"
+              x86="$unpacked"
+              for t in mongodump mongorestore; do
+                lipo -create -output "$tools/$t" "$src/bin/$t" "$x86/bin/$t"
+                lipo "$tools/$t" -verify_arch arm64 x86_64
+                codesign --verify --strict "$tools/$t"
+              done ;;
+            Linux)
+              # Needs glibc 2.34+ (Ubuntu 22.04+), below what the app itself needs.
+              fetch ubuntu2204-x86_64 tgz "$MONGO_TOOLS_SHA256_UBUNTU2204_X86_64"
+              src="$unpacked"
+              cp "$src/bin/mongodump" "$src/bin/mongorestore" "$tools/" ;;
+          esac
+          cp "$src/LICENSE.md" "$src/THIRD-PARTY-NOTICES" "$tools/"
+          if [ "$RUNNER_OS" != "Windows" ]; then chmod 0755 "$tools/mongodump" "$tools/mongorestore"; fi
+          "$tools/mongodump$ext" --version
+          "$tools/mongorestore$ext" --version
+          ls -l "$tools"
+
       - name: Build desktop app
         working-directory: cmd/mongorescue-desktop
         env:
@@ -142,13 +212,35 @@ jobs:
           mv wails.json.tmp wails.json
           nsis=()
           if [ "$RUNNER_OS" = "Windows" ]; then nsis=(-nsis); fi
-          wails build -clean -trimpath -s -skipbindings -m -nosyncgomod \
+          # No -clean: it would delete build/bin, and with it the staged tools; the
+          # checkout is fresh anyway.
+          wails build -trimpath -s -skipbindings -m -nosyncgomod \
             -platform "$PLATFORM" -tags "$TAGS" \
             -ldflags "-X main.Version=${TAG#v} -X main.Commit=${GITHUB_SHA::7}" "${nsis[@]}"
           # wails only warns when makensis is missing; fail instead.
           if [ "$RUNNER_OS" = "Windows" ] && [ ! -f build/bin/MongoRescue-amd64-installer.exe ]; then
             echo "::error::NSIS installer was not produced"; exit 1
           fi
+
+      # The bundle is not codesigned as a whole today; if it ever is (a
+      # Contents/_CodeSignature seal), it is re-signed ad hoc after adding the tools,
+      # without --deep so that the tools keep MongoDB's signatures.
+      - name: Add the MongoDB Database Tools to the app bundle
+        if: runner.os == 'macOS'
+        working-directory: cmd/mongorescue-desktop/build/bin
+        run: |
+          set -euo pipefail
+          res=MongoRescue.app/Contents/Resources
+          mkdir -p "$res"
+          rm -rf "$res/tools"
+          mv tools "$res/tools"
+          if [ -d MongoRescue.app/Contents/_CodeSignature ]; then
+            codesign --force --sign - MongoRescue.app
+            codesign --verify --strict MongoRescue.app
+          fi
+          codesign --verify --strict "$res/tools/mongodump" "$res/tools/mongorestore"
+          "$res/tools/mongodump" --version
+          ls -l "$res/tools"
 
       # Windows signing (only when SIGNING_ENABLED): sign MongoRescue.exe, rebuild
       # the installer around the signed exe, then sign the installer. Each SignPath
@@ -183,7 +275,8 @@ jobs:
 
       # Same makensis call as `wails build -nsis` (pkg/commands/build/nsis_installer.go
       # in Wails v2.16.0): run in build/windows/installer with ARG_WAILS_AMD64_BINARY,
-      # reusing the wails_tools.nsh and WebView2 bootstrapper the build step wrote.
+      # reusing the wails_tools.nsh and WebView2 bootstrapper the build step wrote and
+      # the tools staged in build/bin/tools.
       - name: Rebuild the installer around the signed exe
         if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
         working-directory: cmd/mongorescue-desktop/build
@@ -246,14 +339,19 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/desktop-dist"
           out="$GITHUB_WORKSPACE/desktop-dist/MongoRescue-desktop_${TAG#v}"
+          set -euo pipefail
           case "$RUNNER_OS" in
             Windows)
+              # project.nsi skips the tools with only a warning when they are missing.
+              if ! 7z l MongoRescue-amd64-installer.exe | grep -qF mongorestore.exe; then
+                echo "::error::the installer does not contain the MongoDB Database Tools"; exit 1
+              fi
               cp MongoRescue-amd64-installer.exe "${out}_windows_amd64_installer.exe"
-              7z a "${out}_windows_amd64_portable.zip" MongoRescue.exe ;;
+              7z a "${out}_windows_amd64_portable.zip" MongoRescue.exe tools ;;
             macOS)
               ditto -c -k --keepParent MongoRescue.app "${out}_macos_universal.zip" ;;
             Linux)
-              tar -czf "${out}_linux_amd64.tar.gz" MongoRescue ;;
+              tar -czf "${out}_linux_amd64.tar.gz" MongoRescue tools ;;
           esac
           ls -l "$GITHUB_WORKSPACE/desktop-dist"
 

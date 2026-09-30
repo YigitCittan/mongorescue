@@ -69,7 +69,7 @@ Or, with Docker Compose, run `docker compose up -d` in a clone of this repositor
 
 The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/). It is the only distribution that serves the dashboard over HTTP.
 
-**Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary), put `mongodump` and `mongorestore` (100.3.0 or newer) on your `PATH` and start it. It shows the same dashboard in a native window, without opening a network port, fills in the setup code on first start and updates itself from GitHub Releases. See [docs/desktop.md](docs/desktop.md).
+**Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary) and start it; `mongodump` and `mongorestore` are bundled. It shows the same dashboard in a native window, without opening a network port, fills in the setup code on first start and updates itself from GitHub Releases. See [docs/desktop.md](docs/desktop.md).
 
 **Server binary.** For headless use (REST API, MCP, metrics), download `mongorescue` from Releases, put the tools on your `PATH` and run `./mongorescue`. It serves no dashboard unless you pass `-dashboard` (or set `MONGORESCUE_DASHBOARD=true`); the setup code is printed in its log.
 
@@ -162,7 +162,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 - Losing `secret.key` (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable: keep a copy, stored apart from database backups.
 - The dashboard has no automated browser tests yet; the API behind it is covered by Go tests.
 - Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only.
-- The standalone binary needs the MongoDB Database Tools (`mongodump`, `mongorestore`) installed on the host. The Docker image already includes them.
+- The standalone server binary needs the MongoDB Database Tools (`mongodump`, `mongorestore`) installed on the host. The Docker image and the desktop app packages already include them.
 
 ## Roadmap
 
