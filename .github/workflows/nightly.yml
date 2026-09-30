@@ -87,8 +87,8 @@ jobs:
 
       - name: Run fuzz targets
         run: |
-          if [ -f Makefile ] && grep -q '^fuzz:' Makefile; then
-            make fuzz FUZZTIME=5m
-          else
-            echo "The Makefile has no fuzz target yet; nothing to run."
+          if ! { [ -f Makefile ] && grep -q '^fuzz:' Makefile; }; then
+            echo "::error::The Makefile has no fuzz target; the nightly fuzz run cannot start."
+            exit 1
           fi
+          make fuzz FUZZTIME=5m
