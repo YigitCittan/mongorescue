@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -60,7 +61,16 @@ func LaunchInstaller(path string, args []string) error {
 	return nil
 }
 
-// installerParams returns args as a Windows command line, quoting where needed.
+// installerParams returns args as a Windows command line, quoting where needed. A
+// last /D=<dir> argument is appended as is: NSIS reads the install directory from
+// the rest of the command line and does not accept quotes around it.
 func installerParams(args []string) string {
-	return windows.ComposeCommandLine(args)
+	n := len(args)
+	if n == 0 || !strings.HasPrefix(args[n-1], installDirArg) {
+		return windows.ComposeCommandLine(args)
+	}
+	if n == 1 {
+		return args[0]
+	}
+	return windows.ComposeCommandLine(args[:n-1]) + " " + args[n-1]
 }

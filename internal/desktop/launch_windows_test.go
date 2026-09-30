@@ -34,8 +34,12 @@ func TestOpenLockedDeniesWriteAndDelete(t *testing.T) {
 }
 
 func TestInstallerParams(t *testing.T) {
-	if got := installerParams(silentInstallerArgs()); got != "/S /RELAUNCH" {
+	if got := installerParams(silentInstallerArgs("")); got != "/S /RELAUNCH" {
 		t.Errorf("params = %q", got)
+	}
+	dir := `C:\Program Files\MongoRescue\MongoRescue`
+	if got := installerParams(silentInstallerArgs(dir)); got != `/S /RELAUNCH /D=`+dir {
+		t.Errorf("params with install dir = %q; /D= must be last and unquoted", got)
 	}
 	if got := installerParams([]string{"/S", `C:\Program Files\x`}); got != `/S "C:\Program Files\x"` {
 		t.Errorf("quoted params = %q", got)
