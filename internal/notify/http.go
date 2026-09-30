@@ -21,17 +21,35 @@ const maxResponseExcerpt = 512
 
 // NewHTTPClient returns the HTTP client used by HTTP-based notifiers: it has an overall
 // timeout, never follows redirects (a redirect would silently change the target and
-// could replay signed payloads or credentials to another host) and refuses to connect
-// to blocked addresses (see ErrBlockedDestination), also after DNS resolution.
+// could replay signed payloads or credentials to another host) and refuses blocked
+// destinations (see ErrBlockedDestination), also after DNS resolution. The proxy
+// settings of the environment (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) apply; when a proxy
+// is used, the dialer only sees the proxy, so the target host is resolved and checked
+// before the request is handed to the proxy.
 func NewHTTPClient() *http.Client {
-	return newGuardedHTTPClient(nil)
+	return newGuardedHTTPClient(nil, nil)
 }
 
 // newGuardedHTTPClient is NewHTTPClient resolving host names with lookup (the system
-// resolver when nil).
-func newGuardedHTTPClient(lookup lookupFunc) *http.Client {
+// resolver when nil) and choosing proxies with proxy (http.ProxyFromEnvironment when
+// nil).
+func newGuardedHTTPClient(lookup lookupFunc, proxy func(*http.Request) (*url.URL, error)) *http.Client {
+	if proxy == nil {
+		proxy = http.ProxyFromEnvironment
+	}
+	dialer := newGuardedDialer(lookup)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = newGuardedDialer(lookup).DialContext
+	transport.DialContext = dialer.DialContext
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		u, err := proxy(req)
+		if err != nil || u == nil {
+			return u, err
+		}
+		if err := dialer.checkProxiedTarget(req.Context(), req.URL.Hostname()); err != nil {
+			return nil, err
+		}
+		return u, nil
+	}
 	return &http.Client{
 		Timeout:   SendTimeout,
 		Transport: transport,
