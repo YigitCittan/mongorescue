@@ -3,13 +3,19 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/store"
+	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
 // createTestJob creates a job through the API and returns it.
@@ -208,5 +214,87 @@ func TestUpdateJobNeedsAdmin(t *testing.T) {
 	rec := serve(f.h, "PUT", "/api/v1/jobs/job_1", body, map[string]string{"X-API-Key": f.keys[auth.ScopeAdmin], "Content-Type": "application/json"})
 	if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
 		t.Fatalf("admin key PUT = %d %s; want it past the scope check", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateJobRefusesAStaleUpdatedAt(t *testing.T) {
+	srv, metaStore, _ := setupTestServer(t)
+	h := srv.buildRoutes()
+	created := createTestJob(t, h, models.Job{Name: "n", Database: "shop", CronExpression: "@daily", Enabled: true, ConnectionID: testConnID})
+	stored, err := metaStore.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := func(name string, at time.Time) []byte {
+		b, _ := json.Marshal(map[string]any{"name": name, "cron_expression": "@daily", "database": "shop", "connection_id": testConnID, "updated_at": at})
+		return b
+	}
+	if rec := serve(h, "PUT", "/api/v1/jobs/"+created.ID, body("stale", stored.UpdatedAt.Add(-time.Second)), nil); rec.Code != http.StatusConflict {
+		t.Fatalf("PUT with a stale updated_at = %d %s; want 409", rec.Code, rec.Body.String())
+	}
+	if rec := serve(h, "PUT", "/api/v1/jobs/"+created.ID, body("fresh", stored.UpdatedAt), nil); rec.Code != http.StatusOK {
+		t.Fatalf("PUT with the current updated_at = %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	if got, _ := metaStore.GetJob(context.Background(), created.ID); got.Name != "fresh" {
+		t.Fatalf("name = %q; want fresh (and never stale)", got.Name)
+	}
+}
+
+// Concurrent updates are stored and scheduled in the same order: the stored next run
+// always belongs to the stored schedule.
+func TestConcurrentJobUpdatesStayConsistent(t *testing.T) {
+	srv, metaStore, _ := setupTestServer(t)
+	h := srv.buildRoutes()
+	created := createTestJob(t, h, models.Job{Name: "n", Database: "shop", CronExpression: "@daily", Enabled: true, ConnectionID: testConnID})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		cron := "@daily"
+		if i%2 == 1 {
+			cron = "@hourly"
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b := []byte(`{"name":"n","cron_expression":"` + cron + `","database":"shop","connection_id":"` + testConnID + `"}`)
+			if rec := serve(h, "PUT", "/api/v1/jobs/"+created.ID, b, nil); rec.Code != http.StatusOK {
+				t.Errorf("PUT = %d %s", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+	job, err := metaStore.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := scheduler.NextRuns(job.CronExpression, time.Now().Add(-time.Minute), 1)
+	if job.NextRun == nil || len(want) != 1 || !job.NextRun.Equal(want[0]) {
+		t.Fatalf("stored next run %v does not belong to the stored schedule %q (want %v)", job.NextRun, job.CronExpression, want)
+	}
+}
+
+// failingJobStore fails every job read with an unexpected error.
+type failingJobStore struct {
+	store.Store
+}
+
+func (failingJobStore) GetJob(context.Context, string) (*models.Job, error) {
+	return nil, errors.New("disk I/O error")
+}
+
+func TestJobStoreFailuresAreInternalErrors(t *testing.T) {
+	base := storetest.New(t)
+	failing := failingJobStore{Store: base}
+	srv := NewServer(bootConfig(), failing, nil, nil, storage.NewMockStorage(), nil, nil, nil, withTestConnection(t, base, nil))
+	h := srv.buildRoutes()
+	body := []byte(`{"id":"job_x","name":"n","cron_expression":"@daily","database":"shop","connection_id":"` + testConnID + `"}`)
+	for _, method := range []string{"PUT", "POST"} {
+		path := "/api/v1/jobs"
+		if method == "PUT" {
+			path += "/job_x"
+		}
+		rec := serve(h, method, path, body, nil)
+		if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "disk") {
+			t.Errorf("%s with a failing store = %d %s; want a generic 500", method, rec.Code, rec.Body.String())
+		}
 	}
 }

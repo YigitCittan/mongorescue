@@ -225,6 +225,28 @@ func (s *Scheduler) RegisterJob(job *models.Job) error {
 	return s.registerJobLocked(job)
 }
 
+// ApplyJobUpdate runs persist, which stores job, and then replaces the job's cron
+// entry, holding the scheduler's lock for both. Concurrent updates of a job are so
+// registered in the order they were stored, and a finishing run (which writes its run
+// timestamps under the same lock) never interleaves with them. It returns persist's
+// error unchanged; a registration failure after a successful persist is logged (the
+// job was validated before, so it means a bug, not a client error).
+func (s *Scheduler) ApplyJobUpdate(job *models.Job, persist func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := persist(); err != nil {
+		return err
+	}
+	if err := s.registerJobLocked(job); err != nil {
+		s.logger.Error("failed to register job with scheduler",
+			slog.String("job_id", job.ID),
+			slog.Any("error", err),
+		)
+	}
+	return nil
+}
+
 // registerJobLocked registers a job with cron. Caller must hold s.mu.
 func (s *Scheduler) registerJobLocked(job *models.Job) error {
 	if job == nil || job.ID == "" {
@@ -253,9 +275,10 @@ func (s *Scheduler) registerJobLocked(job *models.Job) error {
 
 	// Update NextRun time in metadata store. The cron entry's Next field is
 	// only populated once the runner has processed the entry, so compute it
-	// from the schedule directly.
+	// from the schedule directly. Only the run timestamps are written: the rest of
+	// job may be older than the stored job.
 	job.NextRun = nextRun(job.CronExpression, time.Now())
-	if err := s.metadataStore.UpdateJob(s.ctx, job); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := s.metadataStore.UpdateJobRunTimes(s.ctx, job.ID, nil, job.NextRun); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.logger.Error("failed to update job next run metadata",
 			slog.String("job_id", job.ID),
 			slog.Any("error", err),
@@ -445,23 +468,27 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancelPersist()
 
-	// Update job last run time and next run time. The run timestamps are applied to
-	// the stored job, not to the snapshot the run started with, so an edit saved
-	// while the backup ran is not reverted.
+	// Update job last run time and next run time. Only the run timestamps are written,
+	// under the lock that also covers job updates (ApplyJobUpdate), so an edit saved
+	// while the backup ran is never reverted. The next run follows the registered cron
+	// entry, which is the job's current schedule even when it was edited meanwhile.
 	now := time.Now().UTC()
-	current := job
-	if stored, getErr := s.metadataStore.GetJob(persistCtx, job.ID); getErr == nil {
-		current = stored
-	}
-	current.LastRun = &now
 	s.mu.Lock()
-	if _, exists := s.entries[job.ID]; exists {
-		current.NextRun = nextRun(current.CronExpression, now)
+	var next *time.Time
+	if entryID, exists := s.entries[job.ID]; exists {
+		if sched := s.cron.Entry(entryID).Schedule; sched != nil {
+			n := sched.Next(now).UTC()
+			next = &n
+		}
 	}
+	// A job deleted while it ran stays deleted (ErrNotFound is ignored).
+	saveErr := s.metadataStore.UpdateJobRunTimes(persistCtx, job.ID, &now, next)
 	s.mu.Unlock()
-	job.LastRun, job.NextRun = current.LastRun, current.NextRun
-	// UpdateJob: a job deleted while it ran stays deleted.
-	if saveErr := s.metadataStore.UpdateJob(persistCtx, current); saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
+	job.LastRun = &now
+	if next != nil {
+		job.NextRun = next
+	}
+	if saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
 		s.logger.Error("failed to persist job run metadata",
 			slog.String("job_id", job.ID),
 			slog.Any("error", saveErr),

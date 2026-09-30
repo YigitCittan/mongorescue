@@ -24,6 +24,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -379,7 +380,7 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		case err == nil:
 			existing = found
 		case !errors.Is(err, store.ErrNotFound):
-			writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeOperationError(w, err) // 500, logged
 			return
 		}
 	}
@@ -394,18 +395,26 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		s.writeJobError(w, err)
 		return
 	}
-	if existing != nil {
-		// Run history is owned by the scheduler, not by clients.
-		job.LastRun, job.NextRun, job.CreatedAt = existing.LastRun, existing.NextRun, existing.CreatedAt
-	}
-
 	// A new job is inserted and never overwrites another; an existing one is updated
-	// and never recreated after a concurrent delete.
+	// and never recreated after a concurrent delete. Run history is owned by the
+	// scheduler, not by clients: it is re-read right before the write.
+	persist := func() error {
+		if existing == nil {
+			return s.metaStore.CreateJob(r.Context(), &job)
+		}
+		current, err := s.metaStore.GetJob(r.Context(), job.ID)
+		if err != nil {
+			return err
+		}
+		job.LastRun, job.NextRun, job.CreatedAt = current.LastRun, current.NextRun, current.CreatedAt
+		return s.metaStore.UpdateJob(r.Context(), &job)
+	}
 	var saveErr error
-	if existing == nil {
-		saveErr = s.metaStore.CreateJob(r.Context(), &job)
+	if s.scheduler != nil {
+		// Stores and schedules the job under the scheduler's lock.
+		saveErr = s.scheduler.ApplyJobUpdate(&job, persist)
 	} else {
-		saveErr = s.metaStore.UpdateJob(r.Context(), &job)
+		saveErr = persist()
 	}
 	switch {
 	case errors.Is(saveErr, store.ErrAlreadyExists):
@@ -415,17 +424,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "job not found (deleted meanwhile)")
 		return
 	case saveErr != nil:
-		writeError(w, http.StatusInternalServerError, saveErr.Error())
+		s.writeOperationError(w, saveErr) // 500, logged
 		return
-	}
-
-	if s.scheduler != nil {
-		if err := s.scheduler.RegisterJob(&job); err != nil {
-			s.logger.Error("failed to register job with scheduler",
-				slog.String("job_id", job.ID),
-				slog.Any("error", err),
-			)
-		}
 	}
 
 	writeJSON(w, http.StatusCreated, job)
@@ -458,17 +458,20 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target
-// and connection lookup failures keep the statuses of their own endpoints.
+// and connection lookup failures keep the statuses of their own endpoints; anything
+// else (such as a store failure) is logged and answered with a generic 500.
 func (s *Server) writeJobError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound),
-		errors.Is(err, ErrConnectionRequired), errors.Is(err, ErrUnknownConnection),
-		errors.Is(err, operations.ErrUnknownStorageTarget):
-		s.writeOperationError(w, err)
+	case errors.Is(err, operations.ErrJobChanged):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrNoDefault), errors.Is(err, targets.ErrInvalid):
 		s.writeTargetError(w, err)
-	default:
+	case errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrMaskedURI),
+		errors.Is(err, mongouri.ErrInvalidMongoURI), errors.Is(err, connections.ErrUnavailable):
 		s.writeConnectionError(w, err)
+	default:
+		// Validation, not-found and connection/target sentinels map to 4xx; the rest to 500.
+		s.writeOperationError(w, err)
 	}
 }
 

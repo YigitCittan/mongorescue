@@ -405,6 +405,45 @@ func TestJobRunsUseTheirTargetAndRetentionCountsPerTarget(t *testing.T) {
 	}
 }
 
+func TestJobEditedDuringARunKeepsTheEdit(t *testing.T) {
+	metaStore := storetest.New(t)
+	ctx := context.Background()
+	var edited bool
+	runner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		if !edited {
+			edited = true
+			job, err := metaStore.GetJob(ctx, "job_edit")
+			if err != nil {
+				t.Error(err)
+			} else {
+				job.Name, job.CronExpression, job.RetentionCount = "renamed", "@hourly", 3
+				if err = metaStore.UpdateJob(ctx, job); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		return io.NopCloser(bytes.NewReader([]byte("a"))), strings.NewReader(""), func() error { return nil }, nil
+	}
+	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://h", backup.WithRunner(runner))
+	sched := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil)
+	if err := metaStore.SaveJob(ctx, &models.Job{ID: "job_edit", Name: "original", Database: "db", CronExpression: "@daily", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.TriggerJob(ctx, "job_edit"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := metaStore.GetJob(ctx, "job_edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" || got.CronExpression != "@hourly" || got.RetentionCount != 3 {
+		t.Fatalf("the finished run reverted the edit: %+v", got)
+	}
+	if got.LastRun == nil {
+		t.Fatal("the run did not record its last run")
+	}
+}
+
 func TestJobDeletedDuringARunIsNotRecreated(t *testing.T) {
 	metaStore := storetest.New(t)
 	ctx := context.Background()

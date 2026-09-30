@@ -65,7 +65,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/jobs` | List scheduled jobs | 200 | |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` required; `storage_target_id` optional; the cron expression is validated) | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) | 200 | 404 |
-| `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404 |
+| `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/run` | Run a job now | 202 | 400, 404, 409 |
 | `GET` | `/api/v1/backups` | List backups, newest first (`?database=` and `?job_id=` filters) | 200 | |
@@ -127,12 +127,15 @@ Restoring in place (into the source database, or into `target_database`) must be
 
 `PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip` and `enabled` are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention. The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
 
-The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job.
+The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job. Concurrent updates are stored and scheduled in the same order, and a backup that finishes while the job is being edited only records its run times, so it never reverts the edit.
+
+To avoid overwriting someone else's change, send the job's current `updated_at` (from `GET /api/v1/jobs/{id}`) in the body: the update is refused with `409 Conflict` if the job was changed since. Without `updated_at` the last write wins.
 
 | Status | When |
 | --- | --- |
 | `400 Bad Request` | Invalid JSON, cron expression, database, retention, connection or storage target |
 | `404 Not Found` | No job `{id}` |
+| `409 Conflict` | `updated_at` was sent and the job was changed since |
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/jobs/job_shop_1727146800_3f9a1c2e \
@@ -140,7 +143,7 @@ curl -X PUT http://localhost:8080/api/v1/jobs/job_shop_1727146800_3f9a1c2e \
   -d '{"name":"shop hourly","cron_expression":"@hourly","database":"shop","connection_id":"conn_prod","retention_count":24}'
 ```
 
-In the dashboard, a job row (or its **Details** button) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Enable** / **Disable** pauses or resumes the schedule.
+In the dashboard, clicking a job row (or **Details** in its **⋯** menu) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Enable** / **Disable** pauses or resumes the schedule. Both send `updated_at`, so a job changed elsewhere in the meantime is reported instead of overwritten.
 
 ## Retrying a failed backup
 
