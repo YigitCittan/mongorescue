@@ -138,6 +138,18 @@
       </button>
     </section>
 
+    <!-- Persistent warning: encryption was on before the upgrade but is off now -->
+    <section id="encryption-warning" class="callout callout-danger" role="alert" aria-labelledby="encryption-warning-title" hidden>
+      <div>
+        <h2 class="callout-title" id="encryption-warning-title" data-i18n="enc.upgrade_warning_title">Backups are not encrypted</h2>
+        <p class="section-desc" data-i18n="enc.upgrade_warning">Encryption was enabled in your previous configuration but is currently off; backups since the upgrade are NOT encrypted. Turn it on in Settings → Encryption.</p>
+      </div>
+      <div class="callout-actions">
+        <button type="button" class="btn btn-primary" data-action="open-encryption-settings"><span data-i18n="enc.upgrade_warning_open">Open encryption settings</span></button>
+        <button type="button" class="btn btn-secondary" data-action="dismiss-encryption-warning"><span data-i18n="enc.upgrade_warning_dismiss">Dismiss</span></button>
+      </div>
+    </section>
+
     <!-- Overview -->
     <section class="stats" aria-label="Overview" data-i18n-aria-label="metrics.overview">
       <div class="stat">

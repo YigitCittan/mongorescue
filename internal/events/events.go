@@ -31,7 +31,18 @@ const (
 	// NotificationTest is a synthetic event used by "send test" actions. It is never
 	// published on the Bus and cannot be selected by notification rules.
 	NotificationTest EventType = "notification.test"
+	// EncryptionOffAfterUpgrade is emitted once at startup when the previous
+	// (deprecated) configuration had backup encryption enabled but it is off now, so
+	// backups since the upgrade are not encrypted. It is a security alert: every
+	// enabled channel receives it, whatever the rules (see Broadcast).
+	EncryptionOffAfterUpgrade EventType = "security.encryption_off_after_upgrade"
 )
+
+// Broadcast reports whether t is delivered to every enabled notification channel
+// instead of the channels of matching rules.
+func (t EventType) Broadcast() bool {
+	return t == EncryptionOffAfterUpgrade
+}
 
 // ruleTypes lists the event types that notification rules may subscribe to.
 var ruleTypes = []EventType{BackupSucceeded, BackupFailed, RestoreSucceeded, RestoreFailed}

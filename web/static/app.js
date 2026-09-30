@@ -309,6 +309,13 @@ function setupActions() {
       case "new-connection":
         openConnectionModal("");
         break;
+      case "open-encryption-settings":
+        activateTab("tab-settings", false);
+        showSettingsSection("encryption", true);
+        break;
+      case "dismiss-encryption-warning":
+        dismissEncryptionWarning();
+        break;
       case "edit-connection":
         openConnectionModal(id);
         break;
@@ -563,6 +570,7 @@ async function refreshAll() {
     refreshInFlight = false;
   }
   if (!auth.user) return;
+  renderWarnings();
   renderStats();
   renderJobs();
   renderBackups();
@@ -3360,6 +3368,34 @@ async function loadSettings(force) {
     state.settingsError = err.message;
   }
   fillSettingsForms(force);
+  renderWarnings();
+}
+
+// WARNING_ENCRYPTION_OFF is the ID of the persistent "encryption is off after the
+// upgrade" warning in GET /api/v1/settings (settings.WarningEncryptionOff).
+const WARNING_ENCRYPTION_OFF = "encryption_off_after_upgrade";
+
+// Shows the persistent warnings the server reports with the settings.
+function renderWarnings() {
+  const banner = document.getElementById("encryption-warning");
+  if (!banner) return;
+  const list = state.settings && Array.isArray(state.settings.warnings) ? state.settings.warnings : [];
+  banner.hidden = !list.some(w => w && w.id === WARNING_ENCRYPTION_OFF);
+}
+
+async function dismissEncryptionWarning() {
+  if (!window.confirm(t("enc.upgrade_warning_dismiss_confirm"))) return;
+  try {
+    const json = await apiJSON(`/api/v1/settings/warnings/${WARNING_ENCRYPTION_OFF}/dismiss`, { method: "POST" });
+    if (!json.success) {
+      showToast(json.error || t("toasts.request_failed"), "error");
+      return;
+    }
+    state.settings = { ...(state.settings || {}), warnings: (json.data && json.data.warnings) || [] };
+    renderWarnings();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 // Fills every settings form that the operator is not currently editing.
@@ -3666,6 +3702,7 @@ async function saveSettingsGroup(group, submitter, overrides) {
     }
     dirtySettings.delete(group);
     fillSettingsForms(false);
+    renderWarnings();
     showSaved(group, data.restart_required);
     return true;
   } catch (err) {

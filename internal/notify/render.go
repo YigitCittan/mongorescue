@@ -17,11 +17,12 @@ const maxErrorLength = 500
 
 // subjectTemplates maps an event type to its icon and headline.
 var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
-	events.BackupSucceeded:  {"✅", "Backup succeeded"},
-	events.BackupFailed:     {"❌", "Backup failed"},
-	events.RestoreSucceeded: {"✅", "Restore succeeded"},
-	events.RestoreFailed:    {"❌", "Restore failed"},
-	events.NotificationTest: {"🔔", "Test notification"},
+	events.BackupSucceeded:           {"✅", "Backup succeeded"},
+	events.BackupFailed:              {"❌", "Backup failed"},
+	events.RestoreSucceeded:          {"✅", "Restore succeeded"},
+	events.RestoreFailed:             {"❌", "Restore failed"},
+	events.NotificationTest:          {"🔔", "Test notification"},
+	events.EncryptionOffAfterUpgrade: {"⚠️", "Backup encryption is off"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -52,6 +53,8 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("backup %s → db %s", e.BackupID, e.Database)
 	case events.NotificationTest:
 		target = "MongoRescue notification channel check"
+	case events.EncryptionOffAfterUpgrade:
+		target = "it was enabled in your previous configuration; backups since the upgrade are NOT encrypted. Turn it on in Settings → Encryption"
 	}
 
 	subject := singleLine(fmt.Sprintf("%s %s: %s", tpl.icon, tpl.headline, target))

@@ -36,8 +36,10 @@ type Service struct {
 	mu      sync.RWMutex
 	cur     Settings
 	stored  map[string]bool
-	enc     *encryption.Encryptor
-	dec     *encryption.Decryptor
+	// warnState is the state of WarningEncryptionOff (see warning.go).
+	warnState string
+	enc       *encryption.Encryptor
+	dec       *encryption.Decryptor
 }
 
 // Option customises a Service.
@@ -69,6 +71,7 @@ func NewService(ctx context.Context, repo Repository, opts ...Option) (*Service,
 		return nil, fmt.Errorf("settings: stored encryption settings: %w", err)
 	}
 	s.cur, s.enc, s.dec = cur, enc, dec
+	s.warnState = loadWarningState(values)
 	s.stored = make(map[string]bool, len(values))
 	for k := range values {
 		s.stored[k] = true
@@ -134,6 +137,9 @@ func (s *Service) Update(ctx context.Context, p Patch) (Settings, error) {
 	}
 	changed, err := s.commit(ctx, cur, next)
 	if err != nil {
+		return Settings{}, err
+	}
+	if err = s.noteEncryptionChange(ctx, p, next); err != nil {
 		return Settings{}, err
 	}
 	if len(changed) > 0 {

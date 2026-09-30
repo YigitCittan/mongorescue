@@ -433,9 +433,14 @@ func dedupe[T comparable](in []T) []T {
 }
 
 // HandleEvent is the events.Handler for the Bus: it matches e against enabled rules
-// and enqueues one delivery per distinct enabled channel without blocking. Deliveries
+// and enqueues one delivery per distinct enabled channel without blocking; broadcast
+// events (security alerts) go to every enabled channel. Deliveries
 // that do not fit in the queue are dropped and reported to the observer.
 func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
+	if e.Type.Broadcast() {
+		s.broadcast(ctx, e)
+		return
+	}
 	if !e.Type.Subscribable() {
 		return
 	}
@@ -473,6 +478,22 @@ func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
 			continue
 		}
 		s.enqueue(delivery{channel: ch, msg: msg})
+	}
+}
+
+// broadcast enqueues e for every enabled channel, whatever the rules. It is used
+// for security alerts (see events.EventType.Broadcast).
+func (s *Service) broadcast(ctx context.Context, e events.Event) {
+	channels, err := s.repo.ListChannels(ctx)
+	if err != nil {
+		s.logger.Error("notification channels unavailable", slog.Any("error", err))
+		return
+	}
+	msg := Render(e)
+	for _, ch := range channels {
+		if ch.Enabled {
+			s.enqueue(delivery{channel: ch, msg: msg})
+		}
 	}
 }
 
