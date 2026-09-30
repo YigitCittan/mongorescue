@@ -19,10 +19,6 @@ const (
 	otherRecipient = "age1fqa7lp48axu29pv9l0tcqn3mgukjv2u3x6vknr4g9x0kl7npt40qj4n7rn"
 )
 
-// ageChunkSize is the plaintext size of an age payload chunk; each chunk carries a
-// 16-byte Poly1305 tag.
-const ageChunkSize = 64 << 10
-
 // fuzzDecryptor returns a Decryptor for identity.
 func fuzzDecryptor(t testing.TB, identity string) *Decryptor {
 	d, err := NewDecryptor(DecryptorConfig{Identity: identity})
