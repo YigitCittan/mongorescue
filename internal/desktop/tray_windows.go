@@ -178,22 +178,6 @@ func ConfirmBox(ctx context.Context, title, message string) bool {
 	return <-res
 }
 
-// notifyIconData is the Win32 NOTIFYICONDATAW structure.
-type notifyIconData struct {
-	Size                       uint32
-	Wnd                        windows.Handle
-	ID, Flags, CallbackMessage uint32
-	Icon                       windows.Handle
-	Tip                        [128]uint16
-	State, StateMask           uint32
-	Info                       [256]uint16
-	Timeout, Version           uint32
-	InfoTitle                  [64]uint16
-	InfoFlags                  uint32
-	GUIDItem                   windows.GUID
-	BalloonIcon                windows.Handle
-}
-
 // TrayOptions configures NewTray.
 type TrayOptions struct {
 	// Icon is the icon, in .ico format.
@@ -210,7 +194,7 @@ type TrayOptions struct {
 
 // trayItems are the menu items.
 type trayItems struct {
-	open, status, autostart, quit, cancelQuit, forceQuit *systray.MenuItem
+	open, status, shuttingDown, autostart, quit, cancelQuit, forceQuit *systray.MenuItem
 }
 
 // Tray is the notification area icon of the app, with its menu, built on
@@ -220,14 +204,15 @@ type Tray struct {
 	opts  TrayOptions
 	texts TrayTexts
 
-	wg      sync.WaitGroup
-	started atomic.Bool
-	ready   atomic.Bool
-	tid     atomic.Uint32
-	runDone chan struct{}
-	items   chan trayItems
-	refresh chan struct{}
-	tapped  chan struct{}
+	wg       sync.WaitGroup
+	started  atomic.Bool
+	ready    atomic.Bool
+	tid      atomic.Uint32
+	runDone  chan struct{} // closed once the message loop ended
+	loopDone chan struct{} // closed once the menu loop ended
+	items    chan trayItems
+	refresh  chan struct{}
+	tapped   chan struct{}
 }
 
 // NewTray returns a tray for opts; Start shows it.
@@ -236,12 +221,13 @@ func NewTray(opts TrayOptions) *Tray {
 		opts.Logger = slog.Default()
 	}
 	return &Tray{
-		opts:    opts,
-		texts:   opts.Background.Texts(),
-		runDone: make(chan struct{}),
-		items:   make(chan trayItems, 1),
-		refresh: make(chan struct{}, 1),
-		tapped:  make(chan struct{}, 1),
+		opts:     opts,
+		texts:    opts.Background.Texts(),
+		runDone:  make(chan struct{}),
+		loopDone: make(chan struct{}),
+		items:    make(chan trayItems, 1),
+		refresh:  make(chan struct{}, 1),
+		tapped:   make(chan struct{}, 1),
 	}
 }
 
@@ -266,8 +252,25 @@ func (t *Tray) Start(ctx context.Context) {
 	}()
 	go func() {
 		defer t.wg.Done()
+		defer close(t.loopDone)
 		t.loop(ctx)
 	}()
+}
+
+// Ready reports whether the icon is shown and its menu handled: its menu was
+// built and neither its message loop nor its menu loop has ended.
+func (t *Tray) Ready() bool {
+	if !t.ready.Load() {
+		return false
+	}
+	select {
+	case <-t.runDone:
+		return false
+	case <-t.loopDone:
+		return false
+	default:
+		return true
+	}
 }
 
 // Wait waits for the goroutines of Start to return.
@@ -298,6 +301,9 @@ func (t *Tray) onReady() {
 	it.open = systray.AddMenuItem(t.texts.Open, "")
 	it.status = systray.AddMenuItem(t.opts.Background.Status(), "")
 	it.status.Disable()
+	it.shuttingDown = systray.AddMenuItem(t.texts.ShuttingDown, "")
+	it.shuttingDown.Disable()
+	it.shuttingDown.Hide()
 	if t.opts.Autostart != nil {
 		on, err := t.opts.Autostart.Enabled()
 		if err != nil {
@@ -336,7 +342,9 @@ func (t *Tray) loop(ctx context.Context) {
 			t.stop()
 			return
 		case <-t.runDone:
-			t.opts.Logger.Warn("the tray icon's message loop ended")
+			// The window cannot be opened from the tray any more: show it.
+			t.opts.Logger.Warn("the tray icon's message loop ended; showing the window")
+			t.opts.Open()
 			return
 		case it := <-t.items:
 			items = &it
@@ -382,11 +390,15 @@ func (t *Tray) update(items *trayItems, view *trayView) {
 	}
 	if showQuit := !bg.Waiting(); showQuit != view.quitShown {
 		if showQuit {
+			items.shuttingDown.Hide()
 			items.cancelQuit.Hide()
 			items.quit.Show()
+			systray.SetTooltip(t.texts.Tooltip)
 		} else {
 			items.quit.Hide()
+			items.shuttingDown.Show()
 			items.cancelQuit.Show()
+			systray.SetTooltip(t.texts.ShuttingDown)
 		}
 		view.quitShown = showQuit
 	}
@@ -442,7 +454,7 @@ func (t *Tray) Notify(title, message string) error {
 	if err != nil {
 		return err
 	}
-	nid := notifyIconData{Wnd: hwnd, ID: systrayIconID, Flags: nifInfo, InfoFlags: niifInfo}
+	nid := notifyIconData{Wnd: uintptr(hwnd), ID: systrayIconID, Flags: nifInfo, InfoFlags: niifInfo}
 	nid.Size = uint32(unsafe.Sizeof(nid)) //nolint:gosec // G103: Win32 structure size.
 	copyUTF16(nid.InfoTitle[:], title)
 	copyUTF16(nid.Info[:], message)

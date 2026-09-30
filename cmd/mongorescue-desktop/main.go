@@ -136,6 +136,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	var beforeClose func(context.Context) bool
 	if d.background != nil {
 		beforeClose = d.beforeClose
+		d.startHidden = hidden
 	} else if hidden {
 		logger.Info("ignoring " + desktop.HiddenFlag + ": the app runs in the background on Windows only")
 		hidden = false
@@ -243,6 +244,8 @@ type desktopApp struct {
 	quitting atomic.Bool
 	// forced is set by the force quit: the shutdown records the runs it cancels.
 	forced atomic.Bool
+	// startHidden is set when the window starts hidden in the tray.
+	startHidden bool
 
 	mu   sync.Mutex // serializes shutdown
 	done bool
@@ -307,13 +310,13 @@ func (d *desktopApp) quit() {
 }
 
 // beforeClose hides the window instead of closing it while the app runs in the
-// background (Windows), and lets it close once the app quits.
+// background with a working tray icon (Windows), and lets it close once the app
+// quits or when the tray is not available.
 func (d *desktopApp) beforeClose(context.Context) bool {
 	if d.background == nil || d.quitting.Load() || d.startError() != nil {
 		return false
 	}
-	d.background.WindowClosing()
-	return true
+	return d.background.WindowClosing()
 }
 
 // openURL opens url in the system browser.
