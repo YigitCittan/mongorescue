@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -85,6 +86,53 @@ func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]c
 		return nil
 	})
 	return out, err
+}
+
+// privilege is one entry of connectionStatus' authenticatedUserPrivileges.
+type privilege struct {
+	Resource struct {
+		DB          *string `bson:"db"`
+		Collection  *string `bson:"collection"`
+		AnyResource bool    `bson:"anyResource"`
+	} `bson:"resource"`
+	Actions []string `bson:"actions"`
+}
+
+// CanBypassDocumentValidation reports whether the connection's user may write to
+// every collection of database without document validation (the
+// bypassDocumentValidation action, granted e.g. by the built-in restore role).
+// A server without access control allows it.
+func (p *Prober) CanBypassDocumentValidation(ctx context.Context, uri, database string) (bool, error) {
+	var ok bool
+	err := withClient(ctx, uri, func(c *mongo.Client) error {
+		var res struct {
+			AuthInfo struct {
+				Users      []bson.Raw  `bson:"authenticatedUsers"`
+				Privileges []privilege `bson:"authenticatedUserPrivileges"`
+			} `bson:"authInfo"`
+		}
+		cmd := bson.D{{Key: "connectionStatus", Value: 1}, {Key: "showPrivileges", Value: true}}
+		if err := c.Database("admin").RunCommand(ctx, cmd).Decode(&res); err != nil {
+			return fmt.Errorf("connectionStatus: %w", err)
+		}
+		ok = len(res.AuthInfo.Users) == 0 || grantsBypass(res.AuthInfo.Privileges, database)
+		return nil
+	})
+	return ok, err
+}
+
+// grantsBypass reports whether privs allow bypassDocumentValidation on every
+// collection of database.
+func grantsBypass(privs []privilege, database string) bool {
+	for _, p := range privs {
+		r := p.Resource
+		covers := r.AnyResource ||
+			(r.DB != nil && r.Collection != nil && *r.Collection == "" && (*r.DB == "" || *r.DB == database))
+		if covers && slices.Contains(p.Actions, "bypassDocumentValidation") {
+			return true
+		}
+	}
+	return false
 }
 
 // withClient runs fn with a client for uri and always disconnects it.
