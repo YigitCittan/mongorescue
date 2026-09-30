@@ -155,6 +155,11 @@ func TestSessionsExpireOverHTTP(t *testing.T) {
 	f := newHardeningFixture(t, nil, auth.WithSessionTimeouts(idle, absolute))
 	b := f.browser(t)
 	b.setup(f.authFixture)
+	// Max-Age follows the auth service's clock, not the wall clock: the fixture's
+	// clock is far from real time, and the cookie must still last the absolute lifetime.
+	if b.cookie == nil || b.cookie.MaxAge != int(absolute.Seconds()) {
+		t.Fatalf("setup cookie %+v; want Max-Age %d", b.cookie, int(absolute.Seconds()))
+	}
 
 	f.clock.Advance(idle - time.Minute)
 	if rec := b.do("GET", "/api/v1/jobs", nil, nil); rec.Code != http.StatusOK {

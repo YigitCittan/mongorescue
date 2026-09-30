@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential scrubbing of logs and errors also masks a password containing a raw `://` (which split the connection string before its `@`), and the `token`, `access_token`, `api_key`, `apikey`, `sig` and `signature` query parameters of any URL.
 - Every response carries browser security headers: a strict `Content-Security-Policy` (`default-src 'self'`, no inline or eval'd script, `object-src 'none'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`; API, MCP and metrics responses add `Cache-Control: no-store`. The desktop app's webview origins (`wails:`, `http(s)://wails.localhost`) are added to the policy only in the desktop app.
 
+### Fixed
+- The session cookie's `Max-Age` is measured on the same clock as its `Expires` and the session's lifetime, so the two attributes always agree.
+
 ## [0.7.1] - 2026-09-30
 
 ### Added
