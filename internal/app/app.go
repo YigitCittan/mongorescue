@@ -279,6 +279,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	)
 	bus.Subscribe(metricSet.ObserveEvent)
 	bus.Subscribe(notifySvc.HandleEvent)
+	bus.Subscribe(watchEncryptionOffAlert(logger, settingsSvc))
 	if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, settingsSvc, bus); err != nil {
 		return nil, fmt.Errorf("check encryption after upgrade: %w", err)
 	}

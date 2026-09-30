@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +57,25 @@ func (c *capturePublisher) count() int {
 	return len(c.events)
 }
 
+// deliver hands the captured events at index from and later to h, as the bus does.
+func (c *capturePublisher) deliver(ctx context.Context, from int, h events.Handler) {
+	c.mu.Lock()
+	pending := append([]events.Event(nil), c.events[from:]...)
+	c.mu.Unlock()
+	for _, e := range pending {
+		h(ctx, e)
+	}
+}
+
+func newCheckService(t *testing.T, repo *memSettingsRepo) *settings.Service {
+	t.Helper()
+	svc, err := settings.NewService(context.Background(), repo, settings.WithLogger(slog.New(slog.DiscardHandler)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
 // TestEncryptionOffAfterUpgradeCheck covers the startup check that catches
 // installations whose encryption switch was lost by the import of v0.7.1 and
 // earlier.
@@ -65,42 +86,52 @@ func TestEncryptionOffAfterUpgradeCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	buggyImport := []string{config.EnvEncryptionEnabled, config.EnvEncryptionRecips}
+	fileImport := []string{config.LegacyFileName + ":encryption.enabled", config.LegacyFileName + ":encryption.passphrase"}
 
 	cases := []struct {
 		name    string
 		env     map[string]string
+		file    string   // config.json content, if any
 		markers []string // sources an earlier (buggy) import recorded
 		enabled bool     // encryption currently on
 		want    bool
 	}{
-		{"variable still set, switch lost", map[string]string{config.EnvEncryptionEnabled: "true", config.EnvEncryptionRecips: recipient}, buggyImport, false, true},
-		{"variables removed, import recorded switch and recipients", nil, buggyImport, false, true},
-		{"config.json import recorded", nil, []string{config.LegacyFileName + ":encryption.enabled", config.LegacyFileName + ":encryption.passphrase"}, false, true},
-		{"variable says off", map[string]string{config.EnvEncryptionEnabled: "false"}, buggyImport, false, false},
-		{"only the switch was recorded", nil, []string{config.EnvEncryptionEnabled}, false, false},
-		{"never configured", nil, nil, false, false},
-		{"encryption is on", nil, buggyImport, true, false},
+		{"variable still says on, switch lost", map[string]string{config.EnvEncryptionEnabled: "true", config.EnvEncryptionRecips: recipient}, "", buggyImport, false, true},
+		{"config.json still says on, switch lost", nil, `{"encryption": {"enabled": true, "passphrase": "kept"}}`, fileImport, false, true},
+		// The markers were also written for ENCRYPTION_ENABLED=false: without the
+		// switch value, they must not raise an alarm.
+		{"variables removed, markers only", nil, "", buggyImport, false, false},
+		{"config.json removed, markers only", nil, "", fileImport, false, false},
+		{"variable says off, passphrase kept", map[string]string{config.EnvEncryptionEnabled: "false", config.EnvEncryptionPass: "a kept passphrase"},
+			"", []string{config.EnvEncryptionEnabled, config.EnvEncryptionPass}, false, false},
+		{"config.json says off, passphrase kept", nil, `{"encryption": {"enabled": false, "passphrase": "kept"}}`, fileImport, false, false},
+		{"variable says on, no key imported", map[string]string{config.EnvEncryptionEnabled: "true"}, "", []string{config.EnvEncryptionEnabled}, false, false},
+		{"never configured", nil, "", nil, false, false},
+		{"encryption is on", map[string]string{config.EnvEncryptionEnabled: "true", config.EnvEncryptionRecips: recipient}, "", buggyImport, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &memSettingsRepo{}
-			svc, err := settings.NewService(ctx, repo, settings.WithLogger(slog.New(slog.DiscardHandler)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = svc.Update(ctx, settings.Patch{Encryption: &settings.EncryptionPatch{Recipients: &[]string{recipient}}}); err != nil {
+			svc := newCheckService(t, repo)
+			if _, err := svc.Update(ctx, settings.Patch{Encryption: &settings.EncryptionPatch{Recipients: &[]string{recipient}}}); err != nil {
 				t.Fatal(err)
 			}
 			if tc.enabled {
 				on := true
-				if _, err = svc.Update(ctx, settings.Patch{Encryption: &settings.EncryptionPatch{Enabled: &on}}); err != nil {
+				if _, err := svc.Update(ctx, settings.Patch{Encryption: &settings.EncryptionPatch{Enabled: &on}}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err = svc.MarkImported(ctx, tc.markers...); err != nil {
+			if err := svc.MarkImported(ctx, tc.markers...); err != nil {
 				t.Fatal(err)
 			}
-			legacy, err := config.LoadLegacy(t.TempDir(), envMap(tc.env))
+			dir := t.TempDir()
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(dir, config.LegacyFileName), []byte(tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			legacy, err := config.LoadLegacy(dir, envMap(tc.env))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,13 +139,15 @@ func TestEncryptionOffAfterUpgradeCheck(t *testing.T) {
 			var logs strings.Builder
 			logger := slog.New(slog.NewTextHandler(&lockedWriter{w: &logs}, nil))
 			pub := &capturePublisher{}
+			watch := watchEncryptionOffAlert(logger, svc)
 			for range 3 { // every start runs the check; it must stay idempotent
+				before := pub.count()
 				if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, svc, pub); err != nil {
 					t.Fatal(err)
 				}
+				pub.deliver(ctx, before, watch) // the bus runs after the check
 			}
-			warned := len(svc.Warnings()) == 1
-			if warned != tc.want {
+			if warned := len(svc.Warnings()) == 1; warned != tc.want {
 				t.Fatalf("warning = %v; want %v", warned, tc.want)
 			}
 			if svc.Current().Encryption.Enabled != tc.enabled {
@@ -135,10 +168,7 @@ func TestEncryptionOffAfterUpgradeCheck(t *testing.T) {
 			}
 
 			// A restart keeps an active warning without a second alert.
-			again, err := settings.NewService(ctx, repo, settings.WithLogger(slog.New(slog.DiscardHandler)))
-			if err != nil {
-				t.Fatal(err)
-			}
+			again := newCheckService(t, repo)
 			if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, again, pub); err != nil {
 				t.Fatal(err)
 			}
@@ -149,9 +179,62 @@ func TestEncryptionOffAfterUpgradeCheck(t *testing.T) {
 	}
 }
 
+// TestEncryptionOffAlertIsResentUntilDelivered stops the process after the check but
+// before the event bus delivered the alert: the next start sends it again, and once
+// it was delivered no start sends it any more.
+func TestEncryptionOffAlertIsResentUntilDelivered(t *testing.T) {
+	ctx := context.Background()
+	_, recipient, err := encryption.GenerateX25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &memSettingsRepo{}
+	svc := newCheckService(t, repo)
+	if _, err = svc.Update(ctx, settings.Patch{Encryption: &settings.EncryptionPatch{Recipients: &[]string{recipient}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.MarkImported(ctx, config.EnvEncryptionEnabled, config.EnvEncryptionRecips); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := config.LoadLegacy(t.TempDir(), envMap(map[string]string{config.EnvEncryptionEnabled: "true", config.EnvEncryptionRecips: recipient}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	pub := &capturePublisher{}
+
+	// First start: published, then the process dies before the bus ran.
+	if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, svc, pub); err != nil {
+		t.Fatal(err)
+	}
+	// Second start: still pending, published again and this time delivered.
+	second := newCheckService(t, repo)
+	if !second.EncryptionOffAlertPending() {
+		t.Fatal("an alert that never reached the bus must stay pending")
+	}
+	if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, second, pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub.count() != 2 {
+		t.Fatalf("alerts = %d; want the undelivered one sent again", pub.count())
+	}
+	pub.deliver(ctx, 1, watchEncryptionOffAlert(logger, second))
+	pub.deliver(ctx, 1, watchEncryptionOffAlert(logger, second)) // idempotent
+
+	// Third start: delivered before, so no new alert, but the warning stays.
+	third := newCheckService(t, repo)
+	if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, third, pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub.count() != 2 || third.EncryptionOffAlertPending() || len(third.Warnings()) != 1 {
+		t.Fatalf("after delivery: alerts %d, pending %v, warnings %v", pub.count(), third.EncryptionOffAlertPending(), third.Warnings())
+	}
+}
+
 // TestAppRaisesEncryptionOffWarningAtStartup runs the check through New: an
-// installation upgraded by a release that lost the encryption switch shows the
-// warning after the next start, and enabling encryption clears it.
+// installation upgraded by a release that lost the encryption switch, still
+// configured with MONGORESCUE_ENCRYPTION_ENABLED=true, shows the warning, and
+// enabling encryption clears it.
 func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 	cfg := testConfig(t)
 	ctx := context.Background()
@@ -159,6 +242,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	env := envMap(map[string]string{config.EnvEncryptionEnabled: "true", config.EnvEncryptionRecips: key.Recipient})
 	first, err := New(cfg, nil, WithGetenv(noEnv))
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +261,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := New(cfg, nil, WithGetenv(noEnv))
+	second, err := New(cfg, nil, WithGetenv(env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +279,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	third, err := New(cfg, nil, WithGetenv(noEnv))
+	third, err := New(cfg, nil, WithGetenv(env))
 	if err != nil {
 		t.Fatal(err)
 	}
