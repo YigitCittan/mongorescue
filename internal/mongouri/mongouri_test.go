@@ -32,6 +32,7 @@ func TestValidate(t *testing.T) {
 		{name: "c1 control", uri: "mongodb://u:p\u0085x@h/db", valid: false},
 		{name: "invalid utf-8", uri: "mongodb://u:p\xffx@h/db", valid: false},
 		{name: "invalid host character", uri: "mongodb://h{x}/db", valid: false},
+		{name: "empty option name", uri: "mongodb://h/?=x", valid: false},
 
 		{name: "empty", uri: "", valid: false},
 		{name: "wrong scheme", uri: "postgres://u:p@h/db", valid: false},

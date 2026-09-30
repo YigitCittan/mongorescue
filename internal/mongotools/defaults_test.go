@@ -30,6 +30,8 @@ func TestWithConnectionDefaultsAuthSource(t *testing.T) {
 		{"credentials with empty path", "mongodb://sa:pw@h/", "mongodb://sa:pw@h/?authSource=admin&" + both},
 		{"credentials with path", "mongodb://sa:pw@h:27017/mydb", "mongodb://sa:pw@h:27017/mydb?authSource=mydb&" + both},
 		{"path is escaped", "mongodb://sa:pw@h/my%20db", "mongodb://sa:pw@h/my%20db?authSource=my+db&" + both},
+		{"plus in path is a space", "mongodb://sa:pw@h/my+db", "mongodb://sa:pw@h/my+db?authSource=my+db&" + both},
+		{"escaped option name", "mongodb://sa:pw@h/?auth%53ource=other", "mongodb://sa:pw@h/?auth%53ource=other&" + both},
 		{"existing authSource", "mongodb://sa:pw@h/mydb?authSource=other", "mongodb://sa:pw@h/mydb?authSource=other&" + both},
 		{"existing authsource lower case", "mongodb://sa:pw@h/?authsource=other", "mongodb://sa:pw@h/?authsource=other&" + both},
 		{"existing AUTHSOURCE upper case", "mongodb://sa:pw@h/?AUTHSOURCE=other", "mongodb://sa:pw@h/?AUTHSOURCE=other&" + both},

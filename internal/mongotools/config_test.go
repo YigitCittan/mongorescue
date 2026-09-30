@@ -51,8 +51,18 @@ func TestWriteURIConfig(t *testing.T) {
 }
 
 func TestWriteURIConfigRejectsControlChars(t *testing.T) {
-	if _, _, err := WriteURIConfig(t.TempDir(), "mongodb://h/\nuri: evil"); !errors.Is(err, ErrInvalidURI) {
-		t.Fatalf("expected ErrInvalidURI, got %v", err)
+	for _, uri := range []string{
+		"mongodb://h/\nuri: evil",
+		"mongodb://u:p\u0085x@h", // NEL, a YAML 1.1 line break
+		"mongodb://u:p\u2028x@h", // line separator
+		"mongodb://u:p\u2029x@h", // paragraph separator
+		"mongodb://u:p\ufeffx@h", // byte order mark
+		"mongodb://u:p\x9bx@h",   // invalid UTF-8
+		"mongodb://u:p\u009bx@h", // C1 control
+	} {
+		if _, _, err := WriteURIConfig(t.TempDir(), uri); !errors.Is(err, ErrInvalidURI) {
+			t.Errorf("WriteURIConfig(%q): expected ErrInvalidURI, got %v", uri, err)
+		}
 	}
 }
 
