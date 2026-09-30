@@ -438,6 +438,43 @@ func assertIDs(t *testing.T, what string, got []string, want ...string) {
 	}
 }
 
+func TestUpdateJobRunTimesOnlyTouchesRunTimestamps(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	if err := s.CreateJob(ctx, &models.Job{ID: "job_r", Name: "edited", Database: "db", CronExpression: "@hourly"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.GetJob(ctx, "job_r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	next := last.Add(time.Hour)
+	if err = s.UpdateJobRunTimes(ctx, "job_r", &last, &next); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetJob(ctx, "job_r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "edited" || got.CronExpression != "@hourly" || !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("settings or updated_at changed: %+v", got)
+	}
+	if got.LastRun == nil || !got.LastRun.Equal(last) || got.NextRun == nil || !got.NextRun.Equal(next) {
+		t.Fatalf("run times = %v / %v; want %v / %v", got.LastRun, got.NextRun, last, next)
+	}
+	// nil keeps the stored value.
+	if err = s.UpdateJobRunTimes(ctx, "job_r", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetJob(ctx, "job_r"); got.LastRun == nil || !got.LastRun.Equal(last) || got.NextRun == nil {
+		t.Fatalf("nil cleared a run time: %+v", got)
+	}
+	if err = s.UpdateJobRunTimes(ctx, "job_missing", &last, nil); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown job = %v; want ErrNotFound", err)
+	}
+}
+
 func TestCreateAndUpdateJobNeverOverwriteOrResurrect(t *testing.T) {
 	s := storetest.New(t)
 	ctx := context.Background()

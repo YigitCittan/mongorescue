@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -84,6 +85,32 @@ func (s *SQLiteStore) UpdateJob(ctx context.Context, job *models.Job) error {
 	return execOne(ctx, s.db, ErrNotFound, `UPDATE jobs SET name = ?, database_name = ?, enabled = ?, created_at = ?,
 		connection_id = ?, storage_target_id = ?, data = ? WHERE id = ?`,
 		job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data, job.ID)
+}
+
+// UpdateJobRunTimes stores a job's run timestamps without touching its settings, so
+// a run finishing or a reschedule never reverts an edit saved meanwhile. A nil
+// lastRun or nextRun keeps the stored value. UpdatedAt is not changed. It returns
+// ErrNotFound when the job was deleted.
+func (s *SQLiteStore) UpdateJobRunTimes(ctx context.Context, id string, lastRun, nextRun *time.Time) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		job, err := getRecord[models.Job](ctx, tx, ErrNotFound, "SELECT data FROM jobs WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		if lastRun != nil {
+			last := lastRun.UTC()
+			job.LastRun = &last
+		}
+		if nextRun != nil {
+			next := nextRun.UTC()
+			job.NextRun = &next
+		}
+		data, err := encode(job)
+		if err != nil {
+			return err
+		}
+		return execOne(ctx, tx, ErrNotFound, "UPDATE jobs SET data = ? WHERE id = ?", data, id)
+	})
 }
 
 // GetJob returns a job by ID or ErrNotFound.

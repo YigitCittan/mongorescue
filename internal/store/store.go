@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -43,6 +44,10 @@ type Store interface {
 	// UpdateJob replaces an existing job, or returns ErrNotFound when it was deleted.
 	// It sets UpdatedAt.
 	UpdateJob(ctx context.Context, job *models.Job) error
+	// UpdateJobRunTimes stores only a job's run timestamps (nil keeps the stored
+	// value), never its settings or UpdatedAt, or returns ErrNotFound when the job
+	// was deleted.
+	UpdateJobRunTimes(ctx context.Context, id string, lastRun, nextRun *time.Time) error
 	// GetJob returns a job or ErrNotFound.
 	GetJob(ctx context.Context, id string) (*models.Job, error)
 	// ListJobs returns all jobs sorted by name.

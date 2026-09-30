@@ -3,11 +3,9 @@ package operations
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 )
@@ -27,12 +25,17 @@ var (
 	ErrNegativeRetention = errors.New("retention_days and retention_count must not be negative")
 )
 
+// ErrJobChanged is returned by UpdateJob when the request names the job's updated_at
+// and the job was changed since (adapters answer 409 Conflict).
+var ErrJobChanged = errors.New("the job was changed meanwhile; reload it and try again")
+
 // JobScheduler (re)schedules jobs in the running scheduler (implemented by
 // *scheduler.Scheduler).
 type JobScheduler interface {
-	// RegisterJob replaces the cron entry of job: a disabled job is unscheduled, an
-	// enabled one is scheduled with its current expression and its next run stored.
-	RegisterJob(job *models.Job) error
+	// ApplyJobUpdate runs persist (which stores job) and then replaces the job's cron
+	// entry, under one lock, so concurrent updates are scheduled in the order they
+	// were stored. It returns persist's error unchanged.
+	ApplyJobUpdate(job *models.Job, persist func() error) error
 }
 
 // JobUpdate is the body of PUT /api/v1/jobs/{id}. The schedule, database, collection
@@ -62,6 +65,9 @@ type JobUpdate struct {
 	Gzip *bool `json:"gzip"`
 	// Enabled schedules (true) or pauses (false) the job when set.
 	Enabled *bool `json:"enabled"`
+	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
+	// refused with ErrJobChanged if the job was changed since.
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 // JobDetails is a job with its upcoming activations.
@@ -107,7 +113,8 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 // UpdateJob replaces the editable fields of job id with u, validates the result like
 // a new job (see ValidateJob), stores it and reschedules it at once: the new schedule,
 // or a pause, takes effect without a restart. The job keeps its id, creation time,
-// last run and backups. Expected failures: ErrNotFound and those of ValidateJob.
+// last run and backups. Expected failures: ErrNotFound, ErrJobChanged and those of
+// ValidateJob.
 func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*models.Job, error) {
 	existing, err := s.cfg.Store.GetJob(ctx, id)
 	if err != nil {
@@ -133,14 +140,28 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	if job.Enabled && s.cfg.Scheduler == nil {
 		job.NextRun = nextRunOf(job.CronExpression, s.now())
 	}
-	// UpdateJob never recreates a job deleted meanwhile.
-	if err = s.cfg.Store.UpdateJob(ctx, job); err != nil {
-		return nil, notFound(err, "job not found")
+	// persist re-reads the job under the scheduler's lock: the precondition is checked
+	// against, and the run history taken from, what is stored right now, so a run that
+	// finished since the first read is not reverted.
+	persist := func() error {
+		current, getErr := s.cfg.Store.GetJob(ctx, id)
+		if getErr != nil {
+			return notFound(getErr, "job not found")
+		}
+		if u.UpdatedAt != nil && !current.UpdatedAt.Equal(*u.UpdatedAt) {
+			return ErrJobChanged
+		}
+		job.LastRun, job.CreatedAt = current.LastRun, current.CreatedAt
+		// UpdateJob never recreates a job deleted meanwhile.
+		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
 	}
 	if s.cfg.Scheduler != nil {
-		if regErr := s.cfg.Scheduler.RegisterJob(job); regErr != nil {
-			s.logger.Error("failed to reschedule job", slog.String("job_id", job.ID), logsafe.Error(regErr))
-		}
+		err = s.cfg.Scheduler.ApplyJobUpdate(job, persist)
+	} else {
+		err = persist()
+	}
+	if err != nil {
+		return nil, err
 	}
 	return job, nil
 }
