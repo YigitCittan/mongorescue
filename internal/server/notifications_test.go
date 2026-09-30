@@ -23,15 +23,16 @@ import (
 )
 
 // syncPublisher feeds events straight into the metrics collector (no Bus) so tests can
-// assert on metric values deterministically.
+// assert on metric values deterministically. count is incremented only after the event
+// has been observed, so a count of n means the metrics reflect n events.
 type syncPublisher struct {
 	m     *metrics.Metrics
 	count atomic.Int32
 }
 
 func (p *syncPublisher) Publish(ctx context.Context, e events.Event) bool {
-	p.count.Add(1)
 	p.m.ObserveEvent(ctx, e)
+	p.count.Add(1)
 	return true
 }
 
@@ -334,17 +335,35 @@ func TestManualOperationsEmitEventsAndMetrics(t *testing.T) {
 		t.Fatalf("published %d events; want 2", f.pub.count.Load())
 	}
 
-	out := serve(f.h, "GET", "/metrics", nil, nil).Body.String()
-	for _, want := range []string{
+	out := awaitMetrics(t, f.h,
 		`mongorescue_backups_total{job="manual",status="succeeded"} 1`,
 		`mongorescue_restores_total{status="succeeded"} 1`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in /metrics", want)
-		}
-	}
+	)
 	if strings.Contains(out, "attacker-controlled") {
 		t.Error("unknown client-supplied job IDs must not become metric labels")
+	}
+}
+
+// awaitMetrics polls /metrics until every line in want appears and returns the last
+// scrape. It fails the test with the missing lines after a 5 s deadline.
+func awaitMetrics(t *testing.T, h http.Handler, want ...string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out := serve(h, "GET", "/metrics", nil, nil).Body.String()
+		var missing []string
+		for _, line := range want {
+			if !strings.Contains(out, line) {
+				missing = append(missing, line)
+			}
+		}
+		if len(missing) == 0 {
+			return out
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("missing %q in /metrics after 5s", missing)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
