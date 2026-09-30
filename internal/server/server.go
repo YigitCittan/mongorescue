@@ -101,6 +101,18 @@ type Server struct {
 	// mcpHandler serves /mcp; audit backs GET /api/v1/audit.
 	mcpHandler http.Handler
 	audit      *audit.Service
+
+	// desktopCSP selects desktopContentSecurityPolicy (see WithDesktopCSP).
+	desktopCSP bool
+}
+
+// WithDesktopCSP makes the server send desktopContentSecurityPolicy, which also
+// allows the origins of the desktop app's webview (wails: on macOS and Linux,
+// http(s)://wails.localhost on Windows). WebKit may treat the custom wails:// origin
+// as opaque, so 'self' alone would block the dashboard there. Servers reachable over
+// the network keep the strict policy.
+func WithDesktopCSP() Option {
+	return func(s *Server) { s.desktopCSP = true }
 }
 
 // WithVersion sets the build version reported by GET /api/v1/health.
@@ -194,7 +206,11 @@ func NewServer(
 	mux := s.buildRoutes()
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	handler := s.loggingMiddleware(securityHeadersMiddleware(s.corsMiddleware(s.authMiddleware(mux))))
+	csp := contentSecurityPolicy
+	if s.desktopCSP {
+		csp = desktopContentSecurityPolicy
+	}
+	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.authMiddleware(mux))))
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -710,14 +726,23 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
 	"connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
+// desktopOrigins are the page origins of the desktop app's webview.
+const desktopOrigins = "wails: http://wails.localhost https://wails.localhost"
+
+// desktopContentSecurityPolicy is contentSecurityPolicy with desktopOrigins added to
+// the fetch directives the dashboard uses (see WithDesktopCSP).
+const desktopContentSecurityPolicy = "default-src 'self' " + desktopOrigins + "; script-src 'self' " + desktopOrigins +
+	"; style-src 'self' " + desktopOrigins + "; img-src 'self' data: " + desktopOrigins + "; connect-src 'self' " + desktopOrigins +
+	"; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
 // securityHeadersMiddleware sets the browser security headers on every response: the
-// Content-Security-Policy, X-Content-Type-Options: nosniff, X-Frame-Options: DENY and
-// Referrer-Policy: no-referrer. API, MCP and metrics responses carry
+// Content-Security-Policy csp, X-Content-Type-Options: nosniff, X-Frame-Options: DENY
+// and Referrer-Policy: no-referrer. API, MCP and metrics responses carry
 // Cache-Control: no-store, so neither browsers nor proxies keep copies of them.
-func securityHeadersMiddleware(next http.Handler) http.Handler {
+func securityHeadersMiddleware(csp string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

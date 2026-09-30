@@ -210,7 +210,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 // until deadline while the data directory is still locked by the old process.
 func newApp(cfg *config.Config, logger *slog.Logger, getenv func(string) string, afterUpdate bool, deadline time.Time) (*app.App, error) {
 	for {
-		application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv))
+		application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv), app.WithDesktop())
 		if err == nil || !afterUpdate || !errors.Is(err, store.ErrDataDirLocked) || time.Now().After(deadline) {
 			return application, err
 		}

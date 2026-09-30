@@ -4,9 +4,12 @@ import (
 	"io/fs"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
+	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 	"github.com/yigitcittan/mongorescue/web"
 )
 
@@ -90,6 +93,60 @@ func TestContentSecurityPolicyIsStrict(t *testing.T) {
 					t.Errorf("CSP %s allows %s", name, banned)
 				}
 			}
+		}
+	}
+}
+
+// cspDirectives splits a policy into its directives.
+func cspDirectives(policy string) map[string][]string {
+	out := map[string][]string{}
+	for _, d := range strings.Split(policy, ";") {
+		f := strings.Fields(d)
+		if len(f) > 0 {
+			out[f[0]] = f[1:]
+		}
+	}
+	return out
+}
+
+// TestDesktopCSPAddsOnlyTheWebviewOrigins checks both header variants: the default
+// server sends the strict policy, a server built WithDesktopCSP sends the policy with
+// the webview origins (wails:, http(s)://wails.localhost) added to the fetch
+// directives the dashboard uses, and nothing else loosened.
+func TestDesktopCSPAddsOnlyTheWebviewOrigins(t *testing.T) {
+	base, _, _ := setupTestServer(t)
+	st := storetest.New(t)
+	build := func(opts ...Option) http.Handler {
+		opts = append(opts, WithAuth(newTestAuth(t, st, "")), WithSettings(newTestSettings(t, st, newTestConfig().Security)))
+		return NewServer(bootConfig(), st, base.backupEngine, base.restoreEngine, base.storageDriver, base.scheduler,
+			fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html></html>")}}, nil, opts...).Handler()
+	}
+	for _, path := range []string{"/", "/api/v1/health"} {
+		if got := serve(build(), "GET", path, nil, nil).Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+			t.Errorf("default server %s CSP = %q; want the strict policy", path, got)
+		}
+		if got := serve(build(WithDesktopCSP()), "GET", path, nil, nil).Header().Get("Content-Security-Policy"); got != desktopContentSecurityPolicy {
+			t.Errorf("desktop server %s CSP = %q; want the desktop policy", path, got)
+		}
+	}
+	strict, desktop := cspDirectives(contentSecurityPolicy), cspDirectives(desktopContentSecurityPolicy)
+	if len(strict) != len(desktop) {
+		t.Fatalf("directives differ: %v / %v", strict, desktop)
+	}
+	origins := strings.Fields(desktopOrigins)
+	widened := map[string]bool{"default-src": true, "script-src": true, "style-src": true, "img-src": true, "connect-src": true}
+	for name, values := range strict {
+		want := values
+		if widened[name] {
+			want = append(append([]string(nil), values...), origins...)
+		}
+		if strings.Join(desktop[name], " ") != strings.Join(want, " ") {
+			t.Errorf("desktop %s = %q; want %q", name, desktop[name], want)
+		}
+	}
+	for _, o := range []string{"wails:", "http://wails.localhost", "https://wails.localhost"} {
+		if !slices.Contains(origins, o) {
+			t.Errorf("desktop origins lack %s", o)
 		}
 	}
 }
