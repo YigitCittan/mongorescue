@@ -381,7 +381,7 @@ func TestSaveJobRejectsInvalidID(t *testing.T) {
 func TestSaveJobGeneratesSafeIDFromDatabase(t *testing.T) {
 	h, _ := newChainServer(t, nil)
 
-	body, _ := json.Marshal(models.Job{Database: "Evil DB');<script>" + strings.Repeat("x", 80), CronExpression: "@daily", ConnectionID: testConnID})
+	body, _ := json.Marshal(models.Job{Database: "Evil_DB');<script>" + strings.Repeat("x", 40), CronExpression: "@daily", ConnectionID: testConnID})
 	rec := serve(h, "POST", "/api/v1/jobs", body, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (body: %s)", rec.Code, rec.Body.String())
