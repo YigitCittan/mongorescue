@@ -146,6 +146,7 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		Body:   r,
 	})
 	if err != nil {
+		s.abortFailedUpload(ctx, objKey, err)
 		return nil, fmt.Errorf("s3 multipart upload failed: %w", err)
 	}
 
@@ -185,6 +186,29 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		StorageType: models.StorageS3,
 		ETag:        etag,
 	}, nil
+}
+
+// abortTimeout bounds the abort of a failed multipart upload.
+const abortTimeout = 30 * time.Second
+
+// abortFailedUpload aborts the multipart upload behind a failed Upload. The uploader
+// aborts it itself, but with the upload's context: after a cancellation (a cancelled
+// or timed-out backup) that request is never sent and the uploaded parts would stay
+// in the bucket, invisible and billed, until a lifecycle rule removes them. The abort
+// therefore runs detached from ctx cancellation; aborting an upload the uploader
+// already aborted is harmless.
+func (s *S3Storage) abortFailedUpload(ctx context.Context, objKey string, uploadErr error) {
+	var failure manager.MultiUploadFailure //nolint:staticcheck // SA1019: see S3Storage.uploader.
+	if !errors.As(uploadErr, &failure) || failure.UploadID() == "" {
+		return
+	}
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortTimeout)
+	defer cancel()
+	_, _ = s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(objKey),
+		UploadId: aws.String(failure.UploadID()),
+	})
 }
 
 // Retrieve returns a streaming ReadCloser from S3.
