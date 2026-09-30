@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -31,3 +32,34 @@ func TestNextRun(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+func TestNextRunsAndValidateCron(t *testing.T) {
+	from := time.Date(2026, 9, 24, 10, 30, 0, 0, time.UTC)
+	got := NextRuns("@hourly", from, 3)
+	want := []time.Time{
+		time.Date(2026, 9, 24, 11, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 24, 13, 0, 0, 0, time.UTC),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("NextRuns = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !got[i].Equal(want[i]) {
+			t.Fatalf("NextRuns = %v, want %v", got, want)
+		}
+	}
+	if NextRuns("not a cron", from, 3) != nil || NextRuns("@daily", from, 0) != nil {
+		t.Fatal("NextRuns of an invalid expression or n <= 0 should be nil")
+	}
+	for _, ok := range []string{"@daily", "@every 6h", "0 3 * * 1-5"} {
+		if err := ValidateCron(ok); err != nil {
+			t.Errorf("ValidateCron(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "61 * * * *", "every tuesday", "0 0 * * * *"} {
+		if err := ValidateCron(bad); !errors.Is(err, ErrInvalidCron) {
+			t.Errorf("ValidateCron(%q) = %v; want ErrInvalidCron", bad, err)
+		}
+	}
+}

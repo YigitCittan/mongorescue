@@ -63,10 +63,12 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
 | `GET` | `/api/v1/jobs` | List scheduled jobs | 200 | |
-| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` required; `storage_target_id` optional) | 201 | 400 |
+| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` required; `storage_target_id` optional; the cron expression is validated) | 201 | 400 |
+| `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) | 200 | 404 |
+| `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404 |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/run` | Run a job now | 202 | 400, 404, 409 |
-| `GET` | `/api/v1/backups` | List backups (`?database=` filter) | 200 | |
+| `GET` | `/api/v1/backups` | List backups, newest first (`?database=` and `?job_id=` filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
@@ -120,6 +122,25 @@ curl -s -X POST http://localhost:8080/api/v1/restore \
 ```
 
 Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are verified first under the default `auto` verify policy. A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started.
+
+## Updating a job
+
+`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip` and `enabled` are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention. The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
+
+The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job.
+
+| Status | When |
+| --- | --- |
+| `400 Bad Request` | Invalid JSON, cron expression, database, retention, connection or storage target |
+| `404 Not Found` | No job `{id}` |
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/jobs/job_shop_1727146800_3f9a1c2e \
+  -H "X-API-Key: $MONGORESCUE_ADMIN_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"shop hourly","cron_expression":"@hourly","database":"shop","connection_id":"conn_prod","retention_count":24}'
+```
+
+In the dashboard, a job row (or its **Details** button) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Enable** / **Disable** pauses or resumes the schedule.
 
 ## Retrying a failed backup
 

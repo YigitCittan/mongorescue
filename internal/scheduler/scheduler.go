@@ -445,16 +445,23 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancelPersist()
 
-	// Update job last run time and next run time
+	// Update job last run time and next run time. The run timestamps are applied to
+	// the stored job, not to the snapshot the run started with, so an edit saved
+	// while the backup ran is not reverted.
 	now := time.Now().UTC()
-	job.LastRun = &now
+	current := job
+	if stored, getErr := s.metadataStore.GetJob(persistCtx, job.ID); getErr == nil {
+		current = stored
+	}
+	current.LastRun = &now
 	s.mu.Lock()
 	if _, exists := s.entries[job.ID]; exists {
-		job.NextRun = nextRun(job.CronExpression, now)
+		current.NextRun = nextRun(current.CronExpression, now)
 	}
 	s.mu.Unlock()
+	job.LastRun, job.NextRun = current.LastRun, current.NextRun
 	// UpdateJob: a job deleted while it ran stays deleted.
-	if saveErr := s.metadataStore.UpdateJob(persistCtx, job); saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
+	if saveErr := s.metadataStore.UpdateJob(persistCtx, current); saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
 		s.logger.Error("failed to persist job run metadata",
 			slog.String("job_id", job.ID),
 			slog.Any("error", saveErr),
@@ -532,13 +539,47 @@ var cronParser = cron.NewParser(
 	cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
 )
 
-// nextRun returns the first activation of expr strictly after from, or nil
-// when expr cannot be parsed.
-func nextRun(expr string, from time.Time) *time.Time {
+// ErrInvalidCron is returned by ValidateCron for an expression the scheduler cannot
+// parse.
+var ErrInvalidCron = errors.New("invalid cron expression")
+
+// ValidateCron reports whether expr is a schedule the scheduler accepts: five
+// standard cron fields or a descriptor such as "@daily" or "@every 6h". The returned
+// error wraps ErrInvalidCron.
+func ValidateCron(expr string) error {
+	if _, err := cronParser.Parse(expr); err != nil {
+		return fmt.Errorf("%w %q: %w", ErrInvalidCron, expr, err)
+	}
+	return nil
+}
+
+// NextRuns returns the next n activations of expr strictly after from, in UTC. It
+// returns nil when expr cannot be parsed or n is not positive.
+func NextRuns(expr string, from time.Time, n int) []time.Time {
+	if n <= 0 {
+		return nil
+	}
 	schedule, err := cronParser.Parse(expr)
 	if err != nil {
 		return nil
 	}
-	next := schedule.Next(from).UTC()
-	return &next
+	runs := make([]time.Time, 0, n)
+	for next := from; len(runs) < n; {
+		next = schedule.Next(next)
+		if next.IsZero() {
+			break
+		}
+		runs = append(runs, next.UTC())
+	}
+	return runs
+}
+
+// nextRun returns the first activation of expr strictly after from, or nil
+// when expr cannot be parsed.
+func nextRun(expr string, from time.Time) *time.Time {
+	runs := NextRuns(expr, from, 1)
+	if len(runs) == 0 {
+		return nil
+	}
+	return &runs[0]
 }

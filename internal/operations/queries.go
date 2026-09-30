@@ -37,6 +37,8 @@ type BackupFilter struct {
 	ConnectionID string
 	// Status keeps backups in this state.
 	Status models.BackupStatus
+	// JobID keeps backups taken by this scheduled job.
+	JobID string
 }
 
 // ListBackups returns the backup records matching f, newest first.
@@ -45,11 +47,12 @@ func (s *Service) ListBackups(ctx context.Context, f BackupFilter) ([]*models.Ba
 	if err != nil {
 		return nil, fmt.Errorf("list backups: %w", err)
 	}
-	if f.ConnectionID == "" && f.Status == "" {
+	if f.ConnectionID == "" && f.Status == "" && f.JobID == "" {
 		return list, nil
 	}
 	return slices.DeleteFunc(list, func(b *models.BackupRecord) bool {
-		return (f.ConnectionID != "" && b.ConnectionID != f.ConnectionID) || (f.Status != "" && b.Status != f.Status)
+		return (f.ConnectionID != "" && b.ConnectionID != f.ConnectionID) || (f.Status != "" && b.Status != f.Status) ||
+			(f.JobID != "" && b.JobID != f.JobID)
 	}), nil
 }
 
