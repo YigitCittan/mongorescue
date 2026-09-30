@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -73,6 +75,21 @@ func TestRestoreFidelity(t *testing.T) {
 		rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
 		defer env.dropDB(t, rst.TargetDatabase)
 		assertSnapshotsEqual(t, want.only(included...), env.snapshotDB(t, rst.TargetDatabase))
+		if env.collectionExists(t, rst.TargetDatabase, "system.js") {
+			t.Fatal("system.js was not requested but was backed up")
+		}
+	})
+
+	t.Run("backup of a missing collection fails", func(t *testing.T) {
+		for _, cols := range [][]string{{"no_such_collection"}, {"orders", "no_such_collection"}} {
+			ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+			rec, err := newBackupEngine(env, st).Run(ctx, models.BackupOptions{Database: f.Name, MongoURI: env.URI, Collections: cols})
+			cancel()
+			if !errors.Is(err, backup.ErrCollectionFilter) || rec.Status != models.StatusFailed || !strings.Contains(rec.ErrorMessage, "no_such_collection not found") {
+				t.Fatalf("%v: want a failed backup naming the missing collection, got %v (%+v)", cols, err, rec)
+			}
+			assertObjectGone(t, st, rec.StorageKey)
+		}
 	})
 
 	t.Run("backup includes one collection", func(t *testing.T) {

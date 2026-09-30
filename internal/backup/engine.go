@@ -368,11 +368,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	defer stdout.Close()
 
-	// Capture stderr concurrently for diagnostics
+	// Capture the end of stderr concurrently for diagnostics (bounded: a long dump
+	// logs a line per collection and progress lines).
 	stderrChan := make(chan string, 1)
 	go func() {
-		data, _ := io.ReadAll(stderr)
-		stderrChan <- string(data)
+		tail := &mongotools.TailBuffer{}
+		_, _ = io.Copy(tail, stderr)
+		stderrChan <- tail.String()
 	}()
 
 	proc := &dumpProcess{
@@ -608,26 +610,53 @@ func trimmedNames(names []string) []string {
 	return out
 }
 
-// expandCollections rewrites a filter that includes several collections into the
-// equivalent exclusion list, since mongodump honours only the last --collection
-// flag. System collections are never excluded explicitly: mongodump dumps a
-// time-series collection's buckets and the view definitions together with the
-// collection or view they belong to.
+// expandCollections checks an include filter against the database and rewrites a
+// filter that includes several collections into the equivalent exclusion list, since
+// mongodump honours only the last --collection flag.
+//
+// It fails closed: a requested collection that does not exist fails the backup
+// (mongodump would silently dump nothing for it). Every collection that was not
+// requested is excluded, system collections such as system.js included, except
+// system.views and the buckets of requested time-series collections, which mongodump
+// dumps together with the views and collections they belong to.
+//
+// A collection created between the listing and the dump is not excluded and ends up
+// in the backup as well; that race is accepted, since it can only add data and never
+// drop a requested collection. Without a lister, a single collection is passed to
+// mongodump unchecked and several collections fail with ErrCollectionFilter.
 func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.BackupOptions) (models.BackupOptions, error) {
 	include := trimmedNames(opts.Collections)
-	if len(include) <= 1 {
+	if len(include) == 0 {
 		return opts, nil
 	}
 	if e.listCollections == nil {
+		if len(include) == 1 {
+			return opts, nil
+		}
 		return opts, fmt.Errorf("%w: %d collections requested but no collection lister is configured", ErrCollectionFilter, len(include))
 	}
 	names, err := e.listCollections(ctx, uri, opts.Database)
 	if err != nil {
 		return opts, fmt.Errorf("%w: list collections of %s: %w", ErrCollectionFilter, opts.Database, err)
 	}
+	for _, want := range include {
+		if !slices.Contains(names, want) {
+			return opts, fmt.Errorf("%w: collection %s not found in database %s", ErrCollectionFilter, want, opts.Database)
+		}
+	}
+	if len(include) == 1 {
+		return opts, nil
+	}
+	keep := func(name string) bool {
+		if slices.Contains(include, name) || name == "system.views" {
+			return true
+		}
+		ts, ok := strings.CutPrefix(name, "system.buckets.")
+		return ok && slices.Contains(include, ts)
+	}
 	exclude := trimmedNames(opts.ExcludeCollections)
 	for _, name := range names {
-		if !slices.Contains(include, name) && !strings.HasPrefix(name, "system.") && !slices.Contains(exclude, name) {
+		if !keep(name) && !slices.Contains(exclude, name) {
 			exclude = append(exclude, name)
 		}
 	}

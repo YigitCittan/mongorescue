@@ -138,12 +138,12 @@ func TestRestoreVerifyPolicyMatrix(t *testing.T) {
 	}{
 		{models.VerifyAuto, false, nil, true},
 		{models.VerifyAuto, true, nil, false},
-		{models.VerifyAuto, false, &no, false},
+		{models.VerifyAuto, false, &no, true}, // in place: always verified
 		{models.VerifyAuto, true, &yes, true},
 		{models.VerifyAlways, true, nil, true},
 		{models.VerifyAlways, false, nil, true},
-		{models.VerifyAlways, false, &no, false},
-		{models.VerifyNever, false, nil, false},
+		{models.VerifyAlways, false, &no, true},
+		{models.VerifyNever, false, nil, true},
 		{models.VerifyNever, true, nil, false},
 		{models.VerifyNever, true, &yes, true},
 	}
@@ -230,16 +230,17 @@ func TestRestoreWithoutVerifyReportsPartialApply(t *testing.T) {
 	runner := &capturingRunner{}
 	engine := NewEngine(store, "mongodb://localhost:27017", WithRunner(runner.run),
 		WithDecryptor(mustDecryptor(t, encryption.DecryptorConfig{Identity: id})))
+	// A safe clone without verification streams straight into mongorestore (in-place
+	// restores are always verified first).
 	no := false
-	record, err := engine.Run(context.Background(),
-		models.RestoreRequest{BackupID: src.ID, TargetDatabase: "db_restored", SafeClone: &no, ConfirmInPlace: true, Verify: &no}, src)
+	record, err := engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID, Verify: &no}, src)
 	if !errors.Is(err, encryption.ErrDecryptionFailed) {
 		t.Fatalf("expected ErrDecryptionFailed, got %v", err)
 	}
 	if !runner.called {
 		t.Fatal("without verification mongorestore should have started")
 	}
-	want := "partial data may have been applied to target namespace db_restored.*"
+	want := "partial data may have been applied to target namespace " + record.TargetDatabase + ".*"
 	if !strings.Contains(record.ErrorMessage, want) {
 		t.Fatalf("error message %q must contain %q", record.ErrorMessage, want)
 	}

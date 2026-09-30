@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
@@ -129,9 +130,9 @@ func TestRestoreWithReadWriteUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+		cctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		defer cancel()
-		_ = env.Client.Database(db).RunCommand(ctx, bson.D{{Key: "dropUser", Value: "it_rw"}}).Err()
+		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropUser", Value: "it_rw"}}).Err()
 	})
 	u, err := url.Parse(env.URI)
 	if err != nil {
@@ -150,6 +151,43 @@ func TestRestoreWithReadWriteUser(t *testing.T) {
 	mustRestore(t, rw, st, into, plain)
 	if n := env.count(t, target, "plain"); n != 20 {
 		t.Fatalf("restored %d documents with a readWrite user; want 20", n)
+	}
+
+	// Several collections: the database is listed with the readWrite user.
+	multi := mustBackup(t, rw, st, models.BackupOptions{Database: db, Collections: []string{"plain", "validated"}})
+	if multi.Status != models.StatusCompleted {
+		t.Fatalf("multi-collection backup with a readWrite user: %s", multi.ErrorMessage)
+	}
+
+	// A user that may only read one collection (no listCollections privilege) can
+	// still list what it is authorized for (nameOnly + authorizedCollections).
+	if err = vdb.RunCommand(ctx, bson.D{
+		{Key: "createRole", Value: "it_find_plain"},
+		{Key: "privileges", Value: bson.A{bson.D{
+			{Key: "resource", Value: bson.D{{Key: "db", Value: db}, {Key: "collection", Value: "plain"}}},
+			{Key: "actions", Value: bson.A{"find"}},
+		}}},
+		{Key: "roles", Value: bson.A{}},
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err = vdb.RunCommand(ctx, bson.D{
+		{Key: "createUser", Value: "it_ro"},
+		{Key: "pwd", Value: password},
+		{Key: "roles", Value: bson.A{bson.D{{Key: "role", Value: "it_find_plain"}, {Key: "db", Value: db}}}},
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+		defer cancel()
+		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropUser", Value: "it_ro"}}).Err()
+		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropRole", Value: "it_find_plain"}}).Err()
+	})
+	u.User = url.UserPassword("it_ro", password)
+	cols, err := mongoconn.New().ListCollections(ctx, u.String(), db)
+	if err != nil || len(cols) != 1 || cols[0].Name != "plain" {
+		t.Fatalf("a find-only user must list its collection: %v %+v", err, cols)
 	}
 
 	full := mustBackup(t, rw, st, models.BackupOptions{Database: db})

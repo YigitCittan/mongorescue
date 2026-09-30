@@ -52,7 +52,8 @@ func newBackupEngine(env *mongoEnv, st storage.Storage, opts ...backup.Option) *
 
 // newRestoreEngine returns the production restore engine for st.
 func newRestoreEngine(env *mongoEnv, st storage.Storage, opts ...restore.Option) *restore.Engine {
-	base := []restore.Option{restore.WithLogger(discardLogger), restore.WithValidationBypassCheck(mongoconn.New().CanBypassDocumentValidation)}
+	prober := mongoconn.New()
+	base := []restore.Option{restore.WithLogger(discardLogger), restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation), restore.WithDatabaseAdmin(prober)}
 	return restore.NewEngine(st, env.URI, append(base, opts...)...)
 }
 
@@ -152,6 +153,18 @@ func (m *mongoEnv) dbExists(t *testing.T, db string) bool {
 	names, err := m.Client.ListDatabaseNames(ctx, bson.D{{Key: "name", Value: db}})
 	if err != nil {
 		t.Fatalf("list databases: %v", err)
+	}
+	return len(names) > 0
+}
+
+// collectionExists reports whether db has a collection named coll.
+func (m *mongoEnv) collectionExists(t *testing.T, db, coll string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	names, err := m.Client.Database(db).ListCollectionNames(ctx, bson.D{{Key: "name", Value: coll}})
+	if err != nil {
+		t.Fatalf("list collections of %s: %v", db, err)
 	}
 	return len(names) > 0
 }

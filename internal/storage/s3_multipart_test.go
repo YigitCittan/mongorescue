@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -15,9 +17,10 @@ import (
 // multipartS3 is a minimal S3 endpoint for multipart uploads: it creates uploads,
 // accepts parts and records aborts. Completion is never reached by these tests.
 type multipartS3 struct {
-	mu      sync.Mutex
-	parts   int
-	aborted []string
+	mu        sync.Mutex
+	parts     int
+	aborted   []string
+	failAbort bool
 }
 
 func (f *multipartS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +35,8 @@ func (f *multipartS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && q.Has("partNumber"):
 		f.parts++
 		w.Header().Set("ETag", fmt.Sprintf(`"part-%d"`, f.parts))
+	case r.Method == http.MethodDelete && q.Has("uploadId") && f.failAbort:
+		writeS3Error(w, http.StatusForbidden, "AccessDenied")
 	case r.Method == http.MethodDelete && q.Has("uploadId"):
 		f.aborted = append(f.aborted, q.Get("uploadId"))
 		w.WriteHeader(http.StatusNoContent)
@@ -118,3 +123,28 @@ func TestS3SaveReadErrorAbortsMultipartUpload(t *testing.T) {
 type errReader struct{ err error }
 
 func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestS3SaveLogsFailedAbort(t *testing.T) {
+	isolateAWSEnv(t)
+	fake := &multipartS3{failAbort: true}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	var logs bytes.Buffer
+	st, err := NewS3Storage(context.Background(), S3Config{
+		Endpoint: srv.URL, Bucket: fakeBucket, AccessKey: "a", SecretKey: "s", UsePathStyle: true,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := io.MultiReader(bytes.NewReader(make([]byte, 11<<20)), &errReader{err: errors.New("dump failed")})
+	if _, err := st.Save(context.Background(), "db/failed.archive", body); err == nil {
+		t.Fatal("Save must fail")
+	}
+	out := logs.String()
+	for _, want := range []string{"level=WARN", "bucket=" + fakeBucket, "key=db/failed.archive", "AccessDenied"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log %q does not contain %q", out, want)
+		}
+	}
+}

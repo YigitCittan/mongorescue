@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -71,12 +72,62 @@ func (p *Prober) ListDatabases(ctx context.Context, uri string) ([]connections.D
 	return out, err
 }
 
-// ListCollections returns the collections and views of database.
+// DatabaseExists reports whether database exists on the server at uri (among the
+// databases the user is authorized for).
+func (p *Prober) DatabaseExists(ctx context.Context, uri, database string) (bool, error) {
+	var exists bool
+	err := withClient(ctx, uri, func(c *mongo.Client) error {
+		names, err := c.ListDatabaseNames(ctx, bson.D{{Key: "name", Value: database}},
+			options.ListDatabases().SetAuthorizedDatabases(true))
+		if err != nil {
+			return fmt.Errorf("listDatabases: %w", err)
+		}
+		exists = len(names) > 0
+		return nil
+	})
+	return exists, err
+}
+
+// unauthorizedCode is the server error code for a missing privilege.
+const unauthorizedCode = 13
+
+// DropDatabase drops database on the server at uri. A user without the dropDatabase
+// privilege (e.g. readWrite) drops its collections one by one instead.
+func (p *Prober) DropDatabase(ctx context.Context, uri, database string) error {
+	return withClient(ctx, uri, func(c *mongo.Client) error {
+		db := c.Database(database)
+		err := db.Drop(ctx)
+		if err == nil {
+			return nil
+		}
+		var cmdErr mongo.CommandError
+		if !errors.As(err, &cmdErr) || cmdErr.Code != unauthorizedCode {
+			return fmt.Errorf("dropDatabase: %w", err)
+		}
+		names, err := db.ListCollectionNames(ctx, bson.D{}, options.ListCollections().SetAuthorizedCollections(true))
+		if err != nil {
+			return fmt.Errorf("listCollections: %w", err)
+		}
+		for _, name := range names {
+			if strings.HasPrefix(name, "system.") {
+				continue
+			}
+			if err := db.Collection(name).Drop(ctx); err != nil {
+				return fmt.Errorf("drop %s: %w", name, err)
+			}
+		}
+		return nil
+	})
+}
+
+// ListCollections returns the collections and views of database. nameOnly together
+// with authorizedCollections lets users without the listCollections privilege list
+// the collections they may read.
 func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]connections.Collection, error) {
 	var out []connections.Collection
 	err := withClient(ctx, uri, func(c *mongo.Client) error {
 		specs, err := c.Database(database).ListCollectionSpecifications(ctx, bson.D{},
-			options.ListCollections().SetAuthorizedCollections(true))
+			options.ListCollections().SetNameOnly(true).SetAuthorizedCollections(true))
 		if err != nil {
 			return fmt.Errorf("listCollections: %w", err)
 		}
