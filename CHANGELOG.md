@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Every response carries browser security headers: a strict `Content-Security-Policy` (`default-src 'self'`, no inline or eval'd script, `object-src 'none'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`; API, MCP and metrics responses add `Cache-Control: no-store`.
+
 ## [0.7.1] - 2026-09-30
 
 ### Added
