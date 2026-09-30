@@ -13,8 +13,8 @@ import (
 // Stored backups are layered as mongodump archive -> [gzip] -> [age]. The restore
 // pipeline peels the layers from the content itself where it carries a signature,
 // and falls back to the storage key and the backup record otherwise, so a backup
-// whose key does not follow the naming scheme (a custom target_key) or whose record
-// lost its encryption flag still restores correctly.
+// whose key does not follow the naming scheme (a custom target_key accepted by earlier
+// releases) or whose record lost its encryption flag still restores correctly.
 
 // ageMagic is the first line of every binary age file (https://age-encryption.org/v1).
 const ageMagic = "age-encryption.org/v1\n"
