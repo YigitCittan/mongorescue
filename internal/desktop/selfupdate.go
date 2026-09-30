@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"log/slog"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,6 +30,12 @@ import (
 // allows renaming a running executable) and the new ones moved in, the new version
 // is started with AfterUpdateFlag and the app quits. The new version waits for the
 // old process to exit and removes the leftovers.
+//
+// The staging directory holds stagingMarker from its creation and completeMarker
+// once the archive is fully unpacked. When the app starts, RemoveUpdateLeftovers
+// first repairs a swap that was cut short (a crash or power loss between the
+// renames), then removes only what an update left: MongoRescue.exe.old, tools.old
+// and .update-<version> directories that hold stagingMarker.
 
 // AfterUpdateFlag is the command-line flag, with the PID of the old process as its
 // value (--after-update=<pid>), that the in-app update starts the new version
@@ -36,6 +45,14 @@ const AfterUpdateFlag = "after-update"
 // AfterUpdateWait bounds how long a version started with AfterUpdateFlag waits for
 // the old process to exit and release the data directory.
 const AfterUpdateWait = 60 * time.Second
+
+// AfterUpdateLockWait bounds how long a version started with AfterUpdateFlag keeps
+// trying to lock the data directory after AfterUpdateWait.
+const AfterUpdateLockWait = 30 * time.Second
+
+// DefaultIdlePoll is how often an update that waits for the running backups and
+// restores checks again.
+const DefaultIdlePoll = 5 * time.Second
 
 // Names used by the in-app update, in the executable's directory.
 const (
@@ -48,21 +65,38 @@ const (
 	toolsDirName = "tools"
 	// archiveExe is the executable's name in the portable archive.
 	archiveExe = "MongoRescue.exe"
+	// stagingMarker marks a staging directory as created by the update.
+	stagingMarker = ".mongorescue-staging"
+	// completeMarker marks a staging directory whose archive is fully unpacked.
+	completeMarker = ".complete"
 )
 
 // Limits of the portable archive: it holds the executable and a few tools.
 const (
-	maxArchiveEntries = 16
+	maxArchiveEntries = 64
 	maxEntrySize      = 512 << 20
 	maxUnpackedSize   = update.MaxAssetSize
 )
 
-// archiveTools are the files allowed in the archive's tools/ directory.
-var archiveTools = map[string]bool{
-	"mongodump.exe":       true,
-	"mongorestore.exe":    true,
-	"LICENSE.md":          true,
-	"THIRD-PARTY-NOTICES": true,
+// toolNameRE is the form of a file name accepted in the archive's tools/ directory.
+var toolNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// reservedDOSNames are the Windows device names, which cannot be file names with
+// any extension.
+var reservedDOSNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// validToolName reports whether name can be a file in the archive's tools/
+// directory: toolNameRE, no trailing dot (Windows drops it), and no device name.
+func validToolName(name string) bool {
+	if !toolNameRE.MatchString(name) || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+		return false
+	}
+	stem, _, _ := strings.Cut(name, ".")
+	return !reservedDOSNames[strings.ToUpper(stem)]
 }
 
 // ErrBadUpdateArchive is returned when the portable archive holds an unexpected,
@@ -164,30 +198,33 @@ func verifyAndExtract(file update.File, staging, exeName string) error {
 	return extractArchive(zr, staging, exeName)
 }
 
-// archiveTarget returns the path below staging that the archive entry name (with
-// / or \ separators) unpacks to, "" for the tools/ directory entry, or an error
-// wrapping ErrBadUpdateArchive for any other entry: only MongoRescue.exe and the
-// archiveTools files in tools/ are accepted, which also rules out absolute paths,
-// "..", drive letters and nested directories.
+// archiveTarget returns the slash-separated path below staging that the archive
+// entry name (with / or \ separators) unpacks to, "" for the tools/ directory
+// entry, or an error wrapping ErrBadUpdateArchive for any other entry: only
+// MongoRescue.exe at the root and files directly in tools/ with a validToolName
+// are accepted, which also rules out absolute paths, "..", drive letters, ':'
+// streams and nested directories.
 func archiveTarget(name, exeName string) (string, error) {
 	n := strings.ReplaceAll(name, `\`, "/")
-	switch {
-	case n == archiveExe:
+	switch n {
+	case archiveExe:
 		return exeName, nil
-	case n == toolsDirName+"/":
+	case toolsDirName + "/":
 		return "", nil
 	}
-	if base, ok := strings.CutPrefix(n, toolsDirName+"/"); ok && archiveTools[base] {
-		return filepath.Join(toolsDirName, base), nil
+	if base, ok := strings.CutPrefix(n, toolsDirName+"/"); ok && validToolName(base) {
+		return toolsDirName + "/" + base, nil
 	}
 	return "", fmt.Errorf("%w: entry %q", ErrBadUpdateArchive, name)
 }
 
 // extractArchive unpacks the portable archive zr to staging (created with mode
-// 0700), streaming each file to disk: the executable as exeName and the tools to
-// staging/tools. It accepts only the entries of archiveTarget, each at most once,
-// no links, at most maxArchiveEntries entries, maxEntrySize per file and
-// maxUnpackedSize in total, and requires the executable.
+// 0700 and stagingMarker), streaming each file to disk through an os.Root opened
+// on staging, so no entry can be written outside it: the executable as exeName and
+// the tools to staging/tools. It accepts only the entries of archiveTarget, each
+// at most once (ignoring case), no links, at most maxArchiveEntries entries,
+// maxEntrySize per file and maxUnpackedSize in total, and requires the executable.
+// completeMarker is written last.
 func extractArchive(zr *zip.Reader, staging, exeName string) error {
 	if len(zr.File) > maxArchiveEntries {
 		return fmt.Errorf("%w: %d entries", ErrBadUpdateArchive, len(zr.File))
@@ -195,12 +232,20 @@ func extractArchive(zr *zip.Reader, staging, exeName string) error {
 	if err := os.MkdirAll(staging, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", staging, err)
 	}
+	root, err := os.OpenRoot(staging)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", staging, err)
+	}
+	defer func() { _ = root.Close() }()
+	if err = writeMarker(root, stagingMarker); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	var total int64
 	for _, zf := range zr.File {
-		target, err := archiveTarget(zf.Name, exeName)
-		if err != nil {
-			return err
+		target, terr := archiveTarget(zf.Name, exeName)
+		if terr != nil {
+			return terr
 		}
 		mode := zf.Mode()
 		if target == "" {
@@ -212,6 +257,10 @@ func extractArchive(zr *zip.Reader, staging, exeName string) error {
 		if !mode.IsRegular() {
 			return fmt.Errorf("%w: %q is not a regular file", ErrBadUpdateArchive, zf.Name)
 		}
+		// archiveTarget only returns such names; checked again where the file is made.
+		if !filepath.IsLocal(target) || strings.Contains(target, "..") {
+			return fmt.Errorf("%w: entry %q", ErrBadUpdateArchive, zf.Name)
+		}
 		key := strings.ToLower(target)
 		if seen[key] {
 			return fmt.Errorf("%w: %q appears twice", ErrBadUpdateArchive, zf.Name)
@@ -220,9 +269,9 @@ func extractArchive(zr *zip.Reader, staging, exeName string) error {
 		if zf.UncompressedSize64 > maxEntrySize {
 			return fmt.Errorf("%w: %q is too large", ErrBadUpdateArchive, zf.Name)
 		}
-		n, err := extractFile(zf, filepath.Join(staging, target))
-		if err != nil {
-			return err
+		n, xerr := extractFile(root, zf, target)
+		if xerr != nil {
+			return xerr
 		}
 		if total += n; total > maxUnpackedSize {
 			return fmt.Errorf("%w: too large", ErrBadUpdateArchive)
@@ -231,23 +280,42 @@ func extractArchive(zr *zip.Reader, staging, exeName string) error {
 	if !seen[strings.ToLower(exeName)] {
 		return fmt.Errorf("%w: no %s", ErrBadUpdateArchive, archiveExe)
 	}
+	return writeMarker(root, completeMarker)
+}
+
+// writeMarker creates the empty marker file name in root and flushes it to disk.
+func writeMarker(root *os.Root, name string) error {
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
 	return nil
 }
 
-// extractFile streams the archive entry zf to the new file dst and returns its
-// size. The zip reader checks the entry's CRC-32 at its end.
-func extractFile(zf *zip.File, dst string) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return 0, fmt.Errorf("create %s: %w", filepath.Dir(dst), err)
+// extractFile streams the archive entry zf to the new file target (a local,
+// slash-separated path) in root and returns its size. The zip reader checks the
+// entry's CRC-32 at its end.
+func extractFile(root *os.Root, zf *zip.File, target string) (int64, error) {
+	if dir := path.Dir(target); dir != "." {
+		if err := root.MkdirAll(dir, 0o700); err != nil {
+			return 0, fmt.Errorf("create %s: %w", dir, err)
+		}
 	}
 	rc, err := zf.Open()
 	if err != nil {
 		return 0, fmt.Errorf("open %s in the archive: %w", zf.Name, err)
 	}
 	defer func() { _ = rc.Close() }()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+	out, err := root.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
 	if err != nil {
-		return 0, fmt.Errorf("create %s: %w", dst, err)
+		return 0, fmt.Errorf("create %s: %w", target, err)
 	}
 	n, err := io.Copy(out, io.LimitReader(rc, maxEntrySize+1))
 	if err == nil && n > maxEntrySize {
@@ -363,26 +431,112 @@ func swapInFiles(ops fileOps, exe, staging string) (*swap, error) {
 	return s, nil
 }
 
-// removeLeftovers removes, best effort, what an in-app update leaves next to the
-// executable exe: exe.old, tools.old and .update-* staging directories. The old
-// executable can only be removed once its process has exited. Other files, such
-// as unrelated *.old files next to a portable copy, are kept. It returns the
-// removed paths.
-func removeLeftovers(ops fileOps, exe string) []string {
+// exists reports whether p exists (without following a final link).
+func (o fileOps) exists(p string) bool {
+	_, err := o.lstat(p)
+	return err == nil
+}
+
+// isDir reports whether p is a directory.
+func (o fileOps) isDir(p string) bool {
+	fi, err := o.lstat(p)
+	return err == nil && fi.IsDir()
+}
+
+// stagingDirs returns the staging directories next to exe that the update created:
+// .update-<version> with a valid version and stagingMarker inside, newest first.
+func stagingDirs(ops fileOps, exe string) []string {
 	dir := filepath.Dir(exe)
-	candidates := []string{exe + oldSuffix, filepath.Join(dir, toolsDirName+oldSuffix)}
-	if entries, err := ops.readDir(dir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() && strings.HasPrefix(e.Name(), stagingPrefix) {
-				candidates = append(candidates, filepath.Join(dir, e.Name()))
-			}
-		}
+	entries, err := ops.readDir(dir)
+	if err != nil {
+		return nil
 	}
-	var removed []string
-	for _, p := range candidates {
-		if _, err := ops.lstat(p); err != nil {
+	type staged struct {
+		path string
+		v    update.Version
+	}
+	var found []staged
+	for _, e := range entries {
+		ver, ok := strings.CutPrefix(e.Name(), stagingPrefix)
+		if !ok || !e.IsDir() {
 			continue
 		}
+		v, err := update.ParseVersion(ver)
+		if err != nil || v.String() != ver {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if ops.exists(filepath.Join(p, stagingMarker)) {
+			found = append(found, staged{p, v})
+		}
+	}
+	for i := 1; i < len(found); i++ { // newest first
+		for j := i; j > 0 && found[j].v.Compare(found[j-1].v) > 0; j-- {
+			found[j], found[j-1] = found[j-1], found[j]
+		}
+	}
+	paths := make([]string, len(found))
+	for i, f := range found {
+		paths[i] = f.path
+	}
+	return paths
+}
+
+// recoverSwap repairs a swap next to the executable exe that was cut short
+// between its renames, and returns what it did. A missing exe is restored from
+// exe.old. A missing tools directory is restored from the newest completely
+// unpacked staging directory (completeMarker), whose executable was moved in
+// before its tools, or else from tools.old. Nothing is done while both exist.
+func recoverSwap(ops fileOps, exe string) ([]string, error) {
+	dir := filepath.Dir(exe)
+	var done []string
+	var errs []error
+	move := func(from, to string) {
+		if err := ops.rename(from, to); err != nil {
+			errs = append(errs, fmt.Errorf("restore %s from %s: %w", to, from, err))
+			return
+		}
+		done = append(done, from+" -> "+to)
+	}
+	if !ops.exists(exe) && ops.exists(exe+oldSuffix) {
+		move(exe+oldSuffix, exe)
+	}
+	tools := filepath.Join(dir, toolsDirName)
+	if !ops.exists(tools) {
+		from := ""
+		for _, st := range stagingDirs(ops, exe) {
+			if ops.exists(filepath.Join(st, completeMarker)) && ops.isDir(filepath.Join(st, toolsDirName)) {
+				from = filepath.Join(st, toolsDirName)
+				break
+			}
+		}
+		if from == "" && ops.isDir(tools+oldSuffix) {
+			from = tools + oldSuffix
+		}
+		if from != "" {
+			move(from, tools)
+		}
+	}
+	return done, errors.Join(errs...)
+}
+
+// removeLeftovers removes, best effort, what an in-app update leaves next to the
+// executable exe: exe.old and tools.old, only while exe and tools exist, and the
+// staging directories of stagingDirs. The old executable can only be removed once
+// its process has exited. Nothing else is touched, such as other *.old files next
+// to a portable copy. It returns the removed paths.
+func removeLeftovers(ops fileOps, exe string) []string {
+	tools := filepath.Join(filepath.Dir(exe), toolsDirName)
+	var candidates []string
+	if ops.exists(exe) && ops.exists(exe+oldSuffix) {
+		candidates = append(candidates, exe+oldSuffix)
+	}
+	if ops.isDir(tools) && ops.isDir(tools+oldSuffix) {
+		candidates = append(candidates, tools+oldSuffix)
+	}
+	candidates = append(candidates, stagingDirs(ops, exe)...)
+	var removed []string
+	for _, p := range candidates {
 		if err := ops.removeAll(p); err == nil {
 			removed = append(removed, p)
 		}
@@ -390,9 +544,21 @@ func removeLeftovers(ops fileOps, exe string) []string {
 	return removed
 }
 
-// RemoveUpdateLeftovers removes, on Windows and best effort, the old executable,
-// the old tools directory and the staging directories an in-app update left next
-// to the running executable. It does nothing on other platforms.
+// canonicalExe returns the path the executable exe is installed as: without
+// oldSuffix when the running copy is a MongoRescue.exe.old left by an update.
+func canonicalExe(exe string) string {
+	if base, ok := strings.CutSuffix(exe, oldSuffix); ok && strings.EqualFold(filepath.Ext(base), ".exe") {
+		return base
+	}
+	return exe
+}
+
+// RemoveUpdateLeftovers repairs, on Windows, a swap of an in-app update that was
+// cut short (see recoverSwap), then removes, best effort, the old executable, the
+// old tools directory and the staging directories the update left next to the
+// running executable (see removeLeftovers). Call it only while the app holds the
+// single instance and data directory locks, so a second instance that hands off
+// to the running one never touches its files. It does nothing on other platforms.
 func RemoveUpdateLeftovers(logger *slog.Logger) {
 	if runtime.GOOS != "windows" {
 		return
@@ -401,8 +567,37 @@ func RemoveUpdateLeftovers(logger *slog.Logger) {
 	if err != nil {
 		return
 	}
-	for _, p := range removeLeftovers(osFileOps(), exe) {
+	exe = canonicalExe(exe)
+	ops := osFileOps()
+	done, err := recoverSwap(ops, exe)
+	for _, d := range done {
+		logger.Warn("repaired an interrupted update", slog.String("rename", d))
+	}
+	if err != nil {
+		logger.Error("could not repair an interrupted update", slog.Any("error", err))
+	}
+	for _, p := range removeLeftovers(ops, exe) {
 		logger.Info("removed a leftover of the last update", slog.String("path", p))
+	}
+}
+
+// WaitIdle returns nil once busy reports false, checking every poll, or ctx.Err()
+// when ctx ends first. A nil busy is never busy.
+func WaitIdle(ctx context.Context, busy func() bool, poll time.Duration) error {
+	if busy == nil || !busy() {
+		return nil
+	}
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			if !busy() {
+				return nil
+			}
+		}
 	}
 }
 

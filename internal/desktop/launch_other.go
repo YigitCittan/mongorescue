@@ -63,3 +63,7 @@ func WaitForProcessExit(pid int, timeout time.Duration) bool {
 func LegacyUninstaller() string {
 	return ""
 }
+
+// ShowError shows a native error dialog on Windows; elsewhere it does nothing (the
+// error is logged and printed to stderr).
+func ShowError(string, string) {}

@@ -3,6 +3,7 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,7 +103,7 @@ func StartDetached(exe string, args []string) error {
 // whether it has. A process that cannot be opened is taken as gone, and so is one
 // created after the calling process, which reuses the ID of the process waited for.
 func WaitForProcessExit(pid int, timeout time.Duration) bool {
-	if pid <= 0 || pid == os.Getpid() {
+	if pid <= 0 || int64(pid) > math.MaxUint32 || pid == os.Getpid() {
 		return true
 	}
 	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
@@ -150,4 +151,19 @@ func LegacyUninstaller() string {
 		return ""
 	}
 	return parseUninstallString(s)
+}
+
+// ShowError shows a native error dialog with title and text and returns once it
+// is closed. It serves errors before the window exists, which a GUI process could
+// otherwise only log.
+func ShowError(title, text string) {
+	t, err := windows.UTF16PtrFromString(title)
+	if err != nil {
+		return
+	}
+	m, err := windows.UTF16PtrFromString(text)
+	if err != nil {
+		return
+	}
+	_, _ = windows.MessageBox(0, m, t, windows.MB_OK|windows.MB_ICONERROR|windows.MB_SETFOREGROUND)
 }

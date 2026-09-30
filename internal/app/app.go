@@ -442,6 +442,12 @@ func (a *App) Handler() http.Handler {
 	return a.server.Handler()
 }
 
+// Busy reports whether a backup or restore runs (API-started or scheduled), so an
+// embedded host can hold back a restart, such as the desktop app's update.
+func (a *App) Busy() bool {
+	return len(a.runs.Active()) > 0
+}
+
 // SetupCode returns the one-time setup code while no user exists, or "" otherwise.
 // Run logs it; embedded hosts (the desktop app) show it to the operator.
 func (a *App) SetupCode() string {

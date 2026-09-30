@@ -55,7 +55,11 @@ const (
 	// UpdateRestarting reports that the new version was started and the app quits
 	// (ActionSwap).
 	UpdateRestarting = "restarting"
-	UpdateError      = "error"
+	// UpdateWaiting reports that the verified update waits for the running backups
+	// and restores to finish before it is installed (Windows; see
+	// UpdaterOptions.Busy).
+	UpdateWaiting = "waiting"
+	UpdateError   = "error"
 )
 
 // Update actions reported in UpdateStatus.Action: what Install does with the file.
@@ -160,6 +164,13 @@ type UpdaterOptions struct {
 	Quit func()
 	// OpenURL opens the release page in the system browser; nil does nothing.
 	OpenURL func(url string)
+	// Busy reports whether a backup or restore runs. On Windows the update waits,
+	// as UpdateWaiting, until it reports false before it swaps the files or starts
+	// the installer, since quitting would cancel the run; nil is never busy.
+	Busy func() bool
+	// IdlePoll is how often Busy is checked again while the update waits; 0 means
+	// DefaultIdlePoll.
+	IdlePoll time.Duration
 
 	// fs replaces the file system calls of the swap in tests.
 	fs *fileOps
@@ -263,6 +274,9 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	}
 	if opts.Reveal == nil {
 		opts.Reveal = RevealFile
+	}
+	if opts.IdlePoll <= 0 {
+		opts.IdlePoll = DefaultIdlePoll
 	}
 	goos := opts.GOOS
 	if goos == "" {
@@ -372,7 +386,7 @@ func (u *Updater) busy() bool {
 // busyLocked is busy with u.mu held.
 func (u *Updater) busyLocked() bool {
 	switch u.status.State {
-	case UpdateChecking, UpdateDownloading, UpdateReady, UpdateInstalling, UpdateRestarting:
+	case UpdateChecking, UpdateDownloading, UpdateReady, UpdateInstalling, UpdateRestarting, UpdateWaiting:
 		return true
 	}
 	return false
@@ -490,7 +504,7 @@ func (u *Updater) Install() error {
 	case u.ctx.Err() != nil:
 		return fmt.Errorf("updater stopped: %w", u.ctx.Err())
 	case u.status.State == UpdateChecking || u.status.State == UpdateDownloading ||
-		u.status.State == UpdateInstalling || u.status.State == UpdateRestarting:
+		u.status.State == UpdateInstalling || u.status.State == UpdateRestarting || u.status.State == UpdateWaiting:
 		return ErrUpdateBusy
 	case !u.status.Available:
 		return ErrNoUpdate
@@ -568,6 +582,10 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 		u.reveal(ctx, file.Path)
 		return
 	}
+	if err = u.waitIdle(ctx, file.Path); err != nil {
+		u.fail(err)
+		return
+	}
 	// The app keeps running when the installer does not start (UAC prompt declined,
 	// file changed): the error is shown with a retry and the release page.
 	u.setState(UpdateInstalling, file.Path)
@@ -613,6 +631,12 @@ func (u *Updater) swapInstall(ctx context.Context, res update.Result, exe string
 		u.fail(fmt.Errorf("unpack the update: %w", err))
 		return
 	}
+	if err = u.waitIdle(ctx, file.Path); err != nil {
+		cleanup()
+		u.fail(err)
+		return
+	}
+	u.setState(UpdateInstalling, file.Path)
 	sw, err := swapInFiles(u.fs, exe, staging)
 	if err != nil {
 		cleanup()
@@ -635,6 +659,22 @@ func (u *Updater) swapInstall(ctx context.Context, res update.Result, exe string
 	if u.opts.Quit != nil {
 		u.opts.Quit()
 	}
+}
+
+// waitIdle waits, as UpdateWaiting, until no backup or restore runs (see
+// UpdaterOptions.Busy), or returns an error when ctx ends first.
+func (u *Updater) waitIdle(ctx context.Context, path string) error {
+	busy := u.opts.Busy
+	if busy == nil || !busy() {
+		return nil
+	}
+	u.opts.Logger.Info("the update waits for the running backups and restores to finish")
+	u.setState(UpdateWaiting, path)
+	if err := WaitIdle(ctx, busy, u.opts.IdlePoll); err != nil {
+		return fmt.Errorf("wait for the running backups and restores: %w", err)
+	}
+	u.opts.Logger.Info("no backup or restore runs any more, installing the update")
+	return nil
 }
 
 // progress records the download progress.
