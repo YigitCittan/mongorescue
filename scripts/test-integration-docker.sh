@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Runs the MongoRescue integration suite against disposable containers:
-#   - MongoDB 7 with a random root password (exercises redaction and --config)
+#   - MongoDB (MONGO_IMAGE, default 7) with a random root password (exercises
+#     redaction and --config), standalone or a single-node replica set
 #   - MinIO and LocalStack as S3-compatible emulators
 # Containers bind to random loopback ports and are always removed on exit.
 #
@@ -13,7 +14,12 @@
 # Tools >= 100.3) on PATH.
 #
 # Environment knobs:
+#   MONGO_IMAGE    MongoDB image (default: mongo:7; CI runs 5.0, 6.0, 7.0 and 8.0)
+#   MONGO_TOPOLOGY standalone (default) or replset: a single-node replica set with
+#                  a keyfile, initiated after start; clients use directConnection
 #   IT_PROVIDERS   space-separated emulators to start (default: "minio localstack")
+#   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
+#                  the large-data run only apply without the race detector)
 #   GOTESTFLAGS    extra flags for go test (e.g. "-run TestStorageConformance -v")
 # ==============================================================================
 set -euo pipefail
@@ -24,6 +30,8 @@ MONGO_IMAGE="${MONGO_IMAGE:-mongo:7}"
 MINIO_IMAGE="${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1}"
 LOCALSTACK_IMAGE="${LOCALSTACK_IMAGE:-localstack/localstack:4.4}"
 IT_PROVIDERS="${IT_PROVIDERS:-minio localstack}"
+MONGO_TOPOLOGY="${MONGO_TOPOLOGY:-standalone}"
+IT_RACE="${IT_RACE:-1}"
 
 PREFIX="mongorescue-it-$$"
 MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
@@ -64,10 +72,31 @@ wait_for() {
 }
 
 # --- MongoDB -------------------------------------------------------------------
-log "starting $MONGO_IMAGE"
-docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-  "$MONGO_IMAGE" >/dev/null
+log "starting $MONGO_IMAGE ($MONGO_TOPOLOGY)"
+case "$MONGO_TOPOLOGY" in
+  standalone)
+    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 \
+      -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
+      "$MONGO_IMAGE" >/dev/null
+    ;;
+  replset)
+    # A replica set with authentication needs a keyfile owned by the mongodb user.
+    # The entrypoint drops --replSet while it creates the root user.
+    # shellcheck disable=SC2016 # expanded inside the container
+    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 \
+      -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
+      --entrypoint bash "$MONGO_IMAGE" -c '
+        set -e
+        head -c 756 /dev/urandom | base64 -w0 > /tmp/rs.key
+        chmod 400 /tmp/rs.key
+        chown mongodb:mongodb /tmp/rs.key
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all' >/dev/null
+    ;;
+  *)
+    echo "unknown MONGO_TOPOLOGY: $MONGO_TOPOLOGY (standalone or replset)" >&2
+    exit 1
+    ;;
+esac
 CONTAINERS+=("$PREFIX-mongo")
 
 # mongo_ping runs an authenticated ping through mongosh inside the container.
@@ -124,7 +153,23 @@ wait_for_mongo() {
 SECONDS=0
 wait_for_mongo
 mongo_port="$(host_port "$PREFIX-mongo" 27017)"
-export MONGORESCUE_TEST_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?authSource=admin"
+MONGO_URI_OPTIONS="authSource=admin"
+
+# mongo_eval runs a script through mongosh inside the container as root.
+mongo_eval() {
+  docker exec "$PREFIX-mongo" mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval "$1"
+}
+
+if [ "$MONGO_TOPOLOGY" = replset ]; then
+  log "initiating the single-node replica set"
+  mongo_eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})' >/dev/null
+  primary_ready() { mongo_eval 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1; }
+  wait_for "replica set primary" 60 primary_ready
+  # The member is known as 127.0.0.1:27017 inside the container; the host reaches it
+  # through a mapped port, so clients must not follow the replica set topology.
+  MONGO_URI_OPTIONS="${MONGO_URI_OPTIONS}&directConnection=true"
+fi
+export MONGORESCUE_TEST_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?${MONGO_URI_OPTIONS}"
 
 # --- MinIO ---------------------------------------------------------------------
 if [[ " $IT_PROVIDERS " == *" minio "* ]]; then
@@ -165,6 +210,8 @@ if [[ " $IT_PROVIDERS " == *" localstack "* ]]; then
   export MONGORESCUE_TEST_S3_LOCALSTACK_CREATE_BUCKET="true"
 fi
 
-log "running integration suite (providers: local ${IT_PROVIDERS})"
-# shellcheck disable=SC2086 # GOTESTFLAGS is intentionally word-split
-go test -race -tags=integration -count=1 ${GOTESTFLAGS:-} ./...
+RACE_FLAG="-race"
+if [ "$IT_RACE" = 0 ]; then RACE_FLAG=""; fi
+log "running integration suite (MongoDB $MONGO_IMAGE $MONGO_TOPOLOGY, providers: local ${IT_PROVIDERS}, race: ${IT_RACE})"
+# shellcheck disable=SC2086 # RACE_FLAG and GOTESTFLAGS are intentionally word-split
+go test $RACE_FLAG -tags=integration -count=1 ${GOTESTFLAGS:-} ./...
