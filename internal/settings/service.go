@@ -208,9 +208,10 @@ type ImportResult struct {
 
 // Import stores values from deprecated sources, once: a value is only imported when
 // its setting has no stored value yet and its source has not been imported before.
-// Every source is marked as imported, so later starts ignore it. Invalid values are
-// skipped. The minimum passphrase length is not enforced for imports, so existing
-// encrypted backups stay restorable.
+// Every source is marked as imported, so later starts ignore it. One source may carry
+// several settings (the encryption switch also implies the mode); each of them is
+// imported. Invalid values are skipped. The minimum passphrase length is not enforced
+// for imports, so existing encrypted backups stay restorable.
 func (s *Service) Import(ctx context.Context, items []Import) (ImportResult, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -222,20 +223,27 @@ func (s *Service) Import(ctx context.Context, items []Import) (ImportResult, err
 	if err != nil {
 		return res, err
 	}
+	addOnce := func(list *[]string, source string) {
+		if !slices.Contains(*list, source) {
+			*list = append(*list, source)
+		}
+	}
 	for _, it := range items {
 		s.mu.RLock()
 		seen := s.stored[markerPrefix+it.Source]
 		has := s.stored[it.Key]
 		s.mu.RUnlock()
-		if _, dup := markers[it.Source]; seen || dup {
-			if !slices.Contains(res.Ignored, it.Source) && !slices.Contains(res.Imported, it.Source) {
-				res.Ignored = append(res.Ignored, it.Source)
-			}
+		// A source marked by an earlier start is ignored; one marked earlier in this
+		// batch still contributes its other settings.
+		if seen {
+			addOnce(&res.Ignored, it.Source)
 			continue
 		}
+		markers[it.Source] = string(stamp)
 		if has {
-			markers[it.Source] = string(stamp)
-			res.Ignored = append(res.Ignored, it.Source)
+			if !slices.Contains(res.Imported, it.Source) {
+				addOnce(&res.Ignored, it.Source)
+			}
 			continue
 		}
 		candidate, err := withValue(next, it.Key, it.Value)
@@ -244,13 +252,12 @@ func (s *Service) Import(ctx context.Context, items []Import) (ImportResult, err
 		}
 		if err != nil {
 			s.logger.Warn("ignoring invalid value of a deprecated setting", slog.String("source", it.Source), slog.Any("error", err))
-			markers[it.Source] = string(stamp)
-			res.Invalid = append(res.Invalid, it.Source)
+			addOnce(&res.Invalid, it.Source)
 			continue
 		}
 		next = candidate
-		markers[it.Source] = string(stamp)
-		res.Imported = append(res.Imported, it.Source)
+		res.Ignored = slices.DeleteFunc(res.Ignored, func(v string) bool { return v == it.Source })
+		addOnce(&res.Imported, it.Source)
 	}
 	if _, err := s.commit(ctx, cur, next); err != nil {
 		return ImportResult{}, err

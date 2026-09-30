@@ -250,6 +250,51 @@ func TestImportOnceAndMarkers(t *testing.T) {
 	}
 }
 
+// TestImportEnablesEncryption imports the encryption switch the way the deprecated
+// configuration produces it: the switch's source also carries the derived mode, and
+// both must be applied, otherwise an upgraded deployment silently stops encrypting.
+func TestImportEnablesEncryption(t *testing.T) {
+	key, _ := GenerateKey()
+	for name, items := range map[string][]Import{
+		"x25519": {
+			{Key: KeyEncryptionMode, Value: ModeX25519, Source: "ENV_ENABLED"},
+			{Key: KeyEncryptionRecipients, Value: []string{key.Recipient}, Source: "ENV_RECIPIENTS"},
+			{Key: KeyEncryptionIdentity, Value: key.Identity, Source: "ENV_IDENTITY"},
+			{Key: KeyEncryptionEnabled, Value: true, Source: "ENV_ENABLED"},
+		},
+		"passphrase": {
+			{Key: KeyEncryptionMode, Value: ModePassphrase, Source: "config.json:encryption.enabled"},
+			{Key: KeyEncryptionPassphrase, Value: "short", Source: "config.json:encryption.passphrase"},
+			{Key: KeyEncryptionEnabled, Value: true, Source: "config.json:encryption.enabled"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := &memRepo{}
+			svc := newSvc(t, repo)
+			res, err := svc.Import(context.Background(), items)
+			if err != nil {
+				t.Fatal(err)
+			}
+			enc := svc.Current().Encryption
+			if !enc.Enabled || enc.Mode != items[0].Value || svc.Encryptor() == nil {
+				t.Fatalf("after import: %+v (result %+v); want encryption enabled", enc, res)
+			}
+			if len(res.Imported) != len(items)-1 || len(res.Ignored) != 0 || len(res.Invalid) != 0 {
+				t.Fatalf("result = %+v; want every source imported once", res)
+			}
+			// A later start ignores every source, even after encryption is turned off.
+			if _, err = svc.Update(context.Background(), Patch{Encryption: &EncryptionPatch{Enabled: ptr(false)}}); err != nil {
+				t.Fatal(err)
+			}
+			again := newSvc(t, repo)
+			res, err = again.Import(context.Background(), items)
+			if err != nil || len(res.Imported) != 0 || len(res.Ignored) != len(items)-1 || again.Current().Encryption.Enabled {
+				t.Fatalf("second import = %+v, %v, enabled %v", res, err, again.Current().Encryption.Enabled)
+			}
+		})
+	}
+}
+
 func TestSaveFailureKeepsSnapshot(t *testing.T) {
 	repo := &memRepo{}
 	svc := newSvc(t, repo)
