@@ -83,8 +83,10 @@ let detailsBackupId = "";
 // GET /api/v1/jobs/{id} (refetched when the job's schedule changes).
 let detailsJobId = "";
 const jobNextRuns = { key: "", runs: null, failed: false, seq: 0 };
-// Job being edited in the job form ("" while creating a new job).
+// Job being edited in the job form ("" while creating a new job) and the updated_at
+// it had when the form opened (sent back as the save's precondition).
 let editingJobId = "";
+let editingJobUpdatedAt = "";
 // Jobs whose enable/disable request is in flight.
 const togglingJobs = new Set();
 // Runs listed in a job's run history.
@@ -164,6 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupModals();
   setupForms();
   setupUserMenu();
+  setupRowMenu();
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && auth.user) refreshAll();
@@ -263,7 +266,13 @@ function setupActions() {
     }
     if (btn.disabled) return;
     const id = btn.dataset.id || "";
+    // A menu item closes its menu first, so dialogs return focus to the "⋯" button.
+    const menu = document.getElementById("row-menu");
+    if (menu && menu.contains(btn)) closeRowMenu(true);
     switch (btn.dataset.action) {
+      case "row-menu":
+        toggleRowMenu(btn);
+        break;
       case "set-theme":
         setTheme(btn.dataset.theme || "system");
         break;
@@ -525,6 +534,7 @@ async function apiJSON(url, options) {
     json.success = false;
     json.error = tf("toasts.unexpected_response", { status: res.status });
   }
+  json.httpStatus = res.status;
   return json;
 }
 
@@ -858,15 +868,13 @@ function renderJobs() {
       <td>${job.connection_id ? ellipsis(connectionName(job.connection_id), "ell-sm") : mutedDash()}</td>
       <td>${ellipsis(job.database, "mono ell-sm")}${collectionScope(job)}</td>
       <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
-      <td>${escapeHtml(retentionText(job))}</td>
+      <td class="cell-wrap-sm">${escapeHtml(retentionText(job))}</td>
       <td>${enabledBadge(enabled)}</td>
       <td>${lastDot}${timeCell(job.last_run)}</td>
       <td>${enabled ? timeCell(job.next_run) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="btn btn-secondary btn-sm" data-action="trigger-job" data-id="${id}">${escapeHtml(t("actions.run_now"))}</button>
-        <button type="button" class="btn btn-secondary btn-sm" data-action="job-details" data-id="${id}">${escapeHtml(t("actions.details"))}</button>
-        <button type="button" class="btn btn-secondary btn-sm" data-action="edit-job" data-id="${id}">${escapeHtml(t("ui.edit"))}</button>
-        <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-job" data-id="${id}">${escapeHtml(t("actions.delete"))}</button>
+        ${rowMenuButton("job", job.id)}
       </div></td>
     </tr>`;
   }).join(""));
@@ -1014,8 +1022,7 @@ function renderBackups() {
       <td class="col-actions"><div class="row-actions">
         ${restoreBtn}
         ${retryBtn}
-        <button type="button" class="btn btn-secondary btn-sm" data-action="backup-details" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.details"))}</button>
-        <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-backup" data-id="${escapeHtml(b.id)}">${escapeHtml(t("actions.delete"))}</button>
+        ${rowMenuButton("backup", b.id)}
       </div></td>
     </tr>`;
   }).join(""));
@@ -1197,6 +1204,7 @@ const ICON_PATHS = {
   check: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
   x: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>',
   lock: '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  more: '<circle cx="3.5" cy="8" r="0.6"/><circle cx="8" cy="8" r="0.6"/><circle cx="12.5" cy="8" r="0.6"/>',
   copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/>'
 };
 
@@ -1204,7 +1212,7 @@ function icon(name, extraClass) {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
   const cls = extraClass ? `icon ${extraClass}` : "icon";
-  const weight = name === "check" || name === "x" ? "2" : "1.5";
+  const weight = name === "check" || name === "x" || name === "more" ? "2" : "1.5";
   return `<svg class="${cls}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 }
 
@@ -1322,6 +1330,126 @@ function setTbody(tbody, html) {
   if (renderedTbodies.get(tbody) === html) return;
   tbody.innerHTML = html;
   renderedTbodies.set(tbody, html);
+  // A re-render replaces the row whose action menu is open.
+  if (rowMenu.trigger && !document.contains(rowMenu.trigger)) closeRowMenu(false);
+}
+
+// ---------------------------------------------------------------------------
+// Row action menus: the "⋯" button of a table row opens one shared floating
+// menu (fixed-positioned, so the table's scroll container never clips it).
+// Items are ordinary data-action buttons handled by setupActions.
+// ---------------------------------------------------------------------------
+
+const rowMenu = { trigger: null };
+
+function rowMenuButton(kind, id) {
+  const label = escapeHtml(t("ui.more_actions"));
+  return `<button type="button" class="btn btn-secondary btn-sm btn-icon" data-action="row-menu" data-menu="${escapeHtml(kind)}" data-id="${escapeHtml(id)}" aria-haspopup="menu" aria-expanded="false" title="${label}" aria-label="${label}">${icon("more")}</button>`;
+}
+
+// Items of a row menu: [action, label, danger].
+function rowMenuItems(kind, id) {
+  if (kind === "job") {
+    return [["job-details", t("actions.details")], ["edit-job", t("ui.edit")], ["delete-job", t("actions.delete"), true]];
+  }
+  if (kind === "backup") {
+    return [["backup-details", t("actions.details")], ["delete-backup", t("actions.delete"), true]];
+  }
+  return [];
+}
+
+function toggleRowMenu(btn) {
+  if (rowMenu.trigger === btn) {
+    closeRowMenu(true);
+    return;
+  }
+  closeRowMenu(false);
+  const menu = document.getElementById("row-menu");
+  if (!menu) return;
+  menu.textContent = "";
+  const id = btn.dataset.id || "";
+  rowMenuItems(btn.dataset.menu || "", id).forEach(([action, label, danger], i) => {
+    if (danger && i > 0) {
+      const sep = document.createElement("div");
+      sep.className = "menu-sep";
+      sep.setAttribute("role", "separator");
+      menu.appendChild(sep);
+    }
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = danger ? "menu-item menu-item-danger" : "menu-item";
+    item.setAttribute("role", "menuitem");
+    item.dataset.action = action;
+    item.dataset.id = id;
+    item.textContent = label;
+    menu.appendChild(item);
+  });
+  rowMenu.trigger = btn;
+  menu.setAttribute("aria-label", t("ui.more_actions"));
+  btn.setAttribute("aria-expanded", "true");
+  menu.hidden = false;
+  positionRowMenu();
+  const first = menu.querySelector(".menu-item");
+  if (first) first.focus();
+}
+
+// Right-aligns the menu under its button, or above it near the bottom edge.
+function positionRowMenu() {
+  const menu = document.getElementById("row-menu");
+  if (!menu || !rowMenu.trigger) return;
+  const r = rowMenu.trigger.getBoundingClientRect();
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+  const below = r.bottom + 4 + h <= window.innerHeight - 8;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${below ? r.bottom + 4 : Math.max(8, r.top - 4 - h)}px`;
+}
+
+function closeRowMenu(focusTrigger) {
+  const menu = document.getElementById("row-menu");
+  const trigger = rowMenu.trigger;
+  rowMenu.trigger = null;
+  if (menu) menu.hidden = true;
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", "false");
+    if (focusTrigger && document.contains(trigger)) trigger.focus();
+  }
+}
+
+function setupRowMenu() {
+  const menu = document.getElementById("row-menu");
+  if (!menu) return;
+  // Outside clicks close the menu (clicks on items close it in setupActions).
+  document.addEventListener("click", (e) => {
+    if (!rowMenu.trigger) return;
+    if (menu.contains(e.target) || rowMenu.trigger.contains(e.target)) return;
+    closeRowMenu(false);
+  }, true);
+  menu.addEventListener("keydown", (e) => {
+    const items = Array.from(menu.querySelectorAll(".menu-item"));
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeRowMenu(true);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
+      items[next].focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1].focus();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      closeRowMenu(true);
+    }
+  });
+  window.addEventListener("resize", () => closeRowMenu(false));
+  // Scrolling the page or a table moves the button away from the menu.
+  document.addEventListener("scroll", (e) => {
+    if (rowMenu.trigger && !menu.contains(e.target)) closeRowMenu(false);
+  }, true);
 }
 
 function setText(id, text) {
@@ -1373,8 +1501,10 @@ function setupForms() {
       ...storageSelection("job-storage"),
       enabled: document.getElementById("job-enabled").checked
     };
-    // Editing replaces the job in place (PUT keeps its id, history and gzip setting).
+    // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
+    // updated_at makes the server refuse the save if the job changed since it opened.
     const editing = editingJobId;
+    if (editing && editingJobUpdatedAt) payload.updated_at = editingJobUpdatedAt;
     const url = editing ? `/api/v1/jobs/${encodeURIComponent(editing)}` : "/api/v1/jobs";
     const submit = e.submitter || document.getElementById("job-submit");
     if (submit) submit.disabled = true;
@@ -1387,6 +1517,9 @@ function setupForms() {
       if (json.success) {
         showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
         closeModal("modal-new-job");
+        refreshAll();
+      } else if (editing && json.httpStatus === 409) {
+        showToast(t("job_edit.conflict"), "error");
         refreshAll();
       } else {
         showToast(json.error || (editing ? t("job_edit.update_failed") : t("toasts.job_failed")), "error");
@@ -1501,6 +1634,7 @@ function openJobModal(jobID) {
   const form = document.getElementById("form-new-job");
   if (form) form.reset();
   editingJobId = job ? job.id : "";
+  editingJobUpdatedAt = job ? job.updated_at || "" : "";
   setI18nText("modal-new-job-title", job ? "job_edit.title" : "modal_job.title");
   setI18nText("job-submit", job ? "job_edit.save" : "modal_job.submit");
   if (job) {
@@ -1534,14 +1668,22 @@ function setI18nText(id, key) {
   el.textContent = t(key);
 }
 
-// Enables or disables job jobID; the rest of the job is sent back unchanged.
+// Enables or disables job jobID. The job is fetched fresh and sent back unchanged
+// apart from enabled, with its updated_at as precondition, so a toggle never
+// reverts an edit made elsewhere since the list was loaded.
 async function toggleJob(jobID, btn) {
-  const job = state.jobs.find(j => j.id === jobID);
-  if (!job || togglingJobs.has(jobID)) return;
-  const enable = job.enabled === false;
+  const listed = state.jobs.find(j => j.id === jobID);
+  if (!listed || togglingJobs.has(jobID)) return;
+  const enable = listed.enabled === false;
   togglingJobs.add(jobID);
   if (btn) btn.disabled = true;
   try {
+    const fresh = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}`);
+    if (!fresh.success || !fresh.data) {
+      showToast(fresh.error || t("job_edit.update_failed"), "error");
+      return;
+    }
+    const job = fresh.data;
     const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1553,11 +1695,14 @@ async function toggleJob(jobID, btn) {
         exclude_collections: job.exclude_collections || [],
         connection_id: job.connection_id || "",
         storage_target_id: job.storage_target_id || "",
-        enabled: enable
+        enabled: enable,
+        updated_at: job.updated_at
       })
     });
     if (json.success) {
       showToast(enable ? t("job_edit.enabled_toast") : t("job_edit.disabled_toast"), "success");
+    } else if (json.httpStatus === 409) {
+      showToast(t("job_edit.conflict"), "error");
     } else {
       showToast(json.error || t("job_edit.update_failed"), "error");
     }
