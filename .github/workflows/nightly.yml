@@ -1,0 +1,94 @@
+name: Nightly
+
+# Long-running checks that do not fit the pull request budget: the integration
+# matrix with about 2 GiB of generated data (throughput and a 256 MiB memory limit,
+# see docs/testing.md) and the fuzz targets.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26'
+  MONGO_TOOLS_VERSION: '100.12.2'
+
+jobs:
+  large-data:
+    name: Large data (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mongo: '5.0', topology: standalone }
+          - { mongo: '6.0', topology: standalone }
+          - { mongo: '7.0', topology: standalone }
+          - { mongo: '8.0', topology: standalone }
+          - { mongo: '8.0', topology: replset }
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Run Integration Suite with a large dataset
+        env:
+          MONGO_IMAGE: mongo:${{ matrix.mongo }}
+          MONGO_TOPOLOGY: ${{ matrix.topology }}
+          IT_PROVIDERS: minio
+          # The memory limit is only enforced without the race detector.
+          IT_RACE: '0'
+          MONGORESCUE_TEST_LARGE: '1'
+          GOTESTFLAGS: -timeout 100m
+        run: ./scripts/test-integration-docker.sh
+
+      - name: Disk usage
+        if: always()
+        run: df -h /
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run fuzz targets
+        run: |
+          if [ -f Makefile ] && grep -q '^fuzz:' Makefile; then
+            make fuzz FUZZTIME=5m
+          else
+            echo "The Makefile has no fuzz target yet; nothing to run."
+          fi

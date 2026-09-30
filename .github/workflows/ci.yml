@@ -141,14 +141,24 @@ jobs:
         run: make cross-compile
 
   # 4. Integration Tests against real MongoDB, mongodump/mongorestore and S3 emulators
+  #    Every supported MongoDB release runs the full suite with MinIO; 7.0 also runs
+  #    with LocalStack and 8.0 also as a single-node replica set. The jobs run in
+  #    parallel, so the wall time stays that of one job.
   integration:
-    name: Integration (${{ matrix.emulator }})
+    name: Integration (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }}, ${{ matrix.emulator }})
     runs-on: ubuntu-latest
     needs: [test]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        emulator: [minio, localstack]
+        include:
+          - { mongo: '5.0', topology: standalone, emulator: minio }
+          - { mongo: '6.0', topology: standalone, emulator: minio }
+          - { mongo: '7.0', topology: standalone, emulator: minio }
+          - { mongo: '7.0', topology: standalone, emulator: localstack }
+          - { mongo: '8.0', topology: standalone, emulator: minio }
+          - { mongo: '8.0', topology: replset, emulator: minio }
     env:
       MONGO_TOOLS_VERSION: '100.12.2'
     steps:
@@ -173,8 +183,10 @@ jobs:
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
-      - name: Run Integration Suite (MongoDB 7 + ${{ matrix.emulator }})
+      - name: Run Integration Suite (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }} + ${{ matrix.emulator }})
         env:
+          MONGO_IMAGE: mongo:${{ matrix.mongo }}
+          MONGO_TOPOLOGY: ${{ matrix.topology }}
           IT_PROVIDERS: ${{ matrix.emulator }}
           GOTESTFLAGS: -coverprofile=integration-coverage.out -covermode=atomic -coverpkg=./...
         run: ./scripts/test-integration-docker.sh
@@ -183,7 +195,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: integration-coverage-${{ matrix.emulator }}
+          name: integration-coverage-${{ matrix.mongo }}-${{ matrix.topology }}-${{ matrix.emulator }}
           path: integration-coverage.out
           if-no-files-found: ignore
 
@@ -252,7 +264,7 @@ jobs:
       - name: Run Integration Suite (MongoDB 7 + configured cloud providers)
         env:
           # Word-split by the script; keep the pattern free of spaces and quotes.
-          GOTESTFLAGS: -v -run TestStorageConformance|TestBackupRestoreRoundTrip|TestServerEndToEnd
+          GOTESTFLAGS: -v -run TestStorageConformance|TestBackupRestoreRoundTrip|TestServerEndToEnd|TestRestoreFidelity|TestCorruptedBackupsFailLoudly
         run: ./scripts/test-integration-docker.sh
 
   # 6. Container Image Smoke Test
