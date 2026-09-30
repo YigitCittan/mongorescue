@@ -129,6 +129,7 @@ func (f *fakeGitHub) latest(w http.ResponseWriter, r *http.Request) {
 	type asset struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
+		Size int    `json:"size"`
 	}
 	rel := struct {
 		Tag        string  `json:"tag_name"`
@@ -138,10 +139,10 @@ func (f *fakeGitHub) latest(w http.ResponseWriter, r *http.Request) {
 		Assets     []asset `json:"assets"`
 	}{Tag: f.tag, Body: "## Added\n- things", HTMLURL: f.srv.URL + "/YigitCittan/mongorescue/releases/tag/" + f.tag, Prerelease: f.pre}
 	for name := range f.files {
-		rel.Assets = append(rel.Assets, asset{name, f.dl(name)})
+		rel.Assets = append(rel.Assets, asset{name, f.dl(name), len(f.files[name])})
 	}
 	if f.extraURL != "" {
-		rel.Assets = append(rel.Assets, asset{"MongoRescue-desktop_" + strings.TrimPrefix(f.tag, "v") + "_linux_amd64.tar.gz", f.extraURL})
+		rel.Assets = append(rel.Assets, asset{"MongoRescue-desktop_" + strings.TrimPrefix(f.tag, "v") + "_linux_amd64.tar.gz", f.extraURL, 0})
 	}
 	_ = json.NewEncoder(w).Encode(rel)
 }
@@ -446,6 +447,57 @@ func TestDownloadFailures(t *testing.T) {
 		t.Errorf("404 asset: %v", err)
 	}
 	assertOnly(t, dir)
+}
+
+func TestPortableAssetName(t *testing.T) {
+	v := Version{1, 2, 3}
+	if got, err := PortableAssetName("windows", "amd64", v); err != nil || got != "MongoRescue-desktop_1.2.3_windows_amd64_portable.zip" {
+		t.Errorf("windows = %q, %v", got, err)
+	}
+	for _, p := range [][2]string{{"linux", "amd64"}, {"darwin", "arm64"}, {"windows", "arm64"}} {
+		if _, err := PortableAssetName(p[0], p[1], v); !errors.Is(err, ErrUnsupportedPlatform) {
+			t.Errorf("PortableAssetName(%v) err = %v", p, err)
+		}
+	}
+}
+
+func TestDownloadPortableWithProgress(t *testing.T) {
+	f := newFakeGitHub(t, "v1.1.0")
+	f.release("x")
+	name := "MongoRescue-desktop_1.1.0_windows_amd64_portable.zip"
+	content := strings.Repeat("z", 100000)
+	f.files[name] = []byte(content)
+	ck := f.checker("windows", "amd64")
+	res, err := ck.Check(context.Background(), "1.0.0")
+	if err != nil || res.Portable.Name != name || res.Portable.URL == "" || res.Asset.Name == name {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	var last, total int64
+	calls := 0
+	file, err := ck.DownloadAsset(context.Background(), res, res.Portable, t.TempDir(), func(done, size int64) {
+		calls++
+		last, total = done, size
+	})
+	if err != nil || filepath.Base(file.Path) != name {
+		t.Fatalf("file %+v err %v", file, err)
+	}
+	if calls < 2 || last != int64(len(content)) || total != int64(len(content)) {
+		t.Errorf("progress calls %d last %d total %d", calls, last, total)
+	}
+	// Another asset of the release is refused.
+	other := Asset{Name: "MongoRescue-desktop_1.1.0_checksums.txt", URL: res.ChecksumsURL}
+	if _, err = ck.DownloadAsset(context.Background(), res, other, t.TempDir(), nil); !errors.Is(err, ErrUntrustedURL) {
+		t.Errorf("other asset: %v", err)
+	}
+	// The portable archive is Windows-only.
+	lin := f.checker("linux", "amd64")
+	linRes, err := lin.Check(context.Background(), "1.0.0")
+	if err != nil || linRes.Portable.URL != "" {
+		t.Fatalf("linux: %+v %v", linRes, err)
+	}
+	if _, err := lin.DownloadAsset(context.Background(), linRes, res.Portable, t.TempDir(), nil); !errors.Is(err, ErrUntrustedURL) {
+		t.Errorf("portable on linux: %v", err)
+	}
 }
 
 func TestFindChecksumBinaryMode(t *testing.T) {
