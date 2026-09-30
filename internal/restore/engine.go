@@ -792,21 +792,11 @@ func failedDocuments(stderr string) (failed int64, ok bool) {
 	return n, true
 }
 
-const (
-	// maxStderrTail bounds the mongorestore output quoted in a failure message.
-	maxStderrTail = 1024
-	// maxStderrLine bounds each quoted line, so values from documents (for example
-	// the key of a duplicate key error) are not stored at length.
-	maxStderrLine = 300
-)
-
-// stderrTail returns the last lines of mongorestore's output, redacted and bounded.
+// stderrTail returns the last lines of mongorestore's output, redacted and bounded
+// (each line to mongotools.QuotedLineMax, so document key values are not stored at
+// length).
 func stderrTail(stderr string) string {
-	tail := mongotools.TailLines(stderr, 5, maxStderrLine)
-	if len(tail) > maxStderrTail {
-		tail = "..." + tail[len(tail)-maxStderrTail:]
-	}
-	return redact.Text(tail)
+	return mongotools.QuoteTail(stderr)
 }
 
 // ctxReader aborts a long verification pass promptly once ctx is cancelled.
