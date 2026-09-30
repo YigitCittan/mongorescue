@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Desktop app on Windows: when an older per-machine copy is still installed in Program Files, a one-time bar offers **Remove** (runs that copy's uninstaller silently; Windows asks for administrator rights) or **Dismiss**. Both copies share the data in `%APPDATA%\MongoRescue`, so nothing is migrated. See [docs/desktop.md](docs/desktop.md#updates).
+
 ### Changed
-- Desktop app on Windows: **Update** installs the new version silently instead of opening the setup wizard. After the download and SHA-256 check, the app starts the installer with `/S /RELAUNCH` (Windows still asks for administrator rights), shows *Installing the update…* and closes; the installer waits for `MongoRescue.exe` to exit, installs into the current install folder (`/D=<dir>`, or the default folder for a portable copy) and starts the new version again. If the administrator prompt is declined or the installer does not start, the app stays open and offers **Try again** and the release page. Mandatory updates use the same path; interactive installs are unchanged. See [docs/desktop.md](docs/desktop.md#updates).
+- Desktop app on Windows: **Update** now happens inside the app, with no installer window and no administrator prompt, when the app's folder is writable (the new per-user install and portable copies). The app downloads the release's portable zip, verifies its SHA-256, unpacks it next to `MongoRescue.exe` (only the expected files, streamed, size-limited), renames the running `MongoRescue.exe` and `tools\` to `*.old`, moves the new ones in, starts the new version with `--after-update=<pid>` and closes; any failure rolls every rename back and keeps the running version. The bar and the header button show *Downloading x%*, *Installing…* and *Restarting…*; the new version waits for the old process to exit, comes back in a second or two and removes the leftovers. Mandatory updates use the same path. See [docs/desktop.md](docs/desktop.md#updates).
+- Windows installer: installs per user by default, without a UAC prompt, into `%LOCALAPPDATA%\Programs\MongoRescue`, with shortcuts and the uninstall entry under HKCU (it was `Program Files\MongoRescue\MongoRescue`, per machine). `-DWAILS_INSTALL_SCOPE=machine` builds the per-machine installer.
+- Desktop app on Windows, copies the user cannot write to (a per-machine install in Program Files): the update runs the verified installer silently with `/S /RELAUNCH=<DOMAIN\user> /WAITPID=<pid>` instead of opening the setup wizard. The installer waits up to 180 s for the app to exit (outlasting its shutdown) and starts the new version only when it runs as that same user, so another administrator's UAC credentials never start the app under their account. If the installer does not start, the app stays open with **Try again** and the release page.
 
 ## [0.6.0] - 2026-09-30
 
