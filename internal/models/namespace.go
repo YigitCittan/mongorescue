@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // MaxDatabaseNameLength is the longest database name MongoDB accepts, in bytes.
@@ -73,4 +75,27 @@ func ValidateCollectionNames(names []string) error {
 		}
 	}
 	return nil
+}
+
+// Safe-clone restore targets are named "<source>_rescue_<YYYYMMDD_HHMMSS>".
+const (
+	rescueInfix      = "_rescue_"
+	rescueTimeLayout = "20060102_150405"
+)
+
+// RescueDatabaseName returns the safe-clone restore target for source at t:
+// "<source>_rescue_<YYYYMMDD_HHMMSS>" in UTC. The source part is shortened (at a
+// character boundary) when needed so that the name fits in MaxDatabaseNameLength;
+// the suffix alone adds 23 bytes, so any source longer than 40 bytes used to give a
+// name MongoDB refuses.
+func RescueDatabaseName(source string, t time.Time) string {
+	suffix := rescueInfix + t.UTC().Format(rescueTimeLayout)
+	if limit := MaxDatabaseNameLength - len(suffix); len(source) > limit {
+		cut := limit
+		for cut > 0 && !utf8.RuneStart(source[cut]) {
+			cut--
+		}
+		source = source[:cut]
+	}
+	return source + suffix
 }
