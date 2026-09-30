@@ -49,12 +49,13 @@ type Scheduler struct {
 	connections   ConnectionResolver
 	targets       StorageTargets
 
-	// mu guards entries, ctx, cancel, started and stopped.
+	// mu guards entries, ctx, cancel, started, stopped and paused.
 	mu      sync.Mutex
 	ctx     context.Context
 	cancel  context.CancelFunc
 	started bool
 	stopped bool
+	paused  bool
 
 	// inflight tracks cron-triggered executions so Stop can wait for them to finish.
 	inflight sync.WaitGroup
@@ -217,6 +218,36 @@ func (s *Scheduler) Stop() {
 	s.logger.Info("backup scheduler stopped")
 }
 
+// Pause keeps cron triggers from starting new runs until Resume; runs in progress
+// and on-demand runs (TriggerJob, ExecuteJobRun) are not affected. Jobs stay
+// registered, so triggers missed while paused are skipped, not queued. The desktop
+// app pauses scheduling while it waits for runs to finish before it quits.
+func (s *Scheduler) Pause() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.paused {
+		s.paused = true
+		s.logger.Info("backup scheduler paused: scheduled runs will not start")
+	}
+}
+
+// Resume lets cron triggers start runs again after Pause.
+func (s *Scheduler) Resume() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paused {
+		s.paused = false
+		s.logger.Info("backup scheduler resumed")
+	}
+}
+
+// Paused reports whether Pause is in effect.
+func (s *Scheduler) Paused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
+}
+
 // RegisterJob registers or updates a scheduled job.
 func (s *Scheduler) RegisterJob(job *models.Job) error {
 	s.mu.Lock()
@@ -364,11 +395,16 @@ func (s *Scheduler) ExecuteJobRun(ctx context.Context, job *models.Job, record *
 
 // runScheduled is the cron callback. It reads the scheduler context under s.mu and
 // registers the execution with the in-flight WaitGroup, refusing to start once Stop
-// has been called so that Stop's Wait never races with a new Add.
+// has been called so that Stop's Wait never races with a new Add, and while paused.
 func (s *Scheduler) runScheduled(jobID string) {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
+		return
+	}
+	if s.paused {
+		s.mu.Unlock()
+		s.logger.Info("skipping scheduled backup: scheduling is paused", slog.String("job_id", jobID))
 		return
 	}
 	ctx := s.ctx
