@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -252,11 +253,37 @@ func (s *LocalStorage) Stat(ctx context.Context, key string) (*models.StorageObj
 	}, nil
 }
 
-// resolvePath validates and calculates the absolute path, preventing directory traversal.
+// resolvePath validates and calculates the absolute path, preventing directory
+// traversal, and checks that no symbolic link inside the storage root leads out of it
+// (see confine).
 func (s *LocalStorage) resolvePath(key string) (string, error) {
+	fullPath, err := s.lexicalPath(key)
+	if err != nil {
+		return "", err
+	}
+	if err := s.confine(fullPath); err != nil {
+		return "", err
+	}
+	return fullPath, nil
+}
+
+// lexicalPath validates key and joins it to the base directory without touching the
+// file system. Keys use forward slashes on every platform: backslashes, drive letters
+// and control characters (including NUL) are refused everywhere, so a key means the
+// same file on Windows and Unix.
+func (s *LocalStorage) lexicalPath(key string) (string, error) {
 	cleanKey := strings.TrimSpace(key)
 	if cleanKey == "" {
 		return "", ErrInvalidKey
+	}
+	if strings.ContainsFunc(cleanKey, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", fmt.Errorf("%w: control characters are not allowed", ErrInvalidKey)
+	}
+	if strings.Contains(cleanKey, `\`) {
+		return "", fmt.Errorf("%w: backslashes are not allowed", ErrPathTraversal)
+	}
+	if len(cleanKey) >= 2 && cleanKey[1] == ':' && (cleanKey[0]|0x20 >= 'a' && cleanKey[0]|0x20 <= 'z') {
+		return "", fmt.Errorf("%w: drive letters are not allowed", ErrPathTraversal)
 	}
 
 	// Normalize slashes for filesystem
@@ -288,6 +315,38 @@ func (s *LocalStorage) resolvePath(key string) (string, error) {
 	}
 
 	return fullPath, nil
+}
+
+// confine fails with ErrPathTraversal when the deepest existing ancestor of fullPath
+// (fullPath itself when it exists) resolves, through symbolic links, to a location
+// outside the (resolved) base directory. Symbolic links within the root, and a root
+// that is itself a link, keep working.
+func (s *LocalStorage) confine(fullPath string) error {
+	base, err := filepath.EvalSymlinks(s.baseDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // nothing exists yet, so nothing can escape
+		}
+		return fmt.Errorf("resolve base directory: %w", err)
+	}
+	for p := fullPath; ; {
+		real, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			rel, err := filepath.Rel(base, real)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return fmt.Errorf("%w: symbolic link leads outside the storage root", ErrPathTraversal)
+			}
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return fmt.Errorf("resolve path: %w", err)
+		}
+		parent := filepath.Dir(p)
+		if parent == p || len(parent) < len(s.baseDir) {
+			return nil
+		}
+		p = parent
+	}
 }
 
 // toStandardKey normalizes OS-specific path separators to standard forward slashes.
