@@ -171,8 +171,9 @@ FunctionEnd
 # 180 s for that process (a PID that no longer exists returns at once). Then it waits up to 180 s for a running
 # ${PRODUCT_EXECUTABLE} in $INSTDIR: a running executable cannot be opened for writing, so the file is opened for
 # append (which leaves it unchanged) every 500 ms. Both waits outlast the app's shutdown (30 s for the runs plus the
-# drains). When it still runs, an interactive install asks to close it and retry; a silent install aborts, and the
-# installed version stays as it was.
+# drains). When it still runs, an interactive install asks to close it and retry; a silent install starts the
+# installed version again (RelaunchApp: /RELAUNCH and the same user only) and aborts, and the installed version stays
+# as it was.
 Function WaitForApp
     ${GetParameters} $R0
     ClearErrors
@@ -205,6 +206,8 @@ Function WaitForApp
         IntOp $R1 $R1 + 1
         ${If} $R1 >= 360
             MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is still running.$\r$\n$\r$\nClose it and click Retry to continue the installation." /SD IDCANCEL IDRETRY wait_retry
+            # Silent: start the installed version again (same user rule), so the update does not leave nothing running.
+            Call RelaunchApp
             Abort "${INFO_PRODUCTNAME} is still running."
             wait_retry:
             StrCpy $R1 1
