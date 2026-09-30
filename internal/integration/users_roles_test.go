@@ -52,10 +52,10 @@ func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
 		{Key: "roles", Value: bson.A{bson.D{{Key: "role", Value: role}, {Key: "db", Value: db}}}},
 	})
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+		cctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		defer cancel()
-		_ = env.Client.Database(db).RunCommand(ctx, bson.D{{Key: "dropAllUsersFromDatabase", Value: 1}}).Err()
-		_ = env.Client.Database(db).RunCommand(ctx, bson.D{{Key: "dropAllRolesFromDatabase", Value: 1}}).Err()
+		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropAllUsersFromDatabase", Value: 1}}).Err()
+		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropAllRolesFromDatabase", Value: 1}}).Err()
 	})
 
 	bkp := mustBackup(t, env, st, models.BackupOptions{Database: db})

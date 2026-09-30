@@ -248,14 +248,11 @@ func failingS3Proxy(t *testing.T, endpoint string, rejected *atomic.Int32) strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	// The request keeps the Host header it was signed with.
-	base := proxy.Director
-	proxy.Director = func(r *http.Request) {
-		host := r.Host
-		base(r)
-		r.Host = host
-	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		pr.SetURL(target)
+		// The request keeps the Host header it was signed with.
+		pr.Out.Host = pr.In.Host
+	}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && r.URL.Query().Get("uploadId") != "" && r.URL.Query().Get("partNumber") != "1" {
 			rejected.Add(1)
@@ -299,7 +296,7 @@ func runRetentionAfterFailures(t *testing.T, env *mongoEnv, db string, failed []
 	for _, r := range records {
 		r.Trigger = models.TriggerScheduled
 		r.JobID = "job_retention"
-		if err := meta.SaveBackupRecord(ctx, r); err != nil {
+		if err = meta.SaveBackupRecord(ctx, r); err != nil {
 			t.Fatal(err)
 		}
 	}
