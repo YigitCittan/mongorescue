@@ -140,9 +140,9 @@ func TestLocalStorageFollowsLinksWithinTheRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symbolic links needs extra privileges on Windows")
 	}
-	real := t.TempDir()
+	rootDir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "backups")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(rootDir, link); err != nil {
 		t.Fatal(err)
 	}
 	s, err := NewLocalStorage(link)
@@ -150,10 +150,10 @@ func TestLocalStorageFollowsLinksWithinTheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := s.Save(ctx, "db/2026/x.archive", strings.NewReader("data")); err != nil {
+	if _, err = s.Save(ctx, "db/2026/x.archive", strings.NewReader("data")); err != nil {
 		t.Fatalf("Save through a linked root: %v", err)
 	}
-	if err := os.Symlink("db", filepath.Join(real, "alias")); err != nil {
+	if err = os.Symlink("db", filepath.Join(rootDir, "alias")); err != nil {
 		t.Fatal(err)
 	}
 	rc, err := s.Retrieve(ctx, "alias/2026/x.archive")

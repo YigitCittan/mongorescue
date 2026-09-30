@@ -118,7 +118,7 @@ func TestDashboardIsCompatibleWithTheCSP(t *testing.T) {
 	}
 	found := 0
 	err = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !(strings.HasSuffix(path, ".html") || strings.HasSuffix(path, ".js")) {
+		if err != nil || d.IsDir() || (!strings.HasSuffix(path, ".html") && !strings.HasSuffix(path, ".js")) {
 			return err
 		}
 		found++

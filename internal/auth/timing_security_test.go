@@ -50,7 +50,7 @@ func TestSecretsAreComparedInConstantTime(t *testing.T) {
 				if !ok || (be.Op != token.EQL && be.Op != token.NEQ) {
 					return true
 				}
-				if harmless(be.X) || harmless(be.Y) || !(secretName.MatchString(lastName(be.X)) || secretName.MatchString(lastName(be.Y))) {
+				if harmless(be.X) || harmless(be.Y) || (!secretName.MatchString(lastName(be.X)) && !secretName.MatchString(lastName(be.Y))) {
 					return true
 				}
 				expr := render(fset, be)

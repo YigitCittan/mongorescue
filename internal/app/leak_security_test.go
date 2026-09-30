@@ -257,12 +257,12 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	backup := &models.BackupRecord{ID: "bkp_shop_1", JobID: job.ID, Database: "shop", ConnectionID: conn.ID, ConnectionName: conn.Name,
 		StorageTargetID: target.ID, StorageTargetName: target.Name, Status: models.StatusFailed, StartedAt: now,
 		StorageKey: "shop/2026/09/bkp_shop_1.archive.gz", ErrorMessage: "mongodump failed"}
-	if err := application.metaStore.SaveBackupRecord(ctx, backup); err != nil {
+	if err = application.metaStore.SaveBackupRecord(ctx, backup); err != nil {
 		t.Fatal(err)
 	}
 	restore := &models.RestoreRecord{ID: "rst_shop_1", BackupID: backup.ID, SourceDatabase: "shop", TargetDatabase: "shop_rescue_1",
 		SourceConnectionID: conn.ID, TargetConnectionID: conn.ID, Status: models.RestoreStatusFailed, StartedAt: now, ErrorMessage: "mongorestore failed"}
-	if err := application.metaStore.SaveRestoreRecord(ctx, restore); err != nil {
+	if err = application.metaStore.SaveRestoreRecord(ctx, restore); err != nil {
 		t.Fatal(err)
 	}
 

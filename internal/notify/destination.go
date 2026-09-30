@@ -116,7 +116,7 @@ func (d *guardedDialer) DialContext(ctx context.Context, network, address string
 	if err != nil {
 		return nil, err
 	}
-	if err := checkHost(host); err != nil {
+	if err = checkHost(host); err != nil {
 		return nil, err
 	}
 	var addrs []netip.Addr
