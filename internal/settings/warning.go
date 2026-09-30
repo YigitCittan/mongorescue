@@ -31,6 +31,10 @@ const encryptionOffMessage = "Encryption was enabled in your previous configurat
 // markers, so it survives restarts.
 const warningKey = markerPrefix + "warning." + WarningEncryptionOff
 
+// warningNotifiedKey records when the WarningEncryptionOff alert reached the
+// notification service.
+const warningNotifiedKey = warningKey + ".notified"
+
 // States of the WarningEncryptionOff warning.
 const (
 	warningActive    = "active"    // shown until encryption is on or it is dismissed
@@ -67,6 +71,42 @@ func (s *Service) RaiseEncryptionOffWarning(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// EncryptionOffAlertPending reports whether WarningEncryptionOff is active but its
+// alert has not been handed to the notification service yet (see
+// MarkEncryptionOffAlerted), for example because the process stopped before the
+// event bus ran.
+func (s *Service) EncryptionOffAlertPending() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.warnState == warningActive && !s.warnNotified && !s.cur.Encryption.Enabled
+}
+
+// MarkEncryptionOffAlerted records that the WarningEncryptionOff alert was delivered
+// to the notification service, so later starts do not send it again. It is
+// idempotent.
+func (s *Service) MarkEncryptionOffAlerted(ctx context.Context) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.RLock()
+	done := s.warnNotified
+	s.mu.RUnlock()
+	if done {
+		return nil
+	}
+	stamp, err := json.Marshal(s.now().UTC())
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SaveSettings(ctx, map[string]string{warningNotifiedKey: string(stamp)}); err != nil {
+		return fmt.Errorf("settings: save warning alert: %w", err)
+	}
+	s.mu.Lock()
+	s.warnNotified = true
+	s.stored[warningNotifiedKey] = true
+	s.mu.Unlock()
+	return nil
 }
 
 // DismissWarning dismisses the warning id for good. Unknown IDs return ErrInvalid.

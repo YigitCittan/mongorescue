@@ -51,11 +51,11 @@ AGE-SECRET-KEY-1...
 
 ## Encryption turned off by an upgrade
 
-Releases up to v0.7.1 imported the deprecated encryption settings (`MONGORESCUE_ENCRYPTION_*`, `encryption.*` in `config.json`) without the on/off switch, so an installation that encrypted its backups before the upgrade has been writing **unencrypted** backups since. At startup MongoRescue detects this: the deprecated switch is still set to `true`, or the import recorded both the switch and the recipients or passphrase, and encryption is off. It then
+Releases up to v0.7.1 imported the deprecated encryption settings (`MONGORESCUE_ENCRYPTION_*`, `encryption.*` in `config.json`) without the on/off switch, so an installation that encrypted its backups before the upgrade has been writing **unencrypted** backups since. At startup MongoRescue detects this when the deprecated switch is still set (`MONGORESCUE_ENCRYPTION_ENABLED=true` or `"enabled": true` in `config.json`), the recipients or passphrase were imported, and encryption is off. Import records alone are not enough, because earlier releases wrote them for `false` as well. Keep the old setting in place until you have checked. MongoRescue then
 
 - logs a warning on every start,
 - shows a banner in the dashboard (*Encryption was enabled in your previous configuration but is currently off; backups since the upgrade are NOT encrypted*) with a button that opens **Settings → Encryption**, and
-- sends one alert to every enabled notification channel, whatever the rules.
+- sends one alert to every enabled notification channel, whatever the rules. The alert is sent again on the next start if the process stopped before it was handed to the notification service.
 
 Encryption is **not** turned on automatically: check the recipients (or passphrase) and enable it yourself. The banner disappears once encryption is on, or when you dismiss it (`POST /api/v1/settings/warnings/encryption_off_after_upgrade/dismiss`). If you turn encryption off yourself in the settings, the warning is not raised. Backups taken while encryption was off stay unencrypted; take a new backup after enabling it, and delete the unencrypted ones if they must not stay in storage.
 

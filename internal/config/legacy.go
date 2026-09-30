@@ -537,13 +537,6 @@ func (l *Legacy) EncryptionWasEnabled() bool {
 	return ok && v
 }
 
-// EncryptionDisabled reports whether this deprecated configuration explicitly turns
-// backup encryption off.
-func (l *Legacy) EncryptionDisabled() bool {
-	v, ok := l.encryptionSwitch()
-	return ok && !v
-}
-
 // encryptionSwitch returns the deprecated encryption switch, if set.
 func (l *Legacy) encryptionSwitch() (value, ok bool) {
 	for _, it := range l.Settings {
@@ -553,12 +546,6 @@ func (l *Legacy) encryptionSwitch() (value, ok bool) {
 		}
 	}
 	return false, false
-}
-
-// LegacyEncryptionSwitchSources returns the import sources of the deprecated
-// encryption switch, as recorded by settings.Service.MarkImported.
-func LegacyEncryptionSwitchSources() []string {
-	return []string{EnvEncryptionEnabled, LegacyFileName + ":encryption.enabled"}
 }
 
 // LegacyEncryptionKeySources returns the import sources of the deprecated keys new

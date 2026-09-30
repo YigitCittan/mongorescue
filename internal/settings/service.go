@@ -37,9 +37,10 @@ type Service struct {
 	cur     Settings
 	stored  map[string]bool
 	// warnState is the state of WarningEncryptionOff (see warning.go).
-	warnState string
-	enc       *encryption.Encryptor
-	dec       *encryption.Decryptor
+	warnState    string
+	warnNotified bool
+	enc          *encryption.Encryptor
+	dec          *encryption.Decryptor
 }
 
 // Option customises a Service.
@@ -72,6 +73,7 @@ func NewService(ctx context.Context, repo Repository, opts ...Option) (*Service,
 	}
 	s.cur, s.enc, s.dec = cur, enc, dec
 	s.warnState = loadWarningState(values)
+	_, s.warnNotified = values[warningNotifiedKey]
 	s.stored = make(map[string]bool, len(values))
 	for k := range values {
 		s.stored[k] = true
