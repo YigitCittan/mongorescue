@@ -122,6 +122,14 @@ func checkExtract(t *testing.T, data []byte) {
 	}
 }
 
+// skipSync makes extraction skip the flush to disk for the rest of f, which only
+// costs time here (fuzz targets run after all parallel tests have finished).
+func skipSync(f *testing.F) {
+	saved := syncFile
+	syncFile = func(*os.File) error { return nil }
+	f.Cleanup(func() { syncFile = saved })
+}
+
 // FuzzExtractArchive checks that no archive, however malformed, writes outside the
 // staging directory.
 func FuzzExtractArchive(f *testing.F) {
@@ -131,6 +139,7 @@ func FuzzExtractArchive(f *testing.F) {
 	f.Add(fuzzZip(f, []byte("x"), "tools/../../evil.exe", "MongoRescue.exe"))
 	f.Add(fuzzZip(f, nil, "MongoRescue.exe", "tools/Mongodump.exe", "tools/mongodump.EXE"))
 	f.Add([]byte("PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))
+	skipSync(f)
 	f.Fuzz(func(t *testing.T, data []byte) {
 		checkExtract(t, data)
 	})
@@ -143,6 +152,7 @@ func FuzzExtractArchiveNames(f *testing.F) {
 	for _, n := range fuzzArchiveNames {
 		f.Add("MongoRescue.exe\n"+n, []byte("x"))
 	}
+	skipSync(f)
 	f.Fuzz(func(t *testing.T, names string, body []byte) {
 		list := strings.Split(names, "\n")
 		if len(list) > maxArchiveEntries+1 {

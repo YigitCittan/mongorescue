@@ -283,13 +283,17 @@ func extractArchive(zr *zip.Reader, staging, exeName string) error {
 	return writeMarker(root, completeMarker)
 }
 
+// syncFile flushes an unpacked file to disk. Fuzz tests replace it: a full flush per
+// file (F_FULLFSYNC on macOS) would make them too slow to explore anything.
+var syncFile = (*os.File).Sync
+
 // writeMarker creates the empty marker file name in root and flushes it to disk.
 func writeMarker(root *os.Root, name string) error {
 	f, err := root.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", name, err)
 	}
-	err = f.Sync()
+	err = syncFile(f)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -322,7 +326,7 @@ func extractFile(root *os.Root, zf *zip.File, target string) (int64, error) {
 		err = fmt.Errorf("%w: %q is too large", ErrBadUpdateArchive, zf.Name)
 	}
 	if err == nil {
-		err = out.Sync()
+		err = syncFile(out)
 	}
 	if cerr := out.Close(); err == nil {
 		err = cerr
