@@ -40,6 +40,7 @@ FUZZ_TARGETS?= \
 	./internal/mongotools:FuzzWithConnectionDefaults \
 	./internal/mongotools:FuzzWriteURIConfig \
 	./internal/mongouri:FuzzValidate \
+	./internal/mongouri:FuzzValidateStored \
 	./internal/notify:FuzzValidateEmail \
 	./internal/notify:FuzzValidateWebhook \
 	./internal/redact:FuzzTextPassword \

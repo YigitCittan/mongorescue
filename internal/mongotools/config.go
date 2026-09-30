@@ -18,8 +18,8 @@ import (
 	"unicode/utf8"
 )
 
-// ErrInvalidURI is returned when a connection string contains control characters (or
-// invalid UTF-8) that cannot be represented safely in the tools configuration file.
+// ErrInvalidURI is returned when a connection string contains ASCII control
+// characters, which cannot be represented safely in the tools configuration file.
 var ErrInvalidURI = errors.New("mongotools: connection uri contains control characters")
 
 // configFilePerm restricts the config file to the current user.
@@ -33,8 +33,13 @@ const ConfigFilePattern = "mongorescue-tools-*.yaml"
 // dir (os.TempDir when empty) with 0600 permissions, and returns the "--config=<path>"
 // argument together with a cleanup function that removes the file. Callers must invoke
 // cleanup once the subprocess has exited; it is safe to call more than once.
+//
+// ASCII control characters are rejected with ErrInvalidURI. The URI is written as a
+// YAML single-quoted scalar, or as a double-quoted one with escapes when it contains
+// characters YAML does not allow verbatim (C1 controls such as NEL, U+2028, U+2029,
+// the byte order mark), so the tools read back exactly uri.
 func WriteURIConfig(dir, uri string) (arg string, cleanup func(), err error) {
-	if !utf8.ValidString(uri) || strings.ContainsFunc(uri, unsafeInYAML) {
+	if strings.ContainsFunc(uri, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return "", nil, ErrInvalidURI
 	}
 
@@ -51,9 +56,7 @@ func WriteURIConfig(dir, uri string) (arg string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("restrict tools config file permissions: %w", err)
 	}
 
-	// YAML single-quoted scalar: the only escape is doubling the quote character.
-	content := "uri: '" + strings.ReplaceAll(uri, "'", "''") + "'\n"
-	if _, err = f.WriteString(content); err != nil {
+	if _, err = f.WriteString("uri: " + yamlScalar(uri) + "\n"); err != nil {
 		_ = f.Close()
 		cleanup()
 		return "", nil, fmt.Errorf("write tools config file: %w", err)
@@ -66,10 +69,36 @@ func WriteURIConfig(dir, uri string) (arg string, cleanup func(), err error) {
 	return "--config=" + path, cleanup, nil
 }
 
-// unsafeInYAML reports whether r cannot appear verbatim in a YAML single-quoted
-// scalar: a control character (C0, DEL or C1, which includes the NEL line break), a
-// Unicode line or paragraph separator (YAML 1.1 line breaks, folded into a space), the
-// byte order mark or a non-character outside the YAML printable set.
+// yamlScalar returns s as a YAML scalar. Most URIs are written single-quoted, where the
+// only escape is doubling the quote. A valid UTF-8 URI with a character that must not
+// appear verbatim (see unsafeInYAML) is written double-quoted instead, with such
+// characters as \uXXXX escapes. Invalid UTF-8 cannot be represented in YAML at all;
+// it is written single-quoted as before, and the tools report the error.
+func yamlScalar(s string) string {
+	if !utf8.ValidString(s) || !strings.ContainsFunc(s, unsafeInYAML) {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == '"':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case unsafeInYAML(r):
+			fmt.Fprintf(&b, "\\u%04x", r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// unsafeInYAML reports whether r cannot appear verbatim in a YAML quoted scalar: a
+// control character (C0, DEL or C1, which includes the NEL line break), a Unicode line
+// or paragraph separator (YAML 1.1 line breaks, folded into a space), the byte order
+// mark or a non-character outside the YAML printable set.
 func unsafeInYAML(r rune) bool {
 	switch r {
 	case '\u2028', '\u2029', '\ufeff', '\ufffe', '\uffff':
@@ -100,7 +129,7 @@ const (
 // mechanisms that authenticate against $external.
 //
 // The result carries the same credentials as uri: pass it only to WriteURIConfig and
-// never log or persist it. uri is assumed to satisfy mongouri.Validate, which forbids a
+// never log or persist it. uri is assumed to satisfy mongouri.ValidateStored, which forbids a
 // raw '/' or '?' before the host list ends.
 func WithConnectionDefaults(uri string) string {
 	schemeEnd := strings.Index(uri, "://")

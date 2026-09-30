@@ -51,17 +51,31 @@ func TestWriteURIConfig(t *testing.T) {
 }
 
 func TestWriteURIConfigRejectsControlChars(t *testing.T) {
-	for _, uri := range []string{
-		"mongodb://h/\nuri: evil",
-		"mongodb://u:p\u0085x@h", // NEL, a YAML 1.1 line break
-		"mongodb://u:p\u2028x@h", // line separator
-		"mongodb://u:p\u2029x@h", // paragraph separator
-		"mongodb://u:p\ufeffx@h", // byte order mark
-		"mongodb://u:p\x9bx@h",   // invalid UTF-8
-		"mongodb://u:p\u009bx@h", // C1 control
+	if _, _, err := WriteURIConfig(t.TempDir(), "mongodb://h/\nuri: evil"); !errors.Is(err, ErrInvalidURI) {
+		t.Fatalf("expected ErrInvalidURI, got %v", err)
+	}
+}
+
+// TestWriteURIConfigEscapesUnicodeBreaks checks that characters YAML does not allow
+// verbatim (and that earlier releases wrote as they were) are escaped, not rejected,
+// so a stored URI that worked before keeps working.
+func TestWriteURIConfigEscapesUnicodeBreaks(t *testing.T) {
+	for uri, want := range map[string]string{
+		"mongodb://u:p\u0085x@h":   `uri: "mongodb://u:p\u0085x@h"` + "\n",   // NEL, a YAML 1.1 line break
+		"mongodb://u:p\u2028x@h":   `uri: "mongodb://u:p\u2028x@h"` + "\n",   // line separator
+		"mongodb://u:p\ufeff\"@h":  `uri: "mongodb://u:p\ufeff\"@h"` + "\n",  // byte order mark and a quote
+		"mongodb://u:p\u009b\\x@h": `uri: "mongodb://u:p\u009b\\x@h"` + "\n", // C1 control and a backslash
+		"mongodb://u:p\u00a0x@h":   "uri: 'mongodb://u:p\u00a0x@h'\n",        // no-break space is printable
+		"mongodb://u:p\x9bx@h":     "uri: 'mongodb://u:p\x9bx@h'\n",          // invalid UTF-8, as before
 	} {
-		if _, _, err := WriteURIConfig(t.TempDir(), uri); !errors.Is(err, ErrInvalidURI) {
-			t.Errorf("WriteURIConfig(%q): expected ErrInvalidURI, got %v", uri, err)
+		arg, cleanup, err := WriteURIConfig(t.TempDir(), uri)
+		if err != nil {
+			t.Fatalf("WriteURIConfig(%q): %v", uri, err)
+		}
+		data, err := os.ReadFile(strings.TrimPrefix(arg, "--config="))
+		cleanup()
+		if err != nil || string(data) != want {
+			t.Errorf("WriteURIConfig(%q) wrote %q, %v; want %q", uri, data, err, want)
 		}
 	}
 }
