@@ -166,6 +166,7 @@ func (f fakeConnections) List(context.Context) ([]*models.Connection, error) { r
 type retryFixture struct {
 	svc  *operations.Service
 	st   *store.SQLiteStore
+	runs *runs.Manager
 	mu   sync.Mutex
 	args [][]string
 }
@@ -182,6 +183,7 @@ func newRetryFixture(t *testing.T) *retryFixture {
 	mock := storage.NewMockStorage()
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	f.runs = manager
 	f.svc = operations.New(operations.Config{
 		Store:       f.st,
 		Backup:      backup.NewEngine(mock, "", backup.WithRunner(runner)),
@@ -202,7 +204,10 @@ func (f *retryFixture) save(t *testing.T, records ...*models.BackupRecord) {
 	}
 }
 
-// await polls backup id until it leaves the in-progress state.
+// await polls backup id until it leaves the in-progress state and its run has released
+// the database, so that a following backup of the same database is not refused as busy.
+// The record is persisted before the run lock is released, so the status alone is not
+// enough. It fails the test if the run does not finish within the deadline.
 func (f *retryFixture) await(t *testing.T, id string) *models.BackupRecord {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -211,8 +216,11 @@ func (f *retryFixture) await(t *testing.T, id string) *models.BackupRecord {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rec.Status != models.StatusInProgress || time.Now().After(deadline) {
+		if rec.Status != models.StatusInProgress && !f.runs.Running(runs.BackupKey(rec.ConnectionID, rec.Database)) {
 			return rec
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backup %s still running after 5s: %+v", id, rec)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
