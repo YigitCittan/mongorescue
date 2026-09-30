@@ -53,7 +53,7 @@ MongoRescue incorporates defensive design principles:
 - **Zero In-Memory Buffering**: Dumps stream directly to storage via piped I/O to avoid Denial of Service (DoS) memory exhaustion.
 - **Strict URI Credential Masking**: All connection strings are sanitized at runtime before logging or API serialization.
 - **Command Injection Defense**: System calls to `mongodump` and `mongorestore` use strict argument slices with `exec.CommandContext`, never concatenated shell invocations.
-- **Path Traversal Defense**: All storage operations validate and restrict keys within designated storage boundaries.
+- **Path Traversal Defense**: All storage operations validate and restrict keys within designated storage boundaries: `..` components, absolute paths, backslashes, drive letters and control characters (including NUL) are refused. Symbolic links inside a local target are followed; creating one needs file system access to the backup directory, which the API never grants.
 - **Safe Clone Namespaces**: Restores default to isolated temporary databases (`<db>_rescue_<timestamp>`) to prevent inadvertent data loss on live production databases.
 - **Encryption at Rest**: Optional streaming age encryption (X25519 recommended); the backup host needs only public keys, and by default restores into existing namespaces are verified before `mongorestore` runs.
 - **Secret Masking**: API keys, S3 secrets, encryption identities, connection passwords and notification secrets are masked in API responses and never logged.

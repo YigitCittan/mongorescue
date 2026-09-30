@@ -90,46 +90,39 @@ func TestLocalStorageRejectsHostileKeys(t *testing.T) {
 	}
 }
 
-// TestLocalStorageRefusesSymlinkEscapes checks that a symbolic link inside the root
-// that points outside it (a directory or a file, planted by anyone with write access
-// to the backup directory) cannot be used to write, read, stat or delete outside.
-func TestLocalStorageRefusesSymlinkEscapes(t *testing.T) {
+// TestLocalStorageFollowsSymlinkedSubdirectories checks that a subdirectory of the
+// root that is a symbolic link to another location (a second disk, a NAS mount) is
+// used like any other directory: links are followed, only the key itself is checked.
+func TestLocalStorageFollowsSymlinkedSubdirectories(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symbolic links needs extra privileges on Windows")
 	}
-	outside := t.TempDir()
-	secret := filepath.Join(outside, "secret.txt")
-	if err := os.WriteFile(secret, []byte("outside"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	otherDisk := t.TempDir()
 	s, dir := newTestLocalStorage(t)
-	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(secret, filepath.Join(dir, "file-link.gz")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "db"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../escape", filepath.Join(dir, "db", "relative")); err != nil {
+	if err := os.Symlink(otherDisk, filepath.Join(dir, "shop")); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	for _, key := range []string{"escape/secret.txt", "escape/new/dir/x.gz", "file-link.gz", "db/relative/secret.txt"} {
-		for name, op := range localOps(s) {
-			t.Run(name+"/"+key, func(t *testing.T) {
-				if err := op(ctx, key); !errors.Is(err, ErrPathTraversal) {
-					t.Fatalf("%s(%q) = %v; want ErrPathTraversal", name, key, err)
-				}
-			})
+	if _, err := s.Save(ctx, "shop/2026/09/x.archive", strings.NewReader("data")); err != nil {
+		t.Fatalf("Save through a linked subdirectory: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(otherDisk, "2026", "09", "x.archive")); err != nil || string(raw) != "data" {
+		t.Fatalf("archive on the other disk = %q, %v", raw, err)
+	}
+	for name, op := range localOps(s) {
+		if name == "Save" || name == "Delete" {
+			continue
+		}
+		if err := op(ctx, "shop/2026/09/x.archive"); err != nil {
+			t.Errorf("%s through a linked subdirectory: %v", name, err)
 		}
 	}
-	if raw, err := os.ReadFile(secret); err != nil || string(raw) != "outside" {
-		t.Fatalf("the file outside the root was changed: %q, %v", raw, err)
+	if err := s.Delete(ctx, "shop/2026/09/x.archive"); err != nil {
+		t.Fatalf("Delete through a linked subdirectory: %v", err)
 	}
-	if entries, _ := os.ReadDir(outside); len(entries) != 1 {
-		t.Fatalf("files were created outside the root: %v", entries)
+	// The lexical checks still apply to keys that name the link.
+	if _, err := s.Retrieve(ctx, "shop/../../x"); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("traversal past the link: %v", err)
 	}
 }
 
