@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -598,9 +599,31 @@ func (s *Scheduler) storageFor(ctx context.Context, targetID string) (storage.St
 
 // cronParser accepts standard five-field cron expressions and descriptors
 // such as "@daily".
-var cronParser = cron.NewParser(
+var cronParser = safeParser{cron.NewParser(
 	cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
-)
+)}
+
+// errCronPanic reports an expression on which the cron parser panicked.
+var errCronPanic = errors.New("unparsable schedule")
+
+// safeParser wraps the cron parser, which panics (slice bounds out of range) on a
+// time zone prefix without a schedule such as "TZ=UTC", turning that into an error.
+type safeParser struct {
+	parser cron.Parser
+}
+
+// Parse implements cron.ScheduleParser.
+func (p safeParser) Parse(spec string) (schedule cron.Schedule, err error) {
+	if (strings.HasPrefix(spec, "TZ=") || strings.HasPrefix(spec, "CRON_TZ=")) && !strings.Contains(spec, " ") {
+		return nil, fmt.Errorf("%w: time zone without a schedule", errCronPanic)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			schedule, err = nil, fmt.Errorf("%w: %v", errCronPanic, r)
+		}
+	}()
+	return p.parser.Parse(spec)
+}
 
 // ErrInvalidCron is returned by ValidateCron for an expression the scheduler cannot
 // parse.
