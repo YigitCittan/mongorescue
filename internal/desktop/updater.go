@@ -29,6 +29,9 @@ const (
 	UpdateInstallPath = "/desktop/update/install"
 	// UpdateReleasePagePath opens the release page in the system browser (POST).
 	UpdateReleasePagePath = "/desktop/update/release-page"
+	// UpdateRemoveLegacyPath starts the uninstaller of a per-machine copy left in
+	// Program Files (POST; Windows).
+	UpdateRemoveLegacyPath = "/desktop/update/remove-legacy"
 	// UpdateHeader must be "1" on the POST requests: a page cannot send a custom
 	// header cross-origin without a CORS preflight, which is never granted.
 	UpdateHeader = "X-MongoRescue-Desktop"
@@ -40,23 +43,44 @@ const UpdateCheckInterval = 6 * time.Hour
 
 // Update states reported in UpdateStatus.State.
 const (
-	UpdateIdle        = "idle"
-	UpdateChecking    = "checking"
+	UpdateIdle     = "idle"
+	UpdateChecking = "checking"
+	// UpdateDownloading reports the download; UpdateStatus.Percent has the progress.
 	UpdateDownloading = "downloading"
 	UpdateReady       = "ready"
-	// UpdateInstalling reports that the verified installer is being started, or
-	// runs (Windows): the app quits and the installer starts the new version.
+	// UpdateInstalling reports that the verified update is being unpacked and
+	// swapped in (ActionSwap), or that the verified installer is being started or
+	// runs (ActionLaunch).
 	UpdateInstalling = "installing"
+	// UpdateRestarting reports that the new version was started and the app quits
+	// (ActionSwap).
+	UpdateRestarting = "restarting"
 	UpdateError      = "error"
 )
 
 // Update actions reported in UpdateStatus.Action: what Install does with the file.
 const (
+	// ActionSwap updates the app in place, from the portable archive, and restarts
+	// it (Windows, when the user can write to the app's directory).
+	ActionSwap = "swap"
 	// ActionLaunch runs the installer silently and quits the app; the installer
-	// starts the new version once it is done (Windows).
+	// starts the new version once it is done (Windows, for a copy the user cannot
+	// write to, such as one in Program Files).
 	ActionLaunch = "launch"
 	// ActionReveal saves the archive and shows it in the file manager (macOS, Linux).
 	ActionReveal = "reveal"
+)
+
+// States of a legacy copy's removal, reported in LegacyStatus.State.
+const (
+	// LegacyIdle means no removal was requested.
+	LegacyIdle = ""
+	// LegacyRemoving means the uninstaller is being started (UAC prompt).
+	LegacyRemoving = "removing"
+	// LegacyStarted means the uninstaller runs; the copy disappears once it is done.
+	LegacyStarted = "started"
+	// LegacyError means the uninstaller did not start; LegacyStatus.Error says why.
+	LegacyError = "error"
 )
 
 // Updater errors.
@@ -72,58 +96,17 @@ var (
 	// for this platform (yet).
 	ErrNotInstallable = errors.New("the release has no verified file for this platform yet")
 	// ErrInstallerCancelled is reported when the user declines the Windows UAC
-	// prompt for the installer.
+	// prompt for the installer or uninstaller.
 	ErrInstallerCancelled = errors.New("the installation was cancelled")
+	// ErrNoLegacyCopy is returned by RemoveLegacy when no per-machine copy is
+	// registered.
+	ErrNoLegacyCopy = errors.New("no older copy in Program Files")
 )
-
-// silentInstallerArgs returns the installer's command-line arguments: /S runs the
-// NSIS installer without its wizard, and /RELAUNCH makes it start the new version
-// once the files are installed (see build/windows/installer/project.nsi). A
-// non-empty installDir is passed as /D=<installDir>, last and unquoted as NSIS
-// requires, so the update replaces that install instead of going to the default
-// directory.
-func silentInstallerArgs(installDir string) []string {
-	args := []string{"/S", "/RELAUNCH"}
-	if installDir != "" {
-		args = append(args, installDirArg+installDir)
-	}
-	return args
-}
-
-// installDirArg starts the NSIS argument that sets the install directory.
-const installDirArg = "/D="
-
-// UninstallerName is the file the NSIS installer writes next to MongoRescue.exe;
-// its presence marks an installed copy, as opposed to a portable one.
-const UninstallerName = "uninstall.exe"
-
-// InstallDir returns the directory of the running executable, with symlinks
-// resolved, when it is an installed copy (UninstallerName sits next to it), and ""
-// otherwise, such as for a portable copy or when the executable cannot be found.
-func InstallDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	return installDirOf(exe)
-}
-
-// installDirOf is InstallDir for the executable at exe.
-func installDirOf(exe string) string {
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	dir := filepath.Dir(exe)
-	if fi, err := os.Stat(filepath.Join(dir, UninstallerName)); err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	return dir
-}
 
 // UpdateSource looks up and downloads releases; *update.Checker implements it.
 type UpdateSource interface {
 	Check(ctx context.Context, current string) (update.Result, error)
-	Download(ctx context.Context, res update.Result, dir string) (update.File, error)
+	DownloadAsset(ctx context.Context, res update.Result, asset update.Asset, dir string, progress update.Progress) (update.File, error)
 }
 
 // UpdaterOptions configures NewUpdater. Nil functions get the real implementations.
@@ -142,21 +125,44 @@ type UpdaterOptions struct {
 	Interval time.Duration
 	// Dir returns the directory an update is downloaded to; nil means UpdateDir.
 	Dir func(goos string) (string, error)
-	// InstallDir returns the directory the Windows installer installs the update
-	// to, or "" for its default directory; nil means InstallDir.
-	InstallDir func() string
-	// Launch starts the downloaded installer with args (Windows). It returns once
-	// the installer runs, or with an error when it could not be started, such as
-	// ErrInstallerCancelled after a declined UAC prompt; nil means LaunchInstaller.
+	// Executable returns the running executable, symlinks resolved; nil means
+	// ExecutablePath.
+	Executable func() (string, error)
+	// Writable reports whether the current user can create files in a directory;
+	// on Windows, a writable executable directory selects ActionSwap. Nil means
+	// DirWritable.
+	Writable func(dir string) bool
+	// StartApp starts the updated executable with args as a detached process of the
+	// current user (ActionSwap); nil means StartDetached.
+	StartApp func(exe string, args []string) error
+	// Args are the running app's arguments, passed on to the updated app together
+	// with AfterUpdateFlag; nil means os.Args[1:].
+	Args []string
+	// PID is the running process, which the updated app or the installer waits for;
+	// 0 means os.Getpid().
+	PID int
+	// User returns the account the app runs as, which the installer must run as to
+	// start the new version (ActionLaunch); nil means CurrentUserName.
+	User func() string
+	// Launch starts the downloaded installer, or a legacy copy's uninstaller, with
+	// args (Windows). It returns once the program runs, or with an error when it
+	// could not be started, such as ErrInstallerCancelled after a declined UAC
+	// prompt; nil means LaunchInstaller.
 	Launch func(path string, args []string) error
+	// LegacyUninstaller returns the uninstaller of a per-machine copy registered
+	// under HKLM, or ""; nil means LegacyUninstaller.
+	LegacyUninstaller func() string
 	// Reveal shows the downloaded archive (macOS, Linux); nil means RevealFile.
 	Reveal func(ctx context.Context, path string) error
-	// Quit asks the app to quit once the installer runs, so the installer can
-	// replace its files; it is not called when the installer did not start. It must
-	// not block on the updater (Wait); nil does nothing.
+	// Quit asks the app to quit once the new version or the installer runs, so it
+	// can take over; it is not called when that did not start. It must not block on
+	// the updater (Wait); nil does nothing.
 	Quit func()
 	// OpenURL opens the release page in the system browser; nil does nothing.
 	OpenURL func(url string)
+
+	// fs replaces the file system calls of the swap in tests.
+	fs *fileOps
 }
 
 // UpdateStatus is the JSON body of GET UpdatePath.
@@ -172,10 +178,29 @@ type UpdateStatus struct {
 	HTMLURL     string `json:"html_url"`
 	State       string `json:"state"`
 	Error       string `json:"error"`
-	// Action is ActionLaunch or ActionReveal.
+	// Percent is the download progress, 0 to 100, while State is
+	// UpdateDownloading; -1 when the size is unknown.
+	Percent int `json:"percent"`
+	// Action is ActionSwap, ActionLaunch or ActionReveal.
 	Action string `json:"action"`
 	// File is the base name of the downloaded file once State is UpdateReady.
 	File string `json:"file"`
+	// Legacy reports a per-machine copy left in Program Files (Windows).
+	Legacy LegacyStatus `json:"legacy"`
+}
+
+// LegacyStatus reports a per-machine copy of the app registered under HKLM, left by
+// an earlier version's installer in Program Files, other than the running copy.
+// It shares the user's data, so it can simply be uninstalled.
+type LegacyStatus struct {
+	// Found reports whether such a copy is installed.
+	Found bool `json:"found"`
+	// Dir is its install directory.
+	Dir string `json:"dir"`
+	// State is LegacyIdle, LegacyRemoving, LegacyStarted or LegacyError.
+	State string `json:"state"`
+	// Error says why the uninstaller did not start.
+	Error string `json:"error"`
 }
 
 // Updater checks for a new desktop release at startup and then every Interval, and
@@ -183,17 +208,19 @@ type UpdateStatus struct {
 // Wait returns once they have finished. It is safe for concurrent use.
 type Updater struct {
 	opts    UpdaterOptions
+	fs      fileOps
 	goos    string
 	enabled bool
 
 	wg  sync.WaitGroup // the check loop
-	ops sync.WaitGroup // installs and reveals
+	ops sync.WaitGroup // installs, reveals and uninstaller starts
 
 	mu     sync.Mutex
 	ctx    context.Context // set by Start
 	status UpdateStatus
 	result update.Result
 	path   string // the verified download, once ready
+	legacy LegacyStatus
 }
 
 // NewUpdater returns an idle updater for opts.Version.
@@ -210,11 +237,29 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	if opts.Dir == nil {
 		opts.Dir = UpdateDir
 	}
-	if opts.InstallDir == nil {
-		opts.InstallDir = InstallDir
+	if opts.Executable == nil {
+		opts.Executable = ExecutablePath
+	}
+	if opts.Writable == nil {
+		opts.Writable = DirWritable
+	}
+	if opts.StartApp == nil {
+		opts.StartApp = StartDetached
+	}
+	if opts.Args == nil {
+		opts.Args = os.Args[1:]
+	}
+	if opts.PID <= 0 {
+		opts.PID = os.Getpid()
+	}
+	if opts.User == nil {
+		opts.User = CurrentUserName
 	}
 	if opts.Launch == nil {
 		opts.Launch = LaunchInstaller
+	}
+	if opts.LegacyUninstaller == nil {
+		opts.LegacyUninstaller = LegacyUninstaller
 	}
 	if opts.Reveal == nil {
 		opts.Reveal = RevealFile
@@ -223,13 +268,30 @@ func NewUpdater(opts UpdaterOptions) *Updater {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	u := &Updater{opts: opts, goos: goos, status: UpdateStatus{Current: opts.Version, State: UpdateIdle, Action: ActionReveal}}
+	fsOps := osFileOps()
+	if opts.fs != nil {
+		fsOps = *opts.fs
+	}
+	u := &Updater{opts: opts, fs: fsOps, goos: goos, status: UpdateStatus{Current: opts.Version, State: UpdateIdle, Action: ActionReveal}}
 	if goos == "windows" {
 		u.status.Action = ActionLaunch
+		if _, ok := u.swapTarget(); ok {
+			u.status.Action = ActionSwap
+		}
 	}
 	_, err := update.ParseVersion(opts.Version)
 	u.enabled = err == nil
 	return u
+}
+
+// swapTarget returns the running executable and whether the user can write to its
+// directory, so the app can update itself in place (ActionSwap).
+func (u *Updater) swapTarget() (string, bool) {
+	exe, err := u.opts.Executable()
+	if err != nil || exe == "" {
+		return "", false
+	}
+	return exe, u.opts.Writable(filepath.Dir(exe))
 }
 
 // Start begins the checks in a goroutine bound to ctx: one now, then one every
@@ -310,7 +372,7 @@ func (u *Updater) busy() bool {
 // busyLocked is busy with u.mu held.
 func (u *Updater) busyLocked() bool {
 	switch u.status.State {
-	case UpdateChecking, UpdateDownloading, UpdateReady, UpdateInstalling:
+	case UpdateChecking, UpdateDownloading, UpdateReady, UpdateInstalling, UpdateRestarting:
 		return true
 	}
 	return false
@@ -340,23 +402,85 @@ func (u *Updater) apply(res update.Result) {
 	}
 }
 
-// Status returns the current update status.
+// Status returns the current update status, with a fresh look for a legacy copy
+// on Windows.
 func (u *Updater) Status() UpdateStatus {
+	legacy := u.lookupLegacy()
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.status
+	s := u.status
+	s.Legacy = u.legacy
+	s.Legacy.Found, s.Legacy.Dir = legacy != "", windowsDir(legacy)
+	if legacy == "" {
+		s.Legacy.State, s.Legacy.Error = LegacyIdle, ""
+	}
+	return s
+}
+
+// lookupLegacy returns the uninstaller of a per-machine copy other than the
+// running one, or "" (always on other platforms than Windows).
+func (u *Updater) lookupLegacy() string {
+	if u.goos != "windows" {
+		return ""
+	}
+	uninstaller := u.opts.LegacyUninstaller()
+	if uninstaller == "" {
+		return ""
+	}
+	if exe, err := u.opts.Executable(); err == nil && sameWindowsDir(windowsDir(uninstaller), windowsDir(exe)) {
+		return "" // the running copy is the per-machine one
+	}
+	return uninstaller
+}
+
+// RemoveLegacy starts the uninstaller of the per-machine copy (see LegacyStatus)
+// silently (/S) in a goroutine bound to the Start context; Windows asks for
+// administrator rights. The result is reported in Status().Legacy. It returns
+// ErrNoLegacyCopy when there is no such copy.
+func (u *Updater) RemoveLegacy() error {
+	uninstaller := u.lookupLegacy()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	switch {
+	case u.ctx == nil:
+		return ErrUpdaterNotStarted
+	case u.ctx.Err() != nil:
+		return fmt.Errorf("updater stopped: %w", u.ctx.Err())
+	case uninstaller == "":
+		return ErrNoLegacyCopy
+	case u.legacy.State == LegacyRemoving:
+		return ErrUpdateBusy
+	}
+	u.legacy = LegacyStatus{State: LegacyRemoving}
+	u.ops.Add(1)
+	go func() {
+		defer u.ops.Done()
+		err := u.opts.Launch(uninstaller, []string{"/S"})
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		if err != nil {
+			u.opts.Logger.Warn("the older copy's uninstaller did not start", slog.String("path", uninstaller), slog.Any("error", err))
+			u.legacy = LegacyStatus{State: LegacyError, Error: err.Error()}
+			return
+		}
+		u.opts.Logger.Info("started the older copy's uninstaller", slog.String("path", uninstaller))
+		u.legacy = LegacyStatus{State: LegacyStarted}
+	}()
+	return nil
 }
 
 // Install downloads and verifies the update in a goroutine bound to the Start
-// context, then installs it: on Windows it starts the installer silently (/S
-// /RELAUNCH, after the UAC prompt) and quits the app, and the installer starts the
-// new version once it is done; if the installer does not start, the app keeps
-// running and reports the error. Elsewhere it leaves the file in the download directory and reveals it. After a
-// failure, or when the last check found no installable file, it checks for the
-// release again first. Progress and errors are reported through Status. Once
-// ready, Install reveals the file again. Install never replaces files itself: the
-// installer, or the user unpacking the archive, installs the app together with its
-// bundled MongoDB Database Tools (tools/, or Contents/Resources/tools in the .app).
+// context, then installs it. On Windows, when the user can write to the app's
+// directory (the per-user install or a portable copy), it unpacks the portable
+// archive next to the executable, swaps the executable and tools\ in (every rename
+// is undone on failure), starts the new version and quits (ActionSwap); for a
+// copy the user cannot write to, it starts the installer silently and quits, and
+// the installer starts the new version once it is done (ActionLaunch). If the new
+// version or the installer does not start, the app keeps running and reports the
+// error. Elsewhere it leaves the file in the download directory and reveals it.
+// After a failure, or when the last check found no installable file, it checks
+// for the release again first. Progress and errors are reported through Status.
+// Once ready, Install reveals the file again.
 func (u *Updater) Install() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -365,7 +489,8 @@ func (u *Updater) Install() error {
 		return ErrUpdaterNotStarted
 	case u.ctx.Err() != nil:
 		return fmt.Errorf("updater stopped: %w", u.ctx.Err())
-	case u.status.State == UpdateChecking || u.status.State == UpdateDownloading || u.status.State == UpdateInstalling:
+	case u.status.State == UpdateChecking || u.status.State == UpdateDownloading ||
+		u.status.State == UpdateInstalling || u.status.State == UpdateRestarting:
 		return ErrUpdateBusy
 	case !u.status.Available:
 		return ErrNoUpdate
@@ -380,7 +505,7 @@ func (u *Updater) Install() error {
 		return nil
 	}
 	recheck := u.status.State == UpdateError || !res.Installable
-	u.status.State, u.status.Error, u.status.File = UpdateDownloading, "", ""
+	u.status.State, u.status.Error, u.status.File, u.status.Percent = UpdateDownloading, "", "", 0
 	if recheck {
 		u.status.State = UpdateChecking
 	}
@@ -418,12 +543,20 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 		}
 		res = fresh
 	}
+	if u.goos == "windows" {
+		if exe, ok := u.swapTarget(); ok && res.Portable.URL != "" {
+			u.setAction(ActionSwap)
+			u.swapInstall(ctx, res, exe)
+			return
+		}
+		u.setAction(ActionLaunch)
+	}
 	dir, err := u.opts.Dir(u.goos)
 	if err != nil {
 		u.fail(fmt.Errorf("update directory: %w", err))
 		return
 	}
-	file, err := u.opts.Source.Download(ctx, res, dir)
+	file, err := u.opts.Source.DownloadAsset(ctx, res, res.Asset, dir, u.progress)
 	if err != nil {
 		u.fail(err)
 		return
@@ -437,8 +570,8 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 	}
 	// The app keeps running when the installer does not start (UAC prompt declined,
 	// file changed): the error is shown with a retry and the release page.
-	u.installing(file.Path)
-	if err := verifyAndLaunch(file, silentInstallerArgs(u.opts.InstallDir()), u.opts.Launch); err != nil {
+	u.setState(UpdateInstalling, file.Path)
+	if err := verifyAndLaunch(file, silentInstallerArgs(u.opts.User(), u.opts.PID), u.opts.Launch); err != nil {
 		u.fail(fmt.Errorf("start the installer: %w", err))
 		return
 	}
@@ -446,6 +579,80 @@ func (u *Updater) install(ctx context.Context, res update.Result, recheck bool) 
 	if u.opts.Quit != nil {
 		u.opts.Quit()
 	}
+}
+
+// swapInstall downloads the portable archive of res, unpacks it next to exe,
+// swaps it in, starts the new version and quits. Every failure leaves the running
+// version in place and reports the error.
+func (u *Updater) swapInstall(ctx context.Context, res update.Result, exe string) {
+	dir, err := u.opts.Dir(u.goos)
+	if err != nil {
+		u.fail(fmt.Errorf("update directory: %w", err))
+		return
+	}
+	file, err := u.opts.Source.DownloadAsset(ctx, res, res.Portable, dir, u.progress)
+	if err != nil {
+		u.fail(err)
+		return
+	}
+	u.opts.Logger.Info("update downloaded and verified", slog.String("path", file.Path))
+	u.setState(UpdateInstalling, file.Path)
+
+	staging := stagingDir(filepath.Dir(exe), res.Latest)
+	cleanup := func() {
+		if rmErr := u.fs.removeAll(staging); rmErr != nil {
+			u.opts.Logger.Warn("could not remove the update's staging directory", slog.String("path", staging), slog.Any("error", rmErr))
+		}
+	}
+	if err = u.fs.removeAll(staging); err != nil {
+		u.fail(fmt.Errorf("remove %s: %w", staging, err))
+		return
+	}
+	if err = verifyAndExtract(file, staging, filepath.Base(exe)); err != nil {
+		cleanup()
+		u.fail(fmt.Errorf("unpack the update: %w", err))
+		return
+	}
+	sw, err := swapInFiles(u.fs, exe, staging)
+	if err != nil {
+		cleanup()
+		u.fail(fmt.Errorf("install the update: %w", err))
+		return
+	}
+	u.setState(UpdateRestarting, file.Path)
+	if err = u.opts.StartApp(exe, relaunchArgs(u.opts.Args, u.opts.PID)); err != nil {
+		err = fmt.Errorf("start the new version: %w", err)
+		if rbErr := sw.rollback(); rbErr != nil {
+			u.opts.Logger.Error("could not restore the running version after a failed update", slog.Any("error", rbErr))
+			err = errors.Join(err, rbErr)
+		}
+		cleanup()
+		u.fail(err)
+		return
+	}
+	cleanup()
+	u.opts.Logger.Info("new version started, quitting for the update", slog.String("version", res.Latest.String()), slog.String("path", exe))
+	if u.opts.Quit != nil {
+		u.opts.Quit()
+	}
+}
+
+// progress records the download progress.
+func (u *Updater) progress(done, total int64) {
+	pct := -1
+	if total > 0 {
+		pct = int(min(max(done*100/total, 0), 100))
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.status.Percent = pct
+}
+
+// setAction records the install action.
+func (u *Updater) setAction(action string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.status.Action = action
 }
 
 // ready records the verified download at path.
@@ -456,12 +663,12 @@ func (u *Updater) ready(path string) {
 	u.status.State, u.status.File = UpdateReady, filepath.Base(path)
 }
 
-// installing records that the verified installer at path is being started.
-func (u *Updater) installing(path string) {
+// setState records state for the verified download at path.
+func (u *Updater) setState(state, path string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.path = path
-	u.status.State, u.status.File = UpdateInstalling, filepath.Base(path)
+	u.status.State, u.status.File = state, filepath.Base(path)
 }
 
 // reveal shows path in the file manager; a failure is logged only, since the file
@@ -491,7 +698,7 @@ func verifyAndLaunch(file update.File, args []string, launch func(string, []stri
 	}
 	defer func() { _ = f.Close() }()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err = io.Copy(h, f); err != nil {
 		return fmt.Errorf("read %s: %w", file.Path, err)
 	}
 	if len(file.SHA256) != sha256.Size || subtle.ConstantTimeCompare(h.Sum(nil), file.SHA256) != 1 {
@@ -522,7 +729,7 @@ func (u *Updater) Handler(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case UpdatePath:
 			method = http.MethodGet
-		case UpdateInstallPath, UpdateReleasePagePath:
+		case UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath:
 			method = http.MethodPost
 		default:
 			next.ServeHTTP(w, r)
@@ -544,6 +751,12 @@ func (u *Updater) Handler(next http.Handler) http.Handler {
 		switch r.URL.Path {
 		case UpdateInstallPath:
 			if err := u.Install(); err != nil {
+				writeJSONError(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, u.Status())
+		case UpdateRemoveLegacyPath:
+			if err := u.RemoveLegacy(); err != nil {
 				writeJSONError(w, http.StatusConflict, err.Error())
 				return
 			}

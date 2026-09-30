@@ -16,14 +16,14 @@ func TestOpenLockedDeniesWriteAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if w, err := os.OpenFile(p, os.O_WRONLY, 0); err == nil {
+	if w, werr := os.OpenFile(p, os.O_WRONLY, 0); werr == nil {
 		_ = w.Close()
 		t.Error("opened for writing while locked")
 	}
-	if err := os.Remove(p); err == nil {
+	if os.Remove(p) == nil {
 		t.Error("deleted while locked")
 	}
-	if err := os.Rename(p, p+".old"); err == nil {
+	if os.Rename(p, p+".old") == nil {
 		t.Error("renamed while locked")
 	}
 	r, err := os.Open(p)
@@ -34,14 +34,21 @@ func TestOpenLockedDeniesWriteAndDelete(t *testing.T) {
 }
 
 func TestInstallerParams(t *testing.T) {
-	if got := installerParams(silentInstallerArgs("")); got != "/S /RELAUNCH" {
+	// NSIS GetOptions reads /RELAUNCH=<user> up to the next "/": the options are
+	// passed unquoted, also with a space in the user name.
+	if got := installerParams(silentInstallerArgs(`CORP\John Smith`, 42)); got != `/S /RELAUNCH=CORP\John Smith /WAITPID=42` {
 		t.Errorf("params = %q", got)
 	}
-	dir := `C:\Program Files\MongoRescue\MongoRescue`
-	if got := installerParams(silentInstallerArgs(dir)); got != `/S /RELAUNCH /D=`+dir {
-		t.Errorf("params with install dir = %q; /D= must be last and unquoted", got)
+	if got := installerParams([]string{"/S"}); got != "/S" {
+		t.Errorf("params = %q", got)
 	}
 	if got := installerParams([]string{"/S", `C:\Program Files\x`}); got != `/S "C:\Program Files\x"` {
 		t.Errorf("quoted params = %q", got)
+	}
+}
+
+func TestWaitForProcessExit(t *testing.T) {
+	if !WaitForProcessExit(0, 0) || !WaitForProcessExit(os.Getpid(), 0) {
+		t.Error("no process or the calling one must count as exited")
 	}
 }

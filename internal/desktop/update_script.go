@@ -6,9 +6,9 @@ import (
 )
 
 // updateScript shows the update status of Updater in the dashboard. It polls
-// UpdatePath closely while a check, a download or the start of the installer runs
-// (so a declined UAC prompt shows up as an error with "Try again") and every 10 minutes
-// otherwise, and shows either a blocking full-screen dialog for a mandatory update
+// UpdatePath closely while a check, a download (with its percentage), the install or
+// the restart runs (so a failed swap or a declined UAC prompt shows up as an error
+// with "Try again") and every 10 minutes otherwise, and shows either a blocking full-screen dialog for a mandatory update
 // or a dismissible bar at the bottom of the window for an optional one. A release
 // without a verifiable file for this platform only gets the bar, with the release
 // page instead of "Update". The mandatory dialog is a
@@ -17,7 +17,11 @@ import (
 // fixed overlay with the page's other top-level elements made inert. "Later" hides
 // the bar for the session (sessionStorage); an "Update" button in the dashboard
 // header stays while an optional update is available and shows the bar again
-// (or opens the release page without an installable file). Release notes are set with textContent
+// (or opens the release page without an installable file); while an update runs it
+// shows the progress (Downloading x%, Installing…, Restarting…). On Windows, a
+// per-machine copy left in Program Files gets a separate bar with "Remove", which
+// starts its uninstaller, and "Dismiss", which hides the bar for good
+// (localStorage). Release notes are set with textContent
 // only, after stripping common markdown marks; nothing is ever parsed as markup.
 // Strings are in English, or Turkish when the dashboard's saved language (or,
 // without one, navigator.language) starts with "tr".
@@ -41,7 +45,21 @@ const updateScript = `(function (paths, header) {
       checking: "Checking the release…",
       manual: "This release has no installer for your system yet. Download it from the release page.",
       downloading: "Downloading and verifying the update…",
-      installing: "Installing the update. Allow the Windows prompt if asked; MongoRescue closes and restarts on the new version.",
+      downloadingPercent: "Downloading the update… {percent}%",
+      installing: "Installing the update…",
+      installingSetup: "Installing the update. MongoRescue closes and restarts on the new version.",
+      restarting: "Restarting on the new version…",
+      headerDownloading: "Downloading {percent}%",
+      headerDownloadingUnknown: "Downloading…",
+      headerInstalling: "Installing…",
+      headerRestarting: "Restarting…",
+      legacy: "An older copy of MongoRescue is installed in Program Files.",
+      legacyHint: "Your data is shared and stays where it is. Windows asks for administrator rights to remove the copy.",
+      legacyRemove: "Remove",
+      legacyDismiss: "Dismiss",
+      legacyRemoving: "Removing the older copy… Allow the Windows prompt.",
+      legacyStarted: "Removing the older copy…",
+      legacyFailed: "The older copy was not removed: {error}",
       saved: "Saved to your Downloads folder: {file}. Quit MongoRescue and replace it with the new version.",
       showFile: "Show file",
       failed: "Update failed: {error}",
@@ -64,7 +82,21 @@ const updateScript = `(function (paths, header) {
       checking: "Sürüm denetleniyor…",
       manual: "Bu sürümde sisteminiz için henüz kurulum dosyası yok. Sürüm sayfasından indirin.",
       downloading: "Güncelleme indiriliyor ve doğrulanıyor…",
-      installing: "Güncelleme kuruluyor. Windows onay isterse izin verin; MongoRescue kapanıp yeni sürümle yeniden açılacak.",
+      downloadingPercent: "Güncelleme indiriliyor… %{percent}",
+      installing: "Güncelleme kuruluyor…",
+      installingSetup: "Güncelleme kuruluyor. MongoRescue kapanıp yeni sürümle yeniden açılacak.",
+      restarting: "Yeni sürümle yeniden başlatılıyor…",
+      headerDownloading: "İndiriliyor %{percent}",
+      headerDownloadingUnknown: "İndiriliyor…",
+      headerInstalling: "Kuruluyor…",
+      headerRestarting: "Yeniden başlatılıyor…",
+      legacy: "MongoRescue'nun eski bir kopyası Program Files klasöründe kurulu.",
+      legacyHint: "Verileriniz ortaktır ve yerinde kalır. Kopyayı kaldırmak için Windows yönetici izni ister.",
+      legacyRemove: "Kaldır",
+      legacyDismiss: "Kapat",
+      legacyRemoving: "Eski kopya kaldırılıyor… Windows onayına izin verin.",
+      legacyStarted: "Eski kopya kaldırılıyor…",
+      legacyFailed: "Eski kopya kaldırılamadı: {error}",
       saved: "İndirilenler klasörüne kaydedildi: {file}. MongoRescue'dan çıkın ve yeni sürümle değiştirin.",
       showFile: "Dosyayı göster",
       failed: "Güncelleme başarısız: {error}",
@@ -72,9 +104,11 @@ const updateScript = `(function (paths, header) {
       noNotes: "Sürüm notu yok."
     }
   };
-  var POLL_MS = 1500, SLOW_POLL_MS = 600000, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
+  var POLL_MS = 1000, SLOW_POLL_MS = 600000, CHECK_LIMIT_MS = 60000, LATER_KEY = "mongorescue_update_later";
   var HEADER_BUTTON_ID = "mr-update-header", HEADER_RETRY_MS = 1000, HEADER_RETRIES = 30;
+  var LEGACY_KEY = "mongorescue_legacy_dismissed", LEGACY_BAR_ID = "mr-legacy-bar";
   var started = Date.now(), timer = null, ui = null, status = null, headerTimer = null, headerTries = 0;
+  var legacyUI = null, legacySince = 0, legacyHidden = false;
 
   function language() {
     var saved = "";
@@ -106,6 +140,25 @@ const updateScript = `(function (paths, header) {
   function clearLater() {
     try { window.sessionStorage.removeItem(LATER_KEY); } catch (e) { /* nothing stored */ }
   }
+  function legacyDismissed() {
+    try { return window.localStorage.getItem(LEGACY_KEY) === "1"; } catch (e) { return false; }
+  }
+  function dismissLegacy() {
+    try { window.localStorage.setItem(LEGACY_KEY, "1"); } catch (e) { /* hidden for this page only */ }
+    if (legacyUI) { legacyUI.root.remove(); legacyUI = null; }
+    legacyHidden = true;
+  }
+  function busyState(state) {
+    return state === "downloading" || state === "checking" || state === "installing" || state === "restarting";
+  }
+  // legacyBusy follows the start of the uninstaller, and the uninstall itself for a
+  // minute, closely.
+  function legacyBusy(s) {
+    var l = s && s.legacy;
+    if (!l || !l.found) { return false; }
+    if (l.state === "removing") { return true; }
+    return l.state === "started" && legacySince > 0 && Date.now() - legacySince < CHECK_LIMIT_MS;
+  }
 
   function getStatus() {
     return fetch(paths.status, { credentials: "same-origin", cache: "no-store" })
@@ -128,7 +181,7 @@ const updateScript = `(function (paths, header) {
     getStatus().then(function (s) {
       if (s) { render(s); }
       var state = s ? s.state : "";
-      if (state === "downloading" || state === "checking" || state === "installing" || (!s &&Date.now() - started < CHECK_LIMIT_MS)) {
+      if (busyState(state) || legacyBusy(s) || (!s && Date.now() - started < CHECK_LIMIT_MS)) {
         schedule();
       } else if (!timer) {
         timer = setTimeout(poll, SLOW_POLL_MS);
@@ -173,6 +226,74 @@ const updateScript = `(function (paths, header) {
   function openReleasePage() {
     post(paths.release).catch(function () { /* nothing else to try */ });
   }
+  function legacyError(err) {
+    if (legacyUI) {
+      legacyUI.remove.disabled = false;
+      legacyUI.state.textContent = t("legacyFailed", { error: err });
+      legacyUI.state.style.display = "";
+    }
+  }
+  function removeLegacy() {
+    if (legacyUI) { legacyUI.remove.disabled = true; }
+    legacySince = Date.now();
+    post(paths.removeLegacy).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) { legacyError(body.error || r.status); return; }
+        renderLegacy(body);
+        schedule();
+      });
+    }, legacyError);
+  }
+
+  // renderLegacy shows the bar about a per-machine copy in Program Files until it
+  // is removed or the bar is dismissed. It sits above the optional update bar.
+  function renderLegacy(s) {
+    var l = s && s.legacy;
+    if (!l || !l.found || legacyHidden || legacyDismissed()) {
+      if (legacyUI) { legacyUI.root.remove(); legacyUI = null; }
+      return;
+    }
+    if (!legacyUI) {
+      var u = {};
+      u.root = el("div", "position:fixed;left:0;right:0;bottom:0;z-index:2147482000;box-sizing:border-box;padding:10px 16px;" +
+        "display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:space-between;background:var(--surface,#f5f8f6);" +
+        "border-top:1px solid var(--border,#d3dcd6);box-shadow:0 -2px 8px rgba(0,0,0,.12);color:var(--text,#1a211d);font:inherit;");
+      u.root.id = LEGACY_BAR_ID;
+      u.root.setAttribute("role", "region");
+      u.root.setAttribute("aria-label", t("legacy"));
+      var msg = el("div", "display:flex;flex-direction:column;gap:2px;");
+      msg.appendChild(el("strong", "", t("legacy")));
+      msg.appendChild(el("span", "color:var(--muted,#56625b);", t("legacyHint")));
+      u.state = el("span", "min-height:1.2em;");
+      u.state.setAttribute("role", "status");
+      u.state.setAttribute("aria-live", "polite");
+      msg.appendChild(u.state);
+      var actions = el("div", "display:flex;gap:8px;align-items:center;");
+      u.remove = button("btn btn-primary btn-sm", t("legacyRemove"), removeLegacy);
+      actions.appendChild(u.remove);
+      actions.appendChild(button("btn btn-ghost btn-sm", t("legacyDismiss"), dismissLegacy));
+      u.root.appendChild(msg);
+      u.root.appendChild(actions);
+      document.body.appendChild(u.root);
+      legacyUI = u;
+    }
+    var text = "";
+    switch (l.state) {
+    case "removing":
+      text = t("legacyRemoving");
+      break;
+    case "started":
+      text = t("legacyStarted");
+      break;
+    case "error":
+      text = t("legacyFailed", { error: l.error });
+      break;
+    }
+    legacyUI.state.textContent = text;
+    legacyUI.state.style.display = text ? "" : "none";
+    legacyUI.remove.disabled = l.state === "removing" || l.state === "started";
+    legacyUI.root.style.bottom = ui && !ui.mandatory ? ui.root.offsetHeight + "px" : "0";
+  }
 
   // headerButton keeps an "Update" button in the dashboard header while an
   // optional update is available, also after "Later" hid the bar. The header may
@@ -197,10 +318,22 @@ const updateScript = `(function (paths, header) {
       b.id = HEADER_BUTTON_ID;
       actions.insertBefore(b, actions.firstChild);
     }
-    var title = t("headerTitle", { latest: s.latest });
+    var title = t("headerTitle", { latest: s.latest }), label = t("update");
+    switch (s.state) {
+    case "downloading":
+      label = s.percent >= 0 ? t("headerDownloading", { percent: s.percent }) : t("headerDownloadingUnknown");
+      break;
+    case "installing":
+      label = t("headerInstalling");
+      break;
+    case "restarting":
+      label = t("headerRestarting");
+      break;
+    }
+    b.textContent = label;
     b.title = title;
-    b.setAttribute("aria-label", title);
-    b.disabled = s.state === "downloading" || s.state === "checking" || s.state === "installing";
+    b.setAttribute("aria-label", label === t("update") ? title : title + ": " + label);
+    b.disabled = busyState(s.state);
   }
   // headerClick runs the bar's action: it shows the bar again (even after
   // "Later") and installs, or opens the release page when there is nothing to
@@ -343,13 +476,18 @@ const updateScript = `(function (paths, header) {
     if (!ui || ui.mandatory) { return; }
     ui.root.remove();
     ui = null;
+    if (legacyUI) { legacyUI.root.style.bottom = "0"; }
   }
 
   function render(s) {
     status = s;
     headerButton(s);
+    renderUpdate(s);
+    renderLegacy(s);
+  }
+  function renderUpdate(s) {
     if (!s.available) { remove(); return; }
-    var active = s.state === "checking" || s.state === "downloading" || s.state === "ready" || s.state === "installing" || s.state === "error";
+    var active = busyState(s.state) || s.state === "ready" || s.state === "error";
     if (!s.mandatory && !active && later(s.latest)) { remove(); return; }
     if (ui && ui.mandatory !== !!s.mandatory) { remove(); }
     if (!ui) { ui = build(!!s.mandatory); }
@@ -369,14 +507,17 @@ const updateScript = `(function (paths, header) {
       text = t("checking");
       break;
     case "downloading":
-      text = t("downloading");
+      text = s.percent >= 0 ? t("downloadingPercent", { percent: s.percent }) : t("downloading");
       break;
     case "ready":
       text = t("saved", vars);
       label = t("showFile");
       break;
     case "installing":
-      text = t("installing");
+      text = t(s.action === "launch" ? "installingSetup" : "installing");
+      break;
+    case "restarting":
+      text = t("restarting");
       break;
     case "error":
       text = t("failed", vars);
@@ -386,7 +527,7 @@ const updateScript = `(function (paths, header) {
     ui.state.textContent = text;
     ui.state.style.display = text || ui.mandatory ? "" : "none";
     ui.update.textContent = label;
-    ui.update.disabled = s.state === "downloading" || s.state === "checking" || s.state === "installing";
+    ui.update.disabled = busyState(s.state);
     // Without a verifiable file for this platform (yet), only the release page
     // is offered; "Try again" after an error checks for the files again.
     ui.update.hidden = !s.installable && s.state !== "error";
@@ -415,9 +556,10 @@ func UpdateScript() string {
 // object literal.
 func updatePathsJSON() string {
 	b, _ := json.Marshal(struct {
-		Status  string `json:"status"`
-		Install string `json:"install"`
-		Release string `json:"release"`
-	}{UpdatePath, UpdateInstallPath, UpdateReleasePagePath}) // a struct of strings always marshals
+		Status       string `json:"status"`
+		Install      string `json:"install"`
+		Release      string `json:"release"`
+		RemoveLegacy string `json:"removeLegacy"`
+	}{UpdatePath, UpdateInstallPath, UpdateReleasePagePath, UpdateRemoveLegacyPath}) // a struct of strings always marshals
 	return string(b)
 }

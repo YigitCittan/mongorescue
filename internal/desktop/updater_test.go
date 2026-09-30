@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,13 +21,14 @@ import (
 )
 
 // fakeSource is an UpdateSource with canned results. Downloads wait for release
-// when it is not nil.
+// when it is not nil. A .zip asset gets the content zip.
 type fakeSource struct {
 	res      update.Result
 	checkErr error
 	dlErr    error
 	release  chan struct{}
 	badSum   bool
+	zip      []byte
 
 	mu      sync.Mutex
 	dlDirs  []string
@@ -56,9 +58,9 @@ func (f *fakeSource) checkCount() int {
 	return f.checks
 }
 
-// Download writes the asset into dir and returns it with its SHA-256 (a wrong one
-// when badSum is set).
-func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string) (update.File, error) {
+// DownloadAsset writes the asset into dir, reporting the progress in two steps,
+// and returns it with its SHA-256 (a wrong one when badSum is set).
+func (f *fakeSource) DownloadAsset(ctx context.Context, res update.Result, asset update.Asset, dir string, progress update.Progress) (update.File, error) {
 	f.mu.Lock()
 	f.dlDirs = append(f.dlDirs, dir)
 	f.mu.Unlock()
@@ -72,8 +74,16 @@ func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string
 	if f.dlErr != nil {
 		return update.File{}, f.dlErr
 	}
-	p := filepath.Join(dir, res.Asset.Name)
+	p := filepath.Join(dir, asset.Name)
 	content := []byte("installer " + res.Latest.String())
+	if strings.HasSuffix(asset.Name, ".zip") && f.zip != nil {
+		content = f.zip
+	}
+	if progress != nil {
+		progress(0, int64(len(content)))
+		progress(int64(len(content))/2, int64(len(content)))
+		progress(int64(len(content)), int64(len(content)))
+	}
 	if err := os.WriteFile(p, content, 0o600); err != nil {
 		return update.File{}, err
 	}
@@ -87,19 +97,26 @@ func (f *fakeSource) Download(ctx context.Context, res update.Result, dir string
 // recorder records the calls of the injected install functions.
 type recorder struct {
 	dir string // the download directory
+	exe string // the running executable
 
 	mu        sync.Mutex
+	writable  bool // whether exe's directory is writable (in-app update)
 	launched  []string
 	args      [][]string // the arguments of each launch
 	revealed  []string
 	quits     int
 	opened    []string
 	launchErr error
+	started   []string   // the executables started (in-app update)
+	startArgs [][]string // their arguments
+	startErr  error
+	legacy    string // the registered per-machine uninstaller
 }
 
-// newRecorder returns a recorder with a temporary download directory.
+// newRecorder returns a recorder with a temporary download directory and a
+// running executable in a temporary directory.
 func newRecorder(t *testing.T) *recorder {
-	return &recorder{dir: t.TempDir()}
+	return &recorder{dir: t.TempDir(), exe: filepath.Join(t.TempDir(), "MongoRescue.exe")}
 }
 
 func (r *recorder) options(src UpdateSource, version, goos string) UpdaterOptions {
@@ -109,7 +126,27 @@ func (r *recorder) options(src UpdateSource, version, goos string) UpdaterOption
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		GOOS:       goos,
 		Dir:        func(string) (string, error) { return r.dir, nil },
-		InstallDir: func() string { return "" },
+		Executable: func() (string, error) { return r.exe, nil },
+		Writable: func(string) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.writable
+		},
+		StartApp: func(exe string, args []string) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.started = append(r.started, exe)
+			r.startArgs = append(r.startArgs, args)
+			return r.startErr
+		},
+		Args: []string{"-data-dir", `D:\data`},
+		PID:  4242,
+		User: func() string { return `PC\tester` },
+		LegacyUninstaller: func() string {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.legacy
+		},
 		Launch: func(p string, args []string) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -275,8 +312,11 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	if len(r.launched) != 1 || r.quits != 1 || len(r.revealed) != 0 {
 		t.Fatalf("launched %v quits %d revealed %v", r.launched, r.quits, r.revealed)
 	}
-	if got := strings.Join(r.args[0], " "); got != "/S /RELAUNCH" {
-		t.Errorf("installer args = %q; want silent install and relaunch", got)
+	if got := strings.Join(r.args[0], "|"); got != `/S|/RELAUNCH=PC\tester|/WAITPID=4242` {
+		t.Errorf("installer args = %q; want silent install, relaunch as the user and a wait for the app", got)
+	}
+	if len(r.started) != 0 {
+		t.Errorf("started %v; an installer update must not start the app itself", r.started)
 	}
 	if during.State != UpdateInstalling || during.File != filepath.Base(r.launched[0]) || quitsDuring != 0 {
 		t.Errorf("while launching: status %+v quits %d", during, quitsDuring)
@@ -286,56 +326,6 @@ func TestUpdaterLaunchesOnWindows(t *testing.T) {
 	}
 	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
 		t.Errorf("Install while installing = %v; want ErrUpdateBusy", err)
-	}
-}
-
-func TestUpdaterInstallsIntoCurrentInstallDir(t *testing.T) {
-	src := &fakeSource{res: available(false)}
-	r := newRecorder(t)
-	opts := r.options(src, "1.0.0", "windows")
-	dir := `D:\My Apps\Mongo Rescue`
-	opts.InstallDir = func() string { return dir }
-	u, _ := started(t, opts)
-	if err := u.Install(); err != nil {
-		t.Fatal(err)
-	}
-	u.ops.Wait()
-	want := []string{"/S", "/RELAUNCH", "/D=" + dir}
-	if len(r.args) != 1 || strings.Join(r.args[0], "|") != strings.Join(want, "|") {
-		t.Fatalf("installer args = %q; want %q", r.args, want)
-	}
-}
-
-func TestInstallDirOf(t *testing.T) {
-	installed := filepath.Join(t.TempDir(), "Program Files", "MongoRescue")
-	portable := filepath.Join(t.TempDir(), "portable copy")
-	for _, d := range []string{installed, portable} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(d, "MongoRescue.exe"), []byte("exe"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(installed, UninstallerName), []byte("uninstaller"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	want, err := filepath.EvalSymlinks(installed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := installDirOf(filepath.Join(installed, "MongoRescue.exe")); got != want {
-		t.Errorf("installed copy: %q; want %q", got, want)
-	}
-	if got := installDirOf(filepath.Join(portable, "MongoRescue.exe")); got != "" {
-		t.Errorf("portable copy: %q; want \"\"", got)
-	}
-	link := filepath.Join(portable, "link.exe")
-	if err := os.Symlink(filepath.Join(installed, "MongoRescue.exe"), link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	if got := installDirOf(link); got != want {
-		t.Errorf("symlink to the installed copy: %q; want %q", got, want)
 	}
 }
 
@@ -366,6 +356,331 @@ func TestUpdaterKeepsRunningWhenInstallerDoesNotStart(t *testing.T) {
 	u.ops.Wait()
 	if s := u.Status(); s.State != UpdateInstalling || len(r.launched) != 2 || r.quits != 1 {
 		t.Fatalf("after retry: status %+v launched %v quits %d", s, r.launched, r.quits)
+	}
+}
+
+// withPortable adds the Windows portable archive to res.
+func withPortable(res update.Result) update.Result {
+	res.Portable = update.Asset{Name: "MongoRescue-desktop_" + res.Latest.String() + "_windows_amd64_portable.zip", URL: "https://github.com/p"}
+	return res
+}
+
+// inAppRecorder returns a recorder whose executable is an installed copy of
+// version 1 in a writable directory.
+func inAppRecorder(t *testing.T) *recorder {
+	r := newRecorder(t)
+	r.exe = installCopy(t, "1")
+	r.writable = true
+	return r
+}
+
+func TestUpdaterSwapsInPlace(t *testing.T) {
+	src := &fakeSource{res: withPortable(available(true)), zip: portableZip(t, "2")}
+	r := inAppRecorder(t)
+	opts := r.options(src, "1.0.0", "windows")
+	var u *Updater
+	var atStart UpdateStatus
+	quitsAtStart := -1
+	src.release = make(chan struct{})
+	start := opts.StartApp
+	opts.StartApp = func(exe string, args []string) error {
+		atStart = u.Status()
+		r.mu.Lock()
+		quitsAtStart = r.quits
+		r.mu.Unlock()
+		return start(exe, args)
+	}
+	u, _ = started(t, opts)
+	if s := u.Status(); s.Action != ActionSwap || !s.Mandatory {
+		t.Fatalf("status = %+v; want ActionSwap", s)
+	}
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	if s := u.Status(); s.State != UpdateDownloading || s.Percent != 0 {
+		t.Errorf("status = %+v", s)
+	}
+	close(src.release)
+	u.ops.Wait()
+
+	if len(r.started) != 1 || r.started[0] != r.exe || r.quits != 1 || len(r.launched) != 0 {
+		t.Fatalf("started %v quits %d launched %v", r.started, r.quits, r.launched)
+	}
+	if got := strings.Join(r.startArgs[0], "|"); got != `-data-dir|D:\data|--after-update=4242` {
+		t.Errorf("relaunch args = %q", got)
+	}
+	if atStart.State != UpdateRestarting || quitsAtStart != 0 {
+		t.Errorf("when starting the new version: status %+v quits %d", atStart, quitsAtStart)
+	}
+	if s := u.Status(); s.State != UpdateRestarting || s.Error != "" || s.Percent != 100 {
+		t.Errorf("status = %+v", s)
+	}
+	assertFiles(t, filepath.Dir(r.exe), map[string]string{
+		"MongoRescue.exe":            "exe 2",
+		"MongoRescue.exe.old":        "exe 1",
+		"tools/mongodump.exe":        "dump 2",
+		"tools/mongorestore.exe":     "restore 2",
+		"tools/LICENSE.md":           "license",
+		"tools/THIRD-PARTY-NOTICES":  "notices",
+		"tools.old/mongodump.exe":    "dump 1",
+		"tools.old/mongorestore.exe": "restore 1",
+	})
+	if err := u.Install(); !errors.Is(err, ErrUpdateBusy) {
+		t.Errorf("Install while restarting = %v; want ErrUpdateBusy", err)
+	}
+}
+
+func TestUpdaterReportsDownloadProgress(t *testing.T) {
+	src := &fakeSource{res: withPortable(available(false)), zip: portableZip(t, "2")}
+	r := inAppRecorder(t)
+	opts := r.options(src, "1.0.0", "windows")
+	var u *Updater
+	var seen []int
+	src.release = make(chan struct{})
+	u, _ = started(t, opts)
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	close(src.release)
+	u.ops.Wait()
+	u.progress(50, 200)
+	seen = append(seen, u.Status().Percent)
+	u.progress(10, 0)
+	seen = append(seen, u.Status().Percent)
+	u.progress(300, 200)
+	seen = append(seen, u.Status().Percent)
+	if fmt.Sprint(seen) != "[25 -1 100]" {
+		t.Errorf("percent = %v", seen)
+	}
+}
+
+func TestUpdaterSwapRollsBackWhenTheNewVersionDoesNotStart(t *testing.T) {
+	src := &fakeSource{res: withPortable(available(true)), zip: portableZip(t, "2")}
+	r := inAppRecorder(t)
+	r.startErr = errors.New("blocked by policy")
+	u, _ := started(t, r.options(src, "1.0.0", "windows"))
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	s := u.Status()
+	if s.State != UpdateError || !strings.Contains(s.Error, "blocked by policy") || r.quits != 0 {
+		t.Fatalf("status %+v quits %d; the app must keep running", s, r.quits)
+	}
+	// The running version is back in place and the staging directory is gone.
+	assertFiles(t, filepath.Dir(r.exe), map[string]string{
+		"MongoRescue.exe":        "exe 1",
+		"tools/mongodump.exe":    "dump 1",
+		"tools/mongorestore.exe": "restore 1",
+	})
+
+	// "Try again" works once the new version starts.
+	r.mu.Lock()
+	r.startErr = nil
+	r.mu.Unlock()
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.State != UpdateRestarting || r.quits != 1 {
+		t.Fatalf("after retry: %+v quits %d", s, r.quits)
+	}
+}
+
+func TestUpdaterSwapFailures(t *testing.T) {
+	cases := map[string]func(*fakeSource, *UpdaterOptions){
+		"checksum mismatch": func(src *fakeSource, _ *UpdaterOptions) { src.badSum = true },
+		"zip slip": func(src *fakeSource, _ *UpdaterOptions) {
+			src.zip = zipBytes(t, zipEntry{name: "MongoRescue.exe", body: "exe 2"}, zipEntry{name: "../evil.exe", body: "x"})
+		},
+		"rename fails": func(_ *fakeSource, opts *UpdaterOptions) {
+			calls := 0
+			ops := failingOps(2, &calls)
+			opts.fs = &ops
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := &fakeSource{res: withPortable(available(false)), zip: portableZip(t, "2")}
+			r := inAppRecorder(t)
+			opts := r.options(src, "1.0.0", "windows")
+			setup(src, &opts)
+			u, _ := started(t, opts)
+			if err := u.Install(); err != nil {
+				t.Fatal(err)
+			}
+			u.ops.Wait()
+			if s := u.Status(); s.State != UpdateError || s.Error == "" {
+				t.Fatalf("status = %+v", s)
+			}
+			if len(r.started) != 0 || r.quits != 0 || len(r.launched) != 0 {
+				t.Fatalf("started %v quits %d launched %v", r.started, r.quits, r.launched)
+			}
+			assertFiles(t, filepath.Dir(r.exe), map[string]string{
+				"MongoRescue.exe":        "exe 1",
+				"tools/mongodump.exe":    "dump 1",
+				"tools/mongorestore.exe": "restore 1",
+			})
+			if _, err := os.Stat(filepath.Join(filepath.Dir(filepath.Dir(r.exe)), "evil.exe")); err == nil {
+				t.Error("an archive entry was written outside the staging directory")
+			}
+		})
+	}
+}
+
+func TestUpdaterChoosesSwapOrInstaller(t *testing.T) {
+	cases := []struct {
+		name     string
+		writable bool
+		portable bool
+		want     string
+	}{
+		{"writable per-user or portable copy", true, true, ActionSwap},
+		{"copy in Program Files", false, true, ActionLaunch},
+		{"release without a portable archive", true, false, ActionLaunch},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := available(false)
+			if c.portable {
+				res = withPortable(res)
+			}
+			src := &fakeSource{res: res, zip: portableZip(t, "2")}
+			r := inAppRecorder(t)
+			r.writable = c.writable
+			var probed []string
+			opts := r.options(src, "1.0.0", "windows")
+			writable := opts.Writable
+			opts.Writable = func(dir string) bool {
+				probed = append(probed, dir)
+				return writable(dir)
+			}
+			u, _ := started(t, opts)
+			if err := u.Install(); err != nil {
+				t.Fatal(err)
+			}
+			u.ops.Wait()
+			s := u.Status()
+			if s.Action != c.want || len(probed) == 0 || probed[0] != filepath.Dir(r.exe) {
+				t.Fatalf("action %q probed %v; want %q", s.Action, probed, c.want)
+			}
+			if c.want == ActionSwap && (len(r.started) != 1 || len(r.launched) != 0) {
+				t.Errorf("started %v launched %v", r.started, r.launched)
+			}
+			if c.want == ActionLaunch && (len(r.started) != 0 || len(r.launched) != 1 || s.State != UpdateInstalling) {
+				t.Errorf("started %v launched %v status %+v", r.started, r.launched, s)
+			}
+		})
+	}
+	// macOS and Linux keep revealing the archive.
+	r := inAppRecorder(t)
+	u, _ := started(t, r.options(&fakeSource{res: withPortable(available(false))}, "1.0.0", "linux"))
+	if err := u.Install(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.Action != ActionReveal || s.State != UpdateReady || len(r.started) != 0 {
+		t.Errorf("linux: %+v started %v", s, r.started)
+	}
+}
+
+func TestUpdaterLegacyCopy(t *testing.T) {
+	src := &fakeSource{res: available(false)}
+	r := newRecorder(t)
+	r.exe = `C:\Users\a\AppData\Local\Programs\MongoRescue\MongoRescue.exe`
+	u, _ := started(t, r.options(src, "1.0.0", "windows"))
+	if s := u.Status(); s.Legacy.Found {
+		t.Fatalf("legacy = %+v without a registered copy", s.Legacy)
+	}
+	if err := u.RemoveLegacy(); !errors.Is(err, ErrNoLegacyCopy) {
+		t.Errorf("RemoveLegacy = %v", err)
+	}
+
+	uninstaller := `C:\Program Files\MongoRescue\MongoRescue\uninstall.exe`
+	r.mu.Lock()
+	r.legacy = uninstaller
+	r.launchErr = ErrInstallerCancelled
+	r.mu.Unlock()
+	if s := u.Status(); !s.Legacy.Found || s.Legacy.Dir != `C:\Program Files\MongoRescue\MongoRescue` || s.Legacy.State != LegacyIdle {
+		t.Fatalf("legacy = %+v", s.Legacy)
+	}
+	if err := u.RemoveLegacy(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.Legacy.State != LegacyError || !strings.Contains(s.Legacy.Error, "cancelled") {
+		t.Fatalf("legacy = %+v", s.Legacy)
+	}
+	r.mu.Lock()
+	r.launchErr = nil
+	r.mu.Unlock()
+	if err := u.RemoveLegacy(); err != nil {
+		t.Fatal(err)
+	}
+	u.ops.Wait()
+	if s := u.Status(); s.Legacy.State != LegacyStarted {
+		t.Fatalf("legacy = %+v", s.Legacy)
+	}
+	if len(r.launched) != 2 || r.launched[1] != uninstaller || strings.Join(r.args[1], " ") != "/S" {
+		t.Fatalf("launched %v args %v", r.launched, r.args)
+	}
+	// Once the uninstaller is done, the copy is gone.
+	r.mu.Lock()
+	r.legacy = ""
+	r.mu.Unlock()
+	if s := u.Status(); s.Legacy.Found || s.Legacy.State != LegacyIdle {
+		t.Errorf("legacy = %+v", s.Legacy)
+	}
+	if r.quits != 0 || len(src.dlDirs) != 0 {
+		t.Error("removing the older copy touched the update")
+	}
+
+	// The running copy is never offered for removal, nor on other platforms.
+	r2 := newRecorder(t)
+	r2.exe = `c:\program files\mongorescue\mongorescue\MongoRescue.exe`
+	r2.legacy = uninstaller
+	u2, _ := started(t, r2.options(src, "1.0.0", "windows"))
+	if s := u2.Status(); s.Legacy.Found {
+		t.Errorf("the running per-machine copy is reported as legacy: %+v", s.Legacy)
+	}
+	r3 := newRecorder(t)
+	r3.legacy = uninstaller
+	u3, _ := started(t, r3.options(src, "1.0.0", "darwin"))
+	if s := u3.Status(); s.Legacy.Found {
+		t.Errorf("legacy on macOS: %+v", s.Legacy)
+	}
+}
+
+func TestUpdaterHandlerRemoveLegacy(t *testing.T) {
+	r := newRecorder(t)
+	r.legacy = `C:\Program Files\MongoRescue\MongoRescue\uninstall.exe`
+	u, _ := started(t, r.options(&fakeSource{}, "1.0.0", "windows"))
+	h := u.Handler(http.NotFoundHandler())
+	if rec := serveUpdate(h, http.MethodPost, UpdateRemoveLegacyPath, map[string]string{"Origin": "https://evil.example", UpdateHeader: "1"}); rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin = %d", rec.Code)
+	}
+	if rec := serveUpdate(h, http.MethodPost, UpdateRemoveLegacyPath, nil); rec.Code != http.StatusForbidden {
+		t.Errorf("without header = %d", rec.Code)
+	}
+	if rec := serveUpdate(h, http.MethodGet, UpdateRemoveLegacyPath, nil); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET = %d", rec.Code)
+	}
+	if len(r.launched) != 0 {
+		t.Fatal("a refused request started the uninstaller")
+	}
+	rec := serveUpdate(h, http.MethodPost, UpdateRemoveLegacyPath, map[string]string{UpdateHeader: "1", "Origin": "http://wails.localhost"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("remove = %d %s", rec.Code, rec.Body)
+	}
+	u.ops.Wait()
+	if len(r.launched) != 1 {
+		t.Errorf("launched %v", r.launched)
+	}
+	r.mu.Lock()
+	r.legacy = ""
+	r.mu.Unlock()
+	if rec := serveUpdate(h, http.MethodPost, UpdateRemoveLegacyPath, map[string]string{UpdateHeader: "1", "Origin": "http://wails.localhost"}); rec.Code != http.StatusConflict {
+		t.Errorf("remove without a copy = %d", rec.Code)
 	}
 }
 
@@ -697,7 +1012,9 @@ func TestRevealCommand(t *testing.T) {
 
 func TestUpdateScript(t *testing.T) {
 	s := UpdateScript()
-	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions", `case "installing":`, `state === "installing"`, "restarts on the new version", "yeni sürümle yeniden açılacak"} {
+	for _, want := range []string{`"status":"/desktop/update"`, `"install":"/desktop/update/install"`, `"release":"/desktop/update/release-page"`, `"X-MongoRescue-Desktop"`, "mongorescue_lang", "Update required", "Güncelleme gerekli", "mr-update-header", "Update to v{latest}", ".topbar-actions", `case "installing":`, `state === "installing"`, "restarts on the new version", "yeni sürümle yeniden açılacak",
+		`"removeLegacy":"/desktop/update/remove-legacy"`, `case "restarting":`, "Downloading {percent}%", "İndiriliyor %{percent}", "Restarting…", "Yeniden başlatılıyor…",
+		"mr-legacy-bar", "mongorescue_legacy_dismissed", "installed in Program Files", "Program Files klasöründe kurulu"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}

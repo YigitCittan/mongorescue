@@ -5,7 +5,9 @@
 // listener. Build it with "make desktop" (the desktop build tag and CGO are required).
 //
 // Flags: -data-dir (default <user config dir>/MongoRescue/data) and -log-level. Logs go
-// to <data dir>/desktop.log.
+// to <data dir>/desktop.log. --after-update=<pid> is set by the in-app update on
+// Windows when it starts the new version: the app then waits for the old process to
+// exit before it opens the data directory.
 //
 // At startup the app checks GitHub for a newer release (see internal/update): a higher
 // MAJOR version blocks the window until the user updates, MINOR and PATCH updates are
@@ -34,7 +36,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/yigitcittan/mongorescue/internal/app"
+	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/desktop"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // Version metadata populated at build time via -ldflags. A Version that is not a
@@ -52,6 +56,10 @@ const singleInstanceID = "io.github.yigitcittan.mongorescue.desktop"
 // the app stops its runs itself and exits.
 const quitGrace = 10 * time.Second
 
+// lockRetry is the interval at which a version started after an update tries again
+// to lock the data directory while the old process still holds it.
+const lockRetry = 250 * time.Millisecond
+
 // appIcon is the MongoRescue logo. wails build turns it into the macOS and Windows
 // icons; on Linux the window icon is set from it at run time.
 //
@@ -68,6 +76,15 @@ func main() {
 // run builds the application, runs the window until it is closed and returns the
 // process exit code.
 func run(args []string, getenv func(string) string, stderr io.Writer) int {
+	// After an in-app update the old process is still shutting down: wait for it to
+	// exit (it holds the data directory lock and the single instance lock) before
+	// the log file is truncated and the data directory opened.
+	oldPID, args := desktop.ParseAfterUpdate(args)
+	deadline := time.Now().Add(desktop.AfterUpdateWait)
+	oldExited := true
+	if oldPID > 0 {
+		oldExited = desktop.WaitForProcessExit(oldPID, desktop.AfterUpdateWait)
+	}
 	cfg, err := desktop.ParseConfig(args, getenv, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -81,8 +98,12 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	defer func() { _ = logFile.Close() }()
 	slog.SetDefault(logger)
 	logger.Info("starting mongorescue desktop", slog.String("version", Version), slog.String("data_dir", cfg.DataDir))
+	if oldPID > 0 {
+		logger.Info("started after an update", slog.Int("old_pid", oldPID), slog.Bool("old_exited", oldExited))
+	}
+	desktop.RemoveUpdateLeftovers(logger)
 
-	application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv))
+	application, err := newApp(cfg, logger, getenv, oldPID > 0, deadline)
 	if err != nil {
 		logger.Error("application bootstrap failed", slog.Any("error", err))
 		return 1
@@ -94,9 +115,19 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	d.updater = desktop.NewUpdater(desktop.UpdaterOptions{
 		Version: Version,
 		Logger:  logger,
+		Args:    args,
 		Quit:    d.quit,
 		OpenURL: d.openURL,
 	})
+	// A new version whose old process has not exited in time must not hand its
+	// start over to it as a second instance.
+	singleInstance := &options.SingleInstanceLock{
+		UniqueId:               singleInstanceID,
+		OnSecondInstanceLaunch: d.secondInstance,
+	}
+	if !oldExited {
+		singleInstance = nil
+	}
 
 	// The signal watcher lives until run returns: done is closed after the shutdown.
 	sigCh := make(chan os.Signal, 2)
@@ -116,14 +147,11 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		MinHeight: 640,
 		// The handler serves the dashboard files as well as the API: no Assets FS.
 		// The update endpoints are answered before the application handler.
-		AssetServer: &assetserver.Options{Handler: d.updater.Handler(desktop.Handler(application.Handler()))},
-		OnStartup:   d.startup,
-		OnDomReady:  d.domReady,
-		OnShutdown:  d.shutdown,
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               singleInstanceID,
-			OnSecondInstanceLaunch: d.secondInstance,
-		},
+		AssetServer:        &assetserver.Options{Handler: d.updater.Handler(desktop.Handler(application.Handler()))},
+		OnStartup:          d.startup,
+		OnDomReady:         d.domReady,
+		OnShutdown:         d.shutdown,
+		SingleInstanceLock: singleInstance,
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{Title: "MongoRescue", Message: "MongoDB backup and restore\nVersion " + Version, Icon: appIcon},
 		},
@@ -150,6 +178,18 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	}
 	logger.Info("mongorescue desktop shutdown complete")
 	return 0
+}
+
+// newApp builds the application. After an update (afterUpdate) it tries again
+// until deadline while the data directory is still locked by the old process.
+func newApp(cfg *config.Config, logger *slog.Logger, getenv func(string) string, afterUpdate bool, deadline time.Time) (*app.App, error) {
+	for {
+		application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv))
+		if err == nil || !afterUpdate || !errors.Is(err, store.ErrDataDirLocked) || time.Now().After(deadline) {
+			return application, err
+		}
+		time.Sleep(lockRetry)
+	}
 }
 
 // desktopApp binds the application lifecycle to the Wails window.
@@ -198,12 +238,12 @@ func (d *desktopApp) startup(ctx context.Context) {
 }
 
 // quit asks the window to close without waiting for it: the updater calls it after
-// starting the installer, and the shutdown waits for the updater. The window's
-// shutdown stops the runs and releases the database and the data directory lock;
-// the installer waits for MongoRescue.exe to exit before it replaces it, then starts
-// the new version. When the window has not closed within quitGrace, the app stops
-// the runs and releases the database itself and exits, so the installer is not left
-// waiting.
+// starting the new version (in-app update) or the installer, and the shutdown waits
+// for the updater. The window's shutdown stops the runs and releases the database
+// and the data directory lock; the new version, or the installer, waits for this
+// process to exit. When the window has not closed within quitGrace, the app stops
+// the runs and releases the database itself and exits, so the new version is not
+// left waiting.
 func (d *desktopApp) quit() {
 	ctx := d.context()
 	if ctx == nil {
