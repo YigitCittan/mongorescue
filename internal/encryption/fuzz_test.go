@@ -133,8 +133,8 @@ func FuzzRoundTrip(f *testing.F) {
 		if err != nil || !bytes.Equal(got, plaintext) {
 			t.Fatalf("round trip of %d bytes: err = %v, equal = %v", len(plaintext), err, bytes.Equal(got, plaintext))
 		}
-		if _, err := decrypt(fuzzDecryptor(t, otherIdentity), ciphertext); !errors.Is(err, ErrDecryptionFailed) {
-			t.Fatalf("wrong identity: err = %v; want ErrDecryptionFailed", err)
+		if _, wrongErr := decrypt(fuzzDecryptor(t, otherIdentity), ciphertext); !errors.Is(wrongErr, ErrDecryptionFailed) {
+			t.Fatalf("wrong identity: err = %v; want ErrDecryptionFailed", wrongErr)
 		}
 
 		if len(plaintext) <= ageChunkSize {

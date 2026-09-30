@@ -156,14 +156,14 @@ func parseSingleQuoted(doc string) (string, error) {
 	}
 	var b strings.Builder
 	for i := 0; i < len(body); i++ {
-		switch c := body[i]; {
-		case c == '\'':
+		switch c := body[i]; c {
+		case '\'':
 			if i+1 >= len(body) || body[i+1] != '\'' {
 				return "", errors.New("unescaped quote inside the scalar")
 			}
 			b.WriteByte('\'')
 			i++
-		case c == '\n' || c == '\r':
+		case '\n', '\r':
 			return "", errors.New("line break inside the scalar")
 		default:
 			b.WriteByte(c)
