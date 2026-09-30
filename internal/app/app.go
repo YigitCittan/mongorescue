@@ -259,6 +259,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		restore.WithLogger(logger),
 		restore.WithToolsDir(cfg.ToolsDir),
 		restore.WithStorageResolver(targetSvc.Storage),
+		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
 			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std()}

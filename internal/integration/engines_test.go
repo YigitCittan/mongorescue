@@ -52,7 +52,8 @@ func newBackupEngine(env *mongoEnv, st storage.Storage, opts ...backup.Option) *
 
 // newRestoreEngine returns the production restore engine for st.
 func newRestoreEngine(env *mongoEnv, st storage.Storage, opts ...restore.Option) *restore.Engine {
-	return restore.NewEngine(st, env.URI, append([]restore.Option{restore.WithLogger(discardLogger)}, opts...)...)
+	base := []restore.Option{restore.WithLogger(discardLogger), restore.WithValidationBypassCheck(mongoconn.New().CanBypassDocumentValidation)}
+	return restore.NewEngine(st, env.URI, append(base, opts...)...)
 }
 
 // mustBackup runs a backup that must succeed and deletes its artifact on cleanup.

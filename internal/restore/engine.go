@@ -58,6 +58,7 @@ type Engine struct {
 	decryptor    *encryption.Decryptor
 	verifyPolicy models.VerifyPolicy
 	timeout      time.Duration
+	canBypass    BypassCheck
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
@@ -174,6 +175,36 @@ func WithTimeout(d time.Duration) Option {
 	return func(e *Engine) {
 		e.timeout = d
 	}
+}
+
+// BypassCheck reports whether the user of the connection string uri may bypass
+// document validation on every collection of database.
+type BypassCheck func(ctx context.Context, uri, database string) (bool, error)
+
+// WithValidationBypassCheck makes restores pass --bypassDocumentValidation when fn
+// reports that the user holds the privilege (e.g. the built-in restore role), so
+// documents that predate a collection's validator are restored too. Without it, or
+// when the user lacks the privilege, the server validates restored documents and a
+// restore with rejected documents fails with ErrDocumentsFailed.
+func WithValidationBypassCheck(fn BypassCheck) Option {
+	return func(e *Engine) {
+		e.canBypass = fn
+	}
+}
+
+// bypassValidation reports whether the restore into database may bypass document
+// validation (see WithValidationBypassCheck).
+func (e *Engine) bypassValidation(ctx context.Context, uri, database string) bool {
+	if e.canBypass == nil {
+		return false
+	}
+	ok, err := e.canBypass(ctx, uri, database)
+	if err != nil {
+		e.logger.Warn("could not check the bypassDocumentValidation privilege; documents are validated",
+			slog.String("target_db", database), slog.String("error", redact.Text(err.Error())))
+		return false
+	}
+	return ok
 }
 
 // CanDecrypt reports whether the engine holds key material for encrypted backups.
@@ -403,6 +434,12 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	defer cleanupConfig()
 
 	args := e.buildRestoreArgs(configArg, sourceRecord.Database, targetDB, req, isGzip)
+	if e.bypassValidation(ctx, mongoURI, targetDB) {
+		// A backup is restored as it was taken: documents that predate a collection's
+		// validator (or were written with validationAction "warn") would otherwise be
+		// rejected by it and missing from the target.
+		args = append(args, "--bypassDocumentValidation")
+	}
 
 	stderr, wait, err := e.runner(ctx, "mongorestore", input, args...)
 	if err != nil {
@@ -456,7 +493,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if failed, ok := failedDocuments(string(stderrLogs)); ok && failed > 0 {
 		err := fmt.Errorf("%w: %d document(s) failed to restore", ErrDocumentsFailed, failed)
 		return failRestore(record, err,
-			fmt.Sprintf("%v (e.g. duplicate keys in a target that already held data)%s; mongorestore output: %s",
+			fmt.Sprintf("%v (duplicate keys in a target that already held data, or documents rejected by a validator when the user lacks the bypassDocumentValidation privilege of the restore role)%s; mongorestore output: %s",
 				err, partialNote, stderrTail(string(stderrLogs))))
 	}
 
@@ -505,11 +542,6 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 	if req.DropTarget {
 		args = append(args, "--drop")
 	}
-
-	// A backup is restored as it was taken: documents that predate a collection's
-	// validator (or were written with validationAction "warn") would otherwise be
-	// rejected by it and missing from the target.
-	args = append(args, "--bypassDocumentValidation")
 
 	// Handle namespace renaming (e.g. restoring to safe clone or custom database)
 	if targetDB != "" && targetDB != sourceDB {

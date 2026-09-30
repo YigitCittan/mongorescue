@@ -112,15 +112,39 @@ func TestFailedDocuments(t *testing.T) {
 	}
 }
 
-func TestRestoreArgsBypassDocumentValidation(t *testing.T) {
-	store := storage.NewMockStorage()
-	src := plainBackup(t, store, []byte("archive-bytes"))
-	runner := &capturingRunner{}
-	engine := NewEngine(store, "mongodb://localhost:27017", WithRunner(runner.run))
-	if _, err := engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID}, src); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(runner.args, "--bypassDocumentValidation") {
-		t.Fatalf("args %v must bypass document validation", runner.args)
+func TestRestoreBypassesValidationOnlyWithThePrivilege(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check BypassCheck
+		want  bool
+	}{
+		{"no check", nil, false},
+		{"privilege held", func(context.Context, string, string) (bool, error) { return true, nil }, true},
+		{"privilege missing", func(context.Context, string, string) (bool, error) { return false, nil }, false},
+		{"check failed", func(context.Context, string, string) (bool, error) { return true, errors.New("unreachable") }, false},
+	} {
+		store := storage.NewMockStorage()
+		src := plainBackup(t, store, []byte("archive-bytes"))
+		runner := &capturingRunner{}
+		var checkedDB string
+		opts := []Option{WithRunner(runner.run)}
+		if tc.check != nil {
+			check := tc.check
+			opts = append(opts, WithValidationBypassCheck(func(ctx context.Context, uri, db string) (bool, error) {
+				checkedDB = db
+				return check(ctx, uri, db)
+			}))
+		}
+		engine := NewEngine(store, "mongodb://localhost:27017", opts...)
+		record, err := engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID}, src)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := slices.Contains(runner.args, "--bypassDocumentValidation"); got != tc.want {
+			t.Errorf("%s: --bypassDocumentValidation passed = %v; want %v", tc.name, got, tc.want)
+		}
+		if tc.check != nil && checkedDB != record.TargetDatabase {
+			t.Errorf("%s: privilege checked on %q; want the target %q", tc.name, checkedDB, record.TargetDatabase)
+		}
 	}
 }
