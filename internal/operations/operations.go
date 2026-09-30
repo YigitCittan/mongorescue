@@ -25,6 +25,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -486,8 +487,8 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = target.ID, target.Name, target.URI
 
 	// Key material is checked synchronously so the client learns about it immediately.
-	if source.Encrypted && !s.cfg.Restore.CanDecrypt() {
-		return nil, ErrKeyRequired
+	if (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {
+		return nil, fmt.Errorf("%w: backup %s is encrypted; %s", ErrKeyRequired, source.ID, restore.KeyRequiredHint)
 	}
 
 	record, err := s.cfg.Restore.Prepare(req, source)

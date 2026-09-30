@@ -3,6 +3,7 @@
 package restore
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -266,9 +267,13 @@ func (e *Engine) resolveURI(req models.RestoreRequest) string {
 // req and sourceRecord), updating and returning it.
 //
 // Encrypted backups are decrypted on the fly (storage -> age decrypt -> mongorestore
-// stdin). Missing key material yields encryption.ErrEncryptionKeyRequired and a key
-// that does not match, or a corrupted ciphertext, yields encryption.ErrDecryptionFailed;
-// header-level failures are detected before mongorestore is started.
+// stdin). A backup is treated as encrypted when its record says so, its storage key
+// ends in encryption.FileExtension or its content starts with the age header; gzip
+// compression is taken from the archive signature, falling back to the ".gz" key
+// suffix. Missing key material yields encryption.ErrEncryptionKeyRequired (with
+// KeyRequiredHint) and a key that does not match, or a corrupted ciphertext, yields
+// encryption.ErrDecryptionFailed; failures in the header or the first chunk are
+// detected before mongorestore is started.
 //
 // When verification applies (see models.RestoreRequest.ShouldVerify), a first pass
 // streams the artifact through SHA-256 (and full age authentication) into io.Discard;
@@ -309,9 +314,12 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		slog.Bool("encrypted", sourceRecord.Encrypted),
 	)
 
-	if sourceRecord.Encrypted && e.decryptor == nil {
-		return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, encryption.ErrEncryptionKeyRequired),
-			"backup is encrypted but no decryption identity or passphrase is configured")
+	// A record written without its encryption flag, but with an .age key, is treated as
+	// encrypted as well: ciphertext is never handed to mongorestore as plaintext.
+	encrypted := sourceRecord.Encrypted || keyEncrypted(sourceRecord.StorageKey)
+	if encrypted && e.decryptor == nil {
+		return failRestore(record, fmt.Errorf("restore %s: %w: %s", req.BackupID, encryption.ErrEncryptionKeyRequired, KeyRequiredHint),
+			"backup is encrypted but no decryption key is configured: "+KeyRequiredHint)
 	}
 
 	if req.ShouldVerify(e.verifyPolicy) {
@@ -335,15 +343,38 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 	defer stream.Close()
 
-	var archive io.Reader = stream
-	if sourceRecord.Encrypted {
-		decrypted, decErr := e.decryptor.Decrypt(stream)
+	stored := bufio.NewReader(stream)
+	if !encrypted {
+		if encrypted, err = e.detectUnrecordedEncryption(stored, sourceRecord); err != nil {
+			return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error())
+		}
+	}
+
+	var archive io.Reader = stored
+	if encrypted {
+		decrypted, decErr := e.decryptor.Decrypt(stored)
 		if decErr != nil {
 			return failRestore(record, fmt.Errorf("decrypt backup stream: %w", decErr), decErr.Error())
 		}
 		archive = decrypted
 	}
-	input := &errTrackingReader{r: archive}
+	// Peeking decrypts and authenticates the first chunk, so a corrupted start fails
+	// here, before mongorestore could apply anything.
+	plain := bufio.NewReader(archive)
+	isGzip, err := sniffGzip(plain, sourceRecord.StorageKey)
+	if err != nil {
+		stage := "read backup stream"
+		if errors.Is(err, encryption.ErrDecryptionFailed) {
+			stage = "decrypt backup stream"
+		}
+		return failRestore(record, fmt.Errorf("%s: %w", stage, err),
+			fmt.Sprintf("%s (target untouched): %v", stage, err))
+	}
+	if isGzip != keyGzip(sourceRecord.StorageKey) {
+		e.logger.Warn("backup compression differs from its storage key; using the archive content",
+			slog.String("backup_id", req.BackupID), slog.Bool("gzip", isGzip))
+	}
+	input := &errTrackingReader{r: plain}
 
 	// Pass the URI through a private config file so credentials never appear in argv.
 	// Connection timeouts are defaulted there; the augmented URI is never logged.
@@ -354,12 +385,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 	defer cleanupConfig()
 
-	// Build mongorestore arguments
-	archiveKey := sourceRecord.StorageKey
-	if sourceRecord.Encrypted {
-		archiveKey = strings.TrimSuffix(archiveKey, encryption.FileExtension)
-	}
-	args := e.buildRestoreArgs(configArg, sourceRecord.Database, targetDB, req, strings.HasSuffix(archiveKey, ".gz"))
+	args := e.buildRestoreArgs(configArg, sourceRecord.Database, targetDB, req, isGzip)
 
 	stderr, wait, err := e.runner(ctx, "mongorestore", input, args...)
 	if err != nil {
@@ -487,9 +513,16 @@ func (e *Engine) verifyArtifact(ctx context.Context, rec *models.BackupRecord) e
 	defer stream.Close()
 
 	h := sha256.New()
-	stored := io.TeeReader(&ctxReader{ctx: ctx, r: stream}, h)
+	// Every stored byte passes the hash exactly once; the buffer only allows peeking.
+	stored := bufio.NewReader(io.TeeReader(&ctxReader{ctx: ctx, r: stream}, h))
 
-	if rec.Encrypted {
+	encrypted := rec.Encrypted || keyEncrypted(rec.StorageKey)
+	if !encrypted {
+		if encrypted, err = e.detectUnrecordedEncryption(stored, rec); err != nil {
+			return err
+		}
+	}
+	if encrypted {
 		plain, err := e.decryptor.Decrypt(stored)
 		if err != nil {
 			return fmt.Errorf("verify decryption: %w", err)
@@ -508,6 +541,31 @@ func (e *Engine) verifyArtifact(ctx context.Context, rec *models.BackupRecord) e
 		return fmt.Errorf("%w: recorded %s, stored artifact %s", ErrChecksumMismatch, expected, actual)
 	}
 	return nil
+}
+
+// KeyRequiredHint tells the operator how to restore an encrypted backup when no key
+// material is configured. Errors wrapping encryption.ErrEncryptionKeyRequired from
+// this package include it.
+const KeyRequiredHint = "add the age identity (AGE-SECRET-KEY-1...) or the passphrase this backup was encrypted with under Settings → Encryption; without that key the backup cannot be restored"
+
+// detectUnrecordedEncryption reports whether the artifact of a backup recorded as
+// plaintext is in fact age-encrypted (a record that lost its encryption flag). It
+// fails with encryption.ErrEncryptionKeyRequired when it is and no key is configured,
+// so ciphertext never reaches mongorestore as if it were an archive.
+func (e *Engine) detectUnrecordedEncryption(stored *bufio.Reader, rec *models.BackupRecord) (bool, error) {
+	isAge, err := sniffEncrypted(stored)
+	if err != nil {
+		return false, fmt.Errorf("read backup stream: %w", err)
+	}
+	if !isAge {
+		return false, nil
+	}
+	e.logger.Warn("backup recorded as unencrypted holds an age-encrypted artifact; decrypting it",
+		slog.String("backup_id", rec.ID))
+	if e.decryptor == nil {
+		return false, fmt.Errorf("%w: %s", encryption.ErrEncryptionKeyRequired, KeyRequiredHint)
+	}
+	return true, nil
 }
 
 // ctxReader aborts a long verification pass promptly once ctx is cancelled.
