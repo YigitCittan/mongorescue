@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -128,7 +129,7 @@ func TestNamesResolvingToBlockedAddressesAreRefused(t *testing.T) {
 		"zero.attacker.test":     {"0.0.0.0"},
 		"internal.corp.test":     {"127.0.0.1"},
 	}}
-	client := newGuardedHTTPClient(res.lookup)
+	client := newGuardedHTTPClient(res.lookup, noProxy)
 	for _, host := range []string{"metadata.attacker.test", "rebind.attacker.test", "mapped.attacker.test", "v6.attacker.test", "zero.attacker.test"} {
 		n := NewWebhookNotifier(WebhookConfig{URL: "http://" + net.JoinHostPort(host, port) + "/hook"}, client)
 		err := n.Send(context.Background(), Message{Subject: "s", Body: "b"})
@@ -211,5 +212,61 @@ func TestBlockedChannelsCannotBeSaved(t *testing.T) {
 		if err := ch.Validate(); !errors.Is(err, ErrInvalidChannelConfig) || !errors.Is(err, ErrBlockedDestination) {
 			t.Errorf("channel with %s: %v", u, err)
 		}
+	}
+}
+
+// noProxy never uses a proxy, whatever the environment says.
+func noProxy(*http.Request) (*url.URL, error) { return nil, nil }
+
+// TestProxiedRequestsAreCheckedToo sends notifications through a (fake) HTTP proxy,
+// where the dialer only ever sees the proxy's address, and checks that the target
+// host is still resolved and refused when blocked, before the proxy is contacted.
+// Names the local resolver does not know are left to the proxy, as behind corporate
+// proxies that resolve external names themselves.
+func TestProxiedRequestsAreCheckedToo(t *testing.T) {
+	var proxied atomic.Int32
+	var lastTarget atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied.Add(1)
+		lastTarget.Store(r.URL.String()) // a proxy receives the absolute target URL
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(proxy.Close)
+	proxyURL, _ := url.Parse(proxy.URL)
+	res := &fakeResolver{answers: map[string][]string{
+		"metadata.attacker.test": {"169.254.169.254"},
+		"rebind.attacker.test":   {"93.184.216.34", "fd00:ec2::254"},
+		"hooks.example.test":     {"93.184.216.34"},
+	}}
+	client := newGuardedHTTPClient(res.lookup, func(*http.Request) (*url.URL, error) { return proxyURL, nil })
+	for _, target := range []string{
+		"http://metadata.attacker.test/latest/meta-data/",
+		"http://rebind.attacker.test/",
+		"http://[::ffff:169.254.169.254]/",
+		"http://169.254.169.254/",
+		"http://0x7f000001/",
+	} {
+		resp, err := client.Get(target)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if !errors.Is(err, ErrBlockedDestination) {
+			t.Errorf("proxied %s: %v; want ErrBlockedDestination", target, err)
+		}
+	}
+	if proxied.Load() != 0 {
+		t.Fatalf("the proxy was contacted %d times for blocked targets", proxied.Load())
+	}
+	for _, target := range []string{"http://hooks.example.test/hook", "http://only-the-proxy-knows.test/hook"} {
+		n := NewWebhookNotifier(WebhookConfig{URL: target}, client)
+		if err := n.Send(context.Background(), Message{Subject: "s", Body: "b"}); err != nil {
+			t.Fatalf("proxied %s: %v", target, err)
+		}
+		if got, _ := lastTarget.Load().(string); got != target {
+			t.Fatalf("proxy saw %q; want %q", got, target)
+		}
+	}
+	if proxied.Load() != 2 {
+		t.Fatalf("proxy hits = %d; want 2", proxied.Load())
 	}
 }

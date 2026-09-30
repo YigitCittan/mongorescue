@@ -109,30 +109,25 @@ func controlDestination(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// DialContext resolves address, refuses it when any of its addresses is blocked and
-// dials the allowed addresses in turn.
-func (d *guardedDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
+// resolve checks host (see checkHost), resolves it with d.lookup on the IP network
+// matching network and fails with ErrBlockedDestination when any address is blocked.
+func (d *guardedDialer) resolve(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	if err := checkHost(host); err != nil {
+		return nil, err
+	}
+	if ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); err == nil {
+		return []netip.Addr{ip}, nil // checked by checkHost
+	}
+	ipNet := "ip"
+	switch network {
+	case "tcp4", "udp4":
+		ipNet = "ip4"
+	case "tcp6", "udp6":
+		ipNet = "ip6"
+	}
+	addrs, err := d.lookup(ctx, ipNet, host)
 	if err != nil {
 		return nil, err
-	}
-	if err = checkHost(host); err != nil {
-		return nil, err
-	}
-	var addrs []netip.Addr
-	if ip, perr := netip.ParseAddr(host); perr == nil {
-		addrs = []netip.Addr{ip}
-	} else {
-		ipNet := "ip"
-		switch network {
-		case "tcp4", "udp4":
-			ipNet = "ip4"
-		case "tcp6", "udp6":
-			ipNet = "ip6"
-		}
-		if addrs, err = d.lookup(ctx, ipNet, host); err != nil {
-			return nil, err
-		}
 	}
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("resolve %s: no addresses", host)
@@ -141,6 +136,33 @@ func (d *guardedDialer) DialContext(ctx context.Context, network, address string
 		if blockedAddr(a) {
 			return nil, fmt.Errorf("%w: %s resolves to %s", ErrBlockedDestination, host, a.Unmap())
 		}
+	}
+	return addrs, nil
+}
+
+// checkProxiedTarget applies the destination policy to the target of a request sent
+// through a proxy, which the dialer never sees. A name the local resolver cannot
+// resolve is left to the proxy (common behind corporate proxies that resolve external
+// names themselves); literals and resolvable names are checked.
+func (d *guardedDialer) checkProxiedTarget(ctx context.Context, host string) error {
+	_, err := d.resolve(ctx, "tcp", host)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return nil
+	}
+	return err
+}
+
+// DialContext resolves address, refuses it when any of its addresses is blocked and
+// dials the allowed addresses in turn.
+func (d *guardedDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := d.resolve(ctx, network, host)
+	if err != nil {
+		return nil, err
 	}
 	var firstErr error
 	for _, a := range addrs {
