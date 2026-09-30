@@ -57,8 +57,9 @@ func URI(rawURI string) string {
 // messages) containing any number of connection strings. Each "scheme://" occurrence is
 // treated independently: the token running from the scheme to the next whitespace (or the
 // next "scheme://") is passed through URI. A "scheme://" glued to the preceding
-// connection string (such as a raw "pa://ss" inside its password) does not start a new
-// token, so it cannot split a connection string before its '@'.
+// connection string (such as a raw "pa://ss" inside its password), or one that follows
+// it before its '@' (such as "p!a://s@h"), does not start a new token, so it cannot
+// split a connection string before its '@'.
 //
 // Limitation: tokens are whitespace-delimited, so a password containing raw whitespace is
 // masked only up to the first space (best effort). Valid connection strings always
@@ -70,8 +71,11 @@ func Text(s string) string {
 	}
 	matches := make([][]int, 0, len(all))
 	for _, m := range all {
-		if n := len(matches); n > 0 && gluedToURI(s[m[0]-1]) && !strings.ContainsFunc(s[matches[n-1][0]:m[0]], isSpace) {
-			continue // inside the previous connection string
+		if n := len(matches); n > 0 && !strings.ContainsFunc(s[matches[n-1][0]:m[0]], isSpace) &&
+			(gluedToURI(s[m[0]-1]) || !strings.Contains(s[matches[n-1][1]:m[0]], "@")) {
+			// Inside the previous connection string: glued to it, or before its '@'
+			// (a raw "!x://" in a password), where it cannot start a new one.
+			continue
 		}
 		matches = append(matches, m)
 	}
