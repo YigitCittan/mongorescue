@@ -42,6 +42,7 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/settings":                          auth.ScopeRead,
 	"PUT /api/v1/settings":                          auth.ScopeAdmin,
 	"POST /api/v1/settings/encryption/generate-key": auth.ScopeAdmin,
+	"POST /api/v1/settings/warnings/{id}/dismiss":   auth.ScopeAdmin,
 
 	"GET /api/v1/storage-targets":               auth.ScopeRead,
 	"POST /api/v1/storage-targets":              auth.ScopeAdmin,

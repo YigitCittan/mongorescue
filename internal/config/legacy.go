@@ -529,3 +529,40 @@ func DeprecatedEnvSet(getenv func(string) string) []string {
 	}
 	return out
 }
+
+// EncryptionWasEnabled reports whether this deprecated configuration turns backup
+// encryption on (MONGORESCUE_ENCRYPTION_ENABLED or encryption.enabled in config.json).
+func (l *Legacy) EncryptionWasEnabled() bool {
+	v, ok := l.encryptionSwitch()
+	return ok && v
+}
+
+// EncryptionDisabled reports whether this deprecated configuration explicitly turns
+// backup encryption off.
+func (l *Legacy) EncryptionDisabled() bool {
+	v, ok := l.encryptionSwitch()
+	return ok && !v
+}
+
+// encryptionSwitch returns the deprecated encryption switch, if set.
+func (l *Legacy) encryptionSwitch() (value, ok bool) {
+	for _, it := range l.Settings {
+		if it.Key == settings.KeyEncryptionEnabled {
+			v, isBool := it.Value.(bool)
+			return v, isBool
+		}
+	}
+	return false, false
+}
+
+// LegacyEncryptionSwitchSources returns the import sources of the deprecated
+// encryption switch, as recorded by settings.Service.MarkImported.
+func LegacyEncryptionSwitchSources() []string {
+	return []string{EnvEncryptionEnabled, LegacyFileName + ":encryption.enabled"}
+}
+
+// LegacyEncryptionKeySources returns the import sources of the deprecated keys new
+// backups were encrypted with (recipients and passphrase).
+func LegacyEncryptionKeySources() []string {
+	return []string{EnvEncryptionRecips, EnvEncryptionPass, LegacyFileName + ":encryption.recipients", LegacyFileName + ":encryption.passphrase"}
+}

@@ -20,14 +20,17 @@ func (s *Server) registerSettingsRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/v1/settings", s.handleUpdateSettings)
 	mux.HandleFunc("POST /api/v1/settings/encryption/generate-key", s.handleGenerateKey)
+	mux.HandleFunc("POST /api/v1/settings/warnings/{id}/dismiss", s.handleDismissWarning)
 }
 
 // settingsResponse is returned by GET and PUT /api/v1/settings. Secrets are masked.
 // RestartRequired lists settings that only apply after a restart (currently none:
-// every setting applies to the next operation or request).
+// every setting applies to the next operation or request). Warnings lists active
+// persistent warnings for the dashboard banner (see settings.Service.Warnings).
 type settingsResponse struct {
 	settings.Settings
-	RestartRequired []string `json:"restart_required"`
+	RestartRequired []string           `json:"restart_required"`
+	Warnings        []settings.Warning `json:"warnings"`
 }
 
 // requireSettings returns the settings service, answering 503 when absent.
@@ -44,7 +47,24 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}})
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}, Warnings: svc.Warnings()})
+}
+
+// handleDismissWarning dismisses a persistent warning for good.
+func (s *Server) handleDismissWarning(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireSettings(w)
+	if !ok {
+		return
+	}
+	if err := svc.DismissWarning(r.Context(), r.PathValue("id")); err != nil {
+		if errors.Is(err, settings.ErrInvalid) {
+			writeError(w, http.StatusNotFound, "unknown warning")
+			return
+		}
+		s.writeSettingsError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"warnings": svc.Warnings()})
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +88,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeSettingsError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: updated, RestartRequired: []string{}})
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: updated, RestartRequired: []string{}, Warnings: svc.Warnings()})
 }
 
 func (s *Server) handleGenerateKey(w http.ResponseWriter, _ *http.Request) {

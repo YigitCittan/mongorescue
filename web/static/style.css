@@ -1730,6 +1730,17 @@ input[type="radio"] {
   background: var(--accent-subtle);
 }
 
+.callout-danger {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.callout-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .callout-title {
   font-size: 15px;
   font-weight: 600;

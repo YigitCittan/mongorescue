@@ -42,6 +42,8 @@ A rule connects events to channels:
 - `job_ids`: optional. Empty means every job, including on-demand backups.
 - `channel_ids`: channels that receive matching events.
 
+Security alerts are not tied to rules: *Backup encryption is off* (`security.encryption_off_after_upgrade`, see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)) is sent once to every enabled channel.
+
 ## Delivery
 
 Delivery is asynchronous and never blocks or fails a backup. Events go into a bounded queue served by a small worker pool. Each attempt has a 10 second timeout; failed attempts are retried 3 times with exponential backoff (1s, 2s, 4s). Permanent failures such as an HTTP 4xx other than 408/429 are not retried. If the queue is full, the event is dropped and counted in `mongorescue_events_dropped_total`; every delivery outcome is counted in `mongorescue_notifications_total` (see [metrics.md](metrics.md)).

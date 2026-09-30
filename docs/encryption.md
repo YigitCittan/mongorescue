@@ -49,6 +49,16 @@ AGE-SECRET-KEY-1...
 - **Existing unencrypted backups** restore unchanged after encryption is enabled.
 - A restore of an encrypted backup without a matching key fails with `422 Unprocessable Entity` before `mongorestore` starts; the message says which key to add under **Settings → Encryption**.
 
+## Encryption turned off by an upgrade
+
+Releases up to v0.7.1 imported the deprecated encryption settings (`MONGORESCUE_ENCRYPTION_*`, `encryption.*` in `config.json`) without the on/off switch, so an installation that encrypted its backups before the upgrade has been writing **unencrypted** backups since. At startup MongoRescue detects this: the deprecated switch is still set to `true`, or the import recorded both the switch and the recipients or passphrase, and encryption is off. It then
+
+- logs a warning on every start,
+- shows a banner in the dashboard (*Encryption was enabled in your previous configuration but is currently off; backups since the upgrade are NOT encrypted*) with a button that opens **Settings → Encryption**, and
+- sends one alert to every enabled notification channel, whatever the rules.
+
+Encryption is **not** turned on automatically: check the recipients (or passphrase) and enable it yourself. The banner disappears once encryption is on, or when you dismiss it (`POST /api/v1/settings/warnings/encryption_off_after_upgrade/dismiss`). If you turn encryption off yourself in the settings, the warning is not raised. Backups taken while encryption was off stay unencrypted; take a new backup after enabling it, and delete the unencrypted ones if they must not stay in storage.
+
 ## Key management and loss
 
 **A lost identity (or passphrase) means lost backups.** age has no recovery mechanism, and MongoRescue keeps no copy of your private key outside its own database. If the identity an encrypted backup was made for is gone, that backup cannot be restored by anyone, including you: a restore fails with `encryption: key material required` (no key configured) or `encryption: decryption failed` (a different key), and `mongorestore` is never started.
