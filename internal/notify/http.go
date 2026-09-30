@@ -20,11 +20,21 @@ const SendTimeout = 10 * time.Second
 const maxResponseExcerpt = 512
 
 // NewHTTPClient returns the HTTP client used by HTTP-based notifiers: it has an overall
-// timeout and never follows redirects (a redirect would silently change the target and
-// could replay signed payloads or credentials to another host).
+// timeout, never follows redirects (a redirect would silently change the target and
+// could replay signed payloads or credentials to another host) and refuses to connect
+// to blocked addresses (see ErrBlockedDestination), also after DNS resolution.
 func NewHTTPClient() *http.Client {
+	return newGuardedHTTPClient(nil)
+}
+
+// newGuardedHTTPClient is NewHTTPClient resolving host names with lookup (the system
+// resolver when nil).
+func newGuardedHTTPClient(lookup lookupFunc) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = newGuardedDialer(lookup).DialContext
 	return &http.Client{
-		Timeout: SendTimeout,
+		Timeout:   SendTimeout,
+		Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -112,5 +122,5 @@ func doHTTP(ctx context.Context, client *http.Client, req *http.Request) ([]byte
 // isPermanent reports whether err must not be retried.
 func isPermanent(err error) bool {
 	return errors.Is(err, ErrPermanent) || errors.Is(err, ErrHeaderInjection) ||
-		errors.Is(err, ErrInvalidChannelConfig)
+		errors.Is(err, ErrInvalidChannelConfig) || errors.Is(err, ErrBlockedDestination)
 }

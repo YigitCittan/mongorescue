@@ -116,6 +116,9 @@ func validateWebhook(w *WebhookConfig) error {
 	if u.Host == "" || u.Hostname() == "" {
 		return invalidf("url must include a host")
 	}
+	if err := checkHost(u.Hostname()); err != nil {
+		return fmt.Errorf("%w: url: %w", ErrInvalidChannelConfig, err)
+	}
 	if len(w.Headers) > 32 {
 		return invalidf("at most 32 custom headers are allowed")
 	}
@@ -168,6 +171,9 @@ func validateEmail(e *EmailConfig) error {
 	}
 	if strings.TrimSpace(e.Host) == "" || strings.ContainsAny(e.Host, " /\\@") {
 		return invalidf("host is required and must be a hostname")
+	}
+	if err := checkHost(e.Host); err != nil {
+		return fmt.Errorf("%w: host: %w", ErrInvalidChannelConfig, err)
 	}
 	if e.Port < 1 || e.Port > 65535 {
 		return invalidf("port must be between 1 and 65535")
