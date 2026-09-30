@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-09-30
+## [0.8.1] - 2026-09-30
+
+The `v0.8.0` tag was never released: a flaky test stopped its release build. This release contains everything planned for 0.8.0.
 
 ### Added
 - Documentation: *Key management and loss* in [docs/encryption.md](docs/encryption.md#key-management-and-loss). A lost age identity or passphrase makes its backups unrecoverable; escrow every key offline.
