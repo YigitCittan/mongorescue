@@ -81,6 +81,7 @@ func TestText(t *testing.T) {
 			input: "mongodb://a:p1@h1,mongodb://b:p2@h2",
 			want:  "mongodb://a:******@h1,mongodb://b:******@h2",
 		},
+		{name: "raw scheme inside password", input: "dial mongodb://u:ab://c@h/db failed", want: "dial mongodb://u:******@h/db failed"},
 		{name: "empty username in text", input: "dial mongodb://:secret@h/db failed", want: "dial mongodb://:******@h/db failed"},
 		{name: "query secret in text", input: "x mongodb://h/?PASSWORD=s1 y", want: "x mongodb://h/?PASSWORD=****** y"},
 		{name: "text without uri untouched", input: "open /tmp/x?password=1", want: "open /tmp/x?password=1"},
