@@ -194,7 +194,7 @@ func NewServer(
 	mux := s.buildRoutes()
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	handler := s.loggingMiddleware(s.corsMiddleware(s.authMiddleware(mux)))
+	handler := s.loggingMiddleware(securityHeadersMiddleware(s.corsMiddleware(s.authMiddleware(mux))))
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -701,6 +701,30 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			slog.String("path", r.URL.Path),
 			slog.Duration("duration", time.Since(start)),
 		)
+	})
+}
+
+// contentSecurityPolicy is the Content-Security-Policy of every response. The
+// dashboard loads only its own scripts, styles and images (no inline code, no
+// third-party origins), talks only to its own API and may not be framed.
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+	"connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+// securityHeadersMiddleware sets the browser security headers on every response: the
+// Content-Security-Policy, X-Content-Type-Options: nosniff, X-Frame-Options: DENY and
+// Referrer-Policy: no-referrer. API, MCP and metrics responses carry
+// Cache-Control: no-store, so neither browsers nor proxies keep copies of them.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		if p := r.URL.Path; strings.HasPrefix(p, "/api/") || p == MCPPath || p == "/metrics" {
+			h.Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
