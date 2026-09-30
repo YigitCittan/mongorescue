@@ -63,6 +63,16 @@ make test-integration                        # against services you configured y
 make docker-smoke                            # build the image and smoke-test it
 ```
 
+**Fuzz tests** (`func FuzzXxx(f *testing.F)`) cover every parser and validator that handles untrusted input: connection strings and their redaction, the tools config file, sealed values, age ciphertext, the update archive and checksums, versions, notification channels, the legacy configuration, cron expressions, storage keys and restore namespaces. A plain `go test` runs only their seed corpora (and any regression inputs in `testdata/fuzz/`), so it stays fast. `make fuzz` fuzzes each target in turn:
+
+```bash
+make fuzz                                    # every target, 30s each
+make fuzz FUZZTIME=2m                        # longer runs
+make fuzz FUZZ_TARGETS=./internal/redact:FuzzURI   # one target (<package>:<FuzzFunc>)
+```
+
+When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths).
+
 The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only from `_test.go` files**; CI fails if it reaches the binary. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
 
 ### What CI checks
@@ -193,6 +203,7 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | `make test-coverage` + `make coverage-check` | Unit tests with coverage; fails below 60% | Go |
 | `make test-integration` | Unit + `integration`-tagged tests against the services in your `MONGORESCUE_TEST_*` env; missing services are skipped | Go, MongoDB Database Tools |
 | `make test-integration-docker` | Same, against disposable MongoDB 7, MinIO and LocalStack containers | Docker, curl, Go, MongoDB Database Tools |
+| `make fuzz` | Each fuzz target in `FUZZ_TARGETS` for `FUZZTIME` (default `30s`), one after another | Go |
 | `make docker-smoke` | Builds the image and checks health, auth, dashboard and bundled tools | Docker, curl |
 
 The integration suite (`internal/integration`) drives the real `mongodump`/`mongorestore` binaries: backup and safe-clone restore, collection filters, gzip on and off, the full HTTP API in-process, and a storage conformance suite run against local disk and every configured S3 provider. Every test also asserts that the MongoDB password never appears in API responses, records or logs.

@@ -152,7 +152,7 @@ flowchart TD
     MR --> REC["save record,<br/>publish restore event"]
 ```
 
-1. The target namespace is resolved: `<db>_rescue_<timestamp>` by default (an omitted `safe_clone` means true). An in-place restore into the source database or an explicit `target_database` requires `safe_clone: false` and `confirm_in_place: true`; otherwise the request is rejected with `ErrInPlaceNotConfirmed` (HTTP 400).
+1. The target namespace is resolved: `<db>_rescue_<timestamp>` by default (an omitted `safe_clone` means true). An in-place restore into the source database or an explicit `target_database` requires `safe_clone: false` and `confirm_in_place: true`; otherwise the request is rejected with `ErrInPlaceNotConfirmed` (HTTP 400). The source part of a clone name is shortened so that it fits MongoDB's 63-byte limit. A client-supplied target database and selected collections must be valid MongoDB names (`models.ErrInvalidNamespace`, HTTP 400); the backup's own database name is never refused.
 2. If the verify policy applies (`always`, or `auto` for in-place restores), the artifact is streamed once into `io.Discard` while its SHA-256 is compared with the record and, for encrypted backups, the age stream is fully authenticated. On any failure the restore stops before `mongorestore` starts.
 3. The artifact is streamed again, decrypted if needed, into `mongorestore`'s stdin. Namespace rewriting (`--nsFrom`/`--nsTo`) implements safe clones; `--nsInclude` implements collection-level restores.
 4. The restore record is saved and a `restore.succeeded` or `restore.failed` event is published.

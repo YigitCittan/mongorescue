@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The error for restoring an encrypted backup without a key (`422`) now says which key to add under Settings → Encryption.
+### Added
+- Fuzz tests for every parser and validator that handles untrusted input, and `make fuzz` (`FUZZTIME`, default `30s` per target). A plain `go test` runs only the seed corpora. See [CONTRIBUTING.md](CONTRIBUTING.md#building-and-testing).
+
+### Fixed
+- Safe-clone restores of a database with a name longer than 40 bytes failed, because `<db>_rescue_<timestamp>` exceeded MongoDB's 63-byte limit; the source part of the clone name is now shortened.
+- Connection strings with an invalid percent escape (`p%zz`), invalid UTF-8, Unicode whitespace or control characters (such as U+2028), host characters outside RFC 3986 or an empty option name are rejected when saved, instead of failing in the Database Tools; such characters also no longer reach the tools configuration file, where a YAML line break could change the URI.
+- `authSource` injected for the Database Tools is derived from the database path as the driver decodes it (`/my+db` is `my db`), and a percent-escaped option name such as `auth%53ource` is recognised.
+- A sealed credential with an inserted line break or altered final base64 character was still accepted; only the exact encoding is now opened.
+- A cron expression that is only a time zone (`TZ=UTC`, `CRON_TZ=...`) crashed schedule validation instead of being rejected.
+- The one-time import of the legacy configuration hung on an identity file that is a device or FIFO (such as `/dev/zero`); legacy files must be regular files and are read with a size limit.
 
 ## [0.7.1] - 2026-09-30
 
