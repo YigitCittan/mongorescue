@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Desktop app: every release package bundles `mongodump` and `mongorestore` from the MongoDB Database Tools 100.12.2 (Apache License 2.0, with MongoDB's `LICENSE.md` and `THIRD-PARTY-NOTICES`), so the tools no longer have to be installed: `<install dir>\tools` on Windows (installer and portable zip; the uninstaller removes them), `MongoRescue.app/Contents/Resources/tools` on macOS (universal binaries) and `tools/` next to the binary on Linux. Fixes `mongodump not found` on machines without the tools. See [docs/desktop.md](docs/desktop.md#install).
+## [0.5.1] - 2026-09-30
+
+### Fixed
+- `mongodump not found` in the desktop app on machines without the MongoDB Database Tools: every release package bundles `mongodump` and `mongorestore` from the MongoDB Database Tools 100.12.2 (Apache License 2.0, with MongoDB's `LICENSE.md` and `THIRD-PARTY-NOTICES`), so the tools no longer have to be installed: `<install dir>\tools` on Windows (installer and portable zip; the uninstaller removes them), `MongoRescue.app/Contents/Resources/tools` on macOS (universal binaries) and `tools/` next to the binary on Linux. See [docs/desktop.md](docs/desktop.md#install).
 
 ### Changed
 - Release workflow: the `desktop` job downloads the MongoDB Database Tools archives from `fastdl.mongodb.org`, verifies them against SHA-256 values pinned in the workflow, and builds without `wails build -clean` so the staged tools survive. See [docs/desktop.md](docs/desktop.md#building).
