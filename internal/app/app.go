@@ -199,7 +199,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
 	targetSvc := targets.NewService(metaStore, storage.NewForTarget, cfg.DataDir, targets.WithLogger(logger))
-	connSvc := connections.NewService(metaStore, mongoconn.New(), connections.WithLogger(logger))
+	prober := mongoconn.New()
+	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger))
 	authSvc, err := auth.NewService(metaStore, auth.WithLogger(logger),
 		auth.WithSessionPolicy(func() (time.Duration, time.Duration) {
 			sec := settingsSvc.Current().Security
@@ -248,6 +249,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithLogger(logger),
 		backup.WithToolsDir(cfg.ToolsDir),
 		backup.WithStorageResolver(targetSvc.Storage),
+		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithRunConfig(func() backup.RunConfig {
 			g := settingsSvc.Current().General
 			return backup.RunConfig{Encryptor: settingsSvc.Encryptor(), Timeout: g.BackupTimeout.Std(), StallTimeout: g.BackupStallTimeout.Std()}
@@ -791,6 +793,22 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+// collectionLister adapts the driver adapter to backup.CollectionLister, so backups
+// of several collections can be expressed as exclusions.
+func collectionLister(prober connections.Prober) backup.CollectionLister {
+	return func(ctx context.Context, uri, database string) ([]string, error) {
+		cols, err := prober.ListCollections(ctx, uri, database)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(cols))
+		for _, c := range cols {
+			names = append(names, c.Name)
+		}
+		return names, nil
+	}
 }
 
 // logToolPaths logs where mongodump and mongorestore were found, or warns with the

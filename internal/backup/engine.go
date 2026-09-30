@@ -11,6 +11,7 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,7 +36,26 @@ var (
 	// ErrStalled indicates that mongodump produced no output for the stall timeout
 	// (see WithStallTimeout), e.g. while hanging on an unreachable server, and was aborted.
 	ErrStalled = errors.New("backup: mongodump stalled without producing output")
+
+	// ErrCollectionFilter indicates that a filter naming several collections could not
+	// be applied: mongodump dumps one collection or a whole database, so the engine
+	// lists the database (see WithCollectionLister) and excludes the other collections.
+	ErrCollectionFilter = errors.New("backup: collection filter cannot be applied")
 )
+
+// CollectionLister returns the names of the collections and views of database on the
+// server at uri. Implementations must never include the URI's credentials in errors.
+type CollectionLister func(ctx context.Context, uri, database string) ([]string, error)
+
+// WithCollectionLister lets backups include several collections (BackupOptions
+// Collections with more than one entry): the database is listed with fn and every
+// other collection is excluded. Without a lister such backups fail with
+// ErrCollectionFilter instead of silently dumping only one collection.
+func WithCollectionLister(fn CollectionLister) Option {
+	return func(e *Engine) {
+		e.listCollections = fn
+	}
+}
 
 // ProcessRunner abstracts subprocess execution for testing and process management.
 type ProcessRunner func(ctx context.Context, name string, args ...string) (stdout io.ReadCloser, stderr io.Reader, wait func() error, err error)
@@ -51,6 +71,8 @@ type Engine struct {
 
 	timeout      time.Duration
 	stallTimeout time.Duration
+
+	listCollections CollectionLister
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
@@ -327,8 +349,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	defer cleanupConfig()
 
+	dumpOpts, err := e.expandCollections(runCtx, mongoURI, opts)
+	if err != nil {
+		return e.fail(record, err)
+	}
+
 	// Build mongodump arguments
-	args := e.buildDumpArgs(configArg, opts)
+	args := e.buildDumpArgs(configArg, dumpOpts)
 
 	// procCtx lets failure paths kill mongodump even when the caller's ctx is still live,
 	// so a blocked writer can never keep Wait from returning.
@@ -568,6 +595,49 @@ func (p *dumpProcess) reap() error {
 		p.waitErr = p.wait()
 	})
 	return p.waitErr
+}
+
+// trimmedNames returns the non-empty, trimmed, de-duplicated names in order.
+func trimmedNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// expandCollections rewrites a filter that includes several collections into the
+// equivalent exclusion list, since mongodump honours only the last --collection
+// flag. System collections are never excluded explicitly: mongodump dumps a
+// time-series collection's buckets and the view definitions together with the
+// collection or view they belong to.
+func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.BackupOptions) (models.BackupOptions, error) {
+	include := trimmedNames(opts.Collections)
+	if len(include) <= 1 {
+		return opts, nil
+	}
+	if e.listCollections == nil {
+		return opts, fmt.Errorf("%w: %d collections requested but no collection lister is configured", ErrCollectionFilter, len(include))
+	}
+	names, err := e.listCollections(ctx, uri, opts.Database)
+	if err != nil {
+		return opts, fmt.Errorf("%w: list collections of %s: %w", ErrCollectionFilter, opts.Database, err)
+	}
+	exclude := trimmedNames(opts.ExcludeCollections)
+	for _, name := range names {
+		if !slices.Contains(include, name) && !strings.HasPrefix(name, "system.") && !slices.Contains(exclude, name) {
+			exclude = append(exclude, name)
+		}
+	}
+	opts.Collections = nil
+	opts.ExcludeCollections = exclude
+	if len(exclude) == 0 {
+		// Every collection is included: dump the whole database.
+		opts.ExcludeCollections = nil
+	}
+	return opts, nil
 }
 
 // buildDumpArgs constructs safe CLI arguments for mongodump. configArg is the
