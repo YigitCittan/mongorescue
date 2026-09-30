@@ -54,7 +54,7 @@ func TestBackupSeveralCollectionsBecomeExclusions(t *testing.T) {
 	var listedDB string
 	lister := func(_ context.Context, _ string, db string) ([]string, error) {
 		listedDB = db
-		return []string{"orders", "customers", "logs", "audit_view", "system.views", "system.buckets.metrics", "metrics"}, nil
+		return []string{"orders", "customers", "logs", "audit_view", "system.views", "system.js", "system.buckets.metrics", "metrics"}, nil
 	}
 	engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run), WithCollectionLister(lister))
 	record, err := engine.Run(context.Background(), models.BackupOptions{
@@ -71,7 +71,7 @@ func TestBackupSeveralCollectionsBecomeExclusions(t *testing.T) {
 	if got := runner.values("--collection"); len(got) != 0 {
 		t.Fatalf("--collection must not be passed with several collections: %v", got)
 	}
-	want := []string{"customers_tmp", "logs", "audit_view", "metrics"}
+	want := []string{"customers_tmp", "logs", "audit_view", "system.js", "system.buckets.metrics", "metrics"}
 	if got := runner.values("--excludeCollection"); !slices.Equal(got, want) {
 		t.Fatalf("--excludeCollection = %v; want %v", got, want)
 	}
@@ -111,5 +111,37 @@ func TestBackupAllCollectionsIncludedDumpsWholeDatabase(t *testing.T) {
 	}
 	if len(runner.values("--collection"))+len(runner.values("--excludeCollection")) != 0 {
 		t.Fatalf("unexpected filter args: %v", runner.args)
+	}
+}
+
+// TestBackupMissingCollectionFails keeps a typo from producing an empty or partial
+// backup that reports success.
+func TestBackupMissingCollectionFails(t *testing.T) {
+	lister := func(context.Context, string, string) ([]string, error) {
+		return []string{"orders", "metrics", "system.buckets.metrics"}, nil
+	}
+	for _, cols := range [][]string{{"ordres"}, {"orders", "customers"}} {
+		runner := &argsRunner{}
+		engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run), WithCollectionLister(lister))
+		rec, err := engine.Run(context.Background(), models.BackupOptions{Database: "shop", Collections: cols})
+		if !errors.Is(err, ErrCollectionFilter) || !strings.Contains(err.Error(), "not found") || runner.called || rec.Status != models.StatusFailed {
+			t.Fatalf("%v: want a failed backup naming the missing collection, got %v (called=%v)", cols, err, runner.called)
+		}
+	}
+}
+
+// TestBackupRequestedTimeSeriesKeepsItsBuckets checks the buckets of a requested
+// time-series collection are not excluded.
+func TestBackupRequestedTimeSeriesKeepsItsBuckets(t *testing.T) {
+	lister := func(context.Context, string, string) ([]string, error) {
+		return []string{"orders", "metrics", "system.buckets.metrics", "other", "system.buckets.other"}, nil
+	}
+	runner := &argsRunner{}
+	engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run), WithCollectionLister(lister))
+	if _, err := engine.Run(context.Background(), models.BackupOptions{Database: "shop", Collections: []string{"orders", "metrics"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runner.values("--excludeCollection"), []string{"other", "system.buckets.other"}; !slices.Equal(got, want) {
+		t.Fatalf("--excludeCollection = %v; want %v", got, want)
 	}
 }

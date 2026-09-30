@@ -171,10 +171,30 @@ func TestCorruptedBackupsFailLoudly(t *testing.T) {
 				// checksum computed while streaming reveals the damage.
 				bad := damaged(t, st, plain, flipLetterAt(archiveOffset(t, st, plain.StorageKey, markerIndex)))
 				rec, err := tryRestore(t, env, st, models.RestoreRequest{}, bad)
+				if rec != nil && env.dbExists(t, rec.TargetDatabase) {
+					t.Fatalf("the partially restored clone %s must be dropped", rec.TargetDatabase)
+				}
 				assertRestoreFailed(t, env, rec, err, restore.ErrChecksumMismatch)
-				if rec.Verified || !strings.Contains(rec.ErrorMessage, "must not be trusted") {
+				if rec.Verified || !strings.Contains(rec.ErrorMessage, "was dropped") {
 					t.Fatalf("unexpected record: verified=%v message=%q", rec.Verified, rec.ErrorMessage)
 				}
+			})
+			t.Run("changed metadata, in place", func(t *testing.T) {
+				// In-place restores are verified before mongorestore runs, even with
+				// verify off and drop_target on: the target stays untouched.
+				target := db + "_live"
+				env.seedText(t, target, "notes", 20)
+				before := env.snapshotDB(t, target)
+				bad := damaged(t, st, plain, flipLetterAt(archiveOffset(t, st, plain.StorageKey, markerIndex)))
+				no := false
+				rec, err := tryRestore(t, env, st, models.RestoreRequest{
+					SafeClone: &no, ConfirmInPlace: true, DropTarget: true, TargetDatabase: target, Verify: &no,
+				}, bad)
+				if !errors.Is(err, restore.ErrChecksumMismatch) || rec.Status != models.RestoreStatusFailed || !strings.Contains(rec.ErrorMessage, "target untouched") {
+					t.Fatalf("want a verification failure before mongorestore, got %v (%+v)", err, rec)
+				}
+				assertSnapshotsEqual(t, before, env.snapshotDB(t, target))
+				env.dropDB(t, target)
 			})
 			t.Run("changed document byte", func(t *testing.T) {
 				bad := damaged(t, st, plain, flipLetterAt(plain.SizeBytes/2))

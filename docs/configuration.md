@@ -56,7 +56,7 @@ In v0.1.0 every signed-in user and every API key is a full administrator: they c
 | `backup_timeout` | `6h` | Maximum duration of one backup (`0s` = unlimited) |
 | `backup_stall_timeout` | `10m` | Abort a backup when `mongodump` produces no output for this long (`0s` = off) |
 | `restore_timeout` | `12h` | Maximum duration of one restore, verification included (`0s` = unlimited) |
-| `restore_verify_policy` | `auto` | `always`, `auto` (in-place restores only) or `never`; see [encryption.md](encryption.md#verify-before-restore) |
+| `restore_verify_policy` | `auto` | `always`, `auto` or `never`; decides for safe clones only, in-place restores are always verified; see [encryption.md](encryption.md#verify-before-restore) |
 
 Retention is applied only after a successful **scheduled** (cron) run of a job, and only to that job's own scheduled backups: every backup record has a `trigger` (`scheduled`, `on_demand`, `manual` or `mcp`), and on-demand job runs (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool), manual backups and MCP backups neither prune nor count towards the kept backups; they stay until an admin deletes them. Two floors protect good backups: the newest `retention_count` scheduled backups of the job (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. Backups recorded before triggers existed count as `scheduled` when they belong to a job and as `manual` otherwise.
 

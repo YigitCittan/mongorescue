@@ -234,6 +234,10 @@ func seedFidelity(t *testing.T, env *mongoEnv, tag string) fidelityDB {
 		indexes("metrics", mongo.IndexModel{Keys: bson.D{{Key: "sensor.id", Value: 1}, {Key: "ts", Value: -1}}})
 	}
 
+	// A stored server-side function (system.js), which a filtered backup must leave out.
+	_, jsErr := db.Collection("system.js").InsertOne(ctx, bson.D{{Key: "_id", Value: "double"}, {Key: "value", Value: bson.JavaScript("function (x) { return 2 * x; }")}})
+	must("system.js", jsErr)
+
 	// Views, one with its own collation.
 	must("view big_orders", db.CreateView(ctx, "big_orders", "orders", mongo.Pipeline{
 		{{Key: "$match", Value: bson.D{{Key: "amount", Value: bson.D{{Key: "$gt", Value: 10000}}}}}},

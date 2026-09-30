@@ -198,6 +198,11 @@ type RestoreRecord struct {
 	// Verified reports that the artifact passed verify-before-restore (checksum and,
 	// if encrypted, full authentication) before mongorestore was started.
 	Verified bool `json:"verified,omitempty"`
+
+	// Warning notes something the restore could not check although it succeeded,
+	// e.g. "document counts unavailable" or an in-place restore of a backup without a
+	// recorded checksum.
+	Warning string `json:"warning,omitempty"`
 }
 
 // Redacted returns a copy of the request with the MongoURI password masked, suitable

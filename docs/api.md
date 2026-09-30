@@ -124,7 +124,7 @@ curl -s -X POST http://localhost:8080/api/v1/restore \
   -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e"}'
 ```
 
-Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are verified first under the default `auto` verify policy. A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started.
+Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are always verified first (`verify` and the policy apply to safe clones only). A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started.
 
 ## Updating a job
 

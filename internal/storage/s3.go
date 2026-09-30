@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
 // S3Config configures an S3Storage driver.
@@ -42,6 +44,10 @@ type S3Config struct {
 
 	// UsePathStyle enables path-style URLs (e.g. http://s3.host/bucket), required for MinIO.
 	UsePathStyle bool
+
+	// Logger receives warnings the driver cannot return (a failed cleanup of an
+	// aborted upload); nil means slog.Default().
+	Logger *slog.Logger
 }
 
 // S3Storage provides a stream-first storage driver for AWS S3 and S3-compatible backends
@@ -52,6 +58,7 @@ type S3Storage struct {
 	bucket   string
 	// prefix is prepended to every key ("" or ending in "/"); List strips it again.
 	prefix string
+	logger *slog.Logger
 }
 
 // NormalizePrefix trims surrounding whitespace and slashes from prefix and appends a
@@ -82,6 +89,11 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 	region := cfg.Region
 	if region == "" {
 		region = "us-east-1"
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	// 1. Build AWS configuration options
@@ -128,6 +140,7 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		uploader: uploader,
 		bucket:   cfg.Bucket,
 		prefix:   NormalizePrefix(cfg.Prefix),
+		logger:   logger,
 	}, nil
 }
 
@@ -204,11 +217,19 @@ func (s *S3Storage) abortFailedUpload(ctx context.Context, objKey string, upload
 	}
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortTimeout)
 	defer cancel()
-	_, _ = s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
+	_, err := s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
 		Bucket:   aws.String(s.bucket),
 		Key:      aws.String(objKey),
 		UploadId: aws.String(failure.UploadID()),
 	})
+	var apiErr smithy.APIError
+	if err != nil && (!errors.As(err, &apiErr) || apiErr.ErrorCode() != "NoSuchUpload") {
+		s.logger.Warn("failed to abort the multipart upload of a failed backup; its parts stay in the bucket until a lifecycle rule removes them",
+			slog.String("bucket", s.bucket),
+			slog.String("key", objKey),
+			slog.String("error", redact.Text(err.Error())),
+		)
+	}
 }
 
 // Retrieve returns a streaming ReadCloser from S3.

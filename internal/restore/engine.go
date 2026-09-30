@@ -43,7 +43,32 @@ var (
 	// it could not insert (e.g. duplicate keys in a target that already held data), so
 	// the target does not match the backup.
 	ErrDocumentsFailed = errors.New("restore: documents failed to restore")
+
+	// ErrCloneExists indicates that the safe-clone database of a restore already
+	// exists (another restore of the same database started within the same second);
+	// the restore is refused before anything is written.
+	ErrCloneExists = errors.New("restore: safe clone target already exists")
 )
+
+// DatabaseAdmin checks and drops databases on the target server. The restore engine
+// uses it for safe clones only: it refuses a clone name that already exists and drops
+// a clone that turned out to hold data from a corrupted artifact.
+type DatabaseAdmin interface {
+	// DatabaseExists reports whether database exists on the server at uri.
+	DatabaseExists(ctx context.Context, uri, database string) (bool, error)
+	// DropDatabase drops database on the server at uri.
+	DropDatabase(ctx context.Context, uri, database string) error
+}
+
+// WithDatabaseAdmin enables the safe-clone checks described at DatabaseAdmin.
+func WithDatabaseAdmin(a DatabaseAdmin) Option {
+	return func(e *Engine) {
+		e.admin = a
+	}
+}
+
+// cloneDropTimeout bounds dropping a corrupted safe clone after a failed restore.
+const cloneDropTimeout = 2 * time.Minute
 
 // ProcessRunner abstracts subprocess execution for restore commands.
 type ProcessRunner func(ctx context.Context, name string, stdin io.Reader, args ...string) (stderr io.Reader, wait func() error, err error)
@@ -59,6 +84,7 @@ type Engine struct {
 	verifyPolicy models.VerifyPolicy
 	timeout      time.Duration
 	canBypass    BypassCheck
+	admin        DatabaseAdmin
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
@@ -314,7 +340,13 @@ func (e *Engine) resolveURI(req models.RestoreRequest) string {
 // encryption.ErrDecryptionFailed; failures in the header or the first chunk are
 // detected before mongorestore is started.
 //
-// When verification applies (see models.RestoreRequest.ShouldVerify), a first pass
+// In-place restores are always verified first; clones follow
+// models.RestoreRequest.ShouldVerify (see verifyFirst). With WithDatabaseAdmin, a
+// clone whose database already exists is refused (ErrCloneExists) and a clone
+// restore that fails after mongorestore started drops the partial clone, unless
+// documents failed to insert (ErrDocumentsFailed), which keeps it for inspection.
+//
+// When verification applies, a first pass
 // streams the artifact through SHA-256 (and full age authentication) into io.Discard;
 // mongorestore only starts if it matches the recorded checksum, otherwise
 // ErrChecksumMismatch is returned. Without verification, a stream that fails midway
@@ -365,7 +397,22 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 			"backup is encrypted but no decryption key is configured: "+KeyRequiredHint)
 	}
 
-	if req.ShouldVerify(e.verifyPolicy) {
+	clone := !req.InPlace() && !req.DryRun
+	if clone && e.admin != nil {
+		exists, err := e.admin.DatabaseExists(ctx, mongoURI, targetDB)
+		if err != nil {
+			return failRestore(record, fmt.Errorf("check safe clone target %s: %w", targetDB, err),
+				fmt.Sprintf("could not check the safe clone target %s: %v", targetDB, err))
+		}
+		if exists {
+			err := fmt.Errorf("%w: %s", ErrCloneExists, targetDB)
+			return failRestore(record, err,
+				fmt.Sprintf("%v (another restore of %s started within the same second); nothing was written, retry the restore",
+					err, sourceRecord.Database))
+		}
+	}
+
+	if e.verifyFirst(req, sourceRecord, record) {
 		if err := e.verifyArtifact(ctx, sourceRecord); err != nil {
 			err = e.withCause(ctx, err)
 			return failRestore(record, fmt.Errorf("verify backup %s: %w", req.BackupID, err),
@@ -446,8 +493,10 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		return failRestore(record, fmt.Errorf("start mongorestore: %w", err), fmt.Sprintf("start mongorestore: %v", err))
 	}
 
-	// Capture stderr for status and error diagnostics
-	stderrLogs, _ := io.ReadAll(stderr)
+	// Capture the end of stderr (bounded) for status and error diagnostics.
+	stderrBuf := &mongotools.TailBuffer{}
+	_, _ = io.Copy(stderrBuf, stderr)
+	stderrLogs := stderrBuf.String()
 	waitErr := wait()
 
 	finishTime := time.Now().UTC()
@@ -458,12 +507,29 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if !req.DryRun {
 		partialNote = fmt.Sprintf("; partial data may have been applied to target namespace %s.*", targetDB)
 	}
+	// dropClone removes the partial safe clone of a failed restore and says so: it was
+	// created by this restore (see ErrCloneExists) and cannot be trusted. In-place
+	// targets are never dropped, nor clones with failed documents (kept for inspection).
+	dropClone := func() string {
+		if !clone || e.admin == nil {
+			return partialNote
+		}
+		dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cloneDropTimeout)
+		defer cancel()
+		if err := e.admin.DropDatabase(dropCtx, mongoURI, targetDB); err != nil {
+			e.logger.Warn("failed to drop the safe clone of a failed restore",
+				slog.String("restore_id", restoreID), slog.String("target_db", targetDB),
+				slog.String("error", redact.Text(err.Error())))
+			return fmt.Sprintf("; dropping the partially restored clone %s failed (%v), drop it manually", targetDB, err)
+		}
+		return fmt.Sprintf("; the partially restored clone %s was dropped", targetDB)
+	}
 
 	// An aborted run (timeout, cancellation) may have stopped mongorestore midway.
 	if ctx.Err() != nil {
 		abortErr := e.withCause(ctx, ctx.Err())
 		return failRestore(record, fmt.Errorf("restore aborted: %w", abortErr),
-			fmt.Sprintf("restore aborted: %v%s", abortErr, partialNote))
+			fmt.Sprintf("restore aborted: %v%s", abortErr, dropClone()))
 	}
 
 	// A mid-stream read or authentication failure means mongorestore saw truncated
@@ -474,27 +540,39 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 			stage = "decrypt backup stream"
 		}
 		return failRestore(record, fmt.Errorf("%s: %w", stage, streamErr),
-			fmt.Sprintf("%s: %v%s", stage, streamErr, partialNote))
+			fmt.Sprintf("%s: %v%s", stage, streamErr, dropClone()))
 	}
 
 	if waitErr != nil {
-		return failRestore(record, fmt.Errorf("mongorestore failed: %w (stderr: %s)", waitErr, redact.Text(string(stderrLogs))),
-			fmt.Sprintf("mongorestore failed: %v, stderr: %s", waitErr, stderrLogs))
+		tail := stderrTail(stderrLogs)
+		return failRestore(record, fmt.Errorf("mongorestore failed: %w (stderr: %s)", waitErr, tail),
+			fmt.Sprintf("mongorestore failed: %v%s, stderr: %s", waitErr, dropClone(), tail))
 	}
 
 	// mongorestore has exited and os/exec has finished copying its stdin, so the
 	// stream is no longer read concurrently: hash what it did not consume and compare.
 	if err := verifyStreamed(ctx, hashed, sourceRecord.SHA256); err != nil {
 		err = e.withCause(ctx, err)
-		return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err),
-			fmt.Sprintf("%v; the data restored into %s.* does not match the backup and must not be trusted", err, targetDB))
+		note := fmt.Sprintf("; the data restored into %s.* does not match the backup and must not be trusted", targetDB)
+		if clone && e.admin != nil {
+			note = dropClone()
+		}
+		return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error()+note)
 	}
 
-	if failed, ok := failedDocuments(string(stderrLogs)); ok && failed > 0 {
+	failed, ok := failedDocuments(stderrLogs)
+	if failed > 0 {
+		// The target is kept (a clone too) so the documents that did arrive can be
+		// inspected; the record is failed.
 		err := fmt.Errorf("%w: %d document(s) failed to restore", ErrDocumentsFailed, failed)
 		return failRestore(record, err,
 			fmt.Sprintf("%v (duplicate keys in a target that already held data, or documents rejected by a validator when the user lacks the bypassDocumentValidation privilege of the restore role)%s; mongorestore output: %s",
-				err, partialNote, stderrTail(string(stderrLogs))))
+				err, partialNote, stderrTail(stderrLogs)))
+	}
+	if !ok && !req.DryRun {
+		addWarning(record, "document counts unavailable: mongorestore printed no restored/failed summary")
+		e.logger.Warn("mongorestore printed no document summary; document counts unavailable",
+			slog.String("restore_id", restoreID), slog.String("target_db", targetDB))
 	}
 
 	record.Status = models.RestoreStatusCompleted
@@ -508,12 +586,39 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	return record, nil
 }
 
+// verifyFirst decides whether the artifact is verified in a first pass before
+// mongorestore starts. In-place restores are always verified, whatever the policy or
+// the request says, so a damaged artifact or a wrong key never reaches an existing
+// database; clones follow req.ShouldVerify. A record without a checksum (from an
+// older release) cannot be verified: an explicit request (Verify or the "always"
+// policy) then fails with ErrChecksumUnavailable, while the implicit in-place
+// verification is skipped with a warning on the record.
+func (e *Engine) verifyFirst(req models.RestoreRequest, src *models.BackupRecord, record *models.RestoreRecord) bool {
+	explicit := (req.Verify != nil && *req.Verify) || (req.Verify == nil && e.verifyPolicy == models.VerifyAlways)
+	verify := req.ShouldVerify(e.verifyPolicy) || (req.InPlace() && !req.DryRun)
+	if verify && !explicit && strings.TrimSpace(src.SHA256) == "" {
+		addWarning(record, "backup record has no checksum (older release): the artifact was not verified before the in-place restore")
+		e.logger.Warn("in-place restore of a backup without a recorded checksum; skipping verification",
+			slog.String("restore_id", record.ID), slog.String("backup_id", src.ID))
+		return false
+	}
+	return verify
+}
+
 // withCause tags err with ErrTimeout when ctx ended because the run hit its limit.
 func (e *Engine) withCause(ctx context.Context, err error) error {
 	if errors.Is(context.Cause(ctx), ErrTimeout) && !errors.Is(err, ErrTimeout) {
 		return fmt.Errorf("%w (limit %s): %w", ErrTimeout, e.timeout, err)
 	}
 	return err
+}
+
+// addWarning appends w to the record's warnings.
+func addWarning(record *models.RestoreRecord, w string) {
+	if record.Warning != "" {
+		record.Warning += "; "
+	}
+	record.Warning += w
 }
 
 // failRestore marks record failed with a redacted message and returns it with err.
@@ -687,13 +792,17 @@ func failedDocuments(stderr string) (failed int64, ok bool) {
 	return n, true
 }
 
-// maxStderrTail bounds the mongorestore output quoted in a failure message.
-const maxStderrTail = 1024
+const (
+	// maxStderrTail bounds the mongorestore output quoted in a failure message.
+	maxStderrTail = 1024
+	// maxStderrLine bounds each quoted line, so values from documents (for example
+	// the key of a duplicate key error) are not stored at length.
+	maxStderrLine = 300
+)
 
 // stderrTail returns the last lines of mongorestore's output, redacted and bounded.
 func stderrTail(stderr string) string {
-	lines := strings.Split(strings.TrimSpace(stderr), "\n")
-	tail := strings.Join(lines[max(len(lines)-5, 0):], " | ")
+	tail := mongotools.TailLines(stderr, 5, maxStderrLine)
 	if len(tail) > maxStderrTail {
 		tail = "..." + tail[len(tail)-maxStderrTail:]
 	}
