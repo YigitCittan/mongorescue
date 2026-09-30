@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -200,17 +201,13 @@ func (b *legacyBuilder) problem(source string, err error) {
 
 // readFile imports <dataDir>/config.json when it exists.
 func (b *legacyBuilder) readFile(path string) error {
-	info, err := os.Stat(path)
+	raw, err := readSmallFile(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
-	case err != nil:
-		return fmt.Errorf("config: stat legacy %s: %w", path, err)
-	case info.Size() > maxLegacyFileSize:
+	case errors.Is(err, errFileTooLarge):
 		return fmt.Errorf("config: legacy %s is larger than %d bytes", path, maxLegacyFileSize)
-	}
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the legacy file inside the configured data directory.
-	if err != nil {
+	case err != nil:
 		return fmt.Errorf("config: read legacy %s: %w", path, err)
 	}
 	var f legacyFile
@@ -493,18 +490,56 @@ func cookiePolicy(always bool) settings.CookiePolicy {
 
 // readIdentityFile reads an age identity file of a former configuration.
 func readIdentityFile(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("read identity file: %w", err)
-	}
-	if info.Size() > maxLegacyFileSize {
+	raw, err := readSmallFile(path)
+	switch {
+	case errors.Is(err, errFileTooLarge):
 		return "", errors.New("identity file is too large")
-	}
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: an operator-configured identity file of an earlier release.
-	if err != nil {
+	case err != nil:
 		return "", fmt.Errorf("read identity file: %w", err)
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// errFileTooLarge is returned by readSmallFile for a file above maxLegacyFileSize.
+var errFileTooLarge = errors.New("file is too large")
+
+// errNotRegular is returned by readSmallFile for a directory, device or pipe.
+var errNotRegular = errors.New("not a regular file")
+
+// readSmallFile reads the regular file at path, at most maxLegacyFileSize bytes. The
+// size is checked through the open handle and the read is bounded, so a device such
+// as /dev/zero, a FIFO or a file that grows while it is read cannot hang the startup
+// or exhaust memory.
+func readSmallFile(path string) ([]byte, error) {
+	// Checked before opening too: opening a FIFO blocks until it has a writer.
+	if info, err := os.Stat(path); err != nil {
+		return nil, err
+	} else if !info.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
+	f, err := os.Open(path) //nolint:gosec // G304: operator-configured files of an earlier release.
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
+	if info.Size() > maxLegacyFileSize {
+		return nil, errFileTooLarge
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxLegacyFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxLegacyFileSize {
+		return nil, errFileTooLarge
+	}
+	return raw, nil
 }
 
 // parseCSV splits a comma-separated list, trimming whitespace and dropping empty entries.
