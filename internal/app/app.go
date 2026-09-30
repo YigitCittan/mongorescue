@@ -97,6 +97,7 @@ type App struct {
 
 // options holds optional App settings.
 type options struct {
+	desktop bool
 	version string
 	commit  string
 	getenv  func(string) string
@@ -108,6 +109,12 @@ type Option func(*options)
 // WithGetenv replaces os.Getenv for reading deprecated environment variables (tests).
 func WithGetenv(getenv func(string) string) Option {
 	return func(o *options) { o.getenv = getenv }
+}
+
+// WithDesktop marks the App as served to the desktop app's webview, whose page
+// origin needs a wider Content-Security-Policy (see server.WithDesktopCSP).
+func WithDesktop() Option {
+	return func(o *options) { o.desktop = true }
 }
 
 // WithBuildInfo sets the version and commit reported by mongorescue_build_info.
@@ -323,7 +330,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Logger:      logger,
 	})
 
-	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger,
+	serverOpts := []server.Option{
 		server.WithOperations(ops),
 		server.WithMCPHandler(mcpSrv.Handler()),
 		server.WithAudit(auditSvc),
@@ -337,7 +344,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithConnections(connSvc),
 		server.WithSettings(settingsSvc),
 		server.WithStorageTargets(targetSvc),
-	)
+	}
+	if o.desktop {
+		serverOpts = append(serverOpts, server.WithDesktopCSP())
+	}
+	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger, serverOpts...)
 
 	return &App{
 		cfg:           cfg,
