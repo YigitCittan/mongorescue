@@ -330,14 +330,20 @@ func warnIfExposed(f *os.File, path string, logger *slog.Logger) {
 }
 
 // parseIdentities reads X25519 identities one per line, skipping blanks and "#"
-// comments. Parse errors reference the line number only, never the line content.
+// comments. A leading UTF-8 byte order mark and CRLF line endings (a key file saved
+// by a Windows editor) are accepted. Parse errors reference the line number only,
+// never the line content.
 func parseIdentities(r io.Reader, source string) ([]age.Identity, error) {
 	var ids []age.Identity
 	scanner := bufio.NewScanner(io.LimitReader(r, identitySizeLimit))
 	line := 0
 	for scanner.Scan() {
 		line++
-		s := strings.TrimSpace(scanner.Text())
+		text := scanner.Text()
+		if line == 1 {
+			text = strings.TrimPrefix(text, "\ufeff")
+		}
+		s := strings.TrimSpace(text)
 		if s == "" || strings.HasPrefix(s, "#") {
 			continue
 		}
