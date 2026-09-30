@@ -22,7 +22,7 @@ func TestRetryOfIsStoredAndIndexed(t *testing.T) {
 		{ID: "bkp_failed", Database: "shop", Status: models.StatusFailed},
 		{ID: "bkp_retry", Database: "shop", Status: models.StatusCompleted, RetryOf: "bkp_failed"},
 	} {
-		if err := s.SaveBackupRecord(ctx, r); err != nil {
+		if err = s.SaveBackupRecord(ctx, r); err != nil {
 			t.Fatal(err)
 		}
 	}
