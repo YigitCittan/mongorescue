@@ -66,6 +66,9 @@
               <span class="menu-user" id="user-menu-fullname"></span>
             </div>
             <button type="button" role="menuitem" class="menu-item" data-action="change-own-password" data-i18n="auth.change_password">Change password</button>
+            <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
+            <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="sessions" data-i18n="sessions.menu">Active sessions</button>
+            <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="menu-item" data-action="logout" data-i18n="auth.logout">Log out</button>
           </div>
         </div>
@@ -511,6 +514,7 @@
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title">Users</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sessions" data-i18n="sessions.title">Sessions</button>
       </nav>
       <div class="settings-content">
 
@@ -1001,6 +1005,42 @@
         </div>
       </section>
 
+      <!-- Sessions -->
+      <section class="settings-panel" id="settings-sessions" aria-labelledby="settings-sessions-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-sessions-title" data-i18n="sessions.title">Sessions</h2>
+            <p class="section-desc" data-i18n="sessions.desc">Browsers signed in to this instance. Revoke a session to sign it out right away; revoking your current session signs you out.</p>
+          </div>
+          <div class="section-actions">
+            <label class="check-inline" for="sessions-all">
+              <input type="checkbox" id="sessions-all">
+              <span data-i18n="sessions.show_all">All users</span>
+            </label>
+            <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-sessions">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>
+              <span data-i18n="settings.activity_refresh">Refresh</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" aria-labelledby="settings-sessions-title">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="settings.col_username">Username</th>
+                <th scope="col" data-i18n="sessions.col_signed_in">Signed in</th>
+                <th scope="col" data-i18n="sessions.col_last_active">Last active</th>
+                <th scope="col" data-i18n="sessions.col_expires">Expires</th>
+                <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="sessions-tbody">
+              <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       </div>
      </div>
     </section>
@@ -1412,9 +1452,90 @@
             <input type="text" id="connection-name" class="form-input" maxlength="128" data-i18n-placeholder="conn.name_placeholder" placeholder="e.g. production-cluster" required>
           </div>
           <div class="form-group">
-            <label class="form-label" for="connection-uri" data-i18n="conn.uri_label">Connection string</label>
-            <textarea id="connection-uri" class="form-input mono" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="mongodb://user:password@host:27017/?authSource=admin" aria-describedby="connection-uri-hint" required></textarea>
-            <span class="form-hint" id="connection-uri-hint" data-i18n="conn.uri_hint">mongodb:// or mongodb+srv:// URI. When editing, leave the masked password unchanged to keep the stored one.</span>
+            <div class="field-head">
+              <label class="form-label" for="connection-uri" id="connection-uri-label" data-i18n="conn.uri_label">Connection string</label>
+              <div class="segmented segmented-text" role="group" aria-label="How to enter the connection string" data-i18n-aria-label="uri_builder.mode_label">
+                <button type="button" class="segmented-btn" data-action="uri-mode" data-mode="paste" aria-pressed="true" aria-controls="connection-uri-paste" data-i18n="uri_builder.mode_paste">Paste URI</button>
+                <button type="button" class="segmented-btn" data-action="uri-mode" data-mode="build" aria-pressed="false" aria-controls="connection-uri-builder" data-i18n="uri_builder.mode_build">Build</button>
+              </div>
+            </div>
+            <div id="connection-uri-paste" class="form-group">
+              <textarea id="connection-uri" class="form-input mono" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="mongodb://user:password@host:27017/?authSource=admin" aria-describedby="connection-uri-hint" required></textarea>
+              <span class="form-hint" id="connection-uri-hint" data-i18n="conn.uri_hint">mongodb:// or mongodb+srv:// URI. When editing, leave the masked password unchanged to keep the stored one.</span>
+            </div>
+            <div id="connection-uri-builder" class="uri-builder" role="group" aria-labelledby="connection-uri-label" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="uri-scheme" data-i18n="uri_builder.scheme">Scheme</label>
+                  <select id="uri-scheme" class="form-select" aria-describedby="uri-scheme-hint">
+                    <option value="mongodb">mongodb://</option>
+                    <option value="mongodb+srv">mongodb+srv://</option>
+                  </select>
+                  <span class="form-hint" id="uri-scheme-hint" data-i18n="uri_builder.scheme_hint">mongodb+srv:// looks the hosts up in DNS: one host name, no port, TLS on by default.</span>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="uri-database" data-i18n="uri_builder.database">Default database</label>
+                  <input type="text" id="uri-database" class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" data-i18n-placeholder="conn.desc_placeholder" placeholder="Optional">
+                </div>
+              </div>
+              <fieldset class="fieldset">
+                <legend class="form-label" data-i18n="uri_builder.hosts">Hosts</legend>
+                <div id="uri-hosts" class="uri-hosts"></div>
+                <button type="button" class="btn btn-ghost btn-sm" id="uri-add-host" data-action="uri-add-host" data-i18n="uri_builder.add_host">Add host</button>
+              </fieldset>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="uri-username" data-i18n="auth.username">Username</label>
+                  <input type="text" id="uri-username" class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="uri-password" data-i18n="auth.password">Password</label>
+                  <input type="password" id="uri-password" class="form-input" autocomplete="new-password" aria-describedby="uri-password-hint">
+                  <span class="form-hint" id="uri-password-hint" data-i18n="uri_builder.password_hint">Never shown in the preview. When editing, leave it unchanged to keep the stored password.</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="uri-auth-source" data-i18n="uri_builder.auth_source">Authentication database</label>
+                  <input type="text" id="uri-auth-source" class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="admin" aria-describedby="uri-auth-source-hint">
+                  <span class="form-hint" id="uri-auth-source-hint" data-i18n="uri_builder.auth_source_hint">authSource. Usually admin.</span>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="uri-replica-set" data-i18n="uri_builder.replica_set">Replica set</label>
+                  <input type="text" id="uri-replica-set" class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false" data-i18n-placeholder="conn.desc_placeholder" placeholder="Optional">
+                </div>
+              </div>
+              <label class="check" for="uri-tls">
+                <input type="checkbox" id="uri-tls">
+                <span class="check-text">
+                  <span class="check-title" data-i18n="uri_builder.tls">Use TLS</span>
+                  <span class="form-hint" data-i18n="uri_builder.tls_hint">Encrypts the connection (tls=true). Required by most hosted clusters.</span>
+                </span>
+              </label>
+              <div class="uri-tls-options" id="uri-tls-options" hidden>
+                <div class="form-group">
+                  <label class="form-label" for="uri-tls-ca" data-i18n="uri_builder.tls_ca">CA file on the server</label>
+                  <input type="text" id="uri-tls-ca" class="form-input mono" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="/etc/ssl/certs/ca.pem" aria-describedby="uri-tls-ca-hint">
+                  <span class="form-hint" id="uri-tls-ca-hint" data-i18n="uri_builder.tls_ca_hint">tlsCAFile. A path on the machine that runs MongoRescue; leave empty for the system certificates.</span>
+                </div>
+                <label class="check check-danger" for="uri-tls-insecure">
+                  <input type="checkbox" id="uri-tls-insecure">
+                  <span class="check-text">
+                    <span class="check-title" data-i18n="uri_builder.tls_insecure">Allow invalid certificates</span>
+                    <span class="form-hint" data-i18n="uri_builder.tls_insecure_hint">tlsAllowInvalidCertificates=true. Only for testing: it disables certificate checks.</span>
+                  </span>
+                </label>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="uri-options" data-i18n="uri_builder.options">Other options</label>
+                <textarea id="uri-options" class="form-input mono" rows="2" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="retryWrites=true&#10;w=majority" aria-describedby="uri-options-hint"></textarea>
+                <span class="form-hint" id="uri-options-hint" data-i18n="uri_builder.options_hint">One key=value per line, for example readPreference=secondary.</span>
+              </div>
+              <div class="uri-preview-box">
+                <span class="form-label" id="uri-preview-label" data-i18n="uri_builder.preview">Preview</span>
+                <output id="uri-preview" class="uri-preview mono" aria-labelledby="uri-preview-label"></output>
+              </div>
+            </div>
           </div>
           <div class="form-group">
             <label class="form-label" for="connection-description" data-i18n="conn.desc_label">Description</label>
@@ -1963,10 +2084,14 @@
   <div class="menu row-menu" id="row-menu" role="menu" hidden></div>
 
   <div id="toast-container" aria-live="polite"></div>
+  <!-- Screen reader announcements of background changes (forms.js announce()). -->
+  <div id="sr-announce-polite" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="sr-announce-assertive" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
   <script src="/runs.js"></script>
   <script src="/trust.js"></script>
+  <script src="/forms.js"></script>
 </body>
 </html>

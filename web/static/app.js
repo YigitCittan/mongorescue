@@ -654,6 +654,7 @@ function reportFinished(kind, records) {
     }
     if (ACTIVE_STATUSES.includes(rec.status)) return;
     tracked.delete(id);
+    if (typeof noteAnnounced === "function") noteAnnounced(kind, id);
     const db = (kind === "backups" ? rec.database : rec.target_database) || info.database;
     if (rec.status === "cancelled") {
       reportCancelled(kind, rec, db);
@@ -1578,6 +1579,8 @@ function renderStats() {
   setText("count-jobs", state.loaded.jobs ? String(state.jobs.length) : "");
   setText("count-restores", state.stats ? String(stats.total_restores || 0) : "");
   setText("count-notifications", state.loaded.channels ? String(state.channels.length) : "");
+  // Screen readers hear about runs that finish in the background (forms.js).
+  if (typeof announceBackgroundChanges === "function") announceBackgroundChanges();
 }
 
 function storageDescription(type) {
@@ -3912,6 +3915,8 @@ function openConnectionModal(id) {
   setValue("connection-description", c ? c.description : "");
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
+  // Paste URI or Build, as last used (forms.js).
+  if (typeof uriBuilderReset === "function") uriBuilderReset();
   openModal("modal-connection");
 }
 
@@ -3944,7 +3949,7 @@ async function testConnectionForm() {
   const id = getValue("connection-id");
   const uri = getValue("connection-uri");
   if (!uri) {
-    document.getElementById("connection-uri").focus();
+    (typeof uriFocusTarget === "function" ? uriFocusTarget() : document.getElementById("connection-uri")).focus();
     return false;
   }
   const existing = id ? state.connections.find(c => c.id === id) : null;
@@ -4316,7 +4321,7 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "security", "users", "apikeys"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "security", "users", "apikeys", "sessions"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
@@ -4338,6 +4343,8 @@ function showSettingsSection(name, focus) {
   });
   // The activity log is only fetched when someone looks at it.
   if (name === "security") loadAudit();
+  // Sessions too (forms.js).
+  if (name === "sessions" && typeof loadSessions === "function") loadSessions();
 }
 
 function setupSettingsNav() {
@@ -5811,7 +5818,12 @@ function trapFocus(modal, e) {
   if (items.length === 0) return;
   const first = items[0];
   const last = items[items.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
+  // Focus that escaped the dialog (a click on the backdrop, a removed element)
+  // comes back to its edge.
+  if (!modal.contains(document.activeElement)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && document.activeElement === first) {
     e.preventDefault();
     last.focus();
   } else if (!e.shiftKey && document.activeElement === last) {
@@ -5842,9 +5854,28 @@ function closeModal(id) {
   const idx = modalStack.findIndex(m => m.id === id);
   const entry = idx >= 0 ? modalStack.splice(idx, 1)[0] : null;
   if (modalStack.length === 0) document.body.classList.remove("modal-open");
-  if (entry && entry.opener && typeof entry.opener.focus === "function" && document.contains(entry.opener)) {
-    entry.opener.focus();
+  returnFocus(entry && entry.opener);
+}
+
+// Gives the focus back to what opened a dialog. An opener that is gone or hidden
+// (a closed menu's item, a re-rendered row) hands it to its menu button, the dialog
+// below or the active tab, so keyboard users never land on <body>.
+function returnFocus(opener) {
+  const visible = (el) => el && typeof el.focus === "function" && document.contains(el) && el.offsetParent !== null;
+  let target = visible(opener) ? opener : null;
+  if (!target && opener && document.getElementById("user-menu-list") && document.getElementById("user-menu-list").contains(opener)) {
+    target = document.getElementById("user-menu-btn");
   }
+  if (!target && opener && document.getElementById("row-menu") && document.getElementById("row-menu").contains(opener)) {
+    target = rowMenu.trigger && visible(rowMenu.trigger) ? rowMenu.trigger : null;
+  }
+  const top = modalStack[modalStack.length - 1];
+  if (!target && top) {
+    const below = document.getElementById(top.id);
+    target = below ? focusableIn(below)[0] : null;
+  }
+  if (!target) target = document.querySelector(".tab-btn.active");
+  if (target && visible(target)) target.focus();
 }
 
 function showToast(msg, type = "success") {
@@ -5866,14 +5897,34 @@ function uiLocale() {
   return typeof currentLang === "string" && currentLang ? currentLang : "en";
 }
 
+// Binary (IEC) units: 1 KiB = 1024 bytes. Every size in the dashboard goes through
+// formatBytes, so tiles, tables and dialogs agree: three significant digits
+// ("9.77 MiB", "97.7 MiB", "977 MiB"), whole bytes below 1 KiB, the number in the
+// UI language's format.
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
 function formatBytes(value) {
   const bytes = Number(value);
-  if (!bytes || bytes <= 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
-  const n = bytes / Math.pow(k, i);
-  return `${n.toFixed(i === 0 ? 0 : n < 10 ? 2 : 1)} ${sizes[i]}`;
+  let i = 0;
+  let n = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  while (n >= 1024 && i < BYTE_UNITS.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  let digits = i === 0 ? 0 : n < 10 ? 2 : n < 100 ? 1 : 0;
+  // 1023.96 KiB would round to "1024 KiB": show "1.00 MiB" instead.
+  if (i > 0 && i < BYTE_UNITS.length - 1 && Number(n.toFixed(digits)) >= 1024) {
+    n /= 1024;
+    i++;
+    digits = 2;
+  }
+  let text;
+  try {
+    text = new Intl.NumberFormat(uiLocale(), { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
+  } catch (err) {
+    text = n.toFixed(digits);
+  }
+  return `${text} ${BYTE_UNITS[i]}`;
 }
 
 function parseDate(value) {
