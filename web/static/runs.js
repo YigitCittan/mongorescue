@@ -99,7 +99,8 @@ function runProgressHtml(rec) {
 function cancelRunButton(kind, rec) {
   if (!rec || rec.status !== "in_progress") return "";
   const busy = cancellingRuns.has(rec.id) || (runProgressOf(rec) || {}).cancelling;
-  return `<button type="button" class="btn btn-secondary btn-sm btn-danger-text" data-action="cancel-run" data-kind="${escapeHtml(kind)}" data-id="${escapeHtml(rec.id)}"${busy ? " disabled" : ""}>${escapeHtml(busy ? t("run.cancelling") : t("run.cancel"))}</button>`;
+  const title = escapeHtml(t("run.cancel"));
+  return `<button type="button" class="btn btn-secondary btn-sm btn-danger-text" data-action="cancel-run" data-kind="${escapeHtml(kind)}" data-id="${escapeHtml(rec.id)}" title="${title}"${busy ? " disabled" : ""}>${escapeHtml(busy ? t("run.cancelling") : t("run.cancel_short"))}</button>`;
 }
 
 // Cancels a running backup or restore after confirmation. A cancelled in-place
@@ -569,14 +570,17 @@ function renderRestoreDetails() {
   warning.hidden = !r.warning;
   setText("restore-details-warning-text", r.warning || "");
   const errorBox = document.getElementById("restore-details-error");
+  setI18nText("restore-details-h-error", r.status === "cancelled" ? "run.cancel_note" : "backup_details.error");
   errorBox.hidden = !r.error_message;
   setText("restore-details-error-text", r.error_message || "");
 
   renderRunPanel("restore", "restore", r);
 }
 
-// Extra rows of the backup details dialog for a cancelled backup.
+// Extra rows of the backup details dialog for a cancelled backup; its message is
+// headed as a cancellation, not an error.
 function backupCancelRows(b, row) {
+  setI18nText("backup-details-h-error", b.status === "cancelled" ? "run.cancel_note" : "backup_details.error");
   if (b.status !== "cancelled") return;
   row(t("run.cancelled_by"), [b.cancelled_by || "", absoluteWithRelative(b.cancelled_at)].filter(Boolean).join(" · "));
 }

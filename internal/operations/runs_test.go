@@ -99,9 +99,9 @@ func TestCancelBackupRecordsWhoAndIsNotAFailure(t *testing.T) {
 	}
 	// The running backup carries its live progress in API results.
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		list, err := f.svc.ListBackups(context.Background(), operations.BackupFilter{})
-		if err != nil {
-			t.Fatal(err)
+		list, listErr := f.svc.ListBackups(context.Background(), operations.BackupFilter{})
+		if listErr != nil {
+			t.Fatal(listErr)
 		}
 		if len(list) == 1 && list[0].Progress != nil && list[0].Progress.Phase == models.PhaseDumping {
 			break
@@ -126,10 +126,10 @@ func TestCancelBackupRecordsWhoAndIsNotAFailure(t *testing.T) {
 		final.ErrorMessage != "backup cancelled by API key ci" || final.Progress != nil {
 		t.Fatalf("final = %+v", final)
 	}
-	if _, err := f.svc.CancelBackup(context.Background(), started.ID, ""); !errors.Is(err, operations.ErrNotRunning) {
+	if _, err = f.svc.CancelBackup(context.Background(), started.ID, ""); !errors.Is(err, operations.ErrNotRunning) {
 		t.Fatalf("cancelling a cancelled backup = %v, want ErrNotRunning", err)
 	}
-	if _, err := f.svc.CancelBackup(context.Background(), "bkp_unknown", ""); !errors.Is(err, operations.ErrNotFound) {
+	if _, err = f.svc.CancelBackup(context.Background(), "bkp_unknown", ""); !errors.Is(err, operations.ErrNotFound) {
 		t.Fatalf("cancelling an unknown backup = %v, want ErrNotFound", err)
 	}
 	if len(f.svc.ActiveRuns()) != 0 {

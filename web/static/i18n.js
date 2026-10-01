@@ -12,6 +12,8 @@ const translations = {
     run: {
       status_cancelled: "Cancelled",
       cancel: "Cancel run",
+      cancel_short: "Cancel",
+      cancel_note: "Cancellation",
       cancelling: "Cancelling…",
       confirm_cancel_backup: "Cancel this backup? mongodump is stopped and the partial archive is deleted.",
       confirm_cancel_restore: "Cancel this restore? mongorestore is stopped and the partially restored clone database is dropped.",
@@ -819,6 +821,8 @@ const translations = {
     run: {
       status_cancelled: "İptal edildi",
       cancel: "Çalışmayı iptal et",
+      cancel_short: "İptal et",
+      cancel_note: "İptal",
       cancelling: "İptal ediliyor…",
       confirm_cancel_backup: "Bu yedekleme iptal edilsin mi? mongodump durdurulur ve yarım kalan arşiv silinir.",
       confirm_cancel_restore: "Bu geri yükleme iptal edilsin mi? mongorestore durdurulur ve yarım kalan klon veritabanı silinir.",

@@ -44,7 +44,7 @@ func (r *Reader) ReadAt(b []byte, off int64) (int, error) {
 		want := min(int64(len(b)), p.size-off)
 		got, err := p.r.ReadAt(b[:want], off)
 		n += got
-		if err != nil && !(errors.Is(err, io.EOF) && int64(got) == want) {
+		if err != nil && (!errors.Is(err, io.EOF) || int64(got) != want) {
 			if errors.Is(err, io.EOF) {
 				// The part is shorter than recorded (a file rotated meanwhile).
 				return n, io.ErrUnexpectedEOF

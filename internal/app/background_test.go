@@ -106,7 +106,7 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cancellation *runs.Cancellation
-	if err := a.runs.Go(runs.BackupKey("c", "shop"), func(runCtx context.Context) {
+	if err = a.runs.Go(runs.BackupKey("c", "shop"), func(runCtx context.Context) {
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
 		<-runCtx.Done()
@@ -116,7 +116,7 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.runs.Go(runs.RestoreKey("c", "shop_rescue"), func(runCtx context.Context) {
+	if err = a.runs.Go(runs.RestoreKey("c", "shop_rescue"), func(runCtx context.Context) {
 		<-runCtx.Done()
 		restore.Status, restore.ErrorMessage = models.RestoreStatusFailed, "restore aborted: context canceled"
 		_ = a.metaStore.SaveRestoreRecord(context.WithoutCancel(runCtx), restore)

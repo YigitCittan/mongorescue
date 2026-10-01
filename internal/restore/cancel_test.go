@@ -128,7 +128,7 @@ func TestRestoreCancelledBeforeMongorestoreLeavesTargetUntouched(t *testing.T) {
 	called := false
 	engine.runner = cancellingRunner(reg, record.ID, &called)
 	run, _ := reg.Register(runs.Meta{Kind: models.RunRestore, ID: record.ID})
-	if err := reg.Cancel(record.ID, runs.Cancellation{By: "API key ci"}); err != nil {
+	if err = reg.Cancel(record.ID, runs.Cancellation{By: "API key ci"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := engine.Execute(run.Bind(context.Background()), req, src, record)

@@ -128,7 +128,7 @@ func TestBackupCancelBeforeStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, _ := reg.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID})
-	if err := reg.Cancel(record.ID, runs.Cancellation{By: "API key ci", At: time.Now()}); err != nil {
+	if err = reg.Cancel(record.ID, runs.Cancellation{By: "API key ci", At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := engine.Execute(run.Bind(context.Background()), opts, record)

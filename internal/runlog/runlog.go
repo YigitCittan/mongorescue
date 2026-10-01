@@ -190,7 +190,7 @@ func (d *Dir) Create(id string) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(d.path, dirPerm); err != nil {
+	if err = os.MkdirAll(d.path, dirPerm); err != nil {
 		return nil, fmt.Errorf("runlog: create %s: %w", d.path, err)
 	}
 	_ = d.Remove(id)
