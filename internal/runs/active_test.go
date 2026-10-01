@@ -218,3 +218,39 @@ func TestFinishingRunsCannotBeCancelled(t *testing.T) {
 		t.Fatal("a finishing run must keep running")
 	}
 }
+
+// TestCancellationBeforeBindSurvivesAnEndedParent covers a force quit: the runs are
+// cancelled, then the application shuts down, and a run that binds its context only
+// afterwards still reports the force quit as its cancellation.
+func TestCancellationBeforeBindSurvivesAnEndedParent(t *testing.T) {
+	reg := NewRegistry()
+	run, _ := reg.Register(Meta{Kind: models.RunBackup, ID: "bkp_late_bind"})
+	defer run.End()
+	if ids := reg.CancelAll(Cancellation{By: SystemActor, Reason: "cancelled: application force quit"}); len(ids) != 1 {
+		t.Fatalf("cancelled %v", ids)
+	}
+	parent, shutdown := context.WithCancel(context.Background())
+	shutdown()
+	ctx := run.Bind(parent)
+	c := CancellationOf(ctx)
+	if c == nil || c.Reason != "cancelled: application force quit" || c.By != SystemActor {
+		t.Fatalf("cancellation = %+v; want the force quit", c)
+	}
+}
+
+// TestCancelAfterTheRunStoppedIsRefused keeps a timeout or shutdown from being
+// reported as a cancellation requested afterwards.
+func TestCancelAfterTheRunStoppedIsRefused(t *testing.T) {
+	reg := NewRegistry()
+	run, _ := reg.Register(Meta{Kind: models.RunBackup, ID: "bkp_stopped"})
+	defer run.End()
+	parent, shutdown := context.WithCancel(context.Background())
+	ctx := run.Bind(parent)
+	shutdown()
+	if err := reg.Cancel("bkp_stopped", Cancellation{By: "alice"}); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("cancel after the run stopped = %v, want ErrNotRunning", err)
+	}
+	if c := CancellationOf(ctx); c != nil {
+		t.Fatalf("a shut-down run reports cancellation %+v", c)
+	}
+}

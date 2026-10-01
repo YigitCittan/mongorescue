@@ -637,6 +637,9 @@ func TestBackgroundUpdateItem(t *testing.T) {
 	close(gate)
 	status("MongoRescue is up to date (v0.7.0)")
 	item("Check for updates", true)
+	// The check stores its result and then reports the change, after the status
+	// above became visible: wait for the second notification instead of racing it.
+	waitFor(t, func() bool { return changes.Load() >= 2 })
 	if checks, _, _ := up.counts(); checks != 1 || changes.Load() < 2 {
 		t.Errorf("checks %d changes %d", checks, changes.Load())
 	}
