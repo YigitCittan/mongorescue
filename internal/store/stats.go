@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -74,12 +73,14 @@ func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*Backup
 		string(models.StatusFailed), timeKey(since)).Scan(&st.FailedSince); err != nil {
 		return nil, fmt.Errorf("store: count recent failures: %w", err)
 	}
-	st.Last, err = getRecord[models.BackupRecord](ctx, s.db, ErrNotFound, "SELECT data FROM backups ORDER BY started_at DESC, id DESC LIMIT 1")
-	if errors.Is(err, ErrNotFound) {
-		st.Last, err = nil, nil
-	}
+	// A newest backup that cannot be read is skipped (and reported), so Last stays nil.
+	last, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		"SELECT id, data FROM backups ORDER BY started_at DESC, id DESC LIMIT 1")
 	if err != nil {
 		return nil, err
+	}
+	if len(last) > 0 {
+		st.Last = last[0]
 	}
 	return st, nil
 }
@@ -87,17 +88,17 @@ func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*Backup
 // LatestJobBackups maps every job ID that has backups to its newest backup (by start
 // time, then ID). A non-empty status only considers backups in that state.
 func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
-	query := `SELECT b.data FROM backups b JOIN (
+	query := `SELECT b.id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' GROUP BY job_id
 		) l ON b.job_id = l.job_id AND b.started_at = l.latest`
 	var args []any
 	if status != "" {
-		query = `SELECT b.data FROM backups b JOIN (
+		query = `SELECT b.id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ? GROUP BY job_id
 		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?`
 		args = []any{string(status), string(status)}
 	}
-	list, err := listRecords[models.BackupRecord](ctx, s.db, query, args...)
+	list, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil, query, args...)
 	if err != nil {
 		return nil, err
 	}

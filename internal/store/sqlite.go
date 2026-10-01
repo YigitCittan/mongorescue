@@ -54,6 +54,8 @@ type SQLiteStore struct {
 	logger *slog.Logger
 	// box encrypts connection URIs and notification channel secrets at rest.
 	box *secretbox.Box
+	// corrupt holds the rows that lists skipped because they cannot be read.
+	corrupt corruptLog
 
 	closeOnce sync.Once
 	closeErr  error
@@ -136,14 +138,16 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 		}
 		if !upgraded {
 			// One-time upgrade; it records the format marker in the same transaction.
-			return s.upgradeSecrets(ctx)
-		}
-		// Once upgraded, a secret field that is not sealed in the current format was
-		// planted: refuse to start instead of accepting (and re-sealing) it.
-		if err := s.verifySecretsSealed(ctx); err != nil {
+			if err := s.upgradeSecrets(ctx); err != nil {
+				return err
+			}
+		} else if err := s.verifySecretsSealed(ctx); err != nil {
+			// Once upgraded, a secret field that is not sealed in the current format was
+			// planted: refuse to start instead of accepting (and re-sealing) it.
 			return err
 		}
 	}
+	s.scanCorruptRecords(ctx)
 	return nil
 }
 
@@ -258,9 +262,48 @@ func getRecord[T any](ctx context.Context, q queryer, notFound error, query stri
 	return decode[T](data)
 }
 
-// listRecords decodes the JSON data column of every row selected by query. It never
-// returns a nil slice, so empty results serialise as [].
-func listRecords[T any](ctx context.Context, q queryer, query string, args ...any) ([]*T, error) {
+// listRecords returns the records of table selected by query, which must select the
+// id and data columns. A row whose JSON does not decode, or whose encrypted fields
+// open (when not nil) cannot open, is skipped and reported through CorruptRecords; it
+// is never changed. Only a missing secret box (ErrNoSecretBox) and query errors fail
+// the list. It never returns a nil slice, so empty results serialise as [].
+func listRecords[T any](ctx context.Context, s *SQLiteStore, table string, open func(*T) error, query string, args ...any) ([]*T, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	list := make([]*T, 0)
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, fmt.Errorf("store: scan row: %w", err)
+		}
+		v, err := decode[T](data)
+		if err == nil && open != nil {
+			if err = open(v); errors.Is(err, ErrNoSecretBox) {
+				return nil, err
+			}
+		}
+		if err != nil {
+			s.reportCorrupt(table, id, err)
+			continue
+		}
+		s.clearCorrupt(table, id)
+		list = append(list, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate rows: %w", err)
+	}
+	return list, nil
+}
+
+// listRecordsStrict decodes the JSON data column of every row selected by query, and
+// fails on the first row that does not decode. Maintenance transactions (secret
+// upgrades, legacy migrations) use it: they must not complete while skipping rows.
+// It never returns a nil slice.
+func listRecordsStrict[T any](ctx context.Context, q queryer, query string, args ...any) ([]*T, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query: %w", err)
@@ -285,11 +328,11 @@ func listRecords[T any](ctx context.Context, q queryer, query string, args ...an
 	return list, nil
 }
 
-// decode unmarshals a stored JSON record.
+// decode unmarshals a stored JSON record. Its errors wrap ErrCorruptRecord.
 func decode[T any](data string) (*T, error) {
 	v := new(T)
 	if err := json.Unmarshal([]byte(data), v); err != nil {
-		return nil, fmt.Errorf("store: decode record: %w", err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrCorruptRecord, errDecodeRecord, err)
 	}
 	return v, nil
 }

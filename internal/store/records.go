@@ -120,7 +120,7 @@ func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*models.Job, error
 
 // ListJobs returns all registered backup jobs sorted by name.
 func (s *SQLiteStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
-	return listRecords[models.Job](ctx, s.db, "SELECT data FROM jobs ORDER BY name, id")
+	return listRecords[models.Job](ctx, s, tableJobs, nil, "SELECT id, data FROM jobs ORDER BY name, id")
 }
 
 // DeleteJob removes a job or returns ErrNotFound. Its backup records are kept.
@@ -145,11 +145,11 @@ func (s *SQLiteStore) GetBackupRecord(ctx context.Context, id string) (*models.B
 // sorted by StartedAt descending (newest first).
 func (s *SQLiteStore) ListBackupRecords(ctx context.Context, database string) ([]*models.BackupRecord, error) {
 	if database == "" {
-		return listRecords[models.BackupRecord](ctx, s.db,
-			"SELECT data FROM backups ORDER BY started_at DESC, id DESC")
+		return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+			"SELECT id, data FROM backups ORDER BY started_at DESC, id DESC")
 	}
-	return listRecords[models.BackupRecord](ctx, s.db,
-		"SELECT data FROM backups WHERE database_name = ? ORDER BY started_at DESC, id DESC", database)
+	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		"SELECT id, data FROM backups WHERE database_name = ? ORDER BY started_at DESC, id DESC", database)
 }
 
 // DeleteBackupRecord deletes a backup record or returns ErrNotFound.
@@ -172,8 +172,8 @@ func (s *SQLiteStore) GetRestoreRecord(ctx context.Context, id string) (*models.
 
 // ListRestoreRecords returns all restore operations sorted by StartedAt descending.
 func (s *SQLiteStore) ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error) {
-	return listRecords[models.RestoreRecord](ctx, s.db,
-		"SELECT data FROM restores ORDER BY started_at DESC, id DESC")
+	return listRecords[models.RestoreRecord](ctx, s, tableRestores, nil,
+		"SELECT id, data FROM restores ORDER BY started_at DESC, id DESC")
 }
 
 // putJob upserts job and its indexed columns.

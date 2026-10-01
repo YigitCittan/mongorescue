@@ -48,16 +48,7 @@ var liveBackupStatuses = []any{string(models.StatusCompleted), string(models.Sta
 
 // ListStorageTargets returns all storage targets sorted by name, secrets decrypted.
 func (s *SQLiteStore) ListStorageTargets(ctx context.Context) ([]*models.StorageTarget, error) {
-	list, err := listRecords[models.StorageTarget](ctx, s.db, "SELECT data FROM storage_targets ORDER BY name, id")
-	if err != nil {
-		return nil, err
-	}
-	for _, t := range list {
-		if err := s.openStorageTarget(t); err != nil {
-			return nil, err
-		}
-	}
-	return list, nil
+	return listRecords(ctx, s, tableStorageTargets, s.openStorageTarget, "SELECT id, data FROM storage_targets ORDER BY name, id")
 }
 
 // GetStorageTarget returns a storage target or targets.ErrNotFound.

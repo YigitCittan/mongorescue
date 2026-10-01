@@ -21,16 +21,7 @@ const upsertConnectionSQL = `INSERT INTO connections (id, name, data) VALUES (?,
 
 // ListConnections returns all connections sorted by name, with decrypted URIs.
 func (s *SQLiteStore) ListConnections(ctx context.Context) ([]*models.Connection, error) {
-	list, err := listRecords[models.Connection](ctx, s.db, "SELECT data FROM connections ORDER BY name, id")
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range list {
-		if err := s.openConnection(c); err != nil {
-			return nil, err
-		}
-	}
-	return list, nil
+	return listRecords(ctx, s, tableConnections, s.openConnection, "SELECT id, data FROM connections ORDER BY name, id")
 }
 
 // GetConnection returns a connection with its decrypted URI or connections.ErrNotFound.
@@ -134,7 +125,7 @@ func (s *SQLiteStore) MigrateLegacyJobURIs(ctx context.Context, defaultURI strin
 		if err != nil || len(rows) == 0 {
 			return err
 		}
-		existing, err := listRecords[models.Connection](ctx, tx, "SELECT data FROM connections ORDER BY json_extract(data, '$.created_at'), id")
+		existing, err := listRecordsStrict[models.Connection](ctx, tx, "SELECT data FROM connections ORDER BY json_extract(data, '$.created_at'), id")
 		if err != nil {
 			return err
 		}
