@@ -317,7 +317,20 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 		Status:               models.RestoreStatusInProgress,
 		StartedAt:            startTime,
 		DryRun:               req.DryRun,
+		SelectedCollections:  selectedCollections(req.SelectedCollections),
 	}, nil
+}
+
+// selectedCollections returns the non-blank, trimmed entries of names (the ones
+// buildRestoreArgs passes to --nsInclude), or nil when there are none.
+func selectedCollections(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if trimmed := strings.TrimSpace(n); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // resolveURI returns the connection string for req (falling back to the default).
@@ -644,6 +657,8 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 		args = append(args, "--dryRun")
 	}
 
+	// mongorestore drops a collection right before restoring it, so with --nsInclude
+	// only the selected collections are dropped; the others in the target are kept.
 	if req.DropTarget {
 		args = append(args, "--drop")
 	}

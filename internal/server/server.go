@@ -284,6 +284,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/backups", s.handleCreateBackup)
 	mux.HandleFunc("DELETE /api/v1/backups/{id}", s.handleDeleteBackup)
 	mux.HandleFunc("POST /api/v1/backups/{id}/retry", s.handleRetryBackup)
+	mux.HandleFunc("GET /api/v1/backups/{id}/collections", s.handleBackupCollections)
 
 	// API Disaster Recovery / Restores
 	mux.HandleFunc("GET /api/v1/restores", s.handleListRestores)
@@ -556,6 +557,20 @@ func (s *Server) handleRetryBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, record)
+}
+
+// handleBackupCollections lists the collections stored in a backup's archive (read
+// from the archive prelude only) for a selective restore.
+func (s *Server) handleBackupCollections(w http.ResponseWriter, r *http.Request) {
+	// Reading the prelude may take up to operations.ArchivePreviewTimeout; the response
+	// must still be written after it, past the server's default write timeout.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(operations.ArchivePreviewTimeout + writeTimeout))
+	list, err := s.ops.ListBackupCollections(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // writeOperationError maps operations errors to HTTP responses. Messages of expected

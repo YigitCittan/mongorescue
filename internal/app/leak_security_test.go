@@ -295,6 +295,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		"/api/v1/users", "/api/v1/api-keys", "/api/v1/connections", "/api/v1/connections/" + conn.ID,
 		"/api/v1/settings", "/api/v1/storage-targets", "/api/v1/storage-targets/" + target.ID, "/api/v1/stats",
 		"/api/v1/jobs", "/api/v1/jobs/" + job.ID, "/api/v1/backups", "/api/v1/backups?database=shop", "/api/v1/restores",
+		"/api/v1/backups/" + backup.ID + "/collections",
 		"/api/v1/notifications/channels", "/api/v1/notifications/rules", "/api/v1/audit",
 		"/api/v1/connections/nope", "/api/v1/jobs/nope", "/api/v1/storage-targets/nope",
 	}
@@ -321,15 +322,16 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	// list_databases and list_collections contact the server; see above.
 	discovery := map[string]bool{mcp.ToolListDatabases: true, mcp.ToolListCollections: true}
 	calls := map[string]map[string]any{
-		mcp.ToolListConnections:    {},
-		mcp.ToolListJobs:           {},
-		mcp.ToolGetJob:             {"id": job.ID},
-		mcp.ToolListBackups:        {},
-		mcp.ToolGetBackup:          {"id": backup.ID},
-		mcp.ToolListRestores:       {},
-		mcp.ToolGetRestore:         {"id": restore.ID},
-		mcp.ToolListStorageTargets: {},
-		mcp.ToolGetStatus:          {},
+		mcp.ToolListConnections:       {},
+		mcp.ToolListJobs:              {},
+		mcp.ToolGetJob:                {"id": job.ID},
+		mcp.ToolListBackups:           {},
+		mcp.ToolGetBackup:             {"id": backup.ID},
+		mcp.ToolListRestores:          {},
+		mcp.ToolGetRestore:            {"id": restore.ID},
+		mcp.ToolListStorageTargets:    {},
+		mcp.ToolGetStatus:             {},
+		mcp.ToolListBackupCollections: {"backup_id": backup.ID},
 	}
 	for tool, args := range calls {
 		if _, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: args}); err != nil {

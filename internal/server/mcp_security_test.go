@@ -8,20 +8,21 @@ import (
 
 // toolRoutes maps every MCP tool to the REST route that performs the same operation.
 var toolRoutes = map[string]string{
-	mcp.ToolListConnections:    "GET /api/v1/connections",
-	mcp.ToolListDatabases:      "GET /api/v1/connections/{id}/databases",
-	mcp.ToolListCollections:    "GET /api/v1/connections/{id}/databases/{db}/collections",
-	mcp.ToolListJobs:           "GET /api/v1/jobs",
-	mcp.ToolGetJob:             "GET /api/v1/jobs/{id}",
-	mcp.ToolListBackups:        "GET /api/v1/backups",
-	mcp.ToolGetBackup:          "GET /api/v1/backups",
-	mcp.ToolListRestores:       "GET /api/v1/restores",
-	mcp.ToolGetRestore:         "GET /api/v1/restores",
-	mcp.ToolListStorageTargets: "GET /api/v1/storage-targets",
-	mcp.ToolGetStatus:          "GET /api/v1/stats",
-	mcp.ToolStartBackup:        "POST /api/v1/backups",
-	mcp.ToolRunJob:             "POST /api/v1/jobs/{id}/run",
-	mcp.ToolRestoreSafeClone:   "POST /api/v1/restore",
+	mcp.ToolListConnections:       "GET /api/v1/connections",
+	mcp.ToolListDatabases:         "GET /api/v1/connections/{id}/databases",
+	mcp.ToolListCollections:       "GET /api/v1/connections/{id}/databases/{db}/collections",
+	mcp.ToolListJobs:              "GET /api/v1/jobs",
+	mcp.ToolGetJob:                "GET /api/v1/jobs/{id}",
+	mcp.ToolListBackups:           "GET /api/v1/backups",
+	mcp.ToolGetBackup:             "GET /api/v1/backups",
+	mcp.ToolListRestores:          "GET /api/v1/restores",
+	mcp.ToolGetRestore:            "GET /api/v1/restores",
+	mcp.ToolListStorageTargets:    "GET /api/v1/storage-targets",
+	mcp.ToolGetStatus:             "GET /api/v1/stats",
+	mcp.ToolStartBackup:           "POST /api/v1/backups",
+	mcp.ToolRunJob:                "POST /api/v1/jobs/{id}/run",
+	mcp.ToolRestoreSafeClone:      "POST /api/v1/restore",
+	mcp.ToolListBackupCollections: "GET /api/v1/backups/{id}/collections",
 }
 
 // TestMCPToolsNeedTheScopeOfTheirRESTRoute checks that no tool is easier to reach

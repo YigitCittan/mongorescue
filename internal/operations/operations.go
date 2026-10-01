@@ -154,6 +154,9 @@ type Service struct {
 	cfg    Config
 	logger *slog.Logger
 	now    func() time.Time
+
+	// archiveCache holds the archive collection lists of ListBackupCollections.
+	archiveCache *collectionCache
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -166,7 +169,7 @@ func New(cfg Config) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{cfg: cfg, logger: logger, now: time.Now}
+	return &Service{cfg: cfg, logger: logger, now: time.Now, archiveCache: newCollectionCache(archiveCacheSize)}
 }
 
 // settings returns the live settings or the defaults.

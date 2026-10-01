@@ -143,8 +143,8 @@ func TestBridgeForwardsToolsResourcesAndPrompts(t *testing.T) {
 	if init.ServerInfo.Name != ServerName || !strings.Contains(init.Instructions, "safe") && !strings.Contains(init.Instructions, "rescue") {
 		t.Fatalf("bridge must mirror the server identity and instructions: %+v", init.ServerInfo)
 	}
-	if names := toolNames(t, cs); len(names) != 11 || slices.Contains(names, ToolStartBackup) {
-		t.Fatalf("a read key through the bridge sees %v; want the 11 read tools", names)
+	if names := toolNames(t, cs); len(names) != 12 || slices.Contains(names, ToolStartBackup) {
+		t.Fatalf("a read key through the bridge sees %v; want the 12 read tools", names)
 	}
 	var status struct {
 		Health string `json:"health"`
