@@ -37,6 +37,13 @@ var (
 // cancellation so that shutdown does not leave records stuck in an in-progress state.
 const persistTimeout = 5 * time.Second
 
+// Delays between attempts to load the jobs when Start could not list them: the first
+// retry waits loadRetryFirst, every further one twice as long, up to loadRetryLimit.
+const (
+	loadRetryFirst = 5 * time.Second
+	loadRetryLimit = 30 * time.Second
+)
+
 // Scheduler coordinates cron-based scheduled backups and automated retention pruning.
 type Scheduler struct {
 	cron          *cron.Cron
@@ -60,6 +67,10 @@ type Scheduler struct {
 
 	// inflight tracks cron-triggered executions so Stop can wait for them to finish.
 	inflight sync.WaitGroup
+	// loader tracks the goroutine that retries loading the jobs after Start failed to.
+	loader sync.WaitGroup
+	// retryFirst and retryLimit bound the delay between job loading attempts.
+	retryFirst, retryLimit time.Duration
 }
 
 // Option customises a Scheduler.
@@ -133,6 +144,8 @@ func NewScheduler(
 		entries:       make(map[string]cron.EntryID),
 		ctx:           ctx,
 		cancel:        cancel,
+		retryFirst:    loadRetryFirst,
+		retryLimit:    loadRetryLimit,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -150,7 +163,10 @@ func (s *Scheduler) ActiveJobCount() int {
 // Start loads all active jobs from the metadata store, schedules them, and starts the cron worker.
 // Cron-triggered backups run under a context derived from ctx and are cancelled by Stop.
 // Start returns ErrStopped after Stop, and ErrAlreadyStarted once a previous call
-// succeeded. If loading jobs fails, the scheduler stays unstarted and Start may be retried.
+// succeeded. If the jobs cannot be listed, Start logs the error, starts anyway and
+// keeps retrying in the background (with a growing delay up to 30 s) until the jobs
+// load or the scheduler stops; jobs registered meanwhile are kept. Rows the store
+// cannot decode are skipped by the store, so one damaged job never blocks the others.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,13 +184,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	runCtx, runCancel := context.WithCancel(parent)
 
-	jobs, err := s.metadataStore.ListJobs(runCtx)
-	if err != nil {
-		runCancel()
-		return fmt.Errorf("list scheduled jobs: %w", err)
-	}
-
-	// Commit the run context only once loading succeeded, releasing the placeholder.
+	// Release the placeholder context of NewScheduler.
 	prevCancel := s.cancel
 	s.ctx, s.cancel = runCtx, runCancel
 	if prevCancel != nil {
@@ -182,6 +192,29 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	s.started = true
 
+	if err := s.loadJobsLocked(); err != nil {
+		s.logger.Error("failed to load scheduled jobs; scheduled backups do not run until they load, retrying",
+			slog.Duration("retry_in", s.retryFirst),
+			slog.Any("error", err),
+		)
+		s.loader.Add(1)
+		go s.retryLoad(runCtx)
+	}
+
+	s.cron.Start()
+	s.logger.Info("backup scheduler started successfully",
+		slog.Int("active_jobs", len(s.entries)),
+	)
+
+	return nil
+}
+
+// loadJobsLocked registers every enabled job of the store. Caller must hold s.mu.
+func (s *Scheduler) loadJobsLocked() error {
+	jobs, err := s.metadataStore.ListJobs(s.ctx)
+	if err != nil {
+		return fmt.Errorf("list scheduled jobs: %w", err)
+	}
 	for _, job := range jobs {
 		if job.Enabled {
 			if err := s.registerJobLocked(job); err != nil {
@@ -193,13 +226,42 @@ func (s *Scheduler) Start(ctx context.Context) error {
 			}
 		}
 	}
-
-	s.cron.Start()
-	s.logger.Info("backup scheduler started successfully",
-		slog.Int("active_jobs", len(s.entries)),
-	)
-
 	return nil
+}
+
+// retryLoad retries loadJobsLocked with a growing delay until it succeeds or ctx (the
+// scheduler's run context, cancelled by Stop) ends.
+func (s *Scheduler) retryLoad(ctx context.Context) {
+	defer s.loader.Done()
+	delay := s.retryFirst
+	for attempt := 2; ; attempt++ {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			return
+		}
+		err := s.loadJobsLocked()
+		active := len(s.entries)
+		s.mu.Unlock()
+		if err == nil {
+			s.logger.Info("scheduled jobs loaded after a failed attempt",
+				slog.Int("attempt", attempt), slog.Int("active_jobs", active))
+			return
+		}
+		delay = min(2*delay, s.retryLimit)
+		s.logger.Error("failed to load scheduled jobs; retrying",
+			slog.Int("attempt", attempt),
+			slog.Duration("retry_in", delay),
+			slog.Any("error", err),
+		)
+	}
 }
 
 // Stop stops the background cron runner, cancels any in-flight cron-triggered backup
@@ -215,6 +277,7 @@ func (s *Scheduler) Stop() {
 
 	ctx := s.cron.Stop()
 	<-ctx.Done()
+	s.loader.Wait()
 	s.inflight.Wait()
 	s.logger.Info("backup scheduler stopped")
 }
