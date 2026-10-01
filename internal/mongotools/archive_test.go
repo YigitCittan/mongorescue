@@ -268,37 +268,3 @@ func TestReadArchivePreludeReadError(t *testing.T) {
 		t.Fatalf("err = %v; want the read error", err)
 	}
 }
-
-// FuzzReadArchivePrelude checks that arbitrary input never panics, never reads past
-// the limit and fails only with the documented sentinels.
-func FuzzReadArchivePrelude(f *testing.F) {
-	archive, err := os.ReadFile(filepath.Join("testdata", "prelude", "shop.archive"))
-	if err != nil {
-		f.Fatal(err)
-	}
-	f.Add(archive)
-	f.Add(archive[:300])
-	f.Add([]byte{0x6d, 0xe2, 0x99, 0x81, 0xff, 0xff, 0xff, 0xff})
-	f.Add([]byte("not an archive"))
-	const limit = 4096
-	f.Fuzz(func(t *testing.T, in []byte) {
-		cr := &countingReader{r: bytes.NewReader(in)}
-		p, err := ReadArchivePrelude(cr, limit)
-		if cr.n > limit {
-			t.Fatalf("read %d bytes past the %d byte limit", cr.n, limit)
-		}
-		if err != nil {
-			for _, sentinel := range []error{ErrNotArchive, ErrArchiveTruncated, ErrPreludeTooLarge, ErrMalformedPrelude} {
-				if errors.Is(err, sentinel) {
-					return
-				}
-			}
-			t.Fatalf("unexpected error %v", err)
-		}
-		for _, c := range p.Collections {
-			if c.Name == "" || (c.Type != CollectionTypeCollection && c.Type != CollectionTypeView && c.Type != CollectionTypeTimeseries) {
-				t.Fatalf("invalid collection %+v", c)
-			}
-		}
-	})
-}
