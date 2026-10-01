@@ -20,6 +20,10 @@ import (
 var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/auth/logout": auth.ScopeAdmin,
 	"GET " + meRoute:           auth.ScopeRead,
+	// Without ?all=true a key sees only its creator's sessions; all needs admin,
+	// which the auth service enforces.
+	"GET /api/v1/auth/sessions":         auth.ScopeRead,
+	"DELETE /api/v1/auth/sessions/{id}": auth.ScopeAdmin,
 
 	"GET /api/v1/users":                  auth.ScopeAdmin,
 	"POST /api/v1/users":                 auth.ScopeAdmin,

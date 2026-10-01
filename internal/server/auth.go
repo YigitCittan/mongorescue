@@ -49,6 +49,8 @@ func (s *Server) registerAuthRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET "+meRoute, s.handleMe)
+	mux.HandleFunc("GET /api/v1/auth/sessions", s.handleListSessions)
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.handleRevokeSession)
 
 	mux.HandleFunc("GET /api/v1/users", s.handleListUsers)
 	mux.HandleFunc("POST /api/v1/users", s.handleCreateUser)
@@ -324,6 +326,8 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "user not found")
 	case errors.Is(err, auth.ErrAPIKeyNotFound):
 		writeError(w, http.StatusNotFound, "api key not found")
+	case errors.Is(err, auth.ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, "session not found")
 	case errors.Is(err, auth.ErrUnauthenticated):
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 	default:
@@ -447,6 +451,57 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meResponse{User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method})
+}
+
+// handleListSessions lists the caller's own sessions, or with ?all=true (admin) those
+// of every user. Token hashes and CSRF tokens are never part of the answer.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireAuth(w)
+	if !ok {
+		return
+	}
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	all := false
+	if v := r.URL.Query().Get("all"); v != "" {
+		var err error
+		if all, err = strconv.ParseBool(v); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid all: want true or false")
+			return
+		}
+	}
+	sessions, err := svc.ListSessions(r.Context(), p, all)
+	if err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+// handleRevokeSession ends one session by its public ID. Revoking the session the
+// request was made with also clears the cookie.
+func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireAuth(w)
+	if !ok {
+		return
+	}
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	current, err := svc.RevokeSession(r.Context(), p, id)
+	if err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	if current {
+		s.clearSessionCookie(w, r)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked_id": id, "current": current})
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
