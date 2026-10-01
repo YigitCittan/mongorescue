@@ -597,9 +597,12 @@ async function refreshAll() {
 }
 
 // While any backup or restore is still running, refresh those lists every few
-// seconds (only while the tab is visible) so completion shows up promptly.
+// seconds (only while the tab is visible) so completion shows up promptly. The
+// server's active counts (/api/v1/stats) cover runs on other pages or filtered out.
 function hasActiveOperations() {
-  return state.backups.some(b => ACTIVE_STATUSES.includes(b.status)) ||
+  const stats = state.stats || {};
+  return (Number(stats.active_backups) || 0) > 0 || (Number(stats.active_restores) || 0) > 0 ||
+    state.backups.some(b => ACTIVE_STATUSES.includes(b.status)) ||
     state.restores.some(r => ACTIVE_STATUSES.includes(r.status)) ||
     trackedOps.backups.size > 0 || trackedOps.restores.size > 0;
 }
@@ -609,8 +612,8 @@ function scheduleActivePoll() {
   activePollTimer = setTimeout(async () => {
     activePollTimer = null;
     if (document.hidden || !auth.user) return;
-    await Promise.all([loadBackups(), loadRestores()]);
-    loadStats().then(renderStats);
+    await Promise.all([loadBackups(), loadRestores(), loadStats()]);
+    renderStats();
     scheduleActivePoll();
   }, ACTIVE_POLL_MS);
 }
@@ -702,6 +705,8 @@ const PAGE_SIZES = [25, 50, 100];
 const DEFAULT_PAGE_SIZE = 25;
 const FILTER_DEBOUNCE_MS = 300;
 const MAX_FILTER_TEXT = 256;
+// Most IDs one ?id= backups query may name.
+const MAX_FILTER_IDS = 200;
 const LIST_KINDS = ["backups", "restores"];
 // Options of the status filters, in order: the API value and its label key. This is
 // the only list of filterable statuses; the selects are filled from it.
@@ -970,6 +975,7 @@ async function loadList(kind) {
     state[kind] = items;
     state.loaded[kind] = true;
     if (kind === "backups") rememberBackups(items);
+    if (kind === "restores") await loadRestoreBackups(items);
     await reportTracked(kind, items);
     if (seq !== L.seq) return;
     renderList(kind);
@@ -1005,6 +1011,27 @@ async function reportTracked(kind, items) {
     }
   }
   reportFinished(kind, records);
+}
+
+// Backups named by restore rows that the server did not return (deleted), so they
+// are not asked for again.
+const missingBackups = new Set();
+
+// Fetches, in one request (?id=a,b,c), the backups of restore rows that are not in
+// backupCache, so their source connection can be shown.
+async function loadRestoreBackups(restores) {
+  const ids = Array.from(new Set((restores || []).map(r => r.backup_id)))
+    .filter(id => id && !backupCache.has(id) && !missingBackups.has(id))
+    .slice(0, MAX_FILTER_IDS);
+  if (ids.length === 0) return;
+  try {
+    const json = await apiJSON(`/api/v1/backups?id=${ids.map(encodeURIComponent).join(",")}&limit=${ids.length}`);
+    if (!json.success) return;
+    rememberBackups(json.data || []);
+    ids.forEach(id => { if (!backupCache.has(id)) missingBackups.add(id); });
+  } catch (err) {
+    console.error("Failed to load the backups of restores:", err);
+  }
 }
 
 // Distinct databases offered by the database filters.
@@ -1295,7 +1322,7 @@ const backupChain = { id: "", records: null, seq: 0 };
 
 async function findBackup(id) {
   if (backupCache.has(id)) return backupCache.get(id);
-  const json = await apiJSON(`/api/v1/backups?q=${encodeURIComponent(id)}&limit=20`);
+  const json = await apiJSON(`/api/v1/backups?id=${encodeURIComponent(id)}&limit=1`);
   if (!json.success) throw new Error(json.error || "");
   rememberBackups(json.data || []);
   return (json.data || []).find(x => x.id === id) || null;
@@ -1733,9 +1760,9 @@ function renderRestores() {
     const errorLine = r.status === "failed" && r.error_message
       ? errorDetail(r.error_message, truncate(errorSummary(r.error_message), 90))
       : "";
-    const { source, target } = restoreConnections(r);
+    const { source, target, crossServer } = restoreConnections(r);
     // A restore into another server is marked so it cannot pass for a local one.
-    const cross = target && target !== source
+    const cross = crossServer
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
       : "";
     return `<tr>
@@ -1749,16 +1776,19 @@ function renderRestores() {
   }).join(""));
 }
 
-// Source and target connection names of a restore record. The source comes from
-// the record's snapshot or its backup; the target defaults to the source.
+// Source and target connection names of a restore record, and whether it went to
+// another server. The source comes from the record's snapshot or its backup (fetched
+// by loadRestoreBackups when it is not on a loaded page); the target defaults to the
+// source. Without a known source the restore is never marked as cross-server.
 function restoreConnections(r) {
   const backup = backupCache.get(r.backup_id) || {};
   const sourceId = r.source_connection_id || backup.connection_id || "";
-  const source = r.source_connection_name || backup.connection_name || connectionName(sourceId);
+  const source = r.source_connection_name || backup.connection_name || (sourceId ? connectionName(sourceId) : "");
   const targetId = r.target_connection_id || "";
   const target = r.target_connection_name || (targetId ? connectionName(targetId) : "");
-  if (targetId && sourceId && targetId === sourceId) return { source, target: source };
-  return { source, target: target || source };
+  if (targetId && sourceId && targetId === sourceId) return { source, target: source, crossServer: false };
+  const crossServer = sourceId && targetId ? true : Boolean(source && target && source !== target);
+  return { source, target: target || source, crossServer };
 }
 
 function channelTypeLabel(type) {
@@ -3251,6 +3281,7 @@ function resetData() {
   trackedOps.backups.clear();
   trackedOps.restores.clear();
   backupCache.clear();
+  missingBackups.clear();
   jobHistory.jobId = "";
   jobHistory.runs = null;
   backupChain.id = "";

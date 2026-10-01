@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -82,6 +83,17 @@ func timeParam(q url.Values, name string) (time.Time, error) {
 	return t, nil
 }
 
+// idList splits a comma-separated id parameter, dropping empty entries.
+func idList(v string) []string {
+	var ids []string
+	for _, id := range strings.Split(v, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // writeList answers a list request: the items as data, plus meta when p is limited.
 func writeList(w http.ResponseWriter, p listPage, total int, items any) {
 	resp := struct {
@@ -106,6 +118,7 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := s.ops.QueryBackups(r.Context(), operations.BackupFilter{
+		IDs:    idList(q.Get("id")),
 		Status: models.BackupStatus(q.Get("status")), Database: q.Get("database"),
 		ConnectionID: q.Get("connection_id"), JobID: q.Get("job_id"),
 		Trigger: models.BackupTrigger(q.Get("trigger")), RetryOf: q.Get("retry_of"),

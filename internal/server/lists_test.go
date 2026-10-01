@@ -177,6 +177,7 @@ func TestListParamsAreValidated(t *testing.T) {
 		{"/api/v1/restores?limit=999", "limit"},
 		{"/api/v1/restores?status=pruned", "status"},
 		{"/api/v1/restores?from=1", "from"},
+		{"/api/v1/backups?id=" + strings.TrimSuffix(strings.Repeat("bkp_x,", 201), ","), "at most 200"},
 	} {
 		rec := serve(h, "GET", tc.target, nil, nil)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
@@ -214,6 +215,8 @@ func TestListDatabasesAndStats(t *testing.T) {
 			TotalBackups   int                  `json:"total_backups"`
 			FailedBackups  int                  `json:"failed_backups"`
 			TotalRestores  int                  `json:"total_restores"`
+			ActiveBackups  int                  `json:"active_backups"`
+			ActiveRestores int                  `json:"active_restores"`
 			LastBackup     *struct{ ID string } `json:"last_backup"`
 			JobLastBackups map[string]struct {
 				ID     string `json:"id"`
@@ -225,10 +228,45 @@ func TestListDatabasesAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := stats.Data
-	if d.TotalBackups != 30 || d.FailedBackups != 10 || d.TotalRestores != 5 || d.LastBackup == nil || d.LastBackup.ID != "bkp_29" {
+	if d.TotalBackups != 30 || d.FailedBackups != 10 || d.TotalRestores != 5 || d.LastBackup == nil || d.LastBackup.ID != "bkp_29" ||
+		d.ActiveBackups != 0 || d.ActiveRestores != 0 {
 		t.Fatalf("stats = %+v", d)
 	}
 	if last := d.JobLastBackups["job_a"]; last.ID != "bkp_09" || last.Status != "failed" {
 		t.Fatalf("job_a last backup = %+v; want bkp_09 failed", last)
+	}
+}
+
+func TestListBackupsByIDs(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	seedLists(t, st)
+	ctx := context.Background()
+	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_running", Database: "shop", Status: models.StatusInProgress, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveRestoreRecord(ctx, &models.RestoreRecord{ID: "rst_running", BackupID: "bkp_01", Status: models.RestoreStatusPending, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h := srv.buildRoutes()
+
+	// Exact IDs only: bkp_1 is a prefix of other IDs and matches nothing.
+	code, _, items := getList(t, h, "/api/v1/backups?id=bkp_03,%20bkp_17,,bkp_1,bkp_missing")
+	if code != http.StatusOK || strings.Join(itemIDs(items), ",") != "bkp_17,bkp_03" {
+		t.Fatalf("id filter = %d %v", code, itemIDs(items))
+	}
+	_, _, items = getList(t, h, "/api/v1/backups?id="+url.QueryEscape("bkp_03' OR '1'='1"))
+	if len(items) != 0 {
+		t.Fatalf("hostile id matched %v", itemIDs(items))
+	}
+
+	rec := serve(h, "GET", "/api/v1/stats", nil, nil)
+	var stats struct {
+		Data struct {
+			ActiveBackups  int `json:"active_backups"`
+			ActiveRestores int `json:"active_restores"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil || stats.Data.ActiveBackups != 1 || stats.Data.ActiveRestores != 1 {
+		t.Fatalf("active counts = %+v, %v; want 1 and 1", stats.Data, err)
 	}
 }
