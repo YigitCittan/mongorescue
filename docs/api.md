@@ -52,7 +52,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/connections/test` | Test an unsaved `{uri}` | 200 | 400 |
 | `GET` | `/api/v1/connections/{id}/databases` | `[{name, size_bytes, empty}]`; `admin`, `config`, `local` only with `?system=true` | 200 | 404, 502 unreachable |
 | `GET` | `/api/v1/connections/{id}/databases/{db}/collections` | `[{name, type}]` | 200 | 404, 502 |
-| `GET` | `/api/v1/stats` | Dashboard KPIs | 200 | |
+| `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
 | `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, restart_required, warnings}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
@@ -69,12 +69,14 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/run` | Run a job now | 202 | 400, 404, 409 |
-| `GET` | `/api/v1/backups` | List backups, newest first (`?database=` and `?job_id=` filters) | 200 | |
+| `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
+| `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `target_connection_id` (admin), `verify`) | 202 | 400, 403, 404, 409, 422 |
-| `GET` | `/api/v1/restores` | Restore audit history | 200 | |
+| `GET` | `/api/v1/restores` | Restore audit history, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
+| `GET` | `/api/v1/restores/databases` | Distinct target databases of all restores, sorted | 200 | |
 | `GET` / `POST` | `/api/v1/notifications/channels` | List / create notification channels | 200 / 201 | 400 |
 | `PUT` / `DELETE` | `/api/v1/notifications/channels/{id}` | Update / delete a channel | 200 | 400, 404 |
 | `POST` | `/api/v1/notifications/channels/{id}/test` | Send a test notification | 200 | 404 |
@@ -166,6 +168,45 @@ curl -X POST http://localhost:8080/api/v1/backups/bkp_shop_20260924_030000_3f9a1
 ```
 
 In the dashboard, a failed backup that has not been retried yet shows a **Retry** button, and **Details** opens the full error message (including `mongodump`'s stderr, which the server stores in the redacted error message), the absolute start and end times, the duration, the trigger, connection, database, storage target and the retry chain.
+
+## Listing backups and restores
+
+`GET /api/v1/backups` and `GET /api/v1/restores` take optional query parameters. All given filters must match; empty values are ignored.
+
+| Parameter | Backups | Restores | Meaning |
+| --- | --- | --- | --- |
+| `status` | `pending`, `in_progress`, `completed`, `failed`, `pruned` | `pending`, `in_progress`, `completed`, `failed` | Records in this state |
+| `database` | Backed-up database | Target database | Exact, case-sensitive match |
+| `connection_id` | yes | | Backups taken from this connection |
+| `job_id` | yes | | Backups of this scheduled job |
+| `trigger` | `scheduled`, `on_demand`, `manual`, `mcp` | | How the backup was started (records older than triggers count as `scheduled` when they belong to a job, else `manual`) |
+| `retry_of` | yes | | Retries of this backup |
+| `backup_id` | | yes | Restores of this backup |
+| `from`, `to` | yes | yes | `started_at` range in RFC 3339 (`2026-10-01T00:00:00Z`); `from` is inclusive, `to` exclusive |
+| `q` | ID or database | ID, source or target database | Substring, ASCII case-insensitive; `%` and `_` are literal (at most 256 characters) |
+| `sort` | yes | yes | `desc` (newest first, default) or `asc` |
+| `limit` | yes | yes | Page size, 1 to 200 |
+| `offset` | yes | yes | Matches to skip (default 0) |
+
+Without `limit` the response is unchanged from earlier releases: `data` is the array of every matching record. With `limit`, `meta` describes the page:
+
+```json
+{
+  "success": true,
+  "data": [{"id": "bkp_shop_20260924_030000_3f9a1c2e", "status": "failed", "...": "...",
+            "retried_by": {"id": "bkp_shop_20260924_031000_9b1d2c3e", "started_at": "2026-09-24T03:10:00Z"}}],
+  "meta": {"total": 312, "limit": 25, "offset": 0}
+}
+```
+
+`total` counts every match, so a client can show "1–25 of 312"; an `offset` past the end returns an empty `data` with the same `total`. A malformed or out-of-range value (`limit=0`, `limit=500`, `sort=random`, `from=yesterday`, `to` before `from`, an unknown `status` or `trigger`) answers `400` with a message naming the parameter. Backup items carry `retried_by`, the newest backup whose `retry_of` is this one, when there is one; it is computed for each listed row, so retry links work on any page.
+
+```bash
+curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026-09-01T00:00:00Z&limit=25&offset=25" \
+  -H "X-API-Key: $MONGORESCUE_READ_KEY"
+```
+
+`GET /api/v1/stats` covers every record regardless of any list filter: `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target.
 
 ## Asynchronous operations
 

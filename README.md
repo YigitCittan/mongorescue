@@ -43,6 +43,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 
 - Manage many MongoDB servers from one instance: connections are tested, their databases and collections listed, and backups can be restored into another server
 - Scheduled and on-demand backups with retention by age or count
+- Backup and restore history filtered and paginated on the server (status, database, trigger, date range, search), in the dashboard and the API
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext

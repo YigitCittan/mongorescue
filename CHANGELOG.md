@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-01
+
+### Added
+- `GET /api/v1/backups` and `GET /api/v1/restores` filter, sort and paginate on the server: `status`, `database`, `connection_id`, `job_id`, `trigger`, `retry_of` (backups), `backup_id` (restores), a `started_at` range (`from`, `to`, RFC 3339), `q` (literal, case-insensitive substring of the ID or database), `sort` (`desc` or `asc`), `limit` (1-200) and `offset`. With `limit` the response adds `meta: {total, limit, offset}`. Malformed values answer `400`. See [docs/api.md](docs/api.md#listing-backups-and-restores).
+- Backup list items carry `retried_by` (the newest retry's ID and start time), computed in SQL, so retry links work across pages.
+- `GET /api/v1/backups/databases` and `GET /api/v1/restores/databases` (read scope) list the distinct databases for filters.
+- `GET /api/v1/stats` adds `failed_backups_24h`, `total_restores`, `last_backup` and `job_last_backups`.
+- Dashboard: a filter bar above the Backups and Restores tables (search with a 300 ms debounce, status, database, trigger, date range with Today, Last 7 days, Last 30 days or a custom range, an active-filter count and *Clear filters*) and a pager (25, 50 or 100 rows, "1–25 of 312", Previous and Next, page numbers). Filters and page are kept in the URL hash (`#backups?status=failed&page=2`), so refresh and Back keep the view; the page size is remembered in the browser. Translated into all eight languages.
+- MCP: `list_backups` takes `job_id`; `list_restores` takes `status`, `backup_id` and `database`.
+
+### Changed
+- The `job_id` filter of `GET /api/v1/backups` is answered by the database instead of filtering every record in memory. Without `limit` the list endpoints return every match as before, in the same shape.
+- The dashboard loads one page of backups and restores instead of the whole history. The KPI cards, tab counts and the jobs table's last-run status come from `/api/v1/stats`; a job's run history loads its last 20 runs (`?job_id=…&limit=20`) and its success rate covers those; the backup details dialog loads the retry chain from the server (`?retry_of=…`).
+- MCP list tools return 50 items by default (was 20; at most 100), and `list_backups` and `list_restores` read only the requested page from the database.
+- Metadata schema migration `0010` adds indexes for the list filters (status, job, retry, restore backup and target database, each with the start time).
+
 ## [0.8.1] - 2026-09-30
 
 The `v0.8.0` tag was never released: a flaky test stopped its release build. This release contains everything planned for 0.8.0.
