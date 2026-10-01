@@ -371,11 +371,14 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Registry:    registry,
 		Connections: connSvc,
 		Targets:     targetSvc,
+		Storage:     targetSvc.Storage,
 		Settings:    settingsSvc.Current,
 		Publisher:   bus,
 		Verifier:    integritySvc,
 		Logger:      logger,
 		Version:     o.version,
+		// Deleted jobs (single or bulk) drop their metric series.
+		OnJobDeleted: metricSet.ForgetJob,
 	})
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
@@ -394,7 +397,6 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithEventPublisher(bus),
 		server.WithNotifications(notifySvc),
 		server.WithMetricsHandler(metricSet.Handler()),
-		server.WithJobDeletedHook(metricSet.ForgetJob),
 		server.WithRunManager(runManager),
 		server.WithRunRegistry(registry),
 		server.WithAuth(authSvc),

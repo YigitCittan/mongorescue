@@ -184,6 +184,12 @@ func (s *SQLiteStore) GetRestoreRecord(ctx context.Context, id string) (*models.
 	return getRecord[models.RestoreRecord](ctx, s.db, ErrNotFound, "SELECT data FROM restores WHERE id = ?", id)
 }
 
+// DeleteRestoreRecord deletes a restore record or returns ErrNotFound. Only the history
+// entry goes; the restored database is never touched.
+func (s *SQLiteStore) DeleteRestoreRecord(ctx context.Context, id string) error {
+	return execOne(ctx, s.db, ErrNotFound, "DELETE FROM restores WHERE id = ?", id)
+}
+
 // ListRestoreRecords returns all restore operations sorted by StartedAt descending.
 func (s *SQLiteStore) ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error) {
 	return listRecords[models.RestoreRecord](ctx, s, tableRestores, nil,

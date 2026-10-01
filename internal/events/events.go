@@ -43,6 +43,11 @@ const (
 	// backups since the upgrade are not encrypted. It is a security alert: every
 	// enabled channel receives it, whatever the rules (see Broadcast).
 	EncryptionOffAfterUpgrade EventType = "security.encryption_off_after_upgrade"
+	// BulkCompleted is emitted once per bulk operation (POST /api/v1/{backups,restores,
+	// jobs}/bulk that is not a dry run) with its counts in Event.Bulk. The per-item
+	// events of the action, if any, are published as for a single item. Notification
+	// rules cannot select it.
+	BulkCompleted EventType = "bulk.completed"
 	// VerificationSucceeded is emitted when a stored archive matched its checksum
 	// (after upload, in an integrity sweep or on demand). It feeds metrics only and
 	// cannot be selected by notification rules.
@@ -71,6 +76,24 @@ const (
 	// VerificationOnDemand is POST /api/v1/backups/{id}/verify (or MCP).
 	VerificationOnDemand = "on_demand"
 )
+
+// BulkSummary describes a finished bulk operation (see BulkCompleted).
+type BulkSummary struct {
+	// Resource is "backups", "restores" or "jobs".
+	Resource string `json:"resource"`
+	// Action is the bulk action, such as "delete".
+	Action string `json:"action"`
+	// Matched counts the selected items.
+	Matched int `json:"matched"`
+	// Succeeded, Skipped and Failed count the outcomes.
+	Succeeded int `json:"succeeded"`
+	// Skipped counts items the action did not apply to (protected, running, missing).
+	Skipped int `json:"skipped"`
+	// Failed counts items the action failed on.
+	Failed int `json:"failed"`
+	// Actor names who ran it (user, API key or "system").
+	Actor string `json:"actor,omitempty"`
+}
 
 // Broadcast reports whether t is delivered to every enabled notification channel
 // instead of the channels of matching rules.
@@ -149,6 +172,9 @@ type Event struct {
 	Missing int `json:"missing,omitempty"`
 	// Detail is a short redacted explanation (a mismatch, a retention rule).
 	Detail string `json:"detail,omitempty"`
+
+	// Bulk summarises a bulk operation (BulkCompleted events only).
+	Bulk *BulkSummary `json:"bulk,omitempty"`
 }
 
 // Publisher is the port through which business and delivery layers emit events.

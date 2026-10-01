@@ -31,6 +31,8 @@ const (
 	StatusSucceeded = "succeeded"
 	// StatusFailed labels failed backups and restores.
 	StatusFailed = "failed"
+	// BulkSkipped labels bulk items the action did not apply to.
+	BulkSkipped = "skipped"
 	// StatusCancelled labels cancelled backups and restores.
 	StatusCancelled = "cancelled"
 )
@@ -66,6 +68,8 @@ type Metrics struct {
 	notificationsTotal  *prometheus.CounterVec
 	eventsDropped       prometheus.Counter
 	mcpCalls            *prometheus.CounterVec
+	bulkOperations      *prometheus.CounterVec
+	bulkItems           *prometheus.CounterVec
 	scheduledJobsSource atomic.Pointer[func() int]
 	activeRunsSource    atomic.Pointer[func(kind string) int]
 
@@ -124,6 +128,16 @@ func New(info BuildInfo) *Metrics {
 			Name:      "mcp_calls_total",
 			Help:      "Total number of MCP tool calls by tool and result (ok|error|denied|rate_limited).",
 		}, []string{"tool", "result"}),
+		bulkOperations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "bulk_operations_total",
+			Help:      "Total number of bulk operations run (not dry runs) by resource (backups|restores|jobs) and action.",
+		}, []string{"resource", "action"}),
+		bulkItems: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "bulk_items_total",
+			Help:      "Total number of items processed by bulk operations by resource, action and outcome (succeeded|skipped|failed).",
+		}, []string{"resource", "action", "outcome"}),
 	}
 
 	scheduledJobs := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -171,6 +185,8 @@ func New(info BuildInfo) *Metrics {
 		m.notificationsTotal,
 		m.eventsDropped,
 		m.mcpCalls,
+		m.bulkOperations,
+		m.bulkItems,
 		scheduledJobs,
 		m.newIntegritySeries(),
 		buildInfo,
@@ -246,6 +262,14 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 		m.restoreDuration.Observe(e.Duration.Seconds())
 	default:
 		m.observeIntegrity(e)
+
+	case events.BulkCompleted:
+		if b := e.Bulk; b != nil {
+			m.bulkOperations.WithLabelValues(b.Resource, b.Action).Inc()
+			m.bulkItems.WithLabelValues(b.Resource, b.Action, StatusSucceeded).Add(float64(b.Succeeded))
+			m.bulkItems.WithLabelValues(b.Resource, b.Action, BulkSkipped).Add(float64(b.Skipped))
+			m.bulkItems.WithLabelValues(b.Resource, b.Action, StatusFailed).Add(float64(b.Failed))
+		}
 	}
 }
 

@@ -25,6 +25,11 @@ var operatorRoutes = []string{
 	"POST /api/v1/backups/{id}/verify",
 	"POST /api/v1/backups/{id}/pin",
 	"POST /api/v1/jobs/{id}/restore-test",
+
+	// Bulk routes: each action then needs the scope of its single-item route.
+	"POST /api/v1/backups/bulk",
+	"POST /api/v1/restores/bulk",
+	"POST /api/v1/jobs/bulk",
 }
 
 // adminOnlyReads are GET routes that need more than the read scope.

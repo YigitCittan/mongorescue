@@ -1,10 +1,8 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,10 +10,8 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
-	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/runs"
-	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // maxIntegrityBody bounds the JSON bodies of the integrity endpoints.
@@ -73,55 +69,6 @@ func (s *Server) writeIntegrityError(w http.ResponseWriter, err error) {
 		s.logger.Error("integrity operation failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
-}
-
-// archiveRefs lists the IDs of every backup row, readable or not, that names a key
-// (implemented by *store.SQLiteStore).
-type archiveRefs interface {
-	ArchiveReferenceIDs(ctx context.Context, targetID, key string) ([]string, error)
-}
-
-// archiveShared returns why the archive of rec must stay when rec is deleted ("" when
-// it may go): another record (in any status, readable or not) names the same key on
-// the same target. A pinned record among them is named, since it holds the archive on
-// legal hold; a row that cannot be read keeps the archive too.
-func (s *Server) archiveShared(ctx context.Context, rec *models.BackupRecord) (string, error) {
-	if rec.StorageKey == "" {
-		return "", nil
-	}
-	var others []string
-	if refs, ok := s.metaStore.(archiveRefs); ok {
-		ids, err := refs.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
-		if err != nil {
-			return "", fmt.Errorf("list archive references: %w", err)
-		}
-		for _, id := range ids {
-			if id != rec.ID {
-				others = append(others, id)
-			}
-		}
-	} else {
-		all, err := s.metaStore.ListBackupRecords(ctx, "")
-		if err != nil {
-			return "", fmt.Errorf("list backups: %w", err)
-		}
-		for _, o := range models.ArchiveReferences(all, rec) {
-			others = append(others, o.ID)
-		}
-	}
-	if len(others) == 0 {
-		return "", nil
-	}
-	for _, id := range others {
-		o, err := s.metaStore.GetBackupRecord(ctx, id)
-		switch {
-		case err != nil && !errors.Is(err, store.ErrNotFound):
-			return fmt.Sprintf("the archive is kept: backup %s, which cannot be read, also names it; only this record was deleted", id), nil
-		case err == nil && o.Pinned:
-			return fmt.Sprintf("the archive is kept: it also belongs to backup %s, which is pinned (legal hold); unpin and delete that backup to remove it", id), nil
-		}
-	}
-	return fmt.Sprintf("the archive is kept: it also belongs to backup %s; only this record was deleted", others[0]), nil
 }
 
 // handleVerifyBackup re-reads a backup's archive in the background and compares it

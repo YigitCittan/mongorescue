@@ -28,6 +28,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/settings"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/targets"
 )
@@ -142,6 +143,13 @@ type Config struct {
 	// Targets resolves storage targets; nil means an anonymous local target served
 	// by the engines' fixed storage driver.
 	Targets Targets
+	// Storage returns the storage driver of a storage target (the default target for
+	// ""), used to delete archives. nil means archives cannot be deleted: deleting a
+	// backup then removes only its record and reports why the archive stayed.
+	Storage func(ctx context.Context, targetID string) (storage.Storage, error)
+	// OnJobDeleted is called after a job has been deleted (for example to drop its
+	// metric series); nil disables it.
+	OnJobDeleted func(jobID string)
 	// Settings returns the live settings; nil means the defaults.
 	Settings func() settings.Settings
 	// Publisher receives backup and restore outcome events; nil disables them.
@@ -168,6 +176,9 @@ type Service struct {
 	archiveCache *collectionCache
 	// previewSlots bounds the archive previews read concurrently.
 	previewSlots chan struct{}
+
+	// bulk is the registry of bulk actions, keyed by resource and action name.
+	bulk map[BulkResource]map[string]BulkAction
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -180,10 +191,12 @@ func New(cfg Config) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
+	s := &Service{
 		cfg: cfg, logger: logger, now: time.Now,
 		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
 	}
+	s.registerBulkActions()
+	return s
 }
 
 // settings returns the live settings or the defaults.
