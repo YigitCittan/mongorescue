@@ -75,12 +75,12 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `GET` | `/api/v1/backups/{id}/collections` | Collections stored in the backup, read from its archive header ([details](#selective-restores)) | 200 | 404, 422 key missing |
-| `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 202 | 404, 409 not running |
+| `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 202 | 404, 409 not running or finishing |
 | `GET` | `/api/v1/backups/{id}/log` | The backup's run log as `text/plain`: the last N lines with `?tail=N` (1-10000), otherwise the whole file as a download ([details](#run-logs)) | 200 | 400, 404 |
 | `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `selected_collections`, `target_connection_id` (admin), `verify`) | 202 | 400, 403, 404, 409, 422 |
 | `GET` | `/api/v1/restores` | Restore audit history, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/restores/databases` | Distinct target databases of all restores, sorted | 200 | |
-| `POST` | `/api/v1/restores/{id}/cancel` | Cancel a running restore; an in-place one needs admin ([details](#cancelling-a-run)) | 202 | 403, 404, 409 not running |
+| `POST` | `/api/v1/restores/{id}/cancel` | Cancel a running restore; an in-place one needs admin ([details](#cancelling-a-run)) | 202 | 403, 404, 409 not running or finishing |
 | `GET` | `/api/v1/restores/{id}/log` | The restore's run log (like the backup log) | 200 | 400, 404 |
 | `GET` | `/api/v1/runs/active` | Live progress of every running backup and restore ([details](#live-progress)) | 200 | |
 | `GET` / `POST` | `/api/v1/notifications/channels` | List / create notification channels | 200 / 201 | 400 |
@@ -262,7 +262,9 @@ The record gets `"status": "cancelled"`, `cancelled_by` (the username, `API key 
 | `202 Accepted` | The cancellation was requested |
 | `403 Forbidden` | The key may not cancel this run (an in-place restore needs admin) |
 | `404 Not Found` | No backup or restore `{id}` |
-| `409 Conflict` | The run is not running (it finished, or it is not active in this process) |
+| `409 Conflict` | The run is not running (it finished, or it is not active in this process), or it is already finishing: its tool completed and only the outcome is being recorded |
+
+Once `mongodump` or `mongorestore` has completed successfully, the run is past the point of no return: a cancellation that arrives then is refused with `409`, and one that raced with the tool's exit does not undo the finished backup or restore. If a check after the tool fails (checksum mismatch, documents that failed to insert) while a cancellation was requested, the run is recorded as cancelled, and a safe clone is dropped.
 
 ## Run logs
 
