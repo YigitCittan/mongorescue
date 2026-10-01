@@ -574,6 +574,8 @@ const BULK_RESULTS_MAX = 1000;
 const BULK_RETRY_MS = 30000;
 // Toolbar order of known actions; destructive ones always come last.
 const BULK_ACTION_ORDER = ["run_now", "enable", "disable", "verify", "pin", "unpin", "cancel", "delete"];
+// Skip reasons whose server detail adds to the translated label (it names the job).
+const BULK_DETAIL_REASONS = ["last_good_backup", "last_verified", "other"];
 const BULK_SKIP_REASONS = ["not_found", "in_progress", "last_good_backup", "last_verified", "pinned", "not_verifiable",
   "already_pinned", "not_pinned", "not_running", "already_enabled", "already_disabled"];
 
@@ -1148,7 +1150,7 @@ function skippedGroups(skipped) {
   const parts = [];
   groups.forEach((items, reason) => {
     const lines = items.slice(0, BULK_LIST_MAX).map(s =>
-      `<li><span class="mono">${escapeHtml(s.id)}</span>${s.detail ? ` <span class="muted">${escapeHtml(s.detail)}</span>` : ""}</li>`).join("");
+      `<li><span class="mono">${escapeHtml(s.id)}</span>${s.detail && BULK_DETAIL_REASONS.includes(reason) ? ` <span class="muted">${escapeHtml(s.detail)}</span>` : ""}</li>`).join("");
     const more = items.length > BULK_LIST_MAX ? `<li class="muted">${escapeHtml(tf("bulk.more", { n: formatCount(items.length - BULK_LIST_MAX) }))}</li>` : "";
     parts.push(`<details class="bulk-group"><summary>${escapeHtml(skipReasonLabel(reason))} <span class="badge">${escapeHtml(formatCount(items.length))}</span></summary><ul class="bulk-list">${lines}${more}</ul></details>`);
   });
