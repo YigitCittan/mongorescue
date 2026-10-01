@@ -270,6 +270,7 @@
         <table class="table">
           <thead>
             <tr>
+              <th scope="col" class="col-select"><input type="checkbox" class="bulk-check-all" data-bulk-kind="backups" aria-label="Select all rows on this page" data-i18n-aria-label="bulk.select_page"></th>
               <th scope="col" data-i18n="tables.backup_id">ID</th>
               <th scope="col" data-i18n="tables.database">Database</th>
               <th scope="col" data-i18n="tables.status">Status</th>
@@ -281,7 +282,7 @@
             </tr>
           </thead>
           <tbody id="backups-tbody">
-            <tr class="empty-row"><td colspan="8"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            <tr class="empty-row"><td colspan="9"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -317,6 +318,7 @@
         <table class="table">
           <thead>
             <tr>
+              <th scope="col" class="col-select"><input type="checkbox" class="bulk-check-all" data-bulk-kind="jobs" aria-label="Select all rows on this page" data-i18n-aria-label="bulk.select_page"></th>
               <th scope="col" data-i18n="tables.job_name">Name</th>
               <th scope="col" data-i18n="tables.connection">Connection</th>
               <th scope="col" data-i18n="tables.database">Database</th>
@@ -329,7 +331,7 @@
             </tr>
           </thead>
           <tbody id="jobs-tbody">
-            <tr class="empty-row"><td colspan="9"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            <tr class="empty-row"><td colspan="10"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -381,6 +383,7 @@
         <table class="table">
           <thead>
             <tr>
+              <th scope="col" class="col-select"><input type="checkbox" class="bulk-check-all" data-bulk-kind="restores" aria-label="Select all rows on this page" data-i18n-aria-label="bulk.select_page"></th>
               <th scope="col" data-i18n="tables.restore_id">ID</th>
               <th scope="col" data-i18n="tables.source_db">Source</th>
               <th scope="col" data-i18n="tables.target_db">Target</th>
@@ -390,7 +393,7 @@
             </tr>
           </thead>
           <tbody id="restores-tbody">
-            <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            <tr class="empty-row"><td colspan="7"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -2093,5 +2096,6 @@
   <script src="/runs.js"></script>
   <script src="/trust.js"></script>
   <script src="/forms.js"></script>
+  <script src="/bulk.js"></script>
 </body>
 </html>
