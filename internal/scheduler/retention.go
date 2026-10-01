@@ -176,6 +176,13 @@ type BackupUpdater interface {
 	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
 }
 
+// BackupPruner prunes a backup record in one transaction that re-checks pins and
+// the job's last verified backup (implemented by *store.SQLiteStore).
+type BackupPruner interface {
+	// PruneBackupRecord marks backup id pruned or refuses with store.ErrPruneRefused.
+	PruneBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
+}
+
 // errRetentionSkip aborts the prune of a backup that changed since it was planned.
 var errRetentionSkip = errors.New("scheduler: backup changed since retention was planned")
 
@@ -206,6 +213,10 @@ func prune(
 
 	var prunedIDs []string
 	updater, atomic := metadataStore.(BackupUpdater)
+	pruner, transactional := metadataStore.(BackupPruner)
+	// Every record, to find archives another record shares (loaded once, on demand).
+	var all []*models.BackupRecord
+	allLoaded := false
 	for _, d := range plan.Delete {
 		rec := d.Backup
 		logger.Info("pruning expired backup per retention policy",
@@ -219,7 +230,14 @@ func prune(
 		// Mark the record pruned first, re-checking it: a backup pinned (or otherwise
 		// changed) since it was listed is skipped.
 		var markErr error
-		if atomic {
+		if transactional {
+			// Pins and the last verified backup are re-checked in the same transaction.
+			_, markErr = pruner.PruneBackupRecord(ctx, rec.ID)
+			if errors.Is(markErr, store.ErrPruneRefused) {
+				logger.Info("retention keeps a backup it planned to prune", slog.String("backup_id", rec.ID), slog.Any("reason", markErr))
+				continue
+			}
+		} else if atomic {
 			_, markErr = updater.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
 				if r.Pinned || r.Status != models.StatusCompleted {
 					return errRetentionSkip
@@ -250,7 +268,22 @@ func prune(
 			StorageTargetID: rec.StorageTargetID, StorageKey: rec.StorageKey, BackupStartedAt: rec.StartedAt,
 			SizeBytes: rec.SizeBytes, Reason: d.Reason, Detail: d.Detail,
 		}
-		if rec.StorageKey != "" {
+		// Only an archive no other record names is deleted from storage.
+		var listErr error
+		if !allLoaded && rec.StorageKey != "" {
+			if all, listErr = metadataStore.ListBackupRecords(ctx, ""); listErr == nil {
+				allLoaded = true
+			}
+		}
+		shared := models.ArchiveReferences(all, rec)
+		switch {
+		case rec.StorageKey == "":
+		case listErr != nil:
+			logger.Warn("retention could not check for shared archives; keeping the archive", slog.Any("error", listErr))
+			entry.Detail += "; archive kept: shared archives could not be checked"
+		case len(shared) > 0:
+			entry.Detail += "; archive kept: it also belongs to backup " + shared[0].ID
+		default:
 			storageDriver, err := storages(ctx, rec.StorageTargetID)
 			if err == nil {
 				err = storageDriver.Delete(ctx, rec.StorageKey)

@@ -179,7 +179,7 @@ func TestImportFailureDetachesTheRecord(t *testing.T) {
 	f := newFixture(t)
 	key := "shop/2026/09/bkp_shop_20260901_030000_beef.archive"
 	f.putObject(t, key, "data")
-	rec, err := f.svc.importRecord(context.Background(), f.targets.targets["tgt_local"], key, &models.StorageObject{Key: key})
+	rec, err := f.svc.importRecord(context.Background(), f.targets.targets["tgt_local"], key, "shop", &models.StorageObject{Key: key})
 	if err != nil {
 		t.Fatal(err)
 	}

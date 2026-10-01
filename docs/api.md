@@ -72,10 +72,10 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
-| `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404, 409 pinned |
+| `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target → `{deleted_id, archive_deleted, archive_kept}`. The archive is kept when another record (in any status) names it; `archive_kept` says which, a pinned one included | 200 | 404, 409 pinned |
 | `POST` | `/api/v1/backups/{id}/verify` | Re-read the archive and compare it with its checksum, in the background; poll the backup for `verified_at` ([verification](verification.md)) | 202 | 404, 409 not completed or already running |
 | `POST` | `/api/v1/backups/{id}/pin` | Pin (legal hold) with an optional `{note}`: retention and deletion skip it | 200 | 400, 404 |
-| `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin | 200 | 404 |
+| `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin (admin: it makes the backup deletable again) | 200 | 403, 404 |
 | `GET` | `/api/v1/jobs/{id}/retention/preview` | Backups the retention policy would delete now and why (`?retention_days=`, `?retention_count=` preview other values) | 200 | 400, 404 |
 | `GET` | `/api/v1/jobs/{id}/retention/log` | Backups the job's retention deleted, newest first (`?limit=` ≤ 200) | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/restore-test` | Run a restore test of the job's latest backup now, in the background → `{job_id, backup_id}` | 202 | 404, 409 no backup or already running, 503 |
@@ -83,7 +83,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/integrity` | Integrity sweep status, the latest scan of every storage target, the next scheduled scan and the integrity work running | 200 | |
 | `POST` | `/api/v1/integrity/sweep` | Start an integrity sweep now (admin) | 202 | 409 already running |
 | `GET` / `POST` | `/api/v1/storage-targets/{id}/scan` | Latest / a new storage scan: orphan and missing archives (`POST` admin) | 200 | 404 |
-| `POST` | `/api/v1/storage-targets/{id}/import` | Create a record for the orphan archive `{key}`, hashed in the background (admin) | 202 | 400, 404, 409 not an orphan |
+| `POST` | `/api/v1/storage-targets/{id}/import` | Create (or revive the failed or pruned record of) the orphan archive `{key}`, hashed in the background (admin) | 202 | 400 no valid database in the key, 404, 409 not an orphan or already importing |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `GET` | `/api/v1/backups/{id}/collections` | Collections stored in the backup, read from its archive header ([details](#selective-restores)) | 200 | 404, 422 key missing |
 | `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 200, 202 still stopping | 404, 409 not running or finishing |

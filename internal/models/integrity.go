@@ -376,6 +376,23 @@ type RestoreTestSummary struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// ArchiveReferences returns the records of all, other than rec itself, that name
+// rec's archive (the same storage target and key), in any status. An archive may
+// only be deleted from storage when this is empty; a record that shares it is
+// deleted alone.
+func ArchiveReferences(all []*BackupRecord, rec *BackupRecord) []*BackupRecord {
+	if rec == nil || rec.StorageKey == "" {
+		return nil
+	}
+	var out []*BackupRecord
+	for _, r := range all {
+		if r.ID != rec.ID && r.StorageKey == rec.StorageKey && r.StorageTargetID == rec.StorageTargetID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // RetentionReason says why retention deleted a backup.
 type RetentionReason string
 

@@ -77,8 +77,13 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 	})
 }
 
-// UnpinBackup lifts the pin of backup id. Expected failures: ErrNotFound.
+// UnpinBackup lifts the pin of backup id, which makes it deletable again; it needs a
+// principal with the admin scope in ctx (auth.ErrForbidden otherwise). Expected
+// failures: ErrNotFound and auth.ErrForbidden.
 func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
+		return nil, fmt.Errorf("lifting a legal hold needs an admin API key or a session: %w", err)
+	}
 	return s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
 		r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy = false, "", nil, ""
 		return nil
@@ -174,8 +179,14 @@ func (s *Service) RetentionPreview(ctx context.Context, jobID string, days, coun
 	if err != nil {
 		return nil, fmt.Errorf("list backups: %w", err)
 	}
+	// The target is resolved like a scheduled run resolves it, so a legacy job
+	// without a storage_target_id previews its default target's backups.
+	target, err := s.ResolveTarget(ctx, job.StorageTargetID)
+	if err != nil {
+		return nil, err
+	}
 	now := s.now().UTC()
-	plan := scheduler.PlanRetention(now, d, c, scheduler.JobRetentionHistory(job, job.StorageTargetID, records))
+	plan := scheduler.PlanRetention(now, d, c, scheduler.JobRetentionHistory(job, target.ID, records))
 	return &RetentionPreview{JobID: job.ID, RetentionDays: d, RetentionCount: c, At: now, RetentionPlan: plan}, nil
 }
 

@@ -52,11 +52,11 @@ A job's `restore_test` policy restores its latest backup into a temporary databa
 
 A test runs *Run restore test now* in the job details (`POST /api/v1/jobs/{id}/restore-test`, operator) as well, whatever the policy says. It
 
-1. checks that the connection's user may create collections and indexes, insert, read and drop the temporary database `<db>_rescue_verify_<YYYYMMDD_HHMMSS>`. A user without those privileges fails the test with *the connection's user lacks the privileges a restore test needs*, naming the missing actions; grant `readWriteAnyDatabase` (or `restore` plus `dbAdminAnyDatabase`) or choose a test connection with such a user;
+1. picks the temporary database `<db>_rescue_verify_<YYYYMMDD_HHMMSS>_<6 random hex>` (unique even for concurrent tests of one database, at most 63 bytes, locked while the test runs) and checks that the connection's user may create collections and indexes, insert, read and drop it. A user without those privileges fails the test with *the connection's user lacks the privileges a restore test needs*, naming the missing actions; grant `readWriteAnyDatabase` (or `restore` plus `dbAdminAnyDatabase`) or choose a test connection with such a user;
 2. refuses to start when the temporary database already exists, and leaves it alone;
 3. restores the backup into the temporary database (the streamed bytes are checked against the recorded checksum, as in every restore);
 4. compares the restored copy with the **manifest** captured at backup time: every collection must exist, its document count must lie within the range captured before and after the dump, and every index must exist with the same keys, uniqueness, sparseness and TTL. Collections the restored copy has beyond the manifest (created during the dump) are noted, not counted as differences;
-5. **drops the temporary database in every case**: success, failure, cancellation (shutdown) and even an internal panic. A drop that fails is reported on the result (`drop_error`) so the database can be dropped by hand.
+5. **drops the temporary database in every case**, and only the exact name it created: success, failure, cancellation (shutdown) and even an internal panic. A drop that fails is reported on the result (`drop_error`) so the database can be dropped by hand.
 
 The result (`ok`, `mismatch` with the differences, or `error` with the reason) and its duration are stored (`GET /api/v1/jobs/{id}/restore-tests`, the newest 200 per job) and copied onto the job and the backup (`last_restore_test`), which the dashboard shows as *Son restore testi: başarılı · 3 gün önce*. `restore_test.succeeded` and `restore_test.failed` events feed notifications and metrics.
 
@@ -74,11 +74,15 @@ Every backup captures a manifest through the MongoDB driver: per collection (vie
 
 ### Pins (legal hold)
 
-`POST /api/v1/backups/{id}/pin` with an optional `{"note": "..."}` (operator) puts a backup on legal hold: retention never deletes it and `DELETE /api/v1/backups/{id}` answers `409` until `POST /api/v1/backups/{id}/unpin`. The record keeps who pinned it, when and why; the dashboard shows a pin icon. Retention re-checks the pin in the same transaction that marks a backup pruned, so a pin set while retention runs is never overridden. The MCP tool `pin_backup` pins; unpinning is only offered in the dashboard and the REST API.
+`POST /api/v1/backups/{id}/pin` with an optional `{"note": "..."}` (operator) puts a backup on legal hold: retention never deletes it and `DELETE /api/v1/backups/{id}` answers `409` until `POST /api/v1/backups/{id}/unpin`, which needs the admin scope because it makes the backup deletable again. The record keeps who pinned it, when and why; the dashboard shows a pin icon. Retention re-checks the pin, and whether the backup has meanwhile become the job's newest verified backup, in the same transaction that marks it pruned, so neither a pin nor a verification recorded while retention runs is overridden. The MCP tool `pin_backup` pins; unpinning is only offered in the dashboard and the REST API.
 
 ### Never the last verified backup
 
 Retention keeps its existing floors (the `max(retention_count, 1)` newest scheduled backups, and no count-based pruning of backups younger than a day) and never deletes the job's newest backup whose archive passed verification, whatever the policy says. Until a job has a verified backup, the floors alone apply.
+
+### Shared archives
+
+Deleting a backup (`DELETE /api/v1/backups/{id}` or retention) removes its archive from storage only when no other record, in any status, names the same key on the same target; otherwise only the record goes and the response (`archive_kept`) or the retention history says which record keeps the archive, a pinned one in particular.
 
 ### Retention history
 
@@ -88,7 +92,7 @@ Every deletion by retention is recorded three times: in the retention log (`GET 
 
 A scan lists every object of a storage target and compares the archives (keys ending in `.archive`, `.archive.gz`, optionally `.age`) with the backup records of that target:
 
-- **Orphans** are archives without a live record (none at all, or a failed or pruned one that still names the key). *Import* (`POST /api/v1/storage-targets/{id}/import` with `{"key": "..."}`, admin) creates a record from the object: the database, backup ID and start time are read from the default key layout `<db>/<YYYY>/<MM>/<backup id>.archive[.gz][.age]` (other layouts keep the first path element as the database), the object is hashed in the background (the record is `pending` until then), and the record is marked `imported` and unverified. An imported backup has no source connection: restoring it needs an admin to choose the target connection. A failed import marks the record failed and detaches it from the key, so the archive stays an orphan and is never deleted through that record.
+- **Orphans** are archives without a live record (none at all, or a failed or pruned one that still names the key). *Import* (`POST /api/v1/storage-targets/{id}/import` with `{"key": "..."}`, admin) makes the object a backup again: a failed or pruned record that still names the key is revived (same ID and history, now manual so retention leaves it alone, and flagged as a mismatch when the archive no longer matches its recorded checksum), otherwise a record is created; two records never share an archive this way. The database, backup ID and start time are read from the default key layout `<db>/<YYYY>/<MM>/<backup id>.archive[.gz][.age]` (other layouts use the first path element as the database); a key whose database is not a valid MongoDB name or contains `*` or `\` is refused. Imports of one key are serialised. The object is hashed in the background (the record is `pending` until then), and the record is marked `imported` and unverified. An imported backup has no source connection: restoring it needs an admin to choose the target connection. A failed import marks the record failed and detaches it from the key, so the archive stays an orphan and is never deleted through that record.
 - **Missing** are completed records whose archive is gone. They are marked `status: "missing"` (with `missing_since`); the dashboard no longer offers to restore them and retention no longer counts them. A later scan that finds the archive again marks them completed.
 
 Records of backups that completed after the listing started are never reported missing, and archives of running backups are never orphans. A listing without a single archive while completed backups are recorded on the target (a wrong prefix, an unmounted directory) fails the scan instead of marking every backup missing. Nothing is deleted, ever.

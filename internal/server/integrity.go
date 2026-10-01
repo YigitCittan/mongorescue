@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 )
@@ -55,17 +59,42 @@ func (s *Server) writeIntegrityError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, integrity.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, integrity.ErrInvalidImport):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, integrity.ErrNotVerifiable), errors.Is(err, integrity.ErrNoBackup),
 		errors.Is(err, integrity.ErrNotOrphan), errors.Is(err, integrity.ErrBusy), errors.Is(err, operations.ErrPinned):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, integrity.ErrUnavailable), errors.Is(err, operations.ErrUnavailable), errors.Is(err, runs.ErrShuttingDown):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
-	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound):
+	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound), errors.Is(err, auth.ErrForbidden):
 		s.writeOperationError(w, err)
 	default:
 		s.logger.Error("integrity operation failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
+}
+
+// archiveShared returns why the archive of rec must stay when rec is deleted ("" when
+// it may go): another record (in any status) names the same key on the same target.
+// A pinned record among them is named, since it holds the archive on legal hold.
+func (s *Server) archiveShared(ctx context.Context, rec *models.BackupRecord) (string, error) {
+	if rec.StorageKey == "" {
+		return "", nil
+	}
+	all, err := s.metaStore.ListBackupRecords(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("list backups: %w", err)
+	}
+	others := models.ArchiveReferences(all, rec)
+	if len(others) == 0 {
+		return "", nil
+	}
+	for _, o := range others {
+		if o.Pinned {
+			return fmt.Sprintf("the archive is kept: it also belongs to backup %s, which is pinned (legal hold); unpin and delete that backup to remove it", o.ID), nil
+		}
+	}
+	return fmt.Sprintf("the archive is kept: it also belongs to backup %s; only this record was deleted", others[0].ID), nil
 }
 
 // handleVerifyBackup re-reads a backup's archive in the background and compares it

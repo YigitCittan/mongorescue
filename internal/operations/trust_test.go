@@ -48,14 +48,14 @@ func TestPinAndUnpin(t *testing.T) {
 func TestRetentionPreviewAndLog(t *testing.T) {
 	svc, st := newService(t)
 	ctx := context.Background()
-	job := &models.Job{ID: "job_r", Name: "r", Database: "shop", CronExpression: "@daily", RetentionCount: 2, StorageTargetID: "tgt"}
+	job := &models.Job{ID: "job_r", Name: "r", Database: "shop", CronExpression: "@daily", RetentionCount: 2} // without a targets service runs use the fixed driver (target "")
 	if err := st.SaveJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	for i := range 5 {
 		rec := &models.BackupRecord{ID: fmt.Sprintf("bkp_%d", i), JobID: job.ID, Trigger: models.TriggerScheduled, Database: "shop",
-			Status: models.StatusCompleted, StorageTargetID: "tgt", StartedAt: now.Add(-time.Duration(i+1) * 48 * time.Hour), Pinned: i == 4}
+			Status: models.StatusCompleted, StartedAt: now.Add(-time.Duration(i+1) * 48 * time.Hour), Pinned: i == 4}
 		if err := st.SaveBackupRecord(ctx, rec); err != nil {
 			t.Fatal(err)
 		}

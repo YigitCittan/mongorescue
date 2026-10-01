@@ -24,7 +24,6 @@ var operatorRoutes = []string{
 	"POST /api/v1/restores/{id}/cancel",
 	"POST /api/v1/backups/{id}/verify",
 	"POST /api/v1/backups/{id}/pin",
-	"POST /api/v1/backups/{id}/unpin",
 	"POST /api/v1/jobs/{id}/restore-test",
 }
 

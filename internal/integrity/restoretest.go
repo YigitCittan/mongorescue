@@ -165,10 +165,24 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 		return errors.New("the backup is encrypted and no decryption key is configured under Settings → Encryption")
 	}
 
-	temp := models.RescueVerifyDatabaseName(backup.Database, res.StartedAt)
+	// The random suffix makes the name unique; the lock on it and the existence
+	// check below are guards on top.
+	suffix, err := models.NewRescueVerifySuffix()
+	if err != nil {
+		return err
+	}
+	temp, err := models.RescueVerifyDatabaseName(backup.Database, res.StartedAt, suffix)
+	if err != nil {
+		return err
+	}
 	if temp == backup.Database || !models.IsRescueVerifyDatabaseName(temp) {
 		return fmt.Errorf("refusing temporary database name %s", temp)
 	}
+	releaseTemp, err := s.cfg.Runs.Acquire(keyPrefixRestoreTestDB + conn.ID + "/" + temp)
+	if err != nil {
+		return fmt.Errorf("%w: %s is in use by another restore test", ErrTempDatabaseExists, temp)
+	}
+	defer releaseTemp()
 	missing, err := s.cfg.Admin.RestoreTestPrivileges(ctx, conn.URI, temp)
 	if err != nil {
 		return fmt.Errorf("check the privileges of connection %s: %w", conn.Name, err)
@@ -186,9 +200,9 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 	}
 
 	// From here on the temporary database belongs to this test: it is dropped in
-	// every case (success, failure, cancellation, panic).
+	// every case (success, failure, cancellation, panic), and only this exact name.
 	res.TempDatabase = temp
-	defer s.dropTemp(ctx, conn.URI, backup.Database, res)
+	defer s.dropTemp(ctx, conn.URI, backup.Database, temp, res)
 
 	noVerifyPass := false
 	req := models.RestoreRequest{
@@ -231,10 +245,11 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 	return nil
 }
 
-// dropTemp drops the temporary database of res, detached from ctx's cancellation.
-// It never drops the source database or a name that is not a restore test's.
-func (s *Service) dropTemp(ctx context.Context, uri, source string, res *models.RestoreTestResult) {
-	temp := res.TempDatabase
+// dropTemp drops temp, the temporary database this test created, detached from
+// ctx's cancellation. The name is passed by value at creation time, so nothing that
+// changes res afterwards can redirect the drop. It never drops the source database
+// or a name that is not a restore test's.
+func (s *Service) dropTemp(ctx context.Context, uri, source, temp string, res *models.RestoreTestResult) {
 	if temp == "" || temp == source || !models.IsRescueVerifyDatabaseName(temp) {
 		return
 	}

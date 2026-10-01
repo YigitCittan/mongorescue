@@ -58,8 +58,8 @@ func TestRestoreTestSuccess(t *testing.T) {
 	if res.Status != models.RestoreTestOK || len(res.Mismatches) != 0 || res.Error != "" {
 		t.Fatalf("result = %+v", res)
 	}
-	wantTemp := "shop_rescue_verify_" + f.now.Format("20060102_150405")
-	if res.TempDatabase != wantTemp || !res.Dropped || res.Collections != 2 || res.Documents != 14 || res.ConnectionID != "conn_src" {
+	wantTemp := res.TempDatabase
+	if !strings.HasPrefix(wantTemp, "shop_rescue_verify_"+f.now.Format("20060102_150405")+"_") || !models.IsRescueVerifyDatabaseName(wantTemp) || !res.Dropped || res.Collections != 2 || res.Documents != 14 || res.ConnectionID != "conn_src" {
 		t.Fatalf("result = %+v", res)
 	}
 	if !slices.Equal(f.admin.dropped, []string{wantTemp}) {
@@ -166,7 +166,7 @@ func TestRestoreTestRefusals(t *testing.T) {
 	})
 	t.Run("temporary database exists", func(t *testing.T) {
 		f, job, rec := restoreTestFixture(t)
-		f.admin.exists["shop_rescue_verify_"+f.now.Format("20060102_150405")] = true
+		f.admin.existsPrefix = "shop_rescue_verify_"
 		res := f.svc.runRestoreTest(context.Background(), job, rec, TriggerScheduled)
 		if res.Status != models.RestoreTestError || !strings.Contains(res.Error, "already exists") {
 			t.Fatalf("result = %+v", res)
