@@ -466,6 +466,29 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		// Schema 0010 only adds indexes; the filtered queries must read every older row.
+		version: 10,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			page, err := s.QueryBackupRecords(ctx, BackupFilter{RetryOf: "bkp_v1_failed", Limit: 10})
+			if err != nil || page.Total != 1 || page.Rows[0].Record.ID != "bkp_v9" {
+				t.Errorf("retries of bkp_v1_failed = %+v, %v; want bkp_v9", page, err)
+			}
+			page, err = s.QueryBackupRecords(ctx, BackupFilter{Status: models.StatusFailed, Search: "v1_FAILED"})
+			if err != nil || page.Total != 1 || page.Rows[0].RetriedBy == nil || page.Rows[0].RetriedBy.ID != "bkp_v9" {
+				t.Errorf("bkp_v1_failed = %+v, %v; want it retried by bkp_v9", page, err)
+			}
+			all, err := s.ListBackupRecords(ctx, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page, err := s.QueryBackupRecords(ctx, BackupFilter{Limit: 1}); err != nil || page.Total != len(all) {
+				t.Errorf("total = %+v, %v; want %d", page, err, len(all))
+			}
+		},
+	},
 }
 
 func findAudit(t *testing.T, s *SQLiteStore, tool string) *audit.Entry {
