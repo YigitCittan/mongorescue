@@ -310,21 +310,86 @@ func (s *flakyListStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
 	return s.Store.ListJobs(ctx)
 }
 
+// waitActive waits until sched has want registered jobs.
+func waitActive(t *testing.T, sched *Scheduler, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for sched.ActiveJobCount() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("active jobs = %d; want %d", sched.ActiveJobCount(), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSchedulerStartRetryAfterTransientError(t *testing.T) {
 	fileStore := storetest.New(t)
-	flaky := &flakyListStore{Store: fileStore, failures: 1}
+	if err := fileStore.SaveJob(context.Background(), &models.Job{ID: "job_a", Name: "a", Database: "shop", CronExpression: "@daily", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyListStore{Store: fileStore, failures: 2}
 	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017")
 	sched := NewScheduler(flaky, engine, storage.NewMockStorage(), nil)
+	sched.retryFirst, sched.retryLimit = time.Millisecond, 2*time.Millisecond
 	defer sched.Stop()
 
-	if err := sched.Start(context.Background()); !errors.Is(err, errTransient) {
-		t.Fatalf("first Start: expected transient error, got %v", err)
-	}
+	// A failed load does not keep the scheduler from starting; it retries until the
+	// jobs load.
 	if err := sched.Start(context.Background()); err != nil {
-		t.Fatalf("retry Start: expected success, got %v", err)
+		t.Fatalf("Start: %v", err)
 	}
+	waitActive(t, sched, 1)
 	if err := sched.Start(context.Background()); !errors.Is(err, ErrAlreadyStarted) {
-		t.Fatalf("third Start: expected ErrAlreadyStarted, got %v", err)
+		t.Fatalf("second Start: expected ErrAlreadyStarted, got %v", err)
+	}
+}
+
+func TestSchedulerStopEndsLoadRetries(t *testing.T) {
+	flaky := &flakyListStore{Store: storetest.New(t), failures: 1 << 30}
+	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017")
+	sched := NewScheduler(flaky, engine, storage.NewMockStorage(), nil)
+	sched.retryFirst, sched.retryLimit = time.Millisecond, time.Millisecond
+	if err := sched.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// A job created through the API while loading fails is scheduled anyway.
+	if err := sched.RegisterJob(&models.Job{ID: "job_new", CronExpression: "@daily", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n := sched.ActiveJobCount(); n != 1 {
+		t.Fatalf("active jobs = %d; want 1", n)
+	}
+	done := make(chan struct{})
+	go func() { sched.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not end the load retries")
+	}
+}
+
+func TestSchedulerRegistersReadableJobsWhenOneRowIsBad(t *testing.T) {
+	fileStore := storetest.New(t)
+	ctx := context.Background()
+	for _, id := range []string{"job_a", "job_bad", "job_c"} {
+		if err := fileStore.SaveJob(ctx, &models.Job{ID: id, Name: id, Database: "shop", CronExpression: "@daily", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storetest.CorruptRow(t, fileStore, "jobs", "job_bad", `{"id":"job_bad","enabled":"yes"}`)
+
+	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017")
+	sched := NewScheduler(fileStore, engine, storage.NewMockStorage(), nil)
+	defer sched.Stop()
+	if err := sched.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := sched.ActiveJobCount(); n != 2 {
+		t.Fatalf("active jobs = %d; want the 2 readable jobs", n)
+	}
+	bad, err := fileStore.CorruptRecords(ctx)
+	if err != nil || len(bad) != 1 || bad[0].ID != "job_bad" {
+		t.Fatalf("CorruptRecords = %+v, %v; want job_bad", bad, err)
 	}
 }
 
