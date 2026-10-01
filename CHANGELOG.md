@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-01
+
 ### Added
 - Cancel running backups and restores: `POST /api/v1/backups/{id}/cancel` and `POST /api/v1/restores/{id}/cancel` (operator; `404` unknown, `409` not running or already finishing), the MCP tool `cancel_run`, and **Cancel** buttons (with a confirmation) on running rows and in the details dialogs. `mongodump`/`mongorestore` is stopped with its process group, a cancelled backup deletes its partial archive (S3 multipart uploads are aborted), a cancelled safe-clone restore drops its partial clone, and a cancelled in-place restore (admin only) is flagged loudly as possibly partially restored. Scheduled runs are cancellable too. See [docs/api.md](docs/api.md#cancelling-a-run).
 - A new run status, `cancelled`, with `cancelled_by` and `cancelled_at`. Cancelled runs are not failures: they are left out of the failure counts and the last 24 hours' failures, emit `backup.cancelled` / `restore.cancelled` (selectable in notification rules) instead of the failure events, and are counted with `status="cancelled"` in the metrics.
