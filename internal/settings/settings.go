@@ -114,6 +114,9 @@ type Settings struct {
 	Security Security `json:"security"`
 	// Encryption configures age encryption of new backups and the keys restores use.
 	Encryption Encryption `json:"encryption"`
+	// Integrity configures archive verification, the integrity sweep and storage
+	// scans (see integrity.go).
+	Integrity Integrity `json:"integrity"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -211,6 +214,7 @@ func Defaults() Settings {
 			Recipients:  []string{},
 			RetiredKeys: []RetiredKey{},
 		},
+		Integrity: defaultIntegrity(),
 	}
 }
 
@@ -256,6 +260,8 @@ type Patch struct {
 	Security *SecurityPatch `json:"security,omitempty"`
 	// Encryption updates encryption settings.
 	Encryption *EncryptionPatch `json:"encryption,omitempty"`
+	// Integrity updates the integrity settings.
+	Integrity *IntegrityPatch `json:"integrity,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -339,6 +345,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		}
 		next.Encryption.RetiredKeys = retire(next.Encryption.RetiredKeys, cur.Encryption, next.Encryption, now)
 	}
+	p.Integrity.apply(&next.Integrity)
 	return next, nil
 }
 
@@ -419,6 +426,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 	}
 	sec.CORSOrigins = origins
 
+	if err := validateIntegrity(&s.Integrity); err != nil {
+		return err
+	}
 	return validateEncryption(&s.Encryption, strictPassphrase)
 }
 
