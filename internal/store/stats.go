@@ -73,43 +73,86 @@ func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*Backup
 		string(models.StatusFailed), timeKey(since)).Scan(&st.FailedSince); err != nil {
 		return nil, fmt.Errorf("store: count recent failures: %w", err)
 	}
-	// A newest backup that cannot be read is skipped (and reported), so Last stays nil.
-	last, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
-		"SELECT id, data FROM backups ORDER BY started_at DESC, id DESC LIMIT 1")
-	if err != nil {
+	// A newest backup that cannot be read is skipped (and reported): Last is the newest
+	// readable one.
+	if st.Last, err = firstReadable[models.BackupRecord](ctx, s, tableBackups,
+		"SELECT id, data FROM backups ORDER BY started_at DESC, id DESC"); err != nil {
 		return nil, err
-	}
-	if len(last) > 0 {
-		st.Last = last[0]
 	}
 	return st, nil
 }
 
 // LatestJobBackups maps every job ID that has backups to its newest backup (by start
-// time, then ID). A non-empty status only considers backups in that state.
+// time, then ID). A non-empty status only considers backups in that state. When the
+// newest backup of a job cannot be read, it is skipped (and reported) and the job's
+// newest readable backup is used instead.
 func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
-	query := `SELECT b.id, b.data FROM backups b JOIN (
+	query := `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' GROUP BY job_id
 		) l ON b.job_id = l.job_id AND b.started_at = l.latest`
 	var args []any
 	if status != "" {
-		query = `SELECT b.id, b.data FROM backups b JOIN (
+		query = `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ? GROUP BY job_id
 		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?`
 		args = []any{string(status), string(status)}
 	}
-	list, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil, query, args...)
+	out, skipped, err := s.latestJobRows(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*models.BackupRecord, len(list))
-	for _, b := range list {
-		// Records sharing the newest start time: the greatest ID wins, as in the lists.
-		if prev, ok := out[b.JobID]; !ok || b.ID > prev.ID {
-			out[b.JobID] = b
+	for jobID := range skipped {
+		if _, ok := out[jobID]; ok {
+			continue
+		}
+		fallback := "SELECT id, data FROM backups WHERE job_id = ? ORDER BY started_at DESC, id DESC"
+		fargs := []any{jobID}
+		if status != "" {
+			fallback = "SELECT id, data FROM backups WHERE job_id = ? AND status = ? ORDER BY started_at DESC, id DESC"
+			fargs = append(fargs, string(status))
+		}
+		b, err := firstReadable[models.BackupRecord](ctx, s, tableBackups, fallback, fargs...)
+		if err != nil {
+			return nil, err
+		}
+		if b != nil {
+			out[jobID] = b
 		}
 	}
 	return out, nil
+}
+
+// latestJobRows reads the newest backup rows per job selected by query (id, job_id,
+// data). It returns the readable ones by job ID, and the jobs with a skipped row.
+func (s *SQLiteStore) latestJobRows(ctx context.Context, query string, args ...any) (map[string]*models.BackupRecord, map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]*models.BackupRecord{}
+	skipped := map[string]bool{}
+	for rows.Next() {
+		var id, jobID, data string
+		if err := rows.Scan(&id, &jobID, &data); err != nil {
+			return nil, nil, fmt.Errorf("store: scan row: %w", err)
+		}
+		b, err := decode[models.BackupRecord](data)
+		if err != nil {
+			s.reportCorrupt(tableBackups, id, err)
+			skipped[jobID] = true
+			continue
+		}
+		s.clearCorrupt(tableBackups, id)
+		// Records sharing the newest start time: the greatest ID wins, as in the lists.
+		if prev, ok := out[jobID]; !ok || b.ID > prev.ID {
+			out[jobID] = b
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("store: iterate rows: %w", err)
+	}
+	return out, skipped, nil
 }
 
 // RestoreStats returns the number of restores and their counts by status.

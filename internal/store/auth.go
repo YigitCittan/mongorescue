@@ -321,7 +321,7 @@ func scanRowError(what string, err error) error {
 		return err
 	}
 	if strings.HasPrefix(err.Error(), "sql: Scan error on column") {
-		return fmt.Errorf("%w: scan %s: %w", ErrCorruptRecord, what, &columnScanError{err})
+		return unreadable(&columnScanError{err})
 	}
 	return fmt.Errorf("store: scan %s: %w", what, err)
 }
