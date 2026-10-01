@@ -2661,6 +2661,7 @@ input[type="radio"] {
   overflow: auto;
   color: var(--warn);
   background: var(--warn-subtle);
+}
 
 /* --------------------------------------------------------------------------
    Backup trust: verification and restore test chips, pins, storage scans,
