@@ -245,7 +245,7 @@ func TestQueryRestoreRecords(t *testing.T) {
 	if len(page.Records) != 2 || page.Records[0].ID != "r3" || page.Records[1].ID != "r2" || page.Total != 4 {
 		t.Fatalf("page = %d records (first %v), total %d; want r3, r2 of 4", len(page.Records), page.Records, page.Total)
 	}
-	if _, err := s.QueryRestoreRecords(ctx, store.RestoreFilter{Limit: store.MaxListLimit + 1}); !errors.Is(err, store.ErrInvalidFilter) {
+	if _, err = s.QueryRestoreRecords(ctx, store.RestoreFilter{Limit: store.MaxListLimit + 1}); !errors.Is(err, store.ErrInvalidFilter) {
 		t.Fatalf("limit above max: error = %v; want ErrInvalidFilter", err)
 	}
 
