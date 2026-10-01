@@ -1627,8 +1627,8 @@ function renderJobs() {
 
   if (state.jobs.length === 0) {
     setTbody(tbody, state.loaded.connections && state.connections.length === 0
-      ? emptyRow(9, t("conn.jobs_need_connection"), "new-connection", "plus", t("conn.add"))
-      : emptyRow(9, t("tables.empty_jobs"), "new-job", "plus", t("nav.new_job")));
+      ? emptyRow(10, t("conn.jobs_need_connection"), "new-connection", "plus", t("conn.add"))
+      : emptyRow(10, t("tables.empty_jobs"), "new-job", "plus", t("nav.new_job")));
     return;
   }
 
@@ -1643,6 +1643,7 @@ function renderJobs() {
     const meaning = describeCron(job.cron_expression);
     const id = escapeHtml(job.id);
     return `<tr class="row-clickable" data-row-action="job-details" data-id="${id}" tabindex="0">
+      ${bulkCell("jobs", job.id, job.name || job.id)}
       <td class="cell-primary">${ellipsis(job.name || job.id, "ell-md")}${idCopy(job.id, "cell-sub")}</td>
       <td>${job.connection_id ? ellipsis(connectionName(job.connection_id), "ell-sm") : mutedDash()}</td>
       <td>${ellipsis(job.database, "mono ell-sm")}${collectionScope(job)}</td>
@@ -1764,17 +1765,17 @@ function renderBackups() {
   renderListControls("backups");
 
   if (lists.backups.error) {
-    setTbody(tbody, emptyRow(8, lists.backups.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(9, lists.backups.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.backups.length === 0 && activeFilterCount("backups") > 0) {
-    setTbody(tbody, emptyRow(8, t("filters.no_backups_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(9, t("filters.no_backups_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.backups.length === 0) {
     setTbody(tbody, state.loaded.connections && state.connections.length === 0
-      ? emptyRow(8, t("conn.backups_need_connection"), "new-connection", "plus", t("conn.add"))
-      : emptyRow(8, t("tables.empty_backups"), "backup-now", "", t("nav.instant_backup")));
+      ? emptyRow(9, t("conn.backups_need_connection"), "new-connection", "plus", t("conn.add"))
+      : emptyRow(9, t("tables.empty_backups"), "backup-now", "", t("nav.instant_backup")));
     return;
   }
 
@@ -1803,6 +1804,7 @@ function renderBackups() {
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
       : "";
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
+      ${bulkCell("backups", b.id, b.id)}
       <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}${trustPinIcon(b)}</div>${retryLinks(b)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
       <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}</td>
@@ -1856,15 +1858,15 @@ function renderRestores() {
   renderRestoreDetails();
 
   if (lists.restores.error) {
-    setTbody(tbody, emptyRow(6, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(7, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.restores.length === 0 && activeFilterCount("restores") > 0) {
-    setTbody(tbody, emptyRow(6, t("filters.no_restores_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(7, t("filters.no_restores_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.restores.length === 0) {
-    setTbody(tbody, emptyRow(6, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
+    setTbody(tbody, emptyRow(7, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
     return;
   }
 
@@ -1885,6 +1887,7 @@ function renderRestores() {
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
       : "";
     return `<tr class="row-clickable" data-row-action="restore-details" data-id="${escapeHtml(r.id)}" tabindex="0">
+      ${bulkCell("restores", r.id, r.id)}
       <td><div class="id-cell">${ellipsis(r.id, "mono muted cell-id")}${copyButton(r.id)}</div></td>
       <td>${ellipsis(r.source_database)}${source ? `<div class="cell-sub">${ellipsis(source)}</div>` : ""}</td>
       <td>${ellipsis(r.target_database, "mono")}${cross}${selection}</td>
@@ -2130,11 +2133,14 @@ function timeCell(value) {
 const renderedTbodies = new WeakMap();
 
 function setTbody(tbody, html) {
-  if (renderedTbodies.get(tbody) === html) return;
-  tbody.innerHTML = html;
-  renderedTbodies.set(tbody, html);
-  // A re-render replaces the row whose action menu is open.
-  if (rowMenu.trigger && !document.contains(rowMenu.trigger)) closeRowMenu(false);
+  if (renderedTbodies.get(tbody) !== html) {
+    tbody.innerHTML = html;
+    renderedTbodies.set(tbody, html);
+    // A re-render replaces the row whose action menu is open.
+    if (rowMenu.trigger && !document.contains(rowMenu.trigger)) closeRowMenu(false);
+  }
+  // Row selection (bulk.js) is applied to the rows after every render.
+  bulkSync(tbody.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2386,7 +2392,7 @@ function setupForms() {
     const dropConfirm = selected.length > 0
       ? tf("modal_restore.drop_confirm_selected", { list: selected.join(", ") })
       : t("modal_restore.drop_confirm");
-    if (!isSafeClone && dropTarget && !window.confirm(dropConfirm)) {
+    if (!isSafeClone && dropTarget && !(await confirmDialog({ body: dropConfirm, danger: true, confirmLabel: t("dialog.confirm") }))) {
       return;
     }
 
@@ -3017,11 +3023,18 @@ async function triggerJob(jobID, btn) {
 }
 
 async function deleteJob(jobID) {
-  if (!window.confirm(t("toasts.confirm_delete_job"))) return;
+  const job = state.jobs.find(j => j.id === jobID);
+  if (!(await confirmDialog({
+    title: t("dialog.delete_title"),
+    body: [t("toasts.confirm_delete_job"), job ? `${job.name || job.id} · ${job.database}` : jobID],
+    danger: true,
+    confirmLabel: t("actions.delete")
+  }))) return;
   try {
     const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}`, { method: "DELETE" });
     if (json.success) {
       showToast(t("toasts.job_deleted"), "success");
+      bulkForget("jobs", jobID);
       refreshAll();
     } else {
       showToast(json.error || t("toasts.request_failed"), "error");
@@ -3032,12 +3045,21 @@ async function deleteJob(jobID) {
 }
 
 async function deleteBackup(backupID) {
-  if (!window.confirm(t("toasts.confirm_delete_backup"))) return;
+  const b = backupCache.get(backupID);
+  const started = b ? parseDate(b.started_at) : null;
+  const facts = b ? [b.database, formatBytes(b.size_bytes), started ? formatAbsolute(started) : ""].filter(Boolean).join(" · ") : "";
+  if (!(await confirmDialog({
+    title: t("dialog.delete_title"),
+    body: [t("toasts.confirm_delete_backup"), backupID, facts],
+    danger: true,
+    confirmLabel: t("actions.delete")
+  }))) return;
   try {
     const json = await apiJSON(`/api/v1/backups/${encodeURIComponent(backupID)}`, { method: "DELETE" });
     if (json.success) {
       showToast(t("toasts.backup_deleted"), "success");
       backupCache.delete(backupID);
+      bulkForget("backups", backupID);
       if (detailsBackupId === backupID) closeModal("modal-backup-details");
       refreshAll();
     } else {
@@ -3364,7 +3386,7 @@ async function testChannel(id, btn) {
 }
 
 async function deleteChannel(id) {
-  if (!window.confirm(t("notify.confirm_delete_channel"))) return;
+  if (!(await confirmDialog({ title: t("dialog.delete_title"), body: t("notify.confirm_delete_channel"), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/notifications/channels/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -3464,7 +3486,7 @@ async function saveRule(e) {
 }
 
 async function deleteRule(id) {
-  if (!window.confirm(t("notify.confirm_delete_rule"))) return;
+  if (!(await confirmDialog({ title: t("dialog.delete_title"), body: t("notify.confirm_delete_rule"), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/notifications/rules/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -3634,6 +3656,7 @@ function resetData() {
   jobHistory.runs = null;
   backupChain.id = "";
   backupChain.records = null;
+  bulkReset();
   LIST_KINDS.forEach(kind => {
     lists[kind].total = 0;
     lists[kind].error = "";
@@ -4034,7 +4057,7 @@ async function testConnection(id, btn) {
 }
 
 async function deleteConnection(id) {
-  if (!window.confirm(tf("conn.confirm_delete", { name: connectionName(id) }))) return;
+  if (!(await confirmDialog({ title: t("dialog.delete_title"), body: tf("conn.confirm_delete", { name: connectionName(id) }), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -4424,7 +4447,7 @@ function renderWarnings() {
 }
 
 async function dismissEncryptionWarning() {
-  if (!window.confirm(t("enc.upgrade_warning_dismiss_confirm"))) return;
+  if (!(await confirmDialog({ body: t("enc.upgrade_warning_dismiss_confirm") }))) return;
   try {
     const json = await apiJSON(`/api/v1/settings/warnings/${WARNING_ENCRYPTION_OFF}/dismiss`, { method: "POST" });
     if (!json.success) {
@@ -4721,8 +4744,8 @@ async function saveSettingsGroup(group, submitter, overrides) {
 
   if (group === "encryption" && !overrides) {
     const before = settingsGroup("encryption");
-    if (before.enabled && !payload.enabled && !window.confirm(t("enc.confirm_disable"))) return false;
-    if (payload.enabled && payload.mode === "x25519" && !payload.identity && !window.confirm(t("enc.confirm_no_identity"))) return false;
+    if (before.enabled && !payload.enabled && !(await confirmDialog({ body: t("enc.confirm_disable"), danger: true, confirmLabel: t("dialog.confirm") }))) return false;
+    if (payload.enabled && payload.mode === "x25519" && !payload.identity && !(await confirmDialog({ body: t("enc.confirm_no_identity"), danger: true, confirmLabel: t("dialog.confirm") }))) return false;
   }
 
   const btn = submitter || document.querySelector(`#${cfg.form} [type=submit]`);
@@ -4806,7 +4829,7 @@ function verifyDefault(isSafeClone) {
 // ---------------------------------------------------------------------------
 
 async function generateKeyPair(btn) {
-  if (generatedKey.identity && !window.confirm(t("enc.confirm_replace_generated"))) return;
+  if (generatedKey.identity && !(await confirmDialog({ body: t("enc.confirm_replace_generated"), danger: true, confirmLabel: t("dialog.confirm") }))) return;
   if (btn) btn.disabled = true;
   try {
     const json = await apiJSON("/api/v1/settings/encryption/generate-key", { method: "POST" });
@@ -4864,8 +4887,9 @@ async function useGeneratedKey(btn) {
   if (generate) generate.focus();
 }
 
-function discardGeneratedKey(ask) {
-  if (ask && generatedKey.identity && !window.confirm(t("enc.confirm_discard"))) return;
+// With ask, it confirms first (asynchronously); without, it discards at once.
+async function discardGeneratedKey(ask) {
+  if (ask && generatedKey.identity && !(await confirmDialog({ body: t("enc.confirm_discard"), danger: true, confirmLabel: t("dialog.confirm") }))) return;
   generatedKey.identity = "";
   generatedKey.recipient = "";
   setValue("enc-gen-identity", "");
@@ -5402,7 +5426,7 @@ async function setDefaultStorageTarget(id, btn) {
 }
 
 async function deleteStorageTarget(id) {
-  if (!window.confirm(tf("storage.confirm_delete", { name: storageTargetName(id) }))) return;
+  if (!(await confirmDialog({ title: t("dialog.delete_title"), body: tf("storage.confirm_delete", { name: storageTargetName(id) }), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/storage-targets/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -5607,7 +5631,7 @@ async function saveUser(e) {
 }
 
 async function deleteUser(id) {
-  if (!window.confirm(tf("settings.confirm_delete_user", { name: userName(id) }))) return;
+  if (!(await confirmDialog({ title: t("dialog.delete_title"), body: tf("settings.confirm_delete_user", { name: userName(id) }), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -5762,7 +5786,7 @@ async function copyField(inputId, labelId) {
 
 async function revokeApiKey(id) {
   const key = state.apikeys.find(k => k.id === id);
-  if (!window.confirm(tf("settings.confirm_revoke", { name: key ? key.name : id }))) return;
+  if (!(await confirmDialog({ body: tf("settings.confirm_revoke", { name: key ? key.name : id }), danger: true, confirmLabel: t("dialog.confirm") }))) return;
   try {
     const json = await apiJSON(`/api/v1/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (json.success) {
@@ -5846,7 +5870,7 @@ function openModal(id) {
 
 function closeModal(id) {
   const el = document.getElementById(id);
-  if (!el || !el.classList.contains("open")) return;
+  if (!el || !el.classList.contains("open") || modalLocked(id)) return;
   el.classList.remove("open");
   el.setAttribute("aria-hidden", "true");
   if (id === "modal-api-key") showApiKeyStep("name");
@@ -5855,6 +5879,8 @@ function closeModal(id) {
   const entry = idx >= 0 ? modalStack.splice(idx, 1)[0] : null;
   if (modalStack.length === 0) document.body.classList.remove("modal-open");
   returnFocus(entry && entry.opener);
+  // Settles confirmDialog() and ends bulk dialogs (bulk.js).
+  onModalClosed(id);
 }
 
 // Gives the focus back to what opened a dialog. An opener that is gone or hidden
