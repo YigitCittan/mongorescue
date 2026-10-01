@@ -19,6 +19,9 @@ var ErrInvalidFilter = errors.New("store: invalid list filter")
 // MaxListLimit is the largest page size of QueryBackupRecords and QueryRestoreRecords.
 const MaxListLimit = 200
 
+// MaxFilterIDs is the largest number of IDs in BackupFilter.IDs.
+const MaxFilterIDs = 200
+
 // SortOrder orders filtered list results by start time.
 type SortOrder string
 
@@ -33,6 +36,8 @@ const (
 // BackupFilter selects, orders and pages backup records. Zero fields match
 // everything; all set fields must match.
 type BackupFilter struct {
+	// IDs keeps the backups with exactly these IDs (at most MaxFilterIDs).
+	IDs []string
 	// Status keeps backups in this state.
 	Status models.BackupStatus
 	// Database keeps backups of exactly this database.
@@ -187,6 +192,14 @@ const effectiveTriggerSQL = `coalesce(nullif(json_extract(b.data, '$.trigger'), 
 // backupConditions renders f as the WHERE clause of a query over "backups b".
 func backupConditions(f BackupFilter) conditions {
 	var c conditions
+	if len(f.IDs) > 0 {
+		args := make([]any, len(f.IDs))
+		for i, id := range f.IDs {
+			args[i] = id
+		}
+		// One constant "?" per ID; the IDs themselves are arguments.
+		c.add("b.id IN (?"+strings.Repeat(", ?", len(f.IDs)-1)+")", args...)
+	}
 	if f.Status != "" {
 		c.add("b.status = ?", string(f.Status))
 	}
@@ -225,6 +238,9 @@ const selectBackupRowsSQL = `SELECT b.data, r.id, r.started_at FROM backups b
 func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*BackupPage, error) {
 	if err := validatePage(f.Sort, f.Limit, f.Offset, f.From, f.To); err != nil {
 		return nil, err
+	}
+	if len(f.IDs) > MaxFilterIDs {
+		return nil, fmt.Errorf("%w: id takes at most %d IDs", ErrInvalidFilter, MaxFilterIDs)
 	}
 	c := backupConditions(f)
 	page, args := orderAndPage("b.", f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))

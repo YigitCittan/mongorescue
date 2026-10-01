@@ -85,4 +85,12 @@ type Store interface {
 	// ListRestoreDatabases returns the distinct target databases of all restores,
 	// sorted.
 	ListRestoreDatabases(ctx context.Context) ([]string, error)
+	// BackupStats returns SQL aggregates over every backup: counts by status, failures
+	// started at or after since, the size of completed backups and the newest backup.
+	BackupStats(ctx context.Context, since time.Time) (*BackupStats, error)
+	// LatestJobBackups maps every job ID with backups to its newest backup, only
+	// considering backups in status when it is not empty.
+	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
+	// RestoreStats returns the number of restores and their counts by status.
+	RestoreStats(ctx context.Context) (*RestoreStats, error)
 }
