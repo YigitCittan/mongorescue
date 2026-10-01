@@ -88,9 +88,11 @@ type JobDetails struct {
 // named, retention must not be negative, the connection must exist and the storage
 // target (the default one for "") is resolved into StorageTargetID and StorageType.
 // Expected failures: ErrInvalid (wrapping scheduler.ErrInvalidCron,
-// ErrDatabaseRequired, ErrNegativeRetention or ErrPausedUntilPast; an enabled job's
-// PausedUntil is cleared), ErrConnectionRequired,
-// ErrUnknownConnection and ErrUnknownStorageTarget.
+// ErrDatabaseRequired or ErrNegativeRetention), ErrConnectionRequired,
+// ErrUnknownConnection and ErrUnknownStorageTarget. An enabled job's PausedUntil is
+// cleared; a stored PausedUntil that has passed is kept (the scheduler resumes the
+// job within a minute), so it never blocks an edit. A PausedUntil sent by a client is
+// checked with ValidatePausedUntil.
 func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	job.CronExpression = strings.TrimSpace(job.CronExpression)
 	if job.CronExpression == "" {
@@ -112,9 +114,6 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 		job.PausedUntil = nil
 	}
 	if job.PausedUntil != nil {
-		if !job.PausedUntil.After(s.now()) {
-			return invalid(ErrPausedUntilPast)
-		}
 		until := job.PausedUntil.UTC()
 		job.PausedUntil = &until
 	}
@@ -129,11 +128,20 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	return nil
 }
 
+// ValidatePausedUntil checks a paused_until sent by a client: it must be in the
+// future (ErrPausedUntilPast, an ErrInvalid error). Nil is valid.
+func (s *Service) ValidatePausedUntil(until *time.Time) error {
+	if until != nil && !until.After(s.now()) {
+		return invalid(ErrPausedUntilPast)
+	}
+	return nil
+}
+
 // UpdateJob replaces the editable fields of job id with u, validates the result like
 // a new job (see ValidateJob), stores it and reschedules it at once: the new schedule,
 // or a pause, takes effect without a restart. The job keeps its id, creation time,
-// last run and backups. Expected failures: ErrNotFound, ErrJobChanged and those of
-// ValidateJob.
+// last run and backups. Expected failures: ErrNotFound, ErrJobChanged,
+// ErrPausedUntilPast (for a paused_until sent in the past) and those of ValidateJob.
 func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*models.Job, error) {
 	existing, err := s.cfg.Store.GetJob(ctx, id)
 	if err != nil {
@@ -155,6 +163,9 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	case job.Enabled:
 		job.PausedUntil = nil
 	case u.PausedUntil != nil:
+		if err = s.ValidatePausedUntil(u.PausedUntil); err != nil {
+			return nil, err
+		}
 		job.PausedUntil = u.PausedUntil
 	case existing.Enabled:
 		// Paused now without a time: until resumed.

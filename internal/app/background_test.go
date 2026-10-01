@@ -88,38 +88,61 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	const reason = "cancelled: application force quit"
 
 	backup := &models.BackupRecord{ID: "bk_running", Database: "shop", Status: models.StatusInProgress}
+	failing := &models.BackupRecord{ID: "bk_failing", Database: "crm", Status: models.StatusInProgress}
 	restore := &models.RestoreRecord{ID: "rs_running", TargetDatabase: "shop_rescue", Status: models.RestoreStatusInProgress}
+	untracked := &models.RestoreRecord{ID: "rs_untracked", TargetDatabase: "crm_rescue", Status: models.RestoreStatusInProgress}
 	done := &models.BackupRecord{ID: "bk_done", Database: "shop", Status: models.StatusCompleted}
-	for _, b := range []*models.BackupRecord{backup, done} {
+	for _, b := range []*models.BackupRecord{backup, failing, done} {
 		if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := a.metaStore.SaveRestoreRecord(ctx, restore); err != nil {
-		t.Fatal(err)
+	for _, r := range []*models.RestoreRecord{restore, untracked} {
+		if err := a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// The tracked backup sees the force quit as a cancellation with the reason, like
-	// the backup engine; the untracked restore is only cancelled by the shutdown and
-	// saves itself as failed.
-	tracked, err := a.registry.Register(runs.Meta{Kind: models.RunBackup, ID: backup.ID, Database: "shop"})
-	if err != nil {
-		t.Fatal(err)
+
+	// track starts a tracked run whose engine stand-in saves save() once its context
+	// is done, and returns the cancellation the run saw.
+	track := func(kind models.RunKind, id, key string, save func(context.Context)) *runs.Cancellation {
+		run, err := a.registry.Register(runs.Meta{Kind: kind, ID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen runs.Cancellation
+		if err := a.runs.Go(key, func(runCtx context.Context) {
+			defer run.End()
+			runCtx = run.Bind(runCtx)
+			<-runCtx.Done()
+			if c := runs.CancellationOf(runCtx); c != nil {
+				seen = *c
+			}
+			save(context.WithoutCancel(runCtx))
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return &seen
 	}
-	var cancellation *runs.Cancellation
-	if err = a.runs.Go(runs.BackupKey("c", "shop"), func(runCtx context.Context) {
-		defer tracked.End()
-		runCtx = tracked.Bind(runCtx)
+	// Like the engines: a cancelled run records itself as cancelled...
+	seen := track(models.RunBackup, backup.ID, runs.BackupKey("c", "shop"), func(ctx context.Context) {
+		backup.Status, backup.ErrorMessage = models.StatusCancelled, "backup cancelled: application force quit"
+		_ = a.metaStore.SaveBackupRecord(ctx, backup)
+	})
+	_ = track(models.RunRestore, restore.ID, runs.RestoreKey("c", "shop_rescue"), func(ctx context.Context) {
+		restore.Status, restore.ErrorMessage = models.RestoreStatusCancelled, "restore cancelled: application force quit"
+		_ = a.metaStore.SaveRestoreRecord(ctx, restore)
+	})
+	// ...and one that failed on its own keeps its failure.
+	_ = track(models.RunBackup, failing.ID, runs.BackupKey("c", "crm"), func(ctx context.Context) {
+		failing.Status, failing.ErrorMessage = models.StatusFailed, "backup: mongodump failed: exit status 1"
+		_ = a.metaStore.SaveBackupRecord(ctx, failing)
+	})
+	// A run the registry does not know is only stopped by the shutdown.
+	if err := a.runs.Go(runs.RestoreKey("c", "crm_rescue"), func(runCtx context.Context) {
 		<-runCtx.Done()
-		cancellation = runs.CancellationOf(runCtx)
-		backup.Status, backup.ErrorMessage = models.StatusCancelled, "backup cancelled: context canceled"
-		_ = a.metaStore.SaveBackupRecord(context.WithoutCancel(runCtx), backup)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err = a.runs.Go(runs.RestoreKey("c", "shop_rescue"), func(runCtx context.Context) {
-		<-runCtx.Done()
-		restore.Status, restore.ErrorMessage = models.RestoreStatusFailed, "restore aborted: context canceled"
-		_ = a.metaStore.SaveRestoreRecord(context.WithoutCancel(runCtx), restore)
+		untracked.Status, untracked.ErrorMessage = models.RestoreStatusFailed, "restore aborted: context canceled"
+		_ = a.metaStore.SaveRestoreRecord(context.WithoutCancel(runCtx), untracked)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,20 +156,26 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := reason + " (backup cancelled: context canceled)"; b.Status != models.StatusCancelled || b.ErrorMessage != want ||
+	if want := reason + " (backup cancelled: application force quit)"; b.Status != models.StatusCancelled || b.ErrorMessage != want ||
 		b.CancelledBy != runs.SystemActor || b.CancelledAt == nil {
 		t.Fatalf("cancelled backup = %s %q by %q; want cancelled %q by the system", b.Status, b.ErrorMessage, b.CancelledBy, want)
 	}
-	if cancellation == nil || cancellation.Reason != reason || cancellation.By != runs.SystemActor {
-		t.Fatalf("the tracked run saw %+v; want the force quit as its cancellation", cancellation)
+	if seen.Reason != reason || seen.By != runs.SystemActor {
+		t.Fatalf("the tracked run saw %+v; want the force quit as its cancellation", seen)
 	}
 	r, err := a.metaStore.GetRestoreRecord(ctx, restore.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := reason + " (restore aborted: context canceled)"; r.Status != models.RestoreStatusCancelled || r.ErrorMessage != want ||
+	if want := reason + " (restore cancelled: application force quit)"; r.Status != models.RestoreStatusCancelled || r.ErrorMessage != want ||
 		r.CancelledBy != runs.SystemActor {
 		t.Fatalf("cancelled restore = %s %q; want cancelled %q", r.Status, r.ErrorMessage, want)
+	}
+	if f, _ := a.metaStore.GetBackupRecord(ctx, failing.ID); f.Status != models.StatusFailed || f.ErrorMessage != "backup: mongodump failed: exit status 1" || f.CancelledBy != "" {
+		t.Fatalf("a backup that failed on its own was rewritten: %+v", f)
+	}
+	if u, _ := a.metaStore.GetRestoreRecord(ctx, untracked.ID); u.Status != models.RestoreStatusFailed || u.ErrorMessage != "restore aborted: context canceled" {
+		t.Fatalf("a run ForceStop did not cancel was rewritten: %+v", u)
 	}
 	if d, _ := a.metaStore.GetBackupRecord(ctx, done.ID); d.Status != models.StatusCompleted || d.ErrorMessage != "" {
 		t.Fatalf("completed backup modified: %+v", d)

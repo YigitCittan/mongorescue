@@ -472,6 +472,10 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		return e.fail(runCtx, record, failErr)
 	}
 
+	// The artifact is complete: the run is past the point of no return and later
+	// cancellations are refused (a late cancel or timeout never discards it).
+	tracker.Finishing()
+
 	// Size and checksum describe a complete artifact, so they are only recorded on success.
 	record.SizeBytes = byteCount.Load()
 	record.SHA256 = hex.EncodeToString(h.Sum(nil))

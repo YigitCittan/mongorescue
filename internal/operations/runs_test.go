@@ -279,3 +279,50 @@ func TestPauseJobUntil(t *testing.T) {
 		t.Fatalf("paused indefinitely = %+v, %v", got, err)
 	}
 }
+
+func TestRenamingAJobWhosePauseHasPassed(t *testing.T) {
+	f := newRunFixture(t)
+	ctx := context.Background()
+	// Paused until a minute ago: due to resume, but the scheduler has not run yet.
+	until := time.Now().Add(-time.Minute).UTC().Round(time.Second)
+	job := &models.Job{ID: "job_due", Name: "old", Database: "shop", ConnectionID: "conn_a", CronExpression: "@daily", PausedUntil: &until}
+	if err := f.st.SaveJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.svc.UpdateJob(ctx, "job_due", operations.JobUpdate{Name: "renamed", Database: "shop", ConnectionID: "conn_a", CronExpression: "@daily"})
+	if err != nil {
+		t.Fatalf("renaming a job whose pause has passed = %v", err)
+	}
+	if got.Name != "renamed" || got.Enabled || got.PausedUntil == nil || !got.PausedUntil.Equal(until) {
+		t.Fatalf("renamed job = %+v; want it still paused with its due time, for the scheduler to resume", got)
+	}
+	// A paused_until sent in the past is still refused.
+	off := false
+	past := time.Now().Add(-time.Hour)
+	if _, err := f.svc.UpdateJob(ctx, "job_due", operations.JobUpdate{Name: "x", Database: "shop", ConnectionID: "conn_a", Enabled: &off, PausedUntil: &past}); !errors.Is(err, operations.ErrInvalid) {
+		t.Fatalf("pause until the past = %v, want ErrInvalid", err)
+	}
+}
+
+func TestCancelIsRefusedOnceTheRunIsFinishing(t *testing.T) {
+	f := newRunFixture(t)
+	ctx := context.Background()
+	rec := &models.BackupRecord{ID: "bkp_fin", Database: "shop", Status: models.StatusInProgress, StartedAt: time.Now()}
+	if err := f.st.SaveBackupRecord(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.registry.Register(runs.Meta{Kind: models.RunBackup, ID: rec.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx := run.Bind(ctx)
+	defer run.End()
+	run.Finishing()
+	_, err = f.svc.CancelBackup(ctx, rec.ID, "")
+	if !errors.Is(err, operations.ErrNotRunning) || !strings.Contains(err.Error(), "already finishing") {
+		t.Fatalf("cancelling a finishing backup = %v, want ErrNotRunning (already finishing)", err)
+	}
+	if runCtx.Err() != nil {
+		t.Fatal("a finishing run must not be cancelled")
+	}
+}

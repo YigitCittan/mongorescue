@@ -555,11 +555,12 @@ func (a *App) ResumeRuns() {
 const forceStopPersistTimeout = 5 * time.Second
 
 // ForceStop is Stop for a forced quit: the backups and restores still in progress
-// are cancelled through the run registry with reason (by runs.SystemActor), so each
-// is recorded as cancelled, with reason in front of the engine's message, as in
-// "reason (backup cancelled: reason)", and logged, so the history says why it did
-// not finish. Like Stop it is idempotent and a no-op before Start; call Close
-// afterwards.
+// are cancelled through the run registry with reason (by runs.SystemActor), and each
+// run this cancellation stopped is recorded as cancelled, with reason in front of the
+// engine's message, as in "reason (backup cancelled: reason)", and logged, so the
+// history says why it did not finish. Runs that ended on their own (failed or
+// completed), that were cancelled before or that were already finishing keep their
+// outcome. Like Stop it is idempotent and a no-op before Start; call Close afterwards.
 func (a *App) ForceStop(reason string) {
 	a.lifeMu.Lock()
 	defer a.lifeMu.Unlock()
@@ -570,7 +571,10 @@ func (a *App) ForceStop(reason string) {
 	defer cancel()
 	backups, restores := a.inProgressRuns(ctx)
 	cancelledAt := time.Now().UTC()
-	a.registry.CancelAll(runs.Cancellation{By: runs.SystemActor, Reason: reason, At: cancelledAt})
+	stopped := make(map[string]bool)
+	for _, id := range a.registry.CancelAll(runs.Cancellation{By: runs.SystemActor, Reason: reason, At: cancelledAt}) {
+		stopped[id] = true
+	}
 	a.stopLocked()
 	if len(backups) == 0 && len(restores) == 0 {
 		return
@@ -583,8 +587,11 @@ func (a *App) ForceStop(reason string) {
 	ctx, cancel = context.WithTimeout(context.Background(), forceStopPersistTimeout)
 	defer cancel()
 	for _, id := range backups {
+		if !stopped[id] {
+			continue
+		}
 		b, err := a.metaStore.GetBackupRecord(ctx, id)
-		if err != nil || (b.Status != models.StatusFailed && b.Status != models.StatusInProgress && b.Status != models.StatusCancelled) {
+		if err != nil || (b.Status != models.StatusInProgress && b.Status != models.StatusCancelled) {
 			continue
 		}
 		b.Status, b.ErrorMessage = models.StatusCancelled, withReason(reason, b.ErrorMessage)
@@ -599,8 +606,11 @@ func (a *App) ForceStop(reason string) {
 		a.logger.Warn("backup cancelled", slog.String("backup_id", id), slog.String("database", b.Database), slog.String("reason", reason))
 	}
 	for _, id := range restores {
+		if !stopped[id] {
+			continue
+		}
 		r, err := a.metaStore.GetRestoreRecord(ctx, id)
-		if err != nil || (r.Status != models.RestoreStatusFailed && r.Status != models.RestoreStatusInProgress && r.Status != models.RestoreStatusCancelled) {
+		if err != nil || (r.Status != models.RestoreStatusInProgress && r.Status != models.RestoreStatusCancelled) {
 			continue
 		}
 		r.Status, r.ErrorMessage = models.RestoreStatusCancelled, withReason(reason, r.ErrorMessage)

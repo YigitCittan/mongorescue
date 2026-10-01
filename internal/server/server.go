@@ -431,6 +431,12 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !job.Enabled {
+		if err := s.ops.ValidatePausedUntil(job.PausedUntil); err != nil {
+			s.writeJobError(w, err)
+			return
+		}
+	}
 	if err := s.ops.ValidateJob(r.Context(), &job); err != nil {
 		s.writeJobError(w, err)
 		return
