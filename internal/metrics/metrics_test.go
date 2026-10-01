@@ -94,6 +94,24 @@ func TestScheduledJobsWithoutSource(t *testing.T) {
 	}
 }
 
+func TestBulkCompletedEvents(t *testing.T) {
+	m := New(BuildInfo{Version: "test"})
+	m.ObserveEvent(context.Background(), events.Event{Type: events.BulkCompleted,
+		Bulk: &events.BulkSummary{Resource: "backups", Action: "delete", Matched: 6, Succeeded: 4, Skipped: 1, Failed: 1}})
+	m.ObserveEvent(context.Background(), events.Event{Type: events.BulkCompleted}) // no summary: ignored
+	out := scrape(t, m)
+	for _, w := range []string{
+		`mongorescue_bulk_operations_total{action="delete",resource="backups"} 1`,
+		`mongorescue_bulk_items_total{action="delete",outcome="succeeded",resource="backups"} 4`,
+		`mongorescue_bulk_items_total{action="delete",outcome="skipped",resource="backups"} 1`,
+		`mongorescue_bulk_items_total{action="delete",outcome="failed",resource="backups"} 1`,
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("scrape lacks %s", w)
+		}
+	}
+}
+
 func TestObserveMCPCall(t *testing.T) {
 	m := New(BuildInfo{Version: "test"})
 	m.ObserveMCPCall("start_backup", "ok")
