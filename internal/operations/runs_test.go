@@ -228,7 +228,7 @@ func TestCancelRunReachesTheRunningRestore(t *testing.T) {
 		t.Fatalf("CancelRun = %+v", res)
 	}
 	<-runCtx.Done()
-	if c := runs.CancellationOf(runCtx); c == nil || c.By != "API key assistant via MCP" {
+	if c := runs.CancellationOf(runCtx); c == nil || c.By != "API key assistant via MCP" || c.Kind != runs.ActorAPIKey {
 		t.Fatalf("cancellation = %+v", c)
 	}
 }
