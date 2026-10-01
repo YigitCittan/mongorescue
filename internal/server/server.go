@@ -76,6 +76,8 @@ type Server struct {
 	// runs owns manual backups, job runs and restores started through the API, which
 	// outlive the HTTP request that triggered them.
 	runs *runs.Manager
+	// registry tracks active runs for an operations service built by the Server.
+	registry *runs.Registry
 
 	// ops implements the backup, job and restore use cases the handlers delegate to
 	// (shared with the MCP server).
@@ -291,6 +293,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/restores", s.handleListRestores)
 	mux.HandleFunc("GET /api/v1/restores/databases", s.handleRestoreDatabases)
 	mux.HandleFunc("POST /api/v1/restore", s.handleRunRestore)
+
+	// Run control: cancel, logs and live progress
+	s.registerRunRoutes(mux)
 
 	// API Notifications (channels & rule workflows)
 	s.registerNotificationRoutes(mux)
@@ -604,7 +609,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, operations.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, operations.ErrBusy):
+	case errors.Is(err, operations.ErrBusy), errors.Is(err, operations.ErrNotRunning):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -655,6 +660,7 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.ops.RemoveRunLog(id)
 
 	writeJSON(w, http.StatusOK, map[string]string{"deleted_id": id})
 }
@@ -703,6 +709,7 @@ func (s *Server) operationsConfig() operations.Config {
 		Backup:    s.backupEngine,
 		Restore:   s.restoreEngine,
 		Runs:      s.runs,
+		Registry:  s.registry,
 		Publisher: s.publisher,
 		Settings:  s.currentSettings,
 		Logger:    s.logger,

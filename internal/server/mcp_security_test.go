@@ -25,6 +25,7 @@ var toolRoutes = map[string]string{
 	mcp.ToolRunJob:                "POST /api/v1/jobs/{id}/run",
 	mcp.ToolRestoreSafeClone:      "POST /api/v1/restore",
 	mcp.ToolListBackupCollections: "GET /api/v1/backups/{id}/collections",
+	mcp.ToolCancelRun:             "POST /api/v1/backups/{id}/cancel",
 }
 
 // TestMCPToolsNeedTheScopeOfTheirRESTRoute checks that no tool is easier to reach

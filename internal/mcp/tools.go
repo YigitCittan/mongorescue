@@ -70,6 +70,7 @@ const (
 	ToolStartBackup           = "start_backup"
 	ToolRunJob                = "run_job"
 	ToolRestoreSafeClone      = "restore_to_safe_clone"
+	ToolCancelRun             = "cancel_run"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
@@ -90,6 +91,7 @@ var ToolScopes = map[string]auth.Scope{
 	ToolStartBackup:           auth.ScopeOperator,
 	ToolRunJob:                auth.ScopeOperator,
 	ToolRestoreSafeClone:      auth.ScopeOperator,
+	ToolCancelRun:             auth.ScopeOperator,
 }
 
 // ptr returns a pointer to v.
@@ -103,6 +105,14 @@ func readOnly(title string) *sdk.ToolAnnotations {
 // additive annotates a tool that starts an operation which only adds data (a new
 // backup artifact or a new clone database) and never overwrites or deletes any.
 func additive(title string) *sdk.ToolAnnotations {
+	return &sdk.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: false, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}
+}
+
+// stopping annotates a tool that stops a running operation. Only the unfinished work
+// of that operation (a partial archive, a partial clone) is discarded; existing data
+// is never deleted or overwritten (stopping an in-place restore, which could leave
+// partial data, needs an admin key).
+func stopping(title string) *sdk.ToolAnnotations {
 	return &sdk.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: false, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}
 }
 
@@ -146,6 +156,7 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound),
 		errors.Is(err, operations.ErrConnectionRequired), errors.Is(err, operations.ErrUnknownConnection),
 		errors.Is(err, operations.ErrUnknownStorageTarget), errors.Is(err, operations.ErrBusy),
+		errors.Is(err, operations.ErrNotRunning),
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
 		errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
 		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable):
@@ -208,6 +219,17 @@ type startBackupInput struct {
 	Collections        []string `json:"collections,omitempty" jsonschema:"only these collections"`
 	ExcludeCollections []string `json:"exclude_collections,omitempty" jsonschema:"skip these collections"`
 	Gzip               *bool    `json:"gzip,omitempty" jsonschema:"compress the archive (default: the server setting)"`
+}
+
+type cancelRunInput struct {
+	ID string `json:"id" jsonschema:"ID of a running backup (bkp_...) or restore (rst_...)"`
+}
+
+type runCancelled struct {
+	Kind     models.RunKind        `json:"kind"`
+	Backup   *models.BackupRecord  `json:"backup,omitempty"`
+	Restore  *models.RestoreRecord `json:"restore,omitempty"`
+	NextStep string                `json:"next_step"`
 }
 
 type runJobInput struct {
@@ -388,12 +410,12 @@ func (s *Server) registerTools() {
 			pageProps(p)
 			limitIDs(p, "connection_id", "job_id")
 			p["database"].MaxLength = ptr(maxNameLength)
-			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusPruned)}
+			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusCancelled), string(models.StatusPruned)}
 		}),
 	}, s.listBackups)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetBackup,
-		Description: "Get one backup record by ID: status (in_progress, completed, failed), size, SHA-256, storage target, error message.",
+		Description: "Get one backup record by ID: status (in_progress, completed, failed, cancelled), size, SHA-256, storage target, error message, phase timestamps and, while it runs, live progress.",
 		Annotations: readOnly("Get backup"),
 		InputSchema: schemaFor[idInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
 	}, s.getBackup)
@@ -410,7 +432,7 @@ func (s *Server) registerTools() {
 	}, s.listRestores)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetRestore,
-		Description: "Get one restore record by ID: status (in_progress, completed, failed), target database, verification, error message.",
+		Description: "Get one restore record by ID: status (in_progress, completed, failed, cancelled), target database, verification, error message, phase timestamps and, while it runs, live progress.",
 		Annotations: readOnly("Get restore"),
 		InputSchema: schemaFor[idInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
 	}, s.getRestore)
@@ -463,6 +485,32 @@ func (s *Server) registerTools() {
 			collectionProps(p, "collections")
 		}),
 	}, s.restoreSafeClone)
+	addTool(s, &sdk.Tool{
+		Name: ToolCancelRun,
+		Description: "Cancel a running backup or restore by its id. A backup stops and its partial archive is deleted; a safe-clone " +
+			"restore stops and its partial clone database is dropped. Cancelling an in-place restore needs an admin key, because the " +
+			"target may be left partially restored. Returns at once; poll get_backup or get_restore until the status is cancelled. " +
+			"Fails when the run is not running.",
+		Annotations: stopping("Cancel a running backup or restore"),
+		InputSchema: schemaFor[cancelRunInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
+	}, s.cancelRun)
+}
+
+func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled, string, error) {
+	if err := requireID("id", in.ID); err != nil {
+		return runCancelled{}, "", err
+	}
+	res, err := s.cfg.Operations.CancelRun(ctx, in.ID, "MCP")
+	if err != nil {
+		return runCancelled{}, "", err
+	}
+	out := runCancelled{Kind: res.Kind, Backup: res.Backup, Restore: res.Restore}
+	poll := "get_backup"
+	if res.Kind == models.RunRestore {
+		poll = "get_restore"
+	}
+	out.NextStep = fmt.Sprintf("poll %s with id %q until status is cancelled", poll, in.ID)
+	return out, fmt.Sprintf("Cancellation of %s %s requested; %s.", res.Kind, idText(in.ID), out.NextStep), nil
 }
 
 // page returns the window of n items selected by limit and cursor, and the cursor
@@ -663,6 +711,8 @@ func backupSummary(b *models.BackupRecord) string {
 		return fmt.Sprintf("Backup %s of database %s is completed (%d bytes, sha256 %s).", idText(b.ID), quoted(b.Database), b.SizeBytes, b.SHA256)
 	case models.StatusFailed:
 		return fmt.Sprintf("Backup %s of database %s failed; error_message in the result has the details.", idText(b.ID), quoted(b.Database))
+	case models.StatusCancelled:
+		return fmt.Sprintf("Backup %s of database %s was cancelled; cancelled_by and error_message in the result have the details.", idText(b.ID), quoted(b.Database))
 	default:
 		return fmt.Sprintf("Backup %s of database %s is %s.", idText(b.ID), quoted(b.Database), b.Status)
 	}
@@ -703,6 +753,8 @@ func restoreSummary(r *models.RestoreRecord) string {
 		return fmt.Sprintf("Restore %s of backup %s into database %s is completed (verified: %v).", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase), r.Verified)
 	case models.RestoreStatusFailed:
 		return fmt.Sprintf("Restore %s of backup %s into database %s failed; error_message in the result has the details.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase))
+	case models.RestoreStatusCancelled:
+		return fmt.Sprintf("Restore %s of backup %s into database %s was cancelled; error_message and warning in the result say what happened to the target.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase))
 	default:
 		return fmt.Sprintf("Restore %s of backup %s into database %s is %s.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase), r.Status)
 	}

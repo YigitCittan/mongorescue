@@ -43,9 +43,12 @@ type Cancellation struct {
 	At time.Time
 }
 
-// Error implements error: "cancelled by alice" or "cancelled: <reason>".
+// Error implements error: "cancelled by alice" or "cancelled: <reason>" (the reason
+// alone when it already starts with "cancelled").
 func (c *Cancellation) Error() string {
 	switch {
+	case strings.HasPrefix(c.Reason, "cancelled"):
+		return c.Reason
 	case c.Reason != "":
 		return "cancelled: " + c.Reason
 	case c.By != "":

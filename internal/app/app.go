@@ -34,6 +34,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
+	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -57,6 +58,14 @@ const (
 	forceKillGrace   = 5 * time.Second
 )
 
+// RunLogDirName is the directory under the data directory that holds the log of
+// every backup and restore run (<run-id>.log).
+const RunLogDirName = "logs"
+
+// runLogPruneInterval is how often run logs older than general.log_retention_days
+// are deleted.
+const runLogPruneInterval = time.Hour
+
 // ErrStarted is returned by Start when the App was already started (or stopped): its
 // background work runs at most once.
 var ErrStarted = errors.New("app: already started")
@@ -71,6 +80,8 @@ type App struct {
 	notifications *notify.Service
 	metrics       *metrics.Metrics
 	runs          *runs.Manager
+	registry      *runs.Registry
+	ops           *operations.Service
 	metaStore     store.Store
 	auth          *auth.Service
 	settings      *settings.Service
@@ -270,6 +281,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// Background operations started through the API live under the application
 	// lifecycle, and share per-database concurrency keys with scheduled runs.
 	runManager := runs.NewManager(logger)
+	// Every run (API, MCP or cron) is tracked for cancellation, live progress and its
+	// log file under <datadir>/logs.
+	registry := runs.NewRegistry(
+		runs.WithLogs(runlog.NewDir(filepath.Join(cfg.DataDir, RunLogDirName))),
+		runs.WithRegistryLogger(logger),
+	)
 
 	// 4. Initialize observability & notifications: metrics registry, event bus, and the
 	// notification service (the metadata store doubles as its repository).
@@ -281,6 +298,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			metricSet.ObserveNotification(string(t), outcome)
 		}),
 	)
+	metricSet.SetActiveRunsSource(func(kind string) int { return registry.Count(models.RunKind(kind)) })
 	bus.Subscribe(metricSet.ObserveEvent)
 	bus.Subscribe(notifySvc.HandleEvent)
 	bus.Subscribe(watchEncryptionOffAlert(logger, settingsSvc))
@@ -293,6 +311,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithPublisher(bus),
 		scheduler.WithConnectionResolver(connSvc),
 		scheduler.WithStorageTargets(targetSvc),
+		scheduler.WithRunRegistry(registry),
 		scheduler.WithBackupGuard(func(connectionID, database string) (func(), error) {
 			return runManager.Acquire(runs.BackupKey(connectionID, database))
 		}),
@@ -320,6 +339,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Jobs:        sched,
 		Scheduler:   sched,
 		Runs:        runManager,
+		Registry:    registry,
 		Connections: connSvc,
 		Targets:     targetSvc,
 		Settings:    settingsSvc.Current,
@@ -347,6 +367,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithMetricsHandler(metricSet.Handler()),
 		server.WithJobDeletedHook(metricSet.ForgetJob),
 		server.WithRunManager(runManager),
+		server.WithRunRegistry(registry),
 		server.WithAuth(authSvc),
 		server.WithVersion(o.version),
 		server.WithConnections(connSvc),
@@ -367,6 +388,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		notifications: notifySvc,
 		metrics:       metricSet,
 		runs:          runManager,
+		registry:      registry,
+		ops:           ops,
 		metaStore:     metaStore,
 		auth:          authSvc,
 		settings:      settingsSvc,
@@ -446,12 +469,43 @@ func (a *App) startBackground() (stop func()) {
 		}
 	}()
 
+	// Run logs older than general.log_retention_days are pruned at start and hourly.
+	pruneCtx, cancelPrune := context.WithCancel(context.Background())
+	var pruneWG sync.WaitGroup
+	pruneWG.Add(1)
+	go func() {
+		defer pruneWG.Done()
+		a.pruneRunLogs(pruneCtx, runLogPruneInterval)
+	}()
+
 	return func() {
+		cancelPrune()
+		pruneWG.Wait()
 		cancelBus()
 		busWG.Wait()
 		cancelNotify()
 		notifyWG.Wait()
 		a.logger.Info("event bus and notification workers stopped")
+	}
+}
+
+// pruneRunLogs deletes expired run logs now and then every interval until ctx ends.
+func (a *App) pruneRunLogs(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if a.ops != nil {
+			if n, err := a.ops.PruneRunLogs(); err != nil {
+				a.logger.Warn("failed to prune run logs", slog.Int("removed", n), slog.Any("error", err))
+			} else if n > 0 {
+				a.logger.Info("expired run logs removed", slog.Int("removed", n))
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -501,10 +555,11 @@ func (a *App) ResumeRuns() {
 const forceStopPersistTimeout = 5 * time.Second
 
 // ForceStop is Stop for a forced quit: the backups and restores still in progress
-// are cancelled like in Stop, and each one is then recorded as failed with reason
-// in front of the engine's error message, as in "reason (backup cancelled: context
-// canceled)", and logged, so the history says why it did not finish.
-// Like Stop it is idempotent and a no-op before Start; call Close afterwards.
+// are cancelled through the run registry with reason (by runs.SystemActor), so each
+// is recorded as cancelled, with reason in front of the engine's message, as in
+// "reason (backup cancelled: reason)", and logged, so the history says why it did
+// not finish. Like Stop it is idempotent and a no-op before Start; call Close
+// afterwards.
 func (a *App) ForceStop(reason string) {
 	a.lifeMu.Lock()
 	defer a.lifeMu.Unlock()
@@ -514,6 +569,8 @@ func (a *App) ForceStop(reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), forceStopPersistTimeout)
 	defer cancel()
 	backups, restores := a.inProgressRuns(ctx)
+	cancelledAt := time.Now().UTC()
+	a.registry.CancelAll(runs.Cancellation{By: runs.SystemActor, Reason: reason, At: cancelledAt})
 	a.stopLocked()
 	if len(backups) == 0 && len(restores) == 0 {
 		return
@@ -527,10 +584,14 @@ func (a *App) ForceStop(reason string) {
 	defer cancel()
 	for _, id := range backups {
 		b, err := a.metaStore.GetBackupRecord(ctx, id)
-		if err != nil || (b.Status != models.StatusFailed && b.Status != models.StatusInProgress) {
+		if err != nil || (b.Status != models.StatusFailed && b.Status != models.StatusInProgress && b.Status != models.StatusCancelled) {
 			continue
 		}
-		b.Status, b.ErrorMessage = models.StatusFailed, withReason(reason, b.ErrorMessage)
+		b.Status, b.ErrorMessage = models.StatusCancelled, withReason(reason, b.ErrorMessage)
+		if b.CancelledBy == "" {
+			b.CancelledBy, b.CancelledAt = runs.SystemActor, models.Stamp(cancelledAt)
+		}
+		b.SizeBytes, b.SHA256 = 0, ""
 		if err = a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 			a.logger.Warn("failed to record the cancelled backup", slog.String("backup_id", id), slog.Any("error", err))
 			continue
@@ -539,10 +600,13 @@ func (a *App) ForceStop(reason string) {
 	}
 	for _, id := range restores {
 		r, err := a.metaStore.GetRestoreRecord(ctx, id)
-		if err != nil || (r.Status != models.RestoreStatusFailed && r.Status != models.RestoreStatusInProgress) {
+		if err != nil || (r.Status != models.RestoreStatusFailed && r.Status != models.RestoreStatusInProgress && r.Status != models.RestoreStatusCancelled) {
 			continue
 		}
-		r.Status, r.ErrorMessage = models.RestoreStatusFailed, withReason(reason, r.ErrorMessage)
+		r.Status, r.ErrorMessage = models.RestoreStatusCancelled, withReason(reason, r.ErrorMessage)
+		if r.CancelledBy == "" {
+			r.CancelledBy, r.CancelledAt = runs.SystemActor, models.Stamp(cancelledAt)
+		}
 		if err = a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
 			a.logger.Warn("failed to record the cancelled restore", slog.String("restore_id", id), slog.Any("error", err))
 			continue

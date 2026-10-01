@@ -12,8 +12,8 @@ import (
 // test fails when a registered route is missing or an entry is stale.
 //
 // read covers every GET except the audit log and the user list (read keys must not
-// enumerate usernames); operator adds starting and retrying backups, running jobs and
-// safe-clone restores into the backup's own connection (in-place and cross-connection
+// enumerate usernames); operator adds starting, retrying and cancelling backups,
+// running jobs, cancelling restores that are not in place and safe-clone restores into the backup's own connection (in-place and cross-connection
 // restores need admin, which the operations service enforces because it depends on the
 // request body); everything else is admin.
 // Public routes (publicPaths) and the dashboard assets need no credentials at all.
@@ -70,6 +70,14 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/restores":                 auth.ScopeRead,
 	"GET /api/v1/restores/databases":       auth.ScopeRead,
 	"POST /api/v1/restore":                 auth.ScopeOperator,
+
+	// Run control. Cancelling an in-place restore needs admin (checked by the
+	// operations service, which knows the restore).
+	"POST /api/v1/backups/{id}/cancel":  auth.ScopeOperator,
+	"POST /api/v1/restores/{id}/cancel": auth.ScopeOperator,
+	"GET /api/v1/backups/{id}/log":      auth.ScopeRead,
+	"GET /api/v1/restores/{id}/log":     auth.ScopeRead,
+	"GET /api/v1/runs/active":           auth.ScopeRead,
 
 	"GET /api/v1/notifications/channels":            auth.ScopeRead,
 	"POST /api/v1/notifications/channels":           auth.ScopeAdmin,
