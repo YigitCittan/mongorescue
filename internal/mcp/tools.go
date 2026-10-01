@@ -427,7 +427,7 @@ func (s *Server) registerTools() {
 			pageProps(p)
 			limitIDs(p, "backup_id")
 			p["database"].MaxLength = ptr(maxNameLength)
-			p["status"].Enum = []any{string(models.RestoreStatusInProgress), string(models.RestoreStatusCompleted), string(models.RestoreStatusFailed)}
+			p["status"].Enum = []any{string(models.RestoreStatusInProgress), string(models.RestoreStatusCompleted), string(models.RestoreStatusFailed), string(models.RestoreStatusCancelled)}
 		}),
 	}, s.listRestores)
 	addTool(s, &sdk.Tool{
