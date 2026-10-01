@@ -30,6 +30,10 @@ var (
 	// ErrLegacyImport is returned when importing a legacy state.json file fails. The
 	// file is left untouched and nothing is written to the database.
 	ErrLegacyImport = errors.New("store: legacy state import failed")
+	// ErrCorruptRecord is returned when a stored row cannot be read: its JSON does not
+	// decode into the record type, or an encrypted field cannot be opened. Lists skip
+	// such rows and report them through CorruptRecords instead.
+	ErrCorruptRecord = errors.New("store: stored record cannot be read")
 )
 
 // Store defines the repository contract for MongoRescue metadata.
@@ -93,4 +97,8 @@ type Store interface {
 	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
 	// RestoreStats returns the number of restores and their counts by status.
 	RestoreStats(ctx context.Context) (*RestoreStats, error)
+
+	// CorruptRecords returns the stored rows that lists skipped because they cannot be
+	// read (see CorruptRecord), after checking each again. Rows are never changed.
+	CorruptRecords(ctx context.Context) ([]CorruptRecord, error)
 }

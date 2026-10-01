@@ -228,7 +228,7 @@ func backupConditions(f BackupFilter) conditions {
 }
 
 // selectBackupRowsSQL selects backups with the ID and start time of their newest retry.
-const selectBackupRowsSQL = `SELECT b.data, r.id, r.started_at FROM backups b
+const selectBackupRowsSQL = `SELECT b.id, b.data, r.id, r.started_at FROM backups b
 	LEFT JOIN backups r ON r.id = (SELECT x.id FROM backups x WHERE x.retry_of = b.id
 		ORDER BY x.started_at DESC, x.id DESC LIMIT 1)`
 
@@ -254,17 +254,20 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 	out := &BackupPage{Rows: make([]BackupRow, 0)}
 	for rows.Next() {
 		var (
-			data      string
+			id, data  string
 			retryID   sql.NullString
 			retryTime sql.NullInt64
 		)
-		if scanErr := rows.Scan(&data, &retryID, &retryTime); scanErr != nil {
+		if scanErr := rows.Scan(&id, &data, &retryID, &retryTime); scanErr != nil {
 			return nil, fmt.Errorf("store: scan backup row: %w", scanErr)
 		}
 		rec, decErr := decode[models.BackupRecord](data)
 		if decErr != nil {
-			return nil, decErr
+			// Skipped like in every list; the page is one row short.
+			s.reportCorrupt(tableBackups, id, decErr)
+			continue
 		}
+		s.clearCorrupt(tableBackups, id)
 		row := BackupRow{Record: rec}
 		if retryID.Valid {
 			row.RetriedBy = &RetryRef{ID: retryID.String, StartedAt: time.Unix(0, retryTime.Int64).UTC()}
@@ -309,7 +312,7 @@ func (s *SQLiteStore) QueryRestoreRecords(ctx context.Context, f RestoreFilter) 
 	}
 	c := restoreConditions(f)
 	page, args := orderAndPage("r.", f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
-	list, err := listRecords[models.RestoreRecord](ctx, s.db, "SELECT r.data FROM restores r"+c.where()+page, args...)
+	list, err := listRecords[models.RestoreRecord](ctx, s, tableRestores, nil, "SELECT r.id, r.data FROM restores r"+c.where()+page, args...)
 	if err != nil {
 		return nil, err
 	}

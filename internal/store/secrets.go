@@ -252,7 +252,7 @@ func (s *SQLiteStore) putKeyCheck(ctx context.Context, tx *sql.Tx, at secretbox.
 func (s *SQLiteStore) upgradeSecrets(ctx context.Context) error {
 	var channels, conns, jobs int
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		chans, err := listRecords[notify.Channel](ctx, tx, "SELECT data FROM notification_channels")
+		chans, err := listRecordsStrict[notify.Channel](ctx, tx, "SELECT data FROM notification_channels")
 		if err != nil {
 			return err
 		}
@@ -275,7 +275,7 @@ func (s *SQLiteStore) upgradeSecrets(ctx context.Context) error {
 			channels++
 		}
 
-		list, err := listRecords[models.Connection](ctx, tx, "SELECT data FROM connections")
+		list, err := listRecordsStrict[models.Connection](ctx, tx, "SELECT data FROM connections")
 		if err != nil {
 			return err
 		}
@@ -299,7 +299,7 @@ func (s *SQLiteStore) upgradeSecrets(ctx context.Context) error {
 			return fmt.Errorf("store: record secrets format: %w", err)
 		}
 
-		legacy, err := listRecords[legacyJob](ctx, tx, "SELECT data FROM jobs WHERE coalesce(json_extract(data, '$.mongo_uri'), '') != ''")
+		legacy, err := listRecordsStrict[legacyJob](ctx, tx, "SELECT data FROM jobs WHERE coalesce(json_extract(data, '$.mongo_uri'), '') != ''")
 		if err != nil {
 			return err
 		}

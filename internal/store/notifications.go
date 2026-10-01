@@ -28,16 +28,13 @@ const (
 // ListChannels returns all notification channels sorted by name. Channel secrets are
 // returned as stored; masking is the caller's responsibility.
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]*notify.Channel, error) {
-	list, err := listRecords[notify.Channel](ctx, s.db, "SELECT data FROM notification_channels ORDER BY name, id")
-	if err != nil {
-		return nil, err
-	}
-	for i, ch := range list {
-		if list[i], err = s.openChannel(ch); err != nil {
-			return nil, err
+	return listRecords(ctx, s, tableChannels, func(ch *notify.Channel) error {
+		opened, err := s.openChannel(ch)
+		if err == nil {
+			*ch = *opened
 		}
-	}
-	return list, nil
+		return err
+	}, "SELECT id, data FROM notification_channels ORDER BY name, id")
 }
 
 // GetChannel returns a notification channel or notify.ErrChannelNotFound.
@@ -67,7 +64,7 @@ func (s *SQLiteStore) DeleteChannel(ctx context.Context, id string) error {
 			return err
 		}
 		// Load every affected rule before writing, so no cursor is open during updates.
-		rules, err := listRecords[notify.Rule](ctx, tx, rulesReferencingChannelSQL, id)
+		rules, err := listRecordsStrict[notify.Rule](ctx, tx, rulesReferencingChannelSQL, id)
 		if err != nil {
 			return err
 		}
@@ -95,7 +92,7 @@ func (s *SQLiteStore) SaveDeliveryStatus(ctx context.Context, id string, status 
 
 // ListRules returns all notification rules sorted by name.
 func (s *SQLiteStore) ListRules(ctx context.Context) ([]*notify.Rule, error) {
-	return listRecords[notify.Rule](ctx, s.db, "SELECT data FROM notification_rules ORDER BY name, id")
+	return listRecords[notify.Rule](ctx, s, tableRules, nil, "SELECT id, data FROM notification_rules ORDER BY name, id")
 }
 
 // GetRule returns a notification rule or notify.ErrRuleNotFound.

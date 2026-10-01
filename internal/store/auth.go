@@ -67,7 +67,8 @@ func (s *SQLiteStore) GetUserByUsername(ctx context.Context, username string) (*
 	return scanUser(s.db.QueryRowContext(ctx, "SELECT "+userColumns+" FROM users WHERE username = ?", username))
 }
 
-// ListUsers returns all users sorted by username.
+// ListUsers returns all users sorted by username. A row that cannot be read is
+// skipped and reported through CorruptRecords.
 func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*auth.User, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+userColumns+" FROM users ORDER BY username, id")
 	if err != nil {
@@ -76,10 +77,16 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*auth.User, error) {
 	defer func() { _ = rows.Close() }()
 	list := make([]*auth.User, 0)
 	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, err
+		u := new(auth.User)
+		// Scan assigns columns in order, so the ID is known when a later column fails.
+		if err := scanUserInto(rows, u); err != nil {
+			if !errors.Is(err, ErrCorruptRecord) {
+				return nil, err
+			}
+			s.reportCorrupt(tableUsers, u.ID, err)
+			continue
 		}
+		s.clearCorrupt(tableUsers, u.ID)
 		list = append(list, u)
 	}
 	if err := rows.Err(); err != nil {
@@ -210,7 +217,8 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, k *auth.APIKey) error {
 	return nil
 }
 
-// ListAPIKeys returns all API keys, newest first.
+// ListAPIKeys returns all API keys, newest first. A row that cannot be read is
+// skipped and reported through CorruptRecords.
 func (s *SQLiteStore) ListAPIKeys(ctx context.Context) ([]*auth.APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+apiKeyColumns+" FROM api_keys ORDER BY created_at DESC, id")
 	if err != nil {
@@ -219,10 +227,15 @@ func (s *SQLiteStore) ListAPIKeys(ctx context.Context) ([]*auth.APIKey, error) {
 	defer func() { _ = rows.Close() }()
 	list := make([]*auth.APIKey, 0)
 	for rows.Next() {
-		k, err := scanAPIKey(rows)
-		if err != nil {
-			return nil, err
+		k := new(auth.APIKey)
+		if err := scanAPIKeyInto(rows, k); err != nil {
+			if !errors.Is(err, ErrCorruptRecord) {
+				return nil, err
+			}
+			s.reportCorrupt(tableAPIKeys, k.ID, err)
+			continue
 		}
+		s.clearCorrupt(tableAPIKeys, k.ID)
 		list = append(list, k)
 	}
 	if err := rows.Err(); err != nil {
@@ -256,31 +269,61 @@ type rowScanner interface {
 
 func scanUser(r rowScanner) (*auth.User, error) {
 	var u auth.User
-	var created, updated int64
-	var lastLogin sql.NullInt64
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin); err != nil {
+	if err := scanUserInto(r, &u); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, auth.ErrUserNotFound
 		}
-		return nil, fmt.Errorf("store: scan user: %w", err)
+		return nil, err
+	}
+	return &u, nil
+}
+
+// scanUserInto scans a users row into u. It returns sql.ErrNoRows unwrapped, and an
+// error wrapping ErrCorruptRecord when a column does not convert.
+func scanUserInto(r rowScanner, u *auth.User) error {
+	var created, updated int64
+	var lastLogin sql.NullInt64
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin); err != nil {
+		return scanRowError("user", err)
 	}
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt = fromKey(created), fromKey(updated), nullableKey(lastLogin)
-	return &u, nil
+	return nil
 }
 
 func scanAPIKey(r rowScanner) (*auth.APIKey, error) {
 	var k auth.APIKey
+	if err := scanAPIKeyInto(r, &k); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, auth.ErrAPIKeyNotFound
+		}
+		return nil, err
+	}
+	return &k, nil
+}
+
+// scanAPIKeyInto scans an api_keys row into k, with the errors of scanUserInto.
+func scanAPIKeyInto(r rowScanner, k *auth.APIKey) error {
 	var created int64
 	var lastUsed sql.NullInt64
 	var scope string
 	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, auth.ErrAPIKeyNotFound
-		}
-		return nil, fmt.Errorf("store: scan api key: %w", err)
+		return scanRowError("api key", err)
 	}
 	k.CreatedAt, k.LastUsedAt, k.Scope = fromKey(created), nullableKey(lastUsed), auth.Scope(scope)
-	return &k, nil
+	return nil
+}
+
+// scanRowError classifies a Scan error of a column-based row: sql.ErrNoRows is
+// returned as is, a failed column conversion as ErrCorruptRecord, anything else
+// (a failing connection) as a plain error.
+func scanRowError(what string, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if strings.HasPrefix(err.Error(), "sql: Scan error on column") {
+		return fmt.Errorf("%w: scan %s: %w", ErrCorruptRecord, what, &columnScanError{err})
+	}
+	return fmt.Errorf("store: scan %s: %w", what, err)
 }
 
 // fromKey converts a stored Unix-nanosecond timestamp back to UTC time.
