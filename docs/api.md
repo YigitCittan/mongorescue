@@ -18,7 +18,7 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 | Scope | Allowed |
 | :--- | :--- |
 | `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), plus the MCP action tools |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), `POST /api/v1/backups/{id}/verify`, `.../pin` and `POST /api/v1/jobs/{id}/restore-test`, plus the MCP action tools |
 | `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
 An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
@@ -53,7 +53,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/connections/{id}/databases` | `[{name, size_bytes, empty}]`; `admin`, `config`, `local` only with `?system=true` | 200 | 404, 502 unreachable |
 | `GET` | `/api/v1/connections/{id}/databases/{db}/collections` | `[{name, type}]` | 200 | 404, 502 |
 | `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
-| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, restart_required, warnings}` | 200 | |
+| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, restart_required, warnings}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
 | `POST` | `/api/v1/settings/warnings/{id}/dismiss` | Dismiss a persistent warning for good; returns the remaining `{warnings}` | 200, 404 | |
@@ -72,7 +72,18 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
-| `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
+| `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404, 409 pinned |
+| `POST` | `/api/v1/backups/{id}/verify` | Re-read the archive and compare it with its checksum, in the background; poll the backup for `verified_at` ([verification](verification.md)) | 202 | 404, 409 not completed or already running |
+| `POST` | `/api/v1/backups/{id}/pin` | Pin (legal hold) with an optional `{note}`: retention and deletion skip it | 200 | 400, 404 |
+| `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin | 200 | 404 |
+| `GET` | `/api/v1/jobs/{id}/retention/preview` | Backups the retention policy would delete now and why (`?retention_days=`, `?retention_count=` preview other values) | 200 | 400, 404 |
+| `GET` | `/api/v1/jobs/{id}/retention/log` | Backups the job's retention deleted, newest first (`?limit=` ≤ 200) | 200 | 404 |
+| `POST` | `/api/v1/jobs/{id}/restore-test` | Run a restore test of the job's latest backup now, in the background → `{job_id, backup_id}` | 202 | 404, 409 no backup or already running, 503 |
+| `GET` | `/api/v1/jobs/{id}/restore-tests` | Restore test results, newest first (`?limit=` ≤ 100) | 200 | 404 |
+| `GET` | `/api/v1/integrity` | Integrity sweep status, the latest scan of every storage target, the next scheduled scan and the integrity work running | 200 | |
+| `POST` | `/api/v1/integrity/sweep` | Start an integrity sweep now (admin) | 202 | 409 already running |
+| `GET` / `POST` | `/api/v1/storage-targets/{id}/scan` | Latest / a new storage scan: orphan and missing archives (`POST` admin) | 200 | 404 |
+| `POST` | `/api/v1/storage-targets/{id}/import` | Create a record for the orphan archive `{key}`, hashed in the background (admin) | 202 | 400, 404, 409 not an orphan |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `GET` | `/api/v1/backups/{id}/collections` | Collections stored in the backup, read from its archive header ([details](#selective-restores)) | 200 | 404, 422 key missing |
 | `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 200, 202 still stopping | 404, 409 not running or finishing |
@@ -165,7 +176,7 @@ When the archive cannot be read (an artifact that is missing, damaged or not a m
 
 ## Updating a job
 
-`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip` and `enabled` are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention. Pausing with `"paused_until": "<RFC 3339 time>"` resumes the job on its own at that time (the scheduler checks every minute; the time must be in the future, else `400`); pausing without it pauses until the job is resumed, an edit that keeps the job paused keeps its `paused_until`, and resuming (`"enabled": true`) clears it. A paused job's run in progress continues; stop it with [cancel](#cancelling-a-run). The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
+`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip`, `enabled`, `verify_after_backup` (`""` follows the `integrity.verify_after_backup` setting, `"on"`, `"off"`) and `restore_test` (`{enabled, frequency, every_n, connection_id}`, see [verification.md](verification.md#automated-restore-tests)) are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention, and `last_restore_test` is managed by the server and never taken from requests. Pausing with `"paused_until": "<RFC 3339 time>"` resumes the job on its own at that time (the scheduler checks every minute; the time must be in the future, else `400`); pausing without it pauses until the job is resumed, an edit that keeps the job paused keeps its `paused_until`, and resuming (`"enabled": true`) clears it. A paused job's run in progress continues; stop it with [cancel](#cancelling-a-run). The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
 
 The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job. Concurrent updates are stored and scheduled in the same order, and a backup that finishes while the job is being edited only records its run times, so it never reverts the edit.
 
@@ -291,7 +302,9 @@ Bytes count what was streamed to storage (backups) or read from it (restores, wi
 
 Every backup record has a `trigger`: `scheduled` (a cron run of `job_id`), `on_demand` (`POST /api/v1/jobs/{id}/run`), `manual` (`POST /api/v1/backups`) or `mcp` (an assistant's `start_backup` or `run_job`). It is set by the server, never taken from the request, and retention only prunes a job's `scheduled` backups ([configuration.md](configuration.md#general)).
 
-`POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed`, `failed` or `cancelled`. Operations keep running if the client disconnects; [cancel](#cancelling-a-run) them to stop them.
+`POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed`, `failed` or `cancelled`. Operations keep running if the client disconnects; [cancel](#cancelling-a-run) them to stop them. Verifications (`POST /api/v1/backups/{id}/verify`), restore tests, sweeps and orphan imports run in the background the same way; their results land on the backup record (`verified_at`, `verification`, `last_restore_test`) or in `GET /api/v1/jobs/{id}/restore-tests` and `GET /api/v1/integrity`.
+
+Backup records carry the trust fields `verified_at`, `verification` (`ok`, `mismatch`, `error`) and `verification_error`; `pinned`, `pin_note`, `pinned_at`, `pinned_by`; `has_manifest`; `imported` and `imported_at`; `missing_since` for `status: "missing"`; and `last_restore_test`. See [verification.md](verification.md).
 
 | Status | Meaning |
 | --- | --- |

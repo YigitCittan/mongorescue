@@ -20,6 +20,13 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
 | `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
 | `mongorescue_build_info` | gauge | `version`, `commit`, `go_version` | Always 1 |
+| `mongorescue_verifications_total` | counter | `source`, `result` | Archive [verifications](verification.md) (`source`: `after_upload`, `sweep`, `on_demand`; `result`: `ok`, `mismatch`, `error`) |
+| `mongorescue_restore_tests_total` | counter | `job`, `result` | Automated restore tests (`ok`, `mismatch`, `error`) |
+| `mongorescue_last_successful_restore_test_timestamp_seconds` | gauge | `job` | Unix time of the last passed restore test |
+| `mongorescue_storage_orphan_archives` | gauge | `target` | Archives without a backup record found by the last storage scan |
+| `mongorescue_storage_missing_archives` | gauge | `target` | Backup records whose archive the last storage scan did not find |
+| `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
+| `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |
 
 The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
 
@@ -59,6 +66,20 @@ groups:
           severity: warning
         annotations:
           summary: "Backup job {{ $labels.job }} failed in the last hour"
+
+      - alert: MongoRescueArchiveDamaged
+        expr: increase(mongorescue_verifications_total{result="mismatch"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A stored backup archive no longer matches its checksum ({{ $labels.source }})"
+
+      - alert: MongoRescueRestoreTestStale
+        expr: time() - mongorescue_last_successful_restore_test_timestamp_seconds > 8 * 24 * 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "No passed restore test for job {{ $labels.job }} in 8 days"
 ```
 
 The first rule does not fire for a job that has never succeeded, because the series does not exist yet; pair it with notifications on `backup.failed` (see [notifications.md](notifications.md)).

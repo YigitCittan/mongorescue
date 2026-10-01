@@ -44,7 +44,7 @@ The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secr
 
 In v0.1.0 every signed-in user and every API key is a full administrator: they can change settings and storage targets, and the test endpoints make outbound connections to the hosts they name. Grant access accordingly; roles (RBAC) are on the roadmap.
 
-**Settings** in the dashboard has the sections General, Storage, Encryption, Security, Users and API keys. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
+**Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Security, Users and API keys. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
 
 ### General
 
@@ -59,7 +59,19 @@ In v0.1.0 every signed-in user and every API key is a full administrator: they c
 | `restore_verify_policy` | `auto` | `always`, `auto` or `never`; decides for safe clones only, in-place restores are always verified; see [encryption.md](encryption.md#verify-before-restore) |
 | `log_retention_days` | `30` | Keep the log of every backup and restore run (`<data_dir>/logs/<id>.log`, redacted, at most 5 MiB each) for this many days; `0` keeps them until their backup is deleted or pruned. See [api.md](api.md#run-logs) |
 
-Retention is applied only after a successful **scheduled** (cron) run of a job, and only to that job's own scheduled backups: every backup record has a `trigger` (`scheduled`, `on_demand`, `manual` or `mcp`), and on-demand job runs (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool), manual backups and MCP backups neither prune nor count towards the kept backups; they stay until an admin deletes them. Two floors protect good backups: the newest `retention_count` scheduled backups of the job (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. Backups recorded before triggers existed count as `scheduled` when they belong to a job and as `manual` otherwise.
+Retention is applied only after a successful **scheduled** (cron) run of a job, and only to that job's own scheduled backups: every backup record has a `trigger` (`scheduled`, `on_demand`, `manual` or `mcp`), and on-demand job runs (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool), manual backups and MCP backups neither prune nor count towards the kept backups; they stay until an admin deletes them. Two floors protect good backups: the newest `retention_count` scheduled backups of the job (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. Pinned backups and the job's newest verified backup are never deleted either, and every deletion is recorded in the job's retention history; see [verification.md](verification.md#retention). Backups recorded before triggers existed count as `scheduled` when they belong to a job and as `manual` otherwise.
+
+### Integrity
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `verify_after_backup` | `true` | Re-read every archive after its upload; a backup whose stored bytes differ fails. Jobs can override it (`verify_after_backup`: `on`, `off`) |
+| `verify_decrypt` | `false` | Also decrypt encrypted archives to their end when verifying (needs the identity or passphrase) |
+| `sweep_schedule` | `off` | Re-verify every completed backup `daily`, `weekly` or `monthly`, least recently verified first |
+| `sweep_bandwidth_limit` | `0` | Read limit of the sweep in MiB/s (`0` = unlimited) |
+| `storage_scan` | `true` | Compare every storage target with the backup records once a week (orphan and missing archives; nothing is deleted) |
+
+See [verification.md](verification.md) for what each check proves.
 
 ### Security
 

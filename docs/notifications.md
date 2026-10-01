@@ -38,7 +38,7 @@ A rule connects events to channels:
 }
 ```
 
-- `events`: any of `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`.
+- `events`: any of `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected` and `retention.deleted` (see [verification.md](verification.md#notifications-and-metrics)). Drift events belong to no job, so only rules without `job_ids` match them.
 - `job_ids`: optional. Empty means every job, including on-demand backups.
 - `channel_ids`: channels that receive matching events.
 
@@ -73,7 +73,10 @@ Every webhook request is a `POST` with `Content-Type: application/json`, an `X-M
 | Field | Notes |
 | :--- | :--- |
 | `version` | Payload schema version, currently `1`. Breaking changes will bump it. |
-| `event` | `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, or `notification.test` |
+| `event` | `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, or `notification.test` |
+| `verification`, `source` | Verification and restore test events: the outcome (`ok`, `mismatch`, `error`) and what triggered it |
+| `target_id`, `orphans`, `missing` | Drift events: the storage target and what its scan found |
+| `detail` | A short redacted explanation (the retention rule, a temporary database that could not be dropped) |
 | `time` | RFC 3339, UTC |
 | `job_id` | Omitted for on-demand backups |
 | `backup_id`, `restore_id` | `restore_id` only on restore events |
