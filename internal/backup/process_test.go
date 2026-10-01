@@ -52,6 +52,16 @@ func TestHelperProcess(_ *testing.T) {
 	case "tree":
 		spawnHelperGrandchild()
 		mode = "slow"
+	case "progress":
+		// mongodump 100.12-style progress on stderr, plus lines that must be redacted
+		// in the run log.
+		fmt.Fprintln(os.Stderr, "2026-10-01T10:00:00.000+0000\twriting shop.orders to archive on stdout")
+		fmt.Fprintln(os.Stderr, "2026-10-01T10:00:00.010+0000\twriting shop.users to archive on stdout")
+		fmt.Fprintln(os.Stderr, "2026-10-01T10:00:00.500+0000\tdone dumping shop.users (2 documents)")
+		fmt.Fprintln(os.Stderr, "2026-10-01T10:00:01.000+0000\t[######..................]  shop.orders  2500/10000  (25.0%)")
+		fmt.Fprintln(os.Stderr, "2026-10-01T10:00:01.100+0000\tretrying mongodb://admin:hunter2@db.internal:27017/?authSource=admin")
+		fmt.Fprintln(os.Stderr, `2026-10-01T10:00:01.200+0000	E11000 duplicate key error collection: shop.users index: email_1 dup key: { email: "alice@example.com" }`)
+		mode = "slow"
 	}
 	fmt.Fprintln(os.Stderr, "writing archive")
 	chunk := bytes.Repeat([]byte("bson"), 16*1024)
