@@ -50,6 +50,12 @@ const BULK_I18N = {
       reason_already_enabled: "Already enabled",
       reason_already_disabled: "Already paused",
       reason_pinned: "Pinned (legal hold)",
+      reason_last_verified: "Last verified backup of its job (protected)",
+      reason_not_verifiable: "Not completed or no checksum",
+      reason_already_pinned: "Already pinned",
+      reason_not_pinned: "Not pinned",
+      reason_not_running: "Not running",
+      pin_note: "Note (optional)",
       reason_other: "Other",
       nothing_to_do: "Nothing to do: the action applies to none of the selected items.",
       no_undo_backups: "This cannot be undone: the backups and their archives are removed from storage for good.",
@@ -110,6 +116,12 @@ const BULK_I18N = {
       reason_already_enabled: "Zaten etkin",
       reason_already_disabled: "Zaten duraklatılmış",
       reason_pinned: "Sabitlenmiş (yasal saklama)",
+      reason_last_verified: "İşinin son doğrulanmış yedeği (korunuyor)",
+      reason_not_verifiable: "Tamamlanmamış veya sağlama toplamı yok",
+      reason_already_pinned: "Zaten sabitlenmiş",
+      reason_not_pinned: "Sabitlenmemiş",
+      reason_not_running: "Çalışmıyor",
+      pin_note: "Not (isteğe bağlı)",
       reason_other: "Diğer",
       nothing_to_do: "Yapılacak bir şey yok: işlem seçilen öğelerin hiçbirine uygulanmıyor.",
       no_undo_backups: "Bu işlem geri alınamaz: yedekler ve arşivleri depolamadan kalıcı olarak silinir.",
@@ -170,6 +182,12 @@ const BULK_I18N = {
       reason_already_enabled: "Bereits aktiv",
       reason_already_disabled: "Bereits pausiert",
       reason_pinned: "Angeheftet (Legal Hold)",
+      reason_last_verified: "Letztes geprüftes Backup seines Jobs (geschützt)",
+      reason_not_verifiable: "Nicht abgeschlossen oder ohne Prüfsumme",
+      reason_already_pinned: "Bereits angeheftet",
+      reason_not_pinned: "Nicht angeheftet",
+      reason_not_running: "Läuft nicht",
+      pin_note: "Notiz (optional)",
       reason_other: "Sonstiges",
       nothing_to_do: "Nichts zu tun: Die Aktion betrifft keines der ausgewählten Elemente.",
       no_undo_backups: "Dies kann nicht rückgängig gemacht werden: Die Backups und ihre Archive werden endgültig aus dem Speicher entfernt.",
@@ -230,6 +248,12 @@ const BULK_I18N = {
       reason_already_enabled: "Ya activa",
       reason_already_disabled: "Ya en pausa",
       reason_pinned: "Fijada (retención legal)",
+      reason_last_verified: "Última copia verificada de su tarea (protegida)",
+      reason_not_verifiable: "No completada o sin suma de comprobación",
+      reason_already_pinned: "Ya fijada",
+      reason_not_pinned: "No fijada",
+      reason_not_running: "No está en ejecución",
+      pin_note: "Nota (opcional)",
       reason_other: "Otros",
       nothing_to_do: "Nada que hacer: la acción no se aplica a ninguno de los elementos seleccionados.",
       no_undo_backups: "Esto no se puede deshacer: las copias y sus archivos se eliminan del almacenamiento para siempre.",
@@ -290,6 +314,12 @@ const BULK_I18N = {
       reason_already_enabled: "Déjà active",
       reason_already_disabled: "Déjà suspendue",
       reason_pinned: "Épinglée (conservation légale)",
+      reason_last_verified: "Dernière sauvegarde vérifiée de sa tâche (protégée)",
+      reason_not_verifiable: "Non terminée ou sans somme de contrôle",
+      reason_already_pinned: "Déjà épinglée",
+      reason_not_pinned: "Non épinglée",
+      reason_not_running: "Pas en cours",
+      pin_note: "Note (facultative)",
       reason_other: "Autre",
       nothing_to_do: "Rien à faire : l’action ne s’applique à aucun des éléments sélectionnés.",
       no_undo_backups: "Action irréversible : les sauvegardes et leurs archives sont définitivement supprimées du stockage.",
@@ -350,6 +380,12 @@ const BULK_I18N = {
       reason_already_enabled: "已启用",
       reason_already_disabled: "已暂停",
       reason_pinned: "已固定（法律保留）",
+      reason_last_verified: "其任务最后一个已校验的备份（受保护）",
+      reason_not_verifiable: "未完成或没有校验和",
+      reason_already_pinned: "已固定",
+      reason_not_pinned: "未固定",
+      reason_not_running: "未在运行",
+      pin_note: "备注（可选）",
       reason_other: "其他",
       nothing_to_do: "无需操作：该操作不适用于任何所选项目。",
       no_undo_backups: "此操作无法撤销：备份及其归档将从存储中永久删除。",
@@ -410,6 +446,12 @@ const BULK_I18N = {
       reason_already_enabled: "すでに有効",
       reason_already_disabled: "すでに一時停止中",
       reason_pinned: "固定済み（リーガルホールド）",
+      reason_last_verified: "ジョブの最後の検証済みバックアップ（保護）",
+      reason_not_verifiable: "未完了またはチェックサムなし",
+      reason_already_pinned: "すでに固定済み",
+      reason_not_pinned: "固定されていません",
+      reason_not_running: "実行中ではありません",
+      pin_note: "メモ（任意）",
       reason_other: "その他",
       nothing_to_do: "対象がありません。選択した項目のいずれにもこの操作は適用されません。",
       no_undo_backups: "元に戻せません。バックアップとそのアーカイブはストレージから完全に削除されます。",
@@ -470,6 +512,12 @@ const BULK_I18N = {
       reason_already_enabled: "Уже включено",
       reason_already_disabled: "Уже приостановлено",
       reason_pinned: "Закреплено (юридическое удержание)",
+      reason_last_verified: "Последняя проверенная копия своего задания (защищена)",
+      reason_not_verifiable: "Не завершена или нет контрольной суммы",
+      reason_already_pinned: "Уже закреплена",
+      reason_not_pinned: "Не закреплена",
+      reason_not_running: "Не выполняется",
+      pin_note: "Заметка (необязательно)",
       reason_other: "Другое",
       nothing_to_do: "Нечего делать: действие не применимо ни к одному из выбранных элементов.",
       no_undo_backups: "Это нельзя отменить: резервные копии и их архивы будут безвозвратно удалены из хранилища.",
@@ -526,7 +574,8 @@ const BULK_RESULTS_MAX = 1000;
 const BULK_RETRY_MS = 30000;
 // Toolbar order of known actions; destructive ones always come last.
 const BULK_ACTION_ORDER = ["run_now", "enable", "disable", "verify", "pin", "unpin", "cancel", "delete"];
-const BULK_SKIP_REASONS = ["not_found", "in_progress", "last_good_backup", "pinned", "already_enabled", "already_disabled"];
+const BULK_SKIP_REASONS = ["not_found", "in_progress", "last_good_backup", "last_verified", "pinned", "not_verifiable",
+  "already_pinned", "not_pinned", "not_running", "already_enabled", "already_disabled"];
 
 const bulkState = {
   // Available actions from GET /api/v1/bulk/actions (null until loaded).
@@ -1131,6 +1180,10 @@ function renderBulkReview() {
     parts.push(`<p class="notice notice-danger">${escapeHtml(t(`bulk.no_undo_${kind}`))}</p>`);
   }
   parts.push(skippedGroups(d.skipped));
+  if (actionable > 0 && bulkRun.action.name === "pin") {
+    parts.push(`<div class="form-group"><label class="form-label" for="bulk-note">${escapeHtml(t("bulk.pin_note"))}</label>
+      <input type="text" class="form-input" id="bulk-note" maxlength="500" autocomplete="off"></div>`);
+  }
   if (actionable > 0 && needsTyping()) {
     parts.push(`<div class="form-group"><label class="form-label" for="bulk-type">${escapeHtml(tf("bulk.type_count", { n: String(actionable) }))}</label>
       <input type="text" class="form-input bulk-type" id="bulk-type" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="${escapeHtml(t("bulk.type_count_label"))}"></div>`);
@@ -1173,6 +1226,8 @@ async function executeBulk() {
   const kind = bulkRun.kind;
   const name = bulkRun.action.name;
   const ids = Array.isArray(bulkRun.dry.actionable_ids) ? bulkRun.dry.actionable_ids.slice() : [];
+  const noteInput = document.getElementById("bulk-note");
+  const extra = name === "pin" && noteInput && noteInput.value.trim() ? { note: noteInput.value.trim() } : {};
   const results = { items: [], skipped: (bulkRun.dry.skipped || []).slice(), stopped: "" };
   bulkRun.running = true;
   bulkRun.results = results;
@@ -1189,14 +1244,14 @@ async function executeBulk() {
   try {
     for (let i = 0; i < ids.length; i += BULK_CHUNK) {
       const chunk = ids.slice(i, i + BULK_CHUNK);
-      let json = await bulkPost(kind, { action: name, ids: chunk, confirm_count: chunk.length });
+      let json = await bulkPost(kind, { action: name, ids: chunk, confirm_count: chunk.length, ...extra });
       if (json.httpStatus === 409) {
         const again = await bulkPost(kind, { action: name, ids: chunk, dry_run: true });
         if (again.success && again.data) {
           (again.data.skipped || []).forEach(s => results.skipped.push(s));
           const still = again.data.actionable_ids || [];
           json = still.length > 0
-            ? await bulkPost(kind, { action: name, ids: still, confirm_count: still.length })
+            ? await bulkPost(kind, { action: name, ids: still, confirm_count: still.length, ...extra })
             : { success: true, data: { results: [] } };
         } else {
           json = again;
