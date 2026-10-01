@@ -92,13 +92,11 @@ func TestBulkDeleteOverHTTP(t *testing.T) {
 	f := newScopeFixture(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	var ids []string
 	for i := range 12 {
 		id := fmt.Sprintf("bk_%02d", i)
 		if err := f.store.SaveBackupRecord(ctx, &models.BackupRecord{ID: id, Database: "shop", Status: models.StatusFailed, StartedAt: now.Add(-time.Duration(i) * time.Minute)}); err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, id)
 	}
 	h := map[string]string{"X-API-Key": f.keys[auth.ScopeAdmin], "Content-Type": "application/json"}
 	filter := []byte(`{"action":"delete","filter":{"status":"failed","database":"shop"},"dry_run":true}`)
@@ -114,8 +112,8 @@ func TestBulkDeleteOverHTTP(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &dry); err != nil || rec.Code != http.StatusOK || dry.Data.Matched != 12 || dry.Data.Actionable != 12 || dry.Data.Skipped == nil {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
-	real := []byte(`{"action":"delete","filter":{"status":"failed","database":"shop"},"confirm_count":12}`)
-	if rec = serve(f.h, "POST", "/api/v1/backups/bulk", real, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"succeeded":12`) {
+	run := []byte(`{"action":"delete","filter":{"status":"failed","database":"shop"},"confirm_count":12}`)
+	if rec = serve(f.h, "POST", "/api/v1/backups/bulk", run, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"succeeded":12`) {
 		t.Fatalf("run: %d %s", rec.Code, rec.Body)
 	}
 	if list, _ := f.store.ListBackupRecords(ctx, ""); len(list) != 0 {
