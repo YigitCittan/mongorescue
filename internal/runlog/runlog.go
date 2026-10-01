@@ -108,27 +108,52 @@ func legacyID(id string) bool {
 }
 
 // Remove deletes the log of run id (and any tail segment left by a crash). A missing
-// log is not an error.
+// log is not an error; a file still open elsewhere (on Windows) is retried briefly and
+// then reported, so callers log it and carry on (see removeFile).
 func (d *Dir) Remove(id string) error {
 	path, err := d.file(id)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := removeFile(path); err != nil {
 		errs = append(errs, err)
 	}
 	segs, _ := filepath.Glob(globEscape(path) + segmentInfix + "*")
 	for _, s := range segs {
-		if err := os.Remove(s); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := removeFile(s); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
+// removeAttempts and removeBackoff bound the retries of removeFile.
+const (
+	removeAttempts = 5
+	removeBackoff  = 20 * time.Millisecond
+)
+
+// removeFile deletes path; a missing file is not an error. Windows cannot delete a
+// file that is open (a log being downloaded or followed), so a failed removal is
+// retried a few times with a growing backoff (20 ms to 160 ms) before its error is
+// returned for the caller to log; the file is then left for the next prune.
+func removeFile(path string) error {
+	var err error
+	for attempt, wait := 0, removeBackoff; attempt < removeAttempts; attempt, wait = attempt+1, wait*2 {
+		if err = os.Remove(path); err == nil || errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if attempt < removeAttempts-1 {
+			time.Sleep(wait)
+		}
+	}
+	return fmt.Errorf("runlog: remove %s: %w", filepath.Base(path), err)
+}
+
 // Prune deletes log files (and stray segments) last modified more than keep ago and
-// returns how many it removed. A keep of zero or less removes nothing; skip, when
+// returns how many it removed. Files it cannot remove (still open, on Windows) are
+// skipped and reported in the joined error; the next prune tries again. A keep of zero or less removes nothing; skip, when
 // set, protects the logs of runs that are still active.
 func (d *Dir) Prune(keep time.Duration, skip func(id string) bool) (int, error) {
 	if keep <= 0 {
@@ -154,7 +179,7 @@ func (d *Dir) Prune(keep time.Duration, skip func(id string) bool) (int, error) 
 		if err != nil || !info.ModTime().Before(cutoff) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(d.path, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := removeFile(filepath.Join(d.path, name)); err != nil {
 			errs = append(errs, err)
 			continue
 		}
