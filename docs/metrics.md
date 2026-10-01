@@ -19,6 +19,8 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
 | `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
+| `mongorescue_bulk_operations_total` | counter | `resource`, `action` | [Bulk operations](api.md#bulk-actions) run (not dry runs; `resource`: `backups`, `restores`, `jobs`) |
+| `mongorescue_bulk_items_total` | counter | `resource`, `action`, `outcome` | Items of bulk operations (`outcome`: `succeeded`, `skipped`, `failed`) |
 | `mongorescue_build_info` | gauge | `version`, `commit`, `go_version` | Always 1 |
 | `mongorescue_verifications_total` | counter | `source`, `result` | Archive [verifications](verification.md) (`source`: `after_upload`, `sweep`, `on_demand`; `result`: `ok`, `mismatch`, `error`) |
 | `mongorescue_restore_tests_total` | counter | `job`, `result` | Automated restore tests (`ok`, `mismatch`, `error`) |

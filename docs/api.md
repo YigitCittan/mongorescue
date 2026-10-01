@@ -75,6 +75,10 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target → `{deleted_id, archive_deleted, archive_kept}`. The archive is kept when another record (in any status) names it; `archive_kept` says which, a pinned one included | 200 | 404, 409 pinned |
+| `POST` | `/api/v1/backups/bulk` | Run one action on many backups (`delete`, `verify`, `pin`, `unpin`, `cancel`), with a dry run ([details](#bulk-actions)) | 200 | 400, 403, 409 confirm_count, 422 too many |
+| `POST` | `/api/v1/restores/bulk` | Delete restore history records or cancel restores in bulk ([details](#bulk-actions)) | 200 | 400, 403, 409, 422 |
+| `POST` | `/api/v1/jobs/bulk` | Enable, disable, run or delete jobs in bulk ([details](#bulk-actions)) | 200 | 400, 403, 409, 422 |
+| `GET` | `/api/v1/bulk/actions` | The available bulk actions and whether the caller may run each | 200 | |
 | `POST` | `/api/v1/backups/{id}/verify` | Re-read the archive and compare it with its checksum, in the background; poll the backup for `verified_at` ([verification](verification.md)) | 202 | 404, 409 not completed or already running |
 | `POST` | `/api/v1/backups/{id}/pin` | Pin (legal hold) with an optional `{note}`: retention and deletion skip it | 200 | 400, 404 |
 | `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin (admin: it makes the backup deletable again) | 200 | 403, 404 |
@@ -258,6 +262,39 @@ curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026
 ```
 
 `GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For administrators (dashboard sessions and `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
+
+## Bulk actions
+
+`POST /api/v1/backups/bulk`, `POST /api/v1/restores/bulk` and `POST /api/v1/jobs/bulk` run one action on many records. They share one body:
+
+```json
+{"action": "delete", "ids": ["bkp_a", "bkp_b"], "dry_run": true}
+{"action": "delete", "filter": {"status": "failed", "database": "shop", "from": "2026-09-01T00:00:00Z"}, "dry_run": false, "confirm_count": 312}
+```
+
+- Exactly one of `ids` (duplicates count once) and `filter` selects the items. `filter` takes the names and formats of the list endpoints' query parameters (backups: `status`, `database`, `connection_id`, `job_id`, `trigger`, `retry_of`, `from`, `to`, `q`; restores: `status`, `database`, `backup_id`, `from`, `to`, `q`; jobs: `database`, `connection_id`, `q`, `enabled`) and selects every match; paging does not apply. A selection may hold at most **10,000** items (`422` otherwise). Unknown fields, also inside `filter`, and filter fields that do not apply to the resource are refused with `400`, so a misspelt filter can never widen the selection.
+- `dry_run: true` changes nothing and answers `{matched, actionable, skipped: [{id, reason, detail}], total_size_bytes, actionable_ids}`.
+- A real run plans the selection again. When more than 10 items are affected it needs `confirm_count` equal to the dry run's `actionable`; a set `confirm_count` must always match. Otherwise it is refused with `409` and nothing changes, so a stale client can never act on more than it showed. Items are then processed one at a time through the same use cases as the single-item routes (logs, events and the shared-archive rule included). The answer adds `succeeded`, `failed` and `results: [{id, ok, error, warning, detail}]` in order. Items are not started once the request ends; an item that started is finished.
+- One `bulk.completed` event (not selectable in notification rules) summarises every real run, and `mongorescue_bulk_operations_total{resource,action}` and `mongorescue_bulk_items_total{resource,action,outcome}` count them. REST calls with an API key are in the audit log like every other route.
+
+`GET /api/v1/bulk/actions` (read) lists the available actions as `{resource, name, scope, destructive, allowed}`; `allowed` says whether the caller has the scope. The route needs `operator`; each action needs the scope of its single-item route:
+
+| Resource | Action | Scope | Skipped (reason) |
+| :--- | :--- | :--- | :--- |
+| backups | `delete` | admin | `in_progress`, `pinned`, `last_good_backup` (the newest completed backup of a job), `last_verified` (the job's newest verified scheduled backup, which retention keeps), `not_found` |
+| backups | `verify` | operator | `not_verifiable` (not completed or no checksum) |
+| backups | `pin` (optional `note`) | operator | `already_pinned` |
+| backups | `unpin` | admin | `not_pinned` |
+| backups | `cancel` | operator | `not_running` |
+| restores | `delete` (history records only; restored databases are not touched) | admin | `in_progress` |
+| restores | `cancel` (in-place restores need admin per item) | operator | `not_running` |
+| jobs | `enable`, `disable` | admin | `already_enabled`, `already_disabled` |
+| jobs | `run_now` | operator | — (a database that is already being backed up fails the item) |
+| jobs | `delete` (their backups are kept) | admin | — |
+
+Every action also skips IDs that name no record (`not_found`). A bulk delete never removes a job's last good backup, a pinned backup or the backup retention keeps as the last verified one; delete those one at a time (after unpinning) if you really mean to. There is no undo.
+
+The dashboard selects rows with checkboxes (shift-click for a range, the header box for the page, then *Select all N matching the filters*, which sends the filter), shows the dry run with the skipped items grouped by reason, asks to type the count for destructive actions on more than 10 items, and runs the confirmed IDs in batches of 25 with a progress bar.
 
 ## Cancelling a run
 
