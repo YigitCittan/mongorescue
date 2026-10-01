@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Cancel running backups and restores: `POST /api/v1/backups/{id}/cancel` and `POST /api/v1/restores/{id}/cancel` (operator; `404` unknown, `409` not running), the MCP tool `cancel_run`, and **Cancel** buttons (with a confirmation) on running rows and in the details dialogs. `mongodump`/`mongorestore` is stopped with its process group, a cancelled backup deletes its partial archive (S3 multipart uploads are aborted), a cancelled safe-clone restore drops its partial clone, and a cancelled in-place restore (admin only) is flagged loudly as possibly partially restored. Scheduled runs are cancellable too. See [docs/api.md](docs/api.md#cancelling-a-run).
+- Cancel running backups and restores: `POST /api/v1/backups/{id}/cancel` and `POST /api/v1/restores/{id}/cancel` (operator; `404` unknown, `409` not running or already finishing), the MCP tool `cancel_run`, and **Cancel** buttons (with a confirmation) on running rows and in the details dialogs. `mongodump`/`mongorestore` is stopped with its process group, a cancelled backup deletes its partial archive (S3 multipart uploads are aborted), a cancelled safe-clone restore drops its partial clone, and a cancelled in-place restore (admin only) is flagged loudly as possibly partially restored. Scheduled runs are cancellable too. See [docs/api.md](docs/api.md#cancelling-a-run).
 - A new run status, `cancelled`, with `cancelled_by` and `cancelled_at`. Cancelled runs are not failures: they are left out of the failure counts and the last 24 hours' failures, emit `backup.cancelled` / `restore.cancelled` (selectable in notification rules) instead of the failure events, and are counted with `status="cancelled"` in the metrics.
 - Per-run logs: every backup and restore writes `<data_dir>/logs/<id>.log` with the full tool output and MongoRescue's phase lines, redacted line by line and capped at 5 MiB (head and tail kept). `GET /api/v1/backups/{id}/log` and `/restores/{id}/log` (read) serve it as text, with `?tail=N` or as a download. Logs are deleted with their record, by retention and after `general.log_retention_days` (default 30). See [docs/api.md](docs/api.md#run-logs).
 - Live progress: phase, percentage, bytes, documents, current collection and throughput of every running run, parsed from the tools' progress lines and the bytes streamed. `GET /api/v1/runs/active` (read) lists them and running records carry them as `progress`. Records store their phase timestamps (`phases`, migration 0011). See [docs/api.md](docs/api.md#live-progress).
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Scheduled (cron) runs are stored as in progress when they start, so they show in the history while they run.
-- A desktop **Force quit** records the runs it stops as `cancelled` by `system`, with its reason, instead of `failed`.
+- A desktop **Force quit** records the runs it stops as `cancelled` by `system`, with its reason, instead of `failed`; runs that failed or finished on their own keep their outcome.
 
 ## [0.9.1] - 2026-10-01
 
