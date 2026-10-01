@@ -789,7 +789,7 @@
     const s = sessions.items.find(x => x.id === id);
     if (!s) return;
     const question = s.current ? t("sessions.confirm_revoke_current") : tf("sessions.confirm_revoke", { name: s.username || s.user_id || "" });
-    if (!window.confirm(question)) return;
+    if (!(await confirmDialog({ body: question, danger: true, confirmLabel: t("dialog.confirm") }))) return;
     if (btn) btn.disabled = true;
     try {
       const json = await apiJSON(`/api/v1/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
