@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.2] - 2026-10-01
+## [0.9.0] - 2026-10-01
 
 ### Added
+- [docs/versioning.md](docs/versioning.md): the versioning and release policy (which changes are breaking, features or fixes, which number each bumps before and after 1.0, when releases are cut, and what 1.0 requires).
 - `GET /api/v1/backups` and `GET /api/v1/restores` filter, sort and paginate on the server: `status`, `database`, `connection_id`, `job_id`, `trigger`, `retry_of` (backups), `backup_id` (restores), a `started_at` range (`from`, `to`, RFC 3339), `q` (literal, case-insensitive substring of the ID or database), `sort` (`desc` or `asc`), `limit` (1-200) and `offset`. With `limit` the response adds `meta: {total, limit, offset}`. Malformed values answer `400`. See [docs/api.md](docs/api.md#listing-backups-and-restores).
 - Backup list items carry `retried_by` (the newest retry's ID and start time), computed in SQL, so retry links work across pages.
 - `GET /api/v1/backups/databases` and `GET /api/v1/restores/databases` (read scope) list the distinct databases for filters.

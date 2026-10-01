@@ -200,7 +200,7 @@ Without `limit` the response is unchanged from earlier releases: `data` is the a
 }
 ```
 
-> **Breaking (API) in 0.8.2:** these parameters are now validated. Earlier releases ignored every query parameter of `GET /api/v1/restores` and every one of `GET /api/v1/backups` except `database` and `job_id`; a malformed `status`, `trigger`, `from`, `to`, `sort`, `limit`, `offset`, `id` (more than 200 IDs) or an over-long `q`, `database`, `connection_id`, `job_id`, `retry_of`, `backup_id` or ID now answers `400` instead of being ignored. Unknown parameter names are still ignored.
+> **Breaking (API) in 0.9.0:** these parameters are now validated. Earlier releases ignored every query parameter of `GET /api/v1/restores` and every one of `GET /api/v1/backups` except `database` and `job_id`; a malformed `status`, `trigger`, `from`, `to`, `sort`, `limit`, `offset`, `id` (more than 200 IDs) or an over-long `q`, `database`, `connection_id`, `job_id`, `retry_of`, `backup_id` or ID now answers `400` instead of being ignored. Unknown parameter names are still ignored.
 
 `total` counts every match, so a client can show "1–25 of 312"; an `offset` past the end returns an empty `data` with the same `total`. A malformed or out-of-range value (`limit=0`, `limit=500`, `sort=random`, `from=yesterday`, `to` before `from`, an unknown `status` or `trigger`) answers `400` with a message naming the parameter. Backup items carry `retried_by`, the newest backup whose `retry_of` is this one, when there is one; it is computed for each listed row, so retry links work on any page.
 
