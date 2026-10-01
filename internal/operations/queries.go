@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
@@ -279,15 +281,45 @@ type Stats struct {
 	StorageType models.StorageType `json:"storage_type,omitempty"`
 	// DefaultStorageTarget is the default storage target, when there is one.
 	DefaultStorageTarget *TargetRef `json:"default_storage_target,omitempty"`
+	// Degraded reports that some figures could not be read and show as zero.
+	Degraded bool `json:"degraded,omitempty"`
+	// DegradedReason says what could not be read, when Degraded.
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	// CorruptRecords lists the stored rows that cannot be read (see
+	// store.CorruptRecord). Stats leaves it empty; the REST API fills it for
+	// administrators.
+	CorruptRecords []store.CorruptRecord `json:"corrupt_records,omitempty"`
 }
 
 // Stats computes the dashboard KPIs from SQL aggregates, never reading every record.
 // Aggregates that cannot be read count as zero, so the dashboard keeps working while
-// the store is degraded.
+// the store is degraded; Degraded and DegradedReason then say so, and the failure is
+// logged.
 func (s *Service) Stats(ctx context.Context) Stats {
-	jobs, _ := s.cfg.Store.ListJobs(ctx)
-	st, _, _, _ := s.stats(ctx, jobs, s.now())
+	var reasons []string
+	jobs, err := s.cfg.Store.ListJobs(ctx)
+	if err != nil {
+		reasons = append(reasons, "list jobs: "+err.Error())
+	}
+	st, _, _, err := s.stats(ctx, jobs, s.now())
+	if err != nil {
+		reasons = append(reasons, err.Error())
+	}
+	if len(reasons) > 0 {
+		st.Degraded, st.DegradedReason = true, redact.Text(strings.Join(reasons, "; "))
+		s.logger.Warn("dashboard statistics are incomplete", slog.String("reason", st.DegradedReason))
+	}
 	return st
+}
+
+// CorruptRecords returns the stored rows that cannot be read and are skipped by every
+// list (see store.CorruptRecord). The rows are never changed.
+func (s *Service) CorruptRecords(ctx context.Context) ([]store.CorruptRecord, error) {
+	list, err := s.cfg.Store.CorruptRecords(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("check stored records: %w", err)
+	}
+	return list, nil
 }
 
 // stats computes the KPIs at now, and returns the aggregates they were computed from.

@@ -27,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -347,8 +348,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleStats serves the dashboard KPIs. Administrators also get the stored rows that
+// cannot be read (corrupt_records), for the dashboard's warning banner.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.ops.Stats(r.Context()))
+	st := s.ops.Stats(r.Context())
+	if auth.PrincipalFrom(r.Context()).Allows(auth.ScopeAdmin) {
+		bad, err := s.ops.CorruptRecords(r.Context())
+		if err != nil {
+			reason := redact.Text(err.Error())
+			if st.Degraded {
+				reason = st.DegradedReason + "; " + reason
+			}
+			st.Degraded, st.DegradedReason = true, reason
+			s.logger.Warn("could not check stored records for damage", slog.String("error", redact.Text(err.Error())))
+		}
+		st.CorruptRecords = bad
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
