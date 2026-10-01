@@ -71,6 +71,9 @@ type Scheduler struct {
 	loader sync.WaitGroup
 	// retryFirst and retryLimit bound the delay between job loading attempts.
 	retryFirst, retryLimit time.Duration
+	// changes counts job registrations and removals (guarded by mu), so a job listing
+	// taken without the lock can tell whether it is still current.
+	changes uint64
 }
 
 // Option customises a Scheduler.
@@ -215,6 +218,12 @@ func (s *Scheduler) loadJobsLocked() error {
 	if err != nil {
 		return fmt.Errorf("list scheduled jobs: %w", err)
 	}
+	s.registerJobsLocked(jobs)
+	return nil
+}
+
+// registerJobsLocked registers the enabled jobs of a store listing. Caller must hold s.mu.
+func (s *Scheduler) registerJobsLocked(jobs []*models.Job) {
 	for _, job := range jobs {
 		if job.Enabled {
 			if err := s.registerJobLocked(job); err != nil {
@@ -226,41 +235,62 @@ func (s *Scheduler) loadJobsLocked() error {
 			}
 		}
 	}
-	return nil
 }
 
-// retryLoad retries loadJobsLocked with a growing delay until it succeeds or ctx (the
-// scheduler's run context, cancelled by Stop) ends.
+// retryLoad retries loading the jobs with a growing delay until it succeeds or ctx
+// (the scheduler's run context, cancelled by Stop) ends. The store is listed without
+// holding s.mu, so a slow database never blocks job updates, Pause or Stop. A listing
+// is only registered when no job was registered or removed while it ran (it could be
+// stale then); otherwise the jobs are listed again right away.
 func (s *Scheduler) retryLoad(ctx context.Context) {
 	defer s.loader.Done()
 	delay := s.retryFirst
+	wait := delay
 	for attempt := 2; ; attempt++ {
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 		}
+
 		s.mu.Lock()
 		if s.stopped {
 			s.mu.Unlock()
 			return
 		}
-		err := s.loadJobsLocked()
-		active := len(s.entries)
+		seen := s.changes
 		s.mu.Unlock()
-		if err == nil {
-			s.logger.Info("scheduled jobs loaded after a failed attempt",
-				slog.Int("attempt", attempt), slog.Int("active_jobs", active))
+
+		jobs, err := s.metadataStore.ListJobs(ctx)
+		if err != nil {
+			delay = min(2*delay, s.retryLimit)
+			wait = delay
+			s.logger.Error("failed to load scheduled jobs; retrying",
+				slog.Int("attempt", attempt),
+				slog.Duration("retry_in", delay),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
 			return
 		}
-		delay = min(2*delay, s.retryLimit)
-		s.logger.Error("failed to load scheduled jobs; retrying",
-			slog.Int("attempt", attempt),
-			slog.Duration("retry_in", delay),
-			slog.Any("error", err),
-		)
+		if s.changes != seen {
+			s.mu.Unlock()
+			wait = 0
+			continue
+		}
+		s.registerJobsLocked(jobs)
+		active := len(s.entries)
+		s.mu.Unlock()
+		s.logger.Info("scheduled jobs loaded after a failed attempt",
+			slog.Int("attempt", attempt), slog.Int("active_jobs", active))
+		return
 	}
 }
 
@@ -347,6 +377,7 @@ func (s *Scheduler) registerJobLocked(job *models.Job) error {
 	if job == nil || job.ID == "" {
 		return errors.New("scheduler: invalid job")
 	}
+	s.changes++
 
 	// Remove existing schedule if already registered
 	if entryID, exists := s.entries[job.ID]; exists {
@@ -395,6 +426,7 @@ func (s *Scheduler) UnregisterJob(jobID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.changes++
 	if entryID, exists := s.entries[jobID]; exists {
 		s.cron.Remove(entryID)
 		delete(s.entries, jobID)
