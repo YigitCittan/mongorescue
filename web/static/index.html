@@ -185,7 +185,7 @@
     </nav>
 
     <!-- Backups -->
-    <section id="tab-backups" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-backups">
+    <section id="tab-backups" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-backups" data-list="backups">
       <div class="section-header">
         <div>
           <h2 class="section-title" data-i18n="tabs.backups">Backups</h2>
@@ -198,6 +198,44 @@
           </button>
           <button type="button" class="btn btn-primary" data-action="backup-now" data-needs-connection><span data-i18n="nav.instant_backup">Back up now</span></button>
         </div>
+      </div>
+      <div class="filter-bar" role="search" aria-label="Filter backups" data-i18n-aria-label="filters.backups_label">
+        <div class="filter-search">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+          <input type="search" class="form-input" id="backups-filter-q" data-filter="q" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Search ID or database" data-i18n-placeholder="filters.search_backups" aria-label="Search" data-i18n-aria-label="filters.search">
+        </div>
+        <select class="form-select" id="backups-filter-status" data-filter="status" aria-label="Status" data-i18n-aria-label="filters.status">
+          <option value="" data-i18n="filters.status_all">All statuses</option>
+          <option value="completed" data-i18n="filters.status_completed">Successful</option>
+          <option value="failed" data-i18n="filters.status_failed">Failed</option>
+          <option value="in_progress" data-i18n="filters.status_running">Running</option>
+        </select>
+        <select class="form-select" id="backups-filter-database" data-filter="database" aria-label="Database" data-i18n-aria-label="filters.database">
+          <option value="" data-i18n="filters.database_all">All databases</option>
+        </select>
+        <select class="form-select" id="backups-filter-trigger" data-filter="trigger" aria-label="Trigger" data-i18n-aria-label="filters.trigger">
+          <option value="" data-i18n="filters.trigger_all">All triggers</option>
+          <option value="scheduled" data-i18n="metrics.trigger_scheduled">Scheduled</option>
+          <option value="on_demand" data-i18n="metrics.trigger_on_demand">Run now</option>
+          <option value="manual" data-i18n="metrics.trigger_manual">Manual</option>
+          <option value="mcp" data-i18n="metrics.trigger_mcp">AI assistant (MCP)</option>
+        </select>
+        <select class="form-select" id="backups-filter-range" data-filter="range" aria-label="Date range" data-i18n-aria-label="filters.range">
+          <option value="" data-i18n="filters.range_any">Any time</option>
+          <option value="today" data-i18n="filters.range_today">Today</option>
+          <option value="7d" data-i18n="filters.range_7d">Last 7 days</option>
+          <option value="30d" data-i18n="filters.range_30d">Last 30 days</option>
+          <option value="custom" data-i18n="filters.range_custom">Custom range</option>
+        </select>
+        <span class="filter-dates" id="backups-filter-dates" hidden>
+          <input type="date" class="form-input" id="backups-filter-from" data-filter="from" aria-label="From" data-i18n-aria-label="filters.from">
+          <span class="muted" aria-hidden="true">–</span>
+          <input type="date" class="form-input" id="backups-filter-to" data-filter="to" aria-label="To" data-i18n-aria-label="filters.to">
+        </span>
+        <span class="filter-meta">
+          <span class="filter-count" id="backups-filter-count" hidden></span>
+          <button type="button" class="link-btn" id="backups-filter-clear" data-action="clear-filters" hidden data-i18n="filters.clear">Clear filters</button>
+        </span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -218,6 +256,18 @@
           </tbody>
         </table>
       </div>
+      <nav class="pager" id="backups-pager" aria-label="Backup pages" data-i18n-aria-label="pager.backups_label" hidden>
+        <label class="pager-size">
+          <span data-i18n="pager.per_page">Rows per page</span>
+          <select class="form-select" id="backups-page-size" data-page-size="backups">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <span class="pager-range" id="backups-pager-range" aria-live="polite"></span>
+        <div class="pager-pages" id="backups-pager-pages"></div>
+      </nav>
     </section>
 
     <!-- Jobs -->
@@ -257,7 +307,7 @@
     </section>
 
     <!-- Restores -->
-    <section id="tab-restores" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-restores" hidden>
+    <section id="tab-restores" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-restores" data-list="restores" hidden>
       <div class="section-header">
         <div>
           <h2 class="section-title" data-i18n="tabs.restores">Restores</h2>
@@ -269,6 +319,37 @@
             <span data-i18n="tables.refresh">Refresh</span>
           </button>
         </div>
+      </div>
+      <div class="filter-bar" role="search" aria-label="Filter restores" data-i18n-aria-label="filters.restores_label">
+        <div class="filter-search">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+          <input type="search" class="form-input" id="restores-filter-q" data-filter="q" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Search ID or database" data-i18n-placeholder="filters.search_restores" aria-label="Search" data-i18n-aria-label="filters.search">
+        </div>
+        <select class="form-select" id="restores-filter-status" data-filter="status" aria-label="Status" data-i18n-aria-label="filters.status">
+          <option value="" data-i18n="filters.status_all">All statuses</option>
+          <option value="completed" data-i18n="filters.status_completed">Successful</option>
+          <option value="failed" data-i18n="filters.status_failed">Failed</option>
+          <option value="in_progress" data-i18n="filters.status_running">Running</option>
+        </select>
+        <select class="form-select" id="restores-filter-database" data-filter="database" aria-label="Target" data-i18n-aria-label="tables.target_db">
+          <option value="" data-i18n="filters.target_all">All target databases</option>
+        </select>
+        <select class="form-select" id="restores-filter-range" data-filter="range" aria-label="Date range" data-i18n-aria-label="filters.range">
+          <option value="" data-i18n="filters.range_any">Any time</option>
+          <option value="today" data-i18n="filters.range_today">Today</option>
+          <option value="7d" data-i18n="filters.range_7d">Last 7 days</option>
+          <option value="30d" data-i18n="filters.range_30d">Last 30 days</option>
+          <option value="custom" data-i18n="filters.range_custom">Custom range</option>
+        </select>
+        <span class="filter-dates" id="restores-filter-dates" hidden>
+          <input type="date" class="form-input" id="restores-filter-from" data-filter="from" aria-label="From" data-i18n-aria-label="filters.from">
+          <span class="muted" aria-hidden="true">–</span>
+          <input type="date" class="form-input" id="restores-filter-to" data-filter="to" aria-label="To" data-i18n-aria-label="filters.to">
+        </span>
+        <span class="filter-meta">
+          <span class="filter-count" id="restores-filter-count" hidden></span>
+          <button type="button" class="link-btn" id="restores-filter-clear" data-action="clear-filters" hidden data-i18n="filters.clear">Clear filters</button>
+        </span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -287,6 +368,18 @@
           </tbody>
         </table>
       </div>
+      <nav class="pager" id="restores-pager" aria-label="Restore pages" data-i18n-aria-label="pager.restores_label" hidden>
+        <label class="pager-size">
+          <span data-i18n="pager.per_page">Rows per page</span>
+          <select class="form-select" id="restores-page-size" data-page-size="restores">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <span class="pager-range" id="restores-pager-range" aria-live="polite"></span>
+        <div class="pager-pages" id="restores-pager-pages"></div>
+      </nav>
     </section>
 
     <!-- Connections -->
