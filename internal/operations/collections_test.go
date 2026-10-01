@@ -195,6 +195,69 @@ func TestListBackupCollectionsBoundsConcurrentReads(t *testing.T) {
 	}
 }
 
+// TestListBackupCollectionsWithinShorterTimeout checks that a caller's shorter
+// timeout bounds the read and still yields the record fallback, and that a longer one
+// is cut to the configured timeout.
+func TestListBackupCollectionsWithinShorterTimeout(t *testing.T) {
+	eng := &listerEngine{Engine: restore.NewEngine(storage.NewMockStorage(), ""), fn: func(ctx context.Context, _ *models.BackupRecord) ([]models.BackupCollection, error) {
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}}
+	svc, st := newPreviewService(t, eng, time.Minute)
+	saveBackup(t, st, &models.BackupRecord{ID: "bkp_slow", Database: "shop", Status: models.StatusCompleted, StorageKey: "k", Collections: []string{"orders"}})
+	start := time.Now()
+	got, err := svc.ListBackupCollectionsWithin(context.Background(), "bkp_slow", 50*time.Millisecond)
+	if err != nil || got.Source != operations.CollectionsFromRecord || !strings.Contains(got.Warning, "timed out after 50ms") || time.Since(start) > 10*time.Second {
+		t.Fatalf("within 50ms = %+v, %v after %s", got, err, time.Since(start))
+	}
+
+	svc, st = newPreviewService(t, eng, 50*time.Millisecond)
+	saveBackup(t, st, &models.BackupRecord{ID: "bkp_slow", Database: "shop", Status: models.StatusCompleted, StorageKey: "k"})
+	if got, err = svc.ListBackupCollectionsWithin(context.Background(), "bkp_slow", time.Hour); err != nil || !strings.Contains(got.Warning, "timed out after 50ms") {
+		t.Fatalf("a longer timeout must be cut to the configured one: %+v, %v", got, err)
+	}
+}
+
+// TestListBackupCollectionsCacheFollowsTheRecord checks that a cached list is served
+// only while its backup is completed: once the record is failed, pruned or deleted,
+// the fallback (or ErrNotFound) is returned, nothing is read, and the entry is evicted.
+func TestListBackupCollectionsCacheFollowsTheRecord(t *testing.T) {
+	eng := &listerEngine{Engine: restore.NewEngine(storage.NewMockStorage(), ""), fn: func(context.Context, *models.BackupRecord) ([]models.BackupCollection, error) {
+		return []models.BackupCollection{{Name: "orders", Type: models.CollectionTypeCollection}}, nil
+	}}
+	svc, st := newPreviewService(t, eng, 0)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		status models.BackupStatus
+		reason string
+	}{{models.StatusPruned, "pruned"}, {models.StatusFailed, "failed"}} {
+		rec := &models.BackupRecord{ID: "bkp_c", Database: "shop", Status: models.StatusCompleted, StorageKey: "k", Collections: []string{"orders"}}
+		saveBackup(t, st, rec)
+		if got, err := svc.ListBackupCollections(ctx, "bkp_c"); err != nil || got.Source != operations.CollectionsFromArchive {
+			t.Fatalf("completed: %+v, %v", got, err)
+		}
+		calls := eng.calls.Load()
+		rec.Status = tc.status
+		saveBackup(t, st, rec)
+		got, err := svc.ListBackupCollections(ctx, "bkp_c")
+		if err != nil || got.Source != operations.CollectionsFromRecord || !strings.Contains(got.Warning, tc.reason) || eng.calls.Load() != calls {
+			t.Fatalf("%s backup = %+v, %v (reads %d -> %d); want the record fallback without a read", tc.status, got, err, calls, eng.calls.Load())
+		}
+		// Completed again (a test-only transition): the evicted entry is read anew.
+		rec.Status = models.StatusCompleted
+		saveBackup(t, st, rec)
+		if _, err = svc.ListBackupCollections(ctx, "bkp_c"); err != nil || eng.calls.Load() != calls+1 {
+			t.Fatalf("after %s the cache entry must be evicted (reads %d -> %d)", tc.status, calls, eng.calls.Load())
+		}
+	}
+	if err := st.DeleteBackupRecord(ctx, "bkp_c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ListBackupCollections(ctx, "bkp_c"); !errors.Is(err, operations.ErrNotFound) {
+		t.Fatalf("deleted backup: %v; want ErrNotFound", err)
+	}
+}
+
 func TestListBackupCollectionsNotFound(t *testing.T) {
 	svc, _ := newService(t)
 	if _, err := svc.ListBackupCollections(context.Background(), "bkp_missing"); !errors.Is(err, operations.ErrNotFound) {

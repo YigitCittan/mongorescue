@@ -2,8 +2,10 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/mcp"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
 // toolRoutes maps every MCP tool to the REST route that performs the same operation.
@@ -48,5 +50,17 @@ func TestMCPToolsNeedTheScopeOfTheirRESTRoute(t *testing.T) {
 		if _, ok := mcp.ToolScopes[tool]; !ok {
 			t.Errorf("toolRoutes has a stale entry %s", tool)
 		}
+	}
+}
+
+// TestMCPPreviewFitsTheWriteTimeout checks that list_backup_collections gives up on a
+// slow archive early enough for its record fallback to be written before the HTTP
+// server's write timeout cuts the MCP response (REST extends its own deadline).
+func TestMCPPreviewFitsTheWriteTimeout(t *testing.T) {
+	if margin := writeTimeout - mcp.PreviewTimeout; margin < 5*time.Second {
+		t.Fatalf("MCP preview timeout %s leaves %s before the %s write timeout; want at least 5s", mcp.PreviewTimeout, margin, writeTimeout)
+	}
+	if mcp.PreviewTimeout >= operations.ArchivePreviewTimeout {
+		t.Fatalf("MCP preview timeout %s must be shorter than the default %s", mcp.PreviewTimeout, operations.ArchivePreviewTimeout)
 	}
 }

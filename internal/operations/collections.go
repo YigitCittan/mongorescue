@@ -66,32 +66,57 @@ type BackupCollections struct {
 // list falls back to the record's own collection filter with Source
 // CollectionsFromRecord and a Warning. An encrypted backup without key material and
 // without such a filter fails with ErrKeyRequired and the same hint as a restore. A
-// missing backup yields ErrNotFound.
+// missing backup yields ErrNotFound. Only completed backups are read from the cache
+// (and cached); a failed or pruned backup has no complete archive and gets the record
+// fallback without a read, and its cache entry, if any, is evicted.
 func (s *Service) ListBackupCollections(ctx context.Context, id string) (*BackupCollections, error) {
+	return s.ListBackupCollectionsWithin(ctx, id, 0)
+}
+
+// ListBackupCollectionsWithin is ListBackupCollections with the archive read bounded
+// by timeout instead of the configured preview timeout (0 keeps it; a longer timeout
+// than the configured one is cut to it). Adapters whose responses must be written
+// within a shorter deadline pass one, so the record fallback still reaches the client.
+func (s *Service) ListBackupCollectionsWithin(ctx context.Context, id string, timeout time.Duration) (*BackupCollections, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, public("backup id required", ErrInvalid)
 	}
 	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			s.archiveCache.remove(id)
 			return nil, public("backup not found", ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("load backup: %w", err)
 	}
 	out := &BackupCollections{BackupID: rec.ID, Database: rec.Database}
 
-	if cached, ok := s.archiveCache.get(rec.ID); ok {
-		out.Source, out.Collections = CollectionsFromArchive, cached
-		return out, nil
+	switch rec.Status {
+	case models.StatusCompleted:
+		if cached, ok := s.archiveCache.get(rec.ID); ok {
+			out.Source, out.Collections = CollectionsFromArchive, cached
+			return out, nil
+		}
+	case models.StatusFailed:
+		s.archiveCache.remove(rec.ID)
+		return s.recordCollections(out, rec, "the backup failed; it has no complete archive"), nil
+	case models.StatusPruned:
+		s.archiveCache.remove(rec.ID)
+		return s.recordCollections(out, rec, "the backup was pruned; its archive was deleted"), nil
+	default:
+		s.archiveCache.remove(rec.ID)
 	}
 
 	lister, ok := s.cfg.Restore.(ArchiveLister)
 	if !ok {
 		return s.recordCollections(out, rec, "reading backup archives is not available"), nil
 	}
-	timeout := s.cfg.PreviewTimeout
-	if timeout <= 0 {
-		timeout = ArchivePreviewTimeout
+	limit := s.cfg.PreviewTimeout
+	if limit <= 0 {
+		limit = ArchivePreviewTimeout
+	}
+	if timeout <= 0 || timeout > limit {
+		timeout = limit
 	}
 	readCtx, cancel := context.WithTimeoutCause(ctx, timeout, errPreviewTimeout)
 	defer cancel()
@@ -209,6 +234,16 @@ func (c *collectionCache) put(id string, value []models.BackupCollection) {
 		oldest := c.order.Back()
 		c.order.Remove(oldest)
 		delete(c.items, oldest.Value.(*cacheEntry).id)
+	}
+}
+
+// remove evicts the entry for id, if any.
+func (c *collectionCache) remove(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.items[id]; ok {
+		c.order.Remove(el)
+		delete(c.items, id)
 	}
 }
 
