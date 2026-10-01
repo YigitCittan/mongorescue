@@ -159,8 +159,10 @@ func TestRunProgressFromToolOutput(t *testing.T) {
 	if err := reg.RemoveLog("bkp_p"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := logs.Open("bkp_p"); err != nil {
+	if lr, err := logs.Open("bkp_p"); err != nil {
 		t.Fatal("the log of an active run must not be removed")
+	} else {
+		_ = lr.Close()
 	}
 	_ = ctx
 	run.End()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,7 +166,7 @@ func TestLiveReaderAndTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fin.Close()
+	t.Cleanup(func() { _ = fin.Close() })
 	all, _ := fin.Tail(MaxTailLines * 10)
 	if !bytes.HasSuffix(full.Bytes(), all) || bytes.Count(all, []byte("\n")) != MaxTailLines {
 		t.Fatalf("tail is capped at %d lines of the log the live reader showed; got %d", MaxTailLines, bytes.Count(all, []byte("\n")))
@@ -173,12 +174,13 @@ func TestLiveReaderAndTail(t *testing.T) {
 	small, _ := d.Create("rst_small")
 	small.Printf("one")
 	_ = small.Close()
-	if sr, err := d.Open("rst_small"); err != nil {
+	sr, err := d.Open("rst_small")
+	if err != nil {
 		t.Fatal(err)
-	} else if got, _ := sr.Tail(50); !strings.HasSuffix(string(got), "[mongorescue] one\n") || bytes.Count(got, []byte("\n")) != 1 {
+	}
+	t.Cleanup(func() { _ = sr.Close() })
+	if got, _ := sr.Tail(50); !strings.HasSuffix(string(got), "[mongorescue] one\n") || bytes.Count(got, []byte("\n")) != 1 {
 		t.Fatalf("tail of a short log = %q", got)
-	} else {
-		_ = sr.Close()
 	}
 	if one, _ := fin.Tail(1); string(one) != fmt.Sprintf("29999 %s\n", line) {
 		t.Fatalf("tail 1 = %q", one)
@@ -216,9 +218,11 @@ func TestRemovePruneAndInvalidIDs(t *testing.T) {
 		t.Fatalf("old log still there: %v", err)
 	}
 	for _, id := range []string{"bkp_new", "bkp_active"} {
-		if _, err := d.Open(id); err != nil {
+		r, err := d.Open(id)
+		if err != nil {
 			t.Fatalf("%s pruned: %v", id, err)
 		}
+		_ = r.Close()
 	}
 	if n, _ := d.Prune(0, nil); n != 0 {
 		t.Fatal("keep 0 must keep every log")
@@ -246,5 +250,59 @@ func TestMissingDirectory(t *testing.T) {
 	}
 	if _, err := d.Open("bkp_x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("open = %v", err)
+	}
+}
+
+// TestRemoveAfterReadersClose checks that a log read through the API (whole file,
+// tail and live reader) can be deleted once its readers are closed, and that Remove
+// waits briefly for a reader that closes meanwhile (an open file cannot be deleted on
+// Windows).
+func TestRemoveAfterReadersClose(t *testing.T) {
+	d := NewDir(t.TempDir())
+	w, err := d.Create("bkp_read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30000; i++ { // head full: the live reader holds segment files too
+		fmt.Fprintf(w, "%05d %s\n", i, strings.Repeat("r", 100))
+	}
+	live, err := w.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = live.Tail(5); err != nil {
+		t.Fatal(err)
+	}
+	if err = live.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := d.Open("bkp_read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.WriteTo(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// A download still open: Remove retries while the reader is being closed.
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		time.Sleep(30 * time.Millisecond)
+		_ = r.Close()
+	}()
+	err = d.Remove("bkp_read")
+	<-closed
+	if err != nil {
+		t.Fatalf("remove after the reader closed = %v", err)
+	}
+	if _, err := d.Open("bkp_read"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("log still there after Remove: %v", err)
+	}
+	if segs, _ := filepath.Glob(filepath.Join(d.Path(), "*"+segmentInfix+"*")); len(segs) != 0 {
+		t.Fatalf("segments left: %v", segs)
 	}
 }
