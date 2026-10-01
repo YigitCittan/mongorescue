@@ -40,7 +40,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/auth/logout` | Revoke the current session | 200 | |
 | `GET` | `/api/v1/auth/me` | `{user, csrf_token, auth: "session"\|"api_key"}`; signed out: `{user: null, csrf_token: "", auth: ""}` | 200 | |
 | `GET` | `/api/v1/auth/sessions` | Your own live sessions, most recently active first: `[{id, user_id, username, created_at, last_seen_at, expires_at, current}]`; `?all=true` lists every user's (admin only). Never carries tokens or their hashes; an API key sees the sessions of the user who created it | 200 | 400, 403 |
-| `DELETE` | `/api/v1/auth/sessions/{id}` | Revoke a session (admin: any user's) → `{revoked_id, current}`; revoking your own current session also clears the cookie | 200 | 404 |
+| `DELETE` | `/api/v1/auth/sessions/{id}` | Revoke any user's session → `{revoked_id, current}`; admin only (every signed-in user is an admin; API keys below admin may list their creator's sessions but not revoke them). Revoking your own current session also clears the cookie | 200 | 403, 404 |
 | `GET` / `POST` | `/api/v1/users` | List / create users `{username, password}`; admin only | 200 / 201 | 400, 403, 409 username taken |
 | `DELETE` | `/api/v1/users/{id}` | Delete a user and revoke their sessions and API keys | 200 | 400 yourself, 404, 409 last user |
 | `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}` (current required for your own account) | 200 | 400, 403 wrong current password, 404 |
