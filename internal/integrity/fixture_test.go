@@ -129,10 +129,10 @@ func (a *fakeAdmin) touched() []string {
 
 // fakeRestorer records restores; execute decides their outcome.
 type fakeRestorer struct {
-	mu        sync.Mutex
-	requests  []models.RestoreRequest
+	mu         sync.Mutex
+	requests   []models.RestoreRequest
 	canDecrypt bool
-	execute   func(ctx context.Context, req models.RestoreRequest) error
+	execute    func(ctx context.Context, req models.RestoreRequest) error
 }
 
 func (r *fakeRestorer) CanDecrypt() bool { return r.canDecrypt }
@@ -227,7 +227,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.svc = New(Config{
 		Store: f.st, Targets: f.targets, Runs: f.runs, Restore: f.restorer, Admin: f.admin, Connections: fakeConnections{},
-		Settings: func() settings.Settings { f.mu.Lock(); defer f.mu.Unlock(); return f.settings },
+		Settings:  func() settings.Settings { f.mu.Lock(); defer f.mu.Unlock(); return f.settings },
 		Publisher: f.pub,
 		Now:       func() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.now },
 	})
