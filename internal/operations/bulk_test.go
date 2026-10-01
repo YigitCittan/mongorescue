@@ -328,9 +328,10 @@ func TestBulkScopes(t *testing.T) {
 	for _, a := range env.svc.BulkActions(operator()) {
 		listed = append(listed, fmt.Sprintf("%s/%s:%v", a.Resource, a.Name, a.Allowed))
 	}
-	want := []string{"backups/delete:false", "jobs/delete:false", "jobs/disable:false", "jobs/enable:false", "restores/delete:false"}
+	want := []string{"backups/cancel:true", "backups/delete:false", "backups/pin:true", "backups/unpin:false", "jobs/delete:false",
+		"jobs/disable:false", "jobs/enable:false", "restores/cancel:true", "restores/delete:false"}
 	if !reflect.DeepEqual(listed, want) {
-		t.Fatalf("actions for an operator = %v; want %v (run_now needs a scheduler)", listed, want)
+		t.Fatalf("actions for an operator = %v; want %v (run_now needs a scheduler, verify a verifier)", listed, want)
 	}
 }
 
@@ -536,5 +537,77 @@ func TestBulkRunNow(t *testing.T) {
 	if res.Succeeded != 2 || res.Failed != 1 || len(res.Skipped) != 1 || res.Results[0].Detail != "run_j1" ||
 		res.Results[1].OK || !strings.Contains(res.Results[1].Error, "already running") {
 		t.Fatalf("run_now = %+v", res)
+	}
+}
+
+func TestBulkTrustProtections(t *testing.T) {
+	env := newBulkEnv(t)
+	ctx := admin()
+	now := time.Now().UTC()
+	if err := env.st.SaveJob(ctx, &models.Job{ID: "job_v", Name: "Verified", Database: "shop", CronExpression: "@daily"}); err != nil {
+		t.Fatal(err)
+	}
+	save := func(rec *models.BackupRecord) {
+		t.Helper()
+		rec.Database = "shop"
+		if err := env.st.SaveBackupRecord(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(&models.BackupRecord{ID: "v_old", JobID: "job_v", Status: models.StatusCompleted, Trigger: models.TriggerScheduled, StartedAt: now.Add(-72 * time.Hour)})
+	save(&models.BackupRecord{ID: "v_verified", JobID: "job_v", Status: models.StatusCompleted, Trigger: models.TriggerScheduled,
+		StartedAt: now.Add(-48 * time.Hour), Verification: models.VerificationOK})
+	save(&models.BackupRecord{ID: "v_last", JobID: "job_v", Status: models.StatusCompleted, Trigger: models.TriggerScheduled, StartedAt: now.Add(-24 * time.Hour)})
+	save(&models.BackupRecord{ID: "pinned", Status: models.StatusCompleted, StartedAt: now, Pinned: true})
+
+	ids := []string{"v_old", "v_verified", "v_last", "pinned"}
+	dry, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: ids, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, sk := range dry.Skipped {
+		reasons[sk.ID] = sk.Reason
+	}
+	want := map[string]string{"v_verified": operations.SkipLastVerified, "v_last": operations.SkipLastGoodBackup, "pinned": operations.SkipPinned}
+	if !reflect.DeepEqual(reasons, want) || dry.Actionable != 1 {
+		t.Fatalf("skips = %v (actionable %d); want %v", reasons, dry.Actionable, want)
+	}
+
+	// A pin set after the plan still protects the backup.
+	if _, err = env.svc.PinBackup(ctx, "v_old", "audit"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"v_old"}, ConfirmCount: intPtr(1)})
+	if !errors.Is(err, operations.ErrBulkConfirm) {
+		t.Fatalf("stale count after a pin: %+v, %v; want ErrBulkConfirm", res, err)
+	}
+	if _, err = env.svc.DeleteBackup(ctx, "v_old"); !errors.Is(err, operations.ErrPinned) {
+		t.Fatalf("single delete of a pinned backup: %v; want ErrPinned", err)
+	}
+
+	// Pin and unpin in bulk; the note only goes with pin.
+	if _, err = env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "unpin", IDs: ids, Note: "x"}); !errors.Is(err, operations.ErrInvalid) {
+		t.Fatalf("note on unpin: %v; want ErrInvalid", err)
+	}
+	res, err = env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "pin", IDs: ids, Note: "legal hold"})
+	if err != nil || res.Succeeded != 2 || len(res.Skipped) != 2 {
+		t.Fatalf("pin = %+v, %v", res, err)
+	}
+	if b, _ := env.st.GetBackupRecord(ctx, "v_last"); !b.Pinned || b.PinNote != "legal hold" || b.PinnedBy == "" {
+		t.Fatalf("pinned record = %+v", b)
+	}
+	if _, err = env.svc.Bulk(operator(), operations.BulkBackups, operations.BulkRequest{Action: "unpin", IDs: ids}); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("operator unpin: %v; want ErrForbidden", err)
+	}
+	res, err = env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "unpin", IDs: ids})
+	if err != nil || res.Succeeded != 4 {
+		t.Fatalf("unpin = %+v, %v", res, err)
+	}
+
+	// Cancel skips what is not running.
+	res, err = env.svc.Bulk(operator(), operations.BulkBackups, operations.BulkRequest{Action: "cancel", IDs: ids, DryRun: true})
+	if err != nil || res.Actionable != 0 || len(res.Skipped) != 4 || res.Skipped[0].Reason != operations.SkipNotRunning {
+		t.Fatalf("cancel dry run = %+v, %v", res, err)
 	}
 }
