@@ -251,8 +251,14 @@ const (
 	bsonMaxKey     = 0x7f
 )
 
+// preludeFields are the header and metadata fields bsonScalars keeps.
+var preludeFields = map[string]bool{
+	"version": true, "server_version": true, "tool_version": true,
+	"db": true, "collection": true, "metadata": true, "size": true, "type": true,
+}
+
 // bsonScalars decodes the top-level string, int32, int64 and double fields of the
-// BSON document doc and skips every other element. It is a minimal reader for the
+// BSON document doc named in preludeFields and skips every other element. It is a minimal reader for the
 // archive prelude: the MongoDB driver is not used outside internal/mongoconn.
 func bsonScalars(doc []byte) (bsonFields, error) {
 	f := bsonFields{strs: map[string]string{}, nums: map[string]int64{}}
@@ -269,13 +275,20 @@ func bsonScalars(doc []byte) (bsonFields, error) {
 		if end < 0 {
 			return malformed("unterminated element name")
 		}
-		name := string(body[1 : 1+end])
+		rawName := body[1 : 1+end]
 		body = body[2+end:]
 		size, err := bsonValueSize(typ, body)
 		if err != nil {
 			return bsonFields{}, err
 		}
 		val := body[:size]
+		body = body[size:]
+		// Only the fields the prelude needs are kept, so the memory used stays a small
+		// multiple of the document, whatever it holds.
+		if !preludeFields[string(rawName)] {
+			continue
+		}
+		name := string(rawName)
 		switch typ {
 		case bsonString:
 			// int32 length (including the NUL), bytes, NUL.
@@ -289,7 +302,6 @@ func bsonScalars(doc []byte) (bsonFields, error) {
 				f.nums[name] = int64(d)
 			}
 		}
-		body = body[size:]
 	}
 	return f, nil
 }
