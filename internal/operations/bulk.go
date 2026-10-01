@@ -26,6 +26,9 @@ const (
 	BulkConfirmThreshold = 10
 )
 
+// bulkItemTimeout bounds the work on one bulk item once it has started.
+const bulkItemTimeout = 2 * time.Minute
+
 // Bulk sentinel errors.
 var (
 	// ErrBulkTooLarge is returned when a bulk operation selects more than
@@ -287,8 +290,8 @@ func (s *Service) BulkActions(ctx context.Context) []BulkActionInfo {
 // what would happen; a real run re-plans the selection, refuses (ErrBulkConfirm) when
 // the plan does not match req.ConfirmCount, then applies the action to the
 // actionable items one at a time, through the same use cases as the single-item
-// routes, and reports every outcome. Items are never processed after ctx ends (they
-// are reported as failed). One events.BulkCompleted event summarises a real run.
+// routes, and reports every outcome. Items are not started after ctx ends (they are
+// reported as failed); a started item is finished. One events.BulkCompleted event summarises a real run.
 // Expected failures: ErrInvalid, ErrBulkTooLarge, ErrBulkConfirm and auth.ErrForbidden.
 func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkRequest) (*BulkResult, error) {
 	action, ok := s.bulk[resource][req.Action]
@@ -347,8 +350,7 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			r = BulkItemResult{ID: it.ID, Error: "not processed: the request ended first"}
 		} else {
-			r = action.Apply(ctx, s, run, it)
-			r.ID = it.ID
+			r = s.applyBulk(ctx, action, run, it)
 		}
 		if r.OK {
 			res.Succeeded++
@@ -359,6 +361,17 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 	}
 	s.finishBulk(ctx, res)
 	return res, nil
+}
+
+// applyBulk runs action on one item. A started item is finished even when the request
+// ends meanwhile (within bulkItemTimeout), so an archive is never deleted without its
+// record.
+func (s *Service) applyBulk(ctx context.Context, action BulkAction, run *BulkRun, it BulkItem) BulkItemResult {
+	itemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bulkItemTimeout)
+	defer cancel()
+	r := action.Apply(itemCtx, s, run, it)
+	r.ID = it.ID
+	return r
 }
 
 // checkConfirm enforces BulkRequest.ConfirmCount against the actionable count.
@@ -431,7 +444,7 @@ func (s *Service) bulkItems(ctx context.Context, resource BulkResource, req Bulk
 		return items, len(items), err
 	}
 
-	ids, err := uniqueIDs(req.IDs)
+	ids, err := s.uniqueIDs(req.IDs)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -448,7 +461,7 @@ func (s *Service) bulkItems(ctx context.Context, resource BulkResource, req Bulk
 }
 
 // uniqueIDs checks the IDs of a bulk request and drops duplicates, keeping the order.
-func uniqueIDs(in []string) ([]string, error) {
+func (s *Service) uniqueIDs(in []string) ([]string, error) {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
 	for _, id := range in {
@@ -460,15 +473,15 @@ func uniqueIDs(in []string) ([]string, error) {
 			out = append(out, id)
 		}
 	}
-	if len(out) > MaxBulkItems {
-		return nil, tooLarge(len(out))
+	if len(out) > s.bulkCap {
+		return nil, s.tooLarge(len(out))
 	}
 	return out, nil
 }
 
 // tooLarge is the ErrBulkTooLarge error for n selected items.
-func tooLarge(n int) error {
-	return public(fmt.Sprintf("the selection has %d items; one bulk operation takes at most %d, narrow the filter", n, MaxBulkItems), ErrBulkTooLarge)
+func (s *Service) tooLarge(n int) error {
+	return public(fmt.Sprintf("the selection has %d items; one bulk operation takes at most %d, narrow the filter", n, s.bulkCap), ErrBulkTooLarge)
 }
 
 // bulkFilterFields lists, per resource, the BulkFilter fields that apply to it.
@@ -535,16 +548,16 @@ func (s *Service) filterBackups(ctx context.Context, f *BulkFilter) ([]BulkItem,
 	if err != nil {
 		return nil, err
 	}
-	if count.Total > MaxBulkItems {
-		return nil, tooLarge(count.Total)
+	if count.Total > s.bulkCap {
+		return nil, s.tooLarge(count.Total)
 	}
 	q.Limit = 0
 	page, err := s.QueryBackups(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	if len(page.Items) > MaxBulkItems {
-		return nil, tooLarge(len(page.Items))
+	if len(page.Items) > s.bulkCap {
+		return nil, s.tooLarge(len(page.Items))
 	}
 	items := make([]BulkItem, len(page.Items))
 	for i, it := range page.Items {
@@ -567,16 +580,16 @@ func (s *Service) filterRestores(ctx context.Context, f *BulkFilter) ([]BulkItem
 	if err != nil {
 		return nil, err
 	}
-	if count.Total > MaxBulkItems {
-		return nil, tooLarge(count.Total)
+	if count.Total > s.bulkCap {
+		return nil, s.tooLarge(count.Total)
 	}
 	q.Limit = 0
 	page, err := s.QueryRestores(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	if len(page.Items) > MaxBulkItems {
-		return nil, tooLarge(len(page.Items))
+	if len(page.Items) > s.bulkCap {
+		return nil, s.tooLarge(len(page.Items))
 	}
 	items := make([]BulkItem, len(page.Items))
 	for i, r := range page.Items {
@@ -607,8 +620,8 @@ func (s *Service) filterJobs(ctx context.Context, f *BulkFilter) ([]BulkItem, er
 		}
 		items = append(items, BulkItem{ID: j.ID, Job: j})
 	}
-	if len(items) > MaxBulkItems {
-		return nil, tooLarge(len(items))
+	if len(items) > s.bulkCap {
+		return nil, s.tooLarge(len(items))
 	}
 	return items, nil
 }

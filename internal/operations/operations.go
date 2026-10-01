@@ -179,6 +179,8 @@ type Service struct {
 
 	// bulk is the registry of bulk actions, keyed by resource and action name.
 	bulk map[BulkResource]map[string]BulkAction
+	// bulkCap is the most items of one bulk operation (MaxBulkItems; lowered by tests).
+	bulkCap int
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -194,6 +196,7 @@ func New(cfg Config) *Service {
 	s := &Service{
 		cfg: cfg, logger: logger, now: time.Now,
 		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
+		bulkCap: MaxBulkItems,
 	}
 	s.registerBulkActions()
 	return s
