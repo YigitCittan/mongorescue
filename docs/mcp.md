@@ -199,11 +199,11 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `list_connections` | read | | Connections with hosts, description, last test (never the URI) |
 | `list_databases` | read | `connection_id` | Databases of a connection (admin, config and local hidden) |
 | `list_collections` | read | `connection_id`, `database` | Collections and views |
-| `list_jobs` | read | `limit` (≤ 100), `cursor` | Scheduled jobs with last and next run |
+| `list_jobs` | read | `limit` (≤ 100, default 50), `cursor` | Scheduled jobs with last and next run |
 | `get_job` | read | `id` | One job |
-| `list_backups` | read | `database`, `connection_id`, `status`, `limit` (≤ 100), `cursor` | Backups, newest first |
+| `list_backups` | read | `database`, `connection_id`, `job_id`, `status`, `limit` (≤ 100, default 50), `cursor` | Backups, newest first |
 | `get_backup` | read | `id` | One backup record (status, size, SHA-256, target, error) |
-| `list_restores` | read | `limit` (≤ 100), `cursor` | Restores, newest first |
+| `list_restores` | read | `status`, `backup_id`, `database` (target), `limit` (≤ 100, default 50), `cursor` | Restores, newest first |
 | `get_restore` | read | `id` | One restore record |
 | `list_storage_targets` | read | | Storage targets without credentials |
 | `get_status` | read | | Health, version, counts, running operations, last successful backup per job, failures in the last 24 hours |
@@ -211,7 +211,7 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `run_job` | operator | `job_id` | The new backup record (`in_progress`) |
 | `restore_to_safe_clone` | operator | `backup_id`, optional `target_connection_id` (admin keys only), `collections`, `verify` | The new restore record (`in_progress`) into `<db>_rescue_<timestamp>` |
 
-Backups and restores run in the background: the action tools return at once and tell the model to poll `get_backup` or `get_restore` until the status is `completed` or `failed`. The same rules as in the REST API apply, because both call the same services: one backup per database at a time, one restore per target database, validation of names and filters, and a missing decryption key reported before anything starts. List tools return at most 100 items per call with a `next_cursor` for the next page.
+Backups and restores run in the background: the action tools return at once and tell the model to poll `get_backup` or `get_restore` until the status is `completed` or `failed`. The same rules as in the REST API apply, because both call the same services: one backup per database at a time, one restore per target database, validation of names and filters, and a missing decryption key reported before anything starts. List tools return 50 items per call unless `limit` asks for another page size (at most 100), with `total` and a `next_cursor` for the next page; a call never returns an unbounded list. `list_backups` and `list_restores` page in the database, so only one page of records is read per call.
 
 ## Resources
 
