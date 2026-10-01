@@ -89,7 +89,11 @@ func (s *Service) ListBackupCollections(ctx context.Context, id string) (*Backup
 	if !ok {
 		return s.recordCollections(out, rec, "reading backup archives is not available"), nil
 	}
-	readCtx, cancel := context.WithTimeoutCause(ctx, ArchivePreviewTimeout, errPreviewTimeout)
+	timeout := s.cfg.PreviewTimeout
+	if timeout <= 0 {
+		timeout = ArchivePreviewTimeout
+	}
+	readCtx, cancel := context.WithTimeoutCause(ctx, timeout, errPreviewTimeout)
 	defer cancel()
 	list, err := lister.ArchiveCollections(readCtx, rec)
 	if err == nil {
@@ -118,7 +122,7 @@ func (s *Service) ListBackupCollections(ctx context.Context, id string) (*Backup
 	case keyMissing:
 		reason = "the backup is encrypted; " + restore.KeyRequiredHint
 	case errors.Is(err, errPreviewTimeout) || errors.Is(err, context.DeadlineExceeded):
-		reason = fmt.Sprintf("reading the archive timed out after %s", ArchivePreviewTimeout)
+		reason = fmt.Sprintf("reading the archive timed out after %s", timeout)
 	case errors.Is(err, restore.ErrNoArtifact):
 		reason = "the backup has no stored archive"
 	default:

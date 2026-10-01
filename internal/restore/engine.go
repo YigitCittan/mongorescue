@@ -671,13 +671,11 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 		)
 	}
 
-	// Restrict to selected collections if requested
-	if len(req.SelectedCollections) > 0 {
-		for _, coll := range req.SelectedCollections {
-			trimmed := strings.TrimSpace(coll)
-			if trimmed != "" {
-				args = append(args, fmt.Sprintf("--nsInclude=%s.%s", sourceDB, trimmed))
-			}
+	// Restrict to selected collections if requested (a selection of blank names only
+	// restores the whole database, like no selection).
+	if selected := selectedCollections(req.SelectedCollections); len(selected) > 0 {
+		for _, coll := range selected {
+			args = append(args, fmt.Sprintf("--nsInclude=%s.%s", sourceDB, coll))
 		}
 	} else if sourceDB != "" {
 		args = append(args, fmt.Sprintf("--nsInclude=%s.*", sourceDB))
