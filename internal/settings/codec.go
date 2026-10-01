@@ -31,6 +31,11 @@ const (
 	KeyEncryptionIdentity     = "encryption.identity"
 	KeyEncryptionPassphrase   = "encryption.passphrase"
 	KeyEncryptionRetiredKeys  = "encryption.retired_keys"
+	KeyVerifyAfterBackup      = "integrity.verify_after_backup"
+	KeyVerifyDecrypt          = "integrity.verify_decrypt"
+	KeySweepSchedule          = "integrity.sweep_schedule"
+	KeySweepBandwidthLimit    = "integrity.sweep_bandwidth_limit"
+	KeyStorageScan            = "integrity.storage_scan"
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -85,6 +90,11 @@ var keyDefs = []keyDef{
 	field(KeyEncryptionRecipients, false, func(s *Settings) *[]string { return &s.Encryption.Recipients }),
 	field(KeyEncryptionIdentity, true, func(s *Settings) *string { return &s.Encryption.Identity }),
 	field(KeyEncryptionPassphrase, true, func(s *Settings) *string { return &s.Encryption.Passphrase }),
+	field(KeyVerifyAfterBackup, false, func(s *Settings) *bool { return &s.Integrity.VerifyAfterBackup }),
+	field(KeyVerifyDecrypt, false, func(s *Settings) *bool { return &s.Integrity.VerifyDecrypt }),
+	field(KeySweepSchedule, false, func(s *Settings) *SweepSchedule { return &s.Integrity.SweepSchedule }),
+	field(KeySweepBandwidthLimit, false, func(s *Settings) *int { return &s.Integrity.SweepBandwidthLimit }),
+	field(KeyStorageScan, false, func(s *Settings) *bool { return &s.Integrity.StorageScan }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,
