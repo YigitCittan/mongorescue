@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-01
+
+### Fixed
+- One stored row that cannot be read (JSON that no longer fits the record, or a credential that cannot be decrypted) no longer fails the whole list. Jobs, connections, storage targets, notification channels and rules, users, API keys, backups and restores skip the row, log it once at `WARN` with its table and ID (never its data) and keep it unchanged in the database. Before, `GET /api/v1/jobs` answered with an error, the dashboard showed no jobs, the active-job count read 0 and the scheduler registered no job at all, so every scheduled backup stopped.
+- The scheduler no longer gives up when it cannot list the jobs on start: it logs the error, starts, and retries in the background (5 s, doubling up to every 30 s) until the jobs load. Jobs created or edited meanwhile are scheduled as usual.
+- `GET /api/v1/stats` no longer hides read failures behind zeros: it adds `degraded: true` and a `degraded_reason`, and the failure is logged.
+- `GET /api/v1/stats` lists the unreadable rows in `corrupt_records` (`table`, `id`, `error`) for administrators, and the dashboard shows a persistent banner naming them, with a link to the new [troubleshooting guide](docs/troubleshooting.md#unreadable-records) (back up `mongorescue.db`, inspect the row with `sqlite3`, repair, export or remove it). The banner clears once the row is repaired or deleted.
+- Dashboard: a list that fails to load (jobs, connections, storage targets, notification channels and rules, users, API keys, backups, restores, settings, statistics) shows its error in one banner instead of looking empty. Translated into all eight languages.
+
 ## [0.9.0] - 2026-10-01
 
 ### Added
