@@ -442,16 +442,15 @@ func checkConfirm(confirm *int, actionable int) error {
 
 // finishBulk logs and publishes the summary of a real run.
 func (s *Service) finishBulk(ctx context.Context, res *BulkResult, started time.Time) {
-	actor := actorName(ctx)
+	actor := actorLabel(ctx)
 	s.auditBulk(ctx, res, actor, started)
-	s.logger.Info("bulk operation finished",
+	s.logger.With(actorAttrs(ctx)...).Info("bulk operation finished",
 		slog.String("resource", string(res.Resource)),
 		slog.String("action", res.Action),
 		slog.Int("matched", res.Matched),
 		slog.Int("succeeded", res.Succeeded),
 		slog.Int("skipped", len(res.Skipped)),
 		slog.Int("failed", res.Failed),
-		slog.String("actor", actor),
 	)
 	s.publish(context.WithoutCancel(ctx), events.Event{
 		Type: events.BulkCompleted,
