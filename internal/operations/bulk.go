@@ -13,6 +13,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
@@ -63,6 +64,14 @@ const (
 	BulkDisable = "disable"
 	// BulkRunNow runs jobs now.
 	BulkRunNow = "run_now"
+	// BulkVerify re-reads backup archives and compares them with their checksums.
+	BulkVerify = "verify"
+	// BulkPin puts backups on legal hold.
+	BulkPin = "pin"
+	// BulkUnpin lifts the legal hold of backups.
+	BulkUnpin = "unpin"
+	// BulkCancel cancels running backups or restores.
+	BulkCancel = "cancel"
 )
 
 // Skip reasons of BulkSkip.Reason.
@@ -78,6 +87,20 @@ const (
 	SkipAlreadyEnabled = "already_enabled"
 	// SkipAlreadyDisabled marks a job that is already paused.
 	SkipAlreadyDisabled = "already_disabled"
+	// SkipPinned marks a pinned backup (legal hold), which is never deleted before it
+	// is unpinned.
+	SkipPinned = "pinned"
+	// SkipLastVerified marks the newest verified scheduled backup of a job, which
+	// retention keeps and bulk deletes never remove (Detail names the job).
+	SkipLastVerified = "last_verified"
+	// SkipNotVerifiable marks a backup that is not completed or has no checksum.
+	SkipNotVerifiable = "not_verifiable"
+	// SkipAlreadyPinned marks a backup that is already pinned.
+	SkipAlreadyPinned = "already_pinned"
+	// SkipNotPinned marks a backup that is not pinned.
+	SkipNotPinned = "not_pinned"
+	// SkipNotRunning marks a backup or restore that is not running.
+	SkipNotRunning = "not_running"
 )
 
 // BulkFilter selects every record matching the list filters, with the names and
@@ -124,6 +147,8 @@ type BulkRequest struct {
 	// ConfirmCount must equal the actionable count when more than
 	// BulkConfirmThreshold items are affected, and must match whenever it is set.
 	ConfirmCount *int `json:"confirm_count,omitempty"`
+	// Note is the reason of the legal hold (pin only).
+	Note string `json:"note,omitempty"`
 }
 
 // BulkSkip is an item the action does not apply to.
@@ -201,6 +226,10 @@ func (it BulkItem) found() bool {
 type BulkRun struct {
 	// lastGood maps job IDs to their newest completed backup.
 	lastGood map[string]*models.BackupRecord
+	// lastVerified maps job IDs to their newest verified scheduled backup.
+	lastVerified map[string]string
+	// note is the request's pin note.
+	note string
 	// jobNames maps job IDs to their names.
 	jobNames map[string]string
 	// refs counts the records of every archive (loaded on the first delete).
@@ -225,7 +254,7 @@ type BulkAction struct {
 	// nil means always.
 	Available func(s *Service) bool
 	// Prepare loads state shared by the items before Check; nil when not needed.
-	Prepare func(ctx context.Context, s *Service, run *BulkRun) error
+	Prepare func(ctx context.Context, s *Service, run *BulkRun, items []BulkItem) error
 	// Check returns why the action does not apply to a found item, or nil; nil
 	// means it applies to every found item.
 	Check func(ctx context.Context, s *Service, run *BulkRun, it BulkItem) *BulkSkip
@@ -305,9 +334,12 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 	if err != nil {
 		return nil, err
 	}
-	run := &BulkRun{}
+	if req.Note != "" && action.Name != BulkPin {
+		return nil, public("note only applies to pin", ErrInvalid)
+	}
+	run := &BulkRun{note: req.Note}
 	if action.Prepare != nil {
-		if err = action.Prepare(ctx, s, run); err != nil {
+		if err = action.Prepare(ctx, s, run, items); err != nil {
 			return nil, err
 		}
 	}
@@ -686,26 +718,57 @@ func (s *Service) failed(err error) BulkItemResult {
 	var pe *publicError
 	if errors.As(err, &pe) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBusy) ||
 		errors.Is(err, ErrShuttingDown) || errors.Is(err, ErrConnectionRequired) || errors.Is(err, ErrUnknownConnection) ||
-		errors.Is(err, ErrUnknownStorageTarget) || errors.Is(err, auth.ErrForbidden) {
-		return BulkItemResult{Error: err.Error()}
+		errors.Is(err, ErrUnknownStorageTarget) || errors.Is(err, auth.ErrForbidden) || errors.Is(err, ErrPinned) ||
+		errors.Is(err, ErrNotRunning) || errors.Is(err, ErrUnavailable) {
+		return BulkItemResult{Error: redact.Text(err.Error())}
 	}
 	s.logger.Error("bulk item failed", slog.Any("error", err))
 	return BulkItemResult{Error: "internal error (see the server log)"}
 }
 
+// lastVerifiedBackups maps the jobs of items to their newest verified scheduled
+// backup, the backup retention keeps besides pins (see scheduler.PlanRetention).
+func (s *Service) lastVerifiedBackups(ctx context.Context, items []BulkItem) (map[string]string, error) {
+	out := map[string]string{}
+	seen := map[string]bool{}
+	for _, it := range items {
+		if it.Backup == nil || it.Backup.JobID == "" || seen[it.Backup.JobID] {
+			continue
+		}
+		jobID := it.Backup.JobID
+		seen[jobID] = true
+		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: jobID, Status: models.StatusCompleted, Trigger: models.TriggerScheduled})
+		if err != nil {
+			return nil, fmt.Errorf("load the last verified backups: %w", err)
+		}
+		// Newest first.
+		for _, row := range page.Rows {
+			if row.Record.Verification == models.VerificationOK {
+				out[jobID] = row.Record.ID
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // registerBulkActions registers the built-in bulk actions. Scopes mirror the
 // single-item routes (see internal/server/scopes.go).
 func (s *Service) registerBulkActions() {
-	// Backups: delete, like DELETE /api/v1/backups/{id} (admin). Running backups and
-	// the newest completed backup of every job are never deleted in bulk.
+	// Backups: delete, like DELETE /api/v1/backups/{id} (admin). Running and pinned
+	// backups, the newest completed backup of every job and the job's last verified
+	// backup (retention's floor) are never deleted in bulk.
 	s.RegisterBulkAction(BulkAction{
 		Resource: BulkBackups, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true,
-		Prepare: func(ctx context.Context, s *Service, run *BulkRun) error {
+		Prepare: func(ctx context.Context, s *Service, run *BulkRun, items []BulkItem) error {
 			latest, err := s.cfg.Store.LatestJobBackups(ctx, models.StatusCompleted)
 			if err != nil {
 				return fmt.Errorf("load the last good backups: %w", err)
 			}
 			run.lastGood = latest
+			if run.lastVerified, err = s.lastVerifiedBackups(ctx, items); err != nil {
+				return err
+			}
 			run.jobNames = map[string]string{}
 			jobs, err := s.ListJobs(ctx)
 			if err != nil {
@@ -721,12 +784,18 @@ func (s *Service) registerBulkActions() {
 			if b.Status == models.StatusInProgress || b.Status == models.StatusPending {
 				return &BulkSkip{Reason: SkipInProgress, Detail: "the backup is still " + string(b.Status)}
 			}
+			if b.Pinned {
+				return &BulkSkip{Reason: SkipPinned, Detail: "unpin it before deleting it"}
+			}
+			name := run.jobNames[b.JobID]
+			if name == "" {
+				name = b.JobID
+			}
 			if last := run.lastGood[b.JobID]; b.JobID != "" && last != nil && last.ID == b.ID {
-				name := run.jobNames[b.JobID]
-				if name == "" {
-					name = b.JobID
-				}
 				return &BulkSkip{Reason: SkipLastGoodBackup, Detail: "last successful backup of job " + name}
+			}
+			if b.JobID != "" && run.lastVerified[b.JobID] == b.ID {
+				return &BulkSkip{Reason: SkipLastVerified, Detail: "last verified backup of job " + name}
 			}
 			return nil
 		},
@@ -738,11 +807,105 @@ func (s *Service) registerBulkActions() {
 				}
 				run.refs = refs
 			}
-			res, err := s.deleteBackup(ctx, it.Backup, run.refs)
+			// A pin set since the plan still protects the backup.
+			current, err := s.cfg.Store.GetBackupRecord(ctx, it.ID)
+			if err != nil {
+				return s.failed(notFound(err, "backup not found (deleted meanwhile)"))
+			}
+			if err = CheckDeletable(current); err != nil {
+				return s.failed(err)
+			}
+			res, err := s.deleteBackup(ctx, current, run.refs)
 			if err != nil {
 				return s.failed(err)
 			}
 			return BulkItemResult{OK: true, Warning: res.ArchiveError, Detail: res.ArchiveKept}
+		},
+	})
+
+	// Backups: verify like POST /api/v1/backups/{id}/verify (operator), pin like
+	// .../pin (operator), unpin like .../unpin (admin), cancel like .../cancel
+	// (operator).
+	s.RegisterBulkAction(BulkAction{
+		Resource: BulkBackups, Name: BulkVerify, Scope: auth.ScopeOperator,
+		Available: func(s *Service) bool { return s.cfg.Verifier != nil },
+		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
+			if it.Backup.Status != models.StatusCompleted || it.Backup.SHA256 == "" {
+				return &BulkSkip{Reason: SkipNotVerifiable, Detail: "only completed backups with a checksum can be verified"}
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
+			if _, err := s.VerifyBackup(ctx, it.ID); err != nil {
+				// The integrity service's errors describe the backup, never secrets.
+				return BulkItemResult{Error: redact.Text(err.Error())}
+			}
+			return BulkItemResult{OK: true}
+		},
+	})
+	s.RegisterBulkAction(BulkAction{
+		Resource: BulkBackups, Name: BulkPin, Scope: auth.ScopeOperator,
+		Available: func(s *Service) bool { _, ok := s.cfg.Store.(backupUpdater); return ok },
+		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
+			if it.Backup.Pinned {
+				return &BulkSkip{Reason: SkipAlreadyPinned}
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, s *Service, run *BulkRun, it BulkItem) BulkItemResult {
+			if _, err := s.PinBackup(ctx, it.ID, run.note); err != nil {
+				return s.failed(err)
+			}
+			return BulkItemResult{OK: true}
+		},
+	})
+	s.RegisterBulkAction(BulkAction{
+		Resource: BulkBackups, Name: BulkUnpin, Scope: auth.ScopeAdmin,
+		Available: func(s *Service) bool { _, ok := s.cfg.Store.(backupUpdater); return ok },
+		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
+			if !it.Backup.Pinned {
+				return &BulkSkip{Reason: SkipNotPinned}
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
+			if _, err := s.UnpinBackup(ctx, it.ID); err != nil {
+				return s.failed(err)
+			}
+			return BulkItemResult{OK: true}
+		},
+	})
+	s.RegisterBulkAction(BulkAction{
+		Resource: BulkBackups, Name: BulkCancel, Scope: auth.ScopeOperator,
+		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
+			if it.Backup.Status != models.StatusInProgress {
+				return &BulkSkip{Reason: SkipNotRunning, Detail: "the backup is " + string(it.Backup.Status)}
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
+			if _, err := s.CancelBackup(ctx, it.ID, ""); err != nil {
+				return s.failed(err)
+			}
+			return BulkItemResult{OK: true}
+		},
+	})
+
+	// Restores: cancel like POST /api/v1/restores/{id}/cancel (operator; in-place
+	// restores need admin, checked per item).
+	s.RegisterBulkAction(BulkAction{
+		Resource: BulkRestores, Name: BulkCancel, Scope: auth.ScopeOperator,
+		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
+			if it.Restore.Status != models.RestoreStatusInProgress {
+				return &BulkSkip{Reason: SkipNotRunning, Detail: "the restore is " + string(it.Restore.Status)}
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
+			if _, err := s.CancelRestore(ctx, it.ID, ""); err != nil {
+				return s.failed(err)
+			}
+			return BulkItemResult{OK: true}
 		},
 	})
 
