@@ -134,6 +134,9 @@ type Config struct {
 	Scheduler JobScheduler
 	// Runs owns the background runs and their per-database concurrency keys.
 	Runs *runs.Manager
+	// Registry tracks the active runs: cancellation, live progress and run logs; nil
+	// disables those features (cancelling then answers ErrNotRunning).
+	Registry *runs.Registry
 	// Connections resolves connections; nil means none are configured.
 	Connections Connections
 	// Targets resolves storage targets; nil means an anonymous local target served
@@ -394,10 +397,13 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 		release()
 		return nil, fmt.Errorf("save backup record: %w", err)
 	}
+	tracked := s.track(models.RunBackup, record.ID, record.JobID, record.Database)
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
 		defer release()
-		execute(runCtx)
+		defer tracked.End()
+		execute(tracked.Bind(runCtx))
 	}); err != nil {
+		tracked.End()
 		release()
 		s.abandonBackup(ctx, &snapshot, err)
 		return nil, runError(err, "")
@@ -523,8 +529,11 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		return nil, fmt.Errorf("save restore record: %w", err)
 	}
 
+	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
 		defer release()
+		defer tracked.End()
+		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.Restore.Execute(runCtx, req, source, record)
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
@@ -536,6 +545,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
 	}); err != nil {
+		tracked.End()
 		release()
 		snapshot.Status = models.RestoreStatusFailed
 		snapshot.ErrorMessage = "restore not started: " + err.Error()

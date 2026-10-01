@@ -331,7 +331,7 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsKnown(KeyCORSOrigins) || !IsKnown("legacy_import.X") || IsKnown("secret_key_check") {
 		t.Fatal("known key classification is wrong")
 	}
-	if len(Keys()) != 20 || IsSecret(KeyMCPEnabled) {
+	if len(Keys()) != 21 || IsSecret(KeyMCPEnabled) || IsSecret(KeyLogRetentionDays) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

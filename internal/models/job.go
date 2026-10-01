@@ -42,8 +42,13 @@ type Job struct {
 	// Gzip determines whether dumps are compressed. Default is true.
 	Gzip bool `json:"gzip"`
 
-	// Enabled controls whether the scheduler actively triggers this job.
+	// Enabled controls whether the scheduler actively triggers this job. A job with
+	// Enabled false is paused.
 	Enabled bool `json:"enabled"`
+
+	// PausedUntil, set on a paused job, makes the scheduler resume it automatically at
+	// that time. Nil means a paused job stays paused until it is resumed.
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
 
 	// ConnectionID references the managed Connection the job backs up from.
 	ConnectionID string `json:"connection_id"`
@@ -69,5 +74,9 @@ func (j *Job) Clone() *Job {
 	clone := *j
 	clone.Collections = slices.Clone(j.Collections)
 	clone.ExcludeCollections = slices.Clone(j.ExcludeCollections)
+	if j.PausedUntil != nil {
+		until := *j.PausedUntil
+		clone.PausedUntil = &until
+	}
 	return &clone
 }

@@ -23,6 +23,8 @@ var (
 	// ErrNegativeRetention is returned when retention_days or retention_count is
 	// negative.
 	ErrNegativeRetention = errors.New("retention_days and retention_count must not be negative")
+	// ErrPausedUntilPast is returned when paused_until is not in the future.
+	ErrPausedUntilPast = errors.New("paused_until must be in the future")
 )
 
 // ErrJobChanged is returned by UpdateJob when the request names the job's updated_at
@@ -65,6 +67,9 @@ type JobUpdate struct {
 	Gzip *bool `json:"gzip"`
 	// Enabled schedules (true) or pauses (false) the job when set.
 	Enabled *bool `json:"enabled"`
+	// PausedUntil, for a paused job, resumes it automatically at that time. Pausing
+	// without it pauses until resumed; a job left paused keeps its current value.
+	PausedUntil *time.Time `json:"paused_until"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -83,7 +88,8 @@ type JobDetails struct {
 // named, retention must not be negative, the connection must exist and the storage
 // target (the default one for "") is resolved into StorageTargetID and StorageType.
 // Expected failures: ErrInvalid (wrapping scheduler.ErrInvalidCron,
-// ErrDatabaseRequired or ErrNegativeRetention), ErrConnectionRequired,
+// ErrDatabaseRequired, ErrNegativeRetention or ErrPausedUntilPast; an enabled job's
+// PausedUntil is cleared), ErrConnectionRequired,
 // ErrUnknownConnection and ErrUnknownStorageTarget.
 func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	job.CronExpression = strings.TrimSpace(job.CronExpression)
@@ -101,6 +107,16 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)
+	}
+	if job.Enabled {
+		job.PausedUntil = nil
+	}
+	if job.PausedUntil != nil {
+		if !job.PausedUntil.After(s.now()) {
+			return invalid(ErrPausedUntilPast)
+		}
+		until := job.PausedUntil.UTC()
+		job.PausedUntil = &until
 	}
 	if _, err := s.ResolveConnection(ctx, job.ConnectionID); err != nil {
 		return err
@@ -135,6 +151,15 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	job.RetentionCount = derefOr(u.RetentionCount, existing.RetentionCount)
 	job.Gzip = derefOr(u.Gzip, existing.Gzip)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
+	switch {
+	case job.Enabled:
+		job.PausedUntil = nil
+	case u.PausedUntil != nil:
+		job.PausedUntil = u.PausedUntil
+	case existing.Enabled:
+		// Paused now without a time: until resumed.
+		job.PausedUntil = nil
+	}
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}

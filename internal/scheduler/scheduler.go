@@ -15,6 +15,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -56,6 +57,7 @@ type Scheduler struct {
 	guard         BackupGuard
 	connections   ConnectionResolver
 	targets       StorageTargets
+	registry      *runs.Registry
 
 	// mu guards entries, ctx, cancel, started, stopped and paused.
 	mu      sync.Mutex
@@ -116,6 +118,12 @@ type StorageTargets interface {
 // Without it, the scheduler's fixed storage driver is used.
 func WithStorageTargets(t StorageTargets) Option {
 	return func(s *Scheduler) { s.targets = t }
+}
+
+// WithRunRegistry tracks cron-triggered runs in reg, so they can be cancelled, report
+// live progress and write a run log; retention removes the logs of pruned backups.
+func WithRunRegistry(reg *runs.Registry) Option {
+	return func(s *Scheduler) { s.registry = reg }
 }
 
 // WithBackupGuard makes cron-triggered runs acquire guard first, so a scheduled run
@@ -202,6 +210,12 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		)
 		s.loader.Add(1)
 		go s.retryLoad(runCtx)
+	}
+
+	// Jobs paused until a given time resume on their own (checked every minute). The
+	// check lists the jobs itself, so it also covers jobs a late retry loads.
+	if _, err := s.cron.AddFunc(resumeCheckSchedule, s.resumeDueJobs); err != nil {
+		s.logger.Error("failed to schedule the resumption of paused jobs", slog.Any("error", err))
 	}
 
 	s.cron.Start()
@@ -570,7 +584,8 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 }
 
 // runBackupForJob executes a scheduled (cron-triggered) run: the backup, the job's
-// timestamps and retention pruning.
+// timestamps and retention pruning. The in-progress record is stored first, so the run
+// shows up (and can be cancelled through the run registry) while it runs.
 func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*models.BackupRecord, error) {
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
@@ -580,7 +595,20 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 	if err != nil {
 		return s.finishJobRun(ctx, job, nil, err, true)
 	}
-	record, err := s.backupEngine.Run(ctx, opts)
+	record, err := s.backupEngine.Prepare(opts)
+	if err != nil {
+		return s.finishJobRun(ctx, job, nil, err, true)
+	}
+	if saveErr := s.metadataStore.SaveBackupRecord(ctx, record); saveErr != nil {
+		s.logger.Warn("failed to record the scheduled backup as in progress",
+			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
+	}
+	tracked, regErr := s.registry.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID, JobID: job.ID, Database: job.Database})
+	if regErr != nil {
+		s.logger.Warn("scheduled backup is not tracked", slog.String("backup_id", record.ID), slog.Any("error", regErr))
+	}
+	defer tracked.End()
+	record, err = s.backupEngine.Execute(tracked.Bind(ctx), opts, record)
 	return s.finishJobRun(ctx, job, record, err, true)
 }
 
@@ -665,7 +693,7 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 				return r.JobID != job.ID || r.EffectiveTrigger() != models.TriggerScheduled ||
 					r.ConnectionID != job.ConnectionID || r.StorageTargetID != record.StorageTargetID
 			})
-			_, _ = PruneBackupsOn(
+			pruned, _ := PruneBackupsOn(
 				ctx,
 				job.RetentionDays,
 				job.RetentionCount,
@@ -674,10 +702,20 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 				s.storageFor,
 				s.logger,
 			)
+			s.removeRunLogs(pruned)
 		}
 	}
 
 	return record, nil
+}
+
+// removeRunLogs deletes the run logs of the backups retention pruned.
+func (s *Scheduler) removeRunLogs(ids []string) {
+	for _, id := range ids {
+		if err := s.registry.RemoveLog(id); err != nil {
+			s.logger.Warn("failed to delete the log of a pruned backup", slog.String("backup_id", id), slog.Any("error", err))
+		}
+	}
 }
 
 // storageFor returns the driver of a storage target: through WithStorageTargets when
