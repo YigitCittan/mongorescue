@@ -69,7 +69,7 @@ const MASKED_SECRET = "******";
 const CHANNEL_TYPES = ["webhook", "telegram", "email", "twilio"];
 const THEMES = ["system", "light", "dark"];
 const POLL_INTERVAL_MS = 10000;
-const ACTIVE_POLL_MS = 3000;
+const ACTIVE_POLL_MS = 2000;
 const ACTIVE_STATUSES = ["pending", "in_progress"];
 
 // Operations started from this browser, keyed by record ID, so their outcome can be
@@ -243,6 +243,9 @@ function runRowAction(row) {
       break;
     case "backup-details":
       openBackupDetails(id);
+      break;
+    case "restore-details":
+      openRestoreDetails(id);
       break;
   }
 }
@@ -451,6 +454,9 @@ function setupActions() {
       case "delete-rule":
         deleteRule(id);
         break;
+      default:
+        // Run control actions (cancel, pause/resume, logs) live in runs.js.
+        handleRunAction(btn.dataset.action, id, btn);
     }
   });
 }
@@ -577,6 +583,7 @@ async function refreshAll() {
       loadUsers(),
       loadApiKeys(),
       loadJobs(),
+      loadActiveRuns(),
       loadBackups(),
       loadRestores(),
       loadListDatabases(),
@@ -612,7 +619,8 @@ function scheduleActivePoll() {
   activePollTimer = setTimeout(async () => {
     activePollTimer = null;
     if (document.hidden || !auth.user) return;
-    await Promise.all([loadBackups(), loadRestores(), loadStats()]);
+    // Live progress (runs.js) refreshes with the lists every ACTIVE_POLL_MS.
+    await Promise.all([loadActiveRuns(), loadBackups(), loadRestores(), loadStats()]);
     renderStats();
     scheduleActivePoll();
   }, ACTIVE_POLL_MS);
@@ -645,7 +653,9 @@ function reportFinished(kind, records) {
     if (ACTIVE_STATUSES.includes(rec.status)) return;
     tracked.delete(id);
     const db = (kind === "backups" ? rec.database : rec.target_database) || info.database;
-    if (rec.status === "failed") {
+    if (rec.status === "cancelled") {
+      reportCancelled(kind, rec, db);
+    } else if (rec.status === "failed") {
       const key = kind === "backups" ? "toasts.backup_failed_detail" : "toasts.restore_failed_detail";
       showToast(tf(key, { db, error: truncate(errorSummary(rec.error_message), 160) }), "error");
     } else {
@@ -780,7 +790,8 @@ const LIST_KINDS = ["backups", "restores"];
 const LIST_STATUSES = [
   { value: "completed", label: "filters.status_completed" },
   { value: "failed", label: "filters.status_failed" },
-  { value: "in_progress", label: "filters.status_running" }
+  { value: "in_progress", label: "filters.status_running" },
+  { value: "cancelled", label: "run.status_cancelled" }
 ];
 const LIST_RANGES = ["today", "7d", "30d", "custom"];
 const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -1045,6 +1056,7 @@ async function loadList(requested) {
     L.error = "";
     state[kind] = items;
     state.loaded[kind] = true;
+    pruneCancellingRuns();
     if (kind === "backups") rememberBackups(items);
     if (kind === "restores") await loadRestoreBackups(items);
     await reportTracked(kind, items);
@@ -1624,7 +1636,7 @@ function renderJobs() {
       <td>${ellipsis(job.database, "mono ell-sm")}${collectionScope(job)}</td>
       <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
       <td class="cell-wrap-sm">${escapeHtml(retentionText(job))}</td>
-      <td>${enabledBadge(enabled)}</td>
+      <td>${jobStateBadge(job)}</td>
       <td>${lastDot}${timeCell(job.last_run)}</td>
       <td>${enabled ? timeCell(job.next_run) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
@@ -1723,6 +1735,8 @@ function backupStatus(status) {
       return ["neutral", t("status.pending")];
     case "pruned":
       return ["neutral", t("status.pruned")];
+    case "cancelled":
+      return ["warn", t("run.status_cancelled")];
     default:
       return ["neutral", String(status || "")];
   }
@@ -1777,7 +1791,7 @@ function renderBackups() {
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
       <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}</div>${retryLinks(b)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
-      <td>${statusBadge(kind, label, b.error_message)}${errorLine}</td>
+      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
       <td class="num">${size}${backupStorageCell(b)}</td>
@@ -1785,6 +1799,7 @@ function renderBackups() {
       <td class="col-actions"><div class="row-actions">
         ${restoreBtn}
         ${retryBtn}
+        ${cancelRunButton("backup", b)}
         ${rowMenuButton("backup", b.id)}
       </div></td>
     </tr>`;
@@ -1824,6 +1839,7 @@ function renderRestores() {
   if (!tbody) return;
   if (!state.loaded.restores) return;
   renderListControls("restores");
+  renderRestoreDetails();
 
   if (lists.restores.error) {
     setTbody(tbody, emptyRow(6, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
@@ -1854,11 +1870,11 @@ function renderRestores() {
     const cross = crossServer
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
       : "";
-    return `<tr>
+    return `<tr class="row-clickable" data-row-action="restore-details" data-id="${escapeHtml(r.id)}" tabindex="0">
       <td><div class="id-cell">${ellipsis(r.id, "mono muted cell-id")}${copyButton(r.id)}</div></td>
       <td>${ellipsis(r.source_database)}${source ? `<div class="cell-sub">${ellipsis(source)}</div>` : ""}</td>
       <td>${ellipsis(r.target_database, "mono")}${cross}${selection}</td>
-      <td><div class="status-line">${statusBadge(kind, label, r.error_message)}${chips.join("")}</div>${errorLine}</td>
+      <td><div class="status-line">${statusBadge(kind, label, r.error_message)}${chips.join("")}${cancelRunButton("restore", r)}</div>${errorLine}${runProgressHtml(r)}</td>
       <td>${timeCell(r.started_at)}</td>
       <td class="num">${durationCell(r)}</td>
     </tr>`;
@@ -2123,10 +2139,10 @@ function rowMenuButton(kind, id) {
 // Items of a row menu: [action, label, danger].
 function rowMenuItems(kind, id) {
   if (kind === "job") {
-    return [["job-details", t("actions.details")], ["edit-job", t("ui.edit")], ["delete-job", t("actions.delete"), true]];
+    return [["job-details", t("actions.details")], ["edit-job", t("ui.edit")], ...jobRunMenuItems(id), ["delete-job", t("actions.delete"), true]];
   }
   if (kind === "backup") {
-    return [["backup-details", t("actions.details")], ["delete-backup", t("actions.delete"), true]];
+    return [["backup-details", t("actions.details")], ...backupRunMenuItems(id), ["delete-backup", t("actions.delete"), true]];
   }
   return [];
 }
@@ -2584,7 +2600,7 @@ function renderJobDetails() {
   appendKv(overview, t("job_details.name"), job.name);
   const idLine = htmlNode(idCopy(job.id), "div");
   appendKv(overview, t("job_details.id"), idLine.firstElementChild || job.id);
-  appendKv(overview, t("job_details.state"), htmlNode(enabledBadge(enabled)));
+  appendKv(overview, t("job_details.state"), htmlNode(jobStateBadge(job)));
   appendKv(overview, t("job_details.connection"), job.connection_id ? connectionName(job.connection_id) : "");
   appendKv(overview, t("job_details.database"), job.database, true);
   const include = job.collections || [];
@@ -2601,7 +2617,8 @@ function renderJobDetails() {
   refreshJobNextRuns(job);
   let next;
   if (!enabled) {
-    next = t("job_details.paused");
+    const until = parseDate(job.paused_until);
+    next = until ? tf("run.resumes_at", { time: formatAbsolute(until) }) : t("job_details.paused");
   } else if (jobNextRuns.runs && jobNextRuns.runs.length > 0) {
     next = document.createElement("ol");
     next.className = "next-runs";
@@ -2635,10 +2652,17 @@ function renderJobDetails() {
 
   renderJobHistory(job);
 
+  // Pause (optionally until a time) and resume live in runs.js.
   const toggle = document.getElementById("job-details-toggle");
-  setI18nText("job-details-toggle", enabled ? "ui.disable" : "ui.enable");
+  setI18nText("job-details-toggle", enabled ? "run.pause" : "run.resume");
+  toggle.dataset.action = enabled ? "pause-job" : "resume-job";
   toggle.dataset.id = job.id;
   toggle.disabled = togglingJobs.has(job.id);
+  const stop = document.getElementById("job-details-stop");
+  if (stop) {
+    stop.hidden = !jobActiveRun(job.id);
+    stop.dataset.id = job.id;
+  }
   document.getElementById("job-details-run").dataset.id = job.id;
   document.getElementById("job-details-empty-run").dataset.id = job.id;
   document.getElementById("job-details-edit").dataset.id = job.id;
@@ -3043,6 +3067,8 @@ function openBackupDetails(backupID) {
   renderBackupDetails();
   openModal("modal-backup-details");
   loadBackupChain(backupID);
+  // Rendering needs the dialog open (it is skipped while closed).
+  renderBackupDetails();
 }
 
 // The retry chain of backup b, oldest first, from the latest records seen: the chain
@@ -3103,6 +3129,9 @@ function renderBackupDetails() {
     row(t("tables.size"), formatBytes(b.size_bytes));
     if (b.sha256) row(t("tables.sha256"), b.sha256, true);
   }
+  backupCancelRows(b, row);
+  // Progress, cancel button, phase timeline and log viewer (runs.js).
+  renderRunPanel("backup", "backup", b);
 
   errorBox.hidden = !b.error_message;
   document.getElementById("backup-details-error-text").textContent = b.error_message || "";
@@ -4412,6 +4441,7 @@ function fillGeneral(g) {
   setValue("set-backup-stall-timeout", g.backup_stall_timeout || "");
   setValue("set-restore-timeout", g.restore_timeout || "");
   setValue("set-verify-policy", ["always", "auto", "never"].includes(g.restore_verify_policy) ? g.restore_verify_policy : "auto");
+  setValue("set-log-retention-days", g.log_retention_days ?? 30);
   updateDurationPreviews("form-general");
 }
 
@@ -4579,7 +4609,8 @@ function collectGeneral() {
     backup_timeout: durationSetting("set-backup-timeout").raw,
     backup_stall_timeout: durationSetting("set-backup-stall-timeout").raw,
     restore_timeout: durationSetting("set-restore-timeout").raw,
-    restore_verify_policy: getValue("set-verify-policy")
+    restore_verify_policy: getValue("set-verify-policy"),
+    log_retention_days: intSetting("set-log-retention-days")
   };
 }
 

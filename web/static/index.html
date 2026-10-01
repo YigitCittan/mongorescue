@@ -574,6 +574,16 @@
             </div>
             <p class="form-hint" data-i18n="settings.duration_help">Durations use Go syntax: 90s, 45m, 6h, 1h30m. There is no day unit: use 168h for 7 days.</p>
           </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="run.settings_logs">Run logs</legend>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="set-log-retention-days" data-i18n="run.settings_log_days">Keep run logs for (days)</label>
+                <input type="number" id="set-log-retention-days" class="form-input" min="0" step="1" aria-describedby="set-log-retention-days-hint">
+                <span class="form-hint" id="set-log-retention-days-hint" data-i18n="run.settings_log_days_hint">The log of every backup and restore is kept in the data directory (logs/). 0 keeps logs until their backup is deleted.</span>
+              </div>
+            </div>
+          </fieldset>
           <p class="form-error" id="general-error" role="alert" hidden></p>
           <div class="settings-footer">
             <span class="save-status" id="general-status" role="status" aria-live="polite"></span>
@@ -1355,7 +1365,8 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-job-details" data-i18n="actions.close">Close</button>
-        <button type="button" class="btn btn-secondary" id="job-details-toggle" data-action="toggle-job" data-i18n="ui.disable">Disable</button>
+        <button type="button" class="btn btn-secondary btn-danger-text" id="job-details-stop" data-action="stop-job-run" data-i18n="run.stop_current" hidden>Stop current run</button>
+        <button type="button" class="btn btn-secondary" id="job-details-toggle" data-action="pause-job" data-i18n="run.pause">Pause</button>
         <button type="button" class="btn btn-secondary" id="job-details-run" data-action="trigger-job" data-i18n="actions.run_now">Run now</button>
         <button type="button" class="btn btn-primary" id="job-details-edit" data-action="edit-job" data-i18n="ui.edit">Edit</button>
       </div>
@@ -1364,14 +1375,19 @@
 
   <!-- Modal: Backup details -->
   <div id="modal-backup-details" class="modal-backdrop" aria-hidden="true">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="backup-details-title">
+    <div class="modal-card modal-lg" role="dialog" aria-modal="true" aria-labelledby="backup-details-title">
       <div class="modal-header">
         <h3 class="modal-title" id="backup-details-title" data-i18n="backup_details.title">Backup details</h3>
         <button type="button" class="modal-close" data-action="close-modal" data-target="modal-backup-details" aria-label="Close" data-i18n-aria-label="actions.close">
           <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
         </button>
       </div>
-      <div class="modal-body scrollable">
+      <div class="run-tabs" role="tablist" aria-label="Backup details" data-i18n-aria-label="backup_details.title">
+        <button type="button" class="run-tab active" role="tab" id="backup-tab-info" aria-controls="backup-panel-info" aria-selected="true" data-action="run-tab" data-prefix="backup" data-tab="info" data-i18n="run.tab_details">Details</button>
+        <button type="button" class="run-tab" role="tab" id="backup-tab-log" aria-controls="backup-panel-log" aria-selected="false" tabindex="-1" data-action="run-tab" data-prefix="backup" data-tab="log" data-i18n="run.tab_log">Log</button>
+      </div>
+      <div class="modal-body scrollable" id="backup-panel-info" role="tabpanel" aria-labelledby="backup-tab-info">
+        <div class="detail-section run-progress-detail" id="backup-details-progress" hidden></div>
         <section class="detail-section">
           <dl class="kv" id="backup-details-list"></dl>
         </section>
@@ -1379,15 +1395,114 @@
           <h4 class="detail-heading" id="backup-details-h-error" data-i18n="backup_details.error">Error</h4>
           <pre class="error-full detail-error" id="backup-details-error-text"></pre>
         </section>
+        <section class="detail-section" aria-labelledby="backup-details-h-timeline" hidden>
+          <h4 class="detail-heading" id="backup-details-h-timeline" data-i18n="run.timeline">Timeline</h4>
+          <ol class="run-timeline" id="backup-details-timeline"></ol>
+        </section>
         <section class="detail-section" id="backup-details-chain-group" aria-labelledby="backup-details-h-chain" hidden>
           <h4 class="detail-heading" id="backup-details-h-chain" data-i18n="backup_details.retry_chain">Retry chain</h4>
           <ol class="retry-chain" id="backup-details-chain"></ol>
         </section>
       </div>
+      <div class="modal-body run-log-panel" id="backup-panel-log" role="tabpanel" aria-labelledby="backup-tab-log" hidden>
+        <div class="run-log-toolbar">
+          <label class="check-inline" id="backup-log-follow-wrap" hidden><input type="checkbox" id="backup-log-follow" checked><span data-i18n="run.follow">Follow</span></label>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="run-log-refresh" data-i18n="run.log_refresh">Refresh</button>
+          <a class="btn btn-secondary btn-sm" id="backup-log-download" href="#" download data-i18n="run.log_download">Download log</a>
+          <span class="detail-meta" id="backup-log-status" role="status" aria-live="polite"></span>
+        </div>
+        <pre class="run-log mono" id="backup-log-text" tabindex="0" aria-label="Log" data-i18n-aria-label="run.tab_log"></pre>
+      </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-backup-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-backup-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary btn-danger-text" id="backup-details-cancel" data-action="cancel-run" data-kind="backup" data-i18n="run.cancel" hidden>Cancel run</button>
         <button type="button" class="btn btn-primary" id="backup-details-retry" data-action="retry-backup" data-i18n="actions.retry" hidden>Retry</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Modal: Restore details -->
+  <div id="modal-restore-details" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-lg" role="dialog" aria-modal="true" aria-labelledby="restore-details-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="restore-details-title" data-i18n="run.restore_details">Restore details</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-restore-details" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="run-tabs" role="tablist" aria-label="Restore details" data-i18n-aria-label="run.restore_details">
+        <button type="button" class="run-tab active" role="tab" id="restore-tab-info" aria-controls="restore-panel-info" aria-selected="true" data-action="run-tab" data-prefix="restore" data-tab="info" data-i18n="run.tab_details">Details</button>
+        <button type="button" class="run-tab" role="tab" id="restore-tab-log" aria-controls="restore-panel-log" aria-selected="false" tabindex="-1" data-action="run-tab" data-prefix="restore" data-tab="log" data-i18n="run.tab_log">Log</button>
+      </div>
+      <div class="modal-body scrollable" id="restore-panel-info" role="tabpanel" aria-labelledby="restore-tab-info">
+        <div class="detail-section run-progress-detail" id="restore-details-progress" hidden></div>
+        <section class="detail-section">
+          <dl class="kv" id="restore-details-list"></dl>
+        </section>
+        <section class="detail-section" id="restore-details-warning" aria-labelledby="restore-details-h-warning" hidden>
+          <h4 class="detail-heading" id="restore-details-h-warning" data-i18n="run.warning">Warning</h4>
+          <pre class="error-full detail-warning" id="restore-details-warning-text"></pre>
+        </section>
+        <section class="detail-section" id="restore-details-error" aria-labelledby="restore-details-h-error" hidden>
+          <h4 class="detail-heading" id="restore-details-h-error" data-i18n="backup_details.error">Error</h4>
+          <pre class="error-full detail-error" id="restore-details-error-text"></pre>
+        </section>
+        <section class="detail-section" aria-labelledby="restore-details-h-timeline" hidden>
+          <h4 class="detail-heading" id="restore-details-h-timeline" data-i18n="run.timeline">Timeline</h4>
+          <ol class="run-timeline" id="restore-details-timeline"></ol>
+        </section>
+      </div>
+      <div class="modal-body run-log-panel" id="restore-panel-log" role="tabpanel" aria-labelledby="restore-tab-log" hidden>
+        <div class="run-log-toolbar">
+          <label class="check-inline" id="restore-log-follow-wrap" hidden><input type="checkbox" id="restore-log-follow" checked><span data-i18n="run.follow">Follow</span></label>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="run-log-refresh" data-i18n="run.log_refresh">Refresh</button>
+          <a class="btn btn-secondary btn-sm" id="restore-log-download" href="#" download data-i18n="run.log_download">Download log</a>
+          <span class="detail-meta" id="restore-log-status" role="status" aria-live="polite"></span>
+        </div>
+        <pre class="run-log mono" id="restore-log-text" tabindex="0" aria-label="Log" data-i18n-aria-label="run.tab_log"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-restore-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary btn-danger-text" id="restore-details-cancel" data-action="cancel-run" data-kind="restore" data-i18n="run.cancel" hidden>Cancel run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Pause job -->
+  <div id="modal-pause-job" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="pause-job-title" aria-describedby="pause-job-name">
+      <div class="modal-header">
+        <div class="modal-heading">
+          <h3 class="modal-title" id="pause-job-title" data-i18n="run.pause_title">Pause job</h3>
+          <p class="modal-subtitle" id="pause-job-name"></p>
+        </div>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-pause-job" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-pause-job" novalidate>
+        <div class="modal-body">
+          <p class="form-hint" data-i18n="run.pause_desc">Scheduled runs are skipped while the job is paused. A run in progress continues.</p>
+          <label class="check" for="pause-job-indefinite">
+            <input type="radio" name="pause-job-mode" id="pause-job-indefinite" value="indefinite" checked>
+            <span class="check-text"><span class="check-title" data-i18n="run.pause_indefinitely">Until I resume it</span></span>
+          </label>
+          <label class="check" for="pause-job-timed">
+            <input type="radio" name="pause-job-mode" id="pause-job-timed" value="until">
+            <span class="check-text"><span class="check-title" data-i18n="run.pause_until_label">Until a date and time</span></span>
+          </label>
+          <div class="form-group">
+            <label class="form-label sr-only" for="pause-job-until" data-i18n="run.pause_until_label">Until a date and time</label>
+            <input type="datetime-local" id="pause-job-until" class="form-input" aria-describedby="pause-job-until-hint">
+            <span class="form-hint" id="pause-job-until-hint" data-i18n="run.pause_until_hint">The job resumes on its own within a minute of this time (your local time).</span>
+          </div>
+          <p class="form-error" id="pause-job-error" role="alert" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-pause-job" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="run.pause">Pause</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -1684,6 +1799,8 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.succeeded"><span data-i18n="notify.events.backup_succeeded">Backup succeeded</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.failed"><span data-i18n="notify.events.restore_failed">Restore failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.succeeded"><span data-i18n="notify.events.restore_succeeded">Restore succeeded</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.cancelled"><span data-i18n="notify.events.backup_cancelled">Backup cancelled</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.cancelled"><span data-i18n="notify.events.restore_cancelled">Restore cancelled</span></label>
             </div>
           </fieldset>
           <div class="form-group">
@@ -1711,5 +1828,6 @@
 
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
+  <script src="/runs.js"></script>
 </body>
 </html>

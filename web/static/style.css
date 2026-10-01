@@ -2487,3 +2487,178 @@ input[type="radio"] {
     max-width: 88px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Run control (runs.js): cancelled badge, progress bars, details tabs, run log,
+   phase timeline.
+   --------------------------------------------------------------------------- */
+
+.badge-warn {
+  color: var(--warn);
+  background: var(--warn-subtle);
+}
+
+.btn-danger-text {
+  color: var(--danger);
+}
+
+.run-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  min-width: 120px;
+  max-width: 260px;
+}
+
+.run-progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--neutral-bg);
+  color: var(--info);
+  overflow: hidden;
+}
+
+.run-progress::-webkit-progress-bar {
+  background: var(--neutral-bg);
+  border-radius: 3px;
+}
+
+.run-progress::-webkit-progress-value {
+  background: var(--info);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.run-progress::-moz-progress-bar {
+  background: var(--info);
+  border-radius: 3px;
+}
+
+.run-progress:indeterminate {
+  background: linear-gradient(90deg, var(--neutral-bg) 0%, var(--info-subtle) 40%, var(--info) 50%, var(--info-subtle) 60%, var(--neutral-bg) 100%);
+  background-size: 200% 100%;
+  animation: run-progress-slide 1.4s linear infinite;
+}
+
+.run-progress:indeterminate::-webkit-progress-bar {
+  background: transparent;
+}
+
+.run-progress:indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+@keyframes run-progress-slide {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-progress:indeterminate {
+    animation: none;
+  }
+}
+
+.run-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-progress-detail .run-progress-wrap {
+  max-width: none;
+}
+
+.run-progress-detail .run-progress {
+  height: 8px;
+}
+
+.run-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.run-tab {
+  padding: 8px 10px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.run-tab:hover,
+.run-tab.active {
+  color: var(--text);
+}
+
+.run-tab.active {
+  border-bottom-color: var(--accent);
+}
+
+.run-log-panel {
+  gap: 10px;
+}
+
+.run-log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-log {
+  margin: 0;
+  min-height: 240px;
+  max-height: calc(80vh - 200px);
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.run-timeline {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.run-timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-timeline .timeline-label {
+  min-width: 120px;
+  font-weight: 500;
+}
+
+.detail-warning {
+  width: auto;
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  color: var(--warn);
+  background: var(--warn-subtle);
+}
