@@ -306,8 +306,15 @@
     return encodeURIComponent(s);
   }
 
+  // Decodes a query key or value as the Go driver's connstring does (url.QueryUnescape):
+  // a raw "+" is a space, so "appName=my+app" names "my app".
+  function decodeQuery(s) {
+    return decode(String(s).replace(/\+/g, " "));
+  }
+
   // Percent-encodes what may not appear raw in a query key or value ("&", "#", "%",
-  // "+", whitespace, ...); ":" "," "/" and the like stay readable.
+  // "+", whitespace, ...); ":" "," "/" and the like stay readable. Spaces become %20
+  // and a literal "+" %2B, so a rebuilt URI keeps its meaning.
   function encodeQuery(s) {
     return String(s).replace(/[^A-Za-z0-9\-._~!$'()*,;:@/=]/g, c => encodeURIComponent(c));
   }
@@ -349,7 +356,7 @@
     }
     const options = query ? query.split("&").filter(Boolean).map(pair => {
       const eq = pair.indexOf("=");
-      return eq === -1 ? [decode(pair), ""] : [decode(pair.slice(0, eq)), decode(pair.slice(eq + 1))];
+      return eq === -1 ? [decodeQuery(pair), ""] : [decodeQuery(pair.slice(0, eq)), decodeQuery(pair.slice(eq + 1))];
     }) : [];
     return { scheme, username, password, hasUserinfo: userinfo !== null, hosts, path, options };
   }
@@ -394,7 +401,7 @@
       out += authority;
     }
     return out + tail.replace(/([?&])([^=&#]+)=([^&#]*)/g, (all, sep, key) =>
-      (SENSITIVE_KEYS.has(decode(key).toLowerCase()) ? `${sep}${key}=${MASKED_SECRET}` : all));
+      (SENSITIVE_KEYS.has(decodeQuery(key).toLowerCase()) ? `${sep}${key}=${MASKED_SECRET}` : all));
   }
 
   // Structural checks of a pasted connection string, mirroring internal/mongouri
