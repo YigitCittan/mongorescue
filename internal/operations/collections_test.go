@@ -87,7 +87,7 @@ func TestListBackupCollectionsFromArchive(t *testing.T) {
 		if got.Source != operations.CollectionsFromArchive || got.Database != "shop" || got.Warning != "" || len(got.Collections) != 4 {
 			t.Fatalf("call %d: %+v", i, got)
 		}
-		if v := got.Collections[3]; v.Name != "big_orders" || v.Type != models.CollectionTypeView || v.ViewOn != "orders" {
+		if v := got.Collections[0]; v.Name != "big_orders" || v.Type != models.CollectionTypeView || v.ViewOn != "orders" {
 			t.Fatalf("view = %+v", v)
 		}
 		got.Collections[0].Name = "mutated" // the cache hands out copies

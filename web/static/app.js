@@ -2781,6 +2781,8 @@ function renderRestoreCollections() {
   document.getElementById("restore-colls-all").disabled = !listed;
   document.getElementById("restore-colls-none").disabled = !listed;
   manual.hidden = restoreColls.loading || !restoreColls.manual;
+  // Searching and bulk selection only apply to a listed archive.
+  document.getElementById("restore-colls-toolbar").hidden = restoreColls.manual;
 
   const visible = listed ? visibleRestoreCollections() : [];
   visible.forEach(c => {

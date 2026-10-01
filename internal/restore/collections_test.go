@@ -28,11 +28,12 @@ func shopArchive(t *testing.T) []byte {
 	return b
 }
 
+// wantShopCollections is the content of shopArchive, sorted by name.
 var wantShopCollections = []models.BackupCollection{
-	{Name: "metrics", Type: models.CollectionTypeTimeseries},
-	{Name: "customers", Type: models.CollectionTypeCollection},
-	{Name: "orders", Type: models.CollectionTypeCollection},
 	{Name: "big_orders", Type: models.CollectionTypeView, ViewOn: "orders"},
+	{Name: "customers", Type: models.CollectionTypeCollection},
+	{Name: "metrics", Type: models.CollectionTypeTimeseries},
+	{Name: "orders", Type: models.CollectionTypeCollection},
 }
 
 // meteredStorage counts the bytes read from its objects and whether they were closed.
