@@ -89,6 +89,9 @@ The menu is in Turkish when the Windows display language is Turkish and in Engli
 | Default "Local disk" backup target | `<user config dir>/MongoRescue/backups` |
 | Log file (truncated on every start) | `<data dir>/desktop.log` |
 | Run logs (one per backup and restore, see [api.md](api.md#run-logs)) | `<data dir>/logs/<id>.log` |
+| Window size, position and maximised state | `<data dir>/window.json` |
+
+The window opens where it was closed, with the same size (and maximised if it was). The saved geometry is clamped to the screen the window opens on, so a window last placed on a disconnected monitor or a larger screen comes back fully visible; delete `window.json` to reset it.
 
 `<user config dir>` is `%AppData%` on Windows, `~/Library/Application Support` on macOS and `$XDG_CONFIG_HOME` (usually `~/.config`) on Linux.
 

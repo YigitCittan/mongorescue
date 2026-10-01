@@ -121,7 +121,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		}
 		return 1
 	}
-	d := &desktopApp{app: application, logger: logger, closed: make(chan struct{})}
+	d := &desktopApp{app: application, logger: logger, closed: make(chan struct{}), window: loadWindowMemory(cfg.DataDir, logger)}
 	// The update check and downloads live until shutdown.
 	d.updateCtx, d.stopUpdates = context.WithCancel(context.Background())
 	defer d.stopUpdates()
@@ -135,9 +135,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	})
 	// Windows: the tray icon and hiding the window on close.
 	d.initBackground(cfg.DataDir)
-	var beforeClose func(context.Context) bool
 	if d.background != nil {
-		beforeClose = d.beforeClose
 		d.startHidden = hidden
 	} else if hidden {
 		logger.Info("ignoring " + desktop.HiddenFlag + ": the app runs in the background on Windows only")
@@ -163,19 +161,25 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		d.watchSignals(sigCh, done)
 	}()
 
+	width, height, maximised := d.window.initial()
+	startState := options.Normal
+	if maximised {
+		startState = options.Maximised
+	}
 	err = wails.Run(&options.App{
-		Title:     "MongoRescue",
-		Width:     1280,
-		Height:    860,
-		MinWidth:  960,
-		MinHeight: 640,
+		Title:            "MongoRescue",
+		Width:            width,
+		Height:           height,
+		MinWidth:         minWidth,
+		MinHeight:        minHeight,
+		WindowStartState: startState,
 		// The handler serves the dashboard files as well as the API: no Assets FS.
 		// The update endpoints are answered before the application handler.
 		AssetServer:        &assetserver.Options{Handler: d.updater.Handler(desktop.Handler(application.Handler()))},
 		OnStartup:          d.startup,
 		OnDomReady:         d.domReady,
 		OnShutdown:         d.shutdown,
-		OnBeforeClose:      beforeClose,
+		OnBeforeClose:      d.beforeClose,
 		StartHidden:        hidden,
 		SingleInstanceLock: singleInstance,
 		Mac: &mac.Options{
@@ -248,6 +252,8 @@ type desktopApp struct {
 	forced atomic.Bool
 	// startHidden is set when the window starts hidden in the tray.
 	startHidden bool
+	// window remembers the window geometry across restarts.
+	window *windowMemory
 
 	mu   sync.Mutex // serializes shutdown
 	done bool
@@ -276,6 +282,7 @@ func (d *desktopApp) startup(ctx context.Context) {
 		return
 	}
 	d.logger.Info("mongorescue desktop ready")
+	d.window.restore(ctx)
 	d.updater.Start(d.updateCtx)
 	d.startBackground()
 }
@@ -293,6 +300,7 @@ func (d *desktopApp) quit() {
 		return
 	}
 	d.quitting.Store(true)
+	d.window.save(ctx)
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -311,10 +319,11 @@ func (d *desktopApp) quit() {
 	}()
 }
 
-// beforeClose hides the window instead of closing it while the app runs in the
-// background with a working tray icon (Windows), and lets it close once the app
-// quits or when the tray is not available.
-func (d *desktopApp) beforeClose(context.Context) bool {
+// beforeClose saves the window geometry, then hides the window instead of closing it
+// while the app runs in the background with a working tray icon (Windows), and lets
+// it close once the app quits or when the tray is not available.
+func (d *desktopApp) beforeClose(ctx context.Context) bool {
+	d.window.save(ctx)
 	if d.background == nil || d.quitting.Load() || d.startError() != nil {
 		return false
 	}
@@ -381,6 +390,7 @@ func (d *desktopApp) watchSignals(sigCh <-chan os.Signal, done <-chan struct{}) 
 	}
 	if ctx := d.context(); ctx != nil {
 		d.quitting.Store(true)
+		d.window.save(ctx)
 		runtime.Quit(ctx)
 	}
 	timer := time.NewTimer(quitGrace)
