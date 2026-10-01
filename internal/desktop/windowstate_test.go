@@ -57,6 +57,46 @@ func TestWindowStateIgnoresBadFiles(t *testing.T) {
 	}
 }
 
+func TestWindowStateCapsHugeValues(t *testing.T) {
+	for name, content := range map[string]string{
+		"normal":    `{"x":99999999,"y":-99999999,"width":2147483647,"height":99999999}`,
+		"maximised": `{"x":1,"y":1,"width":9223372036854775807,"height":70000,"maximised":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, WindowStateFile), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, ok, err := LoadWindowState(dir)
+			if err != nil || !ok {
+				t.Fatalf("LoadWindowState = %+v, %v, %v", got, ok, err)
+			}
+			if got.Width != MaxWindowSize || got.Height != MaxWindowSize {
+				t.Errorf("size %dx%d; want capped at %d", got.Width, got.Height, MaxWindowSize)
+			}
+			if got.X < -MaxWindowSize || got.X > MaxWindowSize || got.Y < -MaxWindowSize || got.Y > MaxWindowSize {
+				t.Errorf("position %d,%d; want within ±%d", got.X, got.Y, MaxWindowSize)
+			}
+			// What the app passes to wails.Run before any screen is known.
+			if c := got.Clamp(0, 0, 960, 640); c.Width > MaxWindowSize || c.Height > MaxWindowSize || c.Maximised != got.Maximised {
+				t.Errorf("Clamp without a screen = %+v", c)
+			}
+		})
+	}
+	// Saving caps too, and the minimum still applies after the cap.
+	dir := t.TempDir()
+	if err := SaveWindowState(dir, WindowState{Width: 1 << 30, Height: 10, Maximised: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := LoadWindowState(dir)
+	if err != nil || got.Width != MaxWindowSize || !got.Maximised {
+		t.Fatalf("saved state = %+v, %v; want width %d, maximised", got, err, MaxWindowSize)
+	}
+	if c := got.Clamp(0, 0, 960, 640); c.Height != 640 {
+		t.Errorf("height after Clamp = %d; want the minimum 640", c.Height)
+	}
+}
+
 func TestWindowStateClamp(t *testing.T) {
 	for _, c := range []struct {
 		name string

@@ -32,16 +32,32 @@ type WindowState struct {
 	Maximised bool `json:"maximised,omitempty"`
 }
 
+// MaxWindowSize bounds every saved coordinate and dimension: no screen is larger,
+// so a bigger value is a damaged or hand-edited file and is capped before it
+// reaches the window.
+const MaxWindowSize = 16384
+
 // Valid reports whether s has a usable size.
 func (s WindowState) Valid() bool {
 	return s.Width > 0 && s.Height > 0
 }
 
+// capped limits the size to MaxWindowSize and the position to ±MaxWindowSize.
+func (s WindowState) capped() WindowState {
+	s.Width = min(s.Width, MaxWindowSize)
+	s.Height = min(s.Height, MaxWindowSize)
+	s.X = min(max(s.X, -MaxWindowSize), MaxWindowSize)
+	s.Y = min(max(s.Y, -MaxWindowSize), MaxWindowSize)
+	return s
+}
+
 // Clamp fits s onto a screen of screenW × screenH: the size is at least minW × minH
 // and at most the screen, and the window is moved so that it lies entirely on the
-// screen. A non-positive screen size leaves the position alone and only enforces the
-// minimum size.
+// screen. A non-positive screen size leaves the position alone (within
+// ±MaxWindowSize) and only enforces the minimum size and MaxWindowSize. The size is
+// clamped for a maximised state too, since it is the one the window un-maximises to.
 func (s WindowState) Clamp(screenW, screenH, minW, minH int) WindowState {
+	s = s.capped()
 	s.Width = max(s.Width, minW)
 	s.Height = max(s.Height, minH)
 	if screenW <= 0 || screenH <= 0 {
@@ -72,7 +88,7 @@ func LoadWindowState(dataDir string) (state WindowState, ok bool, err error) {
 	if !state.Valid() {
 		return WindowState{}, false, nil
 	}
-	return state, true, nil
+	return state.capped(), true, nil
 }
 
 // SaveWindowState writes s to dataDir atomically (a temporary file renamed over the
@@ -81,7 +97,7 @@ func SaveWindowState(dataDir string, s WindowState) error {
 	if !s.Valid() {
 		return nil
 	}
-	data, err := json.Marshal(s)
+	data, err := json.Marshal(s.capped())
 	if err != nil {
 		return fmt.Errorf("desktop: save window state: %w", err)
 	}
