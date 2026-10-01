@@ -67,7 +67,8 @@ type RestorePage struct {
 	Total int
 }
 
-// validBackupStatuses and the other value sets below are the accepted filter values.
+// validBackupStatuses and the other value sets below are the accepted filter values
+// (also listed in the 400 messages).
 var (
 	validBackupStatuses = []models.BackupStatus{
 		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusPruned,
@@ -79,6 +80,15 @@ var (
 		models.RestoreStatusPending, models.RestoreStatusInProgress, models.RestoreStatusCompleted, models.RestoreStatusFailed,
 	}
 )
+
+// joinValues lists the accepted values of a filter for an error message.
+func joinValues[T ~string](values []T) string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	return strings.Join(out, ", ")
+}
 
 // checkText rejects filter values longer than maxFilterText bytes.
 func checkText(fields map[string]string) error {
@@ -102,10 +112,10 @@ func filterError(err error, what string) error {
 // Unknown status or trigger values and out-of-range paging return ErrInvalid errors.
 func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage, error) {
 	if f.Status != "" && !slices.Contains(validBackupStatuses, f.Status) {
-		return nil, public("status must be one of pending, in_progress, completed, failed, pruned", ErrInvalid)
+		return nil, public("status must be one of "+joinValues(validBackupStatuses), ErrInvalid)
 	}
 	if f.Trigger != "" && !slices.Contains(validTriggers, f.Trigger) {
-		return nil, public("trigger must be one of scheduled, on_demand, manual, mcp", ErrInvalid)
+		return nil, public("trigger must be one of "+joinValues(validTriggers), ErrInvalid)
 	}
 	if err := checkText(map[string]string{
 		"database": f.Database, "connection_id": f.ConnectionID, "job_id": f.JobID, "retry_of": f.RetryOf, "q": f.Search,
@@ -159,7 +169,7 @@ func (s *Service) GetBackup(ctx context.Context, id string) (*models.BackupRecor
 // Unknown status values and out-of-range paging return ErrInvalid errors.
 func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestorePage, error) {
 	if f.Status != "" && !slices.Contains(validRestoreStatuses, f.Status) {
-		return nil, public("status must be one of pending, in_progress, completed, failed", ErrInvalid)
+		return nil, public("status must be one of "+joinValues(validRestoreStatuses), ErrInvalid)
 	}
 	if err := checkText(map[string]string{"backup_id": f.BackupID, "database": f.TargetDatabase, "q": f.Search}); err != nil {
 		return nil, err

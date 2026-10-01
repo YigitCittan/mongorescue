@@ -703,7 +703,13 @@ const DEFAULT_PAGE_SIZE = 25;
 const FILTER_DEBOUNCE_MS = 300;
 const MAX_FILTER_TEXT = 256;
 const LIST_KINDS = ["backups", "restores"];
-const LIST_STATUSES = ["completed", "failed", "in_progress"];
+// Options of the status filters, in order: the API value and its label key. This is
+// the only list of filterable statuses; the selects are filled from it.
+const LIST_STATUSES = [
+  { value: "completed", label: "filters.status_completed" },
+  { value: "failed", label: "filters.status_failed" },
+  { value: "in_progress", label: "filters.status_running" }
+];
 const LIST_RANGES = ["today", "7d", "30d", "custom"];
 const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Newest records fetched to report operations started here that are not on the page.
@@ -822,7 +828,7 @@ function applyListParams(kind, params) {
   const next = emptyFilters(kind);
   next.q = get("q");
   next.database = get("database");
-  if (LIST_STATUSES.includes(get("status"))) next.status = get("status");
+  if (LIST_STATUSES.some(s => s.value === get("status"))) next.status = get("status");
   if (kind === "backups" && BACKUP_TRIGGERS.includes(get("trigger"))) next.trigger = get("trigger");
   if (LIST_RANGES.includes(get("range"))) next.range = get("range");
   if (next.range === "custom") {
@@ -1072,8 +1078,26 @@ function setPageSize(kind, value) {
   loadList(kind);
 }
 
+// Fills the status filter of list kind from LIST_STATUSES (labels are translated by
+// applyTranslations through data-i18n).
+function fillStatusOptions(kind) {
+  const sel = document.getElementById(`${kind}-filter-status`);
+  if (!sel) return;
+  sel.textContent = "";
+  [{ value: "", label: "filters.status_all" }].concat(LIST_STATUSES).forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s.value;
+    opt.setAttribute("data-i18n", s.label);
+    opt.textContent = t(s.label);
+    sel.appendChild(opt);
+  });
+}
+
 function setupListControls() {
-  LIST_KINDS.forEach(kind => { lists[kind].size = storedPageSize(kind); });
+  LIST_KINDS.forEach(kind => {
+    lists[kind].size = storedPageSize(kind);
+    fillStatusOptions(kind);
+  });
   document.addEventListener("input", (e) => {
     const el = e.target;
     if (!(el instanceof HTMLInputElement) || el.dataset.filter !== "q") return;
