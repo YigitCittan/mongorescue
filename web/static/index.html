@@ -168,6 +168,17 @@
       </div>
     </section>
 
+    <!-- Warning: a storage scan found orphan or missing archives (trust.js) -->
+    <section id="drift-warning" class="callout callout-warning" role="status" aria-labelledby="drift-warning-title" hidden>
+      <div>
+        <h2 class="callout-title" id="drift-warning-title" data-i18n="trust.drift_title">Storage and backup records disagree</h2>
+        <p class="section-desc" id="drift-warning-text"></p>
+      </div>
+      <div class="callout-actions">
+        <button type="button" class="btn btn-primary" data-action="trust-open-storage"><span data-i18n="trust.drift_open">Review storage</span></button>
+      </div>
+    </section>
+
     <!-- Overview -->
     <section class="stats" aria-label="Overview" data-i18n-aria-label="metrics.overview">
       <div class="stat">
@@ -495,6 +506,7 @@
       <nav class="settings-nav" aria-label="Settings" data-i18n-aria-label="tabs.settings">
         <button type="button" class="settings-nav-btn active" data-action="settings-section" data-section="general" aria-current="page" data-i18n="settings.nav_general">General</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="storage" data-i18n="settings.nav_storage">Storage</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="integrity" data-i18n="settings.nav_integrity">Integrity</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="encryption" data-i18n="settings.nav_encryption">Encryption</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title">Users</button>
@@ -621,6 +633,75 @@
               <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="trust-scans-section">
+          <h3 class="detail-heading" data-i18n="trust.scans_title">Storage scans</h3>
+          <p class="section-desc" data-i18n="trust.scans_desc">Compare a target's archives with the backup records. Orphans can be imported; missing archives are marked and never deleted.</p>
+          <div id="storage-scans"></div>
+        </div>
+      </section>
+
+      <!-- Integrity (trust.js) -->
+      <section class="settings-panel" id="settings-integrity" aria-labelledby="settings-integrity-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-integrity-title" data-i18n="trust.integrity_title">Integrity</h2>
+            <p class="section-desc" data-i18n="trust.integrity_desc">Evidence that backups are restorable: archives are re-read and compared with the checksum recorded when they were written, and storage is compared with the backup records.</p>
+          </div>
+        </div>
+        <form id="form-integrity" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <label class="check" for="integrity-verify-after-backup">
+              <input type="checkbox" id="integrity-verify-after-backup" checked>
+              <span class="check-text">
+                <span class="check-title" data-i18n="trust.verify_after_backup">Verify every backup after upload</span>
+                <span class="form-hint" data-i18n="trust.verify_after_backup_hint">A backup whose stored archive differs from what was written fails. Jobs can override this.</span>
+              </span>
+            </label>
+            <label class="check" for="integrity-verify-decrypt">
+              <input type="checkbox" id="integrity-verify-decrypt">
+              <span class="check-text">
+                <span class="check-title" data-i18n="trust.verify_decrypt">Also decrypt encrypted archives when verifying</span>
+                <span class="form-hint" data-i18n="trust.verify_decrypt_hint">Proves the configured keys still open them. Needs the identity or passphrase under Encryption.</span>
+              </span>
+            </label>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="integrity-sweep-schedule" data-i18n="trust.sweep_schedule">Integrity sweep</label>
+                <select id="integrity-sweep-schedule" class="form-select" aria-describedby="integrity-sweep-hint">
+                  <option value="off" data-i18n="trust.sweep_off">Off</option>
+                  <option value="daily" data-i18n="trust.sweep_daily">Daily</option>
+                  <option value="weekly" data-i18n="trust.sweep_weekly">Weekly</option>
+                  <option value="monthly" data-i18n="trust.sweep_monthly">Monthly</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="integrity-sweep-bandwidth" data-i18n="trust.sweep_bandwidth">Sweep bandwidth limit (MiB/s)</label>
+                <input type="number" id="integrity-sweep-bandwidth" class="form-input" min="0" max="100000" value="0" aria-describedby="integrity-bandwidth-hint">
+                <span class="form-hint" id="integrity-bandwidth-hint" data-i18n="trust.sweep_bandwidth_hint">0 means unlimited.</span>
+              </div>
+            </div>
+            <p class="form-hint" id="integrity-sweep-hint" data-i18n="trust.sweep_schedule_hint">Re-verifies every completed backup, least recently verified first, one at a time. Reading archives back costs egress on cloud storage.</p>
+            <label class="check" for="integrity-storage-scan">
+              <input type="checkbox" id="integrity-storage-scan" checked>
+              <span class="check-text">
+                <span class="check-title" data-i18n="trust.storage_scan">Scan storage targets weekly</span>
+                <span class="form-hint" data-i18n="trust.storage_scan_hint">Lists every target and reports orphan archives (no record) and missing ones (record without archive). Nothing is ever deleted.</span>
+              </span>
+            </label>
+          </fieldset>
+          <p class="form-error" id="integrity-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="integrity-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
+        <div class="trust-sweep">
+          <div class="detail-heading-row">
+            <h3 class="detail-heading" data-i18n="trust.sweep_status">Sweep status</h3>
+            <button type="button" class="btn btn-secondary btn-sm" id="integrity-run-sweep" data-action="trust-run-sweep" data-i18n="trust.run_sweep">Run sweep now</button>
+          </div>
+          <div id="integrity-sweep-status" role="status" aria-live="polite"></div>
         </div>
       </section>
 
@@ -997,6 +1078,47 @@
               <span class="form-hint" id="job-count-hint" data-i18n="modal_job.count_hint">Newest N backups. 0 means unlimited.</span>
             </div>
           </div>
+          <p class="form-hint retention-preview" id="job-retention-preview" role="status" aria-live="polite" hidden></p>
+          <fieldset class="settings-group job-trust">
+            <legend class="settings-group-title" data-i18n="trust.job_section">Integrity</legend>
+            <div class="form-group">
+              <label class="form-label" for="job-verify" data-i18n="trust.job_verify">Verify after upload</label>
+              <select id="job-verify" class="form-select" aria-describedby="job-verify-hint">
+                <option value="">Use the setting</option>
+                <option value="on" data-i18n="trust.job_verify_on">Always</option>
+                <option value="off" data-i18n="trust.job_verify_off">Never</option>
+              </select>
+              <span class="form-hint" id="job-verify-hint" data-i18n="trust.job_verify_hint">Re-reads the stored archive after every backup and fails it when the bytes differ from what was written.</span>
+            </div>
+            <label class="check" for="job-rt-enabled">
+              <input type="checkbox" id="job-rt-enabled">
+              <span class="check-text">
+                <span class="check-title" data-i18n="trust.rt_enabled">Automated restore test</span>
+                <span class="form-hint" data-i18n="trust.rt_enabled_hint">After a scheduled backup, restore it into a temporary database, compare counts and indexes, then drop it. Needs create and drop privileges.</span>
+              </span>
+            </label>
+            <div id="job-rt-fields" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="job-rt-frequency" data-i18n="trust.rt_frequency">Frequency</label>
+                  <select id="job-rt-frequency" class="form-select">
+                    <option value="daily" data-i18n="trust.rt_daily">Daily</option>
+                    <option value="weekly" data-i18n="trust.rt_weekly">Weekly</option>
+                    <option value="monthly" data-i18n="trust.rt_monthly">Monthly</option>
+                    <option value="every_n" data-i18n="trust.rt_every_n">Every N backups</option>
+                  </select>
+                </div>
+                <div class="form-group" id="job-rt-every-n-group" hidden>
+                  <label class="form-label" for="job-rt-every-n" data-i18n="trust.rt_every_n_label">N</label>
+                  <input type="number" id="job-rt-every-n" class="form-input" min="1" max="1000" value="7">
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="job-rt-connection" data-i18n="trust.rt_connection">Test server</label>
+                <select id="job-rt-connection" class="form-select"></select>
+              </div>
+            </div>
+          </fieldset>
           <label class="check" for="job-enabled">
             <input type="checkbox" id="job-enabled" checked>
             <span class="check-text">
@@ -1336,6 +1458,17 @@
         <section class="detail-section" aria-labelledby="job-details-h-options">
           <h4 class="detail-heading" id="job-details-h-options" data-i18n="job_details.options">Retention and options</h4>
           <dl class="kv" id="job-details-options"></dl>
+        </section>
+        <section class="detail-section" aria-labelledby="job-details-h-restore-tests">
+          <div class="detail-heading-row">
+            <h4 class="detail-heading" id="job-details-h-restore-tests" data-i18n="trust.restore_tests_title">Restore tests</h4>
+            <button type="button" class="btn btn-secondary btn-sm" id="job-details-restore-test" data-action="trust-restore-test" data-i18n="trust.run_restore_test">Run restore test now</button>
+          </div>
+          <div id="job-details-restore-tests"></div>
+        </section>
+        <section class="detail-section" aria-labelledby="job-details-h-retention-log">
+          <h4 class="detail-heading" id="job-details-h-retention-log" data-i18n="trust.retention_history">Retention history</h4>
+          <div id="job-details-retention-log"></div>
         </section>
         <section class="detail-section" aria-labelledby="job-details-h-history">
           <div class="detail-heading-row">
@@ -1801,6 +1934,11 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.succeeded"><span data-i18n="notify.events.restore_succeeded">Restore succeeded</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.cancelled"><span data-i18n="notify.events.backup_cancelled">Backup cancelled</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.cancelled"><span data-i18n="notify.events.restore_cancelled">Restore cancelled</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="verification.failed"><span data-i18n="notify.events.verification_failed">Backup verification failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore_test.failed"><span data-i18n="notify.events.restore_test_failed">Restore test failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore_test.succeeded"><span data-i18n="notify.events.restore_test_succeeded">Restore test passed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="storage.drift_detected"><span data-i18n="notify.events.storage_drift_detected">Storage drift detected</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="retention.deleted"><span data-i18n="notify.events.retention_deleted">Backup deleted by retention</span></label>
             </div>
           </fieldset>
           <div class="form-group">
@@ -1829,5 +1967,6 @@
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
   <script src="/runs.js"></script>
+  <script src="/trust.js"></script>
 </body>
 </html>
