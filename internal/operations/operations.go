@@ -146,6 +146,9 @@ type Config struct {
 	Settings func() settings.Settings
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
+	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
+	// ErrUnavailable.
+	Verifier Verifier
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Version is the build version reported by Status.
@@ -359,6 +362,9 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 			)
 		}
 		s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, opts.Database))
+		if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
+			s.publish(persistCtx, ve)
+		}
 	})
 }
 

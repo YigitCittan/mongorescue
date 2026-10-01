@@ -18,6 +18,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 )
@@ -71,6 +72,9 @@ const (
 	ToolRunJob                = "run_job"
 	ToolRestoreSafeClone      = "restore_to_safe_clone"
 	ToolCancelRun             = "cancel_run"
+	ToolVerifyBackup          = "verify_backup"
+	ToolPinBackup             = "pin_backup"
+	ToolRetentionPreview      = "retention_preview"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
@@ -92,6 +96,9 @@ var ToolScopes = map[string]auth.Scope{
 	ToolRunJob:                auth.ScopeOperator,
 	ToolRestoreSafeClone:      auth.ScopeOperator,
 	ToolCancelRun:             auth.ScopeOperator,
+	ToolVerifyBackup:          auth.ScopeOperator,
+	ToolPinBackup:             auth.ScopeOperator,
+	ToolRetentionPreview:      auth.ScopeRead,
 }
 
 // ptr returns a pointer to v.
@@ -159,7 +166,9 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrNotRunning),
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
 		errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
-		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable):
+		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),
+		errors.Is(err, operations.ErrUnavailable), errors.Is(err, integrity.ErrNotFound),
+		errors.Is(err, integrity.ErrNotVerifiable):
 		return errors.New(err.Error())
 	case errors.Is(err, connections.ErrNotFound):
 		return errors.New("connection not found")
@@ -494,6 +503,7 @@ func (s *Server) registerTools() {
 		Annotations: stopping("Cancel a running backup or restore"),
 		InputSchema: schemaFor[cancelRunInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
 	}, s.cancelRun)
+	s.registerTrustTools()
 }
 
 func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled, string, error) {

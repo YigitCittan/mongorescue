@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
@@ -91,6 +92,9 @@ type Server struct {
 	// targets; without them, defaults and the fixed storageDriver apply.
 	settings *settings.Service
 	targets  *targets.Service
+
+	// integrity verifies archives, runs restore tests and scans storage targets.
+	integrity *integrity.Service
 
 	// version is reported by the health endpoint.
 	version string
@@ -297,6 +301,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// Run control: cancel, logs and live progress
 	s.registerRunRoutes(mux)
 
+	// Verification, pins, retention previews and logs, restore tests, storage scans
+	s.registerIntegrityRoutes(mux)
+
 	// API Notifications (channels & rule workflows)
 	s.registerNotificationRoutes(mux)
 
@@ -446,6 +453,7 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	// scheduler, not by clients: it is re-read right before the write.
 	persist := func() error {
 		if existing == nil {
+			job.LastRestoreTest = nil // server-managed, never taken from clients
 			return s.metaStore.CreateJob(r.Context(), &job)
 		}
 		current, err := s.metaStore.GetJob(r.Context(), job.ID)
@@ -453,6 +461,7 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		job.LastRun, job.NextRun, job.CreatedAt = current.LastRun, current.NextRun, current.CreatedAt
+		job.LastRestoreTest = current.LastRestoreTest
 		return s.metaStore.UpdateJob(r.Context(), &job)
 	}
 	var saveErr error
@@ -645,6 +654,11 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// A pinned backup (legal hold) is only deleted after it is unpinned.
+	if err := operations.CheckDeletable(rec); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 
 	// Delete from the storage target the backup was written to (not the current default)
 	if rec.StorageKey != "" {
@@ -730,6 +744,9 @@ func (s *Server) operationsConfig() operations.Config {
 	}
 	if s.targets != nil {
 		cfg.Targets = s.targets
+	}
+	if s.integrity != nil {
+		cfg.Verifier = s.integrity
 	}
 	return cfg
 }
