@@ -43,6 +43,33 @@ const (
 	// backups since the upgrade are not encrypted. It is a security alert: every
 	// enabled channel receives it, whatever the rules (see Broadcast).
 	EncryptionOffAfterUpgrade EventType = "security.encryption_off_after_upgrade"
+	// VerificationSucceeded is emitted when a stored archive matched its checksum
+	// (after upload, in an integrity sweep or on demand). It feeds metrics only and
+	// cannot be selected by notification rules.
+	VerificationSucceeded EventType = "verification.succeeded"
+	// VerificationFailed is emitted when a stored archive did not match its checksum
+	// or could not be read to the end.
+	VerificationFailed EventType = "verification.failed"
+	// RestoreTestSucceeded is emitted when an automated restore test restored the
+	// backup and it matched its manifest.
+	RestoreTestSucceeded EventType = "restore_test.succeeded"
+	// RestoreTestFailed is emitted when a restore test failed or found differences.
+	RestoreTestFailed EventType = "restore_test.failed"
+	// DriftDetected is emitted when a storage scan finds orphan archives (objects
+	// without a record) or missing ones (records whose object is gone).
+	DriftDetected EventType = "storage.drift_detected"
+	// RetentionDeleted is emitted for every backup a retention policy deleted.
+	RetentionDeleted EventType = "retention.deleted"
+)
+
+// Sources of verification events.
+const (
+	// VerificationAfterUpload is the check right after a backup's upload.
+	VerificationAfterUpload = "after_upload"
+	// VerificationSweep is the scheduled integrity sweep.
+	VerificationSweep = "sweep"
+	// VerificationOnDemand is POST /api/v1/backups/{id}/verify (or MCP).
+	VerificationOnDemand = "on_demand"
 )
 
 // Broadcast reports whether t is delivered to every enabled notification channel
@@ -52,7 +79,10 @@ func (t EventType) Broadcast() bool {
 }
 
 // ruleTypes lists the event types that notification rules may subscribe to.
-var ruleTypes = []EventType{BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled}
+var ruleTypes = []EventType{
+	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
+	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
+}
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
 // stable display order. The returned slice is a fresh copy.
@@ -74,7 +104,12 @@ func (t EventType) Subscribable() bool {
 
 // Failed reports whether t describes a failed operation.
 func (t EventType) Failed() bool {
-	return t == BackupFailed || t == RestoreFailed
+	switch t {
+	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected:
+		return true
+	default:
+		return false
+	}
 }
 
 // Event is an immutable description of a finished backup or restore operation.
@@ -100,6 +135,20 @@ type Event struct {
 	Duration time.Duration `json:"duration"`
 	// SizeBytes is the archive size for backup events.
 	SizeBytes int64 `json:"size_bytes,omitempty"`
+	// Verification is the verification outcome (ok, mismatch, error) of
+	// verification events, or the outcome of a restore test.
+	Verification string `json:"verification,omitempty"`
+	// Source says what triggered a verification (after_upload, sweep, on_demand),
+	// a restore test (scheduled, manual) or a storage scan (scheduled, manual).
+	Source string `json:"source,omitempty"`
+	// TargetID and TargetName name the storage target of drift events.
+	TargetID   string `json:"target_id,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
+	// Orphans and Missing count the drift a storage scan found.
+	Orphans int `json:"orphans,omitempty"`
+	Missing int `json:"missing,omitempty"`
+	// Detail is a short redacted explanation (a mismatch, a retention rule).
+	Detail string `json:"detail,omitempty"`
 }
 
 // Publisher is the port through which business and delivery layers emit events.

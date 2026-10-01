@@ -68,6 +68,9 @@ type Metrics struct {
 	mcpCalls            *prometheus.CounterVec
 	scheduledJobsSource atomic.Pointer[func() int]
 	activeRunsSource    atomic.Pointer[func(kind string) int]
+
+	// Integrity series (see integrity.go).
+	integrity integritySeries
 }
 
 // New creates a Metrics instance with its own registry.
@@ -169,6 +172,7 @@ func New(info BuildInfo) *Metrics {
 		m.eventsDropped,
 		m.mcpCalls,
 		scheduledJobs,
+		m.newIntegritySeries(),
 		buildInfo,
 	)
 	m.registry.MustRegister(activeRuns...)
@@ -240,6 +244,8 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 	case events.RestoreCancelled:
 		m.restoresTotal.WithLabelValues(StatusCancelled).Inc()
 		m.restoreDuration.Observe(e.Duration.Seconds())
+	default:
+		m.observeIntegrity(e)
 	}
 }
 
@@ -255,6 +261,7 @@ func (m *Metrics) ForgetJob(jobID string) {
 	m.backupDuration.DeleteLabelValues(jobID)
 	m.backupSize.DeleteLabelValues(jobID)
 	m.lastSuccessBackup.DeleteLabelValues(jobID)
+	m.forgetIntegrityJob(jobID)
 }
 
 // ObserveNotification counts one notification outcome for a channel type.
