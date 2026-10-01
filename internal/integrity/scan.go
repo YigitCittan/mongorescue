@@ -219,6 +219,21 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 		}
 	}
 
+	// A listing without a single archive while backups are recorded on the target
+	// means a wrong prefix or an unmounted directory far more often than lost data:
+	// nothing is marked missing then.
+	if report.Objects == 0 {
+		recorded := 0
+		for _, rec := range records {
+			if rec.Status == models.StatusCompleted {
+				recorded++
+			}
+		}
+		if recorded > 0 {
+			return fmt.Errorf("%w: the target lists no archive at all although %d completed backup(s) are recorded on it; check its location (nothing was marked missing)", ErrEmptyListing, recorded)
+		}
+	}
+
 	for _, rec := range records {
 		switch {
 		case rec.Status == models.StatusMissing && present[rec.StorageKey]:
