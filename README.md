@@ -46,6 +46,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Backup and restore history filtered and paginated on the server (status, database, trigger, date range, search), in the dashboard and the API
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
+- Restore the whole database or only selected collections, picked from a list read from the backup's archive header
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
 - Prometheus metrics, including the time of the last successful backup per job
@@ -100,7 +101,7 @@ curl -X POST http://localhost:8080/api/v1/restore \
   -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e"}'
 ```
 
-To restore over the original database, send `"safe_clone": false` together with `"confirm_in_place": true` (with an admin key). The full endpoint list is in [docs/api.md](docs/api.md).
+To restore only some collections, list what the backup holds with `GET /api/v1/backups/{id}/collections` (read from the archive header, without downloading the backup) and pass `"selected_collections": ["orders", "customers"]`; the dashboard's restore dialog offers the same list. To restore over the original database, send `"safe_clone": false` together with `"confirm_in_place": true` (with an admin key). The full endpoint list is in [docs/api.md](docs/api.md).
 
 Every key has a scope: `read` (the default) can only look, `operator` can also start backups, run jobs and restore into safe clones, and `admin` can do everything. The examples above need an operator key.
 
