@@ -175,6 +175,7 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 
 | Parameter | Backups | Restores | Meaning |
 | --- | --- | --- | --- |
+| `id` | yes | | Backups with exactly these IDs, comma-separated (at most 200) |
 | `status` | `pending`, `in_progress`, `completed`, `failed`, `pruned` | `pending`, `in_progress`, `completed`, `failed` | Records in this state |
 | `database` | Backed-up database | Target database | Exact, case-sensitive match |
 | `connection_id` | yes | | Backups taken from this connection |
@@ -199,6 +200,8 @@ Without `limit` the response is unchanged from earlier releases: `data` is the a
 }
 ```
 
+> **Breaking (API) in 0.8.2:** these parameters are now validated. Earlier releases ignored every query parameter of `GET /api/v1/restores` and every one of `GET /api/v1/backups` except `database` and `job_id`; a malformed `status`, `trigger`, `from`, `to`, `sort`, `limit`, `offset`, `id` (more than 200 IDs) or an over-long `q`, `database`, `connection_id`, `job_id`, `retry_of`, `backup_id` or ID now answers `400` instead of being ignored. Unknown parameter names are still ignored.
+
 `total` counts every match, so a client can show "1–25 of 312"; an `offset` past the end returns an empty `data` with the same `total`. A malformed or out-of-range value (`limit=0`, `limit=500`, `sort=random`, `from=yesterday`, `to` before `from`, an unknown `status` or `trigger`) answers `400` with a message naming the parameter. Backup items carry `retried_by`, the newest backup whose `retry_of` is this one, when there is one; it is computed for each listed row, so retry links work on any page.
 
 ```bash
@@ -206,7 +209,7 @@ curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026
   -H "X-API-Key: $MONGORESCUE_READ_KEY"
 ```
 
-`GET /api/v1/stats` covers every record regardless of any list filter: `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target.
+`GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target.
 
 ## Asynchronous operations
 
