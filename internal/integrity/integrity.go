@@ -55,6 +55,10 @@ var (
 	// ErrUnavailable is returned when a dependency the operation needs is not
 	// configured.
 	ErrUnavailable = errors.New("integrity: not available")
+	// ErrEmptyListing is recorded on a storage scan that listed no archive at all
+	// although completed backups are recorded on the target; no record is marked
+	// missing then.
+	ErrEmptyListing = errors.New("integrity: storage target lists no archives")
 )
 
 // Store is the persistence port (implemented by *store.SQLiteStore).

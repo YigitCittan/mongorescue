@@ -12,6 +12,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 func (f *fixture) putObject(t *testing.T, key, data string) {
@@ -103,6 +104,24 @@ func TestScanFindsOrphansAndMissing(t *testing.T) {
 	ov, err := f.svc.Status(ctx)
 	if err != nil || len(ov.Scans) != 1 || ov.NextScanAt == nil {
 		t.Fatalf("overview = %+v, %v", ov, err)
+	}
+}
+
+func TestScanOfAnEmptyListingMarksNothingMissing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rec := f.putBackup(t, "bkp_1", "", f.now.Add(-time.Hour), []byte("x"), nil)
+	// The target now lists nothing (an unmounted directory, a wrong prefix).
+	f.targets.drivers["tgt_local"] = storage.NewMockStorage()
+	report, err := f.svc.ScanTarget(ctx, "tgt_local", TriggerScheduled)
+	if err != nil || !strings.Contains(report.Error, "lists no archive") || report.MissingCount != 0 {
+		t.Fatalf("report = %+v, %v", report, err)
+	}
+	if got := f.get(t, rec.ID); got.Status != models.StatusCompleted {
+		t.Fatalf("an empty listing must not mark backups missing: %s", got.Status)
+	}
+	if types := f.pub.types(); len(types) != 0 {
+		t.Fatalf("a failed scan must not publish drift: %v", types)
 	}
 }
 
