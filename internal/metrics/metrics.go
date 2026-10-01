@@ -260,9 +260,6 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 	case events.RestoreCancelled:
 		m.restoresTotal.WithLabelValues(StatusCancelled).Inc()
 		m.restoreDuration.Observe(e.Duration.Seconds())
-	default:
-		m.observeIntegrity(e)
-
 	case events.BulkCompleted:
 		if b := e.Bulk; b != nil {
 			m.bulkOperations.WithLabelValues(b.Resource, b.Action).Inc()
@@ -270,6 +267,8 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 			m.bulkItems.WithLabelValues(b.Resource, b.Action, BulkSkipped).Add(float64(b.Skipped))
 			m.bulkItems.WithLabelValues(b.Resource, b.Action, StatusFailed).Add(float64(b.Failed))
 		}
+	default:
+		m.observeIntegrity(e)
 	}
 }
 
