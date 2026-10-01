@@ -655,19 +655,86 @@ function reportFinished(kind, records) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Load errors and unreadable records
+// ---------------------------------------------------------------------------
+
+// Loaders whose last request was answered with an error, by name (a key of
+// data_health.sources), with the error. One banner lists them, so a list that failed
+// to load never looks like an empty one.
+const loadErrors = new Map();
+
+// Records the answer of loader name: an error answer (success false) shows message
+// or its error in the load-error banner, a successful one clears it. An expired
+// session (401) is left to the sign-in flow. It returns json.success.
+function noteLoad(name, json, message) {
+  if (json && json.success) {
+    loadErrors.delete(name);
+  } else if (!json || json.httpStatus !== 401) {
+    loadErrors.set(name, message || (json && json.error) || t("toasts.request_failed"));
+  }
+  renderLoadErrors();
+  return !!(json && json.success);
+}
+
+// Shows the loaders that failed. Server text is set as textContent, never as HTML.
+function renderLoadErrors() {
+  const banner = document.getElementById("load-errors");
+  const list = document.getElementById("load-errors-list");
+  if (!banner || !list) return;
+  list.replaceChildren(...Array.from(loadErrors, ([name, message]) => {
+    const li = document.createElement("li");
+    li.textContent = tf("data_health.load_failed", { what: t(`data_health.sources.${name}`), error: truncate(message, 300) });
+    return li;
+  }));
+  banner.hidden = loadErrors.size === 0;
+}
+
+// Most rows of each table named in the unreadable-records banner text.
+const MAX_CORRUPT_IDS = 5;
+
+// Shows the persistent banner for stored rows the server cannot read
+// (corrupt_records of GET /api/v1/stats, sent to administrators only).
+function renderCorruptRecords() {
+  const banner = document.getElementById("corrupt-records-warning");
+  if (!banner) return;
+  const rows = state.stats && Array.isArray(state.stats.corrupt_records) ? state.stats.corrupt_records : [];
+  banner.hidden = rows.length === 0;
+  if (rows.length === 0) return;
+  const byTable = new Map();
+  rows.forEach(r => {
+    const table = String(r.table || "?");
+    if (!byTable.has(table)) byTable.set(table, []);
+    byTable.get(table).push(String(r.id || "?"));
+  });
+  const summary = Array.from(byTable, ([table, ids]) =>
+    `${table}: ${ids.slice(0, MAX_CORRUPT_IDS).join(", ")}${ids.length > MAX_CORRUPT_IDS ? ", …" : ""}`).join("; ");
+  document.getElementById("corrupt-records-title").textContent = tf("data_health.corrupt_title", { n: rows.length, summary });
+  document.getElementById("corrupt-records-text").textContent = t("data_health.corrupt_body");
+  document.getElementById("corrupt-records-list").replaceChildren(...rows.slice(0, 20).map(r => {
+    const li = document.createElement("li");
+    li.textContent = tf("data_health.corrupt_row", { table: String(r.table || "?"), id: String(r.id || "?"), error: truncate(String(r.error || ""), 200) });
+    return li;
+  }));
+}
+
 async function loadStats() {
   try {
     const json = await apiJSON("/api/v1/stats");
     if (json.success) state.stats = json.data || null;
+    // Figures the server could not read show as zero: say so instead.
+    const degraded = json.success && state.stats && state.stats.degraded;
+    noteLoad("stats", degraded ? { success: false, error: state.stats.degraded_reason } : json);
   } catch (err) {
     console.error("Failed to load stats:", err);
   }
+  renderCorruptRecords();
 }
 
 async function loadJobs() {
   try {
     const json = await apiJSON("/api/v1/jobs");
-    if (!json.success) return;
+    if (!noteLoad("jobs", json)) return;
     state.jobs = json.data || [];
     state.loaded.jobs = true;
     renderJobs();
@@ -682,12 +749,12 @@ async function loadNotifications() {
       apiJSON("/api/v1/notifications/channels"),
       apiJSON("/api/v1/notifications/rules")
     ]);
-    if (cJson.success) {
+    if (noteLoad("channels", cJson)) {
       state.channels = cJson.data || [];
       state.loaded.channels = true;
       renderChannels();
     }
-    if (rJson.success) {
+    if (noteLoad("rules", rJson)) {
       state.rules = rJson.data || [];
       state.loaded.rules = true;
       renderRules();
@@ -957,7 +1024,7 @@ async function loadList(requested) {
   try {
     const json = await apiJSON(`/api/v1/${kind}?${listParams(kind)}`);
     if (seq !== L.seq) return;
-    if (!json.success) {
+    if (!noteLoad(kind, json, json.error || t("filters.load_failed"))) {
       L.error = json.error || t("filters.load_failed");
       L.total = 0;
       state[kind] = [];
@@ -1056,7 +1123,7 @@ async function loadListDatabases() {
   await Promise.all(LIST_KINDS.map(async kind => {
     try {
       const json = await apiJSON(`/api/v1/${kind}/databases`);
-      if (!json.success) return;
+      if (!noteLoad(`${kind}_databases`, json)) return;
       lists[kind].databases = Array.isArray(json.data) ? json.data.map(String) : [];
       renderDatabaseOptions(kind);
     } catch (err) {
@@ -1415,6 +1482,8 @@ function renderAll() {
   renderAudit();
   renderStorageTargets();
   renderSettingsLanguage();
+  renderLoadErrors();
+  renderCorruptRecords();
 }
 
 function renderStats() {
@@ -3502,6 +3571,9 @@ function resetData() {
   state.settings = null;
   state.settingsError = "";
   state.loaded.settings = false;
+  loadErrors.clear();
+  renderLoadErrors();
+  renderCorruptRecords();
   resetSettingsForms();
   trackedOps.backups.clear();
   trackedOps.restores.clear();
@@ -3708,7 +3780,7 @@ function setupUserMenu() {
 async function loadConnections() {
   try {
     const json = await apiJSON("/api/v1/connections");
-    if (!json.success) return;
+    if (!noteLoad("connections", json)) return;
     state.connections = json.data || [];
     state.loaded.connections = true;
     renderConnections();
@@ -4270,7 +4342,7 @@ function settingsGroup(name) {
 async function loadSettings(force) {
   try {
     const json = await apiJSON("/api/v1/settings");
-    if (!json.success) {
+    if (!noteLoad("settings", json)) {
       state.settingsError = json.error || t("toasts.request_failed");
     } else {
       state.settings = json.data || {};
@@ -4776,7 +4848,7 @@ const storageAuto = { endpoint: "" };
 async function loadStorageTargets() {
   try {
     const json = await apiJSON("/api/v1/storage-targets");
-    if (!json.success) {
+    if (!noteLoad("storage_targets", json)) {
       const msg = json.error || t("toasts.request_failed");
       console.error("Failed to load storage targets:", msg);
       return msg;
@@ -5291,7 +5363,7 @@ async function deleteStorageTarget(id) {
 async function loadUsers() {
   try {
     const json = await apiJSON("/api/v1/users");
-    if (!json.success) return;
+    if (!noteLoad("users", json)) return;
     state.users = json.data || [];
     state.loaded.users = true;
     renderUsers();
@@ -5303,7 +5375,7 @@ async function loadUsers() {
 async function loadApiKeys() {
   try {
     const json = await apiJSON("/api/v1/api-keys");
-    if (!json.success) return;
+    if (!noteLoad("api_keys", json)) return;
     state.apikeys = json.data || [];
     state.loaded.apikeys = true;
     renderApiKeys();
