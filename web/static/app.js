@@ -161,6 +161,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   applyTheme(storedTheme());
 
+  setupListControls();
   setupTabs();
   setupActions();
   setupModals();
@@ -192,10 +193,14 @@ function setupTabs() {
     });
   });
 
-  const fromHash = `tab-${String(window.location.hash || "").replace(/^#/, "")}`;
-  if (document.getElementById(fromHash) && fromHash !== "tab-") {
+  // #backups?status=failed&page=2 opens a tab with its list filters and page.
+  const { tab, params } = readHash();
+  if (LIST_KINDS.includes(tab)) applyListParams(tab, params);
+  const fromHash = `tab-${tab}`;
+  if (tab && document.getElementById(fromHash)) {
     activateTab(fromHash, false);
   }
+  LIST_KINDS.forEach(kind => renderListControls(kind));
 }
 
 function activateTab(id, focus) {
@@ -217,7 +222,7 @@ function activateTab(id, focus) {
   // Settings are not polled; pick up changes made elsewhere when the tab opens.
   if (id === "tab-settings" && auth.user) loadSettings(false);
   try {
-    window.history.replaceState(null, "", `#${id.replace(/^tab-/, "")}`);
+    window.history.replaceState(null, "", tabHash(id));
   } catch (err) {
     // history API unavailable (e.g. sandboxed frame): ignore
   }
@@ -412,6 +417,16 @@ function setupActions() {
       case "retry-backup":
         retryBackup(id);
         break;
+      case "clear-filters": {
+        const kind = listKindOf(btn);
+        if (kind) clearFilters(kind);
+        break;
+      }
+      case "page": {
+        const kind = listKindOf(btn);
+        if (kind) goToPage(kind, btn.dataset.page);
+        break;
+      }
       case "backup-details":
         openBackupDetails(id);
         break;
@@ -564,6 +579,7 @@ async function refreshAll() {
       loadJobs(),
       loadBackups(),
       loadRestores(),
+      loadListDatabases(),
       loadNotifications()
     ]);
   } finally {
@@ -657,33 +673,6 @@ async function loadJobs() {
   }
 }
 
-async function loadBackups() {
-  try {
-    const json = await apiJSON("/api/v1/backups");
-    if (!json.success) return;
-    state.backups = sortByStartedDesc(json.data || []);
-    state.loaded.backups = true;
-    reportFinished("backups", state.backups);
-    renderBackups();
-    renderJobs();
-  } catch (err) {
-    console.error("Failed to load backups:", err);
-  }
-}
-
-async function loadRestores() {
-  try {
-    const json = await apiJSON("/api/v1/restores");
-    if (!json.success) return;
-    state.restores = sortByStartedDesc(json.data || []);
-    state.loaded.restores = true;
-    reportFinished("restores", state.restores);
-    renderRestores();
-  } catch (err) {
-    console.error("Failed to load restores:", err);
-  }
-}
-
 async function loadNotifications() {
   try {
     const [cJson, rJson] = await Promise.all([
@@ -705,12 +694,636 @@ async function loadNotifications() {
   }
 }
 
-function sortByStartedDesc(items) {
-  return items.slice().sort((a, b) => {
-    const da = parseDate(a.started_at);
-    const db = parseDate(b.started_at);
-    return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+// ---------------------------------------------------------------------------
+// Backup and restore lists: server-side filters and pagination
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZES = [25, 50, 100];
+const DEFAULT_PAGE_SIZE = 25;
+const FILTER_DEBOUNCE_MS = 300;
+const MAX_FILTER_TEXT = 256;
+const LIST_KINDS = ["backups", "restores"];
+const LIST_STATUSES = ["completed", "failed", "in_progress"];
+const LIST_RANGES = ["today", "7d", "30d", "custom"];
+const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Newest records fetched to report operations started here that are not on the page.
+const TRACK_LOOKUP_LIMIT = 50;
+// Attempts followed when the backup details dialog builds a retry chain.
+const RETRY_CHAIN_MAX = 25;
+const BACKUP_CACHE_MAX = 2000;
+
+// Filters each list keeps in the URL hash, in display order.
+const LIST_FILTERS = {
+  backups: ["q", "status", "database", "trigger", "range", "from", "to"],
+  restores: ["q", "status", "database", "range", "from", "to"]
+};
+
+function emptyFilters(kind) {
+  const f = {};
+  LIST_FILTERS[kind].forEach(k => { f[k] = ""; });
+  return f;
+}
+
+// Filter, page and result state of the Backups and Restores tables. total is the
+// number of matches the server reported for the current filters.
+const lists = {
+  backups: { filters: emptyFilters("backups"), page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null },
+  restores: { filters: emptyFilters("restores"), page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null }
+};
+
+// Every backup record seen in any response, so details dialogs, restore forms and
+// restore rows can find a backup that is not on the current page.
+const backupCache = new Map();
+
+function rememberBackups(items) {
+  (items || []).forEach(b => {
+    if (!b || !b.id) return;
+    backupCache.delete(b.id);
+    backupCache.set(b.id, b);
   });
+  while (backupCache.size > BACKUP_CACHE_MAX) backupCache.delete(backupCache.keys().next().value);
+}
+
+function pageSizeKey(kind) {
+  return `mongorescue_${kind}_page_size`;
+}
+
+function storedPageSize(kind) {
+  const n = Number(storageGet(pageSizeKey(kind)));
+  return PAGE_SIZES.includes(n) ? n : DEFAULT_PAGE_SIZE;
+}
+
+function listKindOf(el) {
+  const holder = el instanceof Element ? el.closest("[data-list]") : null;
+  const kind = holder ? holder.dataset.list : "";
+  return LIST_KINDS.includes(kind) ? kind : "";
+}
+
+function activeTabId() {
+  const pane = document.querySelector(".tab-pane.active");
+  return pane ? pane.id : "";
+}
+
+// ----- URL hash (#backups?status=failed&page=2) -----
+
+function listHashParams(kind) {
+  const L = lists[kind];
+  const p = new URLSearchParams();
+  LIST_FILTERS[kind].forEach(k => {
+    const v = L.filters[k];
+    if (!v || ((k === "from" || k === "to") && L.filters.range !== "custom")) return;
+    p.set(k, v);
+  });
+  if (L.page > 1) p.set("page", String(L.page));
+  return p.toString();
+}
+
+function tabHash(id) {
+  const name = String(id || "").replace(/^tab-/, "");
+  const qs = LIST_KINDS.includes(name) ? listHashParams(name) : "";
+  return `#${name}${qs ? `?${qs}` : ""}`;
+}
+
+// Writes the active tab and its list state into the URL. push adds a history entry
+// (page changes and filter choices), so Back returns to the previous view.
+function writeHash(push) {
+  const id = activeTabId();
+  if (!id) return;
+  const hash = tabHash(id);
+  if (hash === window.location.hash) return;
+  try {
+    if (push) {
+      window.history.pushState(null, "", hash);
+    } else {
+      window.history.replaceState(null, "", hash);
+    }
+  } catch (err) {
+    // history API unavailable (e.g. sandboxed frame): ignore
+  }
+}
+
+function readHash() {
+  const raw = String(window.location.hash || "").replace(/^#/, "");
+  const at = raw.indexOf("?");
+  let params;
+  try {
+    params = new URLSearchParams(at >= 0 ? raw.slice(at + 1) : "");
+  } catch (err) {
+    params = new URLSearchParams();
+  }
+  return { tab: at >= 0 ? raw.slice(0, at) : raw, params };
+}
+
+// Applies hash parameters to list kind; reports whether its state changed. Unknown
+// or malformed values are dropped.
+function applyListParams(kind, params) {
+  const L = lists[kind];
+  const get = k => String(params.get(k) || "").slice(0, MAX_FILTER_TEXT);
+  const next = emptyFilters(kind);
+  next.q = get("q");
+  next.database = get("database");
+  if (LIST_STATUSES.includes(get("status"))) next.status = get("status");
+  if (kind === "backups" && BACKUP_TRIGGERS.includes(get("trigger"))) next.trigger = get("trigger");
+  if (LIST_RANGES.includes(get("range"))) next.range = get("range");
+  if (next.range === "custom") {
+    if (DATE_INPUT_RE.test(get("from"))) next.from = get("from");
+    if (DATE_INPUT_RE.test(get("to"))) next.to = get("to");
+  }
+  const page = Math.max(1, Math.min(1e6, Math.floor(Number(params.get("page"))) || 1));
+  const changed = page !== L.page || LIST_FILTERS[kind].some(k => next[k] !== L.filters[k]);
+  L.filters = next;
+  L.page = page;
+  return changed;
+}
+
+// Back/forward and edited URLs: show the tab and list state the hash names.
+function applyHashState() {
+  const { tab, params } = readHash();
+  const id = `tab-${tab}`;
+  if (!tab || !document.getElementById(id)) return;
+  const changed = LIST_KINDS.includes(tab) && applyListParams(tab, params);
+  if (activeTabId() !== id) activateTab(id, false);
+  if (changed) {
+    renderListControls(tab);
+    if (auth.user) loadList(tab);
+  }
+}
+
+// ----- Query -----
+
+function startOfDay(d) {
+  const x = new Date(d.getTime());
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function addDays(d, n) {
+  const x = new Date(d.getTime());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+// Local midnight of a date input value (YYYY-MM-DD), or null.
+function parseDateInput(value) {
+  if (!DATE_INPUT_RE.test(String(value || ""))) return null;
+  const [y, m, d] = value.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// The started_at range of the date filter in local days: from inclusive, to exclusive.
+function rangeBounds(f) {
+  const today = startOfDay(new Date());
+  switch (f.range) {
+    case "today":
+      return { from: today, to: null };
+    case "7d":
+      return { from: addDays(today, -6), to: null };
+    case "30d":
+      return { from: addDays(today, -29), to: null };
+    case "custom": {
+      let from = parseDateInput(f.from);
+      let to = parseDateInput(f.to);
+      if (from && to && to < from) [from, to] = [to, from];
+      return { from, to: to ? addDays(to, 1) : null };
+    }
+    default:
+      return { from: null, to: null };
+  }
+}
+
+function listParams(kind) {
+  const L = lists[kind];
+  const f = L.filters;
+  const p = new URLSearchParams();
+  if (f.q.trim()) p.set("q", f.q.trim());
+  if (f.status) p.set("status", f.status);
+  if (f.database) p.set("database", f.database);
+  if (kind === "backups" && f.trigger) p.set("trigger", f.trigger);
+  const { from, to } = rangeBounds(f);
+  if (from) p.set("from", from.toISOString());
+  if (to) p.set("to", to.toISOString());
+  p.set("limit", String(L.size));
+  p.set("offset", String((L.page - 1) * L.size));
+  return p.toString();
+}
+
+function activeFilterCount(kind) {
+  const f = lists[kind].filters;
+  let n = 0;
+  if (f.q.trim()) n++;
+  if (f.status) n++;
+  if (f.database) n++;
+  if (kind === "backups" && f.trigger) n++;
+  if (f.range && (f.range !== "custom" || f.from || f.to)) n++;
+  return n;
+}
+
+function lastPage(kind) {
+  const L = lists[kind];
+  return Math.max(1, Math.ceil(L.total / L.size));
+}
+
+// ----- Loading -----
+
+async function loadBackups() {
+  return loadList("backups");
+}
+
+async function loadRestores() {
+  return loadList("restores");
+}
+
+// Loads the current page of list kind with its filters. Responses that arrive after
+// a newer request was started are dropped.
+async function loadList(kind) {
+  const L = lists[kind];
+  const seq = ++L.seq;
+  try {
+    const json = await apiJSON(`/api/v1/${kind}?${listParams(kind)}`);
+    if (seq !== L.seq) return;
+    if (!json.success) {
+      L.error = json.error || t("filters.load_failed");
+      L.total = 0;
+      state[kind] = [];
+      state.loaded[kind] = true;
+      renderList(kind);
+      return;
+    }
+    const items = json.data || [];
+    const total = json.meta ? Math.max(0, Number(json.meta.total) || 0) : items.length;
+    L.total = total;
+    // Records were deleted or the page is past the end: show the last page instead.
+    if (items.length === 0 && total > 0 && L.page > lastPage(kind)) {
+      L.page = lastPage(kind);
+      writeHash(false);
+      await loadList(kind);
+      return;
+    }
+    L.error = "";
+    state[kind] = items;
+    state.loaded[kind] = true;
+    if (kind === "backups") rememberBackups(items);
+    await reportTracked(kind, items);
+    if (seq !== L.seq) return;
+    renderList(kind);
+    if (kind === "backups") refreshOpenBackupDialogs();
+  } catch (err) {
+    console.error(`Failed to load ${kind}:`, err);
+  }
+}
+
+function renderList(kind) {
+  if (kind === "backups") {
+    renderBackups();
+    renderJobs();
+  } else {
+    renderRestores();
+  }
+}
+
+// Operations started here may not be on the current page (other filters, another
+// page): look them up among the newest records before reporting their outcome.
+async function reportTracked(kind, items) {
+  const tracked = trackedOps[kind];
+  if (tracked.size === 0) return;
+  let records = items;
+  if (Array.from(tracked.keys()).some(id => !items.some(r => r.id === id))) {
+    try {
+      const json = await apiJSON(`/api/v1/${kind}?limit=${TRACK_LOOKUP_LIMIT}`);
+      if (!json.success) return;
+      records = items.concat(json.data || []);
+      if (kind === "backups") rememberBackups(json.data || []);
+    } catch (err) {
+      return;
+    }
+  }
+  reportFinished(kind, records);
+}
+
+// Distinct databases offered by the database filters.
+async function loadListDatabases() {
+  await Promise.all(LIST_KINDS.map(async kind => {
+    try {
+      const json = await apiJSON(`/api/v1/${kind}/databases`);
+      if (!json.success) return;
+      lists[kind].databases = Array.isArray(json.data) ? json.data.map(String) : [];
+      renderDatabaseOptions(kind);
+    } catch (err) {
+      console.error(`Failed to load ${kind} databases:`, err);
+    }
+  }));
+}
+
+// ----- Changing filters and pages -----
+
+function setFilter(kind, key, value, push) {
+  const L = lists[kind];
+  let v = String(value || "");
+  if (key === "q" || key === "database") v = v.slice(0, MAX_FILTER_TEXT);
+  if (!LIST_FILTERS[kind].includes(key) || L.filters[key] === v) return;
+  L.filters[key] = v;
+  if (key === "range" && v !== "custom") {
+    L.filters.from = "";
+    L.filters.to = "";
+  }
+  L.page = 1;
+  writeHash(push);
+  renderListControls(kind);
+  if (key === "range" && v === "custom") {
+    const from = document.getElementById(`${kind}-filter-from`);
+    if (from) from.focus();
+  }
+  loadList(kind);
+}
+
+function clearFilters(kind) {
+  const L = lists[kind];
+  clearTimeout(L.timer);
+  L.filters = emptyFilters(kind);
+  L.page = 1;
+  writeHash(true);
+  renderListControls(kind, true);
+  loadList(kind);
+  const q = document.getElementById(`${kind}-filter-q`);
+  if (q) q.focus();
+}
+
+function goToPage(kind, page) {
+  const L = lists[kind];
+  const p = Math.max(1, Math.min(lastPage(kind), Math.floor(Number(page)) || 1));
+  if (p === L.page) return;
+  L.page = p;
+  writeHash(true);
+  renderPager(kind);
+  loadList(kind);
+}
+
+function setPageSize(kind, value) {
+  const L = lists[kind];
+  const n = Number(value);
+  if (!PAGE_SIZES.includes(n) || n === L.size) return;
+  // Keep the first row of the current page in view.
+  const first = (L.page - 1) * L.size;
+  L.size = n;
+  L.page = Math.floor(first / n) + 1;
+  storageSet(pageSizeKey(kind), String(n));
+  writeHash(false);
+  loadList(kind);
+}
+
+function setupListControls() {
+  LIST_KINDS.forEach(kind => { lists[kind].size = storedPageSize(kind); });
+  document.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLInputElement) || el.dataset.filter !== "q") return;
+    const kind = listKindOf(el);
+    if (!kind) return;
+    const L = lists[kind];
+    clearTimeout(L.timer);
+    L.timer = setTimeout(() => setFilter(kind, "q", el.value, false), FILTER_DEBOUNCE_MS);
+  });
+  document.addEventListener("keydown", (e) => {
+    const el = e.target;
+    if (e.key !== "Enter" || !(el instanceof HTMLInputElement) || el.dataset.filter !== "q") return;
+    const kind = listKindOf(el);
+    if (!kind) return;
+    e.preventDefault();
+    clearTimeout(lists[kind].timer);
+    setFilter(kind, "q", el.value, false);
+  });
+  document.addEventListener("change", (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement)) return;
+    const kind = listKindOf(el);
+    if (!kind) return;
+    if (el.dataset.pageSize) {
+      setPageSize(kind, el.value);
+    } else if (el.dataset.filter && el.dataset.filter !== "q") {
+      setFilter(kind, el.dataset.filter, el.value, true);
+    }
+  });
+  window.addEventListener("popstate", applyHashState);
+  window.addEventListener("hashchange", applyHashState);
+}
+
+// ----- Rendering the filter bar and the pager -----
+
+function renderDatabaseOptions(kind) {
+  const sel = document.getElementById(`${kind}-filter-database`);
+  if (!sel) return;
+  const L = lists[kind];
+  const names = L.databases.slice();
+  if (L.filters.database && !names.includes(L.filters.database)) names.unshift(L.filters.database);
+  const key = JSON.stringify(names);
+  if (sel.dataset.key !== key) {
+    const allKey = kind === "backups" ? "filters.database_all" : "filters.target_all";
+    sel.textContent = "";
+    const all = document.createElement("option");
+    all.value = "";
+    all.setAttribute("data-i18n", allKey);
+    all.textContent = t(allKey);
+    sel.appendChild(all);
+    names.forEach(name => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.dataset.key = key;
+  }
+  sel.value = L.filters.database;
+}
+
+// Shows list kind's state in its filter bar and pager. The search box is only
+// overwritten when it is not being typed in (or force is set).
+function renderListControls(kind, force) {
+  const L = lists[kind];
+  const f = L.filters;
+  const q = document.getElementById(`${kind}-filter-q`);
+  if (q && (force || document.activeElement !== q) && q.value !== f.q) q.value = f.q;
+  LIST_FILTERS[kind].forEach(k => {
+    if (k === "q" || k === "database") return;
+    const el = document.getElementById(`${kind}-filter-${k}`);
+    if (el && el.value !== f[k]) el.value = f[k];
+  });
+  renderDatabaseOptions(kind);
+  const dates = document.getElementById(`${kind}-filter-dates`);
+  if (dates) dates.hidden = f.range !== "custom";
+  const n = activeFilterCount(kind);
+  const badge = document.getElementById(`${kind}-filter-count`);
+  if (badge) {
+    badge.hidden = n === 0;
+    badge.textContent = n > 0 ? tf("filters.active_n", { n }) : "";
+  }
+  const clear = document.getElementById(`${kind}-filter-clear`);
+  if (clear) clear.hidden = n === 0;
+  renderPager(kind);
+}
+
+function formatCount(n) {
+  try {
+    return new Intl.NumberFormat(uiLocale()).format(n);
+  } catch (err) {
+    return String(n);
+  }
+}
+
+// Page numbers to show around page (of last): the first and last page, the current
+// one with its neighbours, and "gap" where pages are skipped.
+function pageItems(page, last) {
+  if (last <= 7) return Array.from({ length: last }, (_, i) => i + 1);
+  let start = Math.max(2, page - 1);
+  let end = Math.min(last - 1, page + 1);
+  if (page <= 3) {
+    start = 2;
+    end = 4;
+  } else if (page >= last - 2) {
+    start = last - 3;
+    end = last - 1;
+  }
+  const items = [1];
+  if (start > 2) items.push("gap");
+  for (let i = start; i <= end; i++) items.push(i);
+  if (end < last - 1) items.push("gap");
+  items.push(last);
+  return items;
+}
+
+function renderPager(kind) {
+  const nav = document.getElementById(`${kind}-pager`);
+  if (!nav) return;
+  const L = lists[kind];
+  nav.hidden = !state.loaded[kind] || L.total === 0 || !!L.error;
+  if (nav.hidden) return;
+  const last = lastPage(kind);
+  const page = Math.min(L.page, last);
+  const from = (page - 1) * L.size + 1;
+  const to = Math.min(L.total, page * L.size);
+  setText(`${kind}-pager-range`, tf("pager.range", { from: formatCount(from), to: formatCount(to), total: formatCount(L.total) }));
+  const size = document.getElementById(`${kind}-page-size`);
+  if (size && size.value !== String(L.size)) size.value = String(L.size);
+
+  const pages = document.getElementById(`${kind}-pager-pages`);
+  const focused = pages.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = focused ? (focused.dataset.nav || "page") : "";
+  const button = (target, html, opts) => {
+    const attrs = [
+      `type="button"`,
+      `class="pager-btn${opts.current ? " active" : ""}${opts.nav ? " pager-nav" : ""}"`,
+      `data-action="page"`,
+      `data-page="${Number(target)}"`
+    ];
+    if (opts.nav) attrs.push(`data-nav="${opts.nav}"`);
+    if (opts.label) attrs.push(`aria-label="${escapeHtml(opts.label)}"`);
+    if (opts.current) attrs.push(`aria-current="page"`);
+    if (opts.disabled) attrs.push("disabled");
+    return `<button ${attrs.join(" ")}>${html}</button>`;
+  };
+  const parts = [button(page - 1, `<span aria-hidden="true">‹</span> ${escapeHtml(t("pager.previous"))}`, { nav: "prev", disabled: page <= 1 })];
+  pageItems(page, last).forEach(item => {
+    if (item === "gap") {
+      parts.push(`<span class="pager-gap" aria-hidden="true">…</span>`);
+    } else {
+      parts.push(button(item, escapeHtml(formatCount(item)), { label: tf("pager.page_n", { n: item }), current: item === page }));
+    }
+  });
+  parts.push(button(page + 1, `${escapeHtml(t("pager.next"))} <span aria-hidden="true">›</span>`, { nav: "next", disabled: page >= last }));
+  const html = parts.join("");
+  if (pages.dataset.html !== html) {
+    pages.innerHTML = html;
+    pages.dataset.html = html;
+    // Keep keyboard focus in the pager after it is redrawn.
+    if (focusKey) {
+      const again = focusKey === "page"
+        ? pages.querySelector('[aria-current="page"]')
+        : pages.querySelector(`[data-nav="${focusKey}"]:not([disabled])`) || pages.querySelector('[aria-current="page"]');
+      if (again) again.focus();
+    }
+  }
+}
+
+// ----- Job run history and retry chains (fetched for their dialog) -----
+
+// Last JOB_HISTORY_LIMIT backups of the job in the job details dialog.
+const jobHistory = { jobId: "", runs: null, failed: false, seq: 0 };
+
+async function loadJobHistory(jobID) {
+  if (!jobID) return;
+  const seq = ++jobHistory.seq;
+  try {
+    const json = await apiJSON(`/api/v1/backups?job_id=${encodeURIComponent(jobID)}&limit=${JOB_HISTORY_LIMIT}`);
+    if (seq !== jobHistory.seq) return;
+    if (!json.success) throw new Error(json.error || "");
+    jobHistory.jobId = jobID;
+    jobHistory.runs = json.data || [];
+    jobHistory.failed = false;
+    rememberBackups(jobHistory.runs);
+  } catch (err) {
+    if (seq !== jobHistory.seq) return;
+    jobHistory.failed = true;
+  }
+  renderJobDetails();
+}
+
+// Every attempt of the retry chain of the backup in the details dialog, oldest first.
+const backupChain = { id: "", records: null, seq: 0 };
+
+async function findBackup(id) {
+  if (backupCache.has(id)) return backupCache.get(id);
+  const json = await apiJSON(`/api/v1/backups?q=${encodeURIComponent(id)}&limit=20`);
+  if (!json.success) throw new Error(json.error || "");
+  rememberBackups(json.data || []);
+  return (json.data || []).find(x => x.id === id) || null;
+}
+
+async function backupChildren(id) {
+  const json = await apiJSON(`/api/v1/backups?retry_of=${encodeURIComponent(id)}&sort=asc&limit=${RETRY_CHAIN_MAX}`);
+  if (!json.success) throw new Error(json.error || "");
+  rememberBackups(json.data || []);
+  return json.data || [];
+}
+
+// Builds the chain from the server: the first attempt found by following retry_of,
+// then the retries of every attempt in the chain (retry_of=<id>).
+async function loadBackupChain(id) {
+  const seq = ++backupChain.seq;
+  try {
+    const b = backupCache.get(id);
+    if (!b) return;
+    let root = b;
+    const seen = new Set([b.id]);
+    while (root.retry_of && !seen.has(root.retry_of) && seen.size < RETRY_CHAIN_MAX) {
+      const parent = await findBackup(root.retry_of);
+      if (!parent) break;
+      seen.add(parent.id);
+      root = parent;
+    }
+    const chain = [root];
+    const ids = new Set([root.id]);
+    for (let i = 0; i < chain.length && chain.length < RETRY_CHAIN_MAX; i++) {
+      (await backupChildren(chain[i].id)).forEach(r => {
+        if (!ids.has(r.id)) {
+          ids.add(r.id);
+          chain.push(r);
+        }
+      });
+    }
+    if (seq !== backupChain.seq || backupChain.id !== id) return;
+    backupChain.records = chain.map(x => x.id);
+  } catch (err) {
+    if (seq !== backupChain.seq) return;
+    backupChain.records = null;
+  }
+  renderBackupDetails();
+}
+
+// Refetches what the open backup dialogs show after the lists were refreshed.
+function refreshOpenBackupDialogs() {
+  const jobModal = document.getElementById("modal-job-details");
+  if (jobModal && jobModal.classList.contains("open") && detailsJobId) loadJobHistory(detailsJobId);
+  const backupModal = document.getElementById("modal-backup-details");
+  if (backupModal && backupModal.classList.contains("open") && detailsBackupId) loadBackupChain(detailsBackupId);
 }
 
 // ---------------------------------------------------------------------------
@@ -748,21 +1361,18 @@ function renderStats() {
     storageSub.title = where;
   }
 
-  // Backups (completed archives) + failures in the last 24h
+  // Backups (completed archives) + failures in the last 24h. The KPIs come from
+  // /api/v1/stats and cover every record, not the page shown in the table.
   setText("stat-backups", state.stats ? String(stats.completed_backups || 0) : "—");
-  const dayAgo = Date.now() - 24 * 3600 * 1000;
-  const failed24h = state.backups.filter(b => {
-    const d = parseDate(b.started_at);
-    return b.status === "failed" && d && d.getTime() >= dayAgo;
-  }).length;
+  const failed24h = Number(stats.failed_backups_24h) || 0;
   const backupsSub = document.getElementById("stat-backups-sub");
   if (backupsSub) {
     backupsSub.classList.toggle("text-danger", failed24h > 0);
-    backupsSub.textContent = !state.loaded.backups
+    backupsSub.textContent = !state.stats
       ? ""
       : failed24h > 0
         ? tf("metrics.failed_24h", { n: failed24h })
-        : state.backups.length > 0 ? t("metrics.no_failures_24h") : "";
+        : stats.total_backups > 0 ? t("metrics.no_failures_24h") : "";
   }
 
   // Scheduled jobs + next run
@@ -788,7 +1398,7 @@ function renderStats() {
   // Last backup
   const valueEl = document.getElementById("stat-last");
   const lastSub = document.getElementById("stat-last-sub");
-  const last = state.backups[0];
+  const last = stats.last_backup || null;
   if (valueEl) {
     if (!last) {
       valueEl.textContent = "—";
@@ -801,14 +1411,14 @@ function renderStats() {
     }
   }
   if (lastSub) {
-    lastSub.textContent = !state.loaded.backups
+    lastSub.textContent = !state.stats
       ? ""
       : last ? `${jobLabel(last.job_id)} · ${last.database}` : t("metrics.no_backups");
   }
 
-  setText("count-backups", state.loaded.backups ? String(state.backups.length) : "");
+  setText("count-backups", state.stats ? String(stats.total_backups || 0) : "");
   setText("count-jobs", state.loaded.jobs ? String(state.jobs.length) : "");
-  setText("count-restores", state.loaded.restores ? String(state.restores.length) : "");
+  setText("count-restores", state.stats ? String(stats.total_restores || 0) : "");
   setText("count-notifications", state.loaded.channels ? String(state.channels.length) : "");
 }
 
@@ -862,7 +1472,7 @@ function renderJobs() {
   }
 
   setTbody(tbody, state.jobs.map(job => {
-    const lastBackup = state.backups.find(b => b.job_id === job.id);
+    const lastBackup = state.stats && state.stats.job_last_backups ? state.stats.job_last_backups[job.id] : null;
     let lastDot = "";
     if (lastBackup) {
       const [kind, label] = backupStatus(lastBackup.status);
@@ -986,7 +1596,16 @@ function renderBackups() {
   if (!tbody) return;
   if (!state.loaded.backups) return;
   renderBackupDetails();
+  renderListControls("backups");
 
+  if (lists.backups.error) {
+    setTbody(tbody, emptyRow(8, lists.backups.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    return;
+  }
+  if (state.backups.length === 0 && activeFilterCount("backups") > 0) {
+    setTbody(tbody, emptyRow(8, t("filters.no_backups_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    return;
+  }
   if (state.backups.length === 0) {
     setTbody(tbody, state.loaded.connections && state.connections.length === 0
       ? emptyRow(8, t("conn.backups_need_connection"), "new-connection", "plus", t("conn.add"))
@@ -1014,13 +1633,12 @@ function renderBackups() {
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="restore-backup" data-id="${escapeHtml(b.id)}" data-db="${escapeHtml(b.database)}">${escapeHtml(t("actions.rescue_restore"))}</button>`
       : "";
     // The latest failed attempt of a chain carries the retry action; the others
-    // show which attempt retried them.
-    const retries = backupRetries(b.id);
-    const retryBtn = failed && retries.length === 0
+    // show which attempt retried them (retried_by, computed by the server).
+    const retryBtn = failed && !b.retried_by
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
       : "";
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
-      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}</div>${retryLinks(b, retries)}</td>
+      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}</div>${retryLinks(b)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
       <td>${statusBadge(kind, label, b.error_message)}${errorLine}</td>
       <td>${timeCell(b.started_at)}</td>
@@ -1042,30 +1660,25 @@ function durationCell(item) {
   return escapeHtml(formatDuration(secs || 0));
 }
 
-// Backups that retry backup id (retry_of), oldest first.
-function backupRetries(id) {
-  return state.backups
-    .filter(x => x.retry_of && x.retry_of === id)
-    .sort((a, b) => String(a.started_at || "").localeCompare(String(b.started_at || "")));
-}
-
 // Compact form of a backup ID for "retry of" notes; the full ID is in the title.
 function shortBackupId(id) {
   const s = String(id || "");
   return s.length > 16 ? `…${s.slice(-12)}` : s;
 }
 
-// "Retry of …" and "Retried at … → …" notes under a backup's ID.
-function retryLinks(b, retries) {
+// "Retry of …" and "Retried at … → …" notes under a backup's ID. Both come from the
+// row itself (retry_of, and retried_by: its newest retry), so they work across pages.
+function retryLinks(b) {
   const lines = [];
   if (b.retry_of) {
     lines.push(`<div class="cell-sub retry-link" title="${escapeHtml(b.retry_of)}">${escapeHtml(tf("backup_details.retry_of", { id: shortBackupId(b.retry_of) }))}</div>`);
   }
-  retries.forEach(r => {
+  const r = b.retried_by;
+  if (r && r.id) {
     const d = parseDate(r.started_at);
     const text = tf("backup_details.retried", { time: d ? formatAbsolute(d) : "?", id: shortBackupId(r.id) });
     lines.push(`<div class="cell-sub retry-link" title="${escapeHtml(r.id)}">${escapeHtml(text)}</div>`);
-  });
+  }
   return lines.join("");
 }
 
@@ -1073,7 +1686,16 @@ function renderRestores() {
   const tbody = document.getElementById("restores-tbody");
   if (!tbody) return;
   if (!state.loaded.restores) return;
+  renderListControls("restores");
 
+  if (lists.restores.error) {
+    setTbody(tbody, emptyRow(6, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    return;
+  }
+  if (state.restores.length === 0 && activeFilterCount("restores") > 0) {
+    setTbody(tbody, emptyRow(6, t("filters.no_restores_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    return;
+  }
   if (state.restores.length === 0) {
     setTbody(tbody, emptyRow(6, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
     return;
@@ -1106,7 +1728,7 @@ function renderRestores() {
 // Source and target connection names of a restore record. The source comes from
 // the record's snapshot or its backup; the target defaults to the source.
 function restoreConnections(r) {
-  const backup = state.backups.find(b => b.id === r.backup_id) || {};
+  const backup = backupCache.get(r.backup_id) || {};
   const sourceId = r.source_connection_id || backup.connection_id || "";
   const source = r.source_connection_name || backup.connection_name || connectionName(sourceId);
   const targetId = r.target_connection_id || "";
@@ -1730,10 +2352,14 @@ function openJobDetails(jobID) {
   if (detailsJobId !== jobID) {
     jobNextRuns.key = "";
     jobNextRuns.runs = null;
+    jobHistory.jobId = "";
+    jobHistory.runs = null;
+    jobHistory.failed = false;
   }
   detailsJobId = jobID;
   openModal("modal-job-details");
   renderJobDetails();
+  loadJobHistory(jobID);
 }
 
 // Fetches the next activations of the job in the details dialog when its schedule
@@ -1868,19 +2494,22 @@ function renderJobDetails() {
   document.getElementById("job-details-edit").dataset.id = job.id;
 }
 
-// Run history of the job details dialog: its last JOB_HISTORY_LIMIT backups with
-// the success rate of the finished ones.
+// Run history of the job details dialog: its last JOB_HISTORY_LIMIT backups, fetched
+// from the server (?job_id=…&limit=20), with the success rate of the finished ones.
 function renderJobHistory(job) {
-  const runs = state.backups.filter(b => b.job_id === job.id).slice(0, JOB_HISTORY_LIMIT);
+  const loaded = jobHistory.jobId === job.id && Array.isArray(jobHistory.runs);
+  const runs = loaded ? jobHistory.runs : [];
   const finished = runs.filter(b => ["completed", "pruned", "failed"].includes(b.status));
   const ok = finished.filter(b => b.status !== "failed").length;
   const rate = document.getElementById("job-details-rate");
-  rate.textContent = finished.length > 0
-    ? tf("job_details.success_rate", { pct: Math.round((ok / finished.length) * 100), ok, n: finished.length })
-    : "";
+  rate.textContent = !loaded
+    ? (jobHistory.failed ? "" : t("tables.loading"))
+    : finished.length > 0
+      ? tf("job_details.success_rate", { pct: Math.round((ok / finished.length) * 100), ok, n: finished.length })
+      : "";
   rate.className = `detail-meta${finished.length > 0 && ok < finished.length ? " text-danger" : ""}`;
   document.getElementById("job-details-history-wrap").hidden = runs.length === 0;
-  document.getElementById("job-details-history-empty").hidden = runs.length > 0;
+  document.getElementById("job-details-history-empty").hidden = !loaded || runs.length > 0;
   setTbody(document.getElementById("job-details-runs"), runs.map(b => {
     const [kind, label] = backupStatus(b.status);
     const d = parseDate(b.started_at);
@@ -1941,7 +2570,7 @@ function openRestoreModal(backupID, sourceDB) {
   // Safe clone is on by default; the verify policy decides the initial checkbox.
   document.getElementById("restore-verify").checked = verifyDefault(true);
   // Target server defaults to the one the backup came from.
-  const backup = state.backups.find(b => b.id === backupID) || {};
+  const backup = backupCache.get(backupID) || {};
   setText("restore-storage", backupStorageName(backup) || "—");
   const select = document.getElementById("restore-target-connection");
   let sameAsSource = null;
@@ -2016,6 +2645,8 @@ async function deleteBackup(backupID) {
     const json = await apiJSON(`/api/v1/backups/${encodeURIComponent(backupID)}`, { method: "DELETE" });
     if (json.success) {
       showToast(t("toasts.backup_deleted"), "success");
+      backupCache.delete(backupID);
+      if (detailsBackupId === backupID) closeModal("modal-backup-details");
       refreshAll();
     } else {
       showToast(json.error || t("toasts.request_failed"), "error");
@@ -2055,33 +2686,25 @@ function setRetryButtonsDisabled(backupID, disabled) {
 }
 
 function openBackupDetails(backupID) {
-  if (!state.backups.some(b => b.id === backupID)) return;
+  if (!backupCache.has(backupID)) return;
   detailsBackupId = backupID;
+  if (backupChain.id !== backupID) {
+    backupChain.id = backupID;
+    backupChain.records = null;
+  }
   renderBackupDetails();
   openModal("modal-backup-details");
+  loadBackupChain(backupID);
 }
 
-// Every attempt of the retry chain backup b belongs to, oldest first: the first
-// attempt found by following retry_of, then every retry of an attempt in the chain.
+// The retry chain of backup b, oldest first, from the latest records seen: the chain
+// fetched for the dialog, or b alone until it has loaded.
 function backupRetryChain(b) {
-  const byId = new Map(state.backups.map(x => [x.id, x]));
-  let root = b;
-  const seen = new Set([b.id]);
-  while (root.retry_of && byId.has(root.retry_of) && !seen.has(root.retry_of)) {
-    root = byId.get(root.retry_of);
-    seen.add(root.id);
-  }
-  const chain = [root];
-  const ids = new Set([root.id]);
-  for (let i = 0; i < chain.length; i++) {
-    backupRetries(chain[i].id).forEach(r => {
-      if (!ids.has(r.id)) {
-        ids.add(r.id);
-        chain.push(r);
-      }
-    });
-  }
-  return chain.sort((x, y) => String(x.started_at || "").localeCompare(String(y.started_at || "")));
+  const ids = backupChain.id === b.id && backupChain.records ? backupChain.records : [b.id];
+  return ids
+    .map(id => (id === b.id ? b : backupCache.get(id)))
+    .filter(Boolean)
+    .sort((x, y) => String(x.started_at || "").localeCompare(String(y.started_at || "")));
 }
 
 // Fills the details dialog of detailsBackupId. Everything the server sent is set
@@ -2089,7 +2712,7 @@ function backupRetryChain(b) {
 function renderBackupDetails() {
   const modal = document.getElementById("modal-backup-details");
   if (!modal || !modal.classList.contains("open") || !detailsBackupId) return;
-  const b = state.backups.find(x => x.id === detailsBackupId);
+  const b = backupCache.get(detailsBackupId);
   const list = document.getElementById("backup-details-list");
   const errorBox = document.getElementById("backup-details-error");
   const chainList = document.getElementById("backup-details-chain");
@@ -2165,7 +2788,7 @@ function renderBackupDetails() {
   });
   document.getElementById("backup-details-chain-group").hidden = chainList.children.length < 2;
 
-  retryBtn.hidden = !(failed && backupRetries(b.id).length === 0);
+  retryBtn.hidden = !(failed && !b.retried_by && !chain.some(x => x.retry_of === b.id));
   retryBtn.dataset.id = b.id;
   retryBtn.disabled = retryingBackups.has(b.id);
 }
@@ -2603,6 +3226,16 @@ function resetData() {
   resetSettingsForms();
   trackedOps.backups.clear();
   trackedOps.restores.clear();
+  backupCache.clear();
+  jobHistory.jobId = "";
+  jobHistory.runs = null;
+  backupChain.id = "";
+  backupChain.records = null;
+  LIST_KINDS.forEach(kind => {
+    lists[kind].total = 0;
+    lists[kind].error = "";
+    lists[kind].databases = [];
+  });
   document.querySelectorAll("#app-main tbody").forEach(tbody => {
     const cols = tbody.closest("table").querySelectorAll("thead th").length || 1;
     renderedTbodies.delete(tbody);

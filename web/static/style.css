@@ -824,15 +824,15 @@ time,
 }
 
 #backups-tbody .cell-error {
-  max-width: 200px;
+  max-width: 190px;
 }
 
 #backups-tbody .error-full {
-  width: 200px;
+  width: 190px;
 }
 
 #backups-tbody .retry-link {
-  max-width: 220px;
+  max-width: 214px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2078,6 +2078,160 @@ input[type="radio"] {
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: middle;
+}
+
+/* --------------------------------------------------------------------------
+   List filters and pagination (Backups, Restores)
+   -------------------------------------------------------------------------- */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-bar .form-input,
+.filter-bar .form-select {
+  width: auto;
+}
+
+.filter-bar .form-select {
+  max-width: 190px;
+}
+
+.filter-search {
+  position: relative;
+  flex: 1 1 220px;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.filter-search .icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.filter-search .form-input {
+  width: 100%;
+  padding-left: 30px;
+}
+
+.filter-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-dates[hidden] {
+  display: none;
+}
+
+.filter-dates .form-input {
+  width: 142px;
+}
+
+.filter-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.filter-count {
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.filter-count[hidden],
+.filter-meta .link-btn[hidden] {
+  display: none;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.pager[hidden] {
+  display: none;
+}
+
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.pager-size .form-select {
+  width: auto;
+  min-width: 64px;
+}
+
+.pager-range {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pager-pages {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.pager-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.pager-btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--border-strong);
+}
+
+.pager-btn.active {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pager-btn:disabled {
+  color: var(--text-subtle);
+  cursor: default;
+}
+
+.pager-gap {
+  min-width: 20px;
+  text-align: center;
+  color: var(--text-subtle);
 }
 
 /* --------------------------------------------------------------------------
