@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A desktop **Force quit** records the runs it stops as `cancelled` by `system`, with its reason, instead of `failed`; runs that failed or finished on their own keep their outcome.
 - Retention never deletes a job's newest verified backup, whatever the policy, and re-checks a backup's pin in the same transaction that prunes it.
 - `DELETE /api/v1/backups/{id}` answers `409 Conflict` for a pinned backup, and deletes the archive only when no other record names it (also in retention).
+- A backup row that cannot be read (see 0.9.1) still owns its archive: retention never prunes it, deletions and retention keep an archive it shares, and storage scans count it as `unreadable`, never as an orphan to import.
 
 ## [0.9.1] - 2026-10-01
 

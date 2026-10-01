@@ -176,6 +176,13 @@ type BackupUpdater interface {
 	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
 }
 
+// ArchiveRefs lists every backup row, readable or not, that names an archive
+// (implemented by *store.SQLiteStore).
+type ArchiveRefs interface {
+	// ArchiveReferenceIDs returns the IDs of the rows naming key on targetID.
+	ArchiveReferenceIDs(ctx context.Context, targetID, key string) ([]string, error)
+}
+
 // BackupPruner prunes a backup record in one transaction that re-checks pins and
 // the job's last verified backup (implemented by *store.SQLiteStore).
 type BackupPruner interface {
@@ -268,21 +275,35 @@ func prune(
 			StorageTargetID: rec.StorageTargetID, StorageKey: rec.StorageKey, BackupStartedAt: rec.StartedAt,
 			SizeBytes: rec.SizeBytes, Reason: d.Reason, Detail: d.Detail,
 		}
-		// Only an archive no other record names is deleted from storage.
+		// Only an archive no other record names is deleted from storage. Rows that
+		// cannot be decoded count too (the store reads their keys with SQL).
 		var listErr error
-		if !allLoaded && rec.StorageKey != "" {
-			if all, listErr = metadataStore.ListBackupRecords(ctx, ""); listErr == nil {
-				allLoaded = true
+		var shared []string
+		if refs, ok := metadataStore.(ArchiveRefs); ok && rec.StorageKey != "" {
+			var ids []string
+			ids, listErr = refs.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
+			for _, id := range ids {
+				if id != rec.ID {
+					shared = append(shared, id)
+				}
+			}
+		} else if rec.StorageKey != "" {
+			if !allLoaded {
+				if all, listErr = metadataStore.ListBackupRecords(ctx, ""); listErr == nil {
+					allLoaded = true
+				}
+			}
+			for _, o := range models.ArchiveReferences(all, rec) {
+				shared = append(shared, o.ID)
 			}
 		}
-		shared := models.ArchiveReferences(all, rec)
 		switch {
 		case rec.StorageKey == "":
 		case listErr != nil:
 			logger.Warn("retention could not check for shared archives; keeping the archive", slog.Any("error", listErr))
 			entry.Detail += "; archive kept: shared archives could not be checked"
 		case len(shared) > 0:
-			entry.Detail += "; archive kept: it also belongs to backup " + shared[0].ID
+			entry.Detail += "; archive kept: it also belongs to backup " + shared[0]
 		default:
 			storageDriver, err := storages(ctx, rec.StorageTargetID)
 			if err == nil {

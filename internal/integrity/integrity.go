@@ -77,6 +77,9 @@ type Store interface {
 	SaveBackupRecord(ctx context.Context, record *models.BackupRecord) error
 	// UpdateBackupRecord applies fn to the stored record id in one transaction.
 	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
+	// ArchiveKeyIndex maps every storage key a backup row on targetID names (also
+	// rows that cannot be decoded) to the IDs of those rows.
+	ArchiveKeyIndex(ctx context.Context, targetID string) (map[string][]string, error)
 	// GetManifest returns the manifest of a backup or an error wrapping
 	// store.ErrNotFound.
 	GetManifest(ctx context.Context, id string) (*models.Manifest, error)

@@ -419,7 +419,7 @@ func (s *Server) registerTools() {
 			pageProps(p)
 			limitIDs(p, "connection_id", "job_id")
 			p["database"].MaxLength = ptr(maxNameLength)
-			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusCancelled), string(models.StatusPruned)}
+			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusCancelled), string(models.StatusPruned), string(models.StatusMissing)}
 		}),
 	}, s.listBackups)
 	addTool(s, &sdk.Tool{
