@@ -2777,4 +2777,161 @@ input[type="radio"] {
 #integrity-sweep-status p {
   margin: 4px 0;
   font-size: 13px;
+/* --------------------------------------------------------------------------
+   Forms and accessibility (forms.js)
+   -------------------------------------------------------------------------- */
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.segmented-text .segmented-btn {
+  width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.field-error {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+}
+
+.uri-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-header);
+}
+
+.uri-hosts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.uri-host {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.uri-host-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.uri-host-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.uri-host-port {
+  flex: 0 0 96px;
+  width: 96px;
+}
+
+.uri-host-remove {
+  flex-shrink: 0;
+}
+
+.uri-tls-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 26px;
+}
+
+.uri-preview-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uri-preview {
+  display: block;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.uri-preview:empty::before {
+  content: "mongodb://…";
+  color: var(--text-subtle);
+}
+
+/* Narrow desktop windows (the desktop app's minimum is 960 px; browsers down to
+   800 px): the settings navigation and the dialogs give the content more room. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .settings-layout {
+    grid-template-columns: 148px minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .settings-nav-btn {
+    overflow-wrap: anywhere;
+  }
+
+  .modal-lg .kv {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .section-header {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  .section-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 860px) {
+  .modal-body {
+    padding: 16px;
+  }
+
+  .modal-footer {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+}
+
+/* Short windows: dialogs start near the top instead of 10% down. */
+@media (max-height: 760px) {
+  .modal-backdrop {
+    padding-top: 24px;
+  }
+
+  .modal-body.scrollable {
+    max-height: calc(100vh - 160px);
+  }
+}
+
+/* Reduced motion: the dashboard has no animations of its own today; this keeps
+   anything added later, and smooth scrolling, still for users who ask for it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

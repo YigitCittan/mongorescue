@@ -128,6 +128,9 @@ const updateScript = `(function (paths, header) {
   var started = Date.now(), timer = null, ui = null, status = null, headerTimer = null, headerTries = 0;
   var versionTimer = null, versionTries = 0, pop = null;
   var legacyUI = null, legacySince = 0, legacyHidden = false;
+  // announced is the version a screen reader was last told about (window.mrAnnounce,
+  // the dashboard's live region), so a poll does not repeat it.
+  var announced = "";
 
   function language() {
     var saved = "";
@@ -622,6 +625,10 @@ const updateScript = `(function (paths, header) {
     } else {
       ui.title.textContent = t("available", vars);
       ui.sub.textContent = t("yours", vars);
+    }
+    if (announced !== s.latest && typeof window.mrAnnounce === "function") {
+      announced = s.latest;
+      window.mrAnnounce(ui.title.textContent + ". " + ui.sub.textContent, !!s.mandatory);
     }
     ui.notes.textContent = plain(s.notes) || t("noNotes");
     var label = t(ui.mandatory ? "updateNow" : "update"), text = "";
