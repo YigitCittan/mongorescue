@@ -132,6 +132,9 @@ type General struct {
 	RestoreTimeout Duration `json:"restore_timeout"`
 	// RestoreVerifyPolicy decides when restores verify the artifact first.
 	RestoreVerifyPolicy models.VerifyPolicy `json:"restore_verify_policy"`
+	// LogRetentionDays keeps the log file of every backup and restore run for this
+	// many days (0 keeps them until their record is deleted).
+	LogRetentionDays int `json:"log_retention_days"`
 }
 
 // Security holds session, cookie, proxy, CORS and metrics options.
@@ -194,6 +197,7 @@ func Defaults() Settings {
 			BackupStallTimeout:    Duration(10 * time.Minute),
 			RestoreTimeout:        Duration(12 * time.Hour),
 			RestoreVerifyPolicy:   models.VerifyAuto,
+			LogRetentionDays:      30,
 		},
 		Security: Security{
 			SessionIdleTimeout:     Duration(12 * time.Hour),
@@ -263,6 +267,7 @@ type GeneralPatch struct {
 	BackupStallTimeout    *Duration            `json:"backup_stall_timeout,omitempty"`
 	RestoreTimeout        *Duration            `json:"restore_timeout,omitempty"`
 	RestoreVerifyPolicy   *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
+	LogRetentionDays      *int                 `json:"log_retention_days,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -299,6 +304,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.BackupStallTimeout, g.BackupStallTimeout)
 		setIf(&next.General.RestoreTimeout, g.RestoreTimeout)
 		setIf(&next.General.RestoreVerifyPolicy, g.RestoreVerifyPolicy)
+		setIf(&next.General.LogRetentionDays, g.LogRetentionDays)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -389,6 +395,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.restore_timeout must not be negative (0 disables it)", ErrInvalid)
 	case !g.RestoreVerifyPolicy.Valid():
 		return fmt.Errorf("%w: general.restore_verify_policy must be always, auto or never", ErrInvalid)
+	case g.LogRetentionDays < 0 || g.LogRetentionDays > maxRetentionDays:
+		return fmt.Errorf("%w: general.log_retention_days must be between 0 and %d", ErrInvalid, maxRetentionDays)
 	}
 
 	sec := &s.Security

@@ -73,13 +73,13 @@ type RestorePage struct {
 // (also listed in the 400 messages).
 var (
 	validBackupStatuses = []models.BackupStatus{
-		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusPruned,
+		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusCancelled, models.StatusPruned,
 	}
 	validTriggers = []models.BackupTrigger{
 		models.TriggerScheduled, models.TriggerOnDemand, models.TriggerManual, models.TriggerMCP,
 	}
 	validRestoreStatuses = []models.RestoreStatus{
-		models.RestoreStatusPending, models.RestoreStatusInProgress, models.RestoreStatusCompleted, models.RestoreStatusFailed,
+		models.RestoreStatusPending, models.RestoreStatusInProgress, models.RestoreStatusCompleted, models.RestoreStatusFailed, models.RestoreStatusCancelled,
 	}
 )
 
@@ -137,9 +137,12 @@ func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage
 		return nil, filterError(err, "backups")
 	}
 	out := &BackupPage{Items: make([]BackupItem, 0, len(page.Rows)), Total: page.Total}
+	records := make([]*models.BackupRecord, 0, len(page.Rows))
 	for _, row := range page.Rows {
+		records = append(records, row.Record)
 		out.Items = append(out.Items, BackupItem{BackupRecord: row.Record, RetriedBy: row.RetriedBy})
 	}
+	s.withBackupProgress(records)
 	return out, nil
 }
 
@@ -172,6 +175,7 @@ func (s *Service) GetBackup(ctx context.Context, id string) (*models.BackupRecor
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
+	s.withBackupProgress([]*models.BackupRecord{b})
 	return b, nil
 }
 
@@ -188,6 +192,7 @@ func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestoreP
 	if err != nil {
 		return nil, filterError(err, "restores")
 	}
+	s.withRestoreProgress(page.Records)
 	return &RestorePage{Items: page.Records, Total: page.Total}, nil
 }
 
@@ -197,6 +202,7 @@ func (s *Service) ListRestores(ctx context.Context) ([]*models.RestoreRecord, er
 	if err != nil {
 		return nil, fmt.Errorf("list restores: %w", err)
 	}
+	s.withRestoreProgress(list)
 	return list, nil
 }
 
@@ -215,6 +221,7 @@ func (s *Service) GetRestore(ctx context.Context, id string) (*models.RestoreRec
 	if err != nil {
 		return nil, notFound(err, "restore not found")
 	}
+	s.withRestoreProgress([]*models.RestoreRecord{r})
 	return r, nil
 }
 
@@ -259,10 +266,12 @@ type Stats struct {
 	TotalBackups int `json:"total_backups"`
 	// CompletedBackups counts completed backups.
 	CompletedBackups int `json:"completed_backups"`
-	// FailedBackups counts failed backups.
+	// FailedBackups counts failed backups (cancelled ones are not failures).
 	FailedBackups int `json:"failed_backups"`
 	// FailedBackups24h counts backups that started in the last 24 hours and failed.
 	FailedBackups24h int `json:"failed_backups_24h"`
+	// CancelledBackups counts cancelled backups.
+	CancelledBackups int `json:"cancelled_backups"`
 	// TotalBytes sums the size of completed backups.
 	TotalBytes int64 `json:"total_bytes"`
 	// ActiveBackups counts backups that are pending or in progress.
@@ -343,6 +352,7 @@ func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) 
 	}
 	st.TotalBackups, st.TotalBytes, st.FailedBackups24h = bs.Total, bs.CompletedBytes, bs.FailedSince
 	st.CompletedBackups, st.FailedBackups = bs.ByStatus[models.StatusCompleted], bs.ByStatus[models.StatusFailed]
+	st.CancelledBackups = bs.ByStatus[models.StatusCancelled]
 	st.ActiveBackups = bs.Active()
 	if b := bs.Last; b != nil {
 		st.LastBackup = &BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt, ErrorMessage: b.ErrorMessage}
