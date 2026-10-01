@@ -18,10 +18,10 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 | Scope | Allowed |
 | :--- | :--- |
 | `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` into a safe clone on the backup's own connection (and the MCP action tools) |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), plus the MCP action tools |
 | `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
-An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`. Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
+An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
 
 Failed logins return a generic `401`. After 5 failures for the same (client IP, username), further attempts for that pair get `429 Too Many Requests` with `Retry-After`; the lockout starts at 30 seconds and doubles up to 15 minutes. Once an IP has 20 recent failures, each further username from it is locked after a single failure, but the correct password of a user that is not locked always works, so clients sharing one address (NAT, a proxy) cannot lock each other out. Only one attempt per (IP, username) is checked at a time, and at most four per IP for usernames that already failed; concurrent extras get `429` with `Retry-After: 2`. Password comparisons share a global pool (twice the number of CPUs): a login waits up to 5 seconds for a free slot rather than being refused. Wrong setup codes are throttled only after 100 per IP within 15 minutes, and the correct code is always accepted. Passwords longer than 72 bytes are rejected without a password check.
 
@@ -75,9 +75,14 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target | 200 | 404 |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `GET` | `/api/v1/backups/{id}/collections` | Collections stored in the backup, read from its archive header ([details](#selective-restores)) | 200 | 404, 422 key missing |
+| `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 202 | 404, 409 not running |
+| `GET` | `/api/v1/backups/{id}/log` | The backup's run log as `text/plain`: the last N lines with `?tail=N` (1-10000), otherwise the whole file as a download ([details](#run-logs)) | 200 | 400, 404 |
 | `POST` | `/api/v1/restore` | Restore (safe clone by default; optional `selected_collections`, `target_connection_id` (admin), `verify`) | 202 | 400, 403, 404, 409, 422 |
 | `GET` | `/api/v1/restores` | Restore audit history, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/restores/databases` | Distinct target databases of all restores, sorted | 200 | |
+| `POST` | `/api/v1/restores/{id}/cancel` | Cancel a running restore; an in-place one needs admin ([details](#cancelling-a-run)) | 202 | 403, 404, 409 not running |
+| `GET` | `/api/v1/restores/{id}/log` | The restore's run log (like the backup log) | 200 | 400, 404 |
+| `GET` | `/api/v1/runs/active` | Live progress of every running backup and restore ([details](#live-progress)) | 200 | |
 | `GET` / `POST` | `/api/v1/notifications/channels` | List / create notification channels | 200 / 201 | 400 |
 | `PUT` / `DELETE` | `/api/v1/notifications/channels/{id}` | Update / delete a channel | 200 | 400, 404 |
 | `POST` | `/api/v1/notifications/channels/{id}/test` | Send a test notification | 200 | 404 |
@@ -160,7 +165,7 @@ When the archive cannot be read (an artifact that is missing, damaged or not a m
 
 ## Updating a job
 
-`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip` and `enabled` are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention. The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
+`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip` and `enabled` are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention. Pausing with `"paused_until": "<RFC 3339 time>"` resumes the job on its own at that time (the scheduler checks every minute; the time must be in the future, else `400`); pausing without it pauses until the job is resumed, an edit that keeps the job paused keeps its `paused_until`, and resuming (`"enabled": true`) clears it. A paused job's run in progress continues; stop it with [cancel](#cancelling-a-run). The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
 
 The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job. Concurrent updates are stored and scheduled in the same order, and a backup that finishes while the job is being edited only records its run times, so it never reverts the edit.
 
@@ -178,7 +183,7 @@ curl -X PUT http://localhost:8080/api/v1/jobs/job_shop_1727146800_3f9a1c2e \
   -d '{"name":"shop hourly","cron_expression":"@hourly","database":"shop","connection_id":"conn_prod","retention_count":24}'
 ```
 
-In the dashboard, clicking a job row (or **Details** in its **⋯** menu) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Enable** / **Disable** pauses or resumes the schedule. Both send `updated_at`, so a job changed elsewhere in the meantime is reported instead of overwritten.
+In the dashboard, clicking a job row (or **Details** in its **⋯** menu) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Pause** / **Resume** (also in the row's **⋯** menu) pauses the schedule, until resumed or until a date and time, or resumes it; a paused job shows a *Paused* badge. **Stop current run** cancels the job's running backup. Edits and pauses send `updated_at`, so a job changed elsewhere in the meantime is reported instead of overwritten.
 
 ## Retrying a failed backup
 
@@ -206,7 +211,7 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 | Parameter | Backups | Restores | Meaning |
 | --- | --- | --- | --- |
 | `id` | yes | | Backups with exactly these IDs, comma-separated (at most 200) |
-| `status` | `pending`, `in_progress`, `completed`, `failed`, `pruned` | `pending`, `in_progress`, `completed`, `failed` | Records in this state |
+| `status` | `pending`, `in_progress`, `completed`, `failed`, `cancelled`, `pruned` | `pending`, `in_progress`, `completed`, `failed`, `cancelled` | Records in this state |
 | `database` | Backed-up database | Target database | Exact, case-sensitive match |
 | `connection_id` | yes | | Backups taken from this connection |
 | `job_id` | yes | | Backups of this scheduled job |
@@ -241,11 +246,49 @@ curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026
 
 `GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For administrators (dashboard sessions and `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
 
+## Cancelling a run
+
+`POST /api/v1/backups/{id}/cancel` and `POST /api/v1/restores/{id}/cancel` (operator scope) stop a running backup or restore, whether it was started through the API, the dashboard, MCP or the scheduler. They answer `202 Accepted` with the record while the run stops (its `progress.cancelling` is `true`); poll it until the status is `cancelled`. `mongodump` or `mongorestore` is terminated with its process group (SIGTERM, then SIGKILL), so no tool process outlives the run.
+
+- A cancelled **backup** deletes its partial artifact (an S3 multipart upload is aborted, a local temporary file removed) and records neither size nor checksum.
+- A cancelled **safe-clone restore** drops the partially restored `<db>_rescue_<timestamp>` database; the message says so (or asks to drop it by hand if that failed).
+- A cancelled **in-place restore** cannot be undone: the target may be left **partially restored**. The record's `warning` and `error_message` say so loudly. Cancelling one needs `admin`, like starting it.
+- A run cancelled before its tool started leaves the target untouched.
+
+The record gets `"status": "cancelled"`, `cancelled_by` (the username, `API key <name>`, `... via MCP`, or `system` for the desktop app's force quit) and `cancelled_at`. Cancelled runs are not failures: they are not counted in `failed_backups` or the last 24 hours' failures, emit `backup.cancelled` / `restore.cancelled` instead of the failure events (notification rules may subscribe to them) and are counted with `status="cancelled"` in the metrics.
+
+| Status | When |
+| --- | --- |
+| `202 Accepted` | The cancellation was requested |
+| `403 Forbidden` | The key may not cancel this run (an in-place restore needs admin) |
+| `404 Not Found` | No backup or restore `{id}` |
+| `409 Conflict` | The run is not running (it finished, or it is not active in this process) |
+
+## Run logs
+
+Every backup and restore writes a log file, `<datadir>/logs/<id>.log`: the complete output of `mongodump` / `mongorestore` and MongoRescue's own timestamped `[mongorescue]` phase lines (start, tool arguments without the connection, phases, outcome, cancellation). Each line is redacted before it is written: connection strings and secrets are masked, document values in duplicate-key errors are replaced, and tool lines are cut to 300 bytes. A log never exceeds 5 MiB: the first 1 MiB and the newest output are kept around a `… N bytes truncated …` marker, and the run streams its log to disk without holding it in memory.
+
+`GET /api/v1/backups/{id}/log` and `GET /api/v1/restores/{id}/log` (read scope) return the log as `text/plain`. With `?tail=N` they return the last `N` lines (1-10000), also while the run is still writing them; without it, the whole file with `Content-Disposition: attachment`. Runs from older releases have no log (`404`). Logs are deleted with their backup record, when retention prunes the backup, and after `general.log_retention_days` (default 30; 0 keeps them).
+
+## Live progress
+
+`GET /api/v1/runs/active` (read scope) returns the progress of every running backup and restore, oldest first; running records in `GET /api/v1/backups` and `GET /api/v1/restores` carry the same object as `progress`:
+
+```json
+{"id": "bkp_shop_20261001_100000_3f9a1c2e", "kind": "backup", "job_id": "job_shop", "database": "shop",
+ "phase": "dumping", "percent": 41.2, "bytes": 52428800, "documents": 41200,
+ "current_collection": "shop.orders", "collections_done": 3, "collections_total": 5,
+ "bytes_per_second": 10485760, "started_at": "...", "updated_at": "...",
+ "phases": {"queued": "...", "started": "..."}}
+```
+
+Bytes count what was streamed to storage (backups) or read from it (restores, with `total_bytes` the archive size). Documents, collections and the backup percentage come from the tools' progress lines (the percentage covers the collections the tool has started so far); a restore's percentage is the share of the archive read. `phase` is `queued`, `dumping`, `verifying`, `restoring`, `finishing` or `cancelling`. Every record also stores the timestamps of its `phases` (`queued`, `started`, `dump_done`, `upload_done`, `verify_done`, `restore_done`, `finished`); records from older releases have `queued` and `finished` only. The dashboard polls every 2 seconds while something runs, shows a progress bar on running rows and, in the details dialog, the progress, a phase timeline and a **Log** tab that follows the log of a running run.
+
 ## Asynchronous operations
 
 Every backup record has a `trigger`: `scheduled` (a cron run of `job_id`), `on_demand` (`POST /api/v1/jobs/{id}/run`), `manual` (`POST /api/v1/backups`) or `mcp` (an assistant's `start_backup` or `run_job`). It is set by the server, never taken from the request, and retention only prunes a job's `scheduled` backups ([configuration.md](configuration.md#general)).
 
-`POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed` or `failed`. Operations keep running if the client disconnects.
+`POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run` and `POST /api/v1/restore` return `202 Accepted` as soon as the operation has started. The response body is the new backup or restore record with `"status": "in_progress"`; poll `GET /api/v1/backups` or `GET /api/v1/restores` until it becomes `completed`, `failed` or `cancelled`. Operations keep running if the client disconnects; [cancel](#cancelling-a-run) them to stop them.
 
 | Status | Meaning |
 | --- | --- |
