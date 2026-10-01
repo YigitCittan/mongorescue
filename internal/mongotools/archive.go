@@ -281,9 +281,9 @@ func bsonScalars(doc []byte) (bsonFields, error) {
 			// int32 length (including the NUL), bytes, NUL.
 			f.strs[name] = string(val[4 : len(val)-1])
 		case bsonInt32:
-			f.nums[name] = int64(int32(binary.LittleEndian.Uint32(val)))
+			f.nums[name] = int64(leInt32(val))
 		case bsonInt64:
-			f.nums[name] = int64(binary.LittleEndian.Uint64(val))
+			f.nums[name] = leInt64(val)
 		case bsonDouble:
 			if d := math.Float64frombits(binary.LittleEndian.Uint64(val)); d >= math.MinInt64 && d <= math.MaxInt64 {
 				f.nums[name] = int64(d)
@@ -292,6 +292,16 @@ func bsonScalars(doc []byte) (bsonFields, error) {
 		body = body[size:]
 	}
 	return f, nil
+}
+
+// leInt32 decodes a little-endian two's-complement int32, as BSON stores it.
+func leInt32(b []byte) int32 {
+	return int32(binary.LittleEndian.Uint32(b)) //nolint:gosec // G115: reinterpreting the two's-complement bits is the decoding.
+}
+
+// leInt64 decodes a little-endian two's-complement int64, as BSON stores it.
+func leInt64(b []byte) int64 {
+	return int64(binary.LittleEndian.Uint64(b)) //nolint:gosec // G115: reinterpreting the two's-complement bits is the decoding.
 }
 
 // bsonValueSize returns the encoded size of the value of type typ at the start of b.
@@ -309,7 +319,7 @@ func bsonValueSize(typ byte, b []byte) (int, error) {
 		if len(b) < 4 {
 			return 0, fmt.Errorf("%w: truncated element", ErrMalformedPrelude)
 		}
-		n := int64(int32(binary.LittleEndian.Uint32(b)))
+		n := int64(leInt32(b))
 		if n < int64(minLen) {
 			return 0, fmt.Errorf("%w: bad element length", ErrMalformedPrelude)
 		}
