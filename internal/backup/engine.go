@@ -519,7 +519,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 
 	e.finishManifest(runCtx, mongoURI, dumpOpts, manifest, record)
 	if err := e.verifyAfterUpload(runCtx, opts, record); err != nil {
-		return e.fail(record, err)
+		return e.fail(runCtx, record, err)
 	}
 	return record, nil
 }

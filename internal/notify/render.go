@@ -25,6 +25,11 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.RestoreCancelled:          {"⏹️", "Restore cancelled"},
 	events.NotificationTest:          {"🔔", "Test notification"},
 	events.EncryptionOffAfterUpgrade: {"⚠️", "Backup encryption is off"},
+	events.VerificationFailed:        {"❌", "Backup verification failed"},
+	events.RestoreTestSucceeded:      {"✅", "Restore test passed"},
+	events.RestoreTestFailed:         {"❌", "Restore test failed"},
+	events.DriftDetected:             {"⚠️", "Storage drift detected"},
+	events.RetentionDeleted:          {"🗑️", "Backup deleted by retention"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -57,6 +62,18 @@ func Render(e events.Event) Message {
 		target = "MongoRescue notification channel check"
 	case events.EncryptionOffAfterUpgrade:
 		target = "it was enabled in your previous configuration; backups since the upgrade are NOT encrypted. Turn it on in Settings → Encryption"
+	case events.VerificationFailed, events.VerificationSucceeded:
+		target = fmt.Sprintf("backup %s (db %s, %s check: %s)", e.BackupID, e.Database, e.Source, e.Verification)
+	case events.RestoreTestSucceeded, events.RestoreTestFailed:
+		target = fmt.Sprintf("job %s (db %s), backup %s", e.JobID, e.Database, e.BackupID)
+	case events.DriftDetected:
+		name := e.TargetName
+		if name == "" {
+			name = e.TargetID
+		}
+		target = fmt.Sprintf("storage target %s: %d orphan archive(s), %d missing archive(s)", name, e.Orphans, e.Missing)
+	case events.RetentionDeleted:
+		target = fmt.Sprintf("job %s (db %s), backup %s", e.JobID, e.Database, e.BackupID)
 	}
 
 	subject := singleLine(fmt.Sprintf("%s %s: %s", tpl.icon, tpl.headline, target))
@@ -80,6 +97,9 @@ func Render(e events.Event) Message {
 	}
 	if e.SizeBytes > 0 {
 		fmt.Fprintf(&body, "\nSize: %s", humanBytes(e.SizeBytes))
+	}
+	if e.Detail != "" {
+		fmt.Fprintf(&body, "\nDetail: %s", truncate(singleLine(redact.Text(e.Detail)), maxErrorLength))
 	}
 	if e.RestoreID != "" {
 		fmt.Fprintf(&body, "\nRestore ID: %s", e.RestoreID)

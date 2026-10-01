@@ -30,7 +30,10 @@ const (
 //
 //	{
 //	  "version": 1,
-//	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|restore.succeeded|restore.failed|restore.cancelled|notification.test
+//	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|restore.succeeded|
+//	                                     // restore.failed|restore.cancelled|verification.failed|
+//	                                     // restore_test.succeeded|restore_test.failed|
+//	                                     // storage.drift_detected|retention.deleted|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs
 //	  "backup_id": "bkp_shop_...",       // omitted when unknown
@@ -69,6 +72,17 @@ type WebhookPayload struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	// SizeBytes is the backup archive size.
 	SizeBytes int64 `json:"size_bytes,omitempty"`
+	// Verification is the outcome of verification and restore test events.
+	Verification string `json:"verification,omitempty"`
+	// Source is what triggered a verification, restore test or storage scan.
+	Source string `json:"source,omitempty"`
+	// TargetID is the storage target of drift events.
+	TargetID string `json:"target_id,omitempty"`
+	// Orphans and Missing count the drift of drift events.
+	Orphans int `json:"orphans,omitempty"`
+	Missing int `json:"missing,omitempty"`
+	// Detail is a short redacted explanation (a retention rule, a drop failure).
+	Detail string `json:"detail,omitempty"`
 	// Subject is the rendered one-line summary.
 	Subject string `json:"subject"`
 	// Text is the rendered human-readable body.
@@ -90,6 +104,12 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 		Error:           e.Error,
 		DurationSeconds: e.Duration.Seconds(),
 		SizeBytes:       e.SizeBytes,
+		Verification:    e.Verification,
+		Source:          e.Source,
+		TargetID:        e.TargetID,
+		Orphans:         e.Orphans,
+		Missing:         e.Missing,
+		Detail:          e.Detail,
 		Subject:         msg.Subject,
 		Text:            msg.Body,
 	}

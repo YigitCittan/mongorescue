@@ -49,6 +49,9 @@ const (
 	TransportStdio = "stdio"
 	// TransportREST is the REST API (/api/v1/...) called with an API key.
 	TransportREST = "rest"
+	// TransportSystem is MongoRescue acting on its own (e.g. retention deleting a
+	// backup); such entries carry no API key.
+	TransportSystem = "system"
 )
 
 // Limits.

@@ -3,12 +3,15 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -21,6 +24,119 @@ const MinCountPruneAge = 24 * time.Hour
 // StorageFunc returns the storage driver of a storage target (the default target for
 // an empty ID).
 type StorageFunc func(ctx context.Context, targetID string) (storage.Storage, error)
+
+// Reasons a backup selected by a retention rule is kept anyway.
+const (
+	// ProtectedPinned is a pinned backup (legal hold).
+	ProtectedPinned = "pinned"
+	// ProtectedLastVerified is the job's newest backup whose archive passed
+	// verification: it is never deleted, whatever the policy.
+	ProtectedLastVerified = "last_verified"
+)
+
+// RetentionDecision is a backup the retention policy deletes, and why.
+type RetentionDecision struct {
+	// Backup is the backup record.
+	Backup *models.BackupRecord `json:"backup"`
+	// Reason is the rule that selects it.
+	Reason models.RetentionReason `json:"reason"`
+	// Detail explains the rule ("older than 30 days").
+	Detail string `json:"detail"`
+}
+
+// ProtectedBackup is a backup a retention rule selects but that is kept.
+type ProtectedBackup struct {
+	// BackupID identifies the backup.
+	BackupID string `json:"backup_id"`
+	// Reason is ProtectedPinned or ProtectedLastVerified.
+	Reason string `json:"reason"`
+}
+
+// RetentionPlan is what a retention policy does to a set of backups.
+type RetentionPlan struct {
+	// Delete lists the backups to delete, oldest first.
+	Delete []RetentionDecision `json:"delete"`
+	// Protected lists the backups a rule selects but that are kept.
+	Protected []ProtectedBackup `json:"protected"`
+	// Considered counts the completed scheduled backups the policy applies to.
+	Considered int `json:"considered"`
+}
+
+// PlanRetention decides which of records a policy of retentionDays and
+// retentionCount deletes at now, without changing anything. PruneBackupsOn deletes
+// exactly the backups it lists, so it doubles as the dry-run preview.
+//
+// Only completed scheduled backups (models.TriggerScheduled, see
+// BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups
+// are never pruned automatically. Floors protect the scheduled ones: the
+// max(retentionCount, 1) most recent are never deleted (by either rule), count-based
+// retention never deletes a backup younger than MinCountPruneAge, pinned backups are
+// never deleted, and neither is the newest backup whose archive passed verification.
+// Callers pass the records of one job (see JobRetentionHistory).
+func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*models.BackupRecord) RetentionPlan {
+	plan := RetentionPlan{Delete: []RetentionDecision{}, Protected: []ProtectedBackup{}}
+	if retentionDays <= 0 && retentionCount <= 0 {
+		return plan
+	}
+	var successful []*models.BackupRecord
+	for _, r := range records {
+		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled {
+			successful = append(successful, r)
+		}
+	}
+	plan.Considered = len(successful)
+	// Newest first.
+	sort.SliceStable(successful, func(i, j int) bool {
+		return successful[i].StartedAt.After(successful[j].StartedAt)
+	})
+	lastVerified := ""
+	for _, r := range successful {
+		if r.Verification == models.VerificationOK {
+			lastVerified = r.ID
+			break
+		}
+	}
+
+	floor := max(retentionCount, 1)
+	cutoff := now.AddDate(0, 0, -retentionDays)
+	for _, rec := range successful[min(floor, len(successful)):] {
+		var d *RetentionDecision
+		switch {
+		case retentionDays > 0 && rec.StartedAt.Before(cutoff):
+			d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxAge, Detail: fmt.Sprintf("older than %d days", retentionDays)}
+		case retentionCount > 0 && now.Sub(rec.StartedAt) >= MinCountPruneAge:
+			d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxCount, Detail: fmt.Sprintf("beyond the %d newest backups", retentionCount)}
+		}
+		switch {
+		case d == nil:
+		case rec.Pinned:
+			plan.Protected = append(plan.Protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedPinned})
+		case rec.ID == lastVerified:
+			plan.Protected = append(plan.Protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedLastVerified})
+		default:
+			plan.Delete = append(plan.Delete, *d)
+		}
+	}
+	slices.Reverse(plan.Delete)
+	return plan
+}
+
+// JobRetentionHistory returns the records job's retention applies to: the job's own
+// scheduled backups taken from its connection and stored on targetID. On-demand,
+// manual and MCP backups neither count towards the kept ones nor get pruned. The
+// same database name on another server is a different dataset, and retention counts
+// per storage target: backups kept on another target (e.g. before the job was
+// moved) are not pruned by this one.
+func JobRetentionHistory(job *models.Job, targetID string, records []*models.BackupRecord) []*models.BackupRecord {
+	out := make([]*models.BackupRecord, 0, len(records))
+	for _, r := range records {
+		if r.JobID == job.ID && r.EffectiveTrigger() == models.TriggerScheduled &&
+			r.ConnectionID == job.ConnectionID && r.StorageTargetID == targetID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // PruneBackups applies PruneBackupsOn with every archive stored on storageDriver.
 func PruneBackups(
@@ -37,15 +153,9 @@ func PruneBackups(
 }
 
 // PruneBackupsOn executes retention policies against existing backups for a database
-// or job. It deletes expired archives from the storage target each record names
-// (resolved through storages) and marks the records as pruned in the metadata store.
-//
-// Only completed scheduled backups (models.TriggerScheduled, see
-// BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups are
-// never pruned automatically. Two floors protect the scheduled ones: the
-// max(retentionCount, 1) most recent are never pruned (by either rule), and
-// count-based retention never prunes a backup younger than MinCountPruneAge. Callers
-// pass the records of one job.
+// or job: it deletes the backups PlanRetention lists from the storage target each
+// record names (resolved through storages) and marks the records as pruned in the
+// metadata store. Callers pass the records of one job.
 func PruneBackupsOn(
 	ctx context.Context,
 	retentionDays int,
@@ -55,97 +165,109 @@ func PruneBackupsOn(
 	storages StorageFunc,
 	logger *slog.Logger,
 ) ([]string, error) {
-	if retentionDays <= 0 && retentionCount <= 0 {
-		// No retention policy configured (keep indefinitely)
-		return nil, nil
-	}
+	return prune(ctx, time.Now().UTC(), retentionDays, retentionCount, records, metadataStore, storages, logger, nil)
+}
 
+// BackupUpdater updates a stored backup record atomically (implemented by
+// *store.SQLiteStore). Retention uses it to re-check a backup right before it is
+// pruned, so a pin set meanwhile is never overridden.
+type BackupUpdater interface {
+	// UpdateBackupRecord applies fn to the stored record id in one transaction.
+	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
+}
+
+// errRetentionSkip aborts the prune of a backup that changed since it was planned.
+var errRetentionSkip = errors.New("scheduler: backup changed since retention was planned")
+
+// prune implements PruneBackupsOn at now; onDeleted (optional) is called for every
+// pruned backup.
+func prune(
+	ctx context.Context,
+	now time.Time,
+	retentionDays int,
+	retentionCount int,
+	records []*models.BackupRecord,
+	metadataStore store.Store,
+	storages StorageFunc,
+	logger *slog.Logger,
+	onDeleted func(ctx context.Context, e models.RetentionLogEntry),
+) ([]string, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-
-	// Filter successful scheduled backups only
-	var successful []*models.BackupRecord
-	for _, r := range records {
-		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled {
-			successful = append(successful, r)
-		}
+	plan := PlanRetention(now, retentionDays, retentionCount, records)
+	for _, p := range plan.Protected {
+		logger.Info("retention keeps a backup its policy selects",
+			slog.String("backup_id", p.BackupID), slog.String("reason", p.Reason))
 	}
-
-	if len(successful) == 0 {
-		return nil, nil
-	}
-
-	// Sort newest first
-	sort.Slice(successful, func(i, j int) bool {
-		return successful[i].StartedAt.After(successful[j].StartedAt)
-	})
-
-	toPruneMap := make(map[string]*models.BackupRecord)
-	now := time.Now().UTC()
-	// The newest `floor` completed backups are always kept.
-	floor := max(retentionCount, 1)
-
-	// 1. Time-based retention (RetentionDays)
-	if retentionDays > 0 {
-		cutoff := now.AddDate(0, 0, -retentionDays)
-		for _, rec := range successful[min(floor, len(successful)):] {
-			if rec.StartedAt.Before(cutoff) {
-				toPruneMap[rec.ID] = rec
-			}
-		}
-	}
-
-	// 2. Count-based retention (RetentionCount), for backups old enough only
-	if retentionCount > 0 {
-		for _, rec := range successful[min(floor, len(successful)):] {
-			if now.Sub(rec.StartedAt) >= MinCountPruneAge {
-				toPruneMap[rec.ID] = rec
-			}
-		}
-	}
-
-	if len(toPruneMap) == 0 {
+	if len(plan.Delete) == 0 {
 		return nil, nil
 	}
 
 	var prunedIDs []string
-
-	// Delete from storage and update status
-	for id, rec := range toPruneMap {
+	updater, atomic := metadataStore.(BackupUpdater)
+	for _, d := range plan.Delete {
+		rec := d.Backup
 		logger.Info("pruning expired backup per retention policy",
-			slog.String("backup_id", id),
+			slog.String("backup_id", rec.ID),
 			slog.String("database", rec.Database),
 			slog.String("storage_key", rec.StorageKey),
 			slog.Time("started_at", rec.StartedAt),
+			slog.String("reason", string(d.Reason)),
 		)
 
+		// Mark the record pruned first, re-checking it: a backup pinned (or otherwise
+		// changed) since it was listed is skipped.
+		var markErr error
+		if atomic {
+			_, markErr = updater.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
+				if r.Pinned || r.Status != models.StatusCompleted {
+					return errRetentionSkip
+				}
+				r.Status = models.StatusPruned
+				return nil
+			})
+		} else {
+			rec.Status = models.StatusPruned
+			markErr = metadataStore.SaveBackupRecord(ctx, rec)
+		}
+		switch {
+		case errors.Is(markErr, errRetentionSkip), errors.Is(markErr, store.ErrNotFound):
+			logger.Info("retention skips a backup that changed since it was planned", slog.String("backup_id", rec.ID))
+			continue
+		case markErr != nil:
+			logger.Error("failed to update backup record status to pruned",
+				slog.String("backup_id", rec.ID),
+				slog.Any("error", markErr),
+			)
+			return prunedIDs, fmt.Errorf("update pruned record %s: %w", rec.ID, markErr)
+		}
+		rec.Status = models.StatusPruned
+
 		// Delete the physical archive from the record's own storage target
+		entry := models.RetentionLogEntry{
+			Time: time.Now().UTC(), JobID: rec.JobID, BackupID: rec.ID, Database: rec.Database,
+			StorageTargetID: rec.StorageTargetID, StorageKey: rec.StorageKey, BackupStartedAt: rec.StartedAt,
+			SizeBytes: rec.SizeBytes, Reason: d.Reason, Detail: d.Detail,
+		}
 		if rec.StorageKey != "" {
 			storageDriver, err := storages(ctx, rec.StorageTargetID)
 			if err == nil {
 				err = storageDriver.Delete(ctx, rec.StorageKey)
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, storage.ErrNotFound) {
+				entry.Error = redact.Text(err.Error())
 				logger.Warn("failed to delete physical backup file from storage during pruning",
-					slog.String("backup_id", id),
+					slog.String("backup_id", rec.ID),
 					slog.String("storage_key", rec.StorageKey),
 					slog.Any("error", err),
 				)
 			}
 		}
-
-		// Update record status to pruned
-		rec.Status = models.StatusPruned
-		if err := metadataStore.SaveBackupRecord(ctx, rec); err != nil {
-			logger.Error("failed to update backup record status to pruned",
-				slog.String("backup_id", id),
-				slog.Any("error", err),
-			)
-			return prunedIDs, fmt.Errorf("update pruned record %s: %w", id, err)
+		if onDeleted != nil {
+			onDeleted(ctx, entry)
 		}
-
-		prunedIDs = append(prunedIDs, id)
+		prunedIDs = append(prunedIDs, rec.ID)
 	}
 
 	logger.Info("retention pruning completed",

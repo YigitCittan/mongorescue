@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +57,12 @@ type Scheduler struct {
 	connections   ConnectionResolver
 	targets       StorageTargets
 	registry      *runs.Registry
+
+	// retentionLog, auditor and afterBackup are the integrity hooks (see
+	// integrity.go).
+	retentionLog RetentionLog
+	auditor      Auditor
+	afterBackup  AfterBackupFunc
 
 	// mu guards entries, ctx, cancel, started, stopped and paused.
 	mu      sync.Mutex
@@ -561,6 +566,7 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 		StorageType:        job.StorageType,
 		Gzip:               job.Gzip,
 		ConnectionID:       job.ConnectionID,
+		Verify:             job.VerifyAfterBackup,
 	}
 	if s.targets != nil {
 		target, err := s.targets.Resolve(ctx, job.StorageTargetID)
@@ -670,6 +676,9 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	// Emit the outcome once it is persisted; publishing is non-blocking by contract.
 	if s.publisher != nil {
 		s.publisher.Publish(persistCtx, events.BackupEvent(record, err, job.ID, job.Database))
+		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok {
+			s.publisher.Publish(persistCtx, ve)
+		}
 	}
 
 	if err != nil {
@@ -684,26 +693,19 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	if scheduled && record.Status == models.StatusCompleted && (job.RetentionDays > 0 || job.RetentionCount > 0) {
 		history, listErr := s.metadataStore.ListBackupRecords(ctx, job.Database)
 		if listErr == nil {
-			// Retention only ever sees this job's own scheduled backups: on-demand,
-			// manual and MCP backups neither count towards the kept ones nor get
-			// pruned. The same database name on another server is a different
-			// dataset, and retention counts per storage target: backups kept on
-			// another target (e.g. before the job was moved) are not pruned by this one.
-			history = slices.DeleteFunc(history, func(r *models.BackupRecord) bool {
-				return r.JobID != job.ID || r.EffectiveTrigger() != models.TriggerScheduled ||
-					r.ConnectionID != job.ConnectionID || r.StorageTargetID != record.StorageTargetID
-			})
-			pruned, _ := PruneBackupsOn(
-				ctx,
-				job.RetentionDays,
-				job.RetentionCount,
-				history,
-				s.metadataStore,
-				s.storageFor,
-				s.logger,
-			)
+			// Retention only ever sees this job's own scheduled backups (see
+			// JobRetentionHistory).
+			history = JobRetentionHistory(job, record.StorageTargetID, history)
+			pruned, _ := prune(ctx, time.Now().UTC(), job.RetentionDays, job.RetentionCount, history,
+				s.metadataStore, s.storageFor, s.logger, s.retentionDeleted)
 			s.removeRunLogs(pruned)
 		}
+	}
+
+	// Post-backup work (restore tests) runs last, after retention, on the run's
+	// context: a shutdown cancels it like the backup itself.
+	if scheduled && record.Status == models.StatusCompleted && s.afterBackup != nil {
+		s.afterBackup(ctx, job, record)
 	}
 
 	return record, nil
