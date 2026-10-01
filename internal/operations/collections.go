@@ -95,7 +95,7 @@ func (s *Service) ListBackupCollections(ctx context.Context, id string) (*Backup
 	}
 	readCtx, cancel := context.WithTimeoutCause(ctx, timeout, errPreviewTimeout)
 	defer cancel()
-	list, err := lister.ArchiveCollections(readCtx, rec)
+	list, err := s.readArchive(readCtx, lister, rec)
 	if err == nil {
 		if list == nil {
 			list = []models.BackupCollection{}
@@ -133,6 +133,22 @@ func (s *Service) ListBackupCollections(ctx context.Context, id string) (*Backup
 
 // errPreviewTimeout is the cause of a preview that exceeded ArchivePreviewTimeout.
 var errPreviewTimeout = errors.New("archive preview timed out")
+
+// maxConcurrentPreviews bounds the archive previews read at the same time, so a
+// client listing many uncached backups cannot open an unbounded number of storage
+// streams; the others wait (within their timeout) for a slot.
+const maxConcurrentPreviews = 4
+
+// readArchive runs lister for rec once a preview slot is free.
+func (s *Service) readArchive(ctx context.Context, lister ArchiveLister, rec *models.BackupRecord) ([]models.BackupCollection, error) {
+	select {
+	case s.previewSlots <- struct{}{}:
+		defer func() { <-s.previewSlots }()
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+	return lister.ArchiveCollections(ctx, rec)
+}
 
 // recordCollections fills out from the record's own collection filter.
 func (s *Service) recordCollections(out *BackupCollections, rec *models.BackupRecord, reason string) *BackupCollections {

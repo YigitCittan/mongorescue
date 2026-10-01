@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,6 +164,34 @@ func TestListBackupCollectionsTimeout(t *testing.T) {
 	cancel()
 	if _, err = svc.ListBackupCollections(ctx, "bkp_slow"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled request: %v; want context.Canceled", err)
+	}
+}
+
+// TestListBackupCollectionsBoundsConcurrentReads checks that at most four archives
+// are read at once: a fifth preview waits for a slot and times out without reading.
+func TestListBackupCollectionsBoundsConcurrentReads(t *testing.T) {
+	release := make(chan struct{})
+	eng := &listerEngine{Engine: restore.NewEngine(storage.NewMockStorage(), ""), fn: func(context.Context, *models.BackupRecord) ([]models.BackupCollection, error) {
+		<-release
+		return nil, errors.New("released")
+	}}
+	svc, st := newPreviewService(t, eng, 200*time.Millisecond)
+	for i := range 5 {
+		saveBackup(t, st, &models.BackupRecord{ID: fmt.Sprintf("bkp_%d", i), Database: "shop", Status: models.StatusCompleted, StorageKey: "k"})
+	}
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Go(func() { _, _ = svc.ListBackupCollections(context.Background(), fmt.Sprintf("bkp_%d", i)) })
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for eng.calls.Load() < 4 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, err := svc.ListBackupCollections(context.Background(), "bkp_4")
+	close(release)
+	wg.Wait()
+	if err != nil || !strings.Contains(got.Warning, "timed out") || eng.calls.Load() != 4 {
+		t.Fatalf("fifth preview = %+v, %v after %d reads; want a timeout without a fifth read", got, err, eng.calls.Load())
 	}
 }
 
