@@ -947,7 +947,11 @@ async function loadRestores() {
 
 // Loads the current page of list kind with its filters. Responses that arrive after
 // a newer request was started are dropped.
-async function loadList(kind) {
+async function loadList(requested) {
+  // kind may come from the URL hash: only the two literal list names are accepted, so
+  // it can never name another property of state or lists, or another API path.
+  const kind = listKind(requested);
+  if (!kind) return;
   const L = lists[kind];
   const seq = ++L.seq;
   try {
@@ -981,7 +985,20 @@ async function loadList(kind) {
     renderList(kind);
     if (kind === "backups") refreshOpenBackupDialogs();
   } catch (err) {
-    console.error(`Failed to load ${kind}:`, err);
+    console.error("Failed to load list:", kind, err);
+  }
+}
+
+// listKind returns the list name for value ("backups" or "restores"), or "" for any
+// other value.
+function listKind(value) {
+  switch (value) {
+    case "backups":
+      return "backups";
+    case "restores":
+      return "restores";
+    default:
+      return "";
   }
 }
 
