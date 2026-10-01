@@ -299,6 +299,34 @@ func listRecords[T any](ctx context.Context, s *SQLiteStore, table string, open 
 	return list, nil
 }
 
+// firstReadable returns the first record of table selected by query (id, data) that
+// can be read, skipping and reporting the rows before it that cannot, or nil when
+// there is none. It stops reading at that record.
+func firstReadable[T any](ctx context.Context, s *SQLiteStore, table, query string, args ...any) (*T, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, fmt.Errorf("store: scan row: %w", err)
+		}
+		v, err := decode[T](data)
+		if err != nil {
+			s.reportCorrupt(table, id, err)
+			continue
+		}
+		s.clearCorrupt(table, id)
+		return v, nil
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate rows: %w", err)
+	}
+	return nil, nil
+}
+
 // listRecordsStrict decodes the JSON data column of every row selected by query, and
 // fails on the first row that does not decode. Maintenance transactions (secret
 // upgrades, legacy migrations) use it: they must not complete while skipping rows.
@@ -332,7 +360,7 @@ func listRecordsStrict[T any](ctx context.Context, q queryer, query string, args
 func decode[T any](data string) (*T, error) {
 	v := new(T)
 	if err := json.Unmarshal([]byte(data), v); err != nil {
-		return nil, fmt.Errorf("%w: %w: %w", ErrCorruptRecord, errDecodeRecord, err)
+		return nil, unreadable(fmt.Errorf("%w: %w", errDecodeRecord, err))
 	}
 	return v, nil
 }

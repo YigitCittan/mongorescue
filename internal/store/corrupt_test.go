@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
@@ -61,8 +63,12 @@ func TestListsSkipRowsThatCannotBeDecoded(t *testing.T) {
 	if len(conns) != 1 || conns[0].ID != "conn_a" || conns[0].URI != "mongodb://u:conn-secret@db/" {
 		t.Fatalf("ListConnections = %+v; want conn_a with its decrypted URI", conns)
 	}
-	if _, getErr := s.GetJob(ctx, "job_bad"); !errors.Is(getErr, store.ErrCorruptRecord) {
-		t.Fatalf("GetJob(job_bad) = %v; want ErrCorruptRecord", getErr)
+	if _, getErr := s.GetJob(ctx, "job_bad"); !errors.Is(getErr, store.ErrCorruptRecord) || strings.Contains(getErr.Error(), "4242") {
+		t.Fatalf("GetJob(job_bad) = %v; want ErrCorruptRecord without stored data", getErr)
+	}
+	// A time.ParseError quotes the value; the single-row read must not.
+	if _, getErr := s.GetConnection(ctx, "conn_bad"); !errors.Is(getErr, store.ErrCorruptRecord) || strings.Contains(getErr.Error(), "4242") {
+		t.Fatalf("GetConnection(conn_bad) = %v; want ErrCorruptRecord without stored data", getErr)
 	}
 
 	bad, err := s.CorruptRecords(ctx)
@@ -133,21 +139,66 @@ func TestBackupPagesSkipRowsThatCannotBeDecoded(t *testing.T) {
 	if list, listErr := s.ListBackupRecords(ctx, ""); listErr != nil || len(list) != 2 {
 		t.Fatalf("ListBackupRecords = %d, %v", len(list), listErr)
 	}
-	// The newest backup is the unreadable one: the stats still load, without it.
+	// The newest backup is the unreadable one: the stats fall back to the newest
+	// readable backup.
 	st, err := s.BackupStats(ctx, start.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("BackupStats: %v", err)
 	}
-	if st.Total != 3 || st.Last != nil {
-		t.Fatalf("stats = total %d, last %+v; want 3 and no last backup", st.Total, st.Last)
+	if st.Total != 3 || st.Last == nil || st.Last.ID != "bkp_2" {
+		t.Fatalf("stats = total %d, last %+v; want 3 and bkp_2", st.Total, st.Last)
 	}
-	latest, err := s.LatestJobBackups(ctx, "")
-	if err != nil || len(latest) != 0 {
-		t.Fatalf("LatestJobBackups = %v, %v", latest, err)
+	for _, status := range []models.BackupStatus{"", models.StatusCompleted} {
+		latest, latestErr := s.LatestJobBackups(ctx, status)
+		if latestErr != nil || len(latest) != 1 || latest["job_a"] == nil || latest["job_a"].ID != "bkp_2" {
+			t.Fatalf("LatestJobBackups(%q) = %v, %v; want job_a: bkp_2", status, latest, latestErr)
+		}
 	}
 	bad, err := s.CorruptRecords(ctx)
 	if err != nil || len(bad) != 1 || bad[0].Table != "backups" || bad[0].ID != "bkp_3" {
 		t.Fatalf("CorruptRecords = %+v, %v", bad, err)
+	}
+}
+
+func TestListsSkipRowsThatCannotBeDecrypted(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"conn_a", "conn_b"} {
+		if err := s.SaveConnection(ctx, &models.Connection{ID: id, Name: id, URI: "mongodb://u:pw-" + id + "@db/", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// conn_a's sealed URI is bound to conn_a: moved to conn_b it no longer decrypts.
+	var moved struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal([]byte(rowData(t, s, "connections", "conn_a")), &moved); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"id": "conn_b", "name": "conn_b", "uri": moved.URI, "created_at": now, "updated_at": now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.CorruptRow(t, s, "connections", "conn_b", string(data))
+
+	conns, err := s.ListConnections(ctx)
+	if err != nil {
+		t.Fatalf("ListConnections failed as a whole: %v", err)
+	}
+	if len(conns) != 1 || conns[0].ID != "conn_a" || conns[0].URI != "mongodb://u:pw-conn_a@db/" {
+		t.Fatalf("ListConnections = %+v; want conn_a", conns)
+	}
+	if _, getErr := s.GetConnection(ctx, "conn_b"); !errors.Is(getErr, secretbox.ErrDecrypt) {
+		t.Fatalf("GetConnection(conn_b) = %v; want ErrDecrypt", getErr)
+	}
+	bad, err := s.CorruptRecords(ctx)
+	want := []store.CorruptRecord{{Table: "connections", ID: "conn_b", Error: "an encrypted field cannot be decrypted"}}
+	if err != nil || !slices.Equal(bad, want) {
+		t.Fatalf("CorruptRecords = %+v, %v; want %+v", bad, err, want)
+	}
+	if got := rowData(t, s, "connections", "conn_b"); got != string(data) {
+		t.Fatalf("conn_b was rewritten: %s", got)
 	}
 }
 

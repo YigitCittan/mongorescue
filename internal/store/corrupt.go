@@ -224,13 +224,26 @@ func checkJSON[T any](table string, open func(*SQLiteStore, *T) error) recordChe
 	}
 }
 
-// unreadable marks err, raised while reading one stored row, as ErrCorruptRecord.
+// unreadable marks err, raised while reading one stored row, as ErrCorruptRecord. The
+// returned error's message is the corruptSummary of err, never err's own text: JSON,
+// time and column conversion errors quote the stored value. err stays in the chain
+// for errors.Is and errors.As.
 func unreadable(err error) error {
-	if errors.Is(err, ErrCorruptRecord) {
+	var rec *recordError
+	if errors.As(err, &rec) {
 		return err
 	}
-	return fmt.Errorf("%w: %w", ErrCorruptRecord, err)
+	return &recordError{summary: corruptSummary(err), err: err}
 }
+
+// recordError is an error reading one stored row; see unreadable.
+type recordError struct {
+	summary string
+	err     error
+}
+
+func (e *recordError) Error() string   { return ErrCorruptRecord.Error() + ": " + e.summary }
+func (e *recordError) Unwrap() []error { return []error{ErrCorruptRecord, e.err} }
 
 // corruptSummary describes why a row cannot be read without quoting stored data:
 // JSON and time parsing errors echo the offending value, so only their shape is kept.
