@@ -85,7 +85,7 @@ func TestLogIsCappedWithHeadAndTail(t *testing.T) {
 	for i := 0; i < lines; i++ {
 		fmt.Fprintf(w, "%06d %s\n", i, line)
 	}
-	if err := w.Close(); err != nil {
+	if err = w.Close(); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "bkp_big.log"))
@@ -148,17 +148,17 @@ func TestLiveReaderAndTail(t *testing.T) {
 		t.Fatalf("tail = %q", tail)
 	}
 	var full bytes.Buffer
-	if _, err := r.WriteTo(&full); err != nil {
+	if _, err = r.WriteTo(&full); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(full.String(), "00000 ") || !strings.HasSuffix(full.String(), want) {
 		t.Fatal("the live log must hold the head and the newest lines")
 	}
 	_ = r.Close()
-	if err := w.Close(); err != nil {
+	if err = w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Reader(); !errors.Is(err, ErrClosed) {
+	if _, err = w.Reader(); !errors.Is(err, ErrClosed) {
 		t.Fatalf("reader after close = %v", err)
 	}
 	fin, err := d.Open("rst_live")

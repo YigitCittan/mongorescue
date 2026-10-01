@@ -82,8 +82,8 @@ func TestCancelBackupEndpoint(t *testing.T) {
 		active.Data[0].ID != id || active.Data[0].Kind != models.RunBackup {
 		t.Fatalf("active runs = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := serve(f.h, "GET", "/api/v1/backups", nil, f.as(auth.ScopeRead)); !strings.Contains(rec.Body.String(), `"progress":{"id":"`+id+`"`) {
-		t.Fatalf("the running backup has no progress in the list: %s", rec.Body.String())
+	if res := serve(f.h, "GET", "/api/v1/backups", nil, f.as(auth.ScopeRead)); !strings.Contains(res.Body.String(), `"progress":{"id":"`+id+`"`) {
+		t.Fatalf("the running backup has no progress in the list: %s", res.Body.String())
 	}
 
 	// Following the log while it runs.
@@ -97,8 +97,8 @@ func TestCancelBackupEndpoint(t *testing.T) {
 		}
 	}
 
-	if rec := serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeRead)); !scopeRefused(rec.Code, rec.Body.String()) {
-		t.Fatalf("read key cancelling = %d %s; want a scope refusal", rec.Code, rec.Body.String())
+	if res := serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeRead)); !scopeRefused(res.Code, res.Body.String()) {
+		t.Fatalf("read key cancelling = %d %s; want a scope refusal", res.Code, res.Body.String())
 	}
 	if got := acceptedID(t, serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeOperator))); got != id {
 		t.Fatalf("cancel answered for %s, want %s", got, id)
@@ -129,12 +129,12 @@ func TestCancelBackupEndpoint(t *testing.T) {
 		{"/api/v1/backups/bkp_unknown/cancel", http.StatusNotFound},
 		{"/api/v1/restores/rst_unknown/cancel", http.StatusNotFound},
 	} {
-		if rec := serve(f.h, "POST", tc.path, nil, f.as(auth.ScopeOperator)); rec.Code != tc.want {
-			t.Errorf("POST %s = %d %s; want %d", tc.path, rec.Code, rec.Body.String(), tc.want)
+		if res := serve(f.h, "POST", tc.path, nil, f.as(auth.ScopeOperator)); res.Code != tc.want {
+			t.Errorf("POST %s = %d %s; want %d", tc.path, res.Code, res.Body.String(), tc.want)
 		}
 	}
-	if rec := serve(f.h, "GET", "/api/v1/runs/active", nil, f.as(auth.ScopeRead)); !strings.Contains(rec.Body.String(), `"data":[]`) {
-		t.Fatalf("active runs after the cancel = %s", rec.Body.String())
+	if res := serve(f.h, "GET", "/api/v1/runs/active", nil, f.as(auth.ScopeRead)); !strings.Contains(res.Body.String(), `"data":[]`) {
+		t.Fatalf("active runs after the cancel = %s", res.Body.String())
 	}
 
 	// The finished log: tail and download, redacted.
