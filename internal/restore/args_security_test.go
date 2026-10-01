@@ -97,7 +97,7 @@ func TestExistingBackupsRestoreWhateverTheirNames(t *testing.T) {
 		if err != nil || rec.Status != models.RestoreStatusCompleted {
 			t.Fatalf("restore of %q = %+v, %v", db, rec, err)
 		}
-		if !slices.Contains(runner.args, "--nsFrom="+db+".*") {
+		if !slices.Contains(runner.args, "--nsFrom="+escapeNamespace(db)+".*") {
 			t.Fatalf("args %q", runner.args)
 		}
 	}

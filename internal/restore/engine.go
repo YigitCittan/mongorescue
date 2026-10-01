@@ -663,11 +663,15 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 		args = append(args, "--drop")
 	}
 
+	// Every name goes through escapeNamespace: only the trailing ".*" of a
+	// database-wide pattern is a wildcard.
+	src := escapeNamespace(sourceDB)
+
 	// Handle namespace renaming (e.g. restoring to safe clone or custom database)
 	if targetDB != "" && targetDB != sourceDB {
 		args = append(args,
-			fmt.Sprintf("--nsFrom=%s.*", sourceDB),
-			fmt.Sprintf("--nsTo=%s.*", targetDB),
+			fmt.Sprintf("--nsFrom=%s.*", src),
+			fmt.Sprintf("--nsTo=%s.*", escapeNamespace(targetDB)),
 		)
 	}
 
@@ -675,13 +679,24 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 	// restores the whole database, like no selection).
 	if selected := selectedCollections(req.SelectedCollections); len(selected) > 0 {
 		for _, coll := range selected {
-			args = append(args, fmt.Sprintf("--nsInclude=%s.%s", sourceDB, coll))
+			args = append(args, fmt.Sprintf("--nsInclude=%s.%s", src, escapeNamespace(coll)))
 		}
 	} else if sourceDB != "" {
-		args = append(args, fmt.Sprintf("--nsInclude=%s.*", sourceDB))
+		args = append(args, fmt.Sprintf("--nsInclude=%s.*", src))
 	}
 
 	return args
+}
+
+// escapeNamespace escapes a database or collection name for a mongorestore namespace
+// argument (--nsInclude, --nsExclude, --nsFrom, --nsTo), where '*' is a wildcard and
+// '\' its escape character: '\' becomes "\\" first, then '*' becomes "\*". Without it
+// a collection named "a*" would select, and with --drop drop, every collection whose
+// name starts with "a". ('$', which starts --nsFrom/--nsTo variables, cannot occur in
+// MongoDB namespaces.) mongodump's --db, --collection and --excludeCollection take
+// names literally and are not escaped.
+func escapeNamespace(name string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(name, `\`, `\\`), `*`, `\*`)
 }
 
 // verifyArtifact streams the stored artifact once into io.Discard, hashing the stored

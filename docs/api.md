@@ -131,7 +131,7 @@ Restoring in place (into the source database, or into `target_database`) must be
 
 ### Selective restores
 
-`selected_collections` restores only the named collections of the backup (one `--nsInclude` each); omitted or empty, the whole database is restored. The restore record repeats the selection in `selected_collections`. With `drop_target`, `mongorestore` drops each collection right before restoring it, so only the selected collections are dropped in the target; its other collections are kept. A view is restored from its definition and reads from its source collection (`view_on`), which is not restored with it unless it is selected too.
+`selected_collections` restores only the named collections of the backup (one `--nsInclude` each, with `*` and `\` escaped, so a name always means exactly that collection); omitted or empty, the whole database is restored. The restore record repeats the selection in `selected_collections`. With `drop_target`, `mongorestore` drops each collection right before restoring it, so only the selected collections are dropped in the target; its other collections are kept. A view is restored from its definition and reads from its source collection (`view_on`), which is not restored with it unless it is selected too.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/restore \
