@@ -172,7 +172,7 @@ Maintainers merge with **Squash and merge** or **Rebase and merge** to keep `mai
 
 ### Versioning and releases
 
-MongoRescue follows [Semantic Versioning](https://semver.org): `MAJOR` for incompatible API, storage-format or flag changes; `MINOR` for backwards-compatible features; `PATCH` for fixes. While the version is `0.x`, minor releases may still contain breaking changes, which the changelog calls out.
+MongoRescue follows [Semantic Versioning](https://semver.org). [docs/versioning.md](docs/versioning.md) defines which changes are breaking, features or fixes, which number each one bumps (before and after 1.0), and when releases are cut. Choose the version from that table: a release with any feature or migration is at least a minor release, and a breaking change is a minor release before 1.0 and a major release after it.
 
 To cut a release:
 
