@@ -147,6 +147,9 @@ type Config struct {
 	Logger *slog.Logger
 	// Version is the build version reported by Status.
 	Version string
+	// PreviewTimeout bounds reading the collection list of an archive in
+	// ListBackupCollections; 0 means ArchivePreviewTimeout.
+	PreviewTimeout time.Duration
 }
 
 // Service implements the backup and restore use cases. It is safe for concurrent use.

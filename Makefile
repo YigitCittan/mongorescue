@@ -37,6 +37,7 @@ FUZZ_TARGETS?= \
 	./internal/encryption:FuzzRoundTrip \
 	./internal/models:FuzzRescueDatabaseName \
 	./internal/models:FuzzValidateNamespace \
+	./internal/mongotools:FuzzReadArchivePrelude \
 	./internal/mongotools:FuzzWithConnectionDefaults \
 	./internal/mongotools:FuzzWriteURIConfig \
 	./internal/mongouri:FuzzValidate \

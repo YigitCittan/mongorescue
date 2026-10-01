@@ -371,4 +371,3 @@ func bsonValueSize(typ byte, b []byte) (int, error) {
 		return 0, fmt.Errorf("%w: unknown element type 0x%02x", ErrMalformedPrelude, typ)
 	}
 }
-

@@ -63,9 +63,11 @@ func FuzzPrepareNamespaces(f *testing.F) {
 		if target != "" && target != sourceDB {
 			want = append(want, "--nsFrom="+sourceDB+".*", "--nsTo="+target+".*")
 		}
-		// A blank selected collection is skipped (the archive holds only sourceDB).
+		// A blank selected collection is skipped: the whole database is restored.
 		if coll := strings.TrimSpace(collection); coll != "" {
 			want = append(want, "--nsInclude="+sourceDB+"."+coll)
+		} else if sourceDB != "" {
+			want = append(want, "--nsInclude="+sourceDB+".*")
 		}
 		var got []string
 		for _, a := range args {
