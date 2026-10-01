@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
@@ -36,11 +37,31 @@ var (
 // the desktop app's force quit).
 const SystemActor = "system"
 
+// ActorKind classifies who cancelled a run. Logs record the kind and the user ID,
+// never the display name of an API key.
+type ActorKind string
+
+// Actor kinds.
+const (
+	// ActorUser is a signed-in user (a session).
+	ActorUser ActorKind = "user"
+	// ActorAPIKey is an API key (REST or MCP).
+	ActorAPIKey ActorKind = "api_key"
+	// ActorSystem is the application itself.
+	ActorSystem ActorKind = "system"
+)
+
 // Cancellation describes who stopped a run, and why. It is the cause of the run's
 // context and wraps ErrCancelled.
 type Cancellation struct {
-	// By names the canceller: a username, an API key or SystemActor.
+	// By names the canceller for the record: a username, an API key or SystemActor.
 	By string
+	// Kind classifies the canceller (ActorSystem when empty); with UserID it is what
+	// logs record.
+	Kind ActorKind
+	// UserID is the ID of the user who cancelled the run, or of the user who created
+	// the API key, when known.
+	UserID string
 	// Reason, when set, explains the cancellation ("MongoRescue was force-quit").
 	Reason string
 	// At is when the cancellation was requested.
@@ -65,14 +86,31 @@ func (c *Cancellation) Error() string {
 // Unwrap returns ErrCancelled.
 func (c *Cancellation) Unwrap() error { return ErrCancelled }
 
+// LogAttrs returns the log attributes of the canceller: its kind and user ID.
+func (c *Cancellation) LogAttrs() []any {
+	kind := c.Kind
+	if kind == "" {
+		kind = ActorSystem
+	}
+	return []any{slog.String("cancelled_by_kind", string(kind)), logsafe.Attr("cancelled_by_user_id", c.UserID)}
+}
+
 // CancellationOf returns the Cancellation that ended ctx, or nil when ctx is live or
 // ended for another reason (a timeout, a stall, a plain shutdown).
+//
+// A cancellation requested before the run bound its context counts even when the
+// parent context ended first, before Bind could apply it (a force quit cancels the
+// runs and then shuts the application down): the run then reports it, because Cancel
+// only records cancellations that precede the end of the run's context.
 func CancellationOf(ctx context.Context) *Cancellation {
+	if ctx.Err() == nil {
+		return nil
+	}
 	var c *Cancellation
-	if ctx.Err() != nil && errors.As(context.Cause(ctx), &c) {
+	if errors.As(context.Cause(ctx), &c) {
 		return c
 	}
-	return nil
+	return FromContext(ctx).Cancellation()
 }
 
 // Meta describes a run when it is registered.
@@ -311,6 +349,7 @@ type Run struct {
 	bytes atomic.Int64
 
 	mu            sync.Mutex
+	ctx           context.Context
 	cancel        context.CancelCauseFunc
 	pending       *Cancellation
 	cancellation  *Cancellation
@@ -344,7 +383,7 @@ func (run *Run) Bind(ctx context.Context) context.Context {
 	runCtx, cancel := context.WithCancelCause(ctx)
 	runCtx = context.WithValue(runCtx, runKey{}, run)
 	run.mu.Lock()
-	run.cancel = cancel
+	run.cancel, run.ctx = cancel, runCtx
 	now := run.reg.now().UTC()
 	run.startedAt, run.transferStart, run.updatedAt = now, now, now
 	pending := run.pending
@@ -412,6 +451,11 @@ func (run *Run) cancelRun(c Cancellation) (bool, error) {
 	if run.finishing {
 		run.mu.Unlock()
 		return false, fmt.Errorf("%w: %s", ErrFinishing, run.meta.ID)
+	}
+	if run.ctx != nil && run.ctx.Err() != nil {
+		// The run already stopped for another reason (a timeout, the shutdown).
+		run.mu.Unlock()
+		return false, fmt.Errorf("%w: %s", ErrNotRunning, run.meta.ID)
 	}
 	cause := &c
 	run.cancellation = cause

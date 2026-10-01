@@ -572,7 +572,7 @@ func (a *App) ForceStop(reason string) {
 	backups, restores := a.inProgressRuns(ctx)
 	cancelledAt := time.Now().UTC()
 	stopped := make(map[string]bool)
-	for _, id := range a.registry.CancelAll(runs.Cancellation{By: runs.SystemActor, Reason: reason, At: cancelledAt}) {
+	for _, id := range a.registry.CancelAll(runs.Cancellation{By: runs.SystemActor, Kind: runs.ActorSystem, Reason: reason, At: cancelledAt}) {
 		stopped[id] = true
 	}
 	a.stopLocked()
