@@ -82,14 +82,25 @@ func TestRestoreTestPolicyValidate(t *testing.T) {
 
 func TestRescueVerifyDatabaseName(t *testing.T) {
 	at := time.Date(2026, 10, 1, 8, 9, 10, 0, time.UTC)
-	if got := RescueVerifyDatabaseName("shop", at); got != "shop_rescue_verify_20261001_080910" || !IsRescueVerifyDatabaseName(got) {
-		t.Fatalf("name = %q", got)
+	if got, err := RescueVerifyDatabaseName("shop", at, "a1b2c3"); err != nil || got != "shop_rescue_verify_20261001_080910_a1b2c3" || !IsRescueVerifyDatabaseName(got) {
+		t.Fatalf("name = %q, %v", got, err)
 	}
 	long := strings.Repeat("x", 80)
-	if got := RescueVerifyDatabaseName(long, at); len(got) != MaxDatabaseNameLength || ValidateDatabaseName(got) != nil {
+	if got, _ := RescueVerifyDatabaseName(long, at, "000000"); len(got) != MaxDatabaseNameLength || ValidateDatabaseName(got) != nil || !IsRescueVerifyDatabaseName(got) {
 		t.Fatalf("long name = %q", got)
 	}
-	for _, n := range []string{"shop", "shop_rescue_20261001_080910", "_rescue_verify_20261001_080910", "shop_rescue_verify_x"} {
+	for _, bad := range []string{"", "ABCDEF", "a1b2c", "a1b2c3d", "zzzzzz"} {
+		if _, err := RescueVerifyDatabaseName("shop", at, bad); !errors.Is(err, ErrInvalidVerifySuffix) {
+			t.Errorf("suffix %q accepted", bad)
+		}
+	}
+	s1, err1 := NewRescueVerifySuffix()
+	s2, err2 := NewRescueVerifySuffix()
+	if err1 != nil || err2 != nil || s1 == s2 || !isLowerHex(s1, RescueVerifySuffixLength) {
+		t.Fatalf("suffixes %q %q", s1, s2)
+	}
+	for _, n := range []string{"shop", "shop_rescue_20261001_080910", "_rescue_verify_20261001_080910_a1b2c3", "shop_rescue_verify_x",
+		"shop_rescue_verify_20261001_080910", "shop_rescue_verify_20261001_080910_A1B2C3", "shop_rescue_verify_20261001_080910_a1b2c3x"} {
 		if IsRescueVerifyDatabaseName(n) {
 			t.Errorf("%q must not look like a restore test database", n)
 		}

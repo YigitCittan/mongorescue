@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,14 +72,16 @@ func (f *fakeTargets) Storage(_ context.Context, id string) (storage.Storage, er
 
 // fakeAdmin records every MongoDB call and serves canned answers.
 type fakeAdmin struct {
-	mu       sync.Mutex
-	calls    []string // "op database"
-	exists   map[string]bool
-	missing  []string
-	privErr  error
-	manifest *models.Manifest
-	dropErr  error
-	dropped  []string
+	mu     sync.Mutex
+	calls  []string // "op database"
+	exists map[string]bool
+	// existsPrefix makes every database with this prefix exist.
+	existsPrefix string
+	missing      []string
+	privErr      error
+	manifest     *models.Manifest
+	dropErr      error
+	dropped      []string
 }
 
 func (a *fakeAdmin) record(op, db string) {
@@ -91,7 +94,7 @@ func (a *fakeAdmin) DatabaseExists(_ context.Context, _, db string) (bool, error
 	a.record("exists", db)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.exists[db], nil
+	return a.exists[db] || (a.existsPrefix != "" && strings.HasPrefix(db, a.existsPrefix)), nil
 }
 
 func (a *fakeAdmin) DropDatabase(ctx context.Context, _, db string) error {

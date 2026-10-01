@@ -20,15 +20,17 @@ import (
 const (
 	keyPrefixVerify      = "verify:"
 	keyPrefixRestoreTest = "restore-test:"
-	keyPrefixScan        = "scan:"
-	keyPrefixImport      = "import:"
-	keySweep             = "sweep"
+	// keyPrefixRestoreTestDB locks a restore test's temporary database name.
+	keyPrefixRestoreTestDB = "restore-test-db:"
+	keyPrefixScan          = "scan:"
+	keyPrefixImport        = "import:"
+	keySweep               = "sweep"
 )
 
 // isIntegrityKey reports whether a runs.Manager key belongs to integrity work.
 func isIntegrityKey(k string) bool {
 	return k == keySweep || strings.HasPrefix(k, keyPrefixVerify) || strings.HasPrefix(k, keyPrefixRestoreTest) ||
-		strings.HasPrefix(k, keyPrefixScan) || strings.HasPrefix(k, keyPrefixImport)
+		strings.HasPrefix(k, keyPrefixRestoreTestDB) || strings.HasPrefix(k, keyPrefixScan) || strings.HasPrefix(k, keyPrefixImport)
 }
 
 // stateSweep is the integrity state document of the sweep.

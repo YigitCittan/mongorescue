@@ -77,6 +77,59 @@ func (s *SQLiteStore) UpdateBackupRecord(ctx context.Context, id string, fn func
 	return out, nil
 }
 
+// ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
+var ErrPruneRefused = errors.New("store: retention must keep this backup")
+
+// PruneBackupRecord marks completed backup id pruned, in one transaction that
+// re-checks what retention must keep: a pinned backup, a backup that is no longer
+// completed, and the newest backup of its job (same connection, storage target and
+// scheduled trigger) whose verification is ok, so a verification recorded after
+// retention planned cannot be overtaken. A refusal wraps ErrPruneRefused; an unknown
+// id returns ErrNotFound.
+func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error) {
+	var out *models.BackupRecord
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		rec, err := getRecord[models.BackupRecord](ctx, tx, ErrNotFound, "SELECT data FROM backups WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Pinned:
+			return fmt.Errorf("%w: backup %s is pinned", ErrPruneRefused, id)
+		case rec.Status != models.StatusCompleted:
+			return fmt.Errorf("%w: backup %s is %s", ErrPruneRefused, id, rec.Status)
+		}
+		if rec.Verification == models.VerificationOK && rec.JobID != "" {
+			// Strict: an unreadable sibling could be the newest verified backup, so a
+			// row that does not decode refuses the prune instead of being skipped.
+			siblings, err := listRecordsStrict[models.BackupRecord](ctx, tx,
+				"SELECT data FROM backups WHERE job_id = ? AND status = ?", rec.JobID, string(models.StatusCompleted))
+			if err != nil {
+				return fmt.Errorf("%w: the job's other backups cannot all be read: %w", ErrPruneRefused, err)
+			}
+			newer := false
+			for _, o := range siblings {
+				if o.ID != rec.ID && o.Verification == models.VerificationOK && o.StartedAt.After(rec.StartedAt) &&
+					o.ConnectionID == rec.ConnectionID && o.StorageTargetID == rec.StorageTargetID &&
+					o.EffectiveTrigger() == rec.EffectiveTrigger() {
+					newer = true
+					break
+				}
+			}
+			if !newer {
+				return fmt.Errorf("%w: backup %s is the job's newest verified backup", ErrPruneRefused, id)
+			}
+		}
+		rec.Status = models.StatusPruned
+		out = rec
+		return putBackup(ctx, tx, rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpdateJobRestoreTest stores summary as the job's latest restore test without
 // touching its settings or UpdatedAt. It returns ErrNotFound when the job was deleted.
 func (s *SQLiteStore) UpdateJobRestoreTest(ctx context.Context, id string, summary *models.RestoreTestSummary) error {

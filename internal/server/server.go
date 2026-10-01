@@ -655,13 +655,20 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A pinned backup (legal hold) is only deleted after it is unpinned.
-	if err := operations.CheckDeletable(rec); err != nil {
+	if err = operations.CheckDeletable(rec); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 
+	// The archive is only deleted when no other record names it (see archiveShared).
+	keepReason, err := s.archiveShared(r.Context(), rec)
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+
 	// Delete from the storage target the backup was written to (not the current default)
-	if rec.StorageKey != "" {
+	if rec.StorageKey != "" && keepReason == "" {
 		driver, delErr := s.storageFor(r.Context(), rec.StorageTargetID)
 		if delErr == nil {
 			delErr = driver.Delete(r.Context(), rec.StorageKey)
@@ -682,7 +689,11 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ops.RemoveRunLog(id)
 
-	writeJSON(w, http.StatusOK, map[string]string{"deleted_id": id})
+	resp := map[string]any{"deleted_id": id, "archive_deleted": rec.StorageKey != "" && keepReason == ""}
+	if keepReason != "" {
+		resp["archive_kept"] = keepReason
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {

@@ -381,21 +381,42 @@ func parseKey(key string) keyInfo {
 	return info
 }
 
-// StartImport creates a backup record for the orphan archive key on storage target
-// targetID and hashes the archive in the background: the record is pending until
-// its size and SHA-256 are known, then completed, imported and unverified. A failed
-// import marks the record failed and detaches it from the key, so the archive stays
-// an orphan and is never deleted through the record. Expected failures:
-// ErrNotFound, ErrNotOrphan, ErrBusy and runs.ErrShuttingDown.
+// StartImport makes the orphan archive key on storage target targetID a backup
+// again and hashes it in the background: the record is pending until its size and
+// SHA-256 are known, then completed, imported and unverified. A key that a failed
+// or pruned record still names revives that record (keeping its ID and history) so
+// that no two records ever share an archive; a key a live record owns is refused.
+// The database is taken from the key and must be a valid name. Imports of one key
+// are serialised, and the record check happens under that lock. A failed import
+// marks the record failed and detaches it from the key, so the archive stays an
+// orphan and is never deleted through the record. Expected failures: ErrNotFound,
+// ErrNotOrphan, ErrInvalidImport, ErrBusy and runs.ErrShuttingDown.
 func (s *Service) StartImport(ctx context.Context, targetID, key string) (*models.BackupRecord, error) {
 	key = strings.TrimSpace(key)
 	if !IsArchiveKey(key) {
 		return nil, fmt.Errorf("%w: %q is not a backup archive key", ErrNotOrphan, key)
 	}
+	database, err := importDatabase(key)
+	if err != nil {
+		return nil, err
+	}
 	target, err := s.cfg.Targets.Resolve(ctx, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: storage target %s", ErrNotFound, targetID)
 	}
+	// The lock comes first: the record check and the save below cannot race with
+	// another import of the same key.
+	release, err := s.cfg.Runs.Acquire(keyPrefixImport + target.ID + "/" + key)
+	if err != nil {
+		return nil, err
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
 	driver, err := s.cfg.Targets.Storage(ctx, target.ID)
 	if err != nil {
 		return nil, fmt.Errorf("open storage target: %w", err)
@@ -411,36 +432,79 @@ func (s *Service) StartImport(ctx context.Context, targetID, key string) (*model
 	if err != nil {
 		return nil, err
 	}
-	if rec := byKey[key]; rec != nil && liveStatus(rec.Status) {
-		return nil, fmt.Errorf("%w: it belongs to backup %s", ErrNotOrphan, rec.ID)
-	}
-
-	rec, err := s.importRecord(ctx, target, key, obj)
-	if err != nil {
-		return nil, err
-	}
-	release, err := s.cfg.Runs.Acquire(keyPrefixImport + target.ID + "/" + key)
-	if err != nil {
-		return nil, err
+	var rec *models.BackupRecord
+	priorSHA := ""
+	switch existing := byKey[key]; {
+	case existing != nil && liveStatus(existing.Status):
+		return nil, fmt.Errorf("%w: it belongs to backup %s", ErrNotOrphan, existing.ID)
+	case existing != nil:
+		priorSHA = existing.SHA256
+		if rec, err = s.reviveRecord(ctx, existing.ID, key); err != nil {
+			return nil, err
+		}
+	default:
+		if rec, err = s.importRecord(ctx, target, key, database, obj); err != nil {
+			return nil, err
+		}
+		if err := s.cfg.Store.SaveBackupRecord(ctx, rec); err != nil {
+			return nil, fmt.Errorf("save imported record: %w", err)
+		}
 	}
 	snapshot := *rec
-	if err := s.cfg.Store.SaveBackupRecord(ctx, rec); err != nil {
-		release()
-		return nil, fmt.Errorf("save imported record: %w", err)
-	}
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
 		defer release()
-		s.finishImport(runCtx, driver, rec)
+		s.finishImport(runCtx, driver, rec, priorSHA)
 	}); err != nil {
-		release()
 		s.failImport(ctx, rec, err)
 		return nil, err
 	}
+	released = true
 	return &snapshot, nil
 }
 
-// importRecord builds the pending record of an imported archive.
-func (s *Service) importRecord(ctx context.Context, target *models.StorageTarget, key string, obj *models.StorageObject) (*models.BackupRecord, error) {
+// importDatabase returns the database an imported archive key names. It must be a
+// valid MongoDB database name without '*' or '\' (which namespace patterns would
+// read as wildcards or escapes); keys that name none are refused.
+func importDatabase(key string) (string, error) {
+	db := ""
+	if m := defaultLayout.FindStringSubmatch(key); m != nil {
+		db = m[1]
+	} else if dir, _, ok := strings.Cut(key, "/"); ok {
+		db = dir
+	}
+	switch {
+	case db == "":
+		return "", fmt.Errorf("%w: the key %q names no database (expected <db>/<YYYY>/<MM>/<backup id>.archive)", ErrInvalidImport, key)
+	case strings.ContainsAny(db, "*\\"):
+		return "", fmt.Errorf("%w: the database %q in the key contains '*' or '\\'", ErrInvalidImport, db)
+	}
+	if err := models.ValidateDatabaseName(db); err != nil {
+		return "", fmt.Errorf("%w: the database in the key: %w", ErrInvalidImport, err)
+	}
+	return db, nil
+}
+
+// reviveRecord turns the failed or pruned record id that still names key into a
+// pending import: same ID and history, but manual (retention never prunes it
+// again) and unverified until it is hashed.
+func (s *Service) reviveRecord(ctx context.Context, id, key string) (*models.BackupRecord, error) {
+	now := s.now()
+	rec, err := s.cfg.Store.UpdateBackupRecord(ctx, id, func(r *models.BackupRecord) error {
+		if liveStatus(r.Status) || r.StorageKey != key {
+			return fmt.Errorf("%w: backup %s changed meanwhile", ErrNotOrphan, r.ID)
+		}
+		r.Status, r.Trigger, r.Imported, r.ImportedAt, r.ErrorMessage = models.StatusPending, models.TriggerManual, true, &now, ""
+		r.CompletedAt, r.MissingSince, r.VerifiedAt, r.Verification, r.VerificationError = nil, nil, nil, "", ""
+		return nil
+	})
+	if err != nil {
+		return nil, notFound(err, "backup not found")
+	}
+	return rec, nil
+}
+
+// importRecord builds the pending record of an imported archive of database.
+func (s *Service) importRecord(ctx context.Context, target *models.StorageTarget, key, database string, obj *models.StorageObject) (*models.BackupRecord, error) {
 	info := parseKey(key)
 	now := s.now()
 	started := info.startedAt
@@ -450,16 +514,12 @@ func (s *Service) importRecord(ctx context.Context, target *models.StorageTarget
 	if started.IsZero() {
 		started = now
 	}
-	database := info.database
-	if database == "" {
-		database = "imported"
-	}
 	id := info.id
 	if id != "" {
 		if models.ValidateID(id) != nil {
 			id = ""
 		} else if _, err := s.cfg.Store.GetBackupRecord(ctx, id); err == nil {
-			id = "" // the ID is taken (e.g. by the pruned record of the same archive)
+			id = "" // the ID is taken by a record of another archive
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return nil, fmt.Errorf("check backup id: %w", err)
 		}
@@ -480,8 +540,10 @@ func (s *Service) importRecord(ctx context.Context, target *models.StorageTarget
 	return rec, nil
 }
 
-// finishImport hashes the imported archive and completes (or fails) its record.
-func (s *Service) finishImport(ctx context.Context, driver storage.Storage, rec *models.BackupRecord) {
+// finishImport hashes the imported archive and completes (or fails) its record. A
+// revived record whose archive no longer matches the checksum recorded when it was
+// written (priorSHA) is completed with the new checksum but flagged as a mismatch.
+func (s *Service) finishImport(ctx context.Context, driver storage.Storage, rec *models.BackupRecord, priorSHA string) {
 	sum, size, err := hashObject(ctx, driver, rec.StorageKey)
 	if err != nil {
 		s.failImport(ctx, rec, err)
@@ -495,6 +557,10 @@ func (s *Service) finishImport(ctx context.Context, driver storage.Storage, rec 
 		}
 		done := s.now()
 		r.Status, r.SHA256, r.SizeBytes, r.CompletedAt = models.StatusCompleted, sum, size, &done
+		if priorSHA != "" && !strings.EqualFold(priorSHA, sum) {
+			r.Verification, r.VerifiedAt = models.VerificationMismatch, &done
+			r.VerificationError = fmt.Sprintf("the archive no longer matches the checksum recorded when it was written (recorded %s, imported %s)", priorSHA, sum)
+		}
 		return nil
 	})
 	if err != nil {

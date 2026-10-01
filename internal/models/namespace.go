@@ -1,6 +1,8 @@
 package models
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -95,11 +97,34 @@ func RescueDatabaseName(source string, t time.Time) string {
 // rescueVerifyInfix marks the temporary databases of automated restore tests.
 const rescueVerifyInfix = "_rescue_verify_"
 
+// RescueVerifySuffixLength is the length of the random hex suffix of a restore
+// test's temporary database name.
+const RescueVerifySuffixLength = 6
+
+// ErrInvalidVerifySuffix is returned for a restore test suffix that is not
+// RescueVerifySuffixLength lowercase hex characters.
+var ErrInvalidVerifySuffix = errors.New("restore test suffix must be 6 lowercase hex characters")
+
 // RescueVerifyDatabaseName returns the temporary database of an automated restore
-// test of source at t: "<source>_rescue_verify_<YYYYMMDD_HHMMSS>" in UTC, shortened
-// like RescueDatabaseName so that it fits in MaxDatabaseNameLength.
-func RescueVerifyDatabaseName(source string, t time.Time) string {
-	return withSuffix(source, rescueVerifyInfix+t.UTC().Format(rescueTimeLayout))
+// test of source at t: "<source>_rescue_verify_<YYYYMMDD_HHMMSS>_<suffix>" in UTC,
+// where suffix is RescueVerifySuffixLength random lowercase hex characters (see
+// NewRescueVerifySuffix), so concurrent tests of one database never share a name.
+// The source part is shortened like RescueDatabaseName so that the name fits in
+// MaxDatabaseNameLength.
+func RescueVerifyDatabaseName(source string, t time.Time, suffix string) (string, error) {
+	if !isLowerHex(suffix, RescueVerifySuffixLength) {
+		return "", ErrInvalidVerifySuffix
+	}
+	return withSuffix(source, rescueVerifyInfix+t.UTC().Format(rescueTimeLayout)+"_"+suffix), nil
+}
+
+// NewRescueVerifySuffix returns a random suffix for RescueVerifyDatabaseName.
+func NewRescueVerifySuffix() (string, error) {
+	b := make([]byte, RescueVerifySuffixLength/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("random restore test suffix: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // IsRescueVerifyDatabaseName reports whether name has the shape of a restore test's
@@ -109,8 +134,27 @@ func IsRescueVerifyDatabaseName(name string) bool {
 	if i <= 0 {
 		return false
 	}
-	_, err := time.Parse(rescueTimeLayout, name[i+len(rescueVerifyInfix):])
+	// "<YYYYMMDD_HHMMSS>_<suffix>"
+	rest := name[i+len(rescueVerifyInfix):]
+	n := len(rescueTimeLayout)
+	if len(rest) != n+1+RescueVerifySuffixLength || rest[n] != '_' || !isLowerHex(rest[n+1:], RescueVerifySuffixLength) {
+		return false
+	}
+	_, err := time.Parse(rescueTimeLayout, rest[:n])
 	return err == nil
+}
+
+// isLowerHex reports whether s is n lowercase hex characters.
+func isLowerHex(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // withSuffix appends suffix to source, shortening source at a character boundary so

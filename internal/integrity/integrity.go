@@ -52,6 +52,10 @@ var (
 	// ErrNotOrphan is returned when importing an object that is not an orphan
 	// archive (it belongs to a backup record, or is not an archive at all).
 	ErrNotOrphan = errors.New("integrity: the object is not an orphan archive")
+	// ErrInvalidImport is returned when an orphan's key names no valid database
+	// (MongoDB's naming rules, and no '*' or '\', which namespace patterns treat as
+	// wildcards and escapes).
+	ErrInvalidImport = errors.New("integrity: the archive cannot be imported")
 	// ErrUnavailable is returned when a dependency the operation needs is not
 	// configured.
 	ErrUnavailable = errors.New("integrity: not available")
