@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -329,6 +330,51 @@ func TestPagination(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Fatalf("paging returned %v; want all 5 backups once", seen)
+	}
+}
+
+func TestListToolsDefaultLimit(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	const n = DefaultPageSize + 10
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for i := range n {
+		at := start.Add(time.Duration(i) * time.Minute)
+		if err := f.store.SaveBackupRecord(ctx, &models.BackupRecord{
+			ID: fmt.Sprintf("bkp_page_%03d", i), Database: "pages", JobID: "job_pages", Status: models.StatusCompleted, StartedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.SaveRestoreRecord(ctx, &models.RestoreRecord{
+			ID: fmt.Sprintf("rst_page_%03d", i), BackupID: "bkp_page_000", TargetDatabase: "pages_rescue", Status: models.RestoreStatusCompleted, StartedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cs := f.session(t, principal(auth.ScopeRead))
+
+	var backups backupList
+	structured(t, ToolListBackups, call(t, cs, ToolListBackups, map[string]any{"job_id": "job_pages"}), &backups)
+	if DefaultPageSize != 50 || len(backups.Backups) != DefaultPageSize || backups.Total != n || backups.NextCursor == "" {
+		t.Fatalf("list_backups without limit = %d of %d (next %q); want %d of %d with a cursor", len(backups.Backups), backups.Total, backups.NextCursor, DefaultPageSize, n)
+	}
+	if backups.Backups[0].ID != fmt.Sprintf("bkp_page_%03d", n-1) {
+		t.Fatalf("first backup = %s; want the newest", backups.Backups[0].ID)
+	}
+	var rest backupList
+	structured(t, ToolListBackups, call(t, cs, ToolListBackups, map[string]any{"job_id": "job_pages", "cursor": backups.NextCursor}), &rest)
+	if len(rest.Backups) != n-DefaultPageSize || rest.NextCursor != "" {
+		t.Fatalf("second page = %d (next %q); want %d and no cursor", len(rest.Backups), rest.NextCursor, n-DefaultPageSize)
+	}
+
+	var restores restoreList
+	structured(t, ToolListRestores, call(t, cs, ToolListRestores, map[string]any{"database": "pages_rescue", "status": "completed"}), &restores)
+	if len(restores.Restores) != DefaultPageSize || restores.Total != n || restores.NextCursor == "" {
+		t.Fatalf("list_restores without limit = %d of %d; want %d of %d", len(restores.Restores), restores.Total, DefaultPageSize, n)
+	}
+	structured(t, ToolListRestores, call(t, cs, ToolListRestores, map[string]any{"backup_id": "bkp_missing"}), &restores)
+	if len(restores.Restores) != 0 || restores.Total != 0 {
+		t.Fatalf("list_restores of another backup = %+v; want none", restores)
 	}
 }
 

@@ -280,12 +280,14 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// API Backups
 	mux.HandleFunc("GET /api/v1/backups", s.handleListBackups)
+	mux.HandleFunc("GET /api/v1/backups/databases", s.handleBackupDatabases)
 	mux.HandleFunc("POST /api/v1/backups", s.handleCreateBackup)
 	mux.HandleFunc("DELETE /api/v1/backups/{id}", s.handleDeleteBackup)
 	mux.HandleFunc("POST /api/v1/backups/{id}/retry", s.handleRetryBackup)
 
 	// API Disaster Recovery / Restores
 	mux.HandleFunc("GET /api/v1/restores", s.handleListRestores)
+	mux.HandleFunc("GET /api/v1/restores/databases", s.handleRestoreDatabases)
 	mux.HandleFunc("POST /api/v1/restore", s.handleRunRestore)
 
 	// API Notifications (channels & rule workflows)
@@ -531,16 +533,6 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, record)
 }
 
-func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	backups, err := s.ops.ListBackups(r.Context(), operations.BackupFilter{Database: q.Get("database"), JobID: q.Get("job_id")})
-	if err != nil {
-		s.writeOperationError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, backups)
-}
-
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	var req operations.BackupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -634,15 +626,6 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"deleted_id": id})
-}
-
-func (s *Server) handleListRestores(w http.ResponseWriter, r *http.Request) {
-	restores, err := s.ops.ListRestores(r.Context())
-	if err != nil {
-		s.writeOperationError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, restores)
 }
 
 func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {

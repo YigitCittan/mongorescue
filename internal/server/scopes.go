@@ -62,10 +62,12 @@ var routeScopes = map[string]auth.Scope{
 	"DELETE /api/v1/jobs/{id}":        auth.ScopeAdmin,
 	"POST /api/v1/jobs/{id}/run":      auth.ScopeOperator,
 	"GET /api/v1/backups":             auth.ScopeRead,
+	"GET /api/v1/backups/databases":   auth.ScopeRead,
 	"POST /api/v1/backups":            auth.ScopeOperator,
 	"DELETE /api/v1/backups/{id}":     auth.ScopeAdmin,
 	"POST /api/v1/backups/{id}/retry": auth.ScopeOperator,
 	"GET /api/v1/restores":            auth.ScopeRead,
+	"GET /api/v1/restores/databases":  auth.ScopeRead,
 	"POST /api/v1/restore":            auth.ScopeOperator,
 
 	"GET /api/v1/notifications/channels":            auth.ScopeRead,

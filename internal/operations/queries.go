@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -29,31 +30,120 @@ func (s *Service) GetJob(ctx context.Context, id string) (*models.Job, error) {
 	return job, nil
 }
 
-// BackupFilter narrows ListBackups. Zero fields match everything.
-type BackupFilter struct {
-	// Database keeps backups of this database.
-	Database string
-	// ConnectionID keeps backups taken from this connection.
-	ConnectionID string
-	// Status keeps backups in this state.
-	Status models.BackupStatus
-	// JobID keeps backups taken by this scheduled job.
-	JobID string
+// BackupFilter selects, orders and pages backups; zero fields match everything. See
+// store.BackupFilter for the fields.
+type BackupFilter = store.BackupFilter
+
+// RestoreFilter selects, orders and pages restores; zero fields match everything. See
+// store.RestoreFilter for the fields.
+type RestoreFilter = store.RestoreFilter
+
+// MaxListLimit is the largest page size of QueryBackups and QueryRestores.
+const MaxListLimit = store.MaxListLimit
+
+// maxFilterText bounds the free-text and ID filter values a client may send.
+const maxFilterText = 256
+
+// BackupItem is a listed backup record with its newest retry, if any.
+type BackupItem struct {
+	*models.BackupRecord
+	// RetriedBy is the newest backup retrying this one; omitted when there is none.
+	RetriedBy *store.RetryRef `json:"retried_by,omitempty"`
 }
 
-// ListBackups returns the backup records matching f, newest first.
-func (s *Service) ListBackups(ctx context.Context, f BackupFilter) ([]*models.BackupRecord, error) {
-	list, err := s.cfg.Store.ListBackupRecords(ctx, f.Database)
+// BackupPage is one page of QueryBackups.
+type BackupPage struct {
+	// Items are the backups of the page.
+	Items []BackupItem
+	// Total counts every backup matching the filter.
+	Total int
+}
+
+// RestorePage is one page of QueryRestores.
+type RestorePage struct {
+	// Items are the restores of the page.
+	Items []*models.RestoreRecord
+	// Total counts every restore matching the filter.
+	Total int
+}
+
+// validBackupStatuses and the other value sets below are the accepted filter values.
+var (
+	validBackupStatuses = []models.BackupStatus{
+		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusPruned,
+	}
+	validTriggers = []models.BackupTrigger{
+		models.TriggerScheduled, models.TriggerOnDemand, models.TriggerManual, models.TriggerMCP,
+	}
+	validRestoreStatuses = []models.RestoreStatus{
+		models.RestoreStatusPending, models.RestoreStatusInProgress, models.RestoreStatusCompleted, models.RestoreStatusFailed,
+	}
+)
+
+// checkText rejects filter values longer than maxFilterText bytes.
+func checkText(fields map[string]string) error {
+	for name, v := range fields {
+		if len(v) > maxFilterText {
+			return public(fmt.Sprintf("%s must be at most %d characters", name, maxFilterText), ErrInvalid)
+		}
+	}
+	return nil
+}
+
+// filterError maps store.ErrInvalidFilter to an ErrInvalid error.
+func filterError(err error, what string) error {
+	if errors.Is(err, store.ErrInvalidFilter) {
+		return public(strings.TrimPrefix(err.Error(), "store: invalid list filter: "), ErrInvalid, err)
+	}
+	return fmt.Errorf("list %s: %w", what, err)
+}
+
+// QueryBackups returns the page of backups f selects and the number of all matches.
+// Unknown status or trigger values and out-of-range paging return ErrInvalid errors.
+func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage, error) {
+	if f.Status != "" && !slices.Contains(validBackupStatuses, f.Status) {
+		return nil, public("status must be one of pending, in_progress, completed, failed, pruned", ErrInvalid)
+	}
+	if f.Trigger != "" && !slices.Contains(validTriggers, f.Trigger) {
+		return nil, public("trigger must be one of scheduled, on_demand, manual, mcp", ErrInvalid)
+	}
+	if err := checkText(map[string]string{
+		"database": f.Database, "connection_id": f.ConnectionID, "job_id": f.JobID, "retry_of": f.RetryOf, "q": f.Search,
+	}); err != nil {
+		return nil, err
+	}
+	page, err := s.cfg.Store.QueryBackupRecords(ctx, f)
 	if err != nil {
-		return nil, fmt.Errorf("list backups: %w", err)
+		return nil, filterError(err, "backups")
 	}
-	if f.ConnectionID == "" && f.Status == "" && f.JobID == "" {
-		return list, nil
+	out := &BackupPage{Items: make([]BackupItem, 0, len(page.Rows)), Total: page.Total}
+	for _, row := range page.Rows {
+		out.Items = append(out.Items, BackupItem{BackupRecord: row.Record, RetriedBy: row.RetriedBy})
 	}
-	return slices.DeleteFunc(list, func(b *models.BackupRecord) bool {
-		return (f.ConnectionID != "" && b.ConnectionID != f.ConnectionID) || (f.Status != "" && b.Status != f.Status) ||
-			(f.JobID != "" && b.JobID != f.JobID)
-	}), nil
+	return out, nil
+}
+
+// ListBackups returns every backup record matching f (its Limit and Offset apply),
+// without retry information.
+func (s *Service) ListBackups(ctx context.Context, f BackupFilter) ([]*models.BackupRecord, error) {
+	page, err := s.QueryBackups(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]*models.BackupRecord, 0, len(page.Items))
+	for _, it := range page.Items {
+		list = append(list, it.BackupRecord)
+	}
+	return list, nil
+}
+
+// BackupDatabases returns the distinct database names of all backups, sorted.
+func (s *Service) BackupDatabases(ctx context.Context) ([]string, error) {
+	dbs, err := s.cfg.Store.ListBackupDatabases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list backup databases: %w", err)
+	}
+	return dbs, nil
 }
 
 // GetBackup returns backup record id or an ErrNotFound error.
@@ -65,6 +155,22 @@ func (s *Service) GetBackup(ctx context.Context, id string) (*models.BackupRecor
 	return b, nil
 }
 
+// QueryRestores returns the page of restores f selects and the number of all matches.
+// Unknown status values and out-of-range paging return ErrInvalid errors.
+func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestorePage, error) {
+	if f.Status != "" && !slices.Contains(validRestoreStatuses, f.Status) {
+		return nil, public("status must be one of pending, in_progress, completed, failed", ErrInvalid)
+	}
+	if err := checkText(map[string]string{"backup_id": f.BackupID, "database": f.TargetDatabase, "q": f.Search}); err != nil {
+		return nil, err
+	}
+	page, err := s.cfg.Store.QueryRestoreRecords(ctx, f)
+	if err != nil {
+		return nil, filterError(err, "restores")
+	}
+	return &RestorePage{Items: page.Records, Total: page.Total}, nil
+}
+
 // ListRestores returns every restore record, newest first.
 func (s *Service) ListRestores(ctx context.Context) ([]*models.RestoreRecord, error) {
 	list, err := s.cfg.Store.ListRestoreRecords(ctx)
@@ -72,6 +178,15 @@ func (s *Service) ListRestores(ctx context.Context) ([]*models.RestoreRecord, er
 		return nil, fmt.Errorf("list restores: %w", err)
 	}
 	return list, nil
+}
+
+// RestoreDatabases returns the distinct target databases of all restores, sorted.
+func (s *Service) RestoreDatabases(ctx context.Context) ([]string, error) {
+	dbs, err := s.cfg.Store.ListRestoreDatabases(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list restore databases: %w", err)
+	}
+	return dbs, nil
 }
 
 // GetRestore returns restore record id or an ErrNotFound error.
@@ -101,7 +216,24 @@ type TargetRef struct {
 	Type models.StorageType `json:"type"`
 }
 
-// Stats are the dashboard KPIs.
+// BackupBrief summarises a backup for the dashboard KPIs.
+type BackupBrief struct {
+	// ID is the backup ID.
+	ID string `json:"id"`
+	// Database is the database.
+	Database string `json:"database"`
+	// JobID is the job that ran it, if any.
+	JobID string `json:"job_id,omitempty"`
+	// Status is the backup's state.
+	Status models.BackupStatus `json:"status"`
+	// StartedAt is when it started.
+	StartedAt time.Time `json:"started_at"`
+	// ErrorMessage is the (redacted) failure reason of a failed backup.
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// Stats are the dashboard KPIs. They cover every record, independent of any page of
+// the backup or restore lists.
 type Stats struct {
 	// TotalBackups counts every backup record.
 	TotalBackups int `json:"total_backups"`
@@ -109,10 +241,18 @@ type Stats struct {
 	CompletedBackups int `json:"completed_backups"`
 	// FailedBackups counts failed backups.
 	FailedBackups int `json:"failed_backups"`
+	// FailedBackups24h counts backups that started in the last 24 hours and failed.
+	FailedBackups24h int `json:"failed_backups_24h"`
 	// TotalBytes sums the size of completed backups.
 	TotalBytes int64 `json:"total_bytes"`
+	// TotalRestores counts every restore record.
+	TotalRestores int `json:"total_restores"`
 	// ActiveJobs counts enabled jobs.
 	ActiveJobs int `json:"active_jobs"`
+	// LastBackup is the newest backup, when there is one.
+	LastBackup *BackupBrief `json:"last_backup,omitempty"`
+	// JobLastBackups maps each job ID to its newest backup (without error message).
+	JobLastBackups map[string]BackupBrief `json:"job_last_backups"`
 	// StorageType is the type of the default storage target, when there is one.
 	StorageType models.StorageType `json:"storage_type,omitempty"`
 	// DefaultStorageTarget is the default storage target, when there is one.
@@ -124,24 +264,42 @@ type Stats struct {
 func (s *Service) Stats(ctx context.Context) Stats {
 	backups, _ := s.cfg.Store.ListBackupRecords(ctx, "")
 	jobs, _ := s.cfg.Store.ListJobs(ctx)
-	return s.stats(ctx, backups, jobs)
+	restores := 0
+	if page, err := s.cfg.Store.QueryRestoreRecords(ctx, store.RestoreFilter{Limit: 1}); err == nil {
+		restores = page.Total
+	}
+	return s.stats(ctx, backups, jobs, restores)
 }
 
-func (s *Service) stats(ctx context.Context, backups []*models.BackupRecord, jobs []*models.Job) Stats {
-	var st Stats
+// stats computes the KPIs from backups (newest first), jobs and the restore count.
+func (s *Service) stats(ctx context.Context, backups []*models.BackupRecord, jobs []*models.Job, restores int) Stats {
+	st := Stats{TotalRestores: restores, JobLastBackups: map[string]BackupBrief{}}
 	for _, j := range jobs {
 		if j.Enabled {
 			st.ActiveJobs++
 		}
 	}
 	st.TotalBackups = len(backups)
-	for _, b := range backups {
+	since := s.now().Add(-24 * time.Hour)
+	for i, b := range backups {
+		brief := BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt}
+		if i == 0 {
+			last := brief
+			last.ErrorMessage = b.ErrorMessage
+			st.LastBackup = &last
+		}
+		if _, seen := st.JobLastBackups[b.JobID]; b.JobID != "" && !seen {
+			st.JobLastBackups[b.JobID] = brief
+		}
 		switch b.Status {
 		case models.StatusCompleted:
 			st.CompletedBackups++
 			st.TotalBytes += b.SizeBytes
 		case models.StatusFailed:
 			st.FailedBackups++
+			if !b.StartedAt.Before(since) {
+				st.FailedBackups24h++
+			}
 		}
 	}
 	if s.cfg.Targets != nil {
@@ -232,7 +390,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	now := s.now().UTC()
 	st := &Status{
 		Health: "healthy", Version: s.cfg.Version, Time: now,
-		Stats: s.stats(ctx, backups, jobs), Jobs: len(jobs),
+		Stats: s.stats(ctx, backups, jobs, len(restores)), Jobs: len(jobs),
 		JobStatus: make([]JobStatus, 0, len(jobs)), FailedLast24h: []FailedBackup{},
 	}
 	if s.cfg.Connections != nil {
