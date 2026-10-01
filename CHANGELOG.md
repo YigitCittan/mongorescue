@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-01
+
 ### Added
 - `GET /api/v1/auth/sessions` (read scope) lists your own live sessions (`id`, `user_id`, `username`, `created_at`, `last_seen_at`, `expires_at`, `current`); `?all=true` lists every user's and needs admin. `DELETE /api/v1/auth/sessions/{id}` (admin) revokes one and clears the cookie when it is the caller's own. Session IDs are derived one-way from the token hash: the API never returns tokens, their hashes or CSRF tokens. An API key sees the sessions of the user who created it. No schema migration. See [docs/api.md](docs/api.md).
 - Dashboard: a *Sessions* section under Settings lists the signed-in browsers (yours, or *All users*), marks *This browser* and revokes them one by one. The user menu gains *API keys* and *Active sessions*.
