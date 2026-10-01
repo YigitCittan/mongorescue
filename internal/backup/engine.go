@@ -75,6 +75,12 @@ type Engine struct {
 
 	listCollections CollectionLister
 
+	// manifest captures the manifest of every backup; verifyUpload and
+	// verifyDecryptor configure the post-upload verification (see integrity.go).
+	manifest        ManifestFunc
+	verifyUpload    bool
+	verifyDecryptor *encryption.Decryptor
+
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
 	config     func() RunConfig
@@ -90,6 +96,12 @@ type RunConfig struct {
 	Timeout time.Duration
 	// StallTimeout aborts a silent mongodump (0 = off).
 	StallTimeout time.Duration
+	// Verify re-reads every stored archive after the upload and compares it with the
+	// checksum computed while writing it (a job's override takes precedence).
+	Verify bool
+	// VerifyDecryptor, when set, also decrypts encrypted archives to their end
+	// during that verification; nil compares the checksum only.
+	VerifyDecryptor *encryption.Decryptor
 }
 
 // StorageFunc returns the storage driver of a storage target (the default target for
@@ -118,7 +130,8 @@ func (e *Engine) runConfig() RunConfig {
 	if e.config != nil {
 		return e.config()
 	}
-	return RunConfig{Encryptor: e.encryptor, Timeout: e.timeout, StallTimeout: e.stallTimeout}
+	return RunConfig{Encryptor: e.encryptor, Timeout: e.timeout, StallTimeout: e.stallTimeout,
+		Verify: e.verifyUpload, VerifyDecryptor: e.verifyDecryptor}
 }
 
 // forRun returns a copy of the engine bound to the current settings and the storage
@@ -127,6 +140,7 @@ func (e *Engine) forRun(ctx context.Context, targetID string) (*Engine, error) {
 	run := *e
 	cfg := e.runConfig()
 	run.encryptor, run.timeout, run.stallTimeout = cfg.Encryptor, cfg.Timeout, cfg.StallTimeout
+	run.verifyUpload, run.verifyDecryptor = cfg.Verify, cfg.VerifyDecryptor
 	if e.storageFor != nil {
 		driver, err := e.storageFor(ctx, targetID)
 		if err != nil {
@@ -374,6 +388,8 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	if err != nil {
 		return e.fail(runCtx, record, err)
 	}
+	// Document counts and indexes before the dump (see finishManifest).
+	manifest := e.captureManifest(runCtx, mongoURI, dumpOpts)
 
 	// Build mongodump arguments
 	args := e.buildDumpArgs(configArg, dumpOpts)
@@ -501,6 +517,10 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		slog.Float64("duration_sec", record.DurationSeconds),
 	)
 
+	e.finishManifest(runCtx, mongoURI, dumpOpts, manifest, record)
+	if err := e.verifyAfterUpload(runCtx, opts, record); err != nil {
+		return e.fail(record, err)
+	}
 	return record, nil
 }
 
