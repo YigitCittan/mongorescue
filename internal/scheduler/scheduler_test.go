@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,6 +366,73 @@ func TestSchedulerStopEndsLoadRetries(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not end the load retries")
+	}
+}
+
+// slowListStore fails the first ListJobs, blocks the second until release is closed
+// (signalling entered), and delegates afterwards.
+type slowListStore struct {
+	store.Store
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *slowListStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
+	switch s.calls.Add(1) {
+	case 1:
+		return nil, errTransient
+	case 2:
+		close(s.entered)
+		<-s.release
+		// The listing taken before the job below was registered: stale.
+		return nil, nil
+	}
+	return s.Store.ListJobs(ctx)
+}
+
+func TestSchedulerLoadRetryDoesNotHoldTheLock(t *testing.T) {
+	fileStore := storetest.New(t)
+	ctx := context.Background()
+	job := &models.Job{ID: "job_a", Name: "a", Database: "shop", CronExpression: "@daily", Enabled: true}
+	if err := fileStore.SaveJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	slow := &slowListStore{Store: fileStore, entered: make(chan struct{}), release: make(chan struct{})}
+	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017")
+	sched := NewScheduler(slow, engine, storage.NewMockStorage(), nil)
+	sched.retryFirst, sched.retryLimit = time.Millisecond, time.Millisecond
+	defer sched.Stop()
+	if err := sched.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-slow.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the load was not retried")
+	}
+
+	// While the retry waits for the store, the scheduler stays usable.
+	done := make(chan error, 1)
+	go func() {
+		sched.Pause()
+		sched.Resume()
+		done <- sched.RegisterJob(&models.Job{ID: "job_new", CronExpression: "@daily", Enabled: true})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RegisterJob blocked behind the job listing")
+	}
+	close(slow.release)
+
+	// The stale (empty) listing is discarded and the jobs are listed again.
+	waitActive(t, sched, 2)
+	if n := slow.calls.Load(); n < 3 {
+		t.Fatalf("ListJobs calls = %d; want a fresh listing after the stale one", n)
 	}
 }
 
