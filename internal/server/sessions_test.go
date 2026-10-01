@@ -31,7 +31,7 @@ func newSessionsFixture(t *testing.T) *sessionsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.CreateUser(ctx, admin, "bob", testPassword); err != nil {
+	if _, err = f.auth.CreateUser(ctx, admin, "bob", testPassword); err != nil {
 		t.Fatal(err)
 	}
 	bob, err := f.auth.Login(ctx, "192.0.2.1", "bob", testPassword)
@@ -156,8 +156,8 @@ func TestRevokeSession(t *testing.T) {
 	if rec.Header().Get("Set-Cookie") != "" {
 		t.Error("revoking another session cleared the caller's cookie")
 	}
-	if rec := serve(f.h, "GET", "/api/v1/jobs", nil, map[string]string{"Cookie": f.bobCookie}); rec.Code != http.StatusUnauthorized {
-		t.Errorf("bob after revoke = %d; want 401", rec.Code)
+	if after := serve(f.h, "GET", "/api/v1/jobs", nil, map[string]string{"Cookie": f.bobCookie}); after.Code != http.StatusUnauthorized {
+		t.Errorf("bob after revoke = %d; want 401", after.Code)
 	}
 	// Revoking the current session signs the caller out.
 	rec = serve(f.h, "DELETE", "/api/v1/auth/sessions/"+adminID, nil, unsafe(f.adminCSRF))

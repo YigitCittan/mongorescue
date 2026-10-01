@@ -142,8 +142,8 @@ func TestRevokeSession(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"", "ses_nope", "ses_" + strings.Repeat("0", 24), f.admin.SessionHash} {
-		if _, err := f.svc.RevokeSession(ctx, f.admin, id); !errors.Is(err, auth.ErrSessionNotFound) {
-			t.Errorf("revoking %q: %v; want ErrSessionNotFound", id, err)
+		if _, rerr := f.svc.RevokeSession(ctx, f.admin, id); !errors.Is(rerr, auth.ErrSessionNotFound) {
+			t.Errorf("revoking %q: %v; want ErrSessionNotFound", id, rerr)
 		}
 	}
 	// An admin may end another user's session.
@@ -154,7 +154,7 @@ func TestRevokeSession(t *testing.T) {
 	if list, _ := f.svc.ListSessions(ctx, f.bob, false); len(list) != 0 {
 		t.Errorf("bob still has %d sessions", len(list))
 	}
-	if _, err := f.svc.RevokeSession(ctx, f.admin, otherAdminID); err != nil {
+	if _, err = f.svc.RevokeSession(ctx, f.admin, otherAdminID); err != nil {
 		t.Fatal(err)
 	}
 	// The caller's own session reports current.
