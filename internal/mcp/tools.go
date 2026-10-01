@@ -39,6 +39,11 @@ const (
 	maxSummaryName = 64
 )
 
+// PreviewTimeout bounds the archive read of list_backup_collections. It is shorter
+// than the HTTP server's write timeout, so a slow archive still gets its record
+// fallback (with the reason) to the client instead of a cut connection.
+const PreviewTimeout = 20 * time.Second
+
 // errInvalidInput marks tool input rejected before any service is called.
 var errInvalidInput = errors.New("invalid input")
 
@@ -707,7 +712,7 @@ func (s *Server) listBackupCollections(ctx context.Context, in backupIDInput) (*
 	if err := requireID("backup_id", in.BackupID); err != nil {
 		return nil, "", err
 	}
-	list, err := s.cfg.Operations.ListBackupCollections(ctx, in.BackupID)
+	list, err := s.cfg.Operations.ListBackupCollectionsWithin(ctx, in.BackupID, PreviewTimeout)
 	if err != nil {
 		return nil, "", err
 	}

@@ -203,7 +203,7 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `get_job` | read | `id` | One job |
 | `list_backups` | read | `database`, `connection_id`, `job_id`, `status`, `limit` (≤ 100, default 50), `cursor` | Backups, newest first |
 | `get_backup` | read | `id` | One backup record (status, size, SHA-256, target, error) |
-| `list_backup_collections` | read | `backup_id` | Collections stored in the backup (`name`, `type`: `collection`, `view` or `timeseries`, `view_on` for views), read from the archive header without downloading the backup; `source` is `record` with a `warning` when the archive could not be read ([details](api.md#selective-restores)) |
+| `list_backup_collections` | read | `backup_id` | Collections stored in the backup (`name`, `type`: `collection`, `view` or `timeseries`, `view_on` for views), read from the archive header without downloading the backup (within 20 seconds); `source` is `record` with a `warning` when the archive could not be read ([details](api.md#selective-restores)) |
 | `list_restores` | read | `status`, `backup_id`, `database` (target), `limit` (≤ 100, default 50), `cursor` | Restores, newest first |
 | `get_restore` | read | `id` | One restore record |
 | `list_storage_targets` | read | | Storage targets without credentials |
