@@ -80,6 +80,27 @@ func TestBackupSeveralCollectionsBecomeExclusions(t *testing.T) {
 	}
 }
 
+// TestDumpArgsKeepWildcardsLiteral checks that names with '*' or '\' reach mongodump
+// unchanged: --db, --collection and --excludeCollection compare names literally (an
+// integration test checks that --excludeCollection=a* skips "a*" only), unlike the
+// namespace patterns of mongorestore, which the restore engine escapes.
+func TestDumpArgsKeepWildcardsLiteral(t *testing.T) {
+	runner := &argsRunner{}
+	engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run))
+	if _, err := engine.Run(context.Background(), models.BackupOptions{Database: "x*", Collections: []string{"a*"}, ExcludeCollections: []string{`a\b`, "*"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.values("--db"); !slices.Equal(got, []string{"x*"}) {
+		t.Fatalf("--db = %q", got)
+	}
+	if got := runner.values("--collection"); !slices.Equal(got, []string{"a*"}) {
+		t.Fatalf("--collection = %q", got)
+	}
+	if got := runner.values("--excludeCollection"); !slices.Equal(got, []string{`a\b`, "*"}) {
+		t.Fatalf("--excludeCollection = %q", got)
+	}
+}
+
 func TestBackupSingleCollectionNeedsNoLister(t *testing.T) {
 	runner := &argsRunner{}
 	engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run))

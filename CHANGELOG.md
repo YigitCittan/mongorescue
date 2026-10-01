@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metadata schema migration `0010` adds indexes for the list filters (status, job, retry, restore backup and target database, each with the start time).
 - *Drop target collections first* explains that `mongorestore` drops only the collections it restores (with a selection, only the selected ones); an integration test checks that the other collections of the target are kept. A `selected_collections` list of blank names restores the whole database with an explicit `--nsInclude=<db>.*`, as no selection does.
 
+### Fixed
+- **Security:** `*` and `\` in database and collection names are escaped in every namespace argument passed to `mongorestore` (`--nsInclude`, `--nsFrom`, `--nsTo`), where they are a wildcard and its escape character. Before, restoring a selected collection named `a*` with *Drop target collections first* selected, and dropped, every collection of the target whose name starts with `a`; a database named `x*` matched any `x…` namespace. `mongodump` arguments take names literally and were already correct (`--excludeCollection=a*` skips `a*` only); integration tests cover both.
+
 ## [0.8.1] - 2026-09-30
 
 The `v0.8.0` tag was never released: a flaky test stopped its release build. This release contains everything planned for 0.8.0.

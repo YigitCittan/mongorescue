@@ -671,6 +671,8 @@ func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.
 
 // buildDumpArgs constructs safe CLI arguments for mongodump. configArg is the
 // "--config=<file>" argument carrying the connection URI (see mongotools.WriteURIConfig).
+// Names are passed as they are: mongodump's --db, --collection and --excludeCollection
+// match literally, so '*' and '\' need no escaping (unlike mongorestore's --ns* patterns).
 func (e *Engine) buildDumpArgs(configArg string, opts models.BackupOptions) []string {
 	args := []string{
 		configArg,

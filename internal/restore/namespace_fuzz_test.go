@@ -13,7 +13,7 @@ import (
 // for its database name (only client input is validated, by the operations layer),
 // that a restore goes into a "<db>_rescue_<timestamp>" clone of at most 63 bytes
 // unless it is confirmed in place, and that each name reaches mongorestore only inside
-// its own --nsFrom/--nsTo/--nsInclude element.
+// its own --nsFrom/--nsTo/--nsInclude element, with '*' and backslashes escaped.
 func FuzzPrepareNamespaces(f *testing.F) {
 	f.Add("shop", "", "users", false)
 	f.Add("ecommerce_prod", "", "", false)
@@ -59,15 +59,18 @@ func FuzzPrepareNamespaces(f *testing.F) {
 		}
 
 		args := e.buildRestoreArgs("--config=x", sourceDB, target, req, false)
+		// Backslashes and '*' in names are escaped; only a trailing ".*" is a wildcard.
+		esc := strings.NewReplacer(`\`, `\\`, `*`, `\*`).Replace
+		srcNS := esc(sourceDB)
 		var want []string
 		if target != "" && target != sourceDB {
-			want = append(want, "--nsFrom="+sourceDB+".*", "--nsTo="+target+".*")
+			want = append(want, "--nsFrom="+srcNS+".*", "--nsTo="+esc(target)+".*")
 		}
 		// A blank selected collection is skipped: the whole database is restored.
 		if coll := strings.TrimSpace(collection); coll != "" {
-			want = append(want, "--nsInclude="+sourceDB+"."+coll)
+			want = append(want, "--nsInclude="+srcNS+"."+esc(coll))
 		} else if sourceDB != "" {
-			want = append(want, "--nsInclude="+sourceDB+".*")
+			want = append(want, "--nsInclude="+srcNS+".*")
 		}
 		var got []string
 		for _, a := range args {
