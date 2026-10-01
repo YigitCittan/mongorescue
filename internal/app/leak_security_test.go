@@ -297,7 +297,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		"/api/v1/integrity", "/api/v1/storage-targets/" + target.ID + "/scan",
 		"/api/v1/jobs/" + job.ID + "/retention/preview", "/api/v1/jobs/" + job.ID + "/retention/log",
 		"/api/v1/jobs/" + job.ID + "/restore-tests",
-		"/", "/index.html", "/app.js", "/api/v1/health", "/api/v1/setup/status", "/api/v1/auth/me",
+		"/", "/index.html", "/app.js", "/trust.js", "/api/v1/health", "/api/v1/setup/status", "/api/v1/auth/me",
 		"/api/v1/users", "/api/v1/api-keys", "/api/v1/connections", "/api/v1/connections/" + conn.ID,
 		"/api/v1/settings", "/api/v1/storage-targets", "/api/v1/storage-targets/" + target.ID, "/api/v1/stats",
 		"/api/v1/jobs", "/api/v1/jobs/" + job.ID, "/api/v1/backups", "/api/v1/backups?database=shop", "/api/v1/restores",

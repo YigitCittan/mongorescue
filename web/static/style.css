@@ -2661,4 +2661,120 @@ input[type="radio"] {
   overflow: auto;
   color: var(--warn);
   background: var(--warn-subtle);
+
+/* --------------------------------------------------------------------------
+   Backup trust: verification and restore test chips, pins, storage scans,
+   the integrity sweep (trust.js)
+   -------------------------------------------------------------------------- */
+.callout-warning {
+  border-color: var(--warn);
+  background: var(--warn-subtle);
+}
+
+.trust-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.trust-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.trust-chip .badge-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.trust-ok {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.trust-bad {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.trust-warn {
+  background: var(--warn-subtle);
+  color: var(--warn);
+}
+
+.pin-icon {
+  display: inline-flex;
+  color: var(--warn);
+}
+
+.trust-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.trust-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.trust-list li .cell-sub {
+  flex-basis: 100%;
+}
+
+.trust-scans-section,
+.trust-sweep {
+  margin-top: 24px;
+}
+
+.trust-scan {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.trust-scan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trust-subheading {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.trust-scan .ellipsis {
+  max-width: 420px;
+}
+
+.retention-preview {
+  margin-top: -4px;
+}
+
+.job-trust {
+  margin-top: 8px;
+}
+
+#integrity-sweep-status p {
+  margin: 4px 0;
+  font-size: 13px;
 }

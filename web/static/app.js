@@ -594,6 +594,8 @@ async function refreshAll() {
   }
   if (!auth.user) return;
   renderWarnings();
+  // Integrity status: sweep, storage scans, drift warning (trust.js).
+  trustRefresh();
   renderStats();
   renderJobs();
   renderBackups();
@@ -1637,7 +1639,7 @@ function renderJobs() {
       <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
       <td class="cell-wrap-sm">${escapeHtml(retentionText(job))}</td>
       <td>${jobStateBadge(job)}</td>
-      <td>${lastDot}${timeCell(job.last_run)}</td>
+      <td>${lastDot}${timeCell(job.last_run)}${trustJobChip(job)}</td>
       <td>${enabled ? timeCell(job.next_run) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="btn btn-secondary btn-sm" data-action="trigger-job" data-id="${id}">${escapeHtml(t("actions.run_now"))}</button>
@@ -1737,6 +1739,8 @@ function backupStatus(status) {
       return ["neutral", t("status.pruned")];
     case "cancelled":
       return ["warn", t("run.status_cancelled")];
+    case "missing":
+      return ["danger", t("status.missing")];
     default:
       return ["neutral", String(status || "")];
   }
@@ -1789,9 +1793,9 @@ function renderBackups() {
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
       : "";
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
-      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}</div>${retryLinks(b)}</td>
+      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}${trustPinIcon(b)}</div>${retryLinks(b)}</td>
       <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
-      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}</td>
+      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
       <td class="num">${size}${backupStorageCell(b)}</td>
@@ -2142,7 +2146,8 @@ function rowMenuItems(kind, id) {
     return [["job-details", t("actions.details")], ["edit-job", t("ui.edit")], ...jobRunMenuItems(id), ["delete-job", t("actions.delete"), true]];
   }
   if (kind === "backup") {
-    return [["backup-details", t("actions.details")], ...backupRunMenuItems(id), ["delete-backup", t("actions.delete"), true]];
+    // Run control (runs.js), verify now and pin / unpin (trust.js).
+    return [["backup-details", t("actions.details")], ...backupRunMenuItems(id), ...trustBackupMenuItems(id), ["delete-backup", t("actions.delete"), true]];
   }
   return [];
 }
@@ -2288,6 +2293,7 @@ function setupForms() {
       retention_days: parseInt(getValue("job-retention-days"), 10) || 0,
       retention_count: parseInt(getValue("job-retention-count"), 10) || 0,
       ...storageSelection("job-storage"),
+      ...trustJobPayload(),
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2452,6 +2458,8 @@ function openJobModal(jobID) {
     resetPicker("job", "");
     fillStorageSelect(document.getElementById("job-storage"));
   }
+  // Verification override, restore test and the retention preview (trust.js).
+  trustFillJobForm(job);
   openModal("modal-new-job");
 }
 
@@ -2649,6 +2657,8 @@ function renderJobDetails() {
     : enc.enabled ? tf("job_details.enc_on", { mode: enc.mode === "passphrase" ? t("job_details.enc_passphrase") : "age (X25519)" }) : t("job_details.off"));
   appendKv(options, t("job_details.created"), absoluteWithRelative(job.created_at));
   appendKv(options, t("job_details.updated"), absoluteWithRelative(job.updated_at));
+  // Verification override, restore tests and the retention history (trust.js).
+  trustJobDetails(job, options);
 
   renderJobHistory(job);
 
@@ -3130,6 +3140,8 @@ function renderBackupDetails() {
     if (b.sha256) row(t("tables.sha256"), b.sha256, true);
   }
   backupCancelRows(b, row);
+  // Verification, pin, restore test and import (trust.js).
+  trustBackupDetailRows(b, row);
   // Progress, cancel button, phase timeline and log viewer (runs.js).
   renderRunPanel("backup", "backup", b);
 
@@ -4297,7 +4309,7 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "encryption", "security", "users", "apikeys"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "security", "users", "apikeys"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
@@ -4431,6 +4443,8 @@ function fillSettingsForms(force) {
     if (group === "encryption") fillEncryption(settingsGroup("encryption"));
   });
   renderRetiredKeys();
+  // Settings → Integrity (trust.js).
+  trustFillSettings(force);
 }
 
 function fillGeneral(g) {
@@ -5009,6 +5023,8 @@ function renderStorageTargets() {
       </div></td>
     </tr>`;
   }).join(""));
+  // Storage scans of every target (trust.js).
+  trustRenderScans();
 }
 
 // Name of the target a backup was written to (snapshot first: the target may be gone).
