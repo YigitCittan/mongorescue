@@ -19,7 +19,7 @@ func TestIntegrityDefaultsAndPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	off, weekly, limit := false, SweepWeekly, 25
-	if _, err := svc.Update(ctx, Patch{Integrity: &IntegrityPatch{VerifyAfterBackup: &off, SweepSchedule: &weekly, SweepBandwidthLimit: &limit}}); err != nil {
+	if _, err = svc.Update(ctx, Patch{Integrity: &IntegrityPatch{VerifyAfterBackup: &off, SweepSchedule: &weekly, SweepBandwidthLimit: &limit}}); err != nil {
 		t.Fatal(err)
 	}
 	got := svc.Current().Integrity

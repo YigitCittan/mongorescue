@@ -144,7 +144,7 @@ func TestPostBackupVerification(t *testing.T) {
 			copyObject(t, target.Storage, rec.StorageKey, damagedKey, flipByteAt(rec.SizeBytes/2))
 			bad := *rec
 			bad.ID, bad.StorageKey, bad.Verification, bad.VerifiedAt, bad.Manifest = rec.ID+"_dmg", damagedKey, "", nil, nil
-			if err := f.meta.SaveBackupRecord(ctx, &bad); err != nil {
+			if err = f.meta.SaveBackupRecord(ctx, &bad); err != nil {
 				t.Fatal(err)
 			}
 			got, err := f.svc.Verify(ctx, bad.ID, events.VerificationOnDemand, 0)
