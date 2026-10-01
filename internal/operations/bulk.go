@@ -151,13 +151,18 @@ type BulkRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
-// BulkSkip is an item the action does not apply to.
+// BulkSkip is an item the action does not apply to. Reason is a stable code that
+// clients translate, filling in Params; Detail is the same in English.
 type BulkSkip struct {
 	// ID is the record.
 	ID string `json:"id"`
 	// Reason is one of the Skip constants.
 	Reason string `json:"reason"`
-	// Detail explains the reason, such as the protected backup's job.
+	// Params fill in the reason: "job" (the job's name, or its ID) for
+	// last_good_backup and last_verified, "status" for in_progress and not_running.
+	Params map[string]string `json:"params,omitempty"`
+	// Detail explains the reason in English, as a fallback for clients that do not
+	// know the code.
 	Detail string `json:"detail,omitempty"`
 }
 
@@ -349,7 +354,7 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 	for _, it := range items {
 		switch {
 		case !it.found():
-			res.Skipped = append(res.Skipped, BulkSkip{ID: it.ID, Reason: SkipNotFound})
+			res.Skipped = append(res.Skipped, BulkSkip{ID: it.ID, Reason: SkipNotFound, Detail: "no such record"})
 		case action.Check != nil:
 			if skip := action.Check(ctx, s, run, it); skip != nil {
 				skip.ID = it.ID
@@ -782,7 +787,7 @@ func (s *Service) registerBulkActions() {
 		Check: func(_ context.Context, _ *Service, run *BulkRun, it BulkItem) *BulkSkip {
 			b := it.Backup
 			if b.Status == models.StatusInProgress || b.Status == models.StatusPending {
-				return &BulkSkip{Reason: SkipInProgress, Detail: "the backup is still " + string(b.Status)}
+				return &BulkSkip{Reason: SkipInProgress, Params: map[string]string{"status": string(b.Status)}, Detail: "the backup is still " + string(b.Status)}
 			}
 			if b.Pinned {
 				return &BulkSkip{Reason: SkipPinned, Detail: "unpin it before deleting it"}
@@ -792,10 +797,10 @@ func (s *Service) registerBulkActions() {
 				name = b.JobID
 			}
 			if last := run.lastGood[b.JobID]; b.JobID != "" && last != nil && last.ID == b.ID {
-				return &BulkSkip{Reason: SkipLastGoodBackup, Detail: "last successful backup of job " + name}
+				return &BulkSkip{Reason: SkipLastGoodBackup, Params: map[string]string{"job": name}, Detail: "last successful backup of job " + name}
 			}
 			if b.JobID != "" && run.lastVerified[b.JobID] == b.ID {
-				return &BulkSkip{Reason: SkipLastVerified, Detail: "last verified backup of job " + name}
+				return &BulkSkip{Reason: SkipLastVerified, Params: map[string]string{"job": name}, Detail: "last verified backup of job " + name}
 			}
 			return nil
 		},
@@ -879,7 +884,7 @@ func (s *Service) registerBulkActions() {
 		Resource: BulkBackups, Name: BulkCancel, Scope: auth.ScopeOperator,
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if it.Backup.Status != models.StatusInProgress {
-				return &BulkSkip{Reason: SkipNotRunning, Detail: "the backup is " + string(it.Backup.Status)}
+				return &BulkSkip{Reason: SkipNotRunning, Params: map[string]string{"status": string(it.Backup.Status)}, Detail: "the backup is " + string(it.Backup.Status)}
 			}
 			return nil
 		},
@@ -897,7 +902,7 @@ func (s *Service) registerBulkActions() {
 		Resource: BulkRestores, Name: BulkCancel, Scope: auth.ScopeOperator,
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if it.Restore.Status != models.RestoreStatusInProgress {
-				return &BulkSkip{Reason: SkipNotRunning, Detail: "the restore is " + string(it.Restore.Status)}
+				return &BulkSkip{Reason: SkipNotRunning, Params: map[string]string{"status": string(it.Restore.Status)}, Detail: "the restore is " + string(it.Restore.Status)}
 			}
 			return nil
 		},
@@ -915,7 +920,7 @@ func (s *Service) registerBulkActions() {
 		Resource: BulkRestores, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true,
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if st := it.Restore.Status; st == models.RestoreStatusInProgress || st == models.RestoreStatusPending {
-				return &BulkSkip{Reason: SkipInProgress, Detail: "the restore is still " + string(st)}
+				return &BulkSkip{Reason: SkipInProgress, Params: map[string]string{"status": string(st)}, Detail: "the restore is still " + string(st)}
 			}
 			return nil
 		},
