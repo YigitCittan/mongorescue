@@ -214,6 +214,11 @@ func backupConditions(f BackupFilter) conditions {
 	return c
 }
 
+// selectBackupRowsSQL selects backups with the ID and start time of their newest retry.
+const selectBackupRowsSQL = `SELECT b.data, r.id, r.started_at FROM backups b
+	LEFT JOIN backups r ON r.id = (SELECT x.id FROM backups x WHERE x.retry_of = b.id
+		ORDER BY x.started_at DESC, x.id DESC LIMIT 1)`
+
 // QueryBackupRecords returns the backup records matching f, ordered and paged as f
 // asks, each with its newest retry, and the number of all matches. It returns an
 // ErrInvalidFilter error for out-of-range paging or time fields.
@@ -223,9 +228,7 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 	}
 	c := backupConditions(f)
 	page, args := orderAndPage("b.", f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
-	query := `SELECT b.data, r.id, r.started_at FROM backups b
-		LEFT JOIN backups r ON r.id = (SELECT x.id FROM backups x WHERE x.retry_of = b.id
-			ORDER BY x.started_at DESC, x.id DESC LIMIT 1)` + c.where() + page
+	query := selectBackupRowsSQL + c.where() + page //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query backups: %w", err)
@@ -239,12 +242,12 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 			retryID   sql.NullString
 			retryTime sql.NullInt64
 		)
-		if err := rows.Scan(&data, &retryID, &retryTime); err != nil {
-			return nil, fmt.Errorf("store: scan backup row: %w", err)
+		if scanErr := rows.Scan(&data, &retryID, &retryTime); scanErr != nil {
+			return nil, fmt.Errorf("store: scan backup row: %w", scanErr)
 		}
-		rec, err := decode[models.BackupRecord](data)
-		if err != nil {
-			return nil, err
+		rec, decErr := decode[models.BackupRecord](data)
+		if decErr != nil {
+			return nil, decErr
 		}
 		row := BackupRow{Record: rec}
 		if retryID.Valid {
@@ -252,7 +255,7 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 		}
 		out.Rows = append(out.Rows, row)
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: read backup rows: %w", err)
 	}
 	if out.Total, err = s.total(ctx, "SELECT count(*) FROM backups b", c, f.Limit, f.Offset, len(out.Rows)); err != nil {
