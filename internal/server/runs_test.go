@@ -100,8 +100,13 @@ func TestCancelBackupEndpoint(t *testing.T) {
 	if res := serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeRead)); !scopeRefused(res.Code, res.Body.String()) {
 		t.Fatalf("read key cancelling = %d %s; want a scope refusal", res.Code, res.Body.String())
 	}
-	if got := acceptedID(t, serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeOperator))); got != id {
-		t.Fatalf("cancel answered for %s, want %s", got, id)
+	cancelled := serve(f.h, "POST", "/api/v1/backups/"+id+"/cancel", nil, f.as(auth.ScopeOperator))
+	var answer struct {
+		Data models.BackupRecord `json:"data"`
+	}
+	if err := json.Unmarshal(cancelled.Body.Bytes(), &answer); err != nil || cancelled.Code != http.StatusOK ||
+		answer.Data.ID != id || answer.Data.Status != models.StatusCancelled || answer.Data.CancelledBy != "API key operator key" {
+		t.Fatalf("cancel = %d %s; want 200 with the final cancelled record", cancelled.Code, cancelled.Body.String())
 	}
 	var final *models.BackupRecord
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {

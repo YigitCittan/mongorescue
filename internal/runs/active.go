@@ -178,7 +178,7 @@ func (r *Registry) Register(meta Meta) (*Run, error) {
 	if r == nil {
 		return nil, nil
 	}
-	run := &Run{meta: meta, reg: r, queuedAt: r.now().UTC(), phase: models.PhaseQueued}
+	run := &Run{meta: meta, reg: r, queuedAt: r.now().UTC(), phase: models.PhaseQueued, done: make(chan struct{})}
 	run.updatedAt = run.queuedAt
 	r.mu.Lock()
 	if _, dup := r.active[meta.ID]; dup {
@@ -345,6 +345,7 @@ type Run struct {
 	reg      *Registry
 	log      *runlog.Writer
 	queuedAt time.Time
+	done     chan struct{} // closed by End
 
 	bytes atomic.Int64
 
@@ -417,10 +418,23 @@ func (run *Run) End() {
 		delete(run.reg.active, run.meta.ID)
 	}
 	run.reg.mu.Unlock()
+	close(run.done)
 	if cancel != nil {
 		// Release the context's resources; the run is over.
 		cancel(context.Canceled)
 	}
+}
+
+// Done returns a channel closed once End ran: the run's outcome is recorded (the
+// operations service and the scheduler persist the final record before End). A nil
+// Run returns a closed channel.
+func (run *Run) Done() <-chan struct{} {
+	if run == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return run.done
 }
 
 // Cancel stops the run with c as its context's cause. It returns ErrNotRunning once

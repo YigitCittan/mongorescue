@@ -54,8 +54,9 @@ func canceller(ctx context.Context, via string, at time.Time) runs.Cancellation 
 
 // CancelBackup cancels the running backup id: mongodump is killed, the partial
 // artifact removed and the record ends as models.StatusCancelled with who cancelled
-// it. It returns a snapshot of the record while the run stops; poll GetBackup for
-// the outcome. via names the adapter for the record ("MCP", or "" for the REST API).
+// it. It waits up to CancelSettleTimeout for the run to stop and returns its record:
+// the final cancelled record, or, if the run is still stopping, the in-progress
+// record with its progress (Cancelling); poll GetBackup then. via names the adapter for the record ("MCP", or "" for the REST API).
 // Expected failures: ErrNotFound and ErrNotRunning.
 func (s *Service) CancelBackup(ctx context.Context, id, via string) (*models.BackupRecord, error) {
 	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
@@ -68,14 +69,18 @@ func (s *Service) CancelBackup(ctx context.Context, id, via string) (*models.Bac
 	if err := s.cancel(ctx, id, via); err != nil {
 		return nil, err
 	}
-	rec.Progress = s.cfg.Registry.Progress(id)
+	if final, getErr := s.cfg.Store.GetBackupRecord(context.WithoutCancel(ctx), id); getErr == nil {
+		rec = final
+	}
+	s.withBackupProgress([]*models.BackupRecord{rec})
 	return rec, nil
 }
 
 // CancelRestore cancels the running restore id. A cancelled safe-clone restore drops
 // the partial clone; a cancelled in-place restore may leave the target partially
-// restored, so cancelling one needs the admin scope (like starting it). It returns a
-// snapshot of the record; poll GetRestore for the outcome. Expected failures:
+// restored, so cancelling one needs the admin scope (like starting it). Like
+// CancelBackup it waits briefly and returns the final record, or the in-progress
+// one while the run is still stopping. Expected failures:
 // ErrNotFound, ErrNotRunning and auth.ErrForbidden.
 func (s *Service) CancelRestore(ctx context.Context, id, via string) (*models.RestoreRecord, error) {
 	rec, err := s.cfg.Store.GetRestoreRecord(ctx, id)
@@ -93,7 +98,10 @@ func (s *Service) CancelRestore(ctx context.Context, id, via string) (*models.Re
 	if err := s.cancel(ctx, id, via); err != nil {
 		return nil, err
 	}
-	rec.Progress = s.cfg.Registry.Progress(id)
+	if final, getErr := s.cfg.Store.GetRestoreRecord(context.WithoutCancel(ctx), id); getErr == nil {
+		rec = final
+	}
+	s.withRestoreProgress([]*models.RestoreRecord{rec})
 	return rec, nil
 }
 
@@ -128,10 +136,25 @@ func (s *Service) CancelRun(ctx context.Context, id, via string) (*CancelledRun,
 	return &CancelledRun{Kind: models.RunRestore, Restore: r}, nil
 }
 
-// cancel asks the registry to stop run id on behalf of the principal in ctx.
+// CancelSettleTimeout bounds how long a cancel request waits for the run to stop and
+// record its outcome, so the response usually carries the final cancelled record.
+const CancelSettleTimeout = 5 * time.Second
+
+// cancel asks the registry to stop run id on behalf of the principal in ctx, and
+// waits up to CancelSettleTimeout (or until ctx ends) for the run to end.
 func (s *Service) cancel(ctx context.Context, id, via string) error {
 	c := canceller(ctx, via, s.now().UTC())
+	run := s.cfg.Registry.Get(id)
 	err := s.cfg.Registry.Cancel(id, c)
+	if err == nil && run != nil {
+		timer := time.NewTimer(CancelSettleTimeout)
+		defer timer.Stop()
+		select {
+		case <-run.Done():
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	}
 	if errors.Is(err, runs.ErrFinishing) {
 		return public("the run "+id+" is already finishing (its tool completed) and can no longer be cancelled", ErrNotRunning, err)
 	}

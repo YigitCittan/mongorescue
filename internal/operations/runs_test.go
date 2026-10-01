@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,7 +119,8 @@ func TestCancelBackupRecordsWhoAndIsNotAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.ID != started.ID || rec.Status != models.StatusInProgress || rec.Progress == nil || !rec.Progress.Cancelling {
+	// The cancel waits for the run to stop and returns the final record.
+	if rec.ID != started.ID || rec.Status != models.StatusCancelled || rec.CancelledBy != "API key ci" || rec.CancelledAt == nil || rec.Progress != nil {
 		t.Fatalf("cancel result = %+v", rec)
 	}
 	final := f.awaitStatus(t, started.ID)
@@ -220,6 +222,11 @@ func TestCancelRunReachesTheRunningRestore(t *testing.T) {
 	}
 	runCtx := run.Bind(ctx)
 	defer run.End()
+	// Like an engine, the stand-in run ends once it is cancelled.
+	go func() {
+		<-runCtx.Done()
+		run.End()
+	}()
 	res, err := f.svc.CancelRun(asKey("assistant", auth.ScopeOperator), rec.ID, "MCP")
 	if err != nil {
 		t.Fatal(err)
@@ -325,4 +332,68 @@ func TestCancelIsRefusedOnceTheRunIsFinishing(t *testing.T) {
 	if runCtx.Err() != nil {
 		t.Fatal("a finishing run must not be cancelled")
 	}
+}
+
+// TestCancelWhileQueuedNeverStartsTheTool cancels a backup between its registration
+// and its start (the run is queued, not bound yet): mongodump is never started and
+// the record ends as cancelled with who cancelled it.
+func TestCancelWhileQueuedNeverStartsTheTool(t *testing.T) {
+	st := storetest.New(t)
+	gate := make(chan struct{})
+	var started atomic.Bool
+	runner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		started.Store(true)
+		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
+	}
+	mock := storage.NewMockStorage()
+	manager := runs.NewManager(nil)
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	reg := runs.NewRegistry()
+	svc := operations.New(operations.Config{
+		Store: st, Restore: restore.NewEngine(mock, ""), Runs: manager, Registry: reg,
+		Backup:      gatedEngine{Engine: backup.NewEngine(mock, "", backup.WithRunner(runner)), gate: gate},
+		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "primary", URI: "mongodb://u:pw@db.internal/"}},
+	})
+	rec, err := svc.StartBackup(context.Background(), operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Database: "shop"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := make(chan *models.BackupRecord, 1)
+	go func() {
+		got, cancelErr := svc.CancelBackup(asKey("ci", auth.ScopeOperator), rec.ID, "")
+		if cancelErr != nil {
+			t.Error(cancelErr)
+		}
+		cancelled <- got
+	}()
+	// The cancellation is recorded while the run waits at the gate, before it starts.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if p := reg.Progress(rec.ID); p != nil && p.Cancelling {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cancellation was never recorded")
+		}
+	}
+	close(gate)
+	got := <-cancelled
+	if started.Load() {
+		t.Fatal("mongodump was started for a backup cancelled while queued")
+	}
+	if got == nil || got.Status != models.StatusCancelled || got.CancelledBy != "API key ci" || got.CancelledAt == nil ||
+		got.Phases.Started != nil || !strings.Contains(got.ErrorMessage, "before mongodump started") {
+		t.Fatalf("final = %+v", got)
+	}
+}
+
+// gatedEngine holds Execute until gate is closed, so a test can cancel a run that is
+// registered but not started.
+type gatedEngine struct {
+	*backup.Engine
+	gate chan struct{}
+}
+
+func (g gatedEngine) Execute(ctx context.Context, opts models.BackupOptions, record *models.BackupRecord) (*models.BackupRecord, error) {
+	<-g.gate
+	return g.Engine.Execute(ctx, opts, record)
 }
