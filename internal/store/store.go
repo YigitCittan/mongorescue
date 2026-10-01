@@ -71,4 +71,18 @@ type Store interface {
 	GetRestoreRecord(ctx context.Context, id string) (*models.RestoreRecord, error)
 	// ListRestoreRecords returns all restore records, newest first.
 	ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error)
+
+	// QueryBackupRecords returns the backup records matching f, ordered and paged as f
+	// asks, each with its newest retry, and the number of all matches. Out-of-range
+	// paging or time fields return an ErrInvalidFilter error.
+	QueryBackupRecords(ctx context.Context, f BackupFilter) (*BackupPage, error)
+	// QueryRestoreRecords returns the restore records matching f, ordered and paged as
+	// f asks, and the number of all matches. Out-of-range paging or time fields return
+	// an ErrInvalidFilter error.
+	QueryRestoreRecords(ctx context.Context, f RestoreFilter) (*RestorePage, error)
+	// ListBackupDatabases returns the distinct database names of all backups, sorted.
+	ListBackupDatabases(ctx context.Context) ([]string, error)
+	// ListRestoreDatabases returns the distinct target databases of all restores,
+	// sorted.
+	ListRestoreDatabases(ctx context.Context) ([]string, error)
 }
