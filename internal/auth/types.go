@@ -198,6 +198,9 @@ type Repository interface {
 
 	// CreateSession stores s.
 	CreateSession(ctx context.Context, s *Session) error
+	// ListSessions returns the sessions of userID, or of every user when userID is
+	// "", most recently active first.
+	ListSessions(ctx context.Context, userID string) ([]*Session, error)
 	// GetSession returns a session by token hash or ErrSessionNotFound.
 	GetSession(ctx context.Context, tokenHash string) (*Session, error)
 	// TouchSession updates LastSeenAt.

@@ -350,10 +350,7 @@ func (s *Service) AuthenticateSession(ctx context.Context, token string) (*Princ
 		return nil, err
 	}
 	now := s.now().UTC()
-	idle, absolute := s.sessionTimeouts()
-	// The absolute limit is enforced from the creation time as well, so shortening it
-	// applies to sessions that already exist.
-	if !now.Before(sess.ExpiresAt) || !now.Before(sess.CreatedAt.Add(absolute)) || now.Sub(sess.LastSeenAt) >= idle {
+	if s.sessionExpired(sess, now) {
 		if err = s.repo.DeleteSession(ctx, hash); err != nil {
 			s.logger.Warn("failed to delete expired session", slog.Any("error", err))
 		}

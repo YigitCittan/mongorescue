@@ -170,6 +170,37 @@ func (s *SQLiteStore) GetSession(ctx context.Context, tokenHash string) (*auth.S
 	return &sess, nil
 }
 
+// ListSessions returns the sessions of userID, or of every user when userID is "",
+// most recently active first.
+func (s *SQLiteStore) ListSessions(ctx context.Context, userID string) ([]*auth.Session, error) {
+	query := `SELECT token_hash, user_id, csrf_token, created_at, last_seen_at, expires_at FROM sessions`
+	var args []any
+	if userID != "" {
+		query += " WHERE user_id = ?"
+		args = append(args, userID)
+	}
+	query += " ORDER BY last_seen_at DESC, created_at DESC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*auth.Session
+	for rows.Next() {
+		var sess auth.Session
+		var created, seen, expires int64
+		if err := rows.Scan(&sess.TokenHash, &sess.UserID, &sess.CSRFToken, &created, &seen, &expires); err != nil {
+			return nil, fmt.Errorf("store: list sessions: %w", err)
+		}
+		sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt = fromKey(created), fromKey(seen), fromKey(expires)
+		out = append(out, &sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list sessions: %w", err)
+	}
+	return out, nil
+}
+
 // TouchSession updates a session's last activity.
 func (s *SQLiteStore) TouchSession(ctx context.Context, tokenHash string, at time.Time) error {
 	if _, err := s.db.ExecContext(ctx, "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", timeKey(at), tokenHash); err != nil {
