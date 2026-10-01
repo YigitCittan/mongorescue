@@ -13,7 +13,7 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 
 | Flag | Environment variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key` and the instance lock |
+| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key`, the instance lock and the run logs (`logs/`) |
 | `-host` | `MONGORESCUE_SERVER_HOST` | `0.0.0.0` | Listen address |
 | `-port` | `MONGORESCUE_SERVER_PORT` | `8080` | Listen port |
 | `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) | Serve the web dashboard at `/`. Without it the server answers only the REST API, `/mcp` and `/metrics`, and `GET /` returns 404 |
@@ -57,6 +57,7 @@ In v0.1.0 every signed-in user and every API key is a full administrator: they c
 | `backup_stall_timeout` | `10m` | Abort a backup when `mongodump` produces no output for this long (`0s` = off) |
 | `restore_timeout` | `12h` | Maximum duration of one restore, verification included (`0s` = unlimited) |
 | `restore_verify_policy` | `auto` | `always`, `auto` or `never`; decides for safe clones only, in-place restores are always verified; see [encryption.md](encryption.md#verify-before-restore) |
+| `log_retention_days` | `30` | Keep the log of every backup and restore run (`<data_dir>/logs/<id>.log`, redacted, at most 5 MiB each) for this many days; `0` keeps them until their backup is deleted or pruned. See [api.md](api.md#run-logs) |
 
 Retention is applied only after a successful **scheduled** (cron) run of a job, and only to that job's own scheduled backups: every backup record has a `trigger` (`scheduled`, `on_demand`, `manual` or `mcp`), and on-demand job runs (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool), manual backups and MCP backups neither prune nor count towards the kept backups; they stay until an admin deletes them. Two floors protect good backups: the newest `retention_count` scheduled backups of the job (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. Backups recorded before triggers existed count as `scheduled` when they belong to a job and as `manual` otherwise.
 

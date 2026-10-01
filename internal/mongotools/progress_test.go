@@ -36,6 +36,16 @@ func TestParseProgressRealLines(t *testing.T) {
 		{"2025-06-02T09:20:09.401+0000\trestoring users from archive on stdin", Progress{}, false},
 		{"2025-06-02T09:20:09.500+0000\t100000 document(s) restored successfully. 3 document(s) failed to restore.", Progress{}, false},
 		{"2025-06-02T09:20:09.500+0000\tno indexes to restore for collection shop.one", Progress{}, false},
+		// Newer tools (seen with 100.16) quote namespaces in backticks.
+		{"2026-10-01T10:49:52.901+0300\twriting `it_cnl_77417bab.bulk` to `archive on stdout`",
+			Progress{Kind: ProgressStarted, Namespace: "it_cnl_77417bab.bulk"}, true},
+		{"2026-10-01T10:49:53.000+0300\t[####....]  `shop.my orders`  10/20  (50.0%)",
+			Progress{Kind: ProgressBar, Namespace: "shop.my orders", Done: 10, Total: 20, Percent: 50}, true},
+		{"2026-10-01T10:49:54.000+0300\tdone dumping `shop.orders` (5678 documents)", Progress{Kind: ProgressDone, Namespace: "shop.orders", Documents: 5678}, true},
+		{"2026-10-01T10:49:55.000+0300\trestoring `shop_rescue.orders` from archive on stdin", Progress{Kind: ProgressStarted, Namespace: "shop_rescue.orders"}, true},
+		{"2026-10-01T10:49:56.000+0300\tfinished restoring `shop_rescue.orders` (12 documents, 0 failures)",
+			Progress{Kind: ProgressDone, Namespace: "shop_rescue.orders", Documents: 12}, true},
+		{"2026-10-01T10:49:56.100+0300\trestoring indexes for collection `shop_rescue.orders` from metadata", Progress{}, false},
 		// Without a timestamp, and garbage.
 		{"[##..]  a.b  1/2  (50.0%)", Progress{Kind: ProgressBar, Namespace: "a.b", Done: 1, Total: 2, Percent: 50}, true},
 		{"[##..] broken bar", Progress{}, false},

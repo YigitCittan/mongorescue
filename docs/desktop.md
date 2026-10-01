@@ -88,6 +88,7 @@ The menu is in Turkish when the Windows display language is Turkish and in Engli
 | Data directory (`mongorescue.db`, `secret.key`, lock) | `<user config dir>/MongoRescue/data` |
 | Default "Local disk" backup target | `<user config dir>/MongoRescue/backups` |
 | Log file (truncated on every start) | `<data dir>/desktop.log` |
+| Run logs (one per backup and restore, see [api.md](api.md#run-logs)) | `<data dir>/logs/<id>.log` |
 
 `<user config dir>` is `%AppData%` on Windows, `~/Library/Application Support` on macOS and `$XDG_CONFIG_HOME` (usually `~/.config`) on Linux.
 

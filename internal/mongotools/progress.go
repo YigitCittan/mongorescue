@@ -41,19 +41,23 @@ type Progress struct {
 	Failures int64
 }
 
+// namespaceGroup captures a namespace, bare (tools up to 100.9) or quoted in
+// backticks (100.10 and later: "writing `db.c` to `archive on stdout`").
+const namespaceGroup = "(`[^`]+`|\\S+)"
+
 var (
 	// barPattern matches "[####....]  db.c  1234/5678  (21.7%)" and the byte form
 	// "[##..]  db.c  1.20MB/4.50MB  (26.7%)".
-	barPattern = regexp.MustCompile(`^\[[#.]*\]\s+(\S+)\s+([0-9.]+)([KMGTP]?i?B)?/([0-9.]+)([KMGTP]?i?B)?\s+\(\s*([0-9.]+)%\)\s*$`)
+	barPattern = regexp.MustCompile(`^\[[#.]*\]\s+` + namespaceGroup + `\s+([0-9.]+)([KMGTP]?i?B)?/([0-9.]+)([KMGTP]?i?B)?\s+\(\s*([0-9.]+)%\)\s*$`)
 	// writingPattern matches mongodump's "writing db.c to archive on stdout" (and to a
 	// directory, "writing db.c to dump/db/c.bson").
-	writingPattern = regexp.MustCompile(`^writing (\S+) to `)
+	writingPattern = regexp.MustCompile(`^writing ` + namespaceGroup + ` to `)
 	// doneDumpingPattern matches "done dumping db.c (123 documents)".
-	doneDumpingPattern = regexp.MustCompile(`^done dumping (\S+) \((\d+) documents?\)`)
+	doneDumpingPattern = regexp.MustCompile(`^done dumping ` + namespaceGroup + ` \((\d+) documents?\)`)
 	// restoringPattern matches "restoring db.c from archive on stdin".
-	restoringPattern = regexp.MustCompile(`^restoring (\S+) from `)
+	restoringPattern = regexp.MustCompile(`^restoring ` + namespaceGroup + ` from `)
 	// finishedRestoringPattern matches "finished restoring db.c (12 documents, 0 failures)".
-	finishedRestoringPattern = regexp.MustCompile(`^finished restoring (\S+) \((\d+) documents?, (\d+) failures?\)`)
+	finishedRestoringPattern = regexp.MustCompile(`^finished restoring ` + namespaceGroup + ` \((\d+) documents?, (\d+) failures?\)`)
 )
 
 // ParseProgress parses one line of mongodump or mongorestore output (with or without
@@ -72,7 +76,7 @@ func ParseProgress(line string) (p Progress, ok bool) {
 		if errDone != nil || errTotal != nil || errPct != nil {
 			return p, false
 		}
-		p = Progress{Kind: ProgressBar, Namespace: m[1], Done: done, Total: total, Percent: pct}
+		p = Progress{Kind: ProgressBar, Namespace: unquote(m[1]), Done: done, Total: total, Percent: pct}
 		if m[3] != "" || m[5] != "" {
 			p.Bytes = true
 			p.Done *= byteUnit(m[3])
@@ -81,27 +85,35 @@ func ParseProgress(line string) (p Progress, ok bool) {
 		return p, true
 	case strings.HasPrefix(msg, "writing "):
 		if m := writingPattern.FindStringSubmatch(msg); m != nil {
-			return Progress{Kind: ProgressStarted, Namespace: m[1]}, true
+			return Progress{Kind: ProgressStarted, Namespace: unquote(m[1])}, true
 		}
 	case strings.HasPrefix(msg, "done dumping "):
 		if m := doneDumpingPattern.FindStringSubmatch(msg); m != nil {
 			docs, _ := strconv.ParseInt(m[2], 10, 64)
-			return Progress{Kind: ProgressDone, Namespace: m[1], Documents: docs}, true
+			return Progress{Kind: ProgressDone, Namespace: unquote(m[1]), Documents: docs}, true
 		}
 	case strings.HasPrefix(msg, "restoring "):
 		// "restoring indexes for collection db.c from metadata" and "restoring users
 		// from archive" name no namespace.
-		if m := restoringPattern.FindStringSubmatch(msg); m != nil && strings.Contains(m[1], ".") {
-			return Progress{Kind: ProgressStarted, Namespace: m[1]}, true
+		if m := restoringPattern.FindStringSubmatch(msg); m != nil && strings.Contains(unquote(m[1]), ".") {
+			return Progress{Kind: ProgressStarted, Namespace: unquote(m[1])}, true
 		}
 	case strings.HasPrefix(msg, "finished restoring "):
 		if m := finishedRestoringPattern.FindStringSubmatch(msg); m != nil {
 			docs, _ := strconv.ParseInt(m[2], 10, 64)
 			failures, _ := strconv.ParseInt(m[3], 10, 64)
-			return Progress{Kind: ProgressDone, Namespace: m[1], Documents: docs, Failures: failures}, true
+			return Progress{Kind: ProgressDone, Namespace: unquote(m[1]), Documents: docs, Failures: failures}, true
 		}
 	}
 	return p, false
+}
+
+// unquote removes the backticks around a namespace.
+func unquote(ns string) string {
+	if len(ns) >= 2 && ns[0] == '`' && ns[len(ns)-1] == '`' {
+		return ns[1 : len(ns)-1]
+	}
+	return ns
 }
 
 // stripTimestamp removes the tools' "2006-01-02T15:04:05.000-0700<TAB>" prefix.

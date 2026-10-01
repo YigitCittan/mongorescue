@@ -76,6 +76,8 @@ flowchart TB
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
 | `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`) |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, background runs, records and events; read models (`Status`, `Stats`) |
+| `internal/runs` | The run `Manager` (background runs under the application lifecycle, per-database concurrency keys) and the run `Registry` (active runs: cancellation with who and why, live progress, their log files) |
+| `internal/runlog` | Per-run log files under `<data_dir>/logs`: redacted, bounded lines streamed to disk, capped at 5 MiB with head and tail kept; tail reads and pruning |
 | `internal/audit` | The audit log of API key activity (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
