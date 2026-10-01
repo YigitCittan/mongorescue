@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /api/v1/auth/sessions` (read scope) lists your own live sessions (`id`, `user_id`, `username`, `created_at`, `last_seen_at`, `expires_at`, `current`); `?all=true` lists every user's and needs admin. `DELETE /api/v1/auth/sessions/{id}` (admin) revokes one and clears the cookie when it is the caller's own. Session IDs are derived one-way from the token hash: the API never returns tokens, their hashes or CSRF tokens. An API key sees the sessions of the user who created it. No schema migration. See [docs/api.md](docs/api.md).
+- Dashboard: a *Sessions* section under Settings lists the signed-in browsers (yours, or *All users*), marks *This browser* and revokes them one by one. The user menu gains *API keys* and *Active sessions*.
+- Dashboard: the connection dialog builds the connection string from fields as an alternative to pasting it (*Paste URI* / *Build*, remembered in the browser): scheme, hosts and ports, username and password, authentication database, replica set, TLS with a CA file and *Allow invalid certificates*, and other options as `key=value` lines. A live preview masks the password and secret options as the server does. A saved connection opens in the builder with its stored, masked URI kept byte for byte until something changes; then the password must be typed again, which the form says inline.
+- Dashboard: the connection, user, password and API key forms validate as you type: errors appear under the field once it was left (connection strings are checked like the server checks them: scheme, hosts, ports, the `mongodb+srv://` rules, `key=value` options, masked passwords), are linked with `aria-describedby` and `aria-invalid`, and an invalid form focuses its first wrong field instead of submitting.
+- Dashboard: screen readers hear about background changes through live regions: backups and restores that finish or fail while you are on another tab or page (runs you started keep their toast), and, in the desktop app, an available update.
+- Desktop app: the window opens with the size, position and maximised state it was closed with (`<data dir>/window.json`), clamped to the screen it opens on. See [docs/desktop.md](docs/desktop.md).
+
+### Changed
+- Dashboard: sizes use binary units with their proper names (KiB, MiB, GiB, TiB, PiB; 1 KiB = 1024 bytes) instead of "KB"/"MB" for the same 1024-based values, with three significant digits and the UI language's number format, in the tiles, tables, dialogs and the database picker alike. Documented in [docs/architecture.md](docs/architecture.md).
+- Dashboard: closing a dialog returns the focus to what opened it, or, when that is gone (a menu item, a re-rendered row), to the menu button, the dialog below or the active tab; focus that escapes an open dialog comes back on Tab.
+- Dashboard: narrow windows (800 to 1024 px): the settings navigation is narrower, section headers and their actions wrap, dialog padding shrinks, and on short windows dialogs start near the top. A `prefers-reduced-motion` rule keeps any motion off for users who ask for it (the dashboard has no animations today).
+
 ## [0.10.0] - 2026-10-01
 
 ### Added
