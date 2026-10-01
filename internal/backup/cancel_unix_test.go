@@ -44,8 +44,10 @@ func TestRegistryCancelKillsDumpAndItsChildren(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	if err := manager.Go(runs.BackupKey("conn", "db"), func(ctx context.Context) {
-		defer run.End()
+		// End before reporting, like the operations service does before it releases
+		// the database: the test checks the registry right after the result.
 		rec, err := engine.Execute(run.Bind(ctx), opts, record)
+		run.End()
 		done <- result{rec, err}
 	}); err != nil {
 		t.Fatal(err)
