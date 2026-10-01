@@ -193,3 +193,27 @@ func (o BackupOptions) Redacted() BackupOptions {
 	o.MongoURI = redact.URI(o.MongoURI)
 	return o
 }
+
+// Collection types of BackupCollection.Type.
+const (
+	// CollectionTypeCollection is a regular collection.
+	CollectionTypeCollection = "collection"
+	// CollectionTypeView is a view: it holds no data and is restored from its
+	// definition, on top of its source collection (BackupCollection.ViewOn).
+	CollectionTypeView = "view"
+	// CollectionTypeTimeseries is a time-series collection.
+	CollectionTypeTimeseries = "timeseries"
+)
+
+// BackupCollection is one collection stored in a backup archive, as listed by the
+// archive contents preview (GET /api/v1/backups/{id}/collections).
+type BackupCollection struct {
+	// Name is the collection name.
+	Name string `json:"name"`
+	// Type is CollectionTypeCollection, CollectionTypeView or CollectionTypeTimeseries.
+	Type string `json:"type"`
+	// ViewOn is the source collection of a view.
+	ViewOn string `json:"view_on,omitempty"`
+	// SizeBytes is the data size recorded in the archive, when it has one.
+	SizeBytes int64 `json:"size_bytes,omitempty"`
+}

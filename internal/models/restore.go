@@ -195,6 +195,10 @@ type RestoreRecord struct {
 	// DryRun indicates whether this was a simulation run.
 	DryRun bool `json:"dry_run"`
 
+	// SelectedCollections lists the collections a selective restore restored; empty
+	// means the whole database.
+	SelectedCollections []string `json:"selected_collections,omitempty"`
+
 	// Verified reports that the artifact passed verify-before-restore (checksum and,
 	// if encrypted, full authentication) before mongorestore was started.
 	Verified bool `json:"verified,omitempty"`

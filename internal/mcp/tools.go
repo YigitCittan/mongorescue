@@ -50,39 +50,41 @@ type toolSpec struct {
 
 // Tool names, with the scope each requires.
 const (
-	ToolListConnections    = "list_connections"
-	ToolListDatabases      = "list_databases"
-	ToolListCollections    = "list_collections"
-	ToolListJobs           = "list_jobs"
-	ToolGetJob             = "get_job"
-	ToolListBackups        = "list_backups"
-	ToolGetBackup          = "get_backup"
-	ToolListRestores       = "list_restores"
-	ToolGetRestore         = "get_restore"
-	ToolListStorageTargets = "list_storage_targets"
-	ToolGetStatus          = "get_status"
-	ToolStartBackup        = "start_backup"
-	ToolRunJob             = "run_job"
-	ToolRestoreSafeClone   = "restore_to_safe_clone"
+	ToolListConnections       = "list_connections"
+	ToolListDatabases         = "list_databases"
+	ToolListCollections       = "list_collections"
+	ToolListJobs              = "list_jobs"
+	ToolGetJob                = "get_job"
+	ToolListBackups           = "list_backups"
+	ToolGetBackup             = "get_backup"
+	ToolListRestores          = "list_restores"
+	ToolGetRestore            = "get_restore"
+	ToolListStorageTargets    = "list_storage_targets"
+	ToolGetStatus             = "get_status"
+	ToolListBackupCollections = "list_backup_collections"
+	ToolStartBackup           = "start_backup"
+	ToolRunJob                = "run_job"
+	ToolRestoreSafeClone      = "restore_to_safe_clone"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
 // source of truth the middleware enforces and tools/list filters by.
 var ToolScopes = map[string]auth.Scope{
-	ToolListConnections:    auth.ScopeRead,
-	ToolListDatabases:      auth.ScopeRead,
-	ToolListCollections:    auth.ScopeRead,
-	ToolListJobs:           auth.ScopeRead,
-	ToolGetJob:             auth.ScopeRead,
-	ToolListBackups:        auth.ScopeRead,
-	ToolGetBackup:          auth.ScopeRead,
-	ToolListRestores:       auth.ScopeRead,
-	ToolGetRestore:         auth.ScopeRead,
-	ToolListStorageTargets: auth.ScopeRead,
-	ToolGetStatus:          auth.ScopeRead,
-	ToolStartBackup:        auth.ScopeOperator,
-	ToolRunJob:             auth.ScopeOperator,
-	ToolRestoreSafeClone:   auth.ScopeOperator,
+	ToolListConnections:       auth.ScopeRead,
+	ToolListDatabases:         auth.ScopeRead,
+	ToolListCollections:       auth.ScopeRead,
+	ToolListJobs:              auth.ScopeRead,
+	ToolGetJob:                auth.ScopeRead,
+	ToolListBackups:           auth.ScopeRead,
+	ToolGetBackup:             auth.ScopeRead,
+	ToolListRestores:          auth.ScopeRead,
+	ToolGetRestore:            auth.ScopeRead,
+	ToolListStorageTargets:    auth.ScopeRead,
+	ToolGetStatus:             auth.ScopeRead,
+	ToolListBackupCollections: auth.ScopeRead,
+	ToolStartBackup:           auth.ScopeOperator,
+	ToolRunJob:                auth.ScopeOperator,
+	ToolRestoreSafeClone:      auth.ScopeOperator,
 }
 
 // ptr returns a pointer to v.
@@ -190,6 +192,10 @@ type listRestoresInput struct {
 	Cursor   string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
 }
 
+type backupIDInput struct {
+	BackupID string `json:"backup_id" jsonschema:"ID of a backup (see list_backups)"`
+}
+
 type startBackupInput struct {
 	ConnectionID       string   `json:"connection_id" jsonschema:"ID of the connection to back up from (see list_connections)"`
 	Database           string   `json:"database" jsonschema:"database to back up (see list_databases)"`
@@ -206,7 +212,7 @@ type runJobInput struct {
 type restoreInput struct {
 	BackupID           string   `json:"backup_id" jsonschema:"ID of a completed backup (see list_backups)"`
 	TargetConnectionID string   `json:"target_connection_id,omitempty" jsonschema:"admin API keys only: another connection to restore into (default, and the only choice for operator keys: the backup's own connection)"`
-	Collections        []string `json:"collections,omitempty" jsonschema:"only restore these collections"`
+	Collections        []string `json:"collections,omitempty" jsonschema:"only restore these collections (names from list_backup_collections; default: the whole database)"`
 	Verify             *bool    `json:"verify,omitempty" jsonschema:"verify the archive checksum (and decryption) before restoring (default: the server's verify policy)"`
 }
 
@@ -413,6 +419,14 @@ func (s *Server) registerTools() {
 		Description: "Operational overview: health, version, counts, running operations, the last successful backup of every job and the backups that failed in the last 24 hours.",
 		Annotations: readOnly("Get status"),
 	}, s.getStatus)
+	addTool(s, &sdk.Tool{
+		Name: ToolListBackupCollections,
+		Description: "List the collections stored in a backup (name, type: collection, view or timeseries; views name their source collection in view_on), " +
+			"read from the archive header without downloading the backup. Use the names as collections of restore_to_safe_clone to restore only some of them. " +
+			"source is \"archive\", or \"record\" when the archive could not be read (warning says why; the list is then the backup's own collection filter).",
+		Annotations: readOnly("List backup collections"),
+		InputSchema: schemaFor[backupIDInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "backup_id") }),
+	}, s.listBackupCollections)
 	addTool(s, &sdk.Tool{
 		Name: ToolStartBackup,
 		Description: "Start a backup of a database now. Returns immediately with the new backup record (status in_progress); " +
@@ -687,6 +701,22 @@ func restoreSummary(r *models.RestoreRecord) string {
 	default:
 		return fmt.Sprintf("Restore %s of backup %s into database %s is %s.", idText(r.ID), idText(r.BackupID), quoted(r.TargetDatabase), r.Status)
 	}
+}
+
+func (s *Server) listBackupCollections(ctx context.Context, in backupIDInput) (*operations.BackupCollections, string, error) {
+	if err := requireID("backup_id", in.BackupID); err != nil {
+		return nil, "", err
+	}
+	list, err := s.cfg.Operations.ListBackupCollections(ctx, in.BackupID)
+	if err != nil {
+		return nil, "", err
+	}
+	summary := fmt.Sprintf("%d collection(s) in backup %s of database %s (from the %s).",
+		len(list.Collections), idText(list.BackupID), quoted(list.Database), list.Source)
+	if list.Source == operations.CollectionsFromRecord {
+		summary += " The archive could not be read; warning in the result has the reason."
+	}
+	return list, summary, nil
 }
 
 func (s *Server) listStorageTargets(ctx context.Context, _ noInput) (targetList, string, error) {
