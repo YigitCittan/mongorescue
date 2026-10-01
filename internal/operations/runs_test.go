@@ -29,12 +29,15 @@ type runFixture struct {
 	manager  *runs.Manager
 	registry *runs.Registry
 	logs     *runlog.Dir
+	// toolStarted receives once per started fake mongodump.
+	toolStarted chan struct{}
 }
 
 func newRunFixture(t *testing.T) *runFixture {
 	t.Helper()
-	f := &runFixture{st: storetest.New(t), logs: runlog.NewDir(t.TempDir())}
+	f := &runFixture{st: storetest.New(t), logs: runlog.NewDir(t.TempDir()), toolStarted: make(chan struct{}, 16)}
 	blocking := func(ctx context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		f.toolStarted <- struct{}{}
 		pr, pw := io.Pipe()
 		go func() {
 			_, _ = pw.Write([]byte("partial archive"))
@@ -113,6 +116,13 @@ func TestCancelBackupRecordsWhoAndIsNotAFailure(t *testing.T) {
 	}
 	if active := f.svc.ActiveRuns(); len(active) != 1 || active[0].ID != started.ID || active[0].Kind != models.RunBackup {
 		t.Fatalf("active runs = %+v", active)
+	}
+	// Cancel once mongodump runs (a cancel before it starts is covered by
+	// TestCancelWhileQueuedNeverStartsTheTool).
+	select {
+	case <-f.toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mongodump never started")
 	}
 
 	rec, err := f.svc.CancelBackup(asKey("ci", auth.ScopeOperator), started.ID, "")
