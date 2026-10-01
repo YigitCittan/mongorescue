@@ -70,6 +70,11 @@ type JobUpdate struct {
 	// PausedUntil, for a paused job, resumes it automatically at that time. Pausing
 	// without it pauses until resumed; a job left paused keeps its current value.
 	PausedUntil *time.Time `json:"paused_until"`
+	// VerifyAfterBackup, when set, replaces the job's post-backup verification
+	// override ("" follows the setting, "on", "off").
+	VerifyAfterBackup *models.VerifyOverride `json:"verify_after_backup"`
+	// RestoreTest, when set, replaces the job's restore test policy.
+	RestoreTest *models.RestoreTestPolicy `json:"restore_test"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -116,6 +121,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if job.PausedUntil != nil {
 		until := job.PausedUntil.UTC()
 		job.PausedUntil = &until
+	}
+	if err := s.validateTrust(ctx, job); err != nil {
+		return err
 	}
 	if _, err := s.ResolveConnection(ctx, job.ConnectionID); err != nil {
 		return err
@@ -171,6 +179,11 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 		// Paused now without a time: until resumed.
 		job.PausedUntil = nil
 	}
+	job.VerifyAfterBackup = derefOr(u.VerifyAfterBackup, existing.VerifyAfterBackup)
+	if u.RestoreTest != nil {
+		rt := *u.RestoreTest
+		job.RestoreTest = &rt
+	}
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}
@@ -190,7 +203,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 		if u.UpdatedAt != nil && !current.UpdatedAt.Equal(*u.UpdatedAt) {
 			return ErrJobChanged
 		}
-		job.LastRun, job.CreatedAt = current.LastRun, current.CreatedAt
+		job.LastRun, job.CreatedAt, job.LastRestoreTest = current.LastRun, current.CreatedAt, current.LastRestoreTest
 		// UpdateJob never recreates a job deleted meanwhile.
 		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
 	}

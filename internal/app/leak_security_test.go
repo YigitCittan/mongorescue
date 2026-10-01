@@ -289,8 +289,14 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	}
 	// Echoing a masked secret into an update must not unmask it.
 	s.do("PUT", "/api/v1/connections/"+conn.ID, map[string]string{"name": "prod", "uri": "mongodb://admin:******@127.0.0.1:1/?authSource=admin&" + fast})
+	// A storage scan of the S3 target fails against the stub; its error is stored in
+	// the drift report and must be scrubbed too.
+	s.do("POST", "/api/v1/storage-targets/"+target.ID+"/scan", nil)
 
 	reads := []string{
+		"/api/v1/integrity", "/api/v1/storage-targets/" + target.ID + "/scan",
+		"/api/v1/jobs/" + job.ID + "/retention/preview", "/api/v1/jobs/" + job.ID + "/retention/log",
+		"/api/v1/jobs/" + job.ID + "/restore-tests",
 		"/", "/index.html", "/app.js", "/api/v1/health", "/api/v1/setup/status", "/api/v1/auth/me",
 		"/api/v1/users", "/api/v1/api-keys", "/api/v1/connections", "/api/v1/connections/" + conn.ID,
 		"/api/v1/settings", "/api/v1/storage-targets", "/api/v1/storage-targets/" + target.ID, "/api/v1/stats",
@@ -332,6 +338,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		mcp.ToolListStorageTargets:    {},
 		mcp.ToolGetStatus:             {},
 		mcp.ToolListBackupCollections: {"backup_id": backup.ID},
+		mcp.ToolRetentionPreview:      {"job_id": job.ID},
 	}
 	for tool, args := range calls {
 		if _, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: args}); err != nil {

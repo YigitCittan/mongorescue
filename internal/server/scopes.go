@@ -79,6 +79,22 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/restores/{id}/log":     auth.ScopeRead,
 	"GET /api/v1/runs/active":           auth.ScopeRead,
 
+	// Verifying, pinning and restore-testing only read archives or write into a
+	// temporary database the test drops again: operator. Sweeps, storage scans
+	// (which mark records missing) and imports (which create records): admin.
+	"POST /api/v1/backups/{id}/verify":         auth.ScopeOperator,
+	"POST /api/v1/backups/{id}/pin":            auth.ScopeOperator,
+	"POST /api/v1/backups/{id}/unpin":          auth.ScopeOperator,
+	"GET /api/v1/jobs/{id}/retention/preview":  auth.ScopeRead,
+	"GET /api/v1/jobs/{id}/retention/log":      auth.ScopeRead,
+	"POST /api/v1/jobs/{id}/restore-test":      auth.ScopeOperator,
+	"GET /api/v1/jobs/{id}/restore-tests":      auth.ScopeRead,
+	"GET /api/v1/integrity":                    auth.ScopeRead,
+	"POST /api/v1/integrity/sweep":             auth.ScopeAdmin,
+	"GET /api/v1/storage-targets/{id}/scan":    auth.ScopeRead,
+	"POST /api/v1/storage-targets/{id}/scan":   auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/import": auth.ScopeAdmin,
+
 	"GET /api/v1/notifications/channels":            auth.ScopeRead,
 	"POST /api/v1/notifications/channels":           auth.ScopeAdmin,
 	"PUT /api/v1/notifications/channels/{id}":       auth.ScopeAdmin,

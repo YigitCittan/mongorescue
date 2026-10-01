@@ -26,6 +26,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -86,6 +87,7 @@ type App struct {
 	auth          *auth.Service
 	settings      *settings.Service
 	targets       *targets.Service
+	integrity     *integrity.Service
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -261,9 +263,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithToolsDir(cfg.ToolsDir),
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
+		backup.WithManifestCapturer(prober.Manifest),
 		backup.WithRunConfig(func() backup.RunConfig {
-			g := settingsSvc.Current().General
-			return backup.RunConfig{Encryptor: settingsSvc.Encryptor(), Timeout: g.BackupTimeout.Std(), StallTimeout: g.BackupStallTimeout.Std()}
+			cur := settingsSvc.Current()
+			g := cur.General
+			cfg := backup.RunConfig{Encryptor: settingsSvc.Encryptor(), Timeout: g.BackupTimeout.Std(), StallTimeout: g.BackupStallTimeout.Std(),
+				Verify: cur.Integrity.VerifyAfterBackup}
+			if cur.Integrity.VerifyDecrypt {
+				cfg.VerifyDecryptor = settingsSvc.Decryptor()
+			}
+			return cfg
 		}),
 	)
 	restoreEngine := restore.NewEngine(nil, "",
@@ -306,6 +315,23 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		return nil, fmt.Errorf("check encryption after upgrade: %w", err)
 	}
 
+	// Integrity: on-demand and swept archive verification, restore tests after
+	// scheduled backups and weekly storage scans.
+	auditSvc := audit.NewService(metaStore, logger)
+	integritySvc := integrity.New(integrity.Config{
+		Store:       metaStore,
+		Targets:     targetSvc,
+		Runs:        runManager,
+		Restore:     restoreEngine,
+		Admin:       prober,
+		Connections: connSvc,
+		Settings:    settingsSvc.Current,
+		Decryptor:   settingsSvc.Decryptor,
+		Publisher:   bus,
+		ObserveScan: metricSet.ObserveStorageScan,
+		Logger:      logger,
+	})
+
 	// 5. Initialize scheduler
 	sched := scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
 		scheduler.WithPublisher(bus),
@@ -315,6 +341,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithBackupGuard(func(connectionID, database string) (func(), error) {
 			return runManager.Acquire(runs.BackupKey(connectionID, database))
 		}),
+		scheduler.WithRetentionLog(metaStore),
+		scheduler.WithAuditor(auditSvc),
+		scheduler.WithAfterBackup(integritySvc.AfterBackup),
 	)
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 
@@ -344,10 +373,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Targets:     targetSvc,
 		Settings:    settingsSvc.Current,
 		Publisher:   bus,
+		Verifier:    integritySvc,
 		Logger:      logger,
 		Version:     o.version,
 	})
-	auditSvc := audit.NewService(metaStore, logger)
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
 		Connections: connSvc,
@@ -373,6 +402,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithConnections(connSvc),
 		server.WithSettings(settingsSvc),
 		server.WithStorageTargets(targetSvc),
+		server.WithIntegrity(integritySvc),
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
@@ -394,6 +424,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		auth:          authSvc,
 		settings:      settingsSvc,
 		targets:       targetSvc,
+		integrity:     integritySvc,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 	}, nil
@@ -686,6 +717,10 @@ func (a *App) Start(ctx context.Context) error {
 		a.stopLocked()
 		return fmt.Errorf("start scheduler: %w", err)
 	}
+	// Background integrity sweeps and storage scans; stopped by shutdownRuns.
+	if a.integrity != nil {
+		a.integrity.Start(context.WithoutCancel(ctx))
+	}
 	return nil
 }
 
@@ -792,7 +827,7 @@ func (a *App) shutdownRuns() {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(2)
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
 			if err := a.runs.Shutdown(context.Background()); err != nil {
@@ -802,6 +837,12 @@ func (a *App) shutdownRuns() {
 		go func() {
 			defer wg.Done()
 			a.scheduler.Stop()
+		}()
+		go func() {
+			defer wg.Done()
+			if a.integrity != nil {
+				a.integrity.Stop()
+			}
 		}()
 		wg.Wait()
 	}()
