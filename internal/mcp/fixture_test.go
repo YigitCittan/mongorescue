@@ -51,9 +51,10 @@ func (fakeProber) ListCollections(context.Context, string, string) ([]connection
 
 // fixture is an MCP server over real services, a SQLite store and fake tool runners.
 type fixture struct {
-	srv   *Server
-	store *store.SQLiteStore
-	audit *audit.Service
+	srv      *Server
+	store    *store.SQLiteStore
+	audit    *audit.Service
+	registry *runs.Registry
 
 	mu       sync.Mutex
 	observed map[string]int
@@ -85,10 +86,11 @@ func newFixture(t *testing.T, mutate func(*Config)) *fixture {
 	}
 	conns := connections.NewService(st, fakeProber{})
 	sched := scheduler.NewScheduler(st, bEngine, mock, nil, scheduler.WithConnectionResolver(conns))
+	registry := runs.NewRegistry()
 	ops := operations.New(operations.Config{
-		Store: st, Backup: bEngine, Restore: rEngine, Jobs: sched, Runs: manager, Connections: conns, Version: "test",
+		Store: st, Backup: bEngine, Restore: rEngine, Jobs: sched, Runs: manager, Registry: registry, Connections: conns, Version: "test",
 	})
-	f := &fixture{store: st, audit: audit.NewService(st, nil), observed: map[string]int{}}
+	f := &fixture{store: st, audit: audit.NewService(st, nil), registry: registry, observed: map[string]int{}}
 	cfg := Config{
 		Operations: ops, Connections: conns, Audit: f.audit, Version: "test",
 		ObserveCall: func(tool, result string) {
