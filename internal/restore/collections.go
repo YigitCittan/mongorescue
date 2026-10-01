@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
@@ -103,6 +104,8 @@ func (e *Engine) ArchiveCollections(ctx context.Context, rec *models.BackupRecor
 		}
 		out = append(out, models.BackupCollection{Name: c.Name, Type: c.Type, ViewOn: c.ViewOn, SizeBytes: c.SizeBytes})
 	}
+	// mongodump writes the prelude in no particular order.
+	slices.SortFunc(out, func(a, b models.BackupCollection) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
 }
 

@@ -53,7 +53,7 @@ func TestBackupCollectionsEndpoint(t *testing.T) {
 		if err := json.Unmarshal(raw, &list); err != nil {
 			t.Fatal(err)
 		}
-		if list.Source != operations.CollectionsFromArchive || len(list.Collections) != 4 || list.Collections[3].ViewOn != "orders" {
+		if list.Source != operations.CollectionsFromArchive || len(list.Collections) != 4 || list.Collections[0].ViewOn != "orders" {
 			t.Fatalf("list = %+v", list)
 		}
 	}
