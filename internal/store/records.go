@@ -17,18 +17,18 @@ const (
 			connection_id = excluded.connection_id, storage_target_id = excluded.storage_target_id,
 			data = excluded.data`
 
-	upsertBackupSQL = `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, size_bytes, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	upsertBackupSQL = `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, size_bytes, phases, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET job_id = excluded.job_id, database_name = excluded.database_name,
 			status = excluded.status, started_at = excluded.started_at,
 			connection_id = excluded.connection_id, storage_target_id = excluded.storage_target_id,
-			retry_of = excluded.retry_of, size_bytes = excluded.size_bytes, data = excluded.data`
+			retry_of = excluded.retry_of, size_bytes = excluded.size_bytes, phases = excluded.phases, data = excluded.data`
 
-	upsertRestoreSQL = `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	upsertRestoreSQL = `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, phases, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET backup_id = excluded.backup_id, source_database = excluded.source_database,
 			target_database = excluded.target_database, status = excluded.status,
-			started_at = excluded.started_at, data = excluded.data`
+			started_at = excluded.started_at, phases = excluded.phases, data = excluded.data`
 )
 
 // SaveJob creates or updates a scheduled backup job. It sets CreatedAt (when zero) and
@@ -189,28 +189,40 @@ func putJob(ctx context.Context, e execer, job *models.Job) error {
 	return nil
 }
 
-// putBackup upserts record and its indexed columns.
+// putBackup upserts record and its indexed columns. Live progress is never stored.
 func putBackup(ctx context.Context, e execer, record *models.BackupRecord) error {
-	data, err := encode(record)
+	stored := *record
+	stored.Progress = nil
+	data, err := encode(&stored)
+	if err != nil {
+		return err
+	}
+	phases, err := encode(stored.Phases)
 	if err != nil {
 		return err
 	}
 	if _, err := e.ExecContext(ctx, upsertBackupSQL,
-		record.ID, record.JobID, record.Database, string(record.Status), timeKey(record.StartedAt), record.ConnectionID, record.StorageTargetID, record.RetryOf, record.SizeBytes, data); err != nil {
+		record.ID, record.JobID, record.Database, string(record.Status), timeKey(record.StartedAt), record.ConnectionID, record.StorageTargetID, record.RetryOf, record.SizeBytes, phases, data); err != nil {
 		return fmt.Errorf("store: save backup record %s: %w", record.ID, err)
 	}
 	return nil
 }
 
-// putRestore upserts record and its indexed columns.
+// putRestore upserts record and its indexed columns. Live progress is never stored.
 func putRestore(ctx context.Context, e execer, record *models.RestoreRecord) error {
-	data, err := encode(record)
+	stored := *record
+	stored.Progress = nil
+	data, err := encode(&stored)
+	if err != nil {
+		return err
+	}
+	phases, err := encode(stored.Phases)
 	if err != nil {
 		return err
 	}
 	if _, err := e.ExecContext(ctx, upsertRestoreSQL,
 		record.ID, record.BackupID, record.SourceDatabase, record.TargetDatabase,
-		string(record.Status), timeKey(record.StartedAt), data); err != nil {
+		string(record.Status), timeKey(record.StartedAt), phases, data); err != nil {
 		return fmt.Errorf("store: save restore record %s: %w", record.ID, err)
 	}
 	return nil

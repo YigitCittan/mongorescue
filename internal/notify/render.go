@@ -19,8 +19,10 @@ const maxErrorLength = 500
 var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.BackupSucceeded:           {"✅", "Backup succeeded"},
 	events.BackupFailed:              {"❌", "Backup failed"},
+	events.BackupCancelled:           {"⏹️", "Backup cancelled"},
 	events.RestoreSucceeded:          {"✅", "Restore succeeded"},
 	events.RestoreFailed:             {"❌", "Restore failed"},
+	events.RestoreCancelled:          {"⏹️", "Restore cancelled"},
 	events.NotificationTest:          {"🔔", "Test notification"},
 	events.EncryptionOffAfterUpgrade: {"⚠️", "Backup encryption is off"},
 }
@@ -43,13 +45,13 @@ func Render(e events.Event) Message {
 
 	var target string
 	switch e.Type {
-	case events.BackupSucceeded, events.BackupFailed:
+	case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled:
 		job := e.JobID
 		if job == "" {
 			job = "manual"
 		}
 		target = fmt.Sprintf("job %s (db %s)", job, e.Database)
-	case events.RestoreSucceeded, events.RestoreFailed:
+	case events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled:
 		target = fmt.Sprintf("backup %s → db %s", e.BackupID, e.Database)
 	case events.NotificationTest:
 		target = "MongoRescue notification channel check"
