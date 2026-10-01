@@ -99,7 +99,7 @@ func TestNilRegistryAndRun(t *testing.T) {
 	if r := run.CountingReader(strings.NewReader("abc")); r == nil {
 		t.Fatal("nil counting reader")
 	}
-	if reg.Count(models.RunBackup) != 0 || len(reg.Snapshots()) != 0 || reg.CancelAll(Cancellation{}) != 0 {
+	if reg.Count(models.RunBackup) != 0 || len(reg.Snapshots()) != 0 || len(reg.CancelAll(Cancellation{})) != 0 {
 		t.Fatal("a nil registry tracks nothing")
 	}
 	if _, err := reg.OpenLog("x"); !errors.Is(err, runlog.ErrNotFound) {
@@ -185,12 +185,36 @@ func TestCancelAll(t *testing.T) {
 		ctxs = append(ctxs, run.Bind(context.Background()))
 		defer run.End()
 	}
-	if n := reg.CancelAll(Cancellation{By: SystemActor, Reason: "cancelled: application force quit"}); n != 3 {
-		t.Fatalf("cancelled %d runs", n)
+	if ids := reg.CancelAll(Cancellation{By: SystemActor, Reason: "cancelled: application force quit"}); len(ids) != 3 || ids[0] != "rst_0" {
+		t.Fatalf("cancelled %v", ids)
+	}
+	// Runs already cancelled are not cancelled again.
+	if ids := reg.CancelAll(Cancellation{By: SystemActor}); len(ids) != 0 {
+		t.Fatalf("cancelled again: %v", ids)
 	}
 	for _, ctx := range ctxs {
 		if c := CancellationOf(ctx); c == nil || c.By != SystemActor {
 			t.Fatalf("cancellation = %+v", c)
 		}
+	}
+}
+
+func TestFinishingRunsCannotBeCancelled(t *testing.T) {
+	reg := NewRegistry()
+	run, _ := reg.Register(Meta{Kind: models.RunRestore, ID: "rst_f"})
+	ctx := run.Bind(context.Background())
+	defer run.End()
+	run.Finishing()
+	if p := run.Snapshot(); p.Phase != models.PhaseFinishing || p.Cancelling {
+		t.Fatalf("snapshot = %+v", p)
+	}
+	if err := reg.Cancel("rst_f", Cancellation{By: "alice"}); !errors.Is(err, ErrFinishing) {
+		t.Fatalf("cancel while finishing = %v, want ErrFinishing", err)
+	}
+	if ids := reg.CancelAll(Cancellation{By: SystemActor}); len(ids) != 0 {
+		t.Fatalf("CancelAll cancelled a finishing run: %v", ids)
+	}
+	if ctx.Err() != nil || run.Cancellation() != nil {
+		t.Fatal("a finishing run must keep running")
 	}
 }

@@ -563,23 +563,36 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		return fmt.Sprintf("; the partially restored clone %s was dropped", targetDB)
 	}
 
-	// An aborted run (timeout, cancellation) may have stopped mongorestore midway. A
-	// cancelled clone is dropped like a failed one; a cancelled in-place restore leaves
-	// whatever mongorestore applied, which the record states loudly.
-	if ctx.Err() != nil {
+	// cancelNote completes the message of a cancelled restore with what happened to
+	// the target: a cancelled clone is dropped like a failed one; a cancelled in-place
+	// restore leaves whatever mongorestore applied, which the record states loudly.
+	cancelNote := func() string {
+		switch {
+		case req.DryRun:
+			return "; nothing was written (dry run)"
+		case clone:
+			return dropClone()
+		default:
+			warning := fmt.Sprintf("cancelled midway: the in-place target %s may be PARTIALLY RESTORED; check it or restore it again", targetDB)
+			addWarning(record, warning)
+			return "; WARNING: " + warning
+		}
+	}
+	// failOrCancel records a failure found after mongorestore started, or the
+	// cancellation when one was requested (no failure event or metric then).
+	failOrCancel := func(err error, message func() string) (*models.RestoreRecord, error) {
 		if c := runs.CancellationOf(ctx); c != nil {
-			var note string
-			switch {
-			case req.DryRun:
-				note = "; nothing was written (dry run)"
-			case clone:
-				note = dropClone()
-			default:
-				warning := fmt.Sprintf("cancelled midway: the in-place target %s may be PARTIALLY RESTORED; check it or restore it again", targetDB)
-				addWarning(record, warning)
-				note = "; WARNING: " + warning
-			}
-			return e.cancelled(ctx, record, c, note)
+			return e.cancelled(ctx, record, c, cancelNote())
+		}
+		return e.failDone(ctx, record, err, message())
+	}
+
+	// An aborted run (timeout, cancellation) may have stopped mongorestore midway: the
+	// abort decides the outcome only when the tool or its input actually failed.
+	streamErr := input.Err()
+	if ctx.Err() != nil && (waitErr != nil || streamErr != nil) {
+		if c := runs.CancellationOf(ctx); c != nil {
+			return e.cancelled(ctx, record, c, cancelNote())
 		}
 		abortErr := e.withCause(ctx, ctx.Err())
 		return e.failDone(ctx, record, fmt.Errorf("restore aborted: %w", abortErr),
@@ -588,7 +601,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 
 	// A mid-stream read or authentication failure means mongorestore saw truncated
 	// input; report it as the root cause regardless of mongorestore's exit status.
-	if streamErr := input.Err(); streamErr != nil {
+	if streamErr != nil {
 		stage := "read backup stream"
 		if errors.Is(streamErr, encryption.ErrDecryptionFailed) {
 			stage = "decrypt backup stream"
@@ -603,15 +616,24 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 			fmt.Sprintf("mongorestore failed: %v%s, stderr: %s", waitErr, dropClone(), tail))
 	}
 
+	// mongorestore exited 0: the data is applied and the run is past the point of no
+	// return. Later cancellations are refused (runs.ErrFinishing) and a cancellation or
+	// timeout that arrived in between does not undo a complete restore; the checks
+	// below run detached from the run's context.
+	tracker.Finishing()
+	checkCtx, cancelCheck := context.WithTimeout(context.WithoutCancel(ctx), cloneDropTimeout)
+	defer cancelCheck()
+
 	// mongorestore has exited and os/exec has finished copying its stdin, so the
 	// stream is no longer read concurrently: hash what it did not consume and compare.
-	if err := verifyStreamed(ctx, hashed, sourceRecord.SHA256); err != nil {
-		err = e.withCause(ctx, err)
-		note := fmt.Sprintf("; the data restored into %s.* does not match the backup and must not be trusted", targetDB)
-		if clone && e.admin != nil {
-			note = dropClone()
-		}
-		return e.failDone(ctx, record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error()+note)
+	if err := verifyStreamed(checkCtx, hashed, sourceRecord.SHA256); err != nil {
+		return failOrCancel(fmt.Errorf("restore %s: %w", req.BackupID, err), func() string {
+			note := fmt.Sprintf("; the data restored into %s.* does not match the backup and must not be trusted", targetDB)
+			if clone && e.admin != nil {
+				note = dropClone()
+			}
+			return err.Error() + note
+		})
 	}
 
 	failed, ok := failedDocuments(stderrLogs)
@@ -619,9 +641,10 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		// The target is kept (a clone too) so the documents that did arrive can be
 		// inspected; the record is failed.
 		err := fmt.Errorf("%w: %d document(s) failed to restore", ErrDocumentsFailed, failed)
-		return e.failDone(ctx, record, err,
-			fmt.Sprintf("%v (duplicate keys in a target that already held data, or documents rejected by a validator when the user lacks the bypassDocumentValidation privilege of the restore role)%s; mongorestore output: %s",
-				err, partialNote, stderrTail(stderrLogs)))
+		return failOrCancel(err, func() string {
+			return fmt.Sprintf("%v (duplicate keys in a target that already held data, or documents rejected by a validator when the user lacks the bypassDocumentValidation privilege of the restore role)%s; mongorestore output: %s",
+				err, partialNote, stderrTail(stderrLogs))
+		})
 	}
 	if !ok && !req.DryRun {
 		addWarning(record, "document counts unavailable: mongorestore printed no restored/failed summary")

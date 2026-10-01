@@ -26,6 +26,10 @@ var (
 
 	// ErrNotRunning is returned when a run to cancel is not active in this process.
 	ErrNotRunning = errors.New("runs: run is not running")
+
+	// ErrFinishing is returned when a run to cancel is past the point of no return
+	// (see Run.Finishing): its tool finished and it is only recording the outcome.
+	ErrFinishing = errors.New("runs: run is already finishing")
 )
 
 // SystemActor names the application itself as the canceller of a run (shutdown,
@@ -176,10 +180,11 @@ func (r *Registry) Cancel(id string, c Cancellation) error {
 	return run.Cancel(c)
 }
 
-// CancelAll cancels every active run with c and returns how many it cancelled.
-func (r *Registry) CancelAll(c Cancellation) int {
+// CancelAll cancels every active run with c and returns the IDs of the runs it
+// cancelled: runs already cancelled before, finishing or ended are not included.
+func (r *Registry) CancelAll(c Cancellation) []string {
 	if r == nil {
-		return 0
+		return nil
 	}
 	r.mu.Lock()
 	list := make([]*Run, 0, len(r.active))
@@ -187,13 +192,14 @@ func (r *Registry) CancelAll(c Cancellation) int {
 		list = append(list, run)
 	}
 	r.mu.Unlock()
-	n := 0
+	var ids []string
 	for _, run := range list {
-		if run.Cancel(c) == nil {
-			n++
+		if newly, err := run.cancelRun(c); err == nil && newly {
+			ids = append(ids, run.meta.ID)
 		}
 	}
-	return n
+	slices.Sort(ids)
+	return ids
 }
 
 // Count returns the number of active runs of kind.
@@ -308,6 +314,7 @@ type Run struct {
 	cancel        context.CancelCauseFunc
 	pending       *Cancellation
 	cancellation  *Cancellation
+	finishing     bool
 	ended         bool
 	startedAt     time.Time
 	transferStart time.Time
@@ -378,10 +385,17 @@ func (run *Run) End() {
 }
 
 // Cancel stops the run with c as its context's cause. It returns ErrNotRunning once
-// the run ended; a second cancellation keeps the first.
+// the run ended and ErrFinishing once it is past the point of no return (see
+// Finishing); a second cancellation keeps the first.
 func (run *Run) Cancel(c Cancellation) error {
+	_, err := run.cancelRun(c)
+	return err
+}
+
+// cancelRun implements Cancel and reports whether this call cancelled the run.
+func (run *Run) cancelRun(c Cancellation) (bool, error) {
 	if run == nil {
-		return ErrNotRunning
+		return false, ErrNotRunning
 	}
 	if c.At.IsZero() {
 		c.At = run.reg.now().UTC()
@@ -389,11 +403,15 @@ func (run *Run) Cancel(c Cancellation) error {
 	run.mu.Lock()
 	if run.ended {
 		run.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotRunning, run.meta.ID)
+		return false, fmt.Errorf("%w: %s", ErrNotRunning, run.meta.ID)
 	}
 	if run.cancellation != nil {
 		run.mu.Unlock()
-		return nil
+		return false, nil
+	}
+	if run.finishing {
+		run.mu.Unlock()
+		return false, fmt.Errorf("%w: %s", ErrFinishing, run.meta.ID)
 	}
 	cause := &c
 	run.cancellation = cause
@@ -408,7 +426,24 @@ func (run *Run) Cancel(c Cancellation) error {
 	if cancel != nil {
 		cancel(cause)
 	}
-	return nil
+	return true, nil
+}
+
+// Finishing marks the point of no return: the run's tool finished successfully and
+// the run only records its outcome, so later cancellations fail with ErrFinishing
+// (a cancellation requested before still counts). The phase becomes
+// models.PhaseFinishing.
+func (run *Run) Finishing() {
+	if run == nil {
+		return
+	}
+	run.mu.Lock()
+	run.finishing = true
+	if run.cancellation == nil {
+		run.phase = models.PhaseFinishing
+	}
+	run.updatedAt = run.reg.now().UTC()
+	run.mu.Unlock()
 }
 
 // Cancellation returns the run's Cancellation, or nil.

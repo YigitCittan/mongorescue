@@ -97,7 +97,7 @@ func (p *platformState) stop() {
 }
 
 // forceQuit quits like quit, and the shutdown records the backups and restores
-// it cancels as failed with desktop.ForceQuitReason.
+// it cancels as cancelled (by the system) with desktop.ForceQuitReason.
 func (d *desktopApp) forceQuit() {
 	d.forced.Store(true)
 	d.quit()

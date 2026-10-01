@@ -131,6 +131,9 @@ func (s *Service) CancelRun(ctx context.Context, id, via string) (*CancelledRun,
 func (s *Service) cancel(ctx context.Context, id, via string) error {
 	by := actor(ctx, via)
 	err := s.cfg.Registry.Cancel(id, runs.Cancellation{By: by, At: s.now().UTC()})
+	if errors.Is(err, runs.ErrFinishing) {
+		return public("the run "+id+" is already finishing (its tool completed) and can no longer be cancelled", ErrNotRunning, err)
+	}
 	if errors.Is(err, runs.ErrNotRunning) {
 		return public("the run "+id+" is not active in this MongoRescue process (it may have just finished)", ErrNotRunning)
 	}
