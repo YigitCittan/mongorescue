@@ -793,8 +793,15 @@ const LIST_STATUSES = [
   { value: "completed", label: "filters.status_completed" },
   { value: "failed", label: "filters.status_failed" },
   { value: "in_progress", label: "filters.status_running" },
-  { value: "cancelled", label: "run.status_cancelled" }
+  { value: "cancelled", label: "run.status_cancelled" },
+  // Completed backups whose archive a storage scan no longer found (trust.js).
+  { value: "missing", label: "status.missing", kinds: ["backups"] }
 ];
+
+// The status filter options of list kind (an option without kinds applies to both).
+function listStatuses(kind) {
+  return LIST_STATUSES.filter(s => !s.kinds || s.kinds.includes(kind));
+}
 const LIST_RANGES = ["today", "7d", "30d", "custom"];
 const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Newest records fetched to report operations started here that are not on the page.
@@ -913,7 +920,7 @@ function applyListParams(kind, params) {
   const next = emptyFilters(kind);
   next.q = get("q");
   next.database = get("database");
-  if (LIST_STATUSES.some(s => s.value === get("status"))) next.status = get("status");
+  if (listStatuses(kind).some(s => s.value === get("status"))) next.status = get("status");
   if (kind === "backups" && BACKUP_TRIGGERS.includes(get("trigger"))) next.trigger = get("trigger");
   if (LIST_RANGES.includes(get("range"))) next.range = get("range");
   if (next.range === "custom") {
@@ -1209,7 +1216,7 @@ function fillStatusOptions(kind) {
   const sel = document.getElementById(`${kind}-filter-status`);
   if (!sel) return;
   sel.textContent = "";
-  [{ value: "", label: "filters.status_all" }].concat(LIST_STATUSES).forEach(s => {
+  [{ value: "", label: "filters.status_all" }].concat(listStatuses(kind)).forEach(s => {
     const opt = document.createElement("option");
     opt.value = s.value;
     opt.setAttribute("data-i18n", s.label);

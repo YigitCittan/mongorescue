@@ -74,6 +74,9 @@ type DriftReport struct {
 	// unrelated data).
 	Objects int `json:"objects"`
 	Ignored int `json:"ignored"`
+	// Unreadable counts the archives named by a backup row that cannot be read
+	// (see store.CorruptRecords): neither orphans nor missing, never touched.
+	Unreadable int `json:"unreadable,omitempty"`
 	// OrphanCount and Orphans are the archives without a record (the list is capped
 	// at MaxReportedOrphans).
 	OrphanCount int      `json:"orphan_count"`
@@ -113,6 +116,27 @@ func liveStatus(st models.BackupStatus) bool {
 	default:
 		return false
 	}
+}
+
+// unreadableOwner returns the ID of a backup row that names key but could not be
+// decoded (it is not among the readable records), or "". Such a row owns the
+// archive: it is never an orphan and is never imported over.
+func unreadableOwner(index map[string][]string, readable map[string]bool, key string) string {
+	for _, id := range index[key] {
+		if !readable[id] {
+			return id
+		}
+	}
+	return ""
+}
+
+// readableIDs returns the IDs of records.
+func readableIDs(records []*models.BackupRecord) map[string]bool {
+	out := make(map[string]bool, len(records))
+	for _, r := range records {
+		out[r.ID] = true
+	}
+	return out
 }
 
 // targetRecords returns the backup records stored on target id, keyed by storage
@@ -196,6 +220,13 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 	if err != nil {
 		return err
 	}
+	// Rows that cannot be decoded are skipped by the record list; their keys come
+	// from SQL, so their archives are never reported as orphans.
+	index, err := s.cfg.Store.ArchiveKeyIndex(ctx, target.ID)
+	if err != nil {
+		return err
+	}
+	readable := readableIDs(records)
 
 	present := make(map[string]bool, len(objects))
 	for _, obj := range objects {
@@ -207,6 +238,10 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 		present[obj.Key] = true
 		rec := byKey[obj.Key]
 		if rec != nil && liveStatus(rec.Status) {
+			continue
+		}
+		if unreadableOwner(index, readable, obj.Key) != "" {
+			report.Unreadable++
 			continue
 		}
 		report.OrphanCount++
@@ -428,9 +463,16 @@ func (s *Service) StartImport(ctx context.Context, targetID, key string) (*model
 		}
 		return nil, fmt.Errorf("stat object: %w", err)
 	}
-	_, byKey, err := s.targetRecords(ctx, target.ID)
+	records, byKey, err := s.targetRecords(ctx, target.ID)
 	if err != nil {
 		return nil, err
+	}
+	index, err := s.cfg.Store.ArchiveKeyIndex(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	if id := unreadableOwner(index, readableIDs(records), key); id != "" {
+		return nil, fmt.Errorf("%w: backup %s, which cannot be read, names it; repair that row first", ErrNotOrphan, id)
 	}
 	var rec *models.BackupRecord
 	priorSHA := ""

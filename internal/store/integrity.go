@@ -77,6 +77,57 @@ func (s *SQLiteStore) UpdateBackupRecord(ctx context.Context, id string, fn func
 	return out, nil
 }
 
+// ArchiveKeyIndex maps every storage key named by a backup row on storage target
+// targetID to the IDs of those rows. It reads the key with SQL instead of decoding
+// the records, so rows that cannot be decoded (skipped by ListBackupRecords) still
+// own their archives: callers never treat such an archive as an orphan or delete it.
+func (s *SQLiteStore) ArchiveKeyIndex(ctx context.Context, targetID string) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, coalesce(json_extract(data, '$.storage_key'), '') FROM backups
+		WHERE storage_target_id = ? ORDER BY id`, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list archive keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string][]string)
+	for rows.Next() {
+		var id string
+		var key sql.NullString
+		if err := rows.Scan(&id, &key); err != nil {
+			return nil, fmt.Errorf("store: scan archive key: %w", err)
+		}
+		if key.Valid && key.String != "" {
+			out[key.String] = append(out[key.String], id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list archive keys: %w", err)
+	}
+	return out, nil
+}
+
+// ArchiveReferenceIDs returns the IDs of every backup row, readable or not, that
+// names key on storage target targetID.
+func (s *SQLiteStore) ArchiveReferenceIDs(ctx context.Context, targetID, key string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM backups
+		WHERE storage_target_id = ? AND json_extract(data, '$.storage_key') = ? ORDER BY id`, targetID, key)
+	if err != nil {
+		return nil, fmt.Errorf("store: list archive references: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan archive reference: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list archive references: %w", err)
+	}
+	return ids, nil
+}
+
 // ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
 var ErrPruneRefused = errors.New("store: retention must keep this backup")
 

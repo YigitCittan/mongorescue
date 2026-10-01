@@ -73,7 +73,7 @@ type RestorePage struct {
 // (also listed in the 400 messages).
 var (
 	validBackupStatuses = []models.BackupStatus{
-		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusCancelled, models.StatusPruned,
+		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusCancelled, models.StatusPruned, models.StatusMissing,
 	}
 	validTriggers = []models.BackupTrigger{
 		models.TriggerScheduled, models.TriggerOnDemand, models.TriggerManual, models.TriggerMCP,

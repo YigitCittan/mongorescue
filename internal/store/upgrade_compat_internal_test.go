@@ -648,8 +648,7 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, m := range migrations {
-		version := m.version
+	for version := 1; version <= latest; version++ {
 		t.Run(fmt.Sprintf("from_%04d", version), func(t *testing.T) {
 			f := &compatFixture{box: box, ageIdentity: identity, ageRecip: recipient, oldBackupCT: ct.Bytes()}
 			path := filepath.Join(t.TempDir(), "mongorescue.db")
@@ -665,8 +664,8 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 			if err := s.db.QueryRow("SELECT MAX(version), COUNT(*) FROM schema_migrations").Scan(&current, &applied); err != nil {
 				t.Fatal(err)
 			}
-			if current != latest || applied != len(migrations) {
-				t.Fatalf("schema at %d with %d migrations; want %d with %d", current, applied, latest, len(migrations))
+			if current != latest || applied != latest {
+				t.Fatalf("schema at %d with %d migrations; want %d", current, applied, latest)
 			}
 			for _, step := range compatSteps {
 				if step.version <= version {
