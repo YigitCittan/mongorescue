@@ -24,8 +24,9 @@ import (
 
 // Output size caps.
 const (
-	// DefaultPageSize is the page size of list tools when limit is omitted.
-	DefaultPageSize = 20
+	// DefaultPageSize is the page size of list tools when limit is omitted, so a call
+	// without limit never returns an unbounded list.
+	DefaultPageSize = 50
 	// MaxPageSize caps the limit of list tools.
 	MaxPageSize = 100
 	// maxIDLength bounds identifiers accepted from clients.
@@ -164,7 +165,7 @@ type collectionsInput struct {
 }
 
 type pageInput struct {
-	Limit  int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 20)"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 50)"`
 	Cursor string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
 }
 
@@ -176,8 +177,17 @@ type listBackupsInput struct {
 	Database     string `json:"database,omitempty" jsonschema:"only backups of this database"`
 	ConnectionID string `json:"connection_id,omitempty" jsonschema:"only backups taken from this connection"`
 	Status       string `json:"status,omitempty" jsonschema:"only backups in this state"`
-	Limit        int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 20)"`
+	JobID        string `json:"job_id,omitempty" jsonschema:"only backups taken by this scheduled job"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 50)"`
 	Cursor       string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
+}
+
+type listRestoresInput struct {
+	Status   string `json:"status,omitempty" jsonschema:"only restores in this state"`
+	BackupID string `json:"backup_id,omitempty" jsonschema:"only restores of this backup"`
+	Database string `json:"database,omitempty" jsonschema:"only restores into this target database"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 50)"`
+	Cursor   string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
 }
 
 type startBackupInput struct {
@@ -361,11 +371,11 @@ func (s *Server) registerTools() {
 	}, s.getJob)
 	addTool(s, &sdk.Tool{
 		Name:        ToolListBackups,
-		Description: "List backups, newest first, optionally filtered by database, connection and status. Paginated: pass next_cursor to get the next page.",
+		Description: "List backups, newest first, optionally filtered by database, connection, job and status. Paginated (50 per page unless limit is set): pass next_cursor to get the next page.",
 		Annotations: readOnly("List backups"),
 		InputSchema: schemaFor[listBackupsInput](func(p map[string]*jsonschema.Schema) {
 			pageProps(p)
-			limitIDs(p, "connection_id")
+			limitIDs(p, "connection_id", "job_id")
 			p["database"].MaxLength = ptr(maxNameLength)
 			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusPruned)}
 		}),
@@ -378,9 +388,14 @@ func (s *Server) registerTools() {
 	}, s.getBackup)
 	addTool(s, &sdk.Tool{
 		Name:        ToolListRestores,
-		Description: "List restores, newest first. Paginated: pass next_cursor to get the next page.",
+		Description: "List restores, newest first, optionally filtered by status, source backup and target database. Paginated (50 per page unless limit is set): pass next_cursor to get the next page.",
 		Annotations: readOnly("List restores"),
-		InputSchema: schemaFor[pageInput](pageProps),
+		InputSchema: schemaFor[listRestoresInput](func(p map[string]*jsonschema.Schema) {
+			pageProps(p)
+			limitIDs(p, "backup_id")
+			p["database"].MaxLength = ptr(maxNameLength)
+			p["status"].Enum = []any{string(models.RestoreStatusInProgress), string(models.RestoreStatusCompleted), string(models.RestoreStatusFailed)}
+		}),
 	}, s.listRestores)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetRestore,
@@ -434,26 +449,41 @@ func (s *Server) registerTools() {
 // page returns the window of n items selected by limit and cursor, and the cursor
 // of the next page ("" on the last page).
 func page(n, limit int, cursor string) (start, end int, next string, err error) {
+	limit, start, err = pageArgs(limit, cursor)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	start = min(start, n)
+	end = min(start+limit, n)
+	return start, end, nextCursor(end, n), nil
+}
+
+// pageArgs validates limit (DefaultPageSize when 0) and decodes cursor into an offset.
+func pageArgs(limit int, cursor string) (pageLimit, offset int, err error) {
 	if limit == 0 {
 		limit = DefaultPageSize
 	}
 	if limit < 1 || limit > MaxPageSize {
-		return 0, 0, "", fmt.Errorf("%w: limit must be between 1 and %d", errInvalidInput, MaxPageSize)
+		return 0, 0, fmt.Errorf("%w: limit must be between 1 and %d", errInvalidInput, MaxPageSize)
 	}
 	if cursor != "" {
 		raw, decErr := base64.RawURLEncoding.DecodeString(cursor)
 		off, convErr := strconv.Atoi(strings.TrimPrefix(string(raw), "o:"))
 		if decErr != nil || convErr != nil || !strings.HasPrefix(string(raw), "o:") || off < 0 {
-			return 0, 0, "", fmt.Errorf("%w: cursor is not a next_cursor of this tool", errInvalidInput)
+			return 0, 0, fmt.Errorf("%w: cursor is not a next_cursor of this tool", errInvalidInput)
 		}
-		start = off
+		offset = off
 	}
-	start = min(start, n)
-	end = min(start+limit, n)
-	if end < n {
-		next = base64.RawURLEncoding.EncodeToString([]byte("o:" + strconv.Itoa(end)))
+	return limit, offset, nil
+}
+
+// nextCursor returns the cursor of the page starting at end, or "" when end reached
+// total.
+func nextCursor(end, total int) string {
+	if end >= total {
+		return ""
 	}
-	return start, end, next, nil
+	return base64.RawURLEncoding.EncodeToString([]byte("o:" + strconv.Itoa(end)))
 }
 
 // quoted renders an untrusted name (a database, for instance) for a text summary:
@@ -575,18 +605,24 @@ func (s *Server) getJob(ctx context.Context, in idInput) (*models.Job, string, e
 }
 
 func (s *Server) listBackups(ctx context.Context, in listBackupsInput) (backupList, string, error) {
-	list, err := s.cfg.Operations.ListBackups(ctx, operations.BackupFilter{
-		Database: in.Database, ConnectionID: in.ConnectionID, Status: models.BackupStatus(in.Status),
+	limit, offset, err := pageArgs(in.Limit, in.Cursor)
+	if err != nil {
+		return backupList{}, "", err
+	}
+	// The store pages the query, so a call never loads more than one page of records.
+	res, err := s.cfg.Operations.QueryBackups(ctx, operations.BackupFilter{
+		Database: in.Database, ConnectionID: in.ConnectionID, JobID: in.JobID, Status: models.BackupStatus(in.Status),
+		Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return backupList{}, "", err
 	}
-	start, end, next, err := page(len(list), in.Limit, in.Cursor)
-	if err != nil {
-		return backupList{}, "", err
+	list := make([]*models.BackupRecord, 0, len(res.Items))
+	for _, it := range res.Items {
+		list = append(list, it.BackupRecord)
 	}
-	out := backupList{Backups: list[start:end], Total: len(list), NextCursor: next}
-	return out, fmt.Sprintf("%d of %d backup(s), newest first.", end-start, len(list)), nil
+	out := backupList{Backups: list, Total: res.Total, NextCursor: nextCursor(offset+len(list), res.Total)}
+	return out, fmt.Sprintf("%d of %d backup(s), newest first.", len(list), res.Total), nil
 }
 
 func (s *Server) getBackup(ctx context.Context, in idInput) (*models.BackupRecord, string, error) {
@@ -613,17 +649,20 @@ func backupSummary(b *models.BackupRecord) string {
 	}
 }
 
-func (s *Server) listRestores(ctx context.Context, in pageInput) (restoreList, string, error) {
-	list, err := s.cfg.Operations.ListRestores(ctx)
+func (s *Server) listRestores(ctx context.Context, in listRestoresInput) (restoreList, string, error) {
+	limit, offset, err := pageArgs(in.Limit, in.Cursor)
 	if err != nil {
 		return restoreList{}, "", err
 	}
-	start, end, next, err := page(len(list), in.Limit, in.Cursor)
+	res, err := s.cfg.Operations.QueryRestores(ctx, operations.RestoreFilter{
+		Status: models.RestoreStatus(in.Status), BackupID: in.BackupID, TargetDatabase: in.Database,
+		Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		return restoreList{}, "", err
 	}
-	out := restoreList{Restores: list[start:end], Total: len(list), NextCursor: next}
-	return out, fmt.Sprintf("%d of %d restore(s), newest first.", end-start, len(list)), nil
+	out := restoreList{Restores: res.Items, Total: res.Total, NextCursor: nextCursor(offset+len(res.Items), res.Total)}
+	return out, fmt.Sprintf("%d of %d restore(s), newest first.", len(res.Items), res.Total), nil
 }
 
 func (s *Server) getRestore(ctx context.Context, in idInput) (*models.RestoreRecord, string, error) {
