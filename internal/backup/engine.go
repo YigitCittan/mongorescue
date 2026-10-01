@@ -330,6 +330,10 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	mongoURI := e.resolveURI(opts)
 
 	tracker := runs.FromContext(ctx)
+	if runs.CancellationOf(ctx) != nil {
+		// Cancelled while queued: mongodump is never started.
+		return e.fail(ctx, record, fmt.Errorf("backup %w before mongodump started", runs.CancellationOf(ctx)))
+	}
 	record.Phases.Started = models.Stamp(time.Now())
 	if record.Phases.Queued == nil {
 		record.Phases.Queued = models.Stamp(startTime)
@@ -379,6 +383,9 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	procCtx, cancelProc := context.WithCancel(runCtx)
 	defer cancelProc()
 
+	if c := runs.CancellationOf(runCtx); c != nil {
+		return e.fail(runCtx, record, fmt.Errorf("backup %w before mongodump started", c))
+	}
 	stdout, stderr, wait, err := e.runner(procCtx, "mongodump", args...)
 	if err != nil {
 		return e.fail(runCtx, record, fmt.Errorf("start mongodump: %w", err))

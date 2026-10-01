@@ -406,6 +406,10 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		slog.Bool("encrypted", sourceRecord.Encrypted),
 	)
 	tracker := runs.FromContext(ctx)
+	if c := runs.CancellationOf(ctx); c != nil {
+		// Cancelled while queued: nothing is read or written.
+		return e.cancelled(ctx, record, c, " before mongorestore started; the target is untouched")
+	}
 	record.InPlace = req.InPlace()
 	record.Phases.Started = models.Stamp(time.Now())
 	if record.Phases.Queued == nil {
@@ -519,6 +523,9 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		args = append(args, "--bypassDocumentValidation")
 	}
 
+	if c := runs.CancellationOf(ctx); c != nil {
+		return e.cancelled(ctx, record, c, " before mongorestore started; the target is untouched")
+	}
 	stderr, wait, err := e.runner(ctx, "mongorestore", input, args...)
 	if err != nil {
 		return e.failRun(ctx, record, fmt.Errorf("start mongorestore: %w", err), fmt.Sprintf("start mongorestore: %v", err))

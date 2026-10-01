@@ -136,9 +136,11 @@ func TestBackupCancelBeforeStart(t *testing.T) {
 	if !errors.Is(err, runs.ErrCancelled) || got.Status != models.StatusCancelled || got.CancelledBy != "API key ci" {
 		t.Fatalf("got %s by %q, %v", got.Status, got.CancelledBy, err)
 	}
-	if !started {
-		// The runner sees the cancelled context and refuses to start.
-		t.Log("runner was not called")
+	if started {
+		t.Fatal("mongodump was started for a backup cancelled before it started")
+	}
+	if !strings.Contains(got.ErrorMessage, "before mongodump started") || got.Phases.Started != nil {
+		t.Fatalf("message %q, phases %+v", got.ErrorMessage, got.Phases)
 	}
 	if err := reg.Cancel(record.ID, runs.Cancellation{By: "bob"}); !errors.Is(err, runs.ErrNotRunning) {
 		t.Fatalf("cancelling an ended run = %v, want ErrNotRunning", err)

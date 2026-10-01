@@ -29,6 +29,11 @@ func TestCancelRunTool(t *testing.T) {
 	}
 	runCtx := run.Bind(ctx)
 	defer run.End()
+	// Like an engine, the stand-in run ends once it is cancelled.
+	go func() {
+		<-runCtx.Done()
+		run.End()
+	}()
 
 	if names := toolNames(t, f.session(t, principal(auth.ScopeRead))); slices.Contains(names, ToolCancelRun) {
 		t.Fatal("read keys must not see cancel_run")

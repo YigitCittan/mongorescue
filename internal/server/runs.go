@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 )
@@ -27,15 +28,25 @@ func (s *Server) registerRunRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/runs/active", s.handleActiveRuns)
 }
 
-// handleCancelBackup cancels a running backup: 202 with the record while it stops,
-// 404 for an unknown backup and 409 when it is not running.
+// handleCancelBackup cancels a running backup. It answers 200 with the final
+// cancelled record once the run stopped (usually within the request), 202 with the
+// in-progress record while it is still stopping, 404 for an unknown backup and 409
+// when it is not running.
 func (s *Server) handleCancelBackup(w http.ResponseWriter, r *http.Request) {
 	rec, err := s.ops.CancelBackup(r.Context(), r.PathValue("id"), "")
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, rec)
+	writeJSON(w, cancelStatus(rec.Status == models.StatusInProgress), rec)
+}
+
+// cancelStatus is 202 while a cancelled run is still stopping, else 200.
+func cancelStatus(stopping bool) int {
+	if stopping {
+		return http.StatusAccepted
+	}
+	return http.StatusOK
 }
 
 // handleCancelRestore cancels a running restore (see handleCancelBackup). Cancelling
@@ -46,7 +57,7 @@ func (s *Server) handleCancelRestore(w http.ResponseWriter, r *http.Request) {
 		s.writeOperationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, rec)
+	writeJSON(w, cancelStatus(rec.Status == models.RestoreStatusInProgress), rec)
 }
 
 // handleActiveRuns returns the live progress of every running backup and restore.
