@@ -149,7 +149,8 @@ const (
 )
 
 // WithJobDeletedHook registers fn to be called after a job has been deleted, e.g. to
-// drop the job's metric series.
+// drop the job's metric series. It applies to the operations service the Server
+// builds itself; with WithOperations, set operations.Config.OnJobDeleted instead.
 func WithJobDeletedHook(fn func(jobID string)) Option {
 	return func(s *Server) { s.onJobDeleted = fn }
 }
@@ -303,6 +304,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Verification, pins, retention previews and logs, restore tests, storage scans
 	s.registerIntegrityRoutes(mux)
+
+	// Bulk actions on backups, restores and jobs
+	s.registerBulkRoutes(mux)
 
 	// API Notifications (channels & rule workflows)
 	s.registerNotificationRoutes(mux)
@@ -530,29 +534,17 @@ func (s *Server) writeJobError(w http.ResponseWriter, err error) {
 	}
 }
 
+// handleDeleteJob deletes a job (its backups are kept).
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "job id required")
 		return
 	}
-
-	if s.scheduler != nil {
-		s.scheduler.UnregisterJob(id)
-	}
-
-	if err := s.metaStore.DeleteJob(r.Context(), id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := s.ops.DeleteJob(r.Context(), id); err != nil {
+		s.writeOperationError(w, err)
 		return
 	}
-	if s.onJobDeleted != nil {
-		s.onJobDeleted(id)
-	}
-
 	writeJSON(w, http.StatusOK, map[string]string{"deleted_id": id})
 }
 
@@ -615,8 +607,10 @@ func (s *Server) handleBackupCollections(w http.ResponseWriter, r *http.Request)
 func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	switch {
 	// Retry errors come first: they also wrap the connection and target sentinels.
-	case errors.Is(err, operations.ErrNotRetryable):
+	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, operations.ErrBulkTooLarge):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, operations.ErrRetryUnavailable):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrConnectionRequired),
@@ -638,62 +632,20 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	}
 }
 
+// handleDeleteBackup deletes a backup's archive (unless another record shares it) and
+// its record; see operations.DeleteBackup.
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "backup id required")
 		return
 	}
-
-	rec, err := s.metaStore.GetBackupRecord(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "backup not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// A pinned backup (legal hold) is only deleted after it is unpinned.
-	if err = operations.CheckDeletable(rec); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-
-	// The archive is only deleted when no other record names it (see archiveShared).
-	keepReason, err := s.archiveShared(r.Context(), rec)
+	res, err := s.ops.DeleteBackup(r.Context(), id)
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
 	}
-
-	// Delete from the storage target the backup was written to (not the current default)
-	if rec.StorageKey != "" && keepReason == "" {
-		driver, delErr := s.storageFor(r.Context(), rec.StorageTargetID)
-		if delErr == nil {
-			delErr = driver.Delete(r.Context(), rec.StorageKey)
-		}
-		if delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
-			s.logger.Error("failed to delete backup artifact from storage",
-				slog.String("storage_key", rec.StorageKey),
-				slog.String("storage_target_id", rec.StorageTargetID),
-				slog.Any("error", delErr),
-			)
-		}
-	}
-
-	// Delete from metadata store
-	if err := s.metaStore.DeleteBackupRecord(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.ops.RemoveRunLog(id)
-
-	resp := map[string]any{"deleted_id": id, "archive_deleted": rec.StorageKey != "" && keepReason == ""}
-	if keepReason != "" {
-		resp["archive_kept"] = keepReason
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
@@ -745,6 +697,9 @@ func (s *Server) operationsConfig() operations.Config {
 		Settings:  s.currentSettings,
 		Logger:    s.logger,
 		Version:   s.version,
+
+		Storage:      s.storageFor,
+		OnJobDeleted: s.onJobDeleted,
 	}
 	if s.scheduler != nil {
 		cfg.Jobs = s.scheduler

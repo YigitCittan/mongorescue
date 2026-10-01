@@ -100,6 +100,16 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/storage-targets/{id}/scan":   auth.ScopeAdmin,
 	"POST /api/v1/storage-targets/{id}/import": auth.ScopeAdmin,
 
+	// Bulk endpoints need the lowest scope of their actions (operator: running jobs
+	// now; verifying, pinning and cancelling plug in here too). The operations service
+	// then requires the scope of the requested action, mirroring its single-item
+	// route: deleting backups, restore records and jobs, and enabling or disabling
+	// jobs, need admin.
+	"GET /api/v1/bulk/actions":   auth.ScopeRead,
+	"POST /api/v1/backups/bulk":  auth.ScopeOperator,
+	"POST /api/v1/restores/bulk": auth.ScopeOperator,
+	"POST /api/v1/jobs/bulk":     auth.ScopeOperator,
+
 	"GET /api/v1/notifications/channels":            auth.ScopeRead,
 	"POST /api/v1/notifications/channels":           auth.ScopeAdmin,
 	"PUT /api/v1/notifications/channels/{id}":       auth.ScopeAdmin,

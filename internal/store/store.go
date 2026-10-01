@@ -75,6 +75,9 @@ type Store interface {
 	GetRestoreRecord(ctx context.Context, id string) (*models.RestoreRecord, error)
 	// ListRestoreRecords returns all restore records, newest first.
 	ListRestoreRecords(ctx context.Context) ([]*models.RestoreRecord, error)
+	// DeleteRestoreRecord removes a restore record (history only; restored data is
+	// never touched) or returns ErrNotFound.
+	DeleteRestoreRecord(ctx context.Context, id string) error
 
 	// QueryBackupRecords returns the backup records matching f, ordered and paged as f
 	// asks, each with its newest retry, and the number of all matches. Out-of-range
