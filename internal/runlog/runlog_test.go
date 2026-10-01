@@ -238,8 +238,13 @@ func TestRemovePruneAndInvalidIDs(t *testing.T) {
 			t.Errorf("Create(%q) = %v, want ErrInvalidID", id, err)
 		}
 	}
-	if _, err := d.Create("bkp_café_20260101_000000"); err != nil {
-		t.Errorf("a legacy ID with database characters must be accepted: %v", err)
+	legacy, createErr := d.Create("bkp_café_20260101_000000")
+	if createErr != nil {
+		t.Fatalf("a legacy ID with database characters must be accepted: %v", createErr)
+	}
+	// An open writer keeps its file busy on Windows: close it before TempDir cleanup.
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
