@@ -142,6 +142,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
 - [Running in production](docs/production.md)
+- [Troubleshooting: unreadable records](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
 - [Testing: what is tested and known limits](docs/testing.md)
 

@@ -62,6 +62,8 @@ Back up the database consistently. It runs in WAL mode, so copying `mongorescue.
 
 Losing the database does not lose the backup archives, but it loses the records that point to them, your schedules, users and connections.
 
+A single damaged row (a record whose stored JSON no longer fits, or whose credentials cannot be decrypted) does not take a list down: it is skipped, logged with its table and ID, shown to administrators in a dashboard banner and left unchanged on disk. [troubleshooting.md](troubleshooting.md#unreadable-records) shows how to back up the database, inspect the row with `sqlite3`, and repair, export or remove it.
+
 Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#json-file)). Job connection strings from those releases become managed connections.
 
 ## Encryption
