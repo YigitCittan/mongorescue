@@ -152,11 +152,10 @@ func (s *Service) deleteBackup(ctx context.Context, rec *models.BackupRecord) (*
 			}
 		}
 	}
-	s.logger.Info("backup deleted",
+	s.logger.With(actorAttrs(ctx)...).Info("backup deleted",
 		logsafe.Attr("backup_id", rec.ID),
 		logsafe.Attr("database", rec.Database),
 		slog.Bool("archive_deleted", res.ArchiveDeleted),
-		slog.String("actor", actorName(ctx)),
 	)
 	return res, nil
 }
@@ -180,10 +179,9 @@ func (s *Service) deleteRestore(ctx context.Context, rec *models.RestoreRecord) 
 	if err := s.cfg.Store.DeleteRestoreRecord(ctx, rec.ID); err != nil {
 		return notFound(err, "restore not found (deleted meanwhile)")
 	}
-	s.logger.Info("restore record deleted",
+	s.logger.With(actorAttrs(ctx)...).Info("restore record deleted",
 		logsafe.Attr("restore_id", rec.ID),
 		logsafe.Attr("target_database", rec.TargetDatabase),
-		slog.String("actor", actorName(ctx)),
 	)
 	return nil
 }
@@ -206,7 +204,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	if s.cfg.OnJobDeleted != nil {
 		s.cfg.OnJobDeleted(id)
 	}
-	s.logger.Info("job deleted", logsafe.Attr("job_id", id), slog.String("actor", actorName(ctx)))
+	s.logger.With(actorAttrs(ctx)...).Info("job deleted", logsafe.Attr("job_id", id))
 	return nil
 }
 
@@ -250,19 +248,35 @@ func (s *Service) SetJobEnabled(ctx context.Context, id string, enabled bool) (*
 	return job, nil
 }
 
-// actorName identifies the caller in ctx for logs and bulk summaries by kind and ID
-// ("api_key:<id>", "user:<id>", the authentication method, or "system" without a
-// principal). Usernames and key names are not logged.
-func actorName(ctx context.Context) string {
+// actorOf describes the caller in ctx by kind (runs.ActorUser, runs.ActorAPIKey or
+// runs.ActorSystem) and user ID ("" for the system and keys without a user). API key
+// IDs and names are never logged; the audit entry of a bulk run keeps the key.
+func actorOf(ctx context.Context) (kind runs.ActorKind, userID string) {
 	p := auth.PrincipalFrom(ctx)
 	switch {
 	case p == nil:
-		return "system"
-	case p.APIKeyID != "":
-		return "api_key:" + p.APIKeyID
+		return runs.ActorSystem, ""
+	case p.Method == auth.MethodAPIKey:
+		return runs.ActorAPIKey, p.UserID()
 	case p.User != nil:
-		return "user:" + p.User.ID
+		return runs.ActorUser, p.UserID()
 	default:
-		return string(p.Method)
+		return runs.ActorSystem, ""
 	}
+}
+
+// actorAttrs are the log attributes of the caller in ctx (see actorOf).
+func actorAttrs(ctx context.Context) []any {
+	kind, userID := actorOf(ctx)
+	return []any{slog.String("actor_kind", string(kind)), logsafe.Attr("actor_user_id", userID)}
+}
+
+// actorLabel is the caller in ctx as "<kind>" or "<kind>:<user ID>", for bulk
+// summaries.
+func actorLabel(ctx context.Context) string {
+	kind, userID := actorOf(ctx)
+	if userID == "" {
+		return string(kind)
+	}
+	return string(kind) + ":" + userID
 }

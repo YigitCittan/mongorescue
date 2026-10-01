@@ -222,7 +222,7 @@ func TestBulkDeleteBackupsDryRunMatchesRun(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("summary events = %+v; want one", summaries)
 	}
-	if b := summaries[0].Bulk; b == nil || b.Resource != "backups" || b.Action != "delete" || b.Succeeded != 4 || b.Skipped != 3 || b.Failed != 0 || b.Actor != "api_key:key_admin" {
+	if b := summaries[0].Bulk; b == nil || b.Resource != "backups" || b.Action != "delete" || b.Succeeded != 4 || b.Skipped != 3 || b.Failed != 0 || b.Actor != "api_key" {
 		t.Fatalf("summary = %+v", summaries[0].Bulk)
 	}
 }
@@ -669,7 +669,7 @@ func TestBulkAuditEntry(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte("a1\na2"))
 	if e.Tool != "bulk backups delete" || e.Transport != audit.TransportREST || e.Result != audit.ResultOK || e.APIKeyID != "key_admin" ||
-		args["actor"] != "api_key:key_admin" || args["succeeded"] != float64(2) || args["skipped"] != float64(1) ||
+		args["actor"] != "api_key" || args["succeeded"] != float64(2) || args["skipped"] != float64(1) ||
 		args["ids_sha256"] != hex.EncodeToString(sum[:]) {
 		t.Fatalf("audit entry = %+v %v", e, args)
 	}

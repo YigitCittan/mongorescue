@@ -91,7 +91,8 @@ type BulkSummary struct {
 	Skipped int `json:"skipped"`
 	// Failed counts items the action failed on.
 	Failed int `json:"failed"`
-	// Actor names who ran it (user, API key or "system").
+	// Actor is the kind of caller ("user", "api_key" or "system"), with the user ID
+	// after a colon when there is one. API key IDs and names are never included.
 	Actor string `json:"actor,omitempty"`
 }
 
