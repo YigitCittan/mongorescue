@@ -408,7 +408,7 @@ function trustPollVerifications() {
 }
 
 async function trustPin(id) {
-  const note = window.prompt(t("trust.pin_prompt"), "");
+  const note = await promptDialog({ title: t("bulk.pin_title"), label: t("trust.pin_prompt"), maxLength: 500, confirmLabel: t("bulk.action_pin") });
   if (note === null) return;
   await trustPinRequest(id, "pin", { note }, "trust.pinned_toast");
 }

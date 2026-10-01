@@ -163,9 +163,9 @@ func TestBulkDeleteBackupsDryRunMatchesRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSkipped := []operations.BulkSkip{
-		{ID: "b_last", Reason: operations.SkipLastGoodBackup, Detail: "last successful backup of job Nightly shop"},
-		{ID: "b_run", Reason: operations.SkipInProgress, Detail: "the backup is still in_progress"},
-		{ID: "b_missing", Reason: operations.SkipNotFound},
+		{ID: "b_last", Reason: operations.SkipLastGoodBackup, Params: map[string]string{"job": "Nightly shop"}, Detail: "last successful backup of job Nightly shop"},
+		{ID: "b_run", Reason: operations.SkipInProgress, Params: map[string]string{"status": "in_progress"}, Detail: "the backup is still in_progress"},
+		{ID: "b_missing", Reason: operations.SkipNotFound, Detail: "no such record"},
 	}
 	if dry.Matched != 7 || dry.Actionable != 4 || dry.TotalSizeBytes != 350 || !reflect.DeepEqual(dry.Skipped, wantSkipped) {
 		t.Fatalf("dry run = %+v", dry)

@@ -57,6 +57,10 @@ const BULK_I18N = {
       reason_not_running: "Not running",
       pin_note: "Note (optional)",
       reason_other: "Other",
+      detail_job_last_good: "Last successful backup of job {job}",
+      detail_job_last_verified: "Last verified backup of job {job}",
+      detail_status: "Status: {status}",
+      pin_title: "Pin backup",
       nothing_to_do: "Nothing to do: the action applies to none of the selected items.",
       no_undo_backups: "This cannot be undone: the backups and their archives are removed from storage for good.",
       no_undo_restores: "This cannot be undone: the restore history records are removed. Restored databases are not touched.",
@@ -123,6 +127,10 @@ const BULK_I18N = {
       reason_not_running: "Çalışmıyor",
       pin_note: "Not (isteğe bağlı)",
       reason_other: "Diğer",
+      detail_job_last_good: "{job} işinin son başarılı yedeği",
+      detail_job_last_verified: "{job} işinin son doğrulanmış yedeği",
+      detail_status: "Durum: {status}",
+      pin_title: "Yedeği sabitle",
       nothing_to_do: "Yapılacak bir şey yok: işlem seçilen öğelerin hiçbirine uygulanmıyor.",
       no_undo_backups: "Bu işlem geri alınamaz: yedekler ve arşivleri depolamadan kalıcı olarak silinir.",
       no_undo_restores: "Bu işlem geri alınamaz: geri yükleme geçmişi kayıtları silinir. Geri yüklenen veritabanlarına dokunulmaz.",
@@ -189,6 +197,10 @@ const BULK_I18N = {
       reason_not_running: "Läuft nicht",
       pin_note: "Notiz (optional)",
       reason_other: "Sonstiges",
+      detail_job_last_good: "Letztes erfolgreiches Backup des Jobs {job}",
+      detail_job_last_verified: "Letztes geprüftes Backup des Jobs {job}",
+      detail_status: "Status: {status}",
+      pin_title: "Backup anheften",
       nothing_to_do: "Nichts zu tun: Die Aktion betrifft keines der ausgewählten Elemente.",
       no_undo_backups: "Dies kann nicht rückgängig gemacht werden: Die Backups und ihre Archive werden endgültig aus dem Speicher entfernt.",
       no_undo_restores: "Dies kann nicht rückgängig gemacht werden: Die Einträge des Wiederherstellungsverlaufs werden entfernt. Wiederhergestellte Datenbanken bleiben unberührt.",
@@ -255,6 +267,10 @@ const BULK_I18N = {
       reason_not_running: "No está en ejecución",
       pin_note: "Nota (opcional)",
       reason_other: "Otros",
+      detail_job_last_good: "Última copia correcta de la tarea {job}",
+      detail_job_last_verified: "Última copia verificada de la tarea {job}",
+      detail_status: "Estado: {status}",
+      pin_title: "Fijar copia",
       nothing_to_do: "Nada que hacer: la acción no se aplica a ninguno de los elementos seleccionados.",
       no_undo_backups: "Esto no se puede deshacer: las copias y sus archivos se eliminan del almacenamiento para siempre.",
       no_undo_restores: "Esto no se puede deshacer: se eliminan los registros del historial de restauraciones. Las bases de datos restauradas no se tocan.",
@@ -321,6 +337,10 @@ const BULK_I18N = {
       reason_not_running: "Pas en cours",
       pin_note: "Note (facultative)",
       reason_other: "Autre",
+      detail_job_last_good: "Dernière sauvegarde réussie de la tâche {job}",
+      detail_job_last_verified: "Dernière sauvegarde vérifiée de la tâche {job}",
+      detail_status: "Statut : {status}",
+      pin_title: "Épingler la sauvegarde",
       nothing_to_do: "Rien à faire : l’action ne s’applique à aucun des éléments sélectionnés.",
       no_undo_backups: "Action irréversible : les sauvegardes et leurs archives sont définitivement supprimées du stockage.",
       no_undo_restores: "Action irréversible : les entrées de l’historique des restaurations sont supprimées. Les bases restaurées ne sont pas touchées.",
@@ -387,6 +407,10 @@ const BULK_I18N = {
       reason_not_running: "未在运行",
       pin_note: "备注（可选）",
       reason_other: "其他",
+      detail_job_last_good: "任务 {job} 的最后一个成功备份",
+      detail_job_last_verified: "任务 {job} 的最后一个已校验备份",
+      detail_status: "状态：{status}",
+      pin_title: "固定备份",
       nothing_to_do: "无需操作：该操作不适用于任何所选项目。",
       no_undo_backups: "此操作无法撤销：备份及其归档将从存储中永久删除。",
       no_undo_restores: "此操作无法撤销：将删除恢复历史记录。已恢复的数据库不受影响。",
@@ -453,6 +477,10 @@ const BULK_I18N = {
       reason_not_running: "実行中ではありません",
       pin_note: "メモ（任意）",
       reason_other: "その他",
+      detail_job_last_good: "ジョブ {job} の最後の成功バックアップ",
+      detail_job_last_verified: "ジョブ {job} の最後の検証済みバックアップ",
+      detail_status: "状態: {status}",
+      pin_title: "バックアップを固定",
       nothing_to_do: "対象がありません。選択した項目のいずれにもこの操作は適用されません。",
       no_undo_backups: "元に戻せません。バックアップとそのアーカイブはストレージから完全に削除されます。",
       no_undo_restores: "元に戻せません。リストア履歴のレコードが削除されます。リストア済みのデータベースには影響しません。",
@@ -519,6 +547,10 @@ const BULK_I18N = {
       reason_not_running: "Не выполняется",
       pin_note: "Заметка (необязательно)",
       reason_other: "Другое",
+      detail_job_last_good: "Последняя успешная копия задания {job}",
+      detail_job_last_verified: "Последняя проверенная копия задания {job}",
+      detail_status: "Статус: {status}",
+      pin_title: "Закрепить копию",
       nothing_to_do: "Нечего делать: действие не применимо ни к одному из выбранных элементов.",
       no_undo_backups: "Это нельзя отменить: резервные копии и их архивы будут безвозвратно удалены из хранилища.",
       no_undo_restores: "Это нельзя отменить: записи истории восстановлений будут удалены. Восстановленные базы данных не затрагиваются.",
@@ -574,8 +606,13 @@ const BULK_RESULTS_MAX = 1000;
 const BULK_RETRY_MS = 30000;
 // Toolbar order of known actions; destructive ones always come last.
 const BULK_ACTION_ORDER = ["run_now", "enable", "disable", "verify", "pin", "unpin", "cancel", "delete"];
-// Skip reasons whose server detail adds to the translated label (it names the job).
-const BULK_DETAIL_REASONS = ["last_good_backup", "last_verified", "other"];
+// Skip reasons with a translated per-item line, filled from the server's params.
+const BULK_DETAIL_KEYS = {
+  last_good_backup: "bulk.detail_job_last_good",
+  last_verified: "bulk.detail_job_last_verified",
+  in_progress: "bulk.detail_status",
+  not_running: "bulk.detail_status"
+};
 const BULK_SKIP_REASONS = ["not_found", "in_progress", "last_good_backup", "last_verified", "pinned", "not_verifiable",
   "already_pinned", "not_pinned", "not_running", "already_enabled", "already_disabled"];
 
@@ -1004,13 +1041,14 @@ const BULK_CLOSE_ICON = '<svg class="icon" viewBox="0 0 16 16" width="16" height
 // confirmDialog: the app's own confirmation (replaces window.confirm)
 // ---------------------------------------------------------------------------
 
-const confirmState = { resolve: null, result: false, require: "" };
+const confirmState = { resolve: null, result: false, require: "", prompt: false };
 
 // confirmDialog({title, body, danger, confirmLabel, requireText}) opens the
 // confirmation dialog and resolves to true when the user confirms, false when they
 // cancel (button, Escape, backdrop). body is a string or a list of paragraphs (set as
 // text). With requireText the confirm button stays disabled until it is typed.
-// Focus moves into the dialog (Cancel for danger) and returns to the opener.
+// Focus moves into the dialog (Cancel for danger) and returns to the opener. With
+// prompt ({label, value, maxLength}) it asks for a text instead (see promptDialog).
 function confirmDialog(opts) {
   const o = opts || {};
   if (confirmState.resolve) {
@@ -1022,7 +1060,8 @@ function confirmDialog(opts) {
   return new Promise(resolve => {
     confirmState.resolve = resolve;
     confirmState.result = false;
-    confirmState.require = o.requireText ? String(o.requireText) : "";
+    confirmState.require = o.requireText && !o.prompt ? String(o.requireText) : "";
+    confirmState.prompt = !!o.prompt;
     setText("confirm-title", o.title || t("dialog.confirm_title"));
     const body = document.getElementById("confirm-body");
     body.textContent = "";
@@ -1039,16 +1078,19 @@ function confirmDialog(opts) {
     }
     const require = document.getElementById("confirm-require");
     const input = document.getElementById("confirm-input");
-    require.hidden = !confirmState.require;
-    input.value = "";
-    setText("confirm-require-label", confirmState.require ? tf("dialog.type_text", { text: confirmState.require }) : "");
+    require.hidden = !confirmState.require && !o.prompt;
+    input.value = o.prompt ? String(o.prompt.value || "") : "";
+    if (o.prompt && o.prompt.maxLength) input.maxLength = Number(o.prompt.maxLength);
+    else input.removeAttribute("maxlength");
+    setText("confirm-require-label", o.prompt ? String(o.prompt.label || "")
+      : confirmState.require ? tf("dialog.type_text", { text: confirmState.require }) : "");
     const ok = document.getElementById("confirm-ok");
     ok.className = o.danger ? "btn btn-danger" : "btn btn-primary";
     ok.textContent = o.confirmLabel || t("dialog.confirm");
     setText("confirm-cancel", t("actions.cancel"));
     updateConfirmDialog();
     openModal("modal-confirm");
-    const focus = confirmState.require ? input : o.danger ? document.getElementById("confirm-cancel") : ok;
+    const focus = confirmState.require || o.prompt ? input : o.danger ? document.getElementById("confirm-cancel") : ok;
     if (focus) focus.focus();
   });
 }
@@ -1062,8 +1104,24 @@ function updateConfirmDialog() {
 function settleConfirm() {
   const resolve = confirmState.resolve;
   confirmState.resolve = null;
-  if (resolve) resolve(confirmState.result);
+  if (resolve) {
+    const input = document.getElementById("confirm-input");
+    if (confirmState.prompt) resolve(confirmState.result && input ? input.value.trim() : null);
+    else resolve(confirmState.result);
+  }
   confirmState.result = false;
+  confirmState.prompt = false;
+}
+
+// promptDialog({title, body, label, value, maxLength, confirmLabel}) asks for a text
+// in the app's dialog (replaces window.prompt): it resolves to the trimmed text, or to
+// null when the user cancels.
+function promptDialog(opts) {
+  const o = opts || {};
+  return confirmDialog({
+    title: o.title, body: o.body, confirmLabel: o.confirmLabel,
+    prompt: { label: o.label || "", value: o.value || "", maxLength: o.maxLength }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,6 +1192,22 @@ function setBulkFooter(parts) {
   if (footer) footer.innerHTML = parts.join("");
 }
 
+// The per-item line of a skip: the translated code with its params, or the server's
+// English detail for codes this dashboard does not know.
+function skipDetail(reason, skip) {
+  const params = skip && skip.params && typeof skip.params === "object" ? skip.params : {};
+  const key = BULK_DETAIL_KEYS[reason];
+  if (key) {
+    if (key === "bulk.detail_status") {
+      if (!params.status) return "";
+      const label = typeof backupStatus === "function" ? backupStatus(String(params.status))[1] : String(params.status);
+      return tf(key, { status: label });
+    }
+    return params.job ? tf(key, { job: String(params.job) }) : "";
+  }
+  return reason === "other" ? String((skip && skip.detail) || "") : "";
+}
+
 function skipReasonLabel(reason) {
   return BULK_SKIP_REASONS.includes(reason) ? t(`bulk.reason_${reason}`) : t("bulk.reason_other");
 }
@@ -1150,7 +1224,7 @@ function skippedGroups(skipped) {
   const parts = [];
   groups.forEach((items, reason) => {
     const lines = items.slice(0, BULK_LIST_MAX).map(s =>
-      `<li><span class="mono">${escapeHtml(s.id)}</span>${s.detail && BULK_DETAIL_REASONS.includes(reason) ? ` <span class="muted">${escapeHtml(s.detail)}</span>` : ""}</li>`).join("");
+      `<li><span class="mono">${escapeHtml(s.id)}</span>${skipDetail(reason, s) ? ` <span class="muted">${escapeHtml(skipDetail(reason, s))}</span>` : ""}</li>`).join("");
     const more = items.length > BULK_LIST_MAX ? `<li class="muted">${escapeHtml(tf("bulk.more", { n: formatCount(items.length - BULK_LIST_MAX) }))}</li>` : "";
     parts.push(`<details class="bulk-group"><summary>${escapeHtml(skipReasonLabel(reason))} <span class="badge">${escapeHtml(formatCount(items.length))}</span></summary><ul class="bulk-list">${lines}${more}</ul></details>`);
   });
