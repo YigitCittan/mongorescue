@@ -266,8 +266,14 @@ func TestConcurrentJobUpdatesStayConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := scheduler.NextRuns(job.CronExpression, time.Now().Add(-time.Minute), 1)
-	if job.NextRun == nil || len(want) != 1 || !job.NextRun.Equal(want[0]) {
+	// The stored next run must be a run time of the stored schedule. Checking it
+	// against the schedule itself, in the scheduler's local time zone, rather than
+	// against "now" keeps the test independent of when and where it runs.
+	if job.NextRun == nil {
+		t.Fatalf("stored job %q has no next run", job.CronExpression)
+	}
+	want := scheduler.NextRuns(job.CronExpression, job.NextRun.Local().Add(-time.Second), 1)
+	if len(want) != 1 || !job.NextRun.Equal(want[0]) {
 		t.Fatalf("stored next run %v does not belong to the stored schedule %q (want %v)", job.NextRun, job.CronExpression, want)
 	}
 }
