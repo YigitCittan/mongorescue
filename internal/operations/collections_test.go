@@ -74,8 +74,8 @@ func TestListBackupCollectionsFromArchive(t *testing.T) {
 	if _, err = mock.Save(context.Background(), "shop/a.archive.gz", bytes.NewReader(archive)); err != nil {
 		t.Fatal(err)
 	}
-	real := restore.NewEngine(mock, "")
-	eng := &listerEngine{Engine: real, fn: real.ArchiveCollections}
+	engine := restore.NewEngine(mock, "")
+	eng := &listerEngine{Engine: engine, fn: engine.ArchiveCollections}
 	svc, st := newPreviewService(t, eng, 0)
 	saveBackup(t, st, &models.BackupRecord{ID: "bkp_a", Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/a.archive.gz"})
 

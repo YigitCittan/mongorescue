@@ -3,9 +3,9 @@ package restore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -124,9 +124,8 @@ func TestArchiveCollectionsReadsOnlyThePrelude(t *testing.T) {
 	archive := shopArchive(t)
 	// Incompressible filler, so the gzip layout stores megabytes as well.
 	data := make([]byte, 8<<20)
-	rng := rand.New(rand.NewPCG(1, 2))
-	for i := range data {
-		data[i] = byte(rng.Uint32())
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
 	}
 	big := append(slices.Clone(archive), data...)
 	for _, layout := range []string{"plain", "gzip", "age"} {
@@ -177,9 +176,9 @@ func TestArchiveCollectionsKeys(t *testing.T) {
 		{ID: "bkp_a", Database: "shop", StorageKey: "shop/a.archive.age"},
 		{ID: "bkp_b", Database: "shop", StorageKey: "shop/b.archive"}, // encryption flag lost
 	} {
-		_, err := NewEngine(st, "").ArchiveCollections(context.Background(), rec)
-		if !errors.Is(err, encryption.ErrEncryptionKeyRequired) || !strings.Contains(err.Error(), KeyRequiredHint) {
-			t.Fatalf("%s without a key: %v; want ErrEncryptionKeyRequired with the hint", rec.StorageKey, err)
+		_, keyErr := NewEngine(st, "").ArchiveCollections(context.Background(), rec)
+		if !errors.Is(keyErr, encryption.ErrEncryptionKeyRequired) || !strings.Contains(keyErr.Error(), KeyRequiredHint) {
+			t.Fatalf("%s without a key: %v; want ErrEncryptionKeyRequired with the hint", rec.StorageKey, keyErr)
 		}
 	}
 
