@@ -22,12 +22,19 @@ type EventType string
 const (
 	// BackupSucceeded is emitted when a backup completes and is persisted to storage.
 	BackupSucceeded EventType = "backup.succeeded"
-	// BackupFailed is emitted when a backup run ends in failure (including cancellation).
+	// BackupFailed is emitted when a backup run ends in failure (including an abort
+	// by a shutdown, a timeout or a stall).
 	BackupFailed EventType = "backup.failed"
+	// BackupCancelled is emitted when a backup was cancelled (models.StatusCancelled);
+	// it is not a failure.
+	BackupCancelled EventType = "backup.cancelled"
 	// RestoreSucceeded is emitted when a restore (or dry-run) completes successfully.
 	RestoreSucceeded EventType = "restore.succeeded"
 	// RestoreFailed is emitted when a restore run ends in failure.
 	RestoreFailed EventType = "restore.failed"
+	// RestoreCancelled is emitted when a restore was cancelled
+	// (models.RestoreStatusCancelled).
+	RestoreCancelled EventType = "restore.cancelled"
 	// NotificationTest is a synthetic event used by "send test" actions. It is never
 	// published on the Bus and cannot be selected by notification rules.
 	NotificationTest EventType = "notification.test"
@@ -45,7 +52,7 @@ func (t EventType) Broadcast() bool {
 }
 
 // ruleTypes lists the event types that notification rules may subscribe to.
-var ruleTypes = []EventType{BackupSucceeded, BackupFailed, RestoreSucceeded, RestoreFailed}
+var ruleTypes = []EventType{BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled}
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
 // stable display order. The returned slice is a fresh copy.
@@ -127,7 +134,11 @@ func BackupEvent(rec *models.BackupRecord, runErr error, jobID, database string)
 		}
 		errMsg = rec.ErrorMessage
 	}
-	if runErr != nil || rec == nil || rec.Status != models.StatusCompleted {
+	switch {
+	case rec != nil && rec.Status == models.StatusCancelled:
+		e.Type = BackupCancelled
+		e.Error = redact.Text(errMsg)
+	case runErr != nil || rec == nil || rec.Status != models.StatusCompleted:
 		e.Type = BackupFailed
 		if e.Status == "" {
 			e.Status = string(models.StatusFailed)
@@ -158,6 +169,11 @@ func RestoreEvent(rec *models.RestoreRecord, runErr error, backupID string) Even
 			e.Time = rec.CompletedAt.UTC()
 		}
 		errMsg = rec.ErrorMessage
+	}
+	if rec != nil && rec.Status == models.RestoreStatusCancelled {
+		e.Type = RestoreCancelled
+		e.Error = redact.Text(errMsg)
+		return e
 	}
 	if runErr != nil || rec == nil || rec.Status != models.RestoreStatusCompleted {
 		e.Type = RestoreFailed

@@ -30,6 +30,11 @@ const (
 
 	// RestoreStatusFailed indicates restore failure.
 	RestoreStatusFailed RestoreStatus = "failed"
+
+	// RestoreStatusCancelled indicates the restore was stopped before it finished. A
+	// cancelled safe clone is dropped; a cancelled in-place restore may have left the
+	// target partially restored (see RestoreRecord.Warning).
+	RestoreStatusCancelled RestoreStatus = "cancelled"
 )
 
 // VerifyPolicy controls when a restore first verifies the backup artifact end to end
@@ -205,8 +210,26 @@ type RestoreRecord struct {
 
 	// Warning notes something the restore could not check although it succeeded,
 	// e.g. "document counts unavailable" or an in-place restore of a backup without a
-	// recorded checksum.
+	// recorded checksum, or that a cancelled in-place restore left partial data.
 	Warning string `json:"warning,omitempty"`
+
+	// InPlace reports that the restore writes into an existing namespace instead of a
+	// fresh safe clone.
+	InPlace bool `json:"in_place,omitempty"`
+
+	// CancelledBy names who cancelled the restore when Status is
+	// RestoreStatusCancelled.
+	CancelledBy string `json:"cancelled_by,omitempty"`
+
+	// CancelledAt is when the cancellation was requested.
+	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
+
+	// Phases holds the timestamps of the run's phases.
+	Phases RunPhases `json:"phases,omitzero"`
+
+	// Progress is the live progress of a running restore. It is filled in API
+	// responses only and never stored.
+	Progress *RunProgress `json:"progress,omitempty"`
 }
 
 // Redacted returns a copy of the request with the MongoURI password masked, suitable

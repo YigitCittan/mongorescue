@@ -31,6 +31,16 @@ const (
 	StatusSucceeded = "succeeded"
 	// StatusFailed labels failed backups and restores.
 	StatusFailed = "failed"
+	// StatusCancelled labels cancelled backups and restores.
+	StatusCancelled = "cancelled"
+)
+
+// Run kinds of the active_runs gauge.
+const (
+	// KindBackup labels backup runs.
+	KindBackup = "backup"
+	// KindRestore labels restore runs.
+	KindRestore = "restore"
 )
 
 // BuildInfo describes the running binary for the mongorescue_build_info series.
@@ -52,10 +62,12 @@ type Metrics struct {
 	backupSize          *prometheus.GaugeVec
 	lastSuccessBackup   *prometheus.GaugeVec
 	restoresTotal       *prometheus.CounterVec
+	restoreDuration     prometheus.Histogram
 	notificationsTotal  *prometheus.CounterVec
 	eventsDropped       prometheus.Counter
 	mcpCalls            *prometheus.CounterVec
 	scheduledJobsSource atomic.Pointer[func() int]
+	activeRunsSource    atomic.Pointer[func(kind string) int]
 }
 
 // New creates a Metrics instance with its own registry.
@@ -65,7 +77,7 @@ func New(info BuildInfo) *Metrics {
 		backupsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "backups_total",
-			Help:      "Total number of finished backups by job and status (succeeded|failed).",
+			Help:      "Total number of finished backups by job and status (succeeded|failed|cancelled).",
 		}, []string{"job", "status"}),
 		backupDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace,
@@ -86,8 +98,14 @@ func New(info BuildInfo) *Metrics {
 		restoresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "restores_total",
-			Help:      "Total number of finished restores by status (succeeded|failed).",
+			Help:      "Total number of finished restores by status (succeeded|failed|cancelled).",
 		}, []string{"status"}),
+		restoreDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "restore_duration_seconds",
+			Help:      "Duration of finished restores in seconds.",
+			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400},
+		}),
 		notificationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "notifications_total",
@@ -116,6 +134,21 @@ func New(info BuildInfo) *Metrics {
 		return 0
 	})
 
+	activeRuns := make([]prometheus.Collector, 0, 2)
+	for _, kind := range []string{KindBackup, KindRestore} {
+		activeRuns = append(activeRuns, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace:   namespace,
+			Name:        "active_runs",
+			Help:        "Number of backups and restores running now, by kind (backup|restore).",
+			ConstLabels: prometheus.Labels{"kind": kind},
+		}, func() float64 {
+			if fn := m.activeRunsSource.Load(); fn != nil {
+				return float64((*fn)(kind))
+			}
+			return 0
+		}))
+	}
+
 	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Name:      "build_info",
@@ -131,17 +164,29 @@ func New(info BuildInfo) *Metrics {
 		m.backupSize,
 		m.lastSuccessBackup,
 		m.restoresTotal,
+		m.restoreDuration,
 		m.notificationsTotal,
 		m.eventsDropped,
 		m.mcpCalls,
 		scheduledJobs,
 		buildInfo,
 	)
+	m.registry.MustRegister(activeRuns...)
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
-	for _, s := range []string{StatusSucceeded, StatusFailed} {
+	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)
 	}
 	return m
+}
+
+// SetActiveRunsSource registers the function reporting how many runs of a kind
+// (KindBackup, KindRestore) are active. It is safe to call at any time.
+func (m *Metrics) SetActiveRunsSource(fn func(kind string) int) {
+	if fn == nil {
+		m.activeRunsSource.Store(nil)
+		return
+	}
+	m.activeRunsSource.Store(&fn)
 }
 
 // Registry returns the dedicated registry (for tests and custom exporters).
@@ -168,14 +213,17 @@ func (m *Metrics) SetScheduledJobsSource(fn func() int) {
 // ObserveEvent is an events.Handler updating backup and restore series.
 func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 	switch e.Type {
-	case events.BackupSucceeded, events.BackupFailed:
+	case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled:
 		job := e.JobID
 		if job == "" {
 			job = ManualJobLabel
 		}
 		status := StatusSucceeded
-		if e.Type == events.BackupFailed {
+		switch e.Type {
+		case events.BackupFailed:
 			status = StatusFailed
+		case events.BackupCancelled:
+			status = StatusCancelled
 		}
 		m.backupsTotal.WithLabelValues(job, status).Inc()
 		m.backupDuration.WithLabelValues(job).Observe(e.Duration.Seconds())
@@ -185,8 +233,13 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 		}
 	case events.RestoreSucceeded:
 		m.restoresTotal.WithLabelValues(StatusSucceeded).Inc()
+		m.restoreDuration.Observe(e.Duration.Seconds())
 	case events.RestoreFailed:
 		m.restoresTotal.WithLabelValues(StatusFailed).Inc()
+		m.restoreDuration.Observe(e.Duration.Seconds())
+	case events.RestoreCancelled:
+		m.restoresTotal.WithLabelValues(StatusCancelled).Inc()
+		m.restoreDuration.Observe(e.Duration.Seconds())
 	}
 }
 
@@ -196,7 +249,7 @@ func (m *Metrics) ForgetJob(jobID string) {
 	if jobID == "" {
 		return
 	}
-	for _, s := range []string{StatusSucceeded, StatusFailed} {
+	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.backupsTotal.DeleteLabelValues(jobID, s)
 	}
 	m.backupDuration.DeleteLabelValues(jobID)

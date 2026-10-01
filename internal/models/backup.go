@@ -25,6 +25,11 @@ const (
 
 	// StatusPruned indicates the backup was deleted per retention policy.
 	StatusPruned BackupStatus = "pruned"
+
+	// StatusCancelled indicates the backup was stopped before it finished (by a user,
+	// an API key or the application quitting); its partial artifact was removed. It
+	// is not a failure: failure counts and failure alerts ignore it.
+	StatusCancelled BackupStatus = "cancelled"
 )
 
 // BackupTrigger records how a backup was started. Retention only ever prunes
@@ -119,6 +124,20 @@ type BackupRecord struct {
 	// RetryOf is the ID of the failed backup this one retries, empty (omitted) for
 	// backups that are not retries. The original record is never modified by a retry.
 	RetryOf string `json:"retry_of,omitempty"`
+
+	// CancelledBy names who cancelled the backup (a username, an API key or
+	// "system") when Status is StatusCancelled.
+	CancelledBy string `json:"cancelled_by,omitempty"`
+
+	// CancelledAt is when the cancellation was requested.
+	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
+
+	// Phases holds the timestamps of the run's phases.
+	Phases RunPhases `json:"phases,omitzero"`
+
+	// Progress is the live progress of a running backup. It is filled in API
+	// responses only and never stored.
+	Progress *RunProgress `json:"progress,omitempty"`
 }
 
 // EffectiveTrigger returns r.Trigger, or for records written before triggers existed

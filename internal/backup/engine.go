@@ -21,6 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
@@ -267,6 +268,7 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 		StorageKey:     targetKey,
 		Collections:    opts.Collections,
 		StartedAt:      startTime,
+		Phases:         models.RunPhases{Queued: models.Stamp(startTime)},
 
 		StorageTargetID:   opts.StorageTargetID,
 		StorageTargetName: opts.StorageTargetName,
@@ -308,10 +310,15 @@ func (e *Engine) resolveURI(opts models.BackupOptions) string {
 // without ever buffering the archive. When encryption is enabled, the recorded
 // SizeBytes and SHA256 describe the stored ciphertext, not the plaintext archive;
 // failed backups carry neither. The run is bounded by WithTimeout and WithStallTimeout.
+//
+// When ctx carries a runs.Run (see runs.Run.Bind), the run's log receives mongodump's
+// output and the engine's phase lines, its progress is updated while the archive
+// streams, and a cancellation through the run registry kills mongodump, removes the
+// partial artifact and records the backup as models.StatusCancelled.
 func (e *Engine) Execute(ctx context.Context, opts models.BackupOptions, record *models.BackupRecord) (*models.BackupRecord, error) {
 	run, err := e.forRun(ctx, opts.StorageTargetID)
 	if err != nil {
-		return e.fail(record, err)
+		return e.fail(ctx, record, err)
 	}
 	run.alignEncryption(record)
 	return run.execute(ctx, opts, record)
@@ -321,6 +328,16 @@ func (e *Engine) Execute(ctx context.Context, opts models.BackupOptions, record 
 func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record *models.BackupRecord) (*models.BackupRecord, error) {
 	backupID, targetKey, startTime := record.ID, record.StorageKey, record.StartedAt
 	mongoURI := e.resolveURI(opts)
+
+	tracker := runs.FromContext(ctx)
+	record.Phases.Started = models.Stamp(time.Now())
+	if record.Phases.Queued == nil {
+		record.Phases.Queued = models.Stamp(startTime)
+	}
+	tracker.Printf("backup %s of database %s started (connection %s, storage key %s, encrypted %v)",
+		backupID, opts.Database, redact.URI(mongoURI), targetKey, record.Encrypted)
+	tracker.Phase(models.PhaseDumping, record.Phases)
+	tracker.StartTransfer(0)
 
 	// runCtx carries the run's own limits; its cause tells a timeout, a stall and an
 	// external cancellation apart.
@@ -345,13 +362,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	// augmented URI is never logged or stored.
 	configArg, cleanupConfig, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(mongoURI))
 	if err != nil {
-		return e.fail(record, fmt.Errorf("prepare mongodump config: %w", err))
+		return e.fail(runCtx, record, fmt.Errorf("prepare mongodump config: %w", err))
 	}
 	defer cleanupConfig()
 
 	dumpOpts, err := e.expandCollections(runCtx, mongoURI, opts)
 	if err != nil {
-		return e.fail(record, err)
+		return e.fail(runCtx, record, err)
 	}
 
 	// Build mongodump arguments
@@ -364,16 +381,20 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 
 	stdout, stderr, wait, err := e.runner(procCtx, "mongodump", args...)
 	if err != nil {
-		return e.fail(record, fmt.Errorf("start mongodump: %w", err))
+		return e.fail(runCtx, record, fmt.Errorf("start mongodump: %w", err))
 	}
 	defer stdout.Close()
+	tracker.Printf("mongodump started: %s", strings.Join(args[1:], " "))
 
 	// Capture the end of stderr concurrently for diagnostics (bounded: a long dump
-	// logs a line per collection and progress lines).
+	// logs a line per collection and progress lines); the full output streams to the
+	// run's log and progress parser. reap waits for this goroutine.
 	stderrChan := make(chan string, 1)
 	go func() {
 		tail := &mongotools.TailBuffer{}
-		_, _ = io.Copy(tail, stderr)
+		out := tracker.ToolOutput()
+		_, _ = io.Copy(io.MultiWriter(tail, out), stderr)
+		_ = out.Close()
 		stderrChan <- tail.String()
 	}()
 
@@ -406,7 +427,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	h := sha256.New()
 	var byteCount atomic.Int64
 	countedReader := &countingReader{
-		r:      source,
+		r:      tracker.CountingReader(source),
 		hasher: h,
 		total:  &byteCount,
 	}
@@ -415,6 +436,8 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	savedObj, saveErr := e.storage.Save(runCtx, targetKey, countedReader)
 	if saveErr != nil {
 		proc.abort()
+	} else {
+		record.Phases.UploadDone = models.Stamp(time.Now())
 	}
 
 	var stageErr error
@@ -428,6 +451,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	// Reap mongodump exactly once (stderr is drained before Wait, as os/exec requires).
 	waitErr := proc.reap()
 	stopWatchdog()
+	if waitErr == nil {
+		dumpDone := watched.eofTime()
+		if dumpDone.IsZero() {
+			dumpDone = time.Now()
+		}
+		record.Phases.DumpDone = models.Stamp(dumpDone)
+	}
 
 	finishTime := time.Now().UTC()
 	record.CompletedAt = &finishTime
@@ -435,7 +465,11 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 
 	if failErr := e.classifyFailure(runCtx, saveErr, waitErr, stageErr, proc.stderrLogs); failErr != nil {
 		e.deleteArtifact(runCtx, targetKey)
-		return e.fail(record, failErr)
+		record.Phases.UploadDone = nil
+		if runs.CancellationOf(runCtx) != nil {
+			tracker.Printf("mongodump stopped and the partial artifact %s removed", targetKey)
+		}
+		return e.fail(runCtx, record, failErr)
 	}
 
 	// Size and checksum describe a complete artifact, so they are only recorded on success.
@@ -446,6 +480,9 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 
 	record.Status = models.StatusCompleted
+	record.Phases.Finished = models.Stamp(finishTime)
+	tracker.Phase(models.PhaseFinishing, record.Phases)
+	tracker.Printf("backup completed: %d bytes, sha256 %s, %.1fs", record.SizeBytes, record.SHA256, record.DurationSeconds)
 	e.logger.Info("mongodb streaming backup completed successfully",
 		slog.String("backup_id", backupID),
 		slog.Int64("size_bytes", record.SizeBytes),
@@ -456,27 +493,53 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	return record, nil
 }
 
-// fail marks record as failed with a redacted message and returns it with err.
-func (e *Engine) fail(record *models.BackupRecord, err error) (*models.BackupRecord, error) {
+// fail marks record as failed with a redacted message and returns it with err. When
+// ctx was cancelled through the run registry (see runs.CancellationOf), the record is
+// marked cancelled instead, with who cancelled it and when.
+func (e *Engine) fail(ctx context.Context, record *models.BackupRecord, err error) (*models.BackupRecord, error) {
 	record.Status = models.StatusFailed
 	record.SizeBytes = 0
 	record.SHA256 = ""
+	record.Phases.Finished = models.Stamp(time.Now())
+	if c := runs.CancellationOf(ctx); c != nil {
+		if !errors.Is(err, runs.ErrCancelled) {
+			err = fmt.Errorf("backup %w", c)
+		}
+		record.Status = models.StatusCancelled
+		record.CancelledBy, record.CancelledAt = c.By, models.Stamp(c.At)
+	}
 	record.ErrorMessage = redact.Text(err.Error())
+	tracker := runs.FromContext(ctx)
+	tracker.Phase(models.PhaseFinishing, record.Phases)
+	tracker.Printf("backup %s: %s", record.Status, record.ErrorMessage)
 	return record, err
 }
 
 // activityReader records when a Read from the wrapped reader started and has not yet
-// returned, so the stall watchdog can measure how long mongodump kept us waiting.
+// returned, so the stall watchdog can measure how long mongodump kept us waiting. It
+// also notes when the stream ended.
 type activityReader struct {
 	r            io.Reader
 	waitingSince atomic.Int64 // UnixNano of the pending Read's start, 0 when idle
+	eofAt        atomic.Int64 // UnixNano of the first io.EOF, 0 before
 }
 
 func (a *activityReader) Read(p []byte) (int, error) {
 	a.waitingSince.Store(time.Now().UnixNano())
 	n, err := a.r.Read(p)
 	a.waitingSince.Store(0)
+	if errors.Is(err, io.EOF) {
+		a.eofAt.CompareAndSwap(0, time.Now().UnixNano())
+	}
 	return n, err
+}
+
+// eofTime returns when the stream ended, or the zero time.
+func (a *activityReader) eofTime() time.Time {
+	if ns := a.eofAt.Load(); ns != 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
 }
 
 // startStallWatchdog cancels the run with ErrStalled once a Read on r has been pending
@@ -552,6 +615,8 @@ func (e *Engine) classifyFailure(ctx context.Context, saveErr, waitErr, stageErr
 			return fmt.Errorf("%w (limit %s)%s: %w", ErrTimeout, e.timeout, stderrNote, context.DeadlineExceeded)
 		case errors.Is(cause, ErrStalled):
 			return fmt.Errorf("%w for %s%s", ErrStalled, e.stallTimeout, stderrNote)
+		case runs.CancellationOf(ctx) != nil:
+			return fmt.Errorf("backup %w", runs.CancellationOf(ctx))
 		default:
 			return fmt.Errorf("backup cancelled: %w", ctx.Err())
 		}

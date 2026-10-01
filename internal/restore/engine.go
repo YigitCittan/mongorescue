@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
@@ -318,6 +319,8 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 		StartedAt:            startTime,
 		DryRun:               req.DryRun,
 		SelectedCollections:  selectedCollections(req.SelectedCollections),
+		InPlace:              req.InPlace(),
+		Phases:               models.RunPhases{Queued: models.Stamp(startTime)},
 	}, nil
 }
 
@@ -401,12 +404,20 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		slog.String("mongo_uri", redact.URI(mongoURI)),
 		slog.Bool("encrypted", sourceRecord.Encrypted),
 	)
+	tracker := runs.FromContext(ctx)
+	record.InPlace = req.InPlace()
+	record.Phases.Started = models.Stamp(time.Now())
+	if record.Phases.Queued == nil {
+		record.Phases.Queued = models.Stamp(startTime)
+	}
+	tracker.Printf("restore %s of backup %s started: %s.* -> %s.* (connection %s, safe clone %v, dry run %v)",
+		restoreID, req.BackupID, sourceRecord.Database, targetDB, redact.URI(mongoURI), !req.InPlace(), req.DryRun)
 
 	// A record written without its encryption flag, but with an .age key, is treated as
 	// encrypted as well: ciphertext is never handed to mongorestore as plaintext.
 	encrypted := sourceRecord.Encrypted || keyEncrypted(sourceRecord.StorageKey)
 	if encrypted && e.decryptor == nil {
-		return failRestore(record, fmt.Errorf("restore %s: %w: %s", req.BackupID, encryption.ErrEncryptionKeyRequired, KeyRequiredHint),
+		return e.failRun(ctx, record, fmt.Errorf("restore %s: %w: %s", req.BackupID, encryption.ErrEncryptionKeyRequired, KeyRequiredHint),
 			"backup is encrypted but no decryption key is configured: "+KeyRequiredHint)
 	}
 
@@ -414,34 +425,40 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if clone && e.admin != nil {
 		exists, err := e.admin.DatabaseExists(ctx, mongoURI, targetDB)
 		if err != nil {
-			return failRestore(record, fmt.Errorf("check safe clone target %s: %w", targetDB, err),
+			return e.failRun(ctx, record, fmt.Errorf("check safe clone target %s: %w", targetDB, err),
 				fmt.Sprintf("could not check the safe clone target %s: %v", targetDB, err))
 		}
 		if exists {
 			err := fmt.Errorf("%w: %s", ErrCloneExists, targetDB)
-			return failRestore(record, err,
+			return e.failRun(ctx, record, err,
 				fmt.Sprintf("%v (another restore of %s started within the same second); nothing was written, retry the restore",
 					err, sourceRecord.Database))
 		}
 	}
 
 	if e.verifyFirst(req, sourceRecord, record) {
+		tracker.Phase(models.PhaseVerifying, record.Phases)
+		tracker.StartTransfer(sourceRecord.SizeBytes)
 		if err := e.verifyArtifact(ctx, sourceRecord); err != nil {
 			err = e.withCause(ctx, err)
-			return failRestore(record, fmt.Errorf("verify backup %s: %w", req.BackupID, err),
+			return e.failRun(ctx, record, fmt.Errorf("verify backup %s: %w", req.BackupID, err),
 				fmt.Sprintf("pre-restore verification failed (target untouched): %v", err))
 		}
 		record.Verified = true
+		record.Phases.VerifyDone = models.Stamp(time.Now())
+		tracker.Printf("backup artifact verified (sha256 %s)", sourceRecord.SHA256)
 		e.logger.Info("backup artifact verified before restore",
 			slog.String("restore_id", restoreID),
 			slog.String("backup_id", req.BackupID),
 		)
 	}
+	tracker.Phase(models.PhaseRestoring, record.Phases)
+	tracker.StartTransfer(sourceRecord.SizeBytes)
 
 	// Open read stream from storage
 	stream, err := e.storage.Retrieve(ctx, sourceRecord.StorageKey)
 	if err != nil {
-		return failRestore(record, fmt.Errorf("retrieve backup stream from storage: %w", err),
+		return e.failRun(ctx, record, fmt.Errorf("retrieve backup stream from storage: %w", err),
 			fmt.Sprintf("retrieve backup stream: %v", err))
 	}
 	defer stream.Close()
@@ -450,11 +467,11 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	// rest fails the restore even without a verification pass. The buffered reader
 	// sits on top of the hash so every stored byte is hashed exactly once, including
 	// the header bytes peeked to detect encryption.
-	hashed := &hashingReader{r: stream, h: sha256.New()}
+	hashed := &hashingReader{r: tracker.CountingReader(stream), h: sha256.New()}
 	stored := bufio.NewReader(hashed)
 	if !encrypted {
 		if encrypted, err = e.detectUnrecordedEncryption(stored, sourceRecord); err != nil {
-			return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error())
+			return e.failRun(ctx, record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error())
 		}
 	}
 
@@ -462,7 +479,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if encrypted {
 		decrypted, decErr := e.decryptor.Decrypt(stored)
 		if decErr != nil {
-			return failRestore(record, fmt.Errorf("decrypt backup stream: %w", decErr), decErr.Error())
+			return e.failRun(ctx, record, fmt.Errorf("decrypt backup stream: %w", decErr), decErr.Error())
 		}
 		archive = decrypted
 	}
@@ -475,7 +492,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		if errors.Is(err, encryption.ErrDecryptionFailed) {
 			stage = "decrypt backup stream"
 		}
-		return failRestore(record, fmt.Errorf("%s: %w", stage, err),
+		return e.failRun(ctx, record, fmt.Errorf("%s: %w", stage, err),
 			fmt.Sprintf("%s (target untouched): %v", stage, err))
 	}
 	if isGzip != keyGzip(sourceRecord.StorageKey) {
@@ -488,7 +505,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	// Connection timeouts are defaulted there; the augmented URI is never logged.
 	configArg, cleanupConfig, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(mongoURI))
 	if err != nil {
-		return failRestore(record, fmt.Errorf("prepare mongorestore config: %w", err),
+		return e.failRun(ctx, record, fmt.Errorf("prepare mongorestore config: %w", err),
 			fmt.Sprintf("prepare mongorestore config: %v", err))
 	}
 	defer cleanupConfig()
@@ -503,14 +520,22 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 
 	stderr, wait, err := e.runner(ctx, "mongorestore", input, args...)
 	if err != nil {
-		return failRestore(record, fmt.Errorf("start mongorestore: %w", err), fmt.Sprintf("start mongorestore: %v", err))
+		return e.failRun(ctx, record, fmt.Errorf("start mongorestore: %w", err), fmt.Sprintf("start mongorestore: %v", err))
 	}
 
-	// Capture the end of stderr (bounded) for status and error diagnostics.
+	tracker.Printf("mongorestore started: %s", strings.Join(args[1:], " "))
+
+	// Capture the end of stderr (bounded) for status and error diagnostics; the full
+	// output streams to the run's log and progress parser.
 	stderrBuf := &mongotools.TailBuffer{}
-	_, _ = io.Copy(stderrBuf, stderr)
+	toolOut := tracker.ToolOutput()
+	_, _ = io.Copy(io.MultiWriter(stderrBuf, toolOut), stderr)
+	_ = toolOut.Close()
 	stderrLogs := stderrBuf.String()
 	waitErr := wait()
+	if waitErr == nil {
+		record.Phases.RestoreDone = models.Stamp(time.Now())
+	}
 
 	finishTime := time.Now().UTC()
 	record.CompletedAt = &finishTime
@@ -538,10 +563,26 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		return fmt.Sprintf("; the partially restored clone %s was dropped", targetDB)
 	}
 
-	// An aborted run (timeout, cancellation) may have stopped mongorestore midway.
+	// An aborted run (timeout, cancellation) may have stopped mongorestore midway. A
+	// cancelled clone is dropped like a failed one; a cancelled in-place restore leaves
+	// whatever mongorestore applied, which the record states loudly.
 	if ctx.Err() != nil {
+		if c := runs.CancellationOf(ctx); c != nil {
+			var note string
+			switch {
+			case req.DryRun:
+				note = "; nothing was written (dry run)"
+			case clone:
+				note = dropClone()
+			default:
+				warning := fmt.Sprintf("cancelled midway: the in-place target %s may be PARTIALLY RESTORED; check it or restore it again", targetDB)
+				addWarning(record, warning)
+				note = "; WARNING: " + warning
+			}
+			return e.cancelled(ctx, record, c, note)
+		}
 		abortErr := e.withCause(ctx, ctx.Err())
-		return failRestore(record, fmt.Errorf("restore aborted: %w", abortErr),
+		return e.failDone(ctx, record, fmt.Errorf("restore aborted: %w", abortErr),
 			fmt.Sprintf("restore aborted: %v%s", abortErr, dropClone()))
 	}
 
@@ -552,13 +593,13 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		if errors.Is(streamErr, encryption.ErrDecryptionFailed) {
 			stage = "decrypt backup stream"
 		}
-		return failRestore(record, fmt.Errorf("%s: %w", stage, streamErr),
+		return e.failDone(ctx, record, fmt.Errorf("%s: %w", stage, streamErr),
 			fmt.Sprintf("%s: %v%s", stage, streamErr, dropClone()))
 	}
 
 	if waitErr != nil {
 		tail := stderrTail(stderrLogs)
-		return failRestore(record, fmt.Errorf("mongorestore failed: %w (stderr: %s)", waitErr, tail),
+		return e.failDone(ctx, record, fmt.Errorf("mongorestore failed: %w (stderr: %s)", waitErr, tail),
 			fmt.Sprintf("mongorestore failed: %v%s, stderr: %s", waitErr, dropClone(), tail))
 	}
 
@@ -570,7 +611,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		if clone && e.admin != nil {
 			note = dropClone()
 		}
-		return failRestore(record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error()+note)
+		return e.failDone(ctx, record, fmt.Errorf("restore %s: %w", req.BackupID, err), err.Error()+note)
 	}
 
 	failed, ok := failedDocuments(stderrLogs)
@@ -578,7 +619,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		// The target is kept (a clone too) so the documents that did arrive can be
 		// inspected; the record is failed.
 		err := fmt.Errorf("%w: %d document(s) failed to restore", ErrDocumentsFailed, failed)
-		return failRestore(record, err,
+		return e.failDone(ctx, record, err,
 			fmt.Sprintf("%v (duplicate keys in a target that already held data, or documents rejected by a validator when the user lacks the bypassDocumentValidation privilege of the restore role)%s; mongorestore output: %s",
 				err, partialNote, stderrTail(stderrLogs)))
 	}
@@ -589,6 +630,9 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 
 	record.Status = models.RestoreStatusCompleted
+	record.Phases.Finished = models.Stamp(finishTime)
+	tracker.Phase(models.PhaseFinishing, record.Phases)
+	tracker.Printf("restore completed into %s.* in %.1fs", targetDB, record.DurationSeconds)
 	e.logger.Info("mongodb streaming restore finished successfully",
 		slog.String("restore_id", restoreID),
 		slog.String("target_db", targetDB),
@@ -597,6 +641,49 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	)
 
 	return record, nil
+}
+
+// failRun marks record failed before mongorestore started, or cancelled when ctx was
+// cancelled through the run registry (the target is untouched then).
+func (e *Engine) failRun(ctx context.Context, record *models.RestoreRecord, err error, message string) (*models.RestoreRecord, error) {
+	if c := runs.CancellationOf(ctx); c != nil {
+		return e.cancelled(ctx, record, c, " before mongorestore started; the target is untouched")
+	}
+	return e.failDone(ctx, record, err, message)
+}
+
+// failDone marks record failed with message and logs the outcome to the run's log.
+func (e *Engine) failDone(ctx context.Context, record *models.RestoreRecord, err error, message string) (*models.RestoreRecord, error) {
+	record.Phases.Finished = models.Stamp(time.Now())
+	rec, err := failRestore(record, err, message)
+	tracker := runs.FromContext(ctx)
+	tracker.Phase(models.PhaseFinishing, rec.Phases)
+	tracker.Printf("restore failed: %s", rec.ErrorMessage)
+	return rec, err
+}
+
+// cancelled marks record cancelled by c; note completes the message (what happened
+// to the target).
+func (e *Engine) cancelled(ctx context.Context, record *models.RestoreRecord, c *runs.Cancellation, note string) (*models.RestoreRecord, error) {
+	now := time.Now().UTC()
+	if record.CompletedAt == nil {
+		record.CompletedAt = &now
+		record.DurationSeconds = now.Sub(record.StartedAt).Seconds()
+	}
+	record.Phases.Finished = models.Stamp(now)
+	record.Status = models.RestoreStatusCancelled
+	record.CancelledBy, record.CancelledAt = c.By, models.Stamp(c.At)
+	record.ErrorMessage = redact.Text("restore " + c.Error() + note)
+	tracker := runs.FromContext(ctx)
+	tracker.Phase(models.PhaseFinishing, record.Phases)
+	tracker.Printf("%s", record.ErrorMessage)
+	e.logger.Warn("restore cancelled",
+		slog.String("restore_id", record.ID),
+		slog.String("target_db", record.TargetDatabase),
+		slog.String("cancelled_by", c.By),
+		slog.Bool("in_place", record.InPlace),
+	)
+	return record, fmt.Errorf("restore %w", c)
 }
 
 // verifyFirst decides whether the artifact is verified in a first pass before
@@ -716,7 +803,7 @@ func (e *Engine) verifyArtifact(ctx context.Context, rec *models.BackupRecord) e
 
 	h := sha256.New()
 	// Every stored byte passes the hash exactly once; the buffer only allows peeking.
-	stored := bufio.NewReader(io.TeeReader(&ctxReader{ctx: ctx, r: stream}, h))
+	stored := bufio.NewReader(io.TeeReader(&ctxReader{ctx: ctx, r: runs.FromContext(ctx).CountingReader(stream)}, h))
 
 	encrypted := rec.Encrypted || keyEncrypted(rec.StorageKey)
 	if !encrypted {

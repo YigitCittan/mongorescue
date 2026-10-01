@@ -464,6 +464,10 @@ var compatSteps = []compatStep{
 			if orig, err := s.GetBackupRecord(context.Background(), "bkp_v1_failed"); err != nil || orig.Status != models.StatusFailed {
 				t.Errorf("the retried backup must stay as it was: %+v, %v", orig, err)
 			}
+			// Migration 0011 backfills the phases of older records from started_at.
+			if rec != nil && (rec.Phases.Queued == nil || !rec.Phases.Queued.Equal(compatT0.Add(13*time.Hour))) {
+				t.Errorf("bkp_v9 phases = %+v, want queued backfilled from started_at", rec.Phases)
+			}
 		},
 	},
 	{
@@ -496,6 +500,38 @@ var compatSteps = []compatStep{
 			}
 			if st, err := s.BackupStats(ctx, compatT0); err != nil || st.CompletedBytes != want || want == 0 {
 				t.Errorf("completed bytes = %+v, %v; want %d (> 0)", st, err, want)
+			}
+		},
+	},
+	{
+		version: 11,
+		seed: func(t *testing.T, f *compatFixture) {
+			phases := map[string]any{"queued": rfc(14 * time.Hour), "started": rfc(14 * time.Hour), "finished": rfc(15 * time.Hour)}
+			f.exec(t, `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, phases, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"bkp_v11", "job_v1", "shop", "cancelled", ns(14*time.Hour), "conn_v2", "tgt_local", "", jsonDoc(t, phases), jsonDoc(t, map[string]any{
+					"id": "bkp_v11", "job_id": "job_v1", "trigger": "scheduled", "database": "shop", "status": "cancelled",
+					"connection_id": "conn_v2", "storage_type": "local", "storage_target_id": "tgt_local",
+					"storage_key": "shop/2026/09/bkp_v11.archive.gz", "started_at": rfc(14 * time.Hour),
+					"cancelled_by": "admin", "cancelled_at": rfc(15 * time.Hour), "phases": phases,
+					"error_message": "backup cancelled by admin",
+				}))
+			f.exec(t, `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, phases, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"rst_v11", "bkp_v9", "shop", "shop", "cancelled", ns(14*time.Hour), jsonDoc(t, phases), jsonDoc(t, map[string]any{
+					"id": "rst_v11", "backup_id": "bkp_v9", "source_database": "shop", "target_database": "shop",
+					"status": "cancelled", "started_at": rfc(14 * time.Hour), "in_place": true, "cancelled_by": "admin",
+					"cancelled_at": rfc(15 * time.Hour), "phases": phases,
+					"warning": "cancelled midway: the in-place target shop may be PARTIALLY RESTORED",
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			b, err := s.GetBackupRecord(context.Background(), "bkp_v11")
+			if err != nil || b.Status != models.StatusCancelled || b.CancelledBy != "admin" || b.CancelledAt == nil ||
+				b.Phases.Started == nil || b.Phases.Finished == nil {
+				t.Errorf("bkp_v11 = %+v, %v", b, err)
+			}
+			r, err := s.GetRestoreRecord(context.Background(), "rst_v11")
+			if err != nil || r.Status != models.RestoreStatusCancelled || !r.InPlace || r.Warning == "" || r.Phases.Finished == nil {
+				t.Errorf("rst_v11 = %+v, %v", r, err)
 			}
 		},
 	},

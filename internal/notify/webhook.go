@@ -30,7 +30,7 @@ const (
 //
 //	{
 //	  "version": 1,
-//	  "event": "backup.failed",          // backup.succeeded|backup.failed|restore.succeeded|restore.failed|notification.test
+//	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|restore.succeeded|restore.failed|restore.cancelled|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs
 //	  "backup_id": "bkp_shop_...",       // omitted when unknown
