@@ -564,18 +564,14 @@ func withReason(reason, detail string) string {
 
 // inProgressRuns returns the IDs of the backup and restore records in progress.
 func (a *App) inProgressRuns(ctx context.Context) (backups, restores []string) {
-	if list, err := a.metaStore.ListBackupRecords(ctx, ""); err == nil {
-		for _, b := range list {
-			if b.Status == models.StatusInProgress {
-				backups = append(backups, b.ID)
-			}
+	if page, err := a.metaStore.QueryBackupRecords(ctx, store.BackupFilter{Status: models.StatusInProgress}); err == nil {
+		for _, row := range page.Rows {
+			backups = append(backups, row.Record.ID)
 		}
 	}
-	if list, err := a.metaStore.ListRestoreRecords(ctx); err == nil {
-		for _, r := range list {
-			if r.Status == models.RestoreStatusInProgress {
-				restores = append(restores, r.ID)
-			}
+	if page, err := a.metaStore.QueryRestoreRecords(ctx, store.RestoreFilter{Status: models.RestoreStatusInProgress}); err == nil {
+		for _, r := range page.Records {
+			restores = append(restores, r.ID)
 		}
 	}
 	return backups, restores

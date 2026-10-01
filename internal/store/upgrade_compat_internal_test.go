@@ -487,6 +487,16 @@ var compatSteps = []compatStep{
 			if page, err := s.QueryBackupRecords(ctx, BackupFilter{Limit: 1}); err != nil || page.Total != len(all) {
 				t.Errorf("total = %+v, %v; want %d", page, err, len(all))
 			}
+			// The size_bytes column is backfilled from the records.
+			var want int64
+			for _, b := range all {
+				if b.Status == models.StatusCompleted {
+					want += b.SizeBytes
+				}
+			}
+			if st, err := s.BackupStats(ctx, compatT0); err != nil || st.CompletedBytes != want || want == 0 {
+				t.Errorf("completed bytes = %+v, %v; want %d (> 0)", st, err, want)
+			}
 		},
 	},
 }

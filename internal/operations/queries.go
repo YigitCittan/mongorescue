@@ -122,6 +122,14 @@ func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage
 	}); err != nil {
 		return nil, err
 	}
+	if len(f.IDs) > store.MaxFilterIDs {
+		return nil, public(fmt.Sprintf("id takes at most %d IDs", store.MaxFilterIDs), ErrInvalid)
+	}
+	for _, id := range f.IDs {
+		if err := checkText(map[string]string{"id": id}); err != nil {
+			return nil, err
+		}
+	}
 	page, err := s.cfg.Store.QueryBackupRecords(ctx, f)
 	if err != nil {
 		return nil, filterError(err, "backups")
@@ -255,8 +263,12 @@ type Stats struct {
 	FailedBackups24h int `json:"failed_backups_24h"`
 	// TotalBytes sums the size of completed backups.
 	TotalBytes int64 `json:"total_bytes"`
+	// ActiveBackups counts backups that are pending or in progress.
+	ActiveBackups int `json:"active_backups"`
 	// TotalRestores counts every restore record.
 	TotalRestores int `json:"total_restores"`
+	// ActiveRestores counts restores that are pending or in progress.
+	ActiveRestores int `json:"active_restores"`
 	// ActiveJobs counts enabled jobs.
 	ActiveJobs int `json:"active_jobs"`
 	// LastBackup is the newest backup, when there is one.
@@ -269,47 +281,22 @@ type Stats struct {
 	DefaultStorageTarget *TargetRef `json:"default_storage_target,omitempty"`
 }
 
-// Stats computes the dashboard KPIs. Records that cannot be read count as zero, so the
-// dashboard keeps working while the store is degraded.
+// Stats computes the dashboard KPIs from SQL aggregates, never reading every record.
+// Aggregates that cannot be read count as zero, so the dashboard keeps working while
+// the store is degraded.
 func (s *Service) Stats(ctx context.Context) Stats {
-	backups, _ := s.cfg.Store.ListBackupRecords(ctx, "")
 	jobs, _ := s.cfg.Store.ListJobs(ctx)
-	restores := 0
-	if page, err := s.cfg.Store.QueryRestoreRecords(ctx, store.RestoreFilter{Limit: 1}); err == nil {
-		restores = page.Total
-	}
-	return s.stats(ctx, backups, jobs, restores)
+	st, _, _, _ := s.stats(ctx, jobs, s.now())
+	return st
 }
 
-// stats computes the KPIs from backups (newest first), jobs and the restore count.
-func (s *Service) stats(ctx context.Context, backups []*models.BackupRecord, jobs []*models.Job, restores int) Stats {
-	st := Stats{TotalRestores: restores, JobLastBackups: map[string]BackupBrief{}}
+// stats computes the KPIs at now, and returns the aggregates they were computed from.
+// On an error it returns what it has read so far.
+func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) (Stats, *store.BackupStats, *store.RestoreStats, error) {
+	st := Stats{JobLastBackups: map[string]BackupBrief{}}
 	for _, j := range jobs {
 		if j.Enabled {
 			st.ActiveJobs++
-		}
-	}
-	st.TotalBackups = len(backups)
-	since := s.now().Add(-24 * time.Hour)
-	for i, b := range backups {
-		brief := BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt}
-		if i == 0 {
-			last := brief
-			last.ErrorMessage = b.ErrorMessage
-			st.LastBackup = &last
-		}
-		if _, seen := st.JobLastBackups[b.JobID]; b.JobID != "" && !seen {
-			st.JobLastBackups[b.JobID] = brief
-		}
-		switch b.Status {
-		case models.StatusCompleted:
-			st.CompletedBackups++
-			st.TotalBytes += b.SizeBytes
-		case models.StatusFailed:
-			st.FailedBackups++
-			if !b.StartedAt.Before(since) {
-				st.FailedBackups24h++
-			}
 		}
 	}
 	if s.cfg.Targets != nil {
@@ -318,7 +305,29 @@ func (s *Service) stats(ctx context.Context, backups []*models.BackupRecord, job
 			st.DefaultStorageTarget = &TargetRef{ID: def.ID, Name: def.Name, Type: def.Type}
 		}
 	}
-	return st
+	bs, err := s.cfg.Store.BackupStats(ctx, now.Add(-24*time.Hour))
+	if err != nil {
+		return st, nil, nil, fmt.Errorf("backup stats: %w", err)
+	}
+	st.TotalBackups, st.TotalBytes, st.FailedBackups24h = bs.Total, bs.CompletedBytes, bs.FailedSince
+	st.CompletedBackups, st.FailedBackups = bs.ByStatus[models.StatusCompleted], bs.ByStatus[models.StatusFailed]
+	st.ActiveBackups = bs.Active()
+	if b := bs.Last; b != nil {
+		st.LastBackup = &BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt, ErrorMessage: b.ErrorMessage}
+	}
+	latest, err := s.cfg.Store.LatestJobBackups(ctx, "")
+	if err != nil {
+		return st, bs, nil, fmt.Errorf("latest job backups: %w", err)
+	}
+	for id, b := range latest {
+		st.JobLastBackups[id] = BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt}
+	}
+	rs, err := s.cfg.Store.RestoreStats(ctx)
+	if err != nil {
+		return st, bs, nil, fmt.Errorf("restore stats: %w", err)
+	}
+	st.TotalRestores, st.ActiveRestores = rs.Total, rs.Active()
+	return st, bs, rs, nil
 }
 
 // JobStatus summarises one scheduled job for Status.
@@ -385,57 +394,42 @@ const MaxStatusFailures = 20
 // Status returns an operational overview: health, version, counts, the last
 // successful backup of every job and the backups that failed in the last 24 hours.
 func (s *Service) Status(ctx context.Context) (*Status, error) {
-	backups, err := s.cfg.Store.ListBackupRecords(ctx, "")
-	if err != nil {
-		return nil, fmt.Errorf("list backups: %w", err)
-	}
 	jobs, err := s.cfg.Store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
-	restores, err := s.cfg.Store.ListRestoreRecords(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list restores: %w", err)
-	}
 	now := s.now().UTC()
+	kpis, backups, restores, err := s.stats(ctx, jobs, now)
+	if err != nil {
+		return nil, err
+	}
 	st := &Status{
-		Health: "healthy", Version: s.cfg.Version, Time: now,
-		Stats: s.stats(ctx, backups, jobs, len(restores)), Jobs: len(jobs),
-		JobStatus: make([]JobStatus, 0, len(jobs)), FailedLast24h: []FailedBackup{},
+		Health: "healthy", Version: s.cfg.Version, Time: now, Stats: kpis, Jobs: len(jobs),
+		RunningBackups:  backups.ByStatus[models.StatusInProgress],
+		RunningRestores: restores.ByStatus[models.RestoreStatusInProgress],
+		JobStatus:       make([]JobStatus, 0, len(jobs)), FailedLast24h: []FailedBackup{},
 	}
 	if s.cfg.Connections != nil {
 		if conns, cerr := s.cfg.Connections.List(ctx); cerr == nil {
 			st.Connections = len(conns)
 		}
 	}
-	for _, r := range restores {
-		if r.Status == models.RestoreStatusInProgress {
-			st.RunningRestores++
-		}
+	failed, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{
+		Status: models.StatusFailed, From: now.Add(-24 * time.Hour), Limit: MaxStatusFailures,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list failed backups: %w", err)
 	}
-	// Backups are newest first: the first completed one per job is its last success.
-	lastSuccess := make(map[string]*models.BackupRecord, len(jobs))
-	since := now.Add(-24 * time.Hour)
-	for _, b := range backups {
-		switch b.Status {
-		case models.StatusInProgress:
-			st.RunningBackups++
-		case models.StatusCompleted:
-			if _, seen := lastSuccess[b.JobID]; b.JobID != "" && !seen {
-				lastSuccess[b.JobID] = b
-			}
-		case models.StatusFailed:
-			if b.StartedAt.Before(since) {
-				continue
-			}
-			if len(st.FailedLast24h) == MaxStatusFailures {
-				st.FailedLast24hTruncated = true
-				continue
-			}
-			st.FailedLast24h = append(st.FailedLast24h, FailedBackup{
-				ID: b.ID, Database: b.Database, JobID: b.JobID, StartedAt: b.StartedAt, Error: b.ErrorMessage,
-			})
-		}
+	st.FailedLast24hTruncated = failed.Total > MaxStatusFailures
+	for _, row := range failed.Rows {
+		b := row.Record
+		st.FailedLast24h = append(st.FailedLast24h, FailedBackup{
+			ID: b.ID, Database: b.Database, JobID: b.JobID, StartedAt: b.StartedAt, Error: b.ErrorMessage,
+		})
+	}
+	lastSuccess, err := s.cfg.Store.LatestJobBackups(ctx, models.StatusCompleted)
+	if err != nil {
+		return nil, fmt.Errorf("latest job backups: %w", err)
 	}
 	for _, j := range jobs {
 		js := JobStatus{ID: j.ID, Name: j.Name, Database: j.Database, Enabled: j.Enabled, NextRun: j.NextRun}
