@@ -80,7 +80,7 @@ func TestScanFindsOrphansAndMissing(t *testing.T) {
 		t.Fatalf("events = %v", types)
 	}
 	// Nothing was deleted.
-	if _, err := f.mem.Stat(ctx, pruned.StorageKey); err != nil {
+	if _, err = f.mem.Stat(ctx, pruned.StorageKey); err != nil {
 		t.Fatalf("a scan must never delete: %v", err)
 	}
 	if last, ok := f.svc.LastScan(ctx, "tgt_local"); !ok || last.OrphanCount != 2 {
@@ -97,7 +97,7 @@ func TestScanFindsOrphansAndMissing(t *testing.T) {
 		t.Fatalf("recovered backup = %+v", got)
 	}
 
-	if _, err := f.svc.ScanTarget(ctx, "nope", TriggerManual); !errors.Is(err, ErrNotFound) {
+	if _, err = f.svc.ScanTarget(ctx, "nope", TriggerManual); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown target = %v", err)
 	}
 	ov, err := f.svc.Status(ctx)
@@ -130,7 +130,7 @@ func TestImportOrphan(t *testing.T) {
 	}
 
 	// The archive now belongs to a record: it is no orphan any more.
-	if _, err := f.svc.StartImport(ctx, "tgt_local", key); !errors.Is(err, ErrNotOrphan) {
+	if _, err = f.svc.StartImport(ctx, "tgt_local", key); !errors.Is(err, ErrNotOrphan) {
 		t.Fatalf("second import = %v", err)
 	}
 	report, _ := f.svc.ScanTarget(ctx, "tgt_local", TriggerManual)

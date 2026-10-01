@@ -23,7 +23,7 @@ func TestPinAndUnpin(t *testing.T) {
 	if err != nil || !rec.Pinned || rec.PinNote != "audit 2026" || rec.PinnedBy != "alice" || rec.PinnedAt == nil {
 		t.Fatalf("pin = %+v, %v", rec, err)
 	}
-	if err := operations.CheckDeletable(rec); !errors.Is(err, operations.ErrPinned) {
+	if err = operations.CheckDeletable(rec); !errors.Is(err, operations.ErrPinned) {
 		t.Fatalf("deleting a pinned backup = %v", err)
 	}
 	keyCtx := auth.WithPrincipal(context.Background(), &auth.Principal{APIKeyName: "ci", Method: auth.MethodAPIKey, Scope: auth.ScopeOperator})
@@ -73,14 +73,14 @@ func TestRetentionPreviewAndLog(t *testing.T) {
 		t.Fatalf("override preview = %+v, %v", p, err)
 	}
 	neg := -1
-	if _, err := svc.RetentionPreview(ctx, job.ID, &neg, nil); !errors.Is(err, operations.ErrInvalid) {
+	if _, err = svc.RetentionPreview(ctx, job.ID, &neg, nil); !errors.Is(err, operations.ErrInvalid) {
 		t.Fatalf("negative = %v", err)
 	}
-	if _, err := svc.RetentionPreview(ctx, "nope", nil, nil); !errors.Is(err, operations.ErrNotFound) {
+	if _, err = svc.RetentionPreview(ctx, "nope", nil, nil); !errors.Is(err, operations.ErrNotFound) {
 		t.Fatalf("unknown job = %v", err)
 	}
 
-	if err := st.AppendRetentionLog(ctx, &models.RetentionLogEntry{Time: now, JobID: job.ID, BackupID: "bkp_9", Reason: models.RetentionMaxCount}); err != nil {
+	if err = st.AppendRetentionLog(ctx, &models.RetentionLogEntry{Time: now, JobID: job.ID, BackupID: "bkp_9", Reason: models.RetentionMaxCount}); err != nil {
 		t.Fatal(err)
 	}
 	log, err := svc.RetentionLog(ctx, job.ID, 0)

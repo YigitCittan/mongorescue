@@ -42,7 +42,8 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 ## Features
 
 - Manage many MongoDB servers from one instance: connections are tested, their databases and collections listed, and backups can be restored into another server
-- Scheduled and on-demand backups with retention by age or count
+- Scheduled and on-demand backups with retention by age or count, a dry-run preview of what retention deletes, pins (legal hold) and a retention history
+- Evidence that backups restore: every archive is re-read and checksum-verified after upload, an optional integrity sweep re-verifies them at rest, automated restore tests restore a job's latest backup into a temporary database and compare collection counts and indexes, and weekly storage scans report orphan and missing archives ([verification](docs/verification.md))
 - Backup and restore history filtered and paginated on the server (status, database, trigger, date range, search), in the dashboard and the API
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
@@ -139,6 +140,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [REST API](docs/api.md)
 - [AI assistants (MCP)](docs/mcp.md)
 - [Encryption and verified restores](docs/encryption.md)
+- [Verification, restore tests and retention safety](docs/verification.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
 - [Running in production](docs/production.md)
@@ -176,7 +178,7 @@ Planned for upcoming releases:
 - Backup scope per server (all databases), per database or per collection, each schedulable separately
 - Roles for users (viewer, operator, admin, as API keys already have) and single sign-on (OIDC)
 - Storage targets (local disk, S3-compatible buckets) and backup encryption managed in the dashboard
-- Scheduled restore drills and point-in-time recovery from the oplog
+- Point-in-time recovery from the oplog
 - `backup` / `restore` / `list` CLI commands
 - A shared metadata store for running several instances
 

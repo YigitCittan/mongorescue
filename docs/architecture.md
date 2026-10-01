@@ -81,11 +81,13 @@ flowchart TB
 | `internal/audit` | The audit log of API key activity (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
-| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups and checks the restore privilege |
+| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups, checks the restore and restore test privileges and captures backup manifests (document counts and index specifications) |
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
 | `internal/backup` | Backup engine: runs `mongodump`, hashes, optionally encrypts, streams to storage, cleans up on failure |
 | `internal/restore` | Restore engine: safe-clone namespace mapping, verify-before-restore, decryption, runs `mongorestore` |
-| `internal/scheduler` | Cron scheduling (`robfig/cron/v3`) and retention pruning after successful scheduled runs (on-demand runs never prune) |
+| `internal/scheduler` | Cron scheduling (`robfig/cron/v3`) and retention pruning after successful scheduled runs (on-demand runs never prune); `PlanRetention` is shared by the prune and its dry-run preview, and pinned and last verified backups are kept |
+| `internal/verify` | Streams a stored archive through SHA-256 (optionally rate limited, optionally decrypting the age stream) and compares it with the record |
+| `internal/integrity` | Integrity sweep, on-demand verification, automated restore tests into `<db>_rescue_verify_<ts>` and storage scans with orphan import ([verification.md](verification.md)); a business package behind ports for the store, the restore engine, the MongoDB adapter and the storage targets |
 | `internal/storage` | The `Storage` port and its drivers: local filesystem and S3-compatible (AWS SDK v2 multipart) |
 | `internal/store` | Metadata persistence (jobs, history, users, sessions, API keys, connections, notification settings) in an embedded SQLite database; data directory lock |
 | `internal/encryption` | Streaming age encryption and decryption (X25519 and scrypt), key generation, identity hygiene |
