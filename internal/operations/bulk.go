@@ -2,6 +2,9 @@ package operations
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -25,6 +29,8 @@ const (
 	// BulkConfirmThreshold is the number of affected items above which a bulk
 	// operation needs confirm_count (the actionable count of its dry run).
 	BulkConfirmThreshold = 10
+	// MaxBulkIDLength is the longest ID a bulk request may name, in bytes.
+	MaxBulkIDLength = maxFilterText
 )
 
 // bulkItemTimeout bounds the work on one bulk item once it has started.
@@ -179,6 +185,9 @@ type BulkItemResult struct {
 	// Detail adds information, such as the backup a run started or why an archive
 	// was kept.
 	Detail string `json:"detail,omitempty"`
+	// Skip, set by an action, moves the item to BulkResult.Skipped: it became
+	// protected between the plan and its turn.
+	Skip *BulkSkip `json:"-"`
 }
 
 // BulkResult is the response of a bulk operation.
@@ -231,14 +240,12 @@ func (it BulkItem) found() bool {
 type BulkRun struct {
 	// lastGood maps job IDs to their newest completed backup.
 	lastGood map[string]*models.BackupRecord
-	// lastVerified maps job IDs to their newest verified scheduled backup.
+	// lastVerified maps job IDs to their newest verified completed backup.
 	lastVerified map[string]string
 	// note is the request's pin note.
 	note string
 	// jobNames maps job IDs to their names.
 	jobNames map[string]string
-	// refs counts the records of every archive (loaded on the first delete).
-	refs archiveRefs
 }
 
 // BulkAction is an action of a bulk endpoint. New actions are added to the registry
@@ -335,6 +342,12 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 	if err := auth.RequireScope(ctx, action.Scope); err != nil {
 		return nil, fmt.Errorf("bulk %s of %s: %w", action.Name, resource, err)
 	}
+	// A filter is evaluated when the request runs: a destructive action only ever
+	// acts on the exact IDs a dry run listed.
+	if action.Destructive && !req.DryRun && req.Filter != nil {
+		return nil, public(fmt.Sprintf("%s cannot be run with a filter: dry-run the filter, then send its actionable_ids as ids", action.Name), ErrInvalid)
+	}
+	started := s.now()
 	items, matched, err := s.bulkItems(ctx, resource, req)
 	if err != nil {
 		return nil, err
@@ -389,6 +402,11 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 		} else {
 			r = s.applyBulk(ctx, action, run, it)
 		}
+		if r.Skip != nil {
+			r.Skip.ID = it.ID
+			res.Skipped = append(res.Skipped, *r.Skip)
+			continue
+		}
 		if r.OK {
 			res.Succeeded++
 		} else {
@@ -396,7 +414,7 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 		}
 		res.Results = append(res.Results, r)
 	}
-	s.finishBulk(ctx, res)
+	s.finishBulk(ctx, res, started)
 	return res, nil
 }
 
@@ -423,8 +441,9 @@ func checkConfirm(confirm *int, actionable int) error {
 }
 
 // finishBulk logs and publishes the summary of a real run.
-func (s *Service) finishBulk(ctx context.Context, res *BulkResult) {
+func (s *Service) finishBulk(ctx context.Context, res *BulkResult, started time.Time) {
 	actor := actorName(ctx)
+	s.auditBulk(ctx, res, actor, started)
 	s.logger.Info("bulk operation finished",
 		slog.String("resource", string(res.Resource)),
 		slog.String("action", res.Action),
@@ -442,6 +461,36 @@ func (s *Service) finishBulk(ctx context.Context, res *BulkResult) {
 			Succeeded: res.Succeeded, Skipped: len(res.Skipped), Failed: res.Failed, Actor: actor,
 		},
 	})
+}
+
+// auditBulk writes the audit entry of a real run: who ran which action on how many
+// items, and a SHA-256 over the processed IDs (sorted, one per line).
+func (s *Service) auditBulk(ctx context.Context, res *BulkResult, actor string, started time.Time) {
+	if s.cfg.Audit == nil {
+		return
+	}
+	ids := make([]string, 0, len(res.Results))
+	for _, r := range res.Results {
+		ids = append(ids, r.ID)
+	}
+	slices.Sort(ids)
+	sum := sha256.Sum256([]byte(strings.Join(ids, "\n")))
+	args, _ := json.Marshal(map[string]any{
+		"resource": res.Resource, "action": res.Action, "actor": actor, "matched": res.Matched,
+		"succeeded": res.Succeeded, "skipped": len(res.Skipped), "failed": res.Failed,
+		"processed": len(ids), "ids_sha256": hex.EncodeToString(sum[:]),
+	})
+	e := audit.Entry{
+		Time: started, Transport: audit.TransportREST, Tool: "bulk " + string(res.Resource) + " " + res.Action,
+		Arguments: args, Result: audit.ResultOK, DurationMS: s.now().Sub(started).Milliseconds(),
+	}
+	if p := auth.PrincipalFrom(ctx); p != nil {
+		e.APIKeyID, e.APIKeyName = p.APIKeyID, p.APIKeyName
+	}
+	if res.Failed > 0 {
+		e.Result, e.Error = audit.ResultError, fmt.Sprintf("%d of %d items failed", res.Failed, len(ids))
+	}
+	s.cfg.Audit.Record(ctx, e)
 }
 
 // bulkActionNames lists the available actions of resource for error messages.
@@ -731,8 +780,8 @@ func (s *Service) failed(err error) BulkItemResult {
 	return BulkItemResult{Error: "internal error (see the server log)"}
 }
 
-// lastVerifiedBackups maps the jobs of items to their newest verified scheduled
-// backup, the backup retention keeps besides pins (see scheduler.PlanRetention).
+// lastVerifiedBackups maps the jobs of items to their newest completed backup whose
+// archive passed verification. Bulk deletes keep it (retention keeps it too).
 func (s *Service) lastVerifiedBackups(ctx context.Context, items []BulkItem) (map[string]string, error) {
 	out := map[string]string{}
 	seen := map[string]bool{}
@@ -742,7 +791,7 @@ func (s *Service) lastVerifiedBackups(ctx context.Context, items []BulkItem) (ma
 		}
 		jobID := it.Backup.JobID
 		seen[jobID] = true
-		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: jobID, Status: models.StatusCompleted, Trigger: models.TriggerScheduled})
+		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: jobID, Status: models.StatusCompleted})
 		if err != nil {
 			return nil, fmt.Errorf("load the last verified backups: %w", err)
 		}
@@ -755,6 +804,45 @@ func (s *Service) lastVerifiedBackups(ctx context.Context, items []BulkItem) (ma
 		}
 	}
 	return out, nil
+}
+
+// deleteProtection returns why b, as stored now, must not be deleted in bulk, or nil:
+// it is running or pinned, the newest completed backup of its job, or the newest
+// verified one. It reads the store, so callers holding b's deletion lock decide on
+// the current state.
+func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, jobName string) (*BulkSkip, error) {
+	switch {
+	case b.Status == models.StatusInProgress || b.Status == models.StatusPending:
+		return &BulkSkip{Reason: SkipInProgress, Params: map[string]string{"status": string(b.Status)}, Detail: "the backup is still " + string(b.Status)}, nil
+	case b.Pinned:
+		return &BulkSkip{Reason: SkipPinned, Detail: "unpin it before deleting it"}, nil
+	case b.JobID == "" || b.Status != models.StatusCompleted:
+		return nil, nil
+	}
+	if jobName == "" {
+		jobName = b.JobID
+	}
+	newest, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Status: models.StatusCompleted, Limit: 1})
+	if err != nil {
+		return nil, fmt.Errorf("load the job's last good backup: %w", err)
+	}
+	if len(newest.Rows) > 0 && newest.Rows[0].Record.ID == b.ID {
+		return &BulkSkip{Reason: SkipLastGoodBackup, Params: map[string]string{"job": jobName}, Detail: "last successful backup of job " + jobName}, nil
+	}
+	if b.Verification != models.VerificationOK {
+		return nil, nil
+	}
+	// Protected unless a newer completed backup of the job is verified too.
+	newer, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Status: models.StatusCompleted, From: b.StartedAt})
+	if err != nil {
+		return nil, fmt.Errorf("load the job's verified backups: %w", err)
+	}
+	for _, row := range newer.Rows {
+		if o := row.Record; o.ID != b.ID && o.Verification == models.VerificationOK && o.StartedAt.After(b.StartedAt) {
+			return nil, nil
+		}
+	}
+	return &BulkSkip{Reason: SkipLastVerified, Params: map[string]string{"job": jobName}, Detail: "last verified backup of job " + jobName}, nil
 }
 
 // registerBulkActions registers the built-in bulk actions. Scopes mirror the
@@ -805,22 +893,29 @@ func (s *Service) registerBulkActions() {
 			return nil
 		},
 		Apply: func(ctx context.Context, s *Service, run *BulkRun, it BulkItem) BulkItemResult {
-			if run.refs == nil {
-				refs, err := s.allArchiveRefs(ctx)
-				if err != nil {
-					return s.failed(err)
-				}
-				run.refs = refs
-			}
-			// A pin set since the plan still protects the backup.
-			current, err := s.cfg.Store.GetBackupRecord(ctx, it.ID)
+			// The protections are decided again under the job's deletion lock, on the
+			// record as it is stored now: a pin, a newer verification or another
+			// deletion since the plan is honoured.
+			unlock, err := deletionLock(ctx, it.Backup)
 			if err != nil {
-				return s.failed(notFound(err, "backup not found (deleted meanwhile)"))
-			}
-			if err = CheckDeletable(current); err != nil {
 				return s.failed(err)
 			}
-			res, err := s.deleteBackup(ctx, current, run.refs)
+			defer unlock()
+			current, err := s.cfg.Store.GetBackupRecord(ctx, it.ID)
+			if errors.Is(err, store.ErrNotFound) {
+				return BulkItemResult{Skip: &BulkSkip{Reason: SkipNotFound, Detail: "deleted meanwhile"}}
+			}
+			if err != nil {
+				return s.failed(err)
+			}
+			skip, err := s.deleteProtection(ctx, current, run.jobNames[current.JobID])
+			if err != nil {
+				return s.failed(err)
+			}
+			if skip != nil {
+				return BulkItemResult{Skip: skip}
+			}
+			res, err := s.deleteBackup(ctx, current)
 			if err != nil {
 				return s.failed(err)
 			}

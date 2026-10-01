@@ -701,6 +701,9 @@ func (s *Server) operationsConfig() operations.Config {
 		Storage:      s.storageFor,
 		OnJobDeleted: s.onJobDeleted,
 	}
+	if s.audit != nil {
+		cfg.Audit = s.audit
+	}
 	if s.scheduler != nil {
 		cfg.Jobs = s.scheduler
 		cfg.Scheduler = s.scheduler

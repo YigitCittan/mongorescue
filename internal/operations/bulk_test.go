@@ -2,6 +2,9 @@ package operations_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/connections"
@@ -49,6 +53,18 @@ func (p *recordingPublisher) bulk() []events.Event {
 	return out
 }
 
+// recordingAuditor keeps every audit entry.
+type recordingAuditor struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (a *recordingAuditor) Record(_ context.Context, e audit.Entry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+}
+
 // oneConnection resolves only connection "conn_ok".
 type oneConnection struct{}
 
@@ -71,6 +87,7 @@ type bulkEnv struct {
 	st        *store.SQLiteStore
 	mock      *storage.MockStorage
 	pub       *recordingPublisher
+	audits    *recordingAuditor
 	deletedMu sync.Mutex
 	deleted   []string
 	// brokenTarget names a storage target whose driver cannot be opened.
@@ -79,7 +96,7 @@ type bulkEnv struct {
 
 func newBulkEnv(t *testing.T) *bulkEnv {
 	t.Helper()
-	env := &bulkEnv{st: storetest.New(t), mock: storage.NewMockStorage(), pub: &recordingPublisher{}, brokenTarget: "tgt_broken"}
+	env := &bulkEnv{st: storetest.New(t), mock: storage.NewMockStorage(), pub: &recordingPublisher{}, audits: &recordingAuditor{}, brokenTarget: "tgt_broken"}
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	bRunner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
@@ -92,6 +109,7 @@ func newBulkEnv(t *testing.T) *bulkEnv {
 		Runs:        manager,
 		Connections: oneConnection{},
 		Publisher:   env.pub,
+		Audit:       env.audits,
 		Storage: func(_ context.Context, id string) (storage.Storage, error) {
 			if id == env.brokenTarget {
 				return nil, errors.New("target unreachable")
@@ -261,7 +279,12 @@ func TestBulkFilterMode(t *testing.T) {
 	if err != nil || dry.Matched != 5 || dry.Actionable != 5 {
 		t.Fatalf("filter dry run = %+v, %v", dry, err)
 	}
-	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: filter, ConfirmCount: intPtr(5)})
+	// A destructive real run takes only the dry run's IDs, never a filter.
+	if _, err = env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: filter, ConfirmCount: intPtr(5)}); !errors.Is(err, operations.ErrInvalid) ||
+		!strings.Contains(err.Error(), "actionable_ids") {
+		t.Fatalf("filter on a real delete: %v; want ErrInvalid", err)
+	}
+	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: dry.ActionableIDs, ConfirmCount: intPtr(5)})
 	if err != nil || res.Succeeded != 5 {
 		t.Fatalf("filter run = %+v, %v", res, err)
 	}
@@ -293,11 +316,12 @@ func TestBulkValidation(t *testing.T) {
 	}{
 		{"unknown action", operations.BulkBackups, operations.BulkRequest{Action: "explode", IDs: []string{"a"}}, "unknown action"},
 		{"no selection", operations.BulkBackups, operations.BulkRequest{Action: "delete"}, "either ids or filter"},
-		{"both selections", operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"a"}, Filter: &operations.BulkFilter{}}, "either ids or filter"},
+		{"both selections", operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"a"}, Filter: &operations.BulkFilter{}, DryRun: true}, "either ids or filter"},
 		{"empty id", operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{""}}, "ids must be"},
-		{"foreign filter field", operations.BulkRestores, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Trigger: "manual"}}, "do not apply"},
-		{"bad status", operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Status: "zombie"}}, "status must be"},
-		{"bad time", operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{From: "yesterday"}}, "RFC 3339"},
+		{"foreign filter field", operations.BulkRestores, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Trigger: "manual"}, DryRun: true}, "do not apply"},
+		{"bad status", operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Status: "zombie"}, DryRun: true}, "status must be"},
+		{"bad time", operations.BulkBackups, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{From: "yesterday"}, DryRun: true}, "RFC 3339"},
+		{"filter on a real job delete", operations.BulkJobs, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{}}, "cannot be run with a filter"},
 		{"run_now without a scheduler", operations.BulkJobs, operations.BulkRequest{Action: "run_now", IDs: []string{"j"}}, "unknown action"},
 	} {
 		_, err := env.svc.Bulk(ctx, c.resource, c.req)
@@ -418,7 +442,11 @@ func TestBulkPartialFailures(t *testing.T) {
 	if err != nil || res.Succeeded != 2 || len(res.Skipped) != 1 {
 		t.Fatalf("disable all = %+v, %v", res, err)
 	}
-	res, err = env.svc.Bulk(ctx, operations.BulkJobs, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Q: "o"}})
+	res, err = env.svc.Bulk(ctx, operations.BulkJobs, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Q: "o"}, DryRun: true})
+	if err != nil || res.Actionable != 3 {
+		t.Fatalf("delete jobs dry run = %+v, %v", res, err)
+	}
+	res, err = env.svc.Bulk(ctx, operations.BulkJobs, operations.BulkRequest{Action: "delete", IDs: res.ActionableIDs})
 	if err != nil || res.Succeeded != 3 {
 		t.Fatalf("delete jobs = %+v, %v", res, err)
 	}
@@ -440,7 +468,11 @@ func TestBulkDeleteRestores(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	res, err := env.svc.Bulk(ctx, operations.BulkRestores, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Database: "shop_rescue"}})
+	dry, err := env.svc.Bulk(ctx, operations.BulkRestores, operations.BulkRequest{Action: "delete", Filter: &operations.BulkFilter{Database: "shop_rescue"}, DryRun: true})
+	if err != nil || dry.Actionable != 2 || len(dry.Skipped) != 1 || dry.Skipped[0].Reason != operations.SkipInProgress {
+		t.Fatalf("delete restores dry run = %+v, %v", dry, err)
+	}
+	res, err := env.svc.Bulk(ctx, operations.BulkRestores, operations.BulkRequest{Action: "delete", IDs: append(dry.ActionableIDs, "r_run")})
 	if err != nil || res.Succeeded != 2 || len(res.Skipped) != 1 || res.Skipped[0].Reason != operations.SkipInProgress {
 		t.Fatalf("delete restores = %+v, %v", res, err)
 	}
@@ -609,5 +641,36 @@ func TestBulkTrustProtections(t *testing.T) {
 	res, err = env.svc.Bulk(operator(), operations.BulkBackups, operations.BulkRequest{Action: "cancel", IDs: ids, DryRun: true})
 	if err != nil || res.Actionable != 0 || len(res.Skipped) != 4 || res.Skipped[0].Reason != operations.SkipNotRunning {
 		t.Fatalf("cancel dry run = %+v, %v", res, err)
+	}
+}
+
+func TestBulkAuditEntry(t *testing.T) {
+	env := newBulkEnv(t)
+	ctx := admin()
+	now := time.Now().UTC()
+	env.backupAt(t, "a1", "", models.StatusFailed, now, "", 0)
+	env.backupAt(t, "a2", "", models.StatusFailed, now, "", 0)
+	if _, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"a2", "a1", "gone"}, DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.audits.entries) != 0 {
+		t.Fatalf("a dry run was audited: %+v", env.audits.entries)
+	}
+	if _, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"a2", "a1", "gone"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.audits.entries) != 1 {
+		t.Fatalf("audit entries = %+v; want one", env.audits.entries)
+	}
+	e := env.audits.entries[0]
+	var args map[string]any
+	if err := json.Unmarshal(e.Arguments, &args); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("a1\na2"))
+	if e.Tool != "bulk backups delete" || e.Transport != audit.TransportREST || e.Result != audit.ResultOK || e.APIKeyID != "key_admin" ||
+		args["actor"] != "api_key:key_admin" || args["succeeded"] != float64(2) || args["skipped"] != float64(1) ||
+		args["ids_sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("audit entry = %+v %v", e, args)
 	}
 }

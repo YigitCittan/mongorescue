@@ -75,9 +75,10 @@ func TestBulkValidationErrors(t *testing.T) {
 		{"no action", "/api/v1/backups/bulk", `{"ids":["a"]}`, http.StatusBadRequest, "unknown action"},
 		{"unknown action", "/api/v1/restores/bulk", `{"action":"verify","ids":["a"]}`, http.StatusBadRequest, "unknown action"},
 		{"no selection", "/api/v1/backups/bulk", `{"action":"delete"}`, http.StatusBadRequest, "either ids or filter"},
-		{"both selections", "/api/v1/backups/bulk", `{"action":"delete","ids":["a"],"filter":{}}`, http.StatusBadRequest, "either ids or filter"},
-		{"foreign filter", "/api/v1/jobs/bulk", `{"action":"delete","filter":{"status":"failed"}}`, http.StatusBadRequest, "do not apply"},
-		{"bad time", "/api/v1/restores/bulk", `{"action":"delete","filter":{"from":"monday"}}`, http.StatusBadRequest, "RFC 3339"},
+		{"both selections", "/api/v1/backups/bulk", `{"action":"delete","ids":["a"],"filter":{},"dry_run":true}`, http.StatusBadRequest, "either ids or filter"},
+		{"foreign filter", "/api/v1/jobs/bulk", `{"action":"delete","filter":{"status":"failed"},"dry_run":true}`, http.StatusBadRequest, "do not apply"},
+		{"filter on a real delete", "/api/v1/backups/bulk", `{"action":"delete","filter":{"status":"failed"},"confirm_count":3}`, http.StatusBadRequest, "actionable_ids"},
+		{"bad time", "/api/v1/restores/bulk", `{"action":"delete","filter":{"from":"monday"},"dry_run":true}`, http.StatusBadRequest, "RFC 3339"},
 		{"too many", "/api/v1/backups/bulk", string(manyJSON), http.StatusUnprocessableEntity, "at most 10000"},
 		{"confirm mismatch", "/api/v1/backups/bulk", `{"action":"delete","ids":["a"],"confirm_count":5}`, http.StatusConflict, "confirm_count is 5"},
 	} {
@@ -112,7 +113,7 @@ func TestBulkDeleteOverHTTP(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &dry); err != nil || rec.Code != http.StatusOK || dry.Data.Matched != 12 || dry.Data.Actionable != 12 || dry.Data.Skipped == nil {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
-	run := []byte(`{"action":"delete","filter":{"status":"failed","database":"shop"},"confirm_count":12}`)
+	run, _ := json.Marshal(map[string]any{"action": "delete", "ids": dry.Data.ActionableIDs, "confirm_count": 12})
 	if rec = serve(f.h, "POST", "/api/v1/backups/bulk", run, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"succeeded":12`) {
 		t.Fatalf("run: %d %s", rec.Code, rec.Body)
 	}

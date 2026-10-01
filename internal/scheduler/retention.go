@@ -12,6 +12,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -225,103 +226,125 @@ func prune(
 	var all []*models.BackupRecord
 	allLoaded := false
 	for _, d := range plan.Delete {
-		rec := d.Backup
-		logger.Info("pruning expired backup per retention policy",
-			slog.String("backup_id", rec.ID),
-			slog.String("database", rec.Database),
-			slog.String("storage_key", rec.StorageKey),
-			slog.Time("started_at", rec.StartedAt),
-			slog.String("reason", string(d.Reason)),
-		)
-
-		// Mark the record pruned first, re-checking it: a backup pinned (or otherwise
-		// changed) since it was listed is skipped.
-		var markErr error
-		if transactional {
-			// Pins and the last verified backup are re-checked in the same transaction.
-			_, markErr = pruner.PruneBackupRecord(ctx, rec.ID)
-			if errors.Is(markErr, store.ErrPruneRefused) {
-				logger.Info("retention keeps a backup it planned to prune", slog.String("backup_id", rec.ID), slog.Any("reason", markErr))
-				continue
+		// Deletions of one job's backups (retention, single and bulk deletes) hold the
+		// job's deletion lock, so their protections are decided on the current state.
+		err := func() error {
+			rec := d.Backup
+			unlock, err := runs.LockDeletion(ctx, runs.DeletionKey(rec.JobID, rec.ConnectionID, rec.Database))
+			if err != nil {
+				return err
 			}
-		} else if atomic {
-			_, markErr = updater.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
-				if r.Pinned || r.Status != models.StatusCompleted {
-					return errRetentionSkip
-				}
-				r.Status = models.StatusPruned
-				return nil
-			})
-		} else {
-			rec.Status = models.StatusPruned
-			markErr = metadataStore.SaveBackupRecord(ctx, rec)
-		}
-		switch {
-		case errors.Is(markErr, errRetentionSkip), errors.Is(markErr, store.ErrNotFound):
-			logger.Info("retention skips a backup that changed since it was planned", slog.String("backup_id", rec.ID))
-			continue
-		case markErr != nil:
-			logger.Error("failed to update backup record status to pruned",
+			defer unlock()
+			logger.Info("pruning expired backup per retention policy",
 				slog.String("backup_id", rec.ID),
-				slog.Any("error", markErr),
+				slog.String("database", rec.Database),
+				slog.String("storage_key", rec.StorageKey),
+				slog.Time("started_at", rec.StartedAt),
+				slog.String("reason", string(d.Reason)),
 			)
-			return prunedIDs, fmt.Errorf("update pruned record %s: %w", rec.ID, markErr)
-		}
-		rec.Status = models.StatusPruned
 
-		// Delete the physical archive from the record's own storage target
-		entry := models.RetentionLogEntry{
-			Time: time.Now().UTC(), JobID: rec.JobID, BackupID: rec.ID, Database: rec.Database,
-			StorageTargetID: rec.StorageTargetID, StorageKey: rec.StorageKey, BackupStartedAt: rec.StartedAt,
-			SizeBytes: rec.SizeBytes, Reason: d.Reason, Detail: d.Detail,
-		}
-		// Only an archive no other record names is deleted from storage. Rows that
-		// cannot be decoded count too (the store reads their keys with SQL).
-		var listErr error
-		var shared []string
-		if refs, ok := metadataStore.(ArchiveRefs); ok && rec.StorageKey != "" {
-			var ids []string
-			ids, listErr = refs.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
-			for _, id := range ids {
-				if id != rec.ID {
-					shared = append(shared, id)
+			// Mark the record pruned first, re-checking it: a backup pinned (or otherwise
+			// changed) since it was listed is skipped.
+			var markErr error
+			if transactional {
+				// Pins and the last verified backup are re-checked in the same transaction.
+				_, markErr = pruner.PruneBackupRecord(ctx, rec.ID)
+				if errors.Is(markErr, store.ErrPruneRefused) {
+					logger.Info("retention keeps a backup it planned to prune", slog.String("backup_id", rec.ID), slog.Any("reason", markErr))
+					return nil
 				}
+			} else if atomic {
+				_, markErr = updater.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
+					if r.Pinned || r.Status != models.StatusCompleted {
+						return errRetentionSkip
+					}
+					r.Status = models.StatusPruned
+					return nil
+				})
+			} else {
+				rec.Status = models.StatusPruned
+				markErr = metadataStore.SaveBackupRecord(ctx, rec)
 			}
-		} else if rec.StorageKey != "" {
-			if !allLoaded {
-				if all, listErr = metadataStore.ListBackupRecords(ctx, ""); listErr == nil {
-					allLoaded = true
-				}
-			}
-			for _, o := range models.ArchiveReferences(all, rec) {
-				shared = append(shared, o.ID)
-			}
-		}
-		switch {
-		case rec.StorageKey == "":
-		case listErr != nil:
-			logger.Warn("retention could not check for shared archives; keeping the archive", slog.Any("error", listErr))
-			entry.Detail += "; archive kept: shared archives could not be checked"
-		case len(shared) > 0:
-			entry.Detail += "; archive kept: it also belongs to backup " + shared[0]
-		default:
-			storageDriver, err := storages(ctx, rec.StorageTargetID)
-			if err == nil {
-				err = storageDriver.Delete(ctx, rec.StorageKey)
-			}
-			if err != nil && !errors.Is(err, storage.ErrNotFound) {
-				entry.Error = redact.Text(err.Error())
-				logger.Warn("failed to delete physical backup file from storage during pruning",
+			switch {
+			case errors.Is(markErr, errRetentionSkip), errors.Is(markErr, store.ErrNotFound):
+				logger.Info("retention skips a backup that changed since it was planned", slog.String("backup_id", rec.ID))
+				return nil
+			case markErr != nil:
+				logger.Error("failed to update backup record status to pruned",
 					slog.String("backup_id", rec.ID),
-					slog.String("storage_key", rec.StorageKey),
-					slog.Any("error", err),
+					slog.Any("error", markErr),
 				)
+				return fmt.Errorf("update pruned record %s: %w", rec.ID, markErr)
 			}
+			rec.Status = models.StatusPruned
+
+			// Delete the physical archive from the record's own storage target
+			entry := models.RetentionLogEntry{
+				Time: time.Now().UTC(), JobID: rec.JobID, BackupID: rec.ID, Database: rec.Database,
+				StorageTargetID: rec.StorageTargetID, StorageKey: rec.StorageKey, BackupStartedAt: rec.StartedAt,
+				SizeBytes: rec.SizeBytes, Reason: d.Reason, Detail: d.Detail,
+			}
+			// Only an archive no other record names is deleted from storage. Rows that
+			// cannot be decoded count too (the store reads their keys with SQL).
+			// The archive's lock is held around reading its references and deleting it,
+			// so a record sharing it that is deleted meanwhile cannot strand it.
+			if rec.StorageKey != "" {
+				unlockArchive, err := runs.LockDeletion(ctx, runs.ArchiveKey(rec.StorageTargetID, rec.StorageKey))
+				if err != nil {
+					return err
+				}
+				defer unlockArchive()
+			}
+			var listErr error
+			var shared []string
+			if refs, ok := metadataStore.(ArchiveRefs); ok && rec.StorageKey != "" {
+				var ids []string
+				ids, listErr = refs.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
+				for _, id := range ids {
+					if id != rec.ID {
+						shared = append(shared, id)
+					}
+				}
+			} else if rec.StorageKey != "" {
+				if !allLoaded {
+					if all, listErr = metadataStore.ListBackupRecords(ctx, ""); listErr == nil {
+						allLoaded = true
+					}
+				}
+				for _, o := range models.ArchiveReferences(all, rec) {
+					shared = append(shared, o.ID)
+				}
+			}
+			switch {
+			case rec.StorageKey == "":
+			case listErr != nil:
+				logger.Warn("retention could not check for shared archives; keeping the archive", slog.Any("error", listErr))
+				entry.Detail += "; archive kept: shared archives could not be checked"
+			case len(shared) > 0:
+				entry.Detail += "; archive kept: it also belongs to backup " + shared[0]
+			default:
+				storageDriver, err := storages(ctx, rec.StorageTargetID)
+				if err == nil {
+					err = storageDriver.Delete(ctx, rec.StorageKey)
+				}
+				if err != nil && !errors.Is(err, storage.ErrNotFound) {
+					entry.Error = redact.Text(err.Error())
+					logger.Warn("failed to delete physical backup file from storage during pruning",
+						slog.String("backup_id", rec.ID),
+						slog.String("storage_key", rec.StorageKey),
+						slog.Any("error", err),
+					)
+				}
+			}
+			if onDeleted != nil {
+				onDeleted(ctx, entry)
+			}
+			prunedIDs = append(prunedIDs, rec.ID)
+			return nil
+		}()
+		if err != nil {
+			return prunedIDs, err
 		}
-		if onDeleted != nil {
-			onDeleted(ctx, entry)
-		}
-		prunedIDs = append(prunedIDs, rec.ID)
 	}
 
 	logger.Info("retention pruning completed",
