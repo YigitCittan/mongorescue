@@ -160,6 +160,8 @@ type Service struct {
 
 	// archiveCache holds the archive collection lists of ListBackupCollections.
 	archiveCache *collectionCache
+	// previewSlots bounds the archive previews read concurrently.
+	previewSlots chan struct{}
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -172,7 +174,10 @@ func New(cfg Config) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{cfg: cfg, logger: logger, now: time.Now, archiveCache: newCollectionCache(archiveCacheSize)}
+	return &Service{
+		cfg: cfg, logger: logger, now: time.Now,
+		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
+	}
 }
 
 // settings returns the live settings or the defaults.
