@@ -108,6 +108,12 @@ type RestoreRequest struct {
 	// pass streams the whole artifact to check its SHA-256 (and decrypt it) before
 	// mongorestore starts. When nil, the server's VerifyPolicy decides.
 	Verify *bool `json:"verify,omitempty"`
+
+	// CloneDatabase, when set, names the safe clone instead of the default
+	// <db>_rescue_<timestamp> (automated restore tests restore into
+	// <db>_rescue_verify_<timestamp>). It only applies to safe-clone restores and is
+	// set by code, never read from clients.
+	CloneDatabase string `json:"-"`
 }
 
 // IsSafeClone reports whether the restore targets a fresh clone namespace. An omitted

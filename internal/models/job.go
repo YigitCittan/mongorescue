@@ -64,6 +64,17 @@ type Job struct {
 
 	// UpdatedAt is when the job was last modified.
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// VerifyAfterBackup overrides the integrity.verify_after_backup setting for this
+	// job's backups ("" follows the setting, "on" or "off").
+	VerifyAfterBackup VerifyOverride `json:"verify_after_backup,omitempty"`
+
+	// RestoreTest configures the automated restore test; nil means none.
+	RestoreTest *RestoreTestPolicy `json:"restore_test,omitempty"`
+
+	// LastRestoreTest is the latest restore test of the job. It is managed by the
+	// server (like LastRun) and never taken from clients.
+	LastRestoreTest *RestoreTestSummary `json:"last_restore_test,omitempty"`
 }
 
 // Clone returns a deep copy of the job.
@@ -77,6 +88,14 @@ func (j *Job) Clone() *Job {
 	if j.PausedUntil != nil {
 		until := *j.PausedUntil
 		clone.PausedUntil = &until
+	}
+	if j.RestoreTest != nil {
+		rt := *j.RestoreTest
+		clone.RestoreTest = &rt
+	}
+	if j.LastRestoreTest != nil {
+		lt := *j.LastRestoreTest
+		clone.LastRestoreTest = &lt
 	}
 	return &clone
 }

@@ -30,6 +30,11 @@ const (
 	// an API key or the application quitting); its partial artifact was removed. It
 	// is not a failure: failure counts and failure alerts ignore it.
 	StatusCancelled BackupStatus = "cancelled"
+
+	// StatusMissing indicates a completed backup whose archive a storage scan no
+	// longer found on its target. A later scan that finds it again restores
+	// StatusCompleted; nothing is deleted automatically.
+	StatusMissing BackupStatus = "missing"
 )
 
 // BackupTrigger records how a backup was started. Retention only ever prunes
@@ -138,6 +143,47 @@ type BackupRecord struct {
 	// Progress is the live progress of a running backup. It is filled in API
 	// responses only and never stored.
 	Progress *RunProgress `json:"progress,omitempty"`
+
+	// VerifiedAt is when the stored archive was last re-read and compared with SHA256
+	// (after upload, by an integrity sweep or on demand); nil if it never was.
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+
+	// Verification is the outcome of that check; empty if it never ran.
+	Verification VerificationStatus `json:"verification,omitempty"`
+
+	// VerificationError explains a mismatch or an error (redacted).
+	VerificationError string `json:"verification_error,omitempty"`
+
+	// Manifest is captured during the backup (document counts and indexes per
+	// collection). The store keeps it apart from the record, so record lists stay
+	// small; it is never serialized with the record (see HasManifest).
+	Manifest *Manifest `json:"-"`
+
+	// HasManifest reports that a manifest was captured for this backup.
+	HasManifest bool `json:"has_manifest,omitempty"`
+
+	// Pinned puts the backup on legal hold: retention never deletes it, and it can
+	// only be deleted after it is unpinned.
+	Pinned bool `json:"pinned,omitempty"`
+
+	// PinNote is the optional reason given when pinning.
+	PinNote string `json:"pin_note,omitempty"`
+
+	// PinnedAt and PinnedBy record when and by whom the backup was pinned.
+	PinnedAt *time.Time `json:"pinned_at,omitempty"`
+	PinnedBy string     `json:"pinned_by,omitempty"`
+
+	// Imported marks a record created from an orphan archive found by a storage scan.
+	Imported bool `json:"imported,omitempty"`
+
+	// ImportedAt is when it was imported.
+	ImportedAt *time.Time `json:"imported_at,omitempty"`
+
+	// MissingSince is when a storage scan first found the archive gone (StatusMissing).
+	MissingSince *time.Time `json:"missing_since,omitempty"`
+
+	// LastRestoreTest is the latest automated restore test of this backup.
+	LastRestoreTest *RestoreTestSummary `json:"last_restore_test,omitempty"`
 }
 
 // EffectiveTrigger returns r.Trigger, or for records written before triggers existed
@@ -201,6 +247,10 @@ type BackupOptions struct {
 	// Trigger is recorded on the backup record. It is set by the application (the
 	// scheduler, the operations service), never read from clients.
 	Trigger BackupTrigger `json:"-"`
+
+	// Verify is the job's post-backup verification override (VerifyInherit for
+	// manual backups). It is set by the application, never read from clients.
+	Verify VerifyOverride `json:"-"`
 }
 
 // Redacted returns a copy of the options with the MongoURI password masked, suitable
