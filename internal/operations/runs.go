@@ -29,26 +29,27 @@ func (s *Service) track(kind models.RunKind, id, jobID, database string) *runs.R
 	return run
 }
 
-// actor names the principal in ctx for CancelledBy: the username of a session, the
-// API key's name, or runs.SystemActor. via, when set, names the adapter ("MCP").
-func actor(ctx context.Context, via string) string {
+// canceller describes the principal in ctx as a cancellation: By (for the record) is
+// the username of a session, "API key <name>" or runs.SystemActor, plus " via <via>"
+// for an adapter such as MCP; Kind and UserID are what logs record.
+func canceller(ctx context.Context, via string, at time.Time) runs.Cancellation {
 	p := auth.PrincipalFrom(ctx)
-	name := runs.SystemActor
+	c := runs.Cancellation{By: runs.SystemActor, Kind: runs.ActorSystem, At: at, UserID: p.UserID()}
 	switch {
 	case p == nil:
-	case p.User != nil && p.User.Username != "":
-		name = p.User.Username
 	case p.Method == auth.MethodAPIKey:
-		key := p.APIKeyName
-		if key == "" {
-			key = p.APIKeyID
+		label := p.APIKeyName
+		if label == "" {
+			label = p.APIKeyID
 		}
-		name = "API key " + key
+		c.By, c.Kind = "API key "+label, runs.ActorAPIKey
+	case p.User != nil && p.User.Username != "":
+		c.By, c.Kind = p.User.Username, runs.ActorUser
 	}
 	if via != "" {
-		name += " via " + via
+		c.By += " via " + via
 	}
-	return name
+	return c
 }
 
 // CancelBackup cancels the running backup id: mongodump is killed, the partial
@@ -129,8 +130,8 @@ func (s *Service) CancelRun(ctx context.Context, id, via string) (*CancelledRun,
 
 // cancel asks the registry to stop run id on behalf of the principal in ctx.
 func (s *Service) cancel(ctx context.Context, id, via string) error {
-	by := actor(ctx, via)
-	err := s.cfg.Registry.Cancel(id, runs.Cancellation{By: by, At: s.now().UTC()})
+	c := canceller(ctx, via, s.now().UTC())
+	err := s.cfg.Registry.Cancel(id, c)
 	if errors.Is(err, runs.ErrFinishing) {
 		return public("the run "+id+" is already finishing (its tool completed) and can no longer be cancelled", ErrNotRunning, err)
 	}
@@ -140,7 +141,7 @@ func (s *Service) cancel(ctx context.Context, id, via string) error {
 	if err != nil {
 		return fmt.Errorf("cancel run: %w", err)
 	}
-	s.logger.Warn("run cancellation requested", logsafe.Attr("run_id", id), logsafe.Attr("cancelled_by", by))
+	s.logger.Warn("run cancellation requested", append([]any{logsafe.Attr("run_id", id)}, c.LogAttrs()...)...)
 	return nil
 }
 

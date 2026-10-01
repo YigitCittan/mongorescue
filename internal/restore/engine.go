@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -700,12 +701,11 @@ func (e *Engine) cancelled(ctx context.Context, record *models.RestoreRecord, c 
 	tracker := runs.FromContext(ctx)
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("%s", record.ErrorMessage)
-	e.logger.Warn("restore cancelled",
-		slog.String("restore_id", record.ID),
-		slog.String("target_db", record.TargetDatabase),
-		slog.String("cancelled_by", c.By),
+	e.logger.Warn("restore cancelled", append([]any{
+		logsafe.Attr("restore_id", record.ID),
+		logsafe.Attr("target_db", record.TargetDatabase),
 		slog.Bool("in_place", record.InPlace),
-	)
+	}, c.LogAttrs()...)...)
 	return record, fmt.Errorf("restore %w", c)
 }
 
