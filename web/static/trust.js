@@ -414,7 +414,7 @@ async function trustPin(id) {
 }
 
 async function trustUnpin(id) {
-  if (!window.confirm(t("trust.unpin_confirm"))) return;
+  if (!(await confirmDialog({ body: t("trust.unpin_confirm"), confirmLabel: t("dialog.confirm") }))) return;
   await trustPinRequest(id, "unpin", null, "trust.unpinned_toast");
 }
 
@@ -753,7 +753,7 @@ async function trustScanTarget(id) {
 }
 
 async function trustImport(targetID, key) {
-  if (!key || !window.confirm(tf("trust.import_confirm", { key }))) return;
+  if (!key || !(await confirmDialog({ body: tf("trust.import_confirm", { key }), confirmLabel: t("dialog.confirm") }))) return;
   try {
     const json = await apiJSON(`/api/v1/storage-targets/${encodeURIComponent(targetID)}/import`, {
       method: "POST",

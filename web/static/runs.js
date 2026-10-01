@@ -114,7 +114,7 @@ async function cancelRun(kind, id) {
       ? tf("run.confirm_cancel_in_place", { db: r.target_database || "" })
       : t("run.confirm_cancel_restore");
   }
-  if (!window.confirm(question)) return;
+  if (!(await confirmDialog({ body: question, danger: kind === "restore", confirmLabel: t("dialog.confirm") }))) return;
   cancellingRuns.add(id);
   rerenderRuns();
   const path = kind === "restore" ? "restores" : "backups";
