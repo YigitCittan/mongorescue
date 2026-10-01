@@ -375,6 +375,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Settings:    settingsSvc.Current,
 		Publisher:   bus,
 		Verifier:    integritySvc,
+		Audit:       auditSvc,
 		Logger:      logger,
 		Version:     o.version,
 		// Deleted jobs (single or bulk) drop their metric series.

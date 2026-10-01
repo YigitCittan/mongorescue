@@ -10,6 +10,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -39,68 +40,31 @@ type archiveRefLister interface {
 	ArchiveReferenceIDs(ctx context.Context, targetID, key string) ([]string, error)
 }
 
-// archiveRefMapper maps every archive to the rows naming it, in one query
-// (implemented by *store.SQLiteStore).
-type archiveRefMapper interface {
-	ArchiveReferences(ctx context.Context) (map[string][]string, error)
-}
-
-// archiveRefs maps archives (see archiveKey) to the IDs of the backup rows naming them.
-type archiveRefs map[string][]string
-
-// archiveKey identifies the archive of rec.
-func archiveKey(rec *models.BackupRecord) string {
-	return rec.StorageTargetID + store.ArchiveKeySep + rec.StorageKey
-}
-
-// allArchiveRefs maps every archive to the rows naming it (bulk deletes load it once).
+// archiveOthers returns the other backup rows naming the archive of rec, read now.
 // Without the store's query, only readable rows are counted.
-func (s *Service) allArchiveRefs(ctx context.Context) (archiveRefs, error) {
-	if m, ok := s.cfg.Store.(archiveRefMapper); ok {
-		refs, err := m.ArchiveReferences(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return archiveRefs(refs), nil
-	}
-	all, err := s.cfg.Store.ListBackupRecords(ctx, "")
-	if err != nil {
-		return nil, fmt.Errorf("list backups: %w", err)
-	}
-	refs := archiveRefs{}
-	for _, r := range all {
-		if r.StorageKey != "" {
-			refs[archiveKey(r)] = append(refs[archiveKey(r)], r.ID)
-		}
-	}
-	return refs, nil
-}
-
-// archiveRefsOf returns the rows naming the archive of rec (single deletes).
-func (s *Service) archiveRefsOf(ctx context.Context, rec *models.BackupRecord) (archiveRefs, error) {
-	if rec.StorageKey == "" {
-		return archiveRefs{}, nil
-	}
+func (s *Service) archiveOthers(ctx context.Context, rec *models.BackupRecord) ([]string, error) {
+	var ids []string
 	if l, ok := s.cfg.Store.(archiveRefLister); ok {
-		ids, err := l.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
+		found, err := l.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
 		if err != nil {
 			return nil, fmt.Errorf("list archive references: %w", err)
 		}
-		return archiveRefs{archiveKey(rec): ids}, nil
-	}
-	return s.allArchiveRefs(ctx)
-}
-
-// archiveKept returns why the archive of rec must stay when rec is deleted ("" when
-// it may go): another row, readable or not, names it. A pinned or unreadable one is
-// named, since it holds the archive.
-func (s *Service) archiveKept(ctx context.Context, rec *models.BackupRecord, refs archiveRefs) string {
-	var others []string
-	for _, id := range refs[archiveKey(rec)] {
-		if id != rec.ID {
-			others = append(others, id)
+		ids = found
+	} else {
+		all, err := s.cfg.Store.ListBackupRecords(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("list backups: %w", err)
+		}
+		for _, o := range models.ArchiveReferences(all, rec) {
+			ids = append(ids, o.ID)
 		}
 	}
+	return slices.DeleteFunc(ids, func(id string) bool { return id == rec.ID }), nil
+}
+
+// archiveKept returns why the archive must stay when its record goes ("" when it may
+// go): others name it. A pinned or unreadable one is named, since it holds the archive.
+func (s *Service) archiveKept(ctx context.Context, others []string) string {
 	if len(others) == 0 {
 		return ""
 	}
@@ -116,33 +80,61 @@ func (s *Service) archiveKept(ctx context.Context, rec *models.BackupRecord, ref
 	return fmt.Sprintf("the archive is kept: it also belongs to backup %s; only this record was deleted", others[0])
 }
 
-// DeleteBackup deletes backup id: its archive on the storage target it was written to
-// (unless another record names the same archive, see DeleteResult.ArchiveKept), its
-// record and its run log. A pinned backup is refused (ErrPinned): unpin it first. A
-// failure to remove the archive is logged and reported in DeleteResult.ArchiveError;
-// the record is still deleted. Expected failures: ErrNotFound and ErrPinned.
+// deletionLock takes the deletion lock of rec's job (or database), see
+// runs.DeletionKey.
+func deletionLock(ctx context.Context, rec *models.BackupRecord) (func(), error) {
+	return runs.LockDeletion(ctx, runs.DeletionKey(rec.JobID, rec.ConnectionID, rec.Database))
+}
+
+// DeleteBackup deletes backup id: its record, its run log and its archive on the
+// storage target it was written to (unless another record names the same archive,
+// see DeleteResult.ArchiveKept). It holds the deletion lock of the backup's job and
+// re-reads the record inside it, so a pin set meanwhile is honoured: a pinned backup
+// is refused (ErrPinned). A failure to remove the archive is logged and reported in
+// DeleteResult.ArchiveError; the record is still deleted. Expected failures:
+// ErrNotFound and ErrPinned.
 func (s *Service) DeleteBackup(ctx context.Context, id string) (*DeleteResult, error) {
 	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
-	if err = CheckDeletable(rec); err != nil {
-		return nil, err
-	}
-	refs, err := s.archiveRefsOf(ctx, rec)
+	unlock, err := deletionLock(ctx, rec)
 	if err != nil {
 		return nil, err
 	}
-	return s.deleteBackup(ctx, rec, refs)
+	defer unlock()
+	if rec, err = s.cfg.Store.GetBackupRecord(ctx, id); err != nil {
+		return nil, notFound(err, "backup not found")
+	}
+	if err = CheckDeletable(rec); err != nil {
+		return nil, err
+	}
+	return s.deleteBackup(ctx, rec)
 }
 
-// deleteBackup implements DeleteBackup for a loaded, deletable record, with refs
-// naming the rows of its archive; refs is updated once the record is gone.
-func (s *Service) deleteBackup(ctx context.Context, rec *models.BackupRecord, refs archiveRefs) (*DeleteResult, error) {
+// deleteBackup deletes a deletable record and, when no other record names it, its
+// archive. The caller holds rec's deletion lock; deleteBackup takes the archive's
+// lock around "read its references, delete the record, delete the object", so two
+// records sharing an archive never both leave it behind (or both delete it).
+func (s *Service) deleteBackup(ctx context.Context, rec *models.BackupRecord) (*DeleteResult, error) {
 	res := &DeleteResult{DeletedID: rec.ID}
-	key := archiveKey(rec)
+	var others []string
 	if rec.StorageKey != "" {
-		if res.ArchiveKept = s.archiveKept(ctx, rec, refs); res.ArchiveKept == "" {
+		unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(rec.StorageTargetID, rec.StorageKey))
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+		if others, err = s.archiveOthers(ctx, rec); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.cfg.Store.DeleteBackupRecord(ctx, rec.ID); err != nil {
+		return nil, notFound(err, "backup not found (deleted meanwhile)")
+	}
+	s.RemoveRunLog(rec.ID)
+	if rec.StorageKey != "" {
+		if res.ArchiveKept = s.archiveKept(ctx, others); res.ArchiveKept == "" {
 			err := s.deleteArchive(ctx, rec)
 			switch {
 			case err == nil:
@@ -158,18 +150,6 @@ func (s *Service) deleteBackup(ctx context.Context, rec *models.BackupRecord, re
 				)
 				res.ArchiveError = archiveErrorText
 			}
-		}
-	}
-	if err := s.cfg.Store.DeleteBackupRecord(ctx, rec.ID); err != nil {
-		return nil, notFound(err, "backup not found (deleted meanwhile)")
-	}
-	s.RemoveRunLog(rec.ID)
-	if ids, ok := refs[key]; ok {
-		left := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == rec.ID })
-		if len(left) == 0 {
-			delete(refs, key)
-		} else {
-			refs[key] = left
 		}
 	}
 	s.logger.Info("backup deleted",

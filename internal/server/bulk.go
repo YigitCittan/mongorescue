@@ -11,8 +11,10 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
-// maxBulkBody bounds the body of a bulk request (MaxBulkItems IDs fit easily).
-const maxBulkBody = 2 << 20
+// maxBulkBody bounds the body of a bulk request: MaxBulkItems IDs of
+// MaxBulkIDLength bytes, each byte escaped (\" or \\) at worst, plus the quotes,
+// commas and the rest of the body.
+const maxBulkBody = operations.MaxBulkItems*(2*operations.MaxBulkIDLength+3) + 64<<10
 
 // bulkWriteTimeout is the write deadline of a bulk run: deleting thousands of
 // archives one at a time can take longer than writeTimeout.

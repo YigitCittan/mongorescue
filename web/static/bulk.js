@@ -1335,6 +1335,8 @@ async function executeBulk() {
       }
       if (json.success && json.data) {
         (json.data.results || []).forEach(r => results.items.push(r));
+        // Items that became protected after the check (a pin, a newer verification).
+        (json.data.skipped || []).forEach(sk => results.skipped.push(sk));
       } else {
         chunk.forEach(id => results.items.push({ id, ok: false, error: json.error || t("toasts.request_failed") }));
       }

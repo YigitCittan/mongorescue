@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
@@ -118,6 +119,12 @@ type Targets interface {
 	List(ctx context.Context) ([]*models.StorageTarget, error)
 }
 
+// Auditor records audit entries (implemented by *audit.Service).
+type Auditor interface {
+	// Record stores e; it never fails the caller.
+	Record(ctx context.Context, e audit.Entry)
+}
+
 // Config holds the dependencies of a Service. Store, Backup, Restore and Runs are
 // required; the others are optional (nil disables the features that need them).
 type Config struct {
@@ -147,6 +154,8 @@ type Config struct {
 	// ""), used to delete archives. nil means archives cannot be deleted: deleting a
 	// backup then removes only its record and reports why the archive stayed.
 	Storage func(ctx context.Context, targetID string) (storage.Storage, error)
+	// Audit receives one entry per bulk operation (real runs); nil disables them.
+	Audit Auditor
 	// OnJobDeleted is called after a job has been deleted (for example to drop its
 	// metric series); nil disables it.
 	OnJobDeleted func(jobID string)

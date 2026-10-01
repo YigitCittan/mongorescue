@@ -128,35 +128,6 @@ func (s *SQLiteStore) ArchiveReferenceIDs(ctx context.Context, targetID, key str
 	return ids, nil
 }
 
-// ArchiveReferences maps every archive named by a backup row, readable or not, to the
-// IDs of those rows (sorted). Keys are storage target ID and storage key joined by
-// ArchiveKeySep.
-func (s *SQLiteStore) ArchiveReferences(ctx context.Context) (map[string][]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, storage_target_id, coalesce(json_extract(data, '$.storage_key'), '')
-		FROM backups WHERE coalesce(json_extract(data, '$.storage_key'), '') != '' ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list archive references: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[string][]string{}
-	for rows.Next() {
-		var id, target, key string
-		if err := rows.Scan(&id, &target, &key); err != nil {
-			return nil, fmt.Errorf("store: scan archive reference: %w", err)
-		}
-		k := target + ArchiveKeySep + key
-		out[k] = append(out[k], id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list archive references: %w", err)
-	}
-	return out, nil
-}
-
-// ArchiveKeySep joins the storage target ID and the storage key of an archive in the
-// keys of ArchiveReferences.
-const ArchiveKeySep = "\x00"
-
 // ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
 var ErrPruneRefused = errors.New("store: retention must keep this backup")
 

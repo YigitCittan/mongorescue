@@ -507,3 +507,32 @@ func TestEnsureDefault(t *testing.T) {
 		t.Fatalf("second EnsureDefault = %+v, %v, %v", again, ok, err)
 	}
 }
+
+// TestStorageOfEmptyIDIsTheDefault pins what the operations service relies on when it
+// deletes the archive of a backup without a storage target ID (it is wired with
+// Service.Storage, as the server's storageFor was): Storage("") is the driver of the
+// current default target, and follows a change of the default.
+func TestStorageOfEmptyIDIsTheDefault(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	a, err := f.svc.Create(ctx, s3Input("a", "bucket-a", "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := f.svc.Create(ctx, s3Input("b", "bucket-b", "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, def := range []string{a.ID, b.ID} {
+		if _, err := f.svc.SetDefault(ctx, def); err != nil {
+			t.Fatal(err)
+		}
+		want, err := f.svc.Storage(ctx, def)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := f.svc.Storage(ctx, ""); err != nil || got != want {
+			t.Fatalf("default %s: Storage(\"\") = %v, %v; want the default target's driver", def, got, err)
+		}
+	}
+}
