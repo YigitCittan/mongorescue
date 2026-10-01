@@ -60,7 +60,9 @@
     const db = r.db || "?";
     if (r.status === "failed") return { text: tf(`a11y.${r.kind}_failed`, { db }), failed: true };
     if (r.status === "completed") return { text: tf(`a11y.${r.kind}_done`, { db }), failed: false };
-    return { text: tf(`a11y.${r.kind}_finished`, { db, status: r.status }), failed: false };
+    // Other end states (cancelled, from run control) by their label.
+    const status = r.status === "cancelled" ? t("run.status_cancelled", r.status) : r.status;
+    return { text: tf(`a11y.${r.kind}_finished`, { db, status }), failed: false };
   }
 
   function announceBackgroundChanges() {
