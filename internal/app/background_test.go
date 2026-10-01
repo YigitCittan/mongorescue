@@ -98,11 +98,20 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	if err := a.metaStore.SaveRestoreRecord(ctx, restore); err != nil {
 		t.Fatal(err)
 	}
-	// The runs save their records as failed when they are cancelled, like the
-	// backup and restore engines.
+	// The tracked backup sees the force quit as a cancellation with the reason, like
+	// the backup engine; the untracked restore is only cancelled by the shutdown and
+	// saves itself as failed.
+	tracked, err := a.registry.Register(runs.Meta{Kind: models.RunBackup, ID: backup.ID, Database: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancellation *runs.Cancellation
 	if err := a.runs.Go(runs.BackupKey("c", "shop"), func(runCtx context.Context) {
+		defer tracked.End()
+		runCtx = tracked.Bind(runCtx)
 		<-runCtx.Done()
-		backup.Status, backup.ErrorMessage = models.StatusFailed, "backup cancelled: context canceled"
+		cancellation = runs.CancellationOf(runCtx)
+		backup.Status, backup.ErrorMessage = models.StatusCancelled, "backup cancelled: context canceled"
 		_ = a.metaStore.SaveBackupRecord(context.WithoutCancel(runCtx), backup)
 	}); err != nil {
 		t.Fatal(err)
@@ -124,15 +133,20 @@ func TestAppForceStopRecordsTheReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := reason + " (backup cancelled: context canceled)"; b.Status != models.StatusFailed || b.ErrorMessage != want {
-		t.Fatalf("cancelled backup = %s %q; want failed %q", b.Status, b.ErrorMessage, want)
+	if want := reason + " (backup cancelled: context canceled)"; b.Status != models.StatusCancelled || b.ErrorMessage != want ||
+		b.CancelledBy != runs.SystemActor || b.CancelledAt == nil {
+		t.Fatalf("cancelled backup = %s %q by %q; want cancelled %q by the system", b.Status, b.ErrorMessage, b.CancelledBy, want)
+	}
+	if cancellation == nil || cancellation.Reason != reason || cancellation.By != runs.SystemActor {
+		t.Fatalf("the tracked run saw %+v; want the force quit as its cancellation", cancellation)
 	}
 	r, err := a.metaStore.GetRestoreRecord(ctx, restore.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := reason + " (restore aborted: context canceled)"; r.Status != models.RestoreStatusFailed || r.ErrorMessage != want {
-		t.Fatalf("cancelled restore = %s %q; want failed %q", r.Status, r.ErrorMessage, want)
+	if want := reason + " (restore aborted: context canceled)"; r.Status != models.RestoreStatusCancelled || r.ErrorMessage != want ||
+		r.CancelledBy != runs.SystemActor {
+		t.Fatalf("cancelled restore = %s %q; want cancelled %q", r.Status, r.ErrorMessage, want)
 	}
 	if d, _ := a.metaStore.GetBackupRecord(ctx, done.ID); d.Status != models.StatusCompleted || d.ErrorMessage != "" {
 		t.Fatalf("completed backup modified: %+v", d)
