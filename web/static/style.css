@@ -1746,6 +1746,13 @@ input[type="radio"] {
   font-weight: 600;
 }
 
+.callout-list {
+  margin: 8px 0;
+  padding-left: 20px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .test-row {
   display: flex;
   align-items: center;

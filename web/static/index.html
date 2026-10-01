@@ -150,6 +150,24 @@
       </div>
     </section>
 
+    <!-- Persistent warning: stored records that cannot be read (corrupt_records of GET /api/v1/stats) -->
+    <section id="corrupt-records-warning" class="callout callout-danger" role="alert" aria-labelledby="corrupt-records-title" hidden>
+      <div>
+        <h2 class="callout-title" id="corrupt-records-title"></h2>
+        <p class="section-desc" id="corrupt-records-text"></p>
+        <ul class="callout-list" id="corrupt-records-list"></ul>
+        <p class="section-desc"><a href="https://github.com/YigitCittan/mongorescue/blob/main/docs/troubleshooting.md#unreadable-records" target="_blank" rel="noopener noreferrer" data-i18n="data_health.corrupt_docs">How to inspect and repair these rows</a></p>
+      </div>
+    </section>
+
+    <!-- Data that could not be loaded: one banner for every failed loader -->
+    <section id="load-errors" class="callout callout-danger" role="alert" aria-labelledby="load-errors-title" hidden>
+      <div>
+        <h2 class="callout-title" id="load-errors-title" data-i18n="data_health.load_errors_title">Some data could not be loaded</h2>
+        <ul class="callout-list" id="load-errors-list"></ul>
+      </div>
+    </section>
+
     <!-- Overview -->
     <section class="stats" aria-label="Overview" data-i18n-aria-label="metrics.overview">
       <div class="stat">
