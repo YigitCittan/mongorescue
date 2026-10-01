@@ -302,6 +302,13 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 
 	// Determine destination database name: a fresh clone unless in place was confirmed.
 	targetDB := models.RescueDatabaseName(sourceRecord.Database, startTime)
+	if clone := strings.TrimSpace(req.CloneDatabase); clone != "" && !req.InPlace() {
+		// A named clone (restore tests) must never be the source database itself.
+		if clone == sourceRecord.Database {
+			return nil, fmt.Errorf("restore: clone database %s is the source database", clone)
+		}
+		targetDB = clone
+	}
 	if req.InPlace() {
 		targetDB = strings.TrimSpace(req.TargetDatabase)
 		if targetDB == "" {

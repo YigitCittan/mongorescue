@@ -89,7 +89,33 @@ const (
 // the suffix alone adds 23 bytes, so any source longer than 40 bytes used to give a
 // name MongoDB refuses.
 func RescueDatabaseName(source string, t time.Time) string {
-	suffix := rescueInfix + t.UTC().Format(rescueTimeLayout)
+	return withSuffix(source, rescueInfix+t.UTC().Format(rescueTimeLayout))
+}
+
+// rescueVerifyInfix marks the temporary databases of automated restore tests.
+const rescueVerifyInfix = "_rescue_verify_"
+
+// RescueVerifyDatabaseName returns the temporary database of an automated restore
+// test of source at t: "<source>_rescue_verify_<YYYYMMDD_HHMMSS>" in UTC, shortened
+// like RescueDatabaseName so that it fits in MaxDatabaseNameLength.
+func RescueVerifyDatabaseName(source string, t time.Time) string {
+	return withSuffix(source, rescueVerifyInfix+t.UTC().Format(rescueTimeLayout))
+}
+
+// IsRescueVerifyDatabaseName reports whether name has the shape of a restore test's
+// temporary database (see RescueVerifyDatabaseName).
+func IsRescueVerifyDatabaseName(name string) bool {
+	i := strings.LastIndex(name, rescueVerifyInfix)
+	if i <= 0 {
+		return false
+	}
+	_, err := time.Parse(rescueTimeLayout, name[i+len(rescueVerifyInfix):])
+	return err == nil
+}
+
+// withSuffix appends suffix to source, shortening source at a character boundary so
+// that the result fits in MaxDatabaseNameLength.
+func withSuffix(source, suffix string) string {
 	if limit := MaxDatabaseNameLength - len(suffix); len(source) > limit {
 		cut := limit
 		for cut > 0 && !utf8.RuneStart(source[cut]) {

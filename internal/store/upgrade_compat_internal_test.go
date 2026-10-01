@@ -535,6 +535,46 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 12,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO backup_manifests (backup_id, captured_at, data) VALUES (?, ?, ?)`,
+				"bkp_v9", ns(13*time.Hour), jsonDoc(t, map[string]any{
+					"captured_at": rfc(13 * time.Hour),
+					"collections": []any{map[string]any{"name": "orders", "documents_min": 3, "documents_max": 4,
+						"indexes": []any{map[string]any{"name": "_id_", "keys": "_id:1"}}}},
+				}))
+			f.exec(t, `INSERT INTO restore_tests (id, job_id, backup_id, started_at, status, data) VALUES (?, ?, ?, ?, ?, ?)`,
+				"rt_v12", "job_v1", "bkp_v9", ns(14*time.Hour), "ok", jsonDoc(t, map[string]any{
+					"id": "rt_v12", "job_id": "job_v1", "backup_id": "bkp_v9", "trigger": "scheduled", "status": "ok",
+					"started_at": rfc(14 * time.Hour), "duration_seconds": 2.5, "collections": 1, "documents": 4, "dropped": true,
+				}))
+			f.exec(t, `INSERT INTO retention_log (at, job_id, backup_id, data) VALUES (?, ?, ?, ?)`,
+				ns(15*time.Hour), "job_v1", "bkp_v1_old", jsonDoc(t, map[string]any{
+					"id": 1, "time": rfc(15 * time.Hour), "job_id": "job_v1", "backup_id": "bkp_v1_old", "database": "shop",
+					"backup_started_at": rfc(0), "size_bytes": 10, "reason": "max_age",
+				}))
+			f.exec(t, `INSERT INTO integrity_state (key, value) VALUES (?, ?)`, "sweep", `{"verified":3}`)
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			if m, err := s.GetManifest(ctx, "bkp_v9"); err != nil || m.Collection("orders") == nil || m.Collection("orders").DocumentsMax != 4 {
+				t.Errorf("manifest of bkp_v9 = %+v, %v", m, err)
+			}
+			if tests, err := s.ListRestoreTests(ctx, "job_v1", 10); err != nil || len(tests) != 1 || tests[0].Status != models.RestoreTestOK {
+				t.Errorf("restore tests = %+v, %v", tests, err)
+			}
+			if log, err := s.ListRetentionLog(ctx, "job_v1", 10); err != nil || len(log) != 1 || log[0].Reason != models.RetentionMaxAge {
+				t.Errorf("retention log = %+v, %v", log, err)
+			}
+			var sweep struct {
+				Verified int `json:"verified"`
+			}
+			if ok, err := s.LoadIntegrityState(ctx, "sweep", &sweep); err != nil || !ok || sweep.Verified != 3 {
+				t.Errorf("sweep state = %+v, %v, %v", sweep, ok, err)
+			}
+		},
+	},
 }
 
 func findAudit(t *testing.T, s *SQLiteStore, tool string) *audit.Entry {
@@ -608,7 +648,8 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for version := 1; version <= latest; version++ {
+	for _, m := range migrations {
+		version := m.version
 		t.Run(fmt.Sprintf("from_%04d", version), func(t *testing.T) {
 			f := &compatFixture{box: box, ageIdentity: identity, ageRecip: recipient, oldBackupCT: ct.Bytes()}
 			path := filepath.Join(t.TempDir(), "mongorescue.db")
@@ -624,8 +665,8 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 			if err := s.db.QueryRow("SELECT MAX(version), COUNT(*) FROM schema_migrations").Scan(&current, &applied); err != nil {
 				t.Fatal(err)
 			}
-			if current != latest || applied != latest {
-				t.Fatalf("schema at %d with %d migrations; want %d", current, applied, latest)
+			if current != latest || applied != len(migrations) {
+				t.Fatalf("schema at %d with %d migrations; want %d with %d", current, applied, latest, len(migrations))
 			}
 			for _, step := range compatSteps {
 				if step.version <= version {

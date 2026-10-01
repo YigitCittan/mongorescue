@@ -133,6 +133,15 @@ func (s *SQLiteStore) SaveBackupRecord(ctx context.Context, record *models.Backu
 	if record == nil || record.ID == "" {
 		return fmt.Errorf("%w: backup record with ID is required", ErrInvalidRecord)
 	}
+	if record.Manifest != nil {
+		// The manifest is stored apart from the record (see putManifest).
+		return s.withTx(ctx, func(tx *sql.Tx) error {
+			if err := putManifest(ctx, tx, record.ID, record.Manifest); err != nil {
+				return err
+			}
+			return putBackup(ctx, tx, record)
+		})
+	}
 	return putBackup(ctx, s.db, record)
 }
 
@@ -152,9 +161,14 @@ func (s *SQLiteStore) ListBackupRecords(ctx context.Context, database string) ([
 		"SELECT id, data FROM backups WHERE database_name = ? ORDER BY started_at DESC, id DESC", database)
 }
 
-// DeleteBackupRecord deletes a backup record or returns ErrNotFound.
+// DeleteBackupRecord deletes a backup record (and its manifest) or returns ErrNotFound.
 func (s *SQLiteStore) DeleteBackupRecord(ctx context.Context, id string) error {
-	return execOne(ctx, s.db, ErrNotFound, "DELETE FROM backups WHERE id = ?", id)
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM backup_manifests WHERE backup_id = ?", id); err != nil {
+			return fmt.Errorf("store: delete manifest of %s: %w", id, err)
+		}
+		return execOne(ctx, tx, ErrNotFound, "DELETE FROM backups WHERE id = ?", id)
+	})
 }
 
 // SaveRestoreRecord stores or updates a disaster recovery restore execution record.
