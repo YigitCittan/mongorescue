@@ -1072,6 +1072,29 @@
             <span class="form-hint" id="restore-target-connection-hint" data-i18n="conn.target_hint">Defaults to the server the backup came from. Pick another to restore across servers.</span>
           </div>
 
+          <fieldset class="form-group fieldset">
+            <legend class="form-label" data-i18n="modal_restore.collections_label">Collections</legend>
+            <div class="radio-group" role="radiogroup">
+              <label class="check-inline"><input type="radio" name="restore-coll-mode" value="all" checked><span data-i18n="modal_restore.coll_all">Whole database</span></label>
+              <label class="check-inline"><input type="radio" name="restore-coll-mode" value="selected"><span data-i18n="modal_restore.coll_selected">Selected collections</span></label>
+            </div>
+            <div class="restore-colls" id="restore-colls-box" hidden>
+              <div class="restore-colls-toolbar">
+                <input type="search" id="restore-colls-search" class="form-input" autocomplete="off" data-i18n-placeholder="modal_restore.coll_search" placeholder="Search collections" data-i18n-aria-label="modal_restore.coll_search" aria-label="Search collections">
+                <button type="button" class="btn btn-secondary btn-sm" id="restore-colls-all" data-i18n="modal_restore.coll_select_all">Select all</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="restore-colls-none" data-i18n="modal_restore.coll_select_none">Select none</button>
+              </div>
+              <div class="restore-colls-list" id="restore-colls-list" role="group" data-i18n-aria-label="modal_restore.collections_label" aria-label="Collections" aria-describedby="restore-colls-status"></div>
+              <input type="text" id="restore-colls-manual" class="form-input mono" data-i18n-placeholder="picker.colls_manual_placeholder" placeholder="orders, customers" data-i18n-aria-label="modal_restore.coll_manual_label" aria-label="Collection names, separated by commas" hidden>
+              <div class="restore-colls-footer">
+                <span class="form-hint" id="restore-colls-status" aria-live="polite"></span>
+                <span class="form-hint restore-colls-count" id="restore-colls-count" aria-live="polite"></span>
+              </div>
+              <p class="notice notice-warn" id="restore-colls-warning" hidden></p>
+              <p class="notice notice-warn" id="restore-colls-view-hint" hidden></p>
+            </div>
+          </fieldset>
+
           <label class="check" for="restore-safe-clone">
             <input type="checkbox" id="restore-safe-clone" checked>
             <span class="check-text">
@@ -1113,7 +1136,7 @@
             <input type="checkbox" id="restore-drop-target">
             <span class="check-text">
               <span class="check-title text-danger" data-i18n="modal_restore.drop_title">Drop target collections first</span>
-              <span class="form-hint" data-i18n="modal_restore.drop_hint">Deletes existing collections in the target database before importing.</span>
+              <span class="form-hint" id="restore-drop-hint" data-i18n="modal_restore.drop_hint">Deletes existing collections in the target database before importing.</span>
             </span>
           </label>
         </div>

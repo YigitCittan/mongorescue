@@ -1827,6 +1827,83 @@ input[type="radio"] {
   margin-top: 8px;
 }
 
+/* Restore dialog: collections of the backup archive */
+.restore-colls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.restore-colls-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.restore-colls-toolbar .form-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+}
+
+.restore-colls-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.restore-colls-list:empty {
+  display: none;
+}
+
+.restore-coll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.restore-coll + .restore-coll {
+  border-top: 1px solid var(--border);
+}
+
+.restore-coll:hover {
+  background: var(--hover);
+}
+
+.restore-coll-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restore-coll-on {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.restore-colls-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.restore-colls-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .input-with-btn {
   display: flex;
   gap: 8px;

@@ -1778,6 +1778,9 @@ function renderRestores() {
       ? errorDetail(r.error_message, truncate(errorSummary(r.error_message), 90))
       : "";
     const { source, target, crossServer } = restoreConnections(r);
+    const selection = Array.isArray(r.selected_collections) && r.selected_collections.length > 0
+      ? `<div class="cell-sub">${ellipsis(tf("tables.selected_collections", { list: r.selected_collections.join(", ") }))}</div>`
+      : "";
     // A restore into another server is marked so it cannot pass for a local one.
     const cross = crossServer
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
@@ -1785,7 +1788,7 @@ function renderRestores() {
     return `<tr>
       <td><div class="id-cell">${ellipsis(r.id, "mono muted cell-id")}${copyButton(r.id)}</div></td>
       <td>${ellipsis(r.source_database)}${source ? `<div class="cell-sub">${ellipsis(source)}</div>` : ""}</td>
-      <td>${ellipsis(r.target_database, "mono")}${cross}</td>
+      <td>${ellipsis(r.target_database, "mono")}${cross}${selection}</td>
       <td><div class="status-line">${statusBadge(kind, label, r.error_message)}${chips.join("")}</div>${errorLine}</td>
       <td>${timeCell(r.started_at)}</td>
       <td class="num">${durationCell(r)}</td>
@@ -2259,6 +2262,7 @@ function setupForms() {
   const safeClone = document.getElementById("restore-safe-clone");
   safeClone.addEventListener("change", () => updateRestoreMode(true));
   document.getElementById("restore-confirm-in-place").addEventListener("change", () => updateRestoreMode(false));
+  setupRestoreCollections();
 
   document.getElementById("form-restore").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -2276,7 +2280,12 @@ function setupForms() {
       document.getElementById("restore-confirm-in-place").focus();
       return;
     }
-    if (!isSafeClone && dropTarget && !window.confirm(t("modal_restore.drop_confirm"))) {
+    const selected = restoreSelection();
+    if (selected === null) return;
+    const dropConfirm = selected.length > 0
+      ? tf("modal_restore.drop_confirm_selected", { list: selected.join(", ") })
+      : t("modal_restore.drop_confirm");
+    if (!isSafeClone && dropTarget && !window.confirm(dropConfirm)) {
       return;
     }
 
@@ -2293,6 +2302,7 @@ function setupForms() {
           dry_run: dryRun,
           drop_target: dropTarget,
           verify: verify,
+          ...(selected.length > 0 ? { selected_collections: selected } : {}),
           ...(targetConnection ? { target_connection_id: targetConnection } : {})
         })
       });
@@ -2658,6 +2668,7 @@ function openRestoreModal(backupID, sourceDB) {
     if (opt.value && opt.value === backup.connection_id) opt.textContent = tf("conn.source_named", { name: opt.textContent });
   });
   updateRestoreMode(false);
+  resetRestoreCollections(backupID);
   openModal("modal-restore");
 }
 
@@ -2675,6 +2686,201 @@ function updateRestoreMode(fromSafeCloneToggle) {
   }
   const acked = document.getElementById("restore-confirm-in-place").checked;
   document.getElementById("restore-submit").disabled = !isSafeClone && !acked;
+}
+
+// ---------------------------------------------------------------------------
+// Restore dialog: selective restore of some collections of the backup
+// ---------------------------------------------------------------------------
+
+// Collections of the backup in the restore dialog, read from its archive by the
+// server (GET /api/v1/backups/{id}/collections) the first time "Selected
+// collections" is chosen. items is null until loaded; manual means the list is
+// unavailable and names are typed instead.
+const restoreColls = { backupID: "", seq: 0, items: null, loading: false, error: "", warning: "", manual: false, selected: new Set() };
+
+function restoreCollMode() {
+  const checked = document.querySelector('input[name="restore-coll-mode"]:checked');
+  return checked ? checked.value : "all";
+}
+
+// Resets the collections section for backupID (whole database, nothing loaded).
+function resetRestoreCollections(backupID) {
+  restoreColls.backupID = backupID;
+  restoreColls.seq++;
+  restoreColls.items = null;
+  restoreColls.loading = false;
+  restoreColls.error = "";
+  restoreColls.warning = "";
+  restoreColls.manual = false;
+  restoreColls.selected = new Set();
+  const all = document.querySelector('input[name="restore-coll-mode"][value="all"]');
+  if (all) all.checked = true;
+  setValue("restore-colls-search", "");
+  setValue("restore-colls-manual", "");
+  updateRestoreCollections();
+}
+
+// Shows or hides the list for the chosen mode, loading it on first use.
+function updateRestoreCollections() {
+  const selected = restoreCollMode() === "selected";
+  document.getElementById("restore-colls-box").hidden = !selected;
+  setI18nText("restore-drop-hint", selected ? "modal_restore.drop_hint_selected" : "modal_restore.drop_hint");
+  if (selected && restoreColls.items === null && !restoreColls.loading && !restoreColls.error) {
+    loadRestoreCollections();
+  }
+  renderRestoreCollections();
+}
+
+async function loadRestoreCollections() {
+  const id = restoreColls.backupID;
+  if (!id) return;
+  const seq = ++restoreColls.seq;
+  restoreColls.loading = true;
+  restoreColls.error = "";
+  renderRestoreCollections();
+  try {
+    const json = await apiJSON(`/api/v1/backups/${encodeURIComponent(id)}/collections`);
+    if (seq !== restoreColls.seq) return;
+    if (!json.success) throw new Error(json.error || "");
+    const data = json.data || {};
+    // System collections are managed by the server and never offered.
+    restoreColls.items = (data.collections || []).filter(c => c && c.name && !String(c.name).startsWith("system."));
+    restoreColls.warning = data.source === "record" ? String(data.warning || "") : "";
+    restoreColls.manual = restoreColls.items.length === 0;
+  } catch (err) {
+    if (seq !== restoreColls.seq) return;
+    restoreColls.items = [];
+    restoreColls.error = truncate(errorSummary(err.message), 300) || "?";
+    restoreColls.manual = true;
+  } finally {
+    if (seq === restoreColls.seq) {
+      restoreColls.loading = false;
+      renderRestoreCollections();
+    }
+  }
+}
+
+// Items matching the search box.
+function visibleRestoreCollections() {
+  const query = getValue("restore-colls-search").toLowerCase();
+  const items = restoreColls.items || [];
+  return query ? items.filter(c => c.name.toLowerCase().includes(query)) : items;
+}
+
+// Renders the checkbox list, the count, the status line and the hints. Names come
+// from the archive and are set through textContent only.
+function renderRestoreCollections() {
+  const list = document.getElementById("restore-colls-list");
+  const manual = document.getElementById("restore-colls-manual");
+  const search = document.getElementById("restore-colls-search");
+  if (!list) return;
+  const items = restoreColls.items || [];
+  const listed = !restoreColls.loading && !restoreColls.manual;
+  list.textContent = "";
+  search.disabled = !listed;
+  document.getElementById("restore-colls-all").disabled = !listed;
+  document.getElementById("restore-colls-none").disabled = !listed;
+  manual.hidden = restoreColls.loading || !restoreColls.manual;
+
+  const visible = listed ? visibleRestoreCollections() : [];
+  visible.forEach(c => {
+    const label = document.createElement("label");
+    label.className = "restore-coll";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = c.name;
+    box.checked = restoreColls.selected.has(c.name);
+    const name = document.createElement("span");
+    name.className = "restore-coll-name mono";
+    name.textContent = c.name;
+    name.title = c.name;
+    label.append(box, name);
+    if (c.type === "view" || c.type === "timeseries") {
+      const chip = document.createElement("span");
+      chip.className = c.type === "view" ? "chip" : "chip chip-accent";
+      chip.textContent = t(c.type === "view" ? "modal_restore.type_view" : "modal_restore.type_timeseries");
+      label.appendChild(chip);
+    }
+    if (c.type === "view" && c.view_on) {
+      const on = document.createElement("span");
+      on.className = "restore-coll-on";
+      on.textContent = tf("modal_restore.view_on", { name: c.view_on });
+      label.appendChild(on);
+    }
+    list.appendChild(label);
+  });
+
+  let status = "";
+  if (restoreColls.loading) status = t("modal_restore.coll_loading");
+  else if (restoreColls.error) status = tf("modal_restore.coll_failed", { error: restoreColls.error });
+  else if (restoreColls.manual) status = t("modal_restore.coll_none_listed");
+  else if (visible.length === 0) status = t("modal_restore.coll_no_match");
+  setText("restore-colls-status", status);
+  setText("restore-colls-count", listed ? tf("modal_restore.coll_count", { selected: restoreColls.selected.size, total: items.length }) : "");
+
+  const warning = document.getElementById("restore-colls-warning");
+  warning.hidden = !restoreColls.warning || restoreColls.loading;
+  warning.textContent = restoreColls.warning ? tf("modal_restore.coll_from_record", { reason: restoreColls.warning }) : "";
+  renderRestoreViewHint();
+}
+
+// Warns when a selected view's source collection is not selected: the view is
+// restored, but reads nothing until its source exists in the target.
+function renderRestoreViewHint() {
+  const hint = document.getElementById("restore-colls-view-hint");
+  const missing = (restoreColls.items || [])
+    .filter(c => c.type === "view" && c.view_on && restoreColls.selected.has(c.name) && !restoreColls.selected.has(c.view_on))
+    .map(c => `${c.name} → ${c.view_on}`);
+  hint.hidden = missing.length === 0 || restoreColls.manual;
+  hint.textContent = missing.length ? tf("modal_restore.view_source_hint", { list: missing.join(", ") }) : "";
+}
+
+// Checks or unchecks every collection matching the search box.
+function setVisibleRestoreCollections(on) {
+  visibleRestoreCollections().forEach(c => {
+    if (on) restoreColls.selected.add(c.name);
+    else restoreColls.selected.delete(c.name);
+  });
+  renderRestoreCollections();
+}
+
+// Returns the selected collection names, or null when "Selected collections" is on
+// and none is selected (after focusing the field to fix).
+function restoreSelection() {
+  if (restoreCollMode() !== "selected") return [];
+  if (restoreColls.loading) {
+    showToast(t("modal_restore.coll_loading"), "info");
+    return null;
+  }
+  const names = restoreColls.manual
+    ? parseList(getValue("restore-colls-manual"))
+    : (restoreColls.items || []).map(c => c.name).filter(n => restoreColls.selected.has(n));
+  if (names.length === 0) {
+    const focus = restoreColls.manual ? document.getElementById("restore-colls-manual") : document.querySelector("#restore-colls-list input");
+    if (focus) focus.focus();
+    showToast(t("modal_restore.need_collections"), "error");
+    return null;
+  }
+  return names;
+}
+
+function setupRestoreCollections() {
+  document.querySelectorAll('input[name="restore-coll-mode"]').forEach(radio => {
+    radio.addEventListener("change", updateRestoreCollections);
+  });
+  document.getElementById("restore-colls-search").addEventListener("input", renderRestoreCollections);
+  // Rebuilt on language changes only, so periodic refreshes never reset the list.
+  onLanguageChange(() => renderRestoreCollections());
+  document.getElementById("restore-colls-all").addEventListener("click", () => setVisibleRestoreCollections(true));
+  document.getElementById("restore-colls-none").addEventListener("click", () => setVisibleRestoreCollections(false));
+  document.getElementById("restore-colls-list").addEventListener("change", (e) => {
+    const box = e.target;
+    if (!box || box.type !== "checkbox") return;
+    if (box.checked) restoreColls.selected.add(box.value);
+    else restoreColls.selected.delete(box.value);
+    setText("restore-colls-count", tf("modal_restore.coll_count", { selected: restoreColls.selected.size, total: (restoreColls.items || []).length }));
+    renderRestoreViewHint();
+  });
 }
 
 async function triggerJob(jobID, btn) {
