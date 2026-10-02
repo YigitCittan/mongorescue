@@ -38,7 +38,7 @@ A rule connects events to channels:
 }
 ```
 
-- `events`: any of `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected` and `retention.deleted` (see [verification.md](verification.md#notifications-and-metrics)). Drift events belong to no job, so only rules without `job_ids` match them.
+- `events`: any of `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted` (see [verification.md](verification.md#notifications-and-metrics)) and `job.databases_added` (a job that includes new databases automatically backed up new ones; `databases` names them). Drift events belong to no job, so only rules without `job_ids` match them. A job with several databases sends one backup event per run, not one per database: `backup.failed` for a partial run names the failed databases and how many new ones were not included ([details](api.md#jobs-with-several-databases)).
 - `job_ids`: optional. Empty means every job, including on-demand backups.
 - `channel_ids`: channels that receive matching events.
 
@@ -73,7 +73,9 @@ Every webhook request is a `POST` with `Content-Type: application/json`, an `X-M
 | Field | Notes |
 | :--- | :--- |
 | `version` | Payload schema version, currently `1`. Breaking changes will bump it. |
-| `event` | `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, or `notification.test` |
+| `event` | `backup.succeeded`, `backup.failed`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, `job.databases_added`, or `notification.test` |
+| `run_id`, `run` | Backup events of a job run: the run and its summary (`status`: `ok`, `partial`, `failed`, `cancelled`; `multi`, `databases`, `succeeded`, `failed`, `cancelled`, `failed_databases`, `new_databases`) |
+| `databases` | `job.databases_added`: the databases added |
 | `verification`, `source` | Verification and restore test events: the outcome (`ok`, `mismatch`, `error`) and what triggered it |
 | `target_id`, `orphans`, `missing` | Drift events: the storage target and what its scan found |
 | `detail` | A short redacted explanation (the retention rule, a temporary database that could not be dropped) |

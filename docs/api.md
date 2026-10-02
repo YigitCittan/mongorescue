@@ -18,7 +18,7 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 | Scope | Allowed |
 | :--- | :--- |
 | `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
-| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), `POST /api/v1/backups/{id}/verify`, `.../pin` and `POST /api/v1/jobs/{id}/restore-test`, plus the MCP action tools |
+| `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/jobs/{id}/cancel`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), `POST /api/v1/backups/{id}/verify`, `.../pin` and `POST /api/v1/jobs/{id}/restore-test`, plus the MCP action tools |
 | `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
 An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
@@ -68,11 +68,15 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
 | `GET` | `/api/v1/jobs` | List scheduled jobs | 200 | |
-| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` required; `storage_target_id` optional; the cron expression is validated) | 201 | 400 |
+| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated) | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) | 200 | 404 |
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
-| `POST` | `/api/v1/jobs/{id}/run` | Run a job now | 202 | 400, 404, 409 |
+| `POST` | `/api/v1/jobs/{id}/run` | Run a job now; for several databases the body is the first database's record, whose `run_id` names the run | 202 | 400, 404, 409, 502 |
+| `POST` | `/api/v1/jobs/{id}/cancel` | Stop the job's current run: the running database and those still waiting ([details](#jobs-with-several-databases)) | 200, 202 still stopping | 404, 409 not running |
+| `GET` | `/api/v1/jobs/{id}/runs` | The job's runs, newest first, each with the outcome of every database (`?limit=` ≤ 200) | 200 | 404 |
+| `GET` | `/api/v1/jobs/{id}/databases/preview` | The databases the job's selection backs up now, the excluded ones with reasons and the new ones (`{included, excluded, missing, new_since_last_run, warnings}`; query parameters preview another selection) ([details](#previewing-a-selection)) | 200 | 400, 404, 502 |
+| `GET` | `/api/v1/jobs/databases/preview` | The same for an unsaved job (`connection_id`, `mode`, `databases`, `include`, `exclude`, `auto_include_new`) | 200 | 400, 404, 502 |
 | `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip}` | 202 | 400, 409 |
@@ -202,7 +206,73 @@ curl -X PUT http://localhost:8080/api/v1/jobs/job_shop_1727146800_3f9a1c2e \
   -d '{"name":"shop hourly","cron_expression":"@hourly","database":"shop","connection_id":"conn_prod","retention_count":24}'
 ```
 
-In the dashboard, clicking a job row (or **Details** in its **⋯** menu) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Pause** / **Resume** (also in the row's **⋯** menu) pauses the schedule, until resumed or until a date and time, or resumes it; a paused job shows a *Paused* badge. **Stop current run** cancels the job's running backup. Edits and pauses send `updated_at`, so a job changed elsewhere in the meantime is reported instead of overwritten.
+In the dashboard, clicking a job row (or **Details** in its **⋯** menu) opens the job's details: its schedule in words with the next three runs, retention, compression, encryption, state, and the last 20 runs with their success rate. **Edit** opens the job form prefilled, and **Pause** / **Resume** (also in the row's **⋯** menu) pauses the schedule, until resumed or until a date and time, or resumes it; a paused job shows a *Paused* badge. **Stop current run** stops the job's current run: its running backup and, for a job with several databases, every database still waiting. Edits and pauses send `updated_at`, so a job changed elsewhere in the meantime is reported instead of overwritten.
+
+`database_selection` and `parallelism` are optional in an update: when `database_selection` is omitted, a `database` makes the job a single-database job of it, and an update with neither keeps the job's selection (see [Jobs with several databases](#jobs-with-several-databases)). `restore_test.databases` (`rotate` or `all`) chooses which databases of a multi-database run the restore test covers.
+
+## Jobs with several databases
+
+A job backs up one database or several. Its `database_selection` says which:
+
+```json
+{
+  "mode": "pattern",
+  "databases": ["billing"],
+  "include": ["prod_*"],
+  "exclude": ["prod_tmp?"],
+  "auto_include_new": false
+}
+```
+
+| `mode` | Backs up | Fields |
+| :--- | :--- | :--- |
+| `single` | One database, as jobs always did (`database` holds it too) | `databases`: exactly one name |
+| `list` | The named databases | `databases`: at least one name |
+| `all` | Every database of the connection except those `exclude` matches | `exclude`, `databases` (always added), `auto_include_new` |
+| `pattern` | The databases an `include` pattern matches and no `exclude` pattern matches | `include` (at least one), `exclude`, `databases` (always added), `auto_include_new` |
+
+- `admin`, `config` and `local` are never backed up by `list`, `all` or `pattern` jobs, and naming one in a `list` is refused with `400`.
+- Patterns use `*` (any run of characters, also none) and `?` (exactly one character); every other character matches itself and matching is case-sensitive, like MongoDB database names. They follow the rules for database names (1 to 63 bytes, none of `/ \ . " $`, a space or a control character, not starting with `-`), with `*` and `?` as the only wildcards. A pattern that matches no database is allowed; the preview and the run report it as a warning.
+- Collection filters (`collections`, `exclude_collections`) only apply to `single` jobs; a multi-database job that sends them is refused with `400`.
+- `parallelism` (1 to 4, default 1) is how many databases a run backs up at the same time. Each database keeps its own run lock: a database already being backed up by another run fails in this run (the others still run).
+- Clients that predate selections keep working: a job created or updated with `database` and no `database_selection` is a `single` job of that database, an update that sends neither keeps the job's selection, and responses still carry `database` for single-database jobs (`""` for the others). Every job stored by an earlier release was migrated to a `single` selection (migration 0013).
+
+**New databases.** For `all` and `pattern` jobs the server records the databases the selection matched when the job was saved (and when its selection or connection changes) as `known_databases` (managed by the server, never taken from requests). With `auto_include_new` off (the default), a run backs up only the known databases plus the named ones; databases created later that match are not backed up but listed as `new_databases` in the run, in the run's notification ("3 new databases not included") and in the dashboard, which offers *Add to job* (it adds the name to `databases`). With `auto_include_new` on, a run backs them up too, adds them to `known_databases` and publishes a `job.databases_added` event the first time each one appears.
+
+**Runs.** Every database of a run gets its own backup record and archive, exactly as a single-database backup: the same storage key layout (`<db>/<yyyy>/<mm>/<id>.archive.gz`), verification, manifest, log and cancellation, so restores, retention, pins and verification work unchanged. The records of one run share a `run_id` (`GET /api/v1/backups?run_id=…`), and `GET /api/v1/jobs/{id}/runs` lists the runs: `{id, job_id, trigger, status, started_at, completed_at, duration_seconds, databases: [{database, backup_id, status, error}], new_databases, added_databases, warnings, error}`. A run is `ok` when every database succeeded, `partial` when some failed, `failed` when none succeeded and `cancelled` when it was stopped without failures. A database named in a `list` (or in `databases`) that no longer exists is recorded as failed with `"error": "database not found"`; the others still run. A run whose connection cannot list its databases fails as a whole (`error`), and starting it on demand answers `502`; a run that matches no existing database is refused with `400`. Single-database jobs record a run too.
+
+Notifications send one message per run, not one per database: the run's `backup.succeeded`, `backup.failed` (also for a `partial` run, whose message names the failed databases) or `backup.cancelled` event carries `run_id` and a `run` summary (`status`, `databases`, `succeeded`, `failed`, `cancelled`, `failed_databases`, `new_databases`); webhooks receive both fields. The per-database events still feed the metrics (per job and per database), and every run is counted in `mongorescue_job_runs_total` ([metrics](metrics.md)).
+
+**Stopping a run.** `POST /api/v1/jobs/{id}/cancel` (operator) stops the job's current run: the running database and every database still waiting are cancelled (`{job_id, run_ids, cancelled, backups}`; `200` once they stopped, `202` while some still stop, `404` unknown job, `409` no run of it is active). Cancelling any one backup of a run (`POST /api/v1/backups/{id}/cancel`, MCP `cancel_run`, the desktop app's quit) stops the whole run as well. Databases already backed up keep their backups. A scheduled run that is still going when the next one is due is skipped; starting one on demand meanwhile answers `409`.
+
+**Retention** stays per job and database: the job's `retention_days` and `retention_count` apply to each of its databases separately, and so do the protections. The newest completed backup of every database is kept (so a database whose backup failed today keeps its last good one), and so is the newest verified one of every database. A scheduled run prunes only the databases it backed up successfully. `GET /api/v1/jobs/{id}/retention/preview` adds `databases`, the per-database breakdown (`database`, `considered`, `delete`, `protected`, `kept`, `last_good`).
+
+**Restore tests** of a multi-database job test one database per run, taking turns in name order (`restore_test.databases: "rotate"`, the default), or every database of the run (`"all"`).
+
+### Previewing a selection
+
+`GET /api/v1/jobs/{id}/databases/preview` (read scope) resolves the job's selection against the live server exactly as its next run would, without changing anything:
+
+```json
+{
+  "job_id": "job_pattern_1727146800_3f9a1c2e",
+  "selection": {"mode": "pattern", "include": ["prod_*"], "auto_include_new": false},
+  "included": ["prod_eu", "prod_us"],
+  "excluded": [{"name": "admin", "reason": "system"}, {"name": "prod_new", "reason": "new"}, {"name": "staging", "reason": "not_matched"}],
+  "missing": [],
+  "new_since_last_run": ["prod_new"],
+  "warnings": []
+}
+```
+
+Reasons are `system`, `excluded` (with the matching `pattern`), `not_matched`, `not_selected`, `new` and `not_found`. Query parameters preview another selection while the job is edited: `mode`, repeated `databases`, `include` and `exclude`, `auto_include_new` and `connection_id`; a changed selection is previewed as saving it would record it (everything it matches counts as known). `GET /api/v1/jobs/databases/preview` previews a selection for a job that does not exist yet (`connection_id` and `mode` required). Answers: `400` invalid selection, `404` unknown job or connection, `502` the databases cannot be listed (a `list` selection is then previewed as named, with a warning).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/jobs \
+  -H "X-API-Key: $MONGORESCUE_ADMIN_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"all prod","cron_expression":"0 2 * * *","connection_id":"conn_prod",
+       "database_selection":{"mode":"pattern","include":["prod_*"],"exclude":["prod_tmp*"]},"parallelism":2}'
+```
 
 ## Retrying a failed backup
 
@@ -236,6 +306,7 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 | `job_id` | yes | | Backups of this scheduled job |
 | `trigger` | `scheduled`, `on_demand`, `manual`, `mcp` | | How the backup was started (records older than triggers count as `scheduled` when they belong to a job, else `manual`) |
 | `retry_of` | yes | | Retries of this backup |
+| `run_id` | yes | | Backups of this job run (one per database) |
 | `backup_id` | | yes | Restores of this backup |
 | `from`, `to` | yes | yes | `started_at` range in RFC 3339 (`2026-10-01T00:00:00Z`); `from` is inclusive, `to` exclusive |
 | `q` | ID or database | ID, source or target database | Substring, ASCII case-insensitive; `%` and `_` are literal (at most 256 characters) |

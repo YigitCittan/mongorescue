@@ -14,6 +14,11 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_backup_duration_seconds` | histogram | `job` | Backup duration |
 | `mongorescue_backup_size_bytes` | gauge | `job` | Size of the last successful backup artifact |
 | `mongorescue_last_successful_backup_timestamp_seconds` | gauge | `job` | Unix time of the last successful backup |
+| `mongorescue_database_backups_total` | counter | `job`, `database`, `status` | Finished backups per database (`status`: `succeeded`, `failed`, `cancelled`; `job="manual"` for manual backups) |
+| `mongorescue_database_backup_size_bytes` | gauge | `job`, `database` | Size of the last successful backup of each database |
+| `mongorescue_database_last_successful_backup_timestamp_seconds` | gauge | `job`, `database` | Unix time of the last successful backup of each database |
+| `mongorescue_job_runs_total` | counter | `job`, `status` | Finished job runs over all their databases (`status`: `ok`, `partial`, `failed`, `cancelled`) |
+| `mongorescue_job_run_duration_seconds` | histogram | `job` | Duration of job runs (all databases) |
 | `mongorescue_restores_total` | counter | `status` | Finished restores (`succeeded`, `failed`) |
 | `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure`, `dropped`) |
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
