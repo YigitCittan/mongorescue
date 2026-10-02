@@ -1085,7 +1085,10 @@ func TestUpdateScript(t *testing.T) {
 		`"removeLegacy":"/desktop/update/remove-legacy"`, `case "restarting":`, "Downloading {percent}%", "İndiriliyor %{percent}", "Restarting…", "Yeniden başlatılıyor…", `case "waiting":`, "Update will install after the running backup finishes", "çalışan yedekleme bitince kurulacak",
 		"mr-legacy-bar", "mongorescue_legacy_dismissed", "installed in Program Files", "Program Files klasöründe kurulu",
 		`"check":"/desktop/update/check"`, `"app-version"`, "mr-update-popover", "Check for updates", "Güncellemeleri denetle", "Up to date ({version})", "Güncel ({version})",
-		"s.checking", "visibilitychange", "window.mrAnnounce"} {
+		"s.checking", "visibilitychange", "window.mrAnnounce",
+		// The dashboard API used by the command palette (web/static/nav.js).
+		"window.__mongorescueUpdate = {", "check: function () { return requestCheck(); }",
+		"install: function () { return startUpdate(true); }", "status: function () { return status; }"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}

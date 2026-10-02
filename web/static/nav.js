@@ -1020,86 +1020,58 @@ function setupDeepLinks() {
 // Check for updates: the desktop app's updater, or the releases page
 // ---------------------------------------------------------------------------
 
-// The desktop app's update endpoints (internal/desktop/updater.go). They exist only
-// in the app's webview; POSTs need the header, which a cross-origin page cannot send.
-const DESKTOP_UPDATE = {
-  check: "/desktop/update/check",
-  install: "/desktop/update/install",
-  release: "/desktop/update/release-page",
-  header: "X-MongoRescue-Desktop",
-  // Created by the update script while an optional update is available; its click
-  // runs the script's own install flow (progress bar, release page fallback).
-  button: "mr-update-header"
-};
-
-// The desktop app injects its update script, which sets this flag; the web and
-// Docker builds never have it.
+// The desktop app injects its update script (internal/desktop/update_script.go),
+// which sets window.__mongorescueUpdate; the web and Docker builds never have it.
 function navIsDesktop() {
-  return window.__mongorescueUpdate === true;
+  return !!window.__mongorescueUpdate;
 }
 
-function desktopPost(path) {
-  return fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { [DESKTOP_UPDATE.header]: "1" } });
-}
-
-async function desktopJSON(path) {
-  const res = await desktopPost(path);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body && body.error ? String(body.error) : `HTTP ${res.status}`);
-  return body || {};
-}
-
-// The update script polls slowly while idle; a visibility event makes it look at
-// the status again soon (it then shows the update bar or the install progress).
-function wakeUpdateScript() {
-  document.dispatchEvent(new Event("visibilitychange"));
+// The update script's API ({check, install, status}), or null.
+function desktopUpdater() {
+  const api = window.__mongorescueUpdate;
+  return api && typeof api.check === "function" && typeof api.install === "function" ? api : null;
 }
 
 // checkForUpdates asks the desktop app's updater for a release now and reports the
 // result as a toast ("Up to date (vX)", or "vY is available" with Update); in the
 // browser it opens the releases page.
 async function checkForUpdates() {
-  if (!navIsDesktop()) {
+  const api = desktopUpdater();
+  if (!api) {
     navOpenExternal(`${NAV_REPO}/releases/latest`);
     return;
   }
   const checking = toastShow(t("palette.checking_updates"), "info", { duration: 60000 });
   let status;
   try {
-    status = await desktopJSON(DESKTOP_UPDATE.check);
+    status = (await api.check()) || {};
   } catch (err) {
     toastDismiss(checking);
-    showToast(tf("palette.check_failed", { error: err.message }), "error");
+    showToast(tf("palette.check_failed", { error: err && err.message ? err.message : String(err) }), "error");
     return;
   }
   toastDismiss(checking);
   if (status.available) {
     showToast(tf("palette.update_available", { version: formatVersion(status.latest) }), "info", {
       duration: 20000,
-      action: { label: t("palette.update_now"), run: () => startDesktopUpdate(status) }
+      action: { label: t("palette.update_now"), run: startDesktopUpdate }
     });
   } else {
     showToast(tf("palette.up_to_date", { version: formatVersion(status.current) }), "success");
   }
-  wakeUpdateScript();
 }
 
-// startDesktopUpdate runs the update through the update script's header button
-// when it is there; otherwise it asks the updater directly (the release page when
-// there is no installable file) and lets the script show the progress.
-async function startDesktopUpdate(status) {
-  const btn = document.getElementById(DESKTOP_UPDATE.button);
-  if (btn && !btn.disabled) {
-    btn.click();
-    return;
-  }
+// startDesktopUpdate runs the update script's own install flow (its bar shows the
+// progress, the wait for a running backup and errors; without an installable file
+// it opens the release page) and reports a start that failed.
+async function startDesktopUpdate() {
+  const api = desktopUpdater();
+  if (!api) return;
   try {
-    await desktopJSON(status && status.installable === false ? DESKTOP_UPDATE.release : DESKTOP_UPDATE.install);
+    await api.install();
   } catch (err) {
-    showToast(tf("palette.update_failed", { error: err.message }), "error");
-    return;
+    showToast(tf("palette.update_failed", { error: err && err.message ? err.message : String(err) }), "error");
   }
-  wakeUpdateScript();
 }
 
 // ---------------------------------------------------------------------------
