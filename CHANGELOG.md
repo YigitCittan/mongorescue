@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-02
+
 ### Security
 - A key imported from the deprecated `MONGORESCUE_API_KEY` was chosen by an administrator, not generated, yet was stored as a plain SHA-256 hash, which a copy of `mongorescue.db` alone let an attacker guess offline. It is now stored as an HMAC-SHA256 under an HKDF subkey of `secret.key` (never the encryption key itself). Keys imported by earlier releases keep their SHA-256 hash and still verify, and while such a record exists no second one is imported (an import an earlier release left unrecorded is a no-op), so revoking the one record revokes the key; session tokens and generated API keys (random, 256 and 160 bits) stay SHA-256 hashes. No migration.
 - Local storage target paths are checked once more right before they reach the file system (test and location checks): no NUL or other control character, no `..` element, absolute and cleaned. Names that merely contain two dots (`v1..v2`) stay valid.
