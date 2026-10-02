@@ -2,8 +2,8 @@
 
 MongoRescue keeps two logs of what happened:
 
-- The **audit log** (this page, `GET /api/v1/audit`, Settings → **Audit log**) records every action: who did what to which object, with what result, from where. It is append-only and hash-chained, so a changed or removed entry is detected.
-- The **API key activity log** (`GET /api/v1/audit/activity`, Settings → Security → *Recent API/MCP activity*) is the detailed trace of API keys and MCP clients, with their redacted arguments and durations. See [api.md](api.md#api-key-activity) and [mcp.md](mcp.md).
+- The **audit log** (this page, `GET /api/v1/audit/events`, Settings → **Audit log**) records every action: who did what to which object, with what result, from where. It is append-only and hash-chained, so a changed or removed entry is detected.
+- The **API key activity log** (`GET /api/v1/audit`, Settings → Security → *Recent API/MCP activity*) is the detailed trace of API keys and MCP clients, with their redacted arguments and durations. See [api.md](api.md#api-key-activity) and [mcp.md](mcp.md).
 
 The activity log stores arguments, which the audit log never does, and merges repeated calls into one row, which a hash chain does not allow; that is why they stay separate. MCP tool calls and system actions recorded in the activity log are also written to the audit log.
 
@@ -14,7 +14,7 @@ The activity log stores arguments, which the audit log never does, and merges re
 | Every REST request that can change something (`POST`, `PUT`, `PATCH`, `DELETE`), from a dashboard session or an API key, including refused ones (wrong scope, missing CSRF token, validation errors) | `user` or `api_key` | The route pattern, e.g. `POST /api/v1/jobs/{id}/run`, or `POST (no route)` |
 | Sign-in, successful or not, and setup | `user` on success, otherwise `anonymous` with the name that was tried | `POST /api/v1/auth/login`, `POST /api/v1/setup` |
 | Sign-out | `user` | `POST /api/v1/auth/logout` |
-| Downloads that copy data out: the recovery kit (`POST`) and the audit log export (`GET`) | `user` or `api_key` | `POST /api/v1/recovery-kit`, `GET /api/v1/audit/export` |
+| Downloads that copy data out: the recovery kit (`POST`) and the audit log export (`GET`) | `user` or `api_key` | `POST /api/v1/recovery-kit`, `GET /api/v1/audit/events/export` |
 | MCP tool calls (not resource reads or prompts) | `api_key` | `MCP <tool>`, e.g. `MCP start_backup` |
 | Actions MongoRescue takes on its own (retention deleting a backup) | `system` | `SYSTEM <action>` |
 
@@ -68,7 +68,7 @@ An exported line therefore verifies with nothing but its predecessor: drop `hash
 
 Entries are appended in one write transaction that reads the newest entry (or the anchor), so concurrent requests never fork the chain. The database refuses updates of `audit_events` and deletions ahead of the anchor with triggers; the store has no update or delete path other than retention.
 
-`GET /api/v1/audit/verify` (admin) and **Verify chain** in the dashboard walk the chain from the anchor and report the first entry whose ID does not follow its predecessor (removed or reordered entries) or whose hash does not match (a changed entry, or a changed predecessor):
+`GET /api/v1/audit/events/verify` (admin) and **Verify chain** in the dashboard walk the chain from the anchor and report the first entry whose ID does not follow its predecessor (removed or reordered entries) or whose hash does not match (a changed entry, or a changed predecessor):
 
 ```json
 {"ok": false, "checked": 1203, "anchor": {"last_id": 640, "last_hash": "…", "pruned_at": "2026-09-30T00:00:00Z"},
@@ -85,7 +85,7 @@ What the chain does and does not prove: it detects any change to an entry and an
 
 ## Export
 
-`GET /api/v1/audit/export` (admin, **Export JSON Lines** in the dashboard) streams the entries matching the same filters as the list (`actor`, `actor_kind`, `action`, `result`, `since`, `until`), oldest first, one JSON entry per line (`application/x-ndjson`, `Content-Disposition: attachment`). It reads the log in batches, so it never holds the database while a slow client downloads. Every export is itself recorded.
+`GET /api/v1/audit/events/export` (admin, **Export JSON Lines** in the dashboard) streams the entries matching the same filters as the list (`actor`, `actor_kind`, `action`, `result`, `since`, `until`), oldest first, one JSON entry per line (`application/x-ndjson`, `Content-Disposition: attachment`). It reads the log in batches, so it never holds the database while a slow client downloads. Every export is itself recorded.
 
 ## Forwarding
 
@@ -94,7 +94,7 @@ With `audit.webhook_url` set, every stored entry is also sent as `POST <url>` wi
 - Delivery runs in the background and never delays a request. Entries wait in a queue of 1024; when it is full, new entries are dropped from forwarding (never from the log) and counted.
 - Each entry is sent once, in order, by one worker, with a 10-second timeout and without redirects. A failure (non-2xx answer or no connection) is counted, not retried: the database stays authoritative, and the receiver can spot gaps by `id`.
 - The URL and the secret are stored encrypted (secretbox) like other credentials; API responses show the URL only up to its host (`https://siem.example.com/******`) and the secret as `******`. Link-local and cloud metadata addresses are refused when connecting, as for notifications.
-- `GET /api/v1/audit` reports `forwarding: {enabled, queued, sent, failed, dropped, last_error, last_error_at}` since start, and `mongorescue_audit_forward_total{outcome="sent|failed|dropped"}` counts them ([metrics.md](metrics.md)).
+- `GET /api/v1/audit/events` reports `forwarding: {enabled, queued, sent, failed, dropped, last_error, last_error_at}` since start, and `mongorescue_audit_forward_total{outcome="sent|failed|dropped"}` counts them ([metrics.md](metrics.md)).
 
 ## Not yet
 

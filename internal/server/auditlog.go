@@ -17,9 +17,9 @@ import (
 
 // Audit log routes.
 const (
-	auditListRoute   = "GET /api/v1/audit"
-	auditExportRoute = "GET /api/v1/audit/export"
-	auditVerifyRoute = "GET /api/v1/audit/verify"
+	auditListRoute   = "GET /api/v1/audit/events"
+	auditExportRoute = "GET /api/v1/audit/events/export"
+	auditVerifyRoute = "GET /api/v1/audit/events/verify"
 )
 
 // exportWriteTimeout bounds the whole audit log export (the server's write timeout
@@ -33,8 +33,8 @@ var auditedReads = map[string]bool{
 }
 
 // WithAuditLog enables the audit log of every action: the auth middleware records
-// mutating requests, sign-ins and setup into svc, and GET /api/v1/audit,
-// /api/v1/audit/export and /api/v1/audit/verify serve it.
+// mutating requests, sign-ins and setup into svc, and GET /api/v1/audit/events,
+// /api/v1/audit/events/export and /api/v1/audit/events/verify serve it.
 func WithAuditLog(svc *auditlog.Service) Option {
 	return func(s *Server) { s.auditLog = svc }
 }
@@ -186,7 +186,7 @@ func auditFilter(r *http.Request, paging bool) (auditlog.Filter, error) {
 	return f, nil
 }
 
-// auditListResponse is the answer of GET /api/v1/audit.
+// auditListResponse is the answer of GET /api/v1/audit/events.
 type auditListResponse struct {
 	auditlog.Page
 	// Forwarding reports the audit webhook's counters.

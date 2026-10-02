@@ -141,13 +141,12 @@ var routeScopes = map[string]auth.Scope{
 	"PUT /api/v1/notifications/rules/{id}":          auth.ScopeAdmin,
 	"DELETE /api/v1/notifications/rules/{id}":       auth.ScopeAdmin,
 
-	"GET /metrics": auth.ScopeRead,
-	// The audit log of every action, its export and verification, and the API key
-	// activity log: admin.
+	"GET /metrics":      auth.ScopeRead,
+	"GET /api/v1/audit": auth.ScopeAdmin,
+	// The audit log of every action, its export and verification: admin.
 	auditListRoute:   auth.ScopeAdmin,
 	auditExportRoute: auth.ScopeAdmin,
 	auditVerifyRoute: auth.ScopeAdmin,
-	activityRoute:    auth.ScopeAdmin,
 	// MCP needs at least read; each tool then requires its own scope.
 	"POST " + MCPPath:   auth.ScopeRead,
 	"GET " + MCPPath:    auth.ScopeRead,

@@ -2,7 +2,7 @@
 // read and prompt request, and every REST request authenticated by an API key, is
 // stored with the calling API key, the transport, the tool (or route), its arguments
 // (secrets redacted), the outcome and the duration. The log is shown in the dashboard and
-// served by GET /api/v1/audit/activity. The hash-chained audit log of every action is
+// served by GET /api/v1/audit. The hash-chained audit log of every action is
 // internal/auditlog, which mirrors MCP calls and system actions from here through an
 // observer (see WithObserver).
 //

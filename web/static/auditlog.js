@@ -1,9 +1,9 @@
 /**
  * MongoRescue dashboard: Settings → Audit log.
  *
- * The hash-chained log of every action (GET /api/v1/audit): a filterable,
- * paged table, chain verification (GET /api/v1/audit/verify), the JSON Lines
- * export (GET /api/v1/audit/export) and the retention and webhook forwarding
+ * The hash-chained log of every action (GET /api/v1/audit/events): a
+ * filterable, paged table, chain verification (GET /api/v1/audit/events/verify),
+ * the JSON Lines export (GET /api/v1/audit/events/export) and the retention and webhook forwarding
  * settings (the "audit" group of PUT /api/v1/settings). Loaded after app.js and
  * i18n.js, whose helpers it uses; app.js calls auditlogRefresh() when the panel
  * opens and auditlogFillSettings() when the settings load.
@@ -62,7 +62,7 @@ async function auditlogRefresh(more) {
   q.set("limit", String(AUDITLOG_PAGE));
   if (more && auditlog.nextBefore) q.set("before_id", String(auditlog.nextBefore));
   try {
-    const json = await apiJSON(`/api/v1/audit?${q.toString()}`);
+    const json = await apiJSON(`/api/v1/audit/events?${q.toString()}`);
     if (!json.success) {
       auditlog.error = json.error || t("toasts.request_failed");
     } else {
@@ -157,7 +157,7 @@ async function auditlogVerify(btn) {
   if (btn) btn.disabled = true;
   setText("auditlog-verify-status", t("auditlog.verifying"));
   try {
-    const json = await apiJSON("/api/v1/audit/verify");
+    const json = await apiJSON("/api/v1/audit/events/verify");
     if (!json.success) {
       auditlog.verification = null;
       setText("auditlog-verify-status", json.error || t("toasts.request_failed"));
@@ -197,7 +197,7 @@ async function auditlogExport(btn) {
   auditlog.exporting = true;
   if (btn) btn.disabled = true;
   try {
-    const res = await apiFetch(`/api/v1/audit/export?${auditlogQuery().toString()}`);
+    const res = await apiFetch(`/api/v1/audit/events/export?${auditlogQuery().toString()}`);
     const type = res.headers.get("content-type") || "";
     if (!res.ok || !type.includes("application/x-ndjson")) {
       let msg = tf("toasts.unexpected_response", { status: res.status });

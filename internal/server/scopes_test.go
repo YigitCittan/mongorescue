@@ -35,7 +35,7 @@ var operatorRoutes = []string{
 }
 
 // adminOnlyReads are GET routes that need more than the read scope.
-var adminOnlyReads = []string{"GET /api/v1/audit", "GET /api/v1/audit/export", "GET /api/v1/audit/verify", "GET /api/v1/audit/activity", "GET /api/v1/users"}
+var adminOnlyReads = []string{"GET /api/v1/audit", "GET /api/v1/audit/events", "GET /api/v1/audit/events/export", "GET /api/v1/audit/events/verify", "GET /api/v1/users"}
 
 // scopeFixture serves the full middleware chain with one API key per scope.
 type scopeFixture struct {
