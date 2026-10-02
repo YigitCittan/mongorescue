@@ -30,6 +30,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.RestoreTestFailed:         {"❌", "Restore test failed"},
 	events.DriftDetected:             {"⚠️", "Storage drift detected"},
 	events.RetentionDeleted:          {"🗑️", "Backup deleted by retention"},
+	events.JobDatabasesAdded:         {"➕", "New databases added to a job"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -47,6 +48,9 @@ func Render(e events.Event) Message {
 	if !ok {
 		tpl = struct{ icon, headline string }{"ℹ️", "MongoRescue event " + string(e.Type)}
 	}
+	if e.Type == events.BackupFailed && e.Run != nil && e.Run.Status == "partial" {
+		tpl = struct{ icon, headline string }{"⚠️", "Backup partially failed"}
+	}
 
 	var target string
 	switch e.Type {
@@ -56,6 +60,11 @@ func Render(e events.Event) Message {
 			job = "manual"
 		}
 		target = fmt.Sprintf("job %s (db %s)", job, e.Database)
+		if r := e.Run; r != nil && r.Multi {
+			target = fmt.Sprintf("job %s (%d of %d databases backed up)", job, r.Succeeded, r.Databases)
+		}
+	case events.JobDatabasesAdded:
+		target = fmt.Sprintf("job %s now also backs up %d database(s)", e.JobID, len(e.Databases))
 	case events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled:
 		target = fmt.Sprintf("backup %s → db %s", e.BackupID, e.Database)
 	case events.NotificationTest:
@@ -100,6 +109,18 @@ func Render(e events.Event) Message {
 	}
 	if e.Detail != "" {
 		fmt.Fprintf(&body, "\nDetail: %s", truncate(singleLine(redact.Text(e.Detail)), maxErrorLength))
+	}
+	if r := e.Run; r != nil && r.Multi {
+		if len(r.FailedDatabases) > 0 {
+			fmt.Fprintf(&body, "\nFailed databases: %s", truncate(singleLine(strings.Join(r.FailedDatabases, ", ")), maxErrorLength))
+		}
+		if len(r.NewDatabases) > 0 {
+			fmt.Fprintf(&body, "\n%d new database(s) not included: %s", len(r.NewDatabases),
+				truncate(singleLine(strings.Join(r.NewDatabases, ", ")), maxErrorLength))
+		}
+	}
+	if e.RunID != "" && e.Run != nil && e.Run.Multi {
+		fmt.Fprintf(&body, "\nRun ID: %s", e.RunID)
 	}
 	if e.RestoreID != "" {
 		fmt.Fprintf(&body, "\nRestore ID: %s", e.RestoreID)

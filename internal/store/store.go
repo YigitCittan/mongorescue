@@ -58,6 +58,16 @@ type Store interface {
 	ListJobs(ctx context.Context) ([]*models.Job, error)
 	// DeleteJob removes a job or returns ErrNotFound.
 	DeleteJob(ctx context.Context, id string) error
+	// UpdateJobKnownDatabases stores only a job's KnownDatabases, never its settings
+	// or UpdatedAt, or returns ErrNotFound when the job was deleted.
+	UpdateJobKnownDatabases(ctx context.Context, id string, known []string) error
+
+	// SaveJobRun creates or replaces a job run.
+	SaveJobRun(ctx context.Context, run *models.JobRun) error
+	// GetJobRun returns a job run or ErrNotFound.
+	GetJobRun(ctx context.Context, id string) (*models.JobRun, error)
+	// ListJobRuns returns up to limit runs of a job, newest first.
+	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*models.JobRun, error)
 
 	// SaveBackupRecord creates or replaces a backup record.
 	SaveBackupRecord(ctx context.Context, record *models.BackupRecord) error

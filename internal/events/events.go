@@ -10,6 +10,8 @@ package events
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -65,6 +67,9 @@ const (
 	DriftDetected EventType = "storage.drift_detected"
 	// RetentionDeleted is emitted for every backup a retention policy deleted.
 	RetentionDeleted EventType = "retention.deleted"
+	// JobDatabasesAdded is emitted when a job that includes new databases
+	// automatically backs up databases for the first time (Event.Databases).
+	JobDatabasesAdded EventType = "job.databases_added"
 )
 
 // Sources of verification events.
@@ -106,6 +111,7 @@ func (t EventType) Broadcast() bool {
 var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
+	JobDatabasesAdded,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -176,6 +182,98 @@ type Event struct {
 
 	// Bulk summarises a bulk operation (BulkCompleted events only).
 	Bulk *BulkSummary `json:"bulk,omitempty"`
+
+	// RunID is the job run a backup event belongs to.
+	RunID string `json:"run_id,omitempty"`
+	// Run summarises a whole job run. A multi-database run publishes one event per
+	// database (InRun) and then one backup event with Run set, which is the one
+	// notifications deliver; a single-database run's backup event carries Run too.
+	Run *RunSummary `json:"run,omitempty"`
+	// InRun marks the per-database backup event of a multi-database run:
+	// notifications skip it (the run's summary event follows), metrics count it.
+	InRun bool `json:"in_run,omitempty"`
+	// Databases names the databases of a JobDatabasesAdded event.
+	Databases []string `json:"databases,omitempty"`
+}
+
+// RunSummary describes a finished job run (see Event.Run).
+type RunSummary struct {
+	// Status is the run's status: ok, partial, failed or cancelled.
+	Status string `json:"status"`
+	// Multi reports a run of a multi-database job.
+	Multi bool `json:"multi,omitempty"`
+	// Databases counts the run's databases.
+	Databases int `json:"databases"`
+	// Succeeded, Failed and Cancelled count their outcomes.
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+	// FailedDatabases names the databases that failed.
+	FailedDatabases []string `json:"failed_databases,omitempty"`
+	// NewDatabases names databases found since the last run that were not backed up.
+	NewDatabases []string `json:"new_databases,omitempty"`
+}
+
+// RunSummaryOf summarises run.
+func RunSummaryOf(run *models.JobRun, multi bool) *RunSummary {
+	if run == nil {
+		return nil
+	}
+	ok, failed, cancelled, _ := run.Counts()
+	return &RunSummary{
+		Status: string(run.Status), Multi: multi, Databases: len(run.Databases),
+		Succeeded: ok, Failed: failed, Cancelled: cancelled,
+		FailedDatabases: run.FailedDatabases(), NewDatabases: slices.Clone(run.NewDatabases),
+	}
+}
+
+// JobRunEvent builds the summary event of a finished multi-database job run: a
+// backup.succeeded event when every database succeeded, backup.cancelled when the
+// run was cancelled without failures, and backup.failed otherwise (also for a
+// partial run, whose Status is "partial"). Error names the failed databases.
+func JobRunEvent(run *models.JobRun) Event {
+	e := Event{Type: BackupSucceeded, Time: time.Now().UTC(), JobID: run.JobID, RunID: run.ID, Status: string(run.Status)}
+	if run.CompletedAt != nil {
+		e.Time = run.CompletedAt.UTC()
+	}
+	e.Duration = secondsToDuration(run.DurationSeconds)
+	e.Run = RunSummaryOf(run, true)
+	switch run.Status {
+	case models.JobRunOK:
+	case models.JobRunCancelled:
+		e.Type = BackupCancelled
+	default:
+		e.Type = BackupFailed
+		var parts []string
+		for _, d := range run.Databases {
+			switch d.Status {
+			case models.StatusCompleted, models.StatusCancelled, models.StatusInProgress, models.StatusPending:
+			default:
+				msg := d.Database
+				if d.Error != "" {
+					msg += ": " + d.Error
+				}
+				parts = append(parts, msg)
+			}
+		}
+		if run.Error != "" {
+			parts = append([]string{run.Error}, parts...)
+		}
+		e.Error = redact.Text(strings.Join(parts, "; "))
+		if e.Error == "" {
+			e.Error = "no database was backed up"
+		}
+	}
+	return e
+}
+
+// DatabasesAddedEvent builds the JobDatabasesAdded event of a job run that backed
+// up databases for the first time.
+func DatabasesAddedEvent(jobID, runID string, databases []string) Event {
+	return Event{
+		Type: JobDatabasesAdded, Time: time.Now().UTC(), JobID: jobID, RunID: runID,
+		Databases: slices.Clone(databases), Detail: strings.Join(databases, ", "),
+	}
 }
 
 // Publisher is the port through which business and delivery layers emit events.

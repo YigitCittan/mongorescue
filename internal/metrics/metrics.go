@@ -63,6 +63,11 @@ type Metrics struct {
 	backupDuration      *prometheus.HistogramVec
 	backupSize          *prometheus.GaugeVec
 	lastSuccessBackup   *prometheus.GaugeVec
+	databaseBackups     *prometheus.CounterVec
+	databaseSize        *prometheus.GaugeVec
+	databaseLastSuccess *prometheus.GaugeVec
+	jobRuns             *prometheus.CounterVec
+	jobRunDuration      *prometheus.HistogramVec
 	restoresTotal       *prometheus.CounterVec
 	restoreDuration     prometheus.Histogram
 	notificationsTotal  *prometheus.CounterVec
@@ -101,6 +106,32 @@ func New(info BuildInfo) *Metrics {
 			Namespace: namespace,
 			Name:      "last_successful_backup_timestamp_seconds",
 			Help:      "Unix timestamp of the last successful backup per job.",
+		}, []string{"job"}),
+		databaseBackups: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "database_backups_total",
+			Help:      "Total number of finished backups by job, database and status (succeeded|failed|cancelled).",
+		}, []string{"job", "database", "status"}),
+		databaseSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "database_backup_size_bytes",
+			Help:      "Size in bytes of the last successful backup archive per job and database.",
+		}, []string{"job", "database"}),
+		databaseLastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "database_last_successful_backup_timestamp_seconds",
+			Help:      "Unix timestamp of the last successful backup per job and database.",
+		}, []string{"job", "database"}),
+		jobRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "job_runs_total",
+			Help:      "Total number of finished job runs (all their databases) by job and status (ok|partial|failed|cancelled).",
+		}, []string{"job", "status"}),
+		jobRunDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "job_run_duration_seconds",
+			Help:      "Duration of finished job runs (all their databases) in seconds.",
+			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800},
 		}, []string{"job"}),
 		restoresTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -180,6 +211,11 @@ func New(info BuildInfo) *Metrics {
 		m.backupDuration,
 		m.backupSize,
 		m.lastSuccessBackup,
+		m.databaseBackups,
+		m.databaseSize,
+		m.databaseLastSuccess,
+		m.jobRuns,
+		m.jobRunDuration,
 		m.restoresTotal,
 		m.restoreDuration,
 		m.notificationsTotal,
@@ -238,6 +274,15 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 		if job == "" {
 			job = ManualJobLabel
 		}
+		if e.Run != nil {
+			m.jobRuns.WithLabelValues(job, e.Run.Status).Inc()
+			m.jobRunDuration.WithLabelValues(job).Observe(e.Duration.Seconds())
+			if e.Run.Multi {
+				// The summary of a multi-database run: its databases were counted
+				// by their own events.
+				return
+			}
+		}
 		status := StatusSucceeded
 		switch e.Type {
 		case events.BackupFailed:
@@ -247,9 +292,16 @@ func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 		}
 		m.backupsTotal.WithLabelValues(job, status).Inc()
 		m.backupDuration.WithLabelValues(job).Observe(e.Duration.Seconds())
+		if e.Database != "" {
+			m.databaseBackups.WithLabelValues(job, e.Database, status).Inc()
+		}
 		if e.Type == events.BackupSucceeded {
 			m.backupSize.WithLabelValues(job).Set(float64(e.SizeBytes))
 			m.lastSuccessBackup.WithLabelValues(job).Set(float64(e.Time.UnixNano()) / 1e9)
+			if e.Database != "" {
+				m.databaseSize.WithLabelValues(job, e.Database).Set(float64(e.SizeBytes))
+				m.databaseLastSuccess.WithLabelValues(job, e.Database).Set(float64(e.Time.UnixNano()) / 1e9)
+			}
 		}
 	case events.RestoreSucceeded:
 		m.restoresTotal.WithLabelValues(StatusSucceeded).Inc()
@@ -283,6 +335,12 @@ func (m *Metrics) ForgetJob(jobID string) {
 	}
 	m.backupDuration.DeleteLabelValues(jobID)
 	m.backupSize.DeleteLabelValues(jobID)
+	byJob := prometheus.Labels{"job": jobID}
+	m.databaseBackups.DeletePartialMatch(byJob)
+	m.databaseSize.DeletePartialMatch(byJob)
+	m.databaseLastSuccess.DeletePartialMatch(byJob)
+	m.jobRuns.DeletePartialMatch(byJob)
+	m.jobRunDuration.DeletePartialMatch(byJob)
 	m.lastSuccessBackup.DeleteLabelValues(jobID)
 	m.forgetIntegrityJob(jobID)
 }

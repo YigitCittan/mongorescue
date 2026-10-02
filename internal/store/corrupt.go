@@ -165,6 +165,7 @@ var recordCheckers = map[string]recordChecker{
 	tableJobs:     checkJSON[models.Job](tableJobs, nil),
 	tableBackups:  checkJSON[models.BackupRecord](tableBackups, nil),
 	tableRestores: checkJSON[models.RestoreRecord](tableRestores, nil),
+	tableJobRuns:  checkJSON[models.JobRun](tableJobRuns, nil),
 	tableRules:    checkJSON[notify.Rule](tableRules, nil),
 	tableConnections: checkJSON(tableConnections, func(s *SQLiteStore, c *models.Connection) error {
 		return s.openConnection(c)

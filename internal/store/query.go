@@ -51,6 +51,8 @@ type BackupFilter struct {
 	Trigger models.BackupTrigger
 	// RetryOf keeps the retries of this backup.
 	RetryOf string
+	// RunID keeps the backups of this job run.
+	RunID string
 	// From keeps backups started at or after this time.
 	From time.Time
 	// To keeps backups started before this time.
@@ -217,6 +219,9 @@ func backupConditions(f BackupFilter) conditions {
 	}
 	if f.RetryOf != "" {
 		c.add("b.retry_of = ?", f.RetryOf)
+	}
+	if f.RunID != "" {
+		c.add("b.run_id = ?", f.RunID)
 	}
 	c.addTimeRange("b.", f.From, f.To)
 	if f.Search != "" {
