@@ -96,6 +96,48 @@ func TestLegacyImportedKeyKeepsVerifying(t *testing.T) {
 	}
 }
 
+// TestImportAfterInterruptedLegacyImport covers an earlier release that stored the
+// key (SHA-256 form) but stopped before recording the import: importing it again
+// must not add a second record, so revoking the one record rejects the key.
+func TestImportAfterInterruptedLegacyImport(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	admin := f.setup(t)
+	legacy := &auth.APIKey{
+		ID: "key_legacy0000000001", Name: "Imported from MONGORESCUE_API_KEY",
+		Prefix: "L" + auth.HashToken(importedKey)[:7], Scope: auth.ScopeAdmin,
+		Hash: auth.HashToken(importedKey), CreatedAt: time.Now().UTC(),
+	}
+	if err := f.store.CreateAPIKey(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	svc := serviceOn(t, f.store, bytes.Repeat([]byte{7}, 32))
+	if created, err := svc.ImportAPIKey(ctx, importedKey); err != nil || created {
+		t.Fatalf("ImportAPIKey = %v, %v; want a no-op", created, err)
+	}
+	keys, err := f.store.ListAPIKeys(ctx)
+	if err != nil || len(keys) != 1 || keys[0].ID != legacy.ID {
+		t.Fatalf("keys = %+v, %v; want only the legacy record", keys, err)
+	}
+	p, err := f.svc.AuthenticateSession(ctx, admin.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteAPIKey(ctx, p, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AuthenticateAPIKey(ctx, importedKey); !errors.Is(err, auth.ErrUnauthenticated) {
+		t.Fatalf("revoked key: %v; want ErrUnauthenticated", err)
+	}
+	// With the legacy record revoked, the next import creates the MAC record.
+	if created, err := svc.ImportAPIKey(ctx, importedKey); err != nil || !created {
+		t.Fatalf("ImportAPIKey after revocation = %v, %v; want created", created, err)
+	}
+	if _, err := svc.AuthenticateAPIKey(ctx, importedKey); err != nil {
+		t.Fatalf("re-imported key: %v", err)
+	}
+}
+
 // TestGeneratedAndImportedFormatKey checks that an imported key in the generated
 // "mr_" format is looked up by its own prefix and verified against its MAC.
 func TestGeneratedAndImportedFormatKey(t *testing.T) {
