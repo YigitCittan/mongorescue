@@ -14,8 +14,15 @@ const verifyUsage = `Usage: mongorescue verify BACKUP_ID [flags]
 Re-reads the backup's archive on its storage target, in the background on the
 server, and compares it with the checksum recorded at backup time (encrypted
 archives are decrypted to their end). With --wait it polls until the result is in
-and exits 1 on a mismatch or an error. Needs an operator or admin API key.
+and exits 1 on a mismatch or an error. It stops waiting after an hour (exit 6)
+unless --timeout says otherwise (--timeout 0 waits forever). Needs an operator or
+admin API key.
 `
+
+// defaultVerifyTimeout bounds "verify --wait" without --timeout: a verification the
+// server never runs (refused in the background, or the server restarted) would
+// otherwise be waited for forever.
+var defaultVerifyTimeout = time.Hour
 
 // runVerify implements "mongorescue verify".
 func runVerify(ctx context.Context, s *session, args []string) error {
@@ -32,9 +39,12 @@ func runVerify(ctx context.Context, s *session, args []string) error {
 	if err != nil {
 		return err
 	}
+	if s.opts.wait && !s.set["timeout"] {
+		s.opts.timeout = defaultVerifyTimeout
+	}
 	res, err := client.VerifyBackup(ctx, id)
 	if err != nil {
-		return err
+		return startError(err, "backups --id "+id+" --json")
 	}
 	if !s.opts.wait {
 		switch {

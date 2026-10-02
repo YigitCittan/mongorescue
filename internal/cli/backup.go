@@ -62,7 +62,7 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 		StorageTargetID: strings.TrimSpace(*target), Gzip: gzip.ptr(), IncludeUsersAndRoles: *usersAndRoles,
 	})
 	if err != nil {
-		return err
+		return startError(err, "backups")
 	}
 	return s.finishBackup(ctx, client, res)
 }
@@ -71,7 +71,7 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 func (s *session) runJob(ctx context.Context, client *apiclient.Client, id string) error {
 	res, err := client.RunJob(ctx, id)
 	if err != nil {
-		return err
+		return startError(err, "backups --job "+id)
 	}
 	if b := res.Value.Backup; b != nil {
 		return s.finishBackup(ctx, client, &apiclient.Result[models.BackupRecord]{Value: *b, Raw: res.Raw})

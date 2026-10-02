@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -85,13 +86,13 @@ func (s *session) resolveKey() (string, error) {
 		if strings.TrimSpace(s.opts.apiKeyFile) == "" {
 			return "", usageErrorf("--api-key-file is empty")
 		}
-		k, err := readKeyFile(s.opts.apiKeyFile)
+		k, err := s.readKeyFile(s.opts.apiKeyFile)
 		if err != nil {
 			return "", err
 		}
 		key, source = k, "--api-key-file"
 	case strings.TrimSpace(s.getenv(EnvAPIKeyFile)) != "":
-		k, err := readKeyFile(strings.TrimSpace(s.getenv(EnvAPIKeyFile)))
+		k, err := s.readKeyFile(strings.TrimSpace(s.getenv(EnvAPIKeyFile)))
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", EnvAPIKeyFile, err)
 		}
@@ -111,13 +112,19 @@ func (s *session) resolveKey() (string, error) {
 }
 
 // readKeyFile reads an API key from path: the file's content without surrounding
-// whitespace.
-func readKeyFile(path string) (string, error) {
+// whitespace. On Unix it warns (and goes on) when the file is readable or writable
+// by its group or by others.
+func (s *session) readKeyFile(path string) (string, error) {
 	f, err := os.Open(path) //nolint:gosec // G304: the user names the key file.
 	if err != nil {
 		return "", fmt.Errorf("%w: API key file: %w", ErrUsage, err)
 	}
 	defer func() { _ = f.Close() }()
+	if runtime.GOOS != "windows" {
+		if info, statErr := f.Stat(); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+			s.warnf("API key file %s is readable by other users (mode %04o); chmod 600 %s", path, info.Mode().Perm(), path)
+		}
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxKeyFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("%w: API key file: %w", ErrUsage, err)

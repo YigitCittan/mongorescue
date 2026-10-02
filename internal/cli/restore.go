@@ -88,7 +88,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 				return s.preflightFailed(p, apiErr.Data)
 			}
 		}
-		return err
+		return startError(err, "restores --backup "+id)
 	}
 	return s.finishRestore(ctx, client, res)
 }
