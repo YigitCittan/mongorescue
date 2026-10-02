@@ -51,7 +51,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
 - A preflight before every restore (target reachable, server versions, clone name, privileges, free disk space, the collections an in-place restore replaces) that refuses a restore bound to fail unless forced, and an optional comparison of the restored database with the backup's manifest ([api](docs/api.md#restore-preflight))
-- A recovery point objective per job (by default two schedule intervals plus an hour) that alerts once when missed, and a *Recovery readiness* view per database: last good, verified and restore-tested backups, RPO, estimated RTO and escrowed keys ([production](docs/production.md#rpo-and-rto))
+- A recovery point objective per job (by default twice the longest gap between runs plus an hour) that alerts once when missed, and a *Recovery readiness* view per database: last good, verified and restore-tested backups, RPO, estimated RTO and escrowed keys ([production](docs/production.md#rpo-and-rto))
 - Restore the whole database or only selected collections, picked from a list read from the backup's archive header
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules

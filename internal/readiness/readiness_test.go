@@ -3,6 +3,7 @@ package readiness_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,17 +15,28 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
-// recorder is an events.Publisher keeping what it was given.
+// recorder is an events.Publisher keeping what it was given. While full is set it
+// refuses events, like a bus whose queue is full.
 type recorder struct {
 	mu     sync.Mutex
 	events []events.Event
+	full   bool
 }
 
 func (r *recorder) Publish(_ context.Context, e events.Event) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.full {
+		return false
+	}
 	r.events = append(r.events, e)
 	return true
+}
+
+func (r *recorder) setFull(full bool) {
+	r.mu.Lock()
+	r.full = full
+	r.mu.Unlock()
 }
 
 // take returns and clears the recorded events.
@@ -57,8 +69,21 @@ func (c *clock) set(t time.Time) {
 var t0 = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 
 // newService returns a readiness service on st with the clock and publisher.
-func newService(st *store.SQLiteStore, clk *clock, pub events.Publisher, observe func([]readiness.Sample)) *readiness.Service {
-	return readiness.New(readiness.Config{Store: st, Publisher: pub, Now: clk.Now, Observe: observe})
+// unedited reads jobs as if they were never edited after their creation
+// (UpdatedAt = CreatedAt): SaveJob stamps UpdatedAt with the wall clock, which the
+// tests' clock does not follow.
+type unedited struct{ *store.SQLiteStore }
+
+func (u unedited) ListJobs(ctx context.Context) ([]*models.Job, error) {
+	list, err := u.SQLiteStore.ListJobs(ctx)
+	for _, j := range list {
+		j.UpdatedAt = j.CreatedAt
+	}
+	return list, err
+}
+
+func newService(st *store.SQLiteStore, clk *clock, pub events.Publisher, observe func(time.Time, []readiness.Sample)) *readiness.Service {
+	return readiness.New(readiness.Config{Store: unedited{st}, Publisher: pub, Now: clk.Now, Observe: observe})
 }
 
 func saveJob(t *testing.T, st *store.SQLiteStore, job *models.Job) {
@@ -100,7 +125,7 @@ func TestCheckerBreachRecoverAndNoRealertAfterRestart(t *testing.T) {
 	clk := &clock{now: t0.Add(2 * time.Hour)}
 	pub := &recorder{}
 	var samples []readiness.Sample
-	svc := newService(st, clk, pub, func(s []readiness.Sample) { samples = s })
+	svc := newService(st, clk, pub, func(_ time.Time, s []readiness.Sample) { samples = s })
 
 	// Hourly: the default objective is the six-hour floor.
 	saveJob(t, st, &models.Job{ID: "job_h", Name: "hourly shop", Database: "shop", CronExpression: "@hourly", Enabled: true, ConnectionID: "c1"})
@@ -152,7 +177,8 @@ func TestCheckerBreachRecoverAndNoRealertAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = pub.take()
-	if len(got) != 1 || got[0].Type != events.JobRPORecovered || got[0].Database != "shop" || got[0].Status != "recovered" {
+	if len(got) != 1 || got[0].Type != events.JobRPORecovered || got[0].Database != "shop" || got[0].Status != "recovered" ||
+		!strings.HasPrefix(got[0].Detail, "the newest successful backup is") {
 		t.Fatalf("events after the recovery = %+v", got)
 	}
 	if b := breaches(t, st); len(b) != 0 {
@@ -225,13 +251,84 @@ func TestCheckerMultiDatabaseJob(t *testing.T) {
 	}
 }
 
+// TestDatabaseJoiningLaterIsNoBreach: a job created 30 days ago gets a new database
+// today. Without a backup yet, its age counts from when it joined, not from the
+// job's creation, so it is no breach; a database known from the start that was
+// never backed up is one.
+func TestDatabaseJoiningLaterIsNoBreach(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	clk := &clock{now: now.Add(time.Hour)}
+	pub := &recorder{}
+	svc := newService(st, clk, pub, nil)
+
+	// A pattern job (every 6 hours: objective 13 hours) whose first run knew app_a
+	// and app_old; app_old never had a successful backup.
+	saveJob(t, st, &models.Job{
+		ID: "job_p", Name: "apps", CronExpression: "@every 6h", Enabled: true, ConnectionID: "c1",
+		CreatedAt: now.Add(-30 * 24 * time.Hour), KnownDatabases: []string{"app_a", "app_old"},
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionPattern, Include: []string{"app_*"}, AutoIncludeNew: true},
+	})
+	saveBackup(t, st, &models.BackupRecord{ID: "ba", JobID: "job_p", Database: "app_a", StartedAt: now.Add(-time.Hour)})
+	// Today a run includes app_new automatically.
+	if err := st.UpdateJobKnownDatabases(ctx, "job_p", func(*models.Job) ([]string, bool) {
+		return []string{"app_a", "app_new", "app_old"}, true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.JobDatabaseJoins(ctx)
+	if joins := all["job_p"]; err != nil || len(joins) != 1 || joins["app_new"].IsZero() {
+		t.Fatalf("joins = %v, %v; want app_new only", all, err)
+	}
+
+	if err = svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := pub.take()
+	if len(got) != 1 || got[0].Database != "app_old" || got[0].Type != events.JobRPOMissed {
+		t.Fatalf("events = %+v; want app_old missed, app_new not", got)
+	}
+	report, err := svc.Report(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range report.Rows {
+		if r.Database == "app_new" && (r.RPO.Met == nil || !*r.RPO.Met || r.Jobs[0].AgeSeconds > 2*time.Hour.Seconds()) {
+			t.Fatalf("app_new = %+v", r)
+		}
+	}
+}
+
+// TestDatabaseAddedByEditCountsFromTheUpdate: a database added by editing a job
+// counts from the job's last update.
+func TestDatabaseAddedByEditCountsFromTheUpdate(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	pub := &recorder{}
+	// The real store: SaveJob stamps UpdatedAt now.
+	svc := readiness.New(readiness.Config{Store: st, Publisher: pub, Now: func() time.Time { return now.Add(time.Hour) }})
+	saveJob(t, st, &models.Job{
+		ID: "job_l", Name: "list", CronExpression: "@hourly", Enabled: true, CreatedAt: now.Add(-30 * 24 * time.Hour),
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"app_a", "app_b"}},
+	})
+	saveBackup(t, st, &models.BackupRecord{ID: "ba", JobID: "job_l", Database: "app_a", StartedAt: now.Add(-time.Hour)})
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.take(); len(got) != 0 {
+		t.Fatalf("events = %+v; want none", got)
+	}
+}
+
 func TestHandleEventKicksAnEarlyCheck(t *testing.T) {
 	st := storetest.New(t)
 	clk := &clock{now: t0.Add(10 * time.Hour)}
 	checked := make(chan struct{}, 4)
 	svc := readiness.New(readiness.Config{
 		Store: st, Now: clk.Now, StartDelay: time.Hour, CheckInterval: time.Hour,
-		Observe: func([]readiness.Sample) { checked <- struct{}{} },
+		Observe: func(time.Time, []readiness.Sample) { checked <- struct{}{} },
 	})
 	svc.Start(context.Background())
 	defer svc.Stop()
@@ -249,6 +346,90 @@ func TestHandleEventKicksAnEarlyCheck(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a job's backup did not trigger a check")
 	}
+	// Job writes kick it directly.
+	svc.Kick()
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Kick did not trigger a check")
+	}
+}
+
+// TestDroppedEventsAreRetried: an event the bus refuses (full queue) leaves the
+// breach state as it was, so the next check publishes it again.
+func TestDroppedEventsAreRetried(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	clk := &clock{now: t0.Add(8 * time.Hour)}
+	pub := &recorder{full: true}
+	svc := newService(st, clk, pub, nil)
+	saveJob(t, st, &models.Job{ID: "job_h", Name: "hourly", Database: "shop", CronExpression: "@hourly", Enabled: true})
+	saveBackup(t, st, &models.BackupRecord{ID: "b1", JobID: "job_h", Database: "shop", StartedAt: t0.Add(time.Hour)})
+
+	// The missed event is dropped: no breach is kept.
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b := breaches(t, st); len(b) != 0 {
+		t.Fatalf("breaches after a dropped event = %+v", b)
+	}
+	pub.setFull(false)
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.take(); len(got) != 1 || got[0].Type != events.JobRPOMissed {
+		t.Fatalf("events of the retry = %+v", got)
+	}
+	since := breaches(t, st)[0].Since
+
+	// The recovered event is dropped: the breach comes back as it was.
+	saveBackup(t, st, &models.BackupRecord{ID: "b2", JobID: "job_h", Database: "shop", StartedAt: t0.Add(8*time.Hour + time.Minute)})
+	clk.set(t0.Add(8*time.Hour + 5*time.Minute))
+	pub.setFull(true)
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b := breaches(t, st); len(b) != 1 || !b[0].Since.Equal(since) {
+		t.Fatalf("breaches after a dropped recovery = %+v; want the breach since %s", b, since)
+	}
+	pub.setFull(false)
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.take(); len(got) != 1 || got[0].Type != events.JobRPORecovered {
+		t.Fatalf("events of the retried recovery = %+v", got)
+	}
+	if b := breaches(t, st); len(b) != 0 {
+		t.Fatalf("breaches after the recovery = %+v", b)
+	}
+}
+
+// TestRaisedObjectiveRecovers: raising the RPO of a breached job heals the breach,
+// and the event says the objective changed (no new backup came in).
+func TestRaisedObjectiveRecovers(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	clk := &clock{now: t0.Add(8 * time.Hour)}
+	pub := &recorder{}
+	svc := newService(st, clk, pub, nil)
+	job := &models.Job{ID: "job_h", Name: "hourly", Database: "shop", CronExpression: "@hourly", Enabled: true}
+	saveJob(t, st, job)
+	saveBackup(t, st, &models.BackupRecord{ID: "b1", JobID: "job_h", Database: "shop", StartedAt: t0.Add(time.Hour)})
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.take(); len(got) != 1 || got[0].Type != events.JobRPOMissed {
+		t.Fatalf("events = %+v", got)
+	}
+	job.RPOMinutes = 24 * 60
+	saveJob(t, st, job)
+	if err := svc.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := pub.take()
+	if len(got) != 1 || got[0].Type != events.JobRPORecovered || got[0].Detail != "the objective changed to 1d; the newest successful backup is 6h 59m old" {
+		t.Fatalf("events after raising the objective = %+v", got)
+	}
 }
 
 func TestReportRows(t *testing.T) {
@@ -256,7 +437,7 @@ func TestReportRows(t *testing.T) {
 	ctx := context.Background()
 	clk := &clock{now: t0.Add(48 * time.Hour)}
 	escrowed := false
-	svc := readiness.New(readiness.Config{Store: st, Now: clk.Now, KeysEscrowed: func() bool { return escrowed }})
+	svc := readiness.New(readiness.Config{Store: unedited{st}, Now: clk.Now, KeysEscrowed: func() bool { return escrowed }})
 
 	// A multi-database job (every 6 hours, objective 13 hours) on c1: app_a has a
 	// fresh, verified, restore-tested backup; app_b only an old one; app_c none.

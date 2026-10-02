@@ -744,6 +744,7 @@ var compatSteps = []compatStep{
 					"created_at": rfc(22 * time.Hour), "updated_at": rfc(22 * time.Hour),
 				}))
 			f.exec(t, `INSERT INTO rpo_breaches (job_id, database_name, since) VALUES (?, ?, ?)`, "job_v18", "shop", ns(23*time.Hour))
+			f.exec(t, `INSERT INTO job_database_joins (job_id, database_name, joined_at) VALUES (?, ?, ?)`, "job_v18", "crm", ns(23*time.Hour))
 		},
 		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
 			ctx := context.Background()
@@ -755,6 +756,9 @@ var compatSteps = []compatStep{
 			if err != nil || len(breaches) != 1 || breaches[0].JobID != "job_v18" || breaches[0].Database != "shop" ||
 				!breaches[0].Since.Equal(time.Unix(0, ns(23*time.Hour)).UTC()) {
 				t.Errorf("rpo breaches = %+v, %v", breaches, err)
+			}
+			if joins, joinErr := s.JobDatabaseJoins(ctx); joinErr != nil || !joins["job_v18"]["crm"].Equal(time.Unix(0, ns(23*time.Hour)).UTC()) {
+				t.Errorf("database joins = %v, %v", joins, joinErr)
 			}
 			// Jobs stored before 0018 keep the default RPO.
 			if old, getErr := s.GetJob(ctx, "job_v1"); getErr == nil && old.RPOMinutes != 0 {

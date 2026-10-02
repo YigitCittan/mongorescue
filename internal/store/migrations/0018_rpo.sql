@@ -11,10 +11,24 @@
 -- published and job.rpo_recovered has not, so a restart never alerts again for a
 -- breach it already reported. Rows of deleted or paused jobs are removed by the
 -- checker without an event.
+--
+-- job_database_joins records when a job that discovers its databases (all or
+-- pattern selections) first counted a database among its known databases after
+-- its first run: a database that joins later and has no successful backup yet
+-- counts its RPO age from then, not from the job's creation. Databases known
+-- from the start, and databases added by editing the job, have no row; their age
+-- counts from the job's last update or creation.
 
 CREATE TABLE rpo_breaches (
     job_id        TEXT    NOT NULL,
     database_name TEXT    NOT NULL,
     since         INTEGER NOT NULL,
+    PRIMARY KEY (job_id, database_name)
+) STRICT;
+
+CREATE TABLE job_database_joins (
+    job_id        TEXT    NOT NULL,
+    database_name TEXT    NOT NULL,
+    joined_at     INTEGER NOT NULL,
     PRIMARY KEY (job_id, database_name)
 ) STRICT;

@@ -38,25 +38,24 @@ const (
 	DefaultCheckInterval = 5 * time.Minute
 	// DefaultStartDelay delays the first check after start-up.
 	DefaultStartDelay = 30 * time.Second
-	// restoreTestsPerJob is how many of a job's newest restore tests are read.
-	restoreTestsPerJob = 50
 )
 
 // Store is the persistence port (implemented by *store.SQLiteStore).
 type Store interface {
 	// ListJobs returns every job.
 	ListJobs(ctx context.Context) ([]*models.Job, error)
-	// LatestJobDatabaseBackups returns the newest backup of job jobID per database
-	// with status ("" = any).
-	LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error)
-	// LatestVerifiedJobDatabaseBackups returns the newest completed and verified
-	// backup of job jobID per database.
-	LatestVerifiedJobDatabaseBackups(ctx context.Context, jobID string) (map[string]*models.BackupRecord, error)
-	// ListRestoreTests returns up to limit restore tests of job jobID, newest first.
-	ListRestoreTests(ctx context.Context, jobID string, limit int) ([]*models.RestoreTestResult, error)
+	// LatestJobDatabaseBackupsAll returns the newest completed (with verified: and
+	// verified) backup of every job and database, keyed by job and database.
+	LatestJobDatabaseBackupsAll(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error)
+	// LatestRestoreTestsAll returns per job the newest restore test of each
+	// database and the newest passed one, newest first.
+	LatestRestoreTestsAll(ctx context.Context) (map[string][]*models.RestoreTestResult, error)
 	// LatestCompletedRestores returns the newest completed full restore per source
 	// connection and database.
 	LatestCompletedRestores(ctx context.Context) ([]*models.RestoreRecord, error)
+	// JobDatabaseJoins returns, per job and database, when a database joined the
+	// job after its first run.
+	JobDatabaseJoins(ctx context.Context) (map[string]map[string]time.Time, error)
 	// ListRPOBreaches returns the recorded RPO breaches.
 	ListRPOBreaches(ctx context.Context) ([]models.RPOBreach, error)
 	// AddRPOBreach records a breach unless one is recorded, reporting whether it was
@@ -79,8 +78,8 @@ type Sample struct {
 	// JobID and Database identify it.
 	JobID    string
 	Database string
-	// Since is when the newest successful backup finished, or when the job was
-	// created when it has none.
+	// Since is when the newest successful backup finished, or when the database
+	// joined the job when it has none.
 	Since time.Time
 	// Target is the job's recovery point objective.
 	Target time.Duration
@@ -97,8 +96,9 @@ type Config struct {
 	KeysEscrowed func() bool
 	// Publisher receives job.rpo_missed and job.rpo_recovered.
 	Publisher events.Publisher
-	// Observe receives the samples of every check (metrics); nil means none.
-	Observe func([]Sample)
+	// Observe receives the samples of every check (metrics) with the time the check
+	// started, so series of jobs deleted meanwhile can be dropped; nil means none.
+	Observe func(started time.Time, samples []Sample)
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Now is the clock; nil means time.Now.
@@ -209,13 +209,19 @@ func (s *Service) loop(ctx context.Context) {
 func (s *Service) HandleEvent(_ context.Context, e events.Event) {
 	switch e.Type {
 	case events.BackupSucceeded, events.BackupFailed:
-		if e.JobID == "" {
-			return
+		if e.JobID != "" {
+			s.Kick()
 		}
-		select {
-		case s.kick <- struct{}{}:
-		default:
-		}
+	}
+}
+
+// Kick asks the background checker for an early check, coalescing requests; it
+// never blocks. Job writes (an edit of the RPO or the schedule, a pause, a resume,
+// a deletion) call it, so their effect shows within moments.
+func (s *Service) Kick() {
+	select {
+	case s.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -225,7 +231,8 @@ type point struct {
 	database string
 	// last is the newest completed backup of the database by the job, or nil.
 	last *models.BackupRecord
-	// since is when last finished, or the job's creation time without one.
+	// since is when last finished, or without one when the database joined the job
+	// (see joinedAt).
 	since     time.Time
 	target    time.Duration
 	isDefault bool
@@ -240,25 +247,50 @@ func (p point) met(now time.Time) bool { return p.age(now) <= p.target }
 // key identifies a job's database in the breach table.
 type key struct{ job, database string }
 
-// points returns the recovery points of every database of jobs, with the newest
-// completed backups read per job.
+// points returns the recovery points of every database of jobs. The newest
+// completed backups and the database join times are read in one query each,
+// whatever the number of jobs.
 func (s *Service) points(ctx context.Context, jobs []*models.Job, now time.Time) ([]point, error) {
+	if len(jobs) == 0 {
+		return nil, nil
+	}
+	latest, err := s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, false)
+	if err != nil {
+		return nil, fmt.Errorf("latest backups: %w", err)
+	}
+	joins, err := s.cfg.Store.JobDatabaseJoins(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("database joins: %w", err)
+	}
 	var out []point
 	for _, j := range jobs {
-		latest, err := s.cfg.Store.LatestJobDatabaseBackups(ctx, j.ID, models.StatusCompleted)
-		if err != nil {
-			return nil, fmt.Errorf("latest backups of job %s: %w", j.ID, err)
-		}
 		target, isDefault := scheduler.EffectiveRPO(j, now)
-		for _, db := range Databases(j, latest) {
-			p := point{job: j, database: db, last: latest[db], since: j.CreatedAt.UTC(), target: target, isDefault: isDefault}
+		for _, db := range Databases(j, latest[j.ID]) {
+			p := point{job: j, database: db, last: latest[j.ID][db], target: target, isDefault: isDefault}
 			if p.last != nil {
 				p.since = finishedAt(p.last)
+			} else {
+				p.since = joinedAt(j, joins[j.ID][db])
 			}
 			out = append(out, p)
 		}
 	}
 	return out, nil
+}
+
+// joinedAt is when a database without a successful backup became part of job j:
+// joined, when its known databases recorded it joining later (auto-included by a
+// run), else the job's last update (a database added by editing the job) or
+// creation, whichever is later.
+func joinedAt(j *models.Job, joined time.Time) time.Time {
+	if !joined.IsZero() {
+		return joined.UTC()
+	}
+	at := j.CreatedAt
+	if j.UpdatedAt.After(at) {
+		at = j.UpdatedAt
+	}
+	return at.UTC()
 }
 
 // Databases returns the databases job j is expected to back up: a single-database
@@ -325,9 +357,9 @@ func (s *Service) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list rpo breaches: %w", err)
 	}
-	breached := make(map[key]bool, len(stored))
+	breachedSince := make(map[key]time.Time, len(stored))
 	for _, b := range stored {
-		breached[key{b.JobID, b.Database}] = true
+		breachedSince[key{b.JobID, b.Database}] = b.Since
 	}
 
 	var errs []error
@@ -337,31 +369,15 @@ func (s *Service) Check(ctx context.Context) error {
 		k := key{p.job.ID, p.database}
 		seen[k] = true
 		samples = append(samples, Sample{JobID: p.job.ID, Database: p.database, Since: p.since, Target: p.target})
+		since, breached := breachedSince[k]
 		switch met := p.met(now); {
-		case !met && !breached[k]:
-			// Recorded before it is published: a crash in between loses one alert
-			// instead of repeating it on every restart.
-			added, addErr := s.cfg.Store.AddRPOBreach(ctx, models.RPOBreach{JobID: k.job, Database: k.database, Since: now})
-			if addErr != nil {
-				errs = append(errs, fmt.Errorf("record the rpo breach of job %s: %w", k.job, addErr))
-				continue
+		case !met && !breached:
+			if err := s.reportMissed(ctx, p, now); err != nil {
+				errs = append(errs, err)
 			}
-			if added {
-				s.logger.Warn("recovery point objective missed",
-					logsafe.Attr("job_id", k.job), logsafe.Attr("database", k.database),
-					slog.Duration("age", p.age(now).Round(time.Second)), slog.Duration("rpo", p.target))
-				s.publish(ctx, rpoEvent(events.JobRPOMissed, p, now))
-			}
-		case met && breached[k]:
-			deleted, delErr := s.cfg.Store.DeleteRPOBreach(ctx, k.job, k.database)
-			if delErr != nil {
-				errs = append(errs, fmt.Errorf("clear the rpo breach of job %s: %w", k.job, delErr))
-				continue
-			}
-			if deleted {
-				s.logger.Info("recovery point objective met again",
-					logsafe.Attr("job_id", k.job), logsafe.Attr("database", k.database))
-				s.publish(ctx, rpoEvent(events.JobRPORecovered, p, now))
+		case met && breached:
+			if err := s.reportRecovered(ctx, p, since, now); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
@@ -373,28 +389,89 @@ func (s *Service) Check(ctx context.Context) error {
 		}
 	}
 	if s.cfg.Observe != nil {
-		s.cfg.Observe(samples)
+		s.cfg.Observe(now, samples)
 	}
 	return errors.Join(errs...)
 }
 
-// publish emits e if a publisher is configured.
-func (s *Service) publish(ctx context.Context, e events.Event) {
-	if s.cfg.Publisher != nil {
-		s.cfg.Publisher.Publish(ctx, e)
+// reportMissed records the new breach of p and publishes job.rpo_missed. The
+// breach is recorded first, so a crash in between loses one alert instead of
+// repeating it on every restart; an event the bus refused (dropped) takes the
+// record back, so the next check tries again.
+func (s *Service) reportMissed(ctx context.Context, p point, now time.Time) error {
+	added, err := s.cfg.Store.AddRPOBreach(ctx, models.RPOBreach{JobID: p.job.ID, Database: p.database, Since: now})
+	if err != nil {
+		return fmt.Errorf("record the rpo breach of job %s: %w", p.job.ID, err)
 	}
+	if !added {
+		return nil
+	}
+	if !s.publish(ctx, rpoEvent(events.JobRPOMissed, p, time.Time{}, now)) {
+		if _, err = s.cfg.Store.DeleteRPOBreach(ctx, p.job.ID, p.database); err != nil {
+			return fmt.Errorf("take back the unpublished rpo breach of job %s: %w", p.job.ID, err)
+		}
+		s.logger.Warn("the rpo_missed event was dropped; the next check retries",
+			logsafe.Attr("job_id", p.job.ID), logsafe.Attr("database", p.database))
+		return nil
+	}
+	s.logger.Warn("recovery point objective missed",
+		logsafe.Attr("job_id", p.job.ID), logsafe.Attr("database", p.database),
+		slog.Duration("age", p.age(now).Round(time.Second)), slog.Duration("rpo", p.target))
+	return nil
 }
 
-// rpoEvent builds the job.rpo_missed or job.rpo_recovered event of p at now.
-func rpoEvent(t events.EventType, p point, now time.Time) events.Event {
+// reportRecovered clears the breach of p (recorded at since) and publishes
+// job.rpo_recovered; a refused event restores the breach, so the next check tries
+// again.
+func (s *Service) reportRecovered(ctx context.Context, p point, since, now time.Time) error {
+	deleted, err := s.cfg.Store.DeleteRPOBreach(ctx, p.job.ID, p.database)
+	if err != nil {
+		return fmt.Errorf("clear the rpo breach of job %s: %w", p.job.ID, err)
+	}
+	if !deleted {
+		return nil
+	}
+	if !s.publish(ctx, rpoEvent(events.JobRPORecovered, p, since, now)) {
+		if _, err = s.cfg.Store.AddRPOBreach(ctx, models.RPOBreach{JobID: p.job.ID, Database: p.database, Since: since}); err != nil {
+			return fmt.Errorf("restore the rpo breach of job %s: %w", p.job.ID, err)
+		}
+		s.logger.Warn("the rpo_recovered event was dropped; the next check retries",
+			logsafe.Attr("job_id", p.job.ID), logsafe.Attr("database", p.database))
+		return nil
+	}
+	s.logger.Info("recovery point objective met again",
+		logsafe.Attr("job_id", p.job.ID), logsafe.Attr("database", p.database))
+	return nil
+}
+
+// publish emits e and reports whether the publisher accepted it; without a
+// publisher there is nobody to tell, which counts as accepted.
+func (s *Service) publish(ctx context.Context, e events.Event) bool {
+	if s.cfg.Publisher == nil {
+		return true
+	}
+	return s.cfg.Publisher.Publish(ctx, e)
+}
+
+// rpoEvent builds the job.rpo_missed or job.rpo_recovered event of p at now. since
+// is when the healed breach began (job.rpo_recovered).
+func rpoEvent(t events.EventType, p point, since, now time.Time) events.Event {
 	e := events.Event{Type: t, Time: now, JobID: p.job.ID, Database: p.database, Status: "missed"}
 	age, target := FormatDuration(p.age(now)), FormatDuration(p.target)
 	switch {
+	case t == events.JobRPORecovered && (p.last == nil || !finishedAt(p.last).After(since)):
+		// No backup since the breach began: the objective was raised (or the
+		// database joined anew), not the data refreshed.
+		e.Status = "recovered"
+		e.Detail = fmt.Sprintf("the objective changed to %s; the newest successful backup is %s old", target, age)
+		if p.last == nil {
+			e.Detail = fmt.Sprintf("the objective changed to %s; no successful backup yet", target)
+		}
 	case t == events.JobRPORecovered:
 		e.Status = "recovered"
 		e.Detail = fmt.Sprintf("the newest successful backup is %s old; objective %s", age, target)
 	case p.last == nil:
-		e.Detail = fmt.Sprintf("no successful backup since the job was created %s ago; objective %s", age, target)
+		e.Detail = fmt.Sprintf("no successful backup since the database joined the job %s ago; objective %s", age, target)
 	default:
 		e.Detail = fmt.Sprintf("no successful backup for %s; objective %s", age, target)
 	}

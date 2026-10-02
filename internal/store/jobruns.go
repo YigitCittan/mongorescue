@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -103,6 +104,20 @@ func (s *SQLiteStore) UpdateJobKnownDatabases(ctx context.Context, id string, up
 		}
 		if known == nil {
 			known = []string{}
+		}
+		// Databases that join a job which already had known databases are recorded
+		// with the time they joined: their RPO age counts from then.
+		if job.KnownDatabases != nil {
+			joined := timeKey(time.Now().UTC())
+			for _, db := range known {
+				if slices.Contains(job.KnownDatabases, db) {
+					continue
+				}
+				if _, err = tx.ExecContext(ctx, `INSERT INTO job_database_joins (job_id, database_name, joined_at) VALUES (?, ?, ?)
+					ON CONFLICT (job_id, database_name) DO NOTHING`, id, db, joined); err != nil {
+					return fmt.Errorf("store: record the database joining job %s: %w", id, err)
+				}
+			}
 		}
 		job.KnownDatabases = slices.Clone(known)
 		data, err := encode(job)

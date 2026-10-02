@@ -63,25 +63,88 @@ func (s *SQLiteStore) DeleteRPOBreach(ctx context.Context, jobID, database strin
 	return n > 0, nil
 }
 
-// LatestVerifiedJobDatabaseBackups returns, per database, the newest completed
-// backup of job jobID whose stored archive passed verification (verification "ok").
-// Databases without one are absent.
-func (s *SQLiteStore) LatestVerifiedJobDatabaseBackups(ctx context.Context, jobID string) (map[string]*models.BackupRecord, error) {
-	const verified = `job_id = ? AND status = ? AND json_extract(data, '$.verification') = ?`
+// JobDatabaseJoins returns, per job and database, when a database that joined the
+// job after its first run (see UpdateJobKnownDatabases) was first counted among
+// its known databases. Databases known from the start have no entry.
+func (s *SQLiteStore) JobDatabaseJoins(ctx context.Context) (map[string]map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT job_id, database_name, joined_at FROM job_database_joins")
+	if err != nil {
+		return nil, fmt.Errorf("store: list database joins: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]map[string]time.Time{}
+	for rows.Next() {
+		var job, db string
+		var at int64
+		if err := rows.Scan(&job, &db, &at); err != nil {
+			return nil, fmt.Errorf("store: scan database join: %w", err)
+		}
+		if out[job] == nil {
+			out[job] = map[string]time.Time{}
+		}
+		out[job][db] = time.Unix(0, at).UTC()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate database joins: %w", err)
+	}
+	return out, nil
+}
+
+// LatestJobDatabaseBackupsAll returns, for every job and database, the newest
+// completed backup of that job and database, in one query; with verified, the
+// newest completed one whose stored archive passed verification ("ok").
+func (s *SQLiteStore) LatestJobDatabaseBackupsAll(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error) {
+	// cond selects the rows of the table aliased t.
+	cond := func(t string) string {
+		c := t + `.job_id != '' AND ` + t + `.status = ?`
+		if verified {
+			c += ` AND json_extract(` + t + `.data, '$.verification') = ?`
+		}
+		return c
+	}
+	args := []any{string(models.StatusCompleted)}
+	if verified {
+		args = append(args, string(models.VerificationOK))
+	}
 	query := `SELECT b.id, b.data FROM backups b JOIN (
-			SELECT database_name, max(started_at) AS latest FROM backups WHERE ` + verified + ` GROUP BY database_name
-		) l ON b.database_name = l.database_name AND b.started_at = l.latest
-		WHERE b.` + verified + ` ORDER BY b.started_at DESC, b.id DESC`
-	st, ok := string(models.StatusCompleted), string(models.VerificationOK)
-	list, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil, query, jobID, st, ok, jobID, st, ok)
+			SELECT i.job_id, i.database_name, max(i.started_at) AS latest FROM backups i WHERE ` + cond("i") + ` GROUP BY i.job_id, i.database_name
+		) l ON b.job_id = l.job_id AND b.database_name = l.database_name AND b.started_at = l.latest
+		WHERE ` + cond("b") + ` ORDER BY b.started_at DESC, b.id DESC`
+	list, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil, query, append(args, args...)...)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*models.BackupRecord, len(list))
+	out := map[string]map[string]*models.BackupRecord{}
 	for _, b := range list {
-		if _, seen := out[b.Database]; !seen {
-			out[b.Database] = b
+		if out[b.JobID] == nil {
+			out[b.JobID] = map[string]*models.BackupRecord{}
 		}
+		if _, seen := out[b.JobID][b.Database]; !seen {
+			out[b.JobID][b.Database] = b
+		}
+	}
+	return out, nil
+}
+
+// LatestRestoreTestsAll returns, per job, the newest restore test of each of its
+// databases and the newest passed one (when that is older), newest first, in one
+// query.
+func (s *SQLiteStore) LatestRestoreTestsAll(ctx context.Context) (map[string][]*models.RestoreTestResult, error) {
+	const db = `coalesce(json_extract(data, '$.database'), '')`
+	query := `SELECT id, data FROM (
+			SELECT id, data, job_id, started_at, status,
+				ROW_NUMBER() OVER (PARTITION BY job_id, ` + db + ` ORDER BY started_at DESC, id DESC) AS rn,
+				ROW_NUMBER() OVER (PARTITION BY job_id, ` + db + `, status = ? ORDER BY started_at DESC, id DESC) AS rn_status
+			FROM restore_tests
+		) WHERE rn = 1 OR (status = ? AND rn_status = 1) ORDER BY job_id, started_at DESC, id DESC`
+	ok := string(models.RestoreTestOK)
+	list, err := listRecords[models.RestoreTestResult](ctx, s, tableRestoreTests, nil, query, ok, ok)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]*models.RestoreTestResult{}
+	for _, t := range list {
+		out[t.JobID] = append(out[t.JobID], t)
 	}
 	return out, nil
 }

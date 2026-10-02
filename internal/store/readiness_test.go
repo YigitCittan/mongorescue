@@ -2,10 +2,12 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -42,7 +44,7 @@ func TestRPOBreaches(t *testing.T) {
 	}
 }
 
-func TestLatestVerifiedJobDatabaseBackups(t *testing.T) {
+func TestLatestJobDatabaseBackupsAll(t *testing.T) {
 	s := storetest.New(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -58,12 +60,19 @@ func TestLatestVerifiedJobDatabaseBackups(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.LatestVerifiedJobDatabaseBackups(ctx, "job_a")
+	all, err := s.LatestJobDatabaseBackupsAll(ctx, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got["shop"] == nil || got["shop"].ID != "b2" {
-		t.Fatalf("verified backups = %+v; want shop → b2", got)
+	if got := all["job_a"]; len(got) != 1 || got["shop"] == nil || got["shop"].ID != "b2" {
+		t.Fatalf("verified backups of job_a = %+v; want shop → b2", got)
+	}
+	if got := all["job_b"]; len(got) != 1 || got["shop"].ID != "b6" {
+		t.Fatalf("verified backups of job_b = %+v; want shop → b6", got)
+	}
+	latest, err := s.LatestJobDatabaseBackupsAll(ctx, false)
+	if err != nil || latest["job_a"]["shop"].ID != "b4" || latest["job_a"]["crm"] != nil {
+		t.Fatalf("latest backups = %+v, %v; want job_a shop → b4 and no crm", latest["job_a"], err)
 	}
 }
 
@@ -93,5 +102,69 @@ func TestLatestCompletedRestores(t *testing.T) {
 			ids[i] = r.ID
 		}
 		t.Fatalf("latest restores = %v; want [r2 r6]", ids)
+	}
+}
+
+func TestLatestRestoreTestsAll(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for i, rt := range []*models.RestoreTestResult{
+		{ID: "t1", JobID: "job_a", Database: "shop", Status: models.RestoreTestOK},
+		{ID: "t2", JobID: "job_a", Database: "shop", Status: models.RestoreTestOK},
+		{ID: "t3", JobID: "job_a", Database: "shop", Status: models.RestoreTestError},
+		{ID: "t4", JobID: "job_a", Database: "crm", Status: models.RestoreTestMismatch},
+		{ID: "t5", JobID: "job_b", Database: "shop", Status: models.RestoreTestOK},
+	} {
+		rt.StartedAt = now.Add(time.Duration(i) * time.Minute)
+		if err := s.SaveRestoreTest(ctx, rt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.LatestRestoreTestsAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(list []*models.RestoreTestResult) []string {
+		out := []string{}
+		for _, r := range list {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	// Per job, newest first: each database's newest test and its newest passed one.
+	if a := names(got["job_a"]); len(a) != 3 || a[0] != "t4" || a[1] != "t3" || a[2] != "t2" {
+		t.Fatalf("job_a = %v; want [t4 t3 t2]", a)
+	}
+	if b := names(got["job_b"]); len(b) != 1 || b[0] != "t5" {
+		t.Fatalf("job_b = %v; want [t5]", b)
+	}
+}
+
+func TestDeleteJobDropsItsRPOState(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	if err := s.SaveJob(ctx, &models.Job{ID: "job_a", Name: "a", Database: "shop", KnownDatabases: []string{"shop"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddRPOBreach(ctx, models.RPOBreach{JobID: "job_a", Database: "shop", Since: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateJobKnownDatabases(ctx, "job_a", func(*models.Job) ([]string, bool) { return []string{"shop", "crm"}, true }); err != nil {
+		t.Fatal(err)
+	}
+	if joins, err := s.JobDatabaseJoins(ctx); err != nil || len(joins["job_a"]) != 1 {
+		t.Fatalf("joins = %v, %v", joins, err)
+	}
+	if err := s.DeleteJob(ctx, "job_a"); err != nil {
+		t.Fatal(err)
+	}
+	breaches, _ := s.ListRPOBreaches(ctx)
+	joins, _ := s.JobDatabaseJoins(ctx)
+	if len(breaches) != 0 || len(joins) != 0 {
+		t.Fatalf("after delete: breaches %v, joins %v", breaches, joins)
+	}
+	if err := s.DeleteJob(ctx, "job_a"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second delete = %v; want ErrNotFound", err)
 	}
 }

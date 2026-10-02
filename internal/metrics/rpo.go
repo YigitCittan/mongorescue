@@ -26,7 +26,10 @@ type RPOSample struct {
 type rpoCollector struct {
 	mu      sync.RWMutex
 	samples []RPOSample
-	now     func() time.Time
+	// forgotten maps the jobs ForgetJob removed to when it did: a check that
+	// started before cannot bring their series back.
+	forgotten map[string]time.Time
+	now       func() time.Time
 
 	age, met, target *prometheus.Desc
 }
@@ -35,7 +38,8 @@ type rpoCollector struct {
 func newRPOCollector() *rpoCollector {
 	labels := []string{"job", "database"}
 	return &rpoCollector{
-		now: time.Now,
+		now:       time.Now,
+		forgotten: map[string]time.Time{},
 		age: prometheus.NewDesc(prometheus.BuildFQName(namespace, "", "job_rpo_seconds"),
 			"Age in seconds of the newest successful backup of a database of an enabled job (since the job's creation when it has none).", labels, nil),
 		met: prometheus.NewDesc(prometheus.BuildFQName(namespace, "", "job_rpo_met"),
@@ -69,20 +73,39 @@ func (c *rpoCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
+// rpoForgetTTL is how long a forgotten job's samples are refused: far longer than
+// any RPO check takes.
+const rpoForgetTTL = time.Hour
+
 // SetRPOSamples replaces the samples of the job_rpo_* gauges (one series per enabled
-// job and database) with samples.
-func (m *Metrics) SetRPOSamples(samples []RPOSample) {
-	cp := make([]RPOSample, len(samples))
-	copy(cp, samples)
+// job and database) with samples, taken by a check that started at started.
+// Samples of a job forgotten (deleted) after the check started are dropped, so a
+// check that read the job before its deletion cannot bring its series back.
+func (m *Metrics) SetRPOSamples(started time.Time, samples []RPOSample) {
 	m.rpo.mu.Lock()
-	m.rpo.samples = cp
-	m.rpo.mu.Unlock()
+	defer m.rpo.mu.Unlock()
+	now := m.rpo.now()
+	for id, at := range m.rpo.forgotten {
+		if now.Sub(at) > rpoForgetTTL {
+			delete(m.rpo.forgotten, id)
+		}
+	}
+	kept := make([]RPOSample, 0, len(samples))
+	for _, s := range samples {
+		if at, ok := m.rpo.forgotten[s.JobID]; ok && !at.Before(started) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	m.rpo.samples = kept
 }
 
-// forgetRPOJob drops the RPO samples of jobID.
+// forgetRPOJob drops the RPO samples of jobID and refuses them from checks that
+// started before now.
 func (m *Metrics) forgetRPOJob(jobID string) {
 	m.rpo.mu.Lock()
 	defer m.rpo.mu.Unlock()
+	m.rpo.forgotten[jobID] = m.rpo.now()
 	kept := m.rpo.samples[:0:0]
 	for _, s := range m.rpo.samples {
 		if s.JobID != jobID {

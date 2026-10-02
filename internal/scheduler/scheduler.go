@@ -66,6 +66,8 @@ type Scheduler struct {
 	auditor      Auditor
 	afterBackup  AfterBackupFunc
 	afterRun     AfterRunFunc
+	// jobChanged is told about every job written through ApplyJobUpdate.
+	jobChanged func(jobID string)
 
 	// databases lists a connection's databases for multi-database jobs.
 	databases DatabaseLister
@@ -399,6 +401,9 @@ func (s *Scheduler) ApplyJobUpdate(job *models.Job, persist func() error) error 
 			logsafe.Attr("job_id", job.ID),
 			logsafe.Error(err),
 		)
+	}
+	if s.jobChanged != nil {
+		s.jobChanged(job.ID)
 	}
 	return nil
 }
