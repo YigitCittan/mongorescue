@@ -3035,7 +3035,15 @@ async function triggerJob(jobID, btn) {
     const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}/run`, { method: "POST" });
     if (json.success) {
       showToast(t("toasts.job_started"), "info");
-      trackBackup(json.data);
+      // A multi-database job answers with its run (its backups start in the
+      // background and show up in the active runs); a single one with its backup.
+      const isRun = json.data && Array.isArray(json.data.databases) && !json.data.storage_key;
+      if (isRun) {
+        if (typeof jobDbsLoadRuns === "function" && detailsJobId === jobID) jobDbsLoadRuns(jobID);
+        scheduleActivePoll();
+      } else {
+        trackBackup(json.data);
+      }
     } else {
       showToast(json.error || t("toasts.job_failed"), "error");
     }

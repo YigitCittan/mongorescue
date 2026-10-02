@@ -382,12 +382,89 @@ type JobStatus struct {
 	Database string `json:"database"`
 	// Enabled reports whether the schedule is active.
 	Enabled bool `json:"enabled"`
-	// LastSuccessAt is when the newest completed backup of the job finished.
+	// LastSuccessAt is when the newest completed backup of the job finished. For a
+	// job with several databases it is the oldest of its databases' newest successes
+	// (the stalest database), and empty while one of them never succeeded, so a
+	// database that fails every day shows.
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 	// LastSuccessBackupID is that backup's ID.
 	LastSuccessBackupID string `json:"last_success_backup_id,omitempty"`
+	// StalestDatabase names the database LastSuccessAt belongs to (multi-database
+	// jobs).
+	StalestDatabase string `json:"stalest_database,omitempty"`
+	// Databases breaks the last successes down per database (multi-database jobs).
+	Databases []DatabaseStatus `json:"databases,omitempty"`
 	// NextRun is the next scheduled run.
 	NextRun *time.Time `json:"next_run,omitempty"`
+}
+
+// DatabaseStatus is the last successful backup of one database of a job.
+type DatabaseStatus struct {
+	// Database is the database.
+	Database string `json:"database"`
+	// LastSuccessAt is when its newest completed backup finished; empty if it never
+	// succeeded.
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	// LastSuccessBackupID is that backup's ID.
+	LastSuccessBackupID string `json:"last_success_backup_id,omitempty"`
+}
+
+// finishedAt is when b finished (its start for records without a completion time).
+func finishedAt(b *models.BackupRecord) time.Time {
+	if b.CompletedAt != nil {
+		return *b.CompletedAt
+	}
+	return b.StartedAt
+}
+
+// jobDatabases returns the databases a multi-database job is expected to back up:
+// the listed ones, else its known and named ones, else those it has backups of.
+func jobDatabases(j *models.Job, latest map[string]*models.BackupRecord) []string {
+	sel := j.Selection()
+	names := slices.Clone(sel.Databases)
+	if sel.Mode != models.SelectionList {
+		names = append(names, j.KnownDatabases...)
+		if j.KnownDatabases == nil {
+			for db := range latest {
+				names = append(names, db)
+			}
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// multiJobStatus fills the per-database last successes of multi-database job j
+// into js: LastSuccessAt is the stalest database's.
+func (s *Service) multiJobStatus(ctx context.Context, j *models.Job, js *JobStatus) error {
+	latest, err := s.cfg.Store.LatestJobDatabaseBackups(ctx, j.ID, models.StatusCompleted)
+	if err != nil {
+		return fmt.Errorf("latest backups of job %s: %w", j.ID, err)
+	}
+	js.LastSuccessAt, js.LastSuccessBackupID = nil, ""
+	never := false
+	for _, db := range jobDatabases(j, latest) {
+		ds := DatabaseStatus{Database: db}
+		b := latest[db]
+		if b == nil {
+			if !never {
+				never = true
+				js.StalestDatabase = db
+			}
+			js.Databases = append(js.Databases, ds)
+			continue
+		}
+		at := finishedAt(b)
+		ds.LastSuccessAt, ds.LastSuccessBackupID = &at, b.ID
+		js.Databases = append(js.Databases, ds)
+		if !never && (js.LastSuccessAt == nil || at.Before(*js.LastSuccessAt)) {
+			js.LastSuccessAt, js.LastSuccessBackupID, js.StalestDatabase = &at, b.ID, db
+		}
+	}
+	if never {
+		js.LastSuccessAt, js.LastSuccessBackupID = nil, ""
+	}
+	return nil
 }
 
 // FailedBackup summarises a failed backup for Status.
@@ -476,11 +553,13 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	for _, j := range jobs {
 		js := JobStatus{ID: j.ID, Name: j.Name, Database: j.Database, Enabled: j.Enabled, NextRun: j.NextRun}
 		if b := lastSuccess[j.ID]; b != nil {
-			at := b.StartedAt
-			if b.CompletedAt != nil {
-				at = *b.CompletedAt
-			}
+			at := finishedAt(b)
 			js.LastSuccessAt, js.LastSuccessBackupID = &at, b.ID
+		}
+		if j.MultiDatabase() {
+			if err := s.multiJobStatus(ctx, j, &js); err != nil {
+				return nil, err
+			}
 		}
 		st.JobStatus = append(st.JobStatus, js)
 	}

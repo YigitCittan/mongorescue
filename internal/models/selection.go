@@ -416,3 +416,30 @@ func systemOr(name, reason string) string {
 	}
 	return reason
 }
+
+// Matches reports whether the selection backs up database name, its known databases
+// aside: a single or list selection names it; an all selection does not exclude it;
+// a pattern selection matches it with an include pattern and no exclude pattern. The
+// databases an all or pattern selection names are always matched; system databases
+// only when a single selection names them.
+func (s DatabaseSelection) Matches(name string) bool {
+	if slices.Contains(s.Databases, name) {
+		return true
+	}
+	switch s.Mode {
+	case SelectionAll:
+		return !IsSystemDatabase(name) && matchesAny(s.Exclude, name) == ""
+	case SelectionPattern:
+		return !IsSystemDatabase(name) && matchesAny(s.Include, name) != "" && matchesAny(s.Exclude, name) == ""
+	}
+	return false
+}
+
+// SearchText is the text of the selection a search matches: its mode, names and
+// patterns.
+func (s DatabaseSelection) SearchText() string {
+	parts := append([]string{string(s.Mode)}, s.Databases...)
+	parts = append(parts, s.Include...)
+	parts = append(parts, s.Exclude...)
+	return strings.Join(parts, " ")
+}

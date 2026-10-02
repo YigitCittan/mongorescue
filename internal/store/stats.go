@@ -179,3 +179,27 @@ func (s *SQLiteStore) RestoreStats(ctx context.Context) (*RestoreStats, error) {
 	}
 	return st, nil
 }
+
+// LatestJobDatabaseBackups maps every database of job jobID with backups in status
+// (any status when empty) to its newest such backup. Rows that cannot be read are
+// skipped.
+func (s *SQLiteStore) LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
+	// An empty status matches every status (status = '' never holds for a record).
+	query := `SELECT b.id, b.data FROM backups b JOIN (
+			SELECT database_name, max(started_at) AS latest FROM backups
+			WHERE job_id = ? AND (? = '' OR status = ?) GROUP BY database_name
+		) l ON b.database_name = l.database_name AND b.started_at = l.latest
+		WHERE b.job_id = ? AND (? = '' OR b.status = ?) ORDER BY b.started_at DESC, b.id DESC`
+	st := string(status)
+	list, err := listRecords[models.BackupRecord](ctx, s, tableBackups, nil, query, jobID, st, st, jobID, st, st)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*models.BackupRecord, len(list))
+	for _, b := range list {
+		if _, seen := out[b.Database]; !seen {
+			out[b.Database] = b
+		}
+	}
+	return out, nil
+}

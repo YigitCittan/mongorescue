@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -135,4 +136,21 @@ func NewRunID(at time.Time) (string, error) {
 		return "", fmt.Errorf("new run id: %w", err)
 	}
 	return fmt.Sprintf("run_%s_%s", at.UTC().Format("20060102_150405"), suffix), nil
+}
+
+// Clone returns a deep copy of r.
+func (r *JobRun) Clone() *JobRun {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.Databases = slices.Clone(r.Databases)
+	c.NewDatabases = slices.Clone(r.NewDatabases)
+	c.AddedDatabases = slices.Clone(r.AddedDatabases)
+	c.Warnings = slices.Clone(r.Warnings)
+	if r.CompletedAt != nil {
+		at := *r.CompletedAt
+		c.CompletedAt = &at
+	}
+	return &c
 }

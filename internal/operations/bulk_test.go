@@ -537,6 +537,10 @@ func (r blockingRunner) PrepareJobRun(ctx context.Context, jobID string, trigger
 
 func (r blockingRunner) BeginJobRun(context.Context, *scheduler.JobRunPlan) error { return nil }
 
+func (r blockingRunner) StartJobRun(context.Context, string, models.BackupTrigger, func(func(context.Context)) error) (*models.JobRun, error) {
+	return nil, scheduler.ErrNotMulti
+}
+
 func (r blockingRunner) AbandonJobRun(context.Context, *scheduler.JobRunPlan, error) {}
 
 func (r blockingRunner) ResolveJobDatabases(_ context.Context, job *models.Job) (*models.DatabaseResolution, error) {

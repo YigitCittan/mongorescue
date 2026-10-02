@@ -911,11 +911,26 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			}
 		}
 	}
-	// Job runs end with their databases: those still waiting or running failed too.
+	// Job runs end with their databases. Each database's outcome is rebuilt from the
+	// backup records of the run (marked above): completed ones stay completed, those
+	// still waiting or running failed with the interruption.
 	if jobRuns, err := a.metaStore.ListRunningJobRuns(ctx); err == nil {
 		for _, run := range jobRuns {
+			records := map[string]*models.BackupRecord{}
+			if page, qerr := a.metaStore.QueryBackupRecords(ctx, store.BackupFilter{RunID: run.ID}); qerr == nil {
+				for _, row := range page.Rows {
+					records[row.Record.ID] = row.Record
+				}
+			}
 			for i := range run.Databases {
-				if d := &run.Databases[i]; d.Status == models.StatusInProgress || d.Status == models.StatusPending {
+				d := &run.Databases[i]
+				if rec := records[d.BackupID]; rec != nil && d.BackupID != "" {
+					d.Status, d.Error = rec.Status, ""
+					if rec.Status != models.StatusCompleted {
+						d.Error = rec.ErrorMessage
+					}
+				}
+				if d.Status == models.StatusInProgress || d.Status == models.StatusPending {
 					d.Status, d.Error = models.StatusFailed, msg
 				}
 			}

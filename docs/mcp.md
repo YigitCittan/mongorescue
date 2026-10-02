@@ -207,9 +207,9 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `list_restores` | read | `status`, `backup_id`, `database` (target), `limit` (≤ 100, default 50), `cursor` | Restores, newest first |
 | `get_restore` | read | `id` | One restore record |
 | `list_storage_targets` | read | | Storage targets without credentials |
-| `get_status` | read | | Health, version, counts, running operations, last successful backup per job, failures in the last 24 hours |
+| `get_status` | read | | Health, version, counts, running operations, last successful backup per job (for a job with several databases the stalest database's, with `stalest_database` and the per-database `databases`), failures in the last 24 hours |
 | `start_backup` | operator | `connection_id`, `database`, optional `storage_target_id`, `collections`, `exclude_collections`, `gzip` | The new backup record (`in_progress`) |
-| `run_job` | operator | `job_id` | The new backup record (`in_progress`); for a job with several databases the first one's, whose `run_id` names the run (poll `list_job_runs`) |
+| `run_job` | operator | `job_id` | The new backup record (`in_progress`); for a job with several databases the run (`run`, status `running`), whose databases are resolved and backed up in the background (poll `list_job_runs`) |
 | `restore_to_safe_clone` | operator | `backup_id`, optional `target_connection_id` (admin keys only), `collections` (only these, e.g. from `list_backup_collections`; the record lists them in `selected_collections`), `verify` | The new restore record (`in_progress`) into `<db>_rescue_<timestamp>` |
 | `cancel_run` | operator | `id` of a running backup or restore | `{kind, backup \| restore, next_step}` while the run stops; it ends as `cancelled` |
 | `verify_backup` | operator | `backup_id` | The backup record; the archive is re-read and compared with its checksum in the background (poll `get_backup` for a new `verified_at`) |

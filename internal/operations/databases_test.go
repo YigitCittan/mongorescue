@@ -211,35 +211,55 @@ func TestRunMultiDatabaseJobOnDemand(t *testing.T) {
 	if _, err := e.svc.CancelJobRun(ctx, "job_run", ""); !errors.Is(err, operations.ErrNotRunning) {
 		t.Errorf("cancel without a run: %v; want ErrNotRunning", err)
 	}
-	rec, err := e.svc.RunJob(ctx, "job_run", models.TriggerOnDemand)
+	started, err := e.svc.RunJob(ctx, "job_run", models.TriggerOnDemand)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.RunID == "" || rec.Database != "a" || rec.Trigger != models.TriggerOnDemand {
-		t.Fatalf("first record = %+v", rec)
+	// A multi-database job answers at once with its run; the databases follow.
+	run := started.Run
+	if started.Backup != nil || run == nil || run.Status != models.JobRunRunning || run.Trigger != models.TriggerOnDemand || run.JobID != "job_run" {
+		t.Fatalf("started = %+v", started)
 	}
-	var runList []*models.JobRun
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		runList, err = e.svc.ListJobRuns(ctx, "job_run", 10)
-		if err == nil && len(runList) == 1 && runList[0].Status != models.JobRunRunning {
-			break
+	awaitRun := func(jobID string) *models.JobRun {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			list, listErr := e.svc.ListJobRuns(ctx, jobID, 10)
+			if listErr == nil && len(list) == 1 && list[0].Status != models.JobRunRunning {
+				return list[0]
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the run of %s did not finish: %+v, %v", jobID, list, listErr)
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the run did not finish: %+v, %v", runList, err)
-		}
 	}
-	if runList[0].Status != models.JobRunOK || runList[0].ID != rec.RunID || len(runList[0].Databases) != 2 {
-		t.Errorf("run = %+v", runList[0])
+	done := awaitRun("job_run")
+	if done.Status != models.JobRunOK || done.ID != run.ID || len(done.Databases) != 2 {
+		t.Errorf("run = %+v", done)
 	}
-	page, err := e.svc.QueryBackups(ctx, operations.BackupFilter{RunID: rec.RunID})
+	page, err := e.svc.QueryBackups(ctx, operations.BackupFilter{RunID: run.ID})
 	if err != nil || page.Total != 2 {
 		t.Errorf("backups of the run = %+v, %v", page, err)
 	}
-	// Selections that match nothing that exists are refused up front.
+	// Planning failures are recorded in the run: databases that are all gone.
 	e.create(t, &models.Job{ID: "job_none", Name: "none", CronExpression: "@daily",
 		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"gone"}}})
-	if _, err := e.svc.RunJob(ctx, "job_none", models.TriggerOnDemand); !errors.Is(err, operations.ErrInvalid) {
-		t.Errorf("run of a job whose databases are gone: %v; want ErrInvalid", err)
+	if _, err := e.svc.RunJob(ctx, "job_none", models.TriggerOnDemand); err != nil {
+		t.Fatalf("run of a job whose databases are gone: %v; want the run recorded", err)
+	}
+	if none := awaitRun("job_none"); none.Status != models.JobRunFailed || none.Databases[0].Error != models.ErrorDatabaseNotFound {
+		t.Errorf("run of job_none = %+v", none)
+	}
+	// And a connection with no database: an all job matches nothing.
+	e.mu.Lock()
+	e.server = nil
+	e.mu.Unlock()
+	e.create(t, &models.Job{ID: "job_empty", Name: "empty", CronExpression: "@daily",
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionAll}})
+	if _, err := e.svc.RunJob(ctx, "job_empty", models.TriggerOnDemand); err != nil {
+		t.Fatal(err)
+	}
+	if empty := awaitRun("job_empty"); empty.Status != models.JobRunFailed || empty.Error == "" {
+		t.Errorf("run of job_empty = %+v", empty)
 	}
 }
 
@@ -264,5 +284,98 @@ func TestRetentionPreviewBreaksDownPerDatabase(t *testing.T) {
 	}
 	if len(p.Delete) != 1 || p.Delete[0].Backup.ID != "bkp_a0" || len(p.Databases) != 2 || p.Databases[1].Kept != 1 {
 		t.Errorf("preview = %+v", p)
+	}
+}
+
+func TestStatusReportsTheStalestDatabase(t *testing.T) {
+	e := newMultiEnv(t, "a", "b")
+	ctx := context.Background()
+	e.create(t, &models.Job{ID: "job_st", Name: "st", CronExpression: "@daily",
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b", "c"}}})
+	now := time.Now().UTC()
+	for _, r := range []struct {
+		id, db string
+		age    time.Duration
+		status models.BackupStatus
+	}{
+		{"a_new", "a", time.Hour, models.StatusCompleted},
+		{"b_old", "b", 72 * time.Hour, models.StatusCompleted},
+		{"b_fail", "b", time.Hour, models.StatusFailed},
+		{"c_fail", "c", time.Hour, models.StatusFailed},
+	} {
+		at := now.Add(-r.age)
+		if err := e.st.SaveBackupRecord(ctx, &models.BackupRecord{ID: r.id, JobID: "job_st", Database: r.db, Status: r.status,
+			StartedAt: at, CompletedAt: &at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobStatus := func() operations.JobStatus {
+		t.Helper()
+		st, err := e.svc.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, js := range st.JobStatus {
+			if js.ID == "job_st" {
+				return js
+			}
+		}
+		t.Fatal("job missing from the status")
+		return operations.JobStatus{}
+	}
+	// c never succeeded: the job has no last success, and says which database.
+	js := jobStatus()
+	if js.LastSuccessAt != nil || js.StalestDatabase != "c" || len(js.Databases) != 3 || js.Databases[0].LastSuccessBackupID != "a_new" {
+		t.Fatalf("status = %+v", js)
+	}
+	// Without c, b (failing daily, last good three days ago) is the stalest.
+	e.create(t, &models.Job{ID: "job_st2", Name: "st2", CronExpression: "@daily",
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}})
+	for _, b := range []string{"a_new", "b_old"} {
+		rec, _ := e.st.GetBackupRecord(ctx, b)
+		rec.ID, rec.JobID = rec.ID+"_2", "job_st2"
+		if err := e.st.SaveBackupRecord(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, _ := e.svc.Status(ctx)
+	for _, js := range st.JobStatus {
+		if js.ID == "job_st2" && (js.LastSuccessAt == nil || js.LastSuccessBackupID != "b_old_2" || js.StalestDatabase != "b") {
+			t.Errorf("status of job_st2 = %+v; want b's three-day-old backup", js)
+		}
+	}
+}
+
+func TestBulkJobFilterCoversSelections(t *testing.T) {
+	e := newMultiEnv(t, "prod_a", "shop")
+	ctx := asUser("admin", "admin")
+	e.create(t, &models.Job{ID: "job_list", Name: "list", CronExpression: "@daily",
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"shop", "crm"}}})
+	e.create(t, &models.Job{ID: "job_pat", Name: "pat", CronExpression: "@daily",
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionPattern, Include: []string{"prod_*"}}})
+	e.create(t, &models.Job{ID: "job_one", Name: "one", CronExpression: "@daily", Database: "other"})
+	matched := func(f operations.BulkFilter) int {
+		t.Helper()
+		res, err := e.svc.Bulk(ctx, operations.BulkJobs, operations.BulkRequest{Action: operations.BulkDisable, Filter: &f, DryRun: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Matched
+	}
+	for _, tt := range []struct {
+		f    operations.BulkFilter
+		want int
+	}{
+		{operations.BulkFilter{Database: "crm"}, 1},     // listed
+		{operations.BulkFilter{Database: "prod_zz"}, 1}, // the pattern matches it
+		{operations.BulkFilter{Database: "prod_a"}, 1},  // known
+		{operations.BulkFilter{Database: "other"}, 1},
+		{operations.BulkFilter{Database: "admin"}, 0},
+		{operations.BulkFilter{Q: "prod_"}, 1}, // the pattern's text
+		{operations.BulkFilter{Q: "crm"}, 1},
+	} {
+		if got := matched(tt.f); got != tt.want {
+			t.Errorf("filter %+v matched %d; want %d", tt.f, got, tt.want)
+		}
 	}
 }

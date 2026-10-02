@@ -475,6 +475,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		}
 		job.LastRun, job.NextRun, job.CreatedAt = current.LastRun, current.NextRun, current.CreatedAt
 		job.LastRestoreTest = current.LastRestoreTest
+		// Known databases a run recorded since existing was read are kept.
+		operations.RefreshKnownDatabases(&job, current)
 		return s.metaStore.UpdateJob(r.Context(), &job)
 	}
 	var saveErr error
@@ -563,12 +565,13 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "job id required")
 		return
 	}
-	record, err := s.ops.RunJob(r.Context(), id, models.TriggerOnDemand)
+	started, err := s.ops.RunJob(r.Context(), id, models.TriggerOnDemand)
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, record)
+	// The backup of a single-database job, or the run of a multi-database job.
+	writeJSON(w, http.StatusAccepted, started.Body())
 }
 
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
