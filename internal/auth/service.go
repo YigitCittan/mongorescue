@@ -600,6 +600,24 @@ func (s *Service) lookupAPIKey(ctx context.Context, presented string) (*APIKey, 
 	return stored, err
 }
 
+// legacyImportedRecord returns a key record an earlier release imported in the
+// SHA-256 form (lookup prefix "L", which generated lower-case prefixes never use), or
+// nil when there is none. It does not hash the import input: the record is
+// recognised by its form alone.
+func (s *Service) legacyImportedRecord(ctx context.Context) (*APIKey, error) {
+	keys, err := s.repo.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		if len(k.Prefix) == apiKeyPrefixLen && k.Prefix[0] == 'L' && k.CreatedBy == "" &&
+			!strings.HasPrefix(k.Hash, importedKeyMACScheme) {
+			return k, nil
+		}
+	}
+	return nil, nil
+}
+
 // apiKeyMatches compares a presented key with a stored hash in constant time: an
 // HMAC for keys imported by this release, a SHA-256 digest otherwise.
 func (s *Service) apiKeyMatches(presented, storedHash string) bool {
@@ -625,6 +643,18 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 		return false, nil
 	} else if !errors.Is(err, ErrAPIKeyNotFound) {
 		return false, err
+	}
+	// An earlier release may have imported the key (SHA-256 form, "L" prefix) and
+	// stopped before recording the import as done. A second record would leave the
+	// key working through the legacy lookup after the visible one is revoked, so
+	// while such a record exists it stays the only imported key. Revoking it in the
+	// dashboard lets the next start import the variable's current value.
+	if legacy, err := s.legacyImportedRecord(ctx); err != nil {
+		return false, err
+	} else if legacy != nil {
+		s.logger.Warn("MONGORESCUE_API_KEY was already imported by an earlier release; keeping that key",
+			slog.String("api_key_id", legacy.ID))
+		return false, nil
 	}
 	id, err := newID("key_")
 	if err != nil {
