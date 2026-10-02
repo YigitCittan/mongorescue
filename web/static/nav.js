@@ -48,6 +48,13 @@ const NAV_I18N = {
       results_n: "{n} results",
       search_failed: "The backup search failed.",
       needs_connection: "Add a MongoDB connection first.",
+      installed: "Installed: {version}",
+      checking_updates: "Checking for updates…",
+      up_to_date: "Up to date ({version})",
+      update_available: "{version} is available",
+      update_now: "Update",
+      check_failed: "Could not check for updates: {error}",
+      update_failed: "The update could not start: {error}",
     },
     keys: {
       title: "Keyboard shortcuts",
@@ -102,6 +109,13 @@ const NAV_I18N = {
       results_n: "{n} sonuç",
       search_failed: "Yedek araması başarısız oldu.",
       needs_connection: "Önce bir MongoDB bağlantısı ekleyin.",
+      installed: "Kurulu: {version}",
+      checking_updates: "Güncellemeler denetleniyor…",
+      up_to_date: "Güncel ({version})",
+      update_available: "{version} mevcut",
+      update_now: "Güncelle",
+      check_failed: "Güncellemeler denetlenemedi: {error}",
+      update_failed: "Güncelleme başlatılamadı: {error}",
     },
     keys: {
       title: "Klavye kısayolları",
@@ -156,6 +170,13 @@ const NAV_I18N = {
       results_n: "{n} Ergebnisse",
       search_failed: "Die Backup-Suche ist fehlgeschlagen.",
       needs_connection: "Fügen Sie zuerst eine MongoDB-Verbindung hinzu.",
+      installed: "Installiert: {version}",
+      checking_updates: "Suche nach Updates…",
+      up_to_date: "Aktuell ({version})",
+      update_available: "{version} ist verfügbar",
+      update_now: "Aktualisieren",
+      check_failed: "Nach Updates suchen fehlgeschlagen: {error}",
+      update_failed: "Das Update konnte nicht starten: {error}",
     },
     keys: {
       title: "Tastenkürzel",
@@ -210,6 +231,13 @@ const NAV_I18N = {
       results_n: "{n} resultados",
       search_failed: "La búsqueda de copias ha fallado.",
       needs_connection: "Añada primero una conexión de MongoDB.",
+      installed: "Instalada: {version}",
+      checking_updates: "Buscando actualizaciones…",
+      up_to_date: "Actualizado ({version})",
+      update_available: "{version} está disponible",
+      update_now: "Actualizar",
+      check_failed: "No se pudieron buscar actualizaciones: {error}",
+      update_failed: "No se pudo iniciar la actualización: {error}",
     },
     keys: {
       title: "Atajos de teclado",
@@ -264,6 +292,13 @@ const NAV_I18N = {
       results_n: "{n} résultats",
       search_failed: "La recherche de sauvegardes a échoué.",
       needs_connection: "Ajoutez d'abord une connexion MongoDB.",
+      installed: "Installée : {version}",
+      checking_updates: "Recherche des mises à jour…",
+      up_to_date: "À jour ({version})",
+      update_available: "{version} est disponible",
+      update_now: "Mettre à jour",
+      check_failed: "Impossible de rechercher des mises à jour : {error}",
+      update_failed: "La mise à jour n'a pas pu démarrer : {error}",
     },
     keys: {
       title: "Raccourcis clavier",
@@ -318,6 +353,13 @@ const NAV_I18N = {
       results_n: "{n} 个结果",
       search_failed: "备份搜索失败。",
       needs_connection: "请先添加一个 MongoDB 连接。",
+      installed: "已安装：{version}",
+      checking_updates: "正在检查更新…",
+      up_to_date: "已是最新（{version}）",
+      update_available: "{version} 可用",
+      update_now: "更新",
+      check_failed: "无法检查更新：{error}",
+      update_failed: "无法开始更新：{error}",
     },
     keys: {
       title: "键盘快捷键",
@@ -372,6 +414,13 @@ const NAV_I18N = {
       results_n: "{n} 件",
       search_failed: "バックアップの検索に失敗しました。",
       needs_connection: "先に MongoDB 接続を追加してください。",
+      installed: "インストール済み: {version}",
+      checking_updates: "アップデートを確認中…",
+      up_to_date: "最新です（{version}）",
+      update_available: "{version} が利用可能です",
+      update_now: "アップデート",
+      check_failed: "アップデートを確認できませんでした: {error}",
+      update_failed: "アップデートを開始できませんでした: {error}",
     },
     keys: {
       title: "キーボードショートカット",
@@ -426,6 +475,13 @@ const NAV_I18N = {
       results_n: "Результатов: {n}",
       search_failed: "Не удалось выполнить поиск резервных копий.",
       needs_connection: "Сначала добавьте подключение к MongoDB.",
+      installed: "Установлено: {version}",
+      checking_updates: "Проверка обновлений…",
+      up_to_date: "Установлена последняя версия ({version})",
+      update_available: "Доступна версия {version}",
+      update_now: "Обновить",
+      check_failed: "Не удалось проверить обновления: {error}",
+      update_failed: "Не удалось запустить обновление: {error}",
     },
     keys: {
       title: "Сочетания клавиш",
@@ -540,24 +596,25 @@ const toastWaiting = [];
 // ({label, run}) adds a button, opts.duration overrides how long it stays (ms).
 // Toasts stack up to TOAST_MAX_VISIBLE; further ones wait their turn. Screen
 // readers hear them through the shared live regions (forms.js), not the toast.
+// It returns a handle for toastDismiss (null for an empty message).
 function toastShow(msg, type, opts) {
   const text = String(msg || "");
-  if (!text) return;
+  if (!text) return null;
   const item = { text, type: TOAST_TYPES.includes(type) ? type : "success", opts: opts || {} };
   if (typeof window.mrAnnounce === "function") window.mrAnnounce(text, item.type === "error");
   const container = document.getElementById("toast-container");
-  if (!container) return;
+  if (!container) return null;
   // The same message already showing: keep it longer instead of stacking a copy.
   const same = Array.from(container.children).find(el => el.dataset.text === text && el.dataset.type === item.type);
   if (same && same.mrRestart) {
     same.mrRestart();
-    return;
+    return same;
   }
   if (container.children.length >= TOAST_MAX_VISIBLE) {
     toastWaiting.push(item);
-    return;
+    return item;
   }
-  toastRender(container, item);
+  return toastRender(container, item);
 }
 
 function toastRender(container, item) {
@@ -613,10 +670,23 @@ function toastRender(container, item) {
     }
   });
   container.appendChild(el);
+  item.el = el;
   start();
+  return el;
 }
 
-function toastDismiss(el) {
+// toastDismiss removes a toast (a handle from toastShow: its element, or a queued
+// entry, which leaves the queue or is removed once it was shown).
+function toastDismiss(handle) {
+  if (handle && !(handle instanceof Element)) {
+    const i = toastWaiting.indexOf(handle);
+    if (i >= 0) {
+      toastWaiting.splice(i, 1);
+      return;
+    }
+    handle = handle.el;
+  }
+  const el = handle;
   if (!el || !el.parentNode) return;
   if (el.mrStop) el.mrStop();
   const container = el.parentNode;
@@ -947,6 +1017,92 @@ function setupDeepLinks() {
 }
 
 // ---------------------------------------------------------------------------
+// Check for updates: the desktop app's updater, or the releases page
+// ---------------------------------------------------------------------------
+
+// The desktop app's update endpoints (internal/desktop/updater.go). They exist only
+// in the app's webview; POSTs need the header, which a cross-origin page cannot send.
+const DESKTOP_UPDATE = {
+  check: "/desktop/update/check",
+  install: "/desktop/update/install",
+  release: "/desktop/update/release-page",
+  header: "X-MongoRescue-Desktop",
+  // Created by the update script while an optional update is available; its click
+  // runs the script's own install flow (progress bar, release page fallback).
+  button: "mr-update-header"
+};
+
+// The desktop app injects its update script, which sets this flag; the web and
+// Docker builds never have it.
+function navIsDesktop() {
+  return window.__mongorescueUpdate === true;
+}
+
+function desktopPost(path) {
+  return fetch(path, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { [DESKTOP_UPDATE.header]: "1" } });
+}
+
+async function desktopJSON(path) {
+  const res = await desktopPost(path);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body && body.error ? String(body.error) : `HTTP ${res.status}`);
+  return body || {};
+}
+
+// The update script polls slowly while idle; a visibility event makes it look at
+// the status again soon (it then shows the update bar or the install progress).
+function wakeUpdateScript() {
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+// checkForUpdates asks the desktop app's updater for a release now and reports the
+// result as a toast ("Up to date (vX)", or "vY is available" with Update); in the
+// browser it opens the releases page.
+async function checkForUpdates() {
+  if (!navIsDesktop()) {
+    navOpenExternal(`${NAV_REPO}/releases/latest`);
+    return;
+  }
+  const checking = toastShow(t("palette.checking_updates"), "info", { duration: 60000 });
+  let status;
+  try {
+    status = await desktopJSON(DESKTOP_UPDATE.check);
+  } catch (err) {
+    toastDismiss(checking);
+    showToast(tf("palette.check_failed", { error: err.message }), "error");
+    return;
+  }
+  toastDismiss(checking);
+  if (status.available) {
+    showToast(tf("palette.update_available", { version: formatVersion(status.latest) }), "info", {
+      duration: 20000,
+      action: { label: t("palette.update_now"), run: () => startDesktopUpdate(status) }
+    });
+  } else {
+    showToast(tf("palette.up_to_date", { version: formatVersion(status.current) }), "success");
+  }
+  wakeUpdateScript();
+}
+
+// startDesktopUpdate runs the update through the update script's header button
+// when it is there; otherwise it asks the updater directly (the release page when
+// there is no installable file) and lets the script show the progress.
+async function startDesktopUpdate(status) {
+  const btn = document.getElementById(DESKTOP_UPDATE.button);
+  if (btn && !btn.disabled) {
+    btn.click();
+    return;
+  }
+  try {
+    await desktopJSON(status && status.installable === false ? DESKTOP_UPDATE.release : DESKTOP_UPDATE.install);
+  } catch (err) {
+    showToast(tf("palette.update_failed", { error: err.message }), "error");
+    return;
+  }
+  wakeUpdateScript();
+}
+
+// ---------------------------------------------------------------------------
 // Command palette
 // ---------------------------------------------------------------------------
 
@@ -1006,8 +1162,9 @@ function paletteStaticItems() {
     { group: "actions", label: t("nav.instant_backup"), icon: "play", run: paletteNeedsConnection(openBackupNowModal) },
     { group: "actions", label: t("nav.new_job"), icon: "plus", run: paletteNeedsConnection(() => openJobModal()) },
     { group: "actions", label: t("conn.add"), icon: "plus", run: () => openConnectionModal("") },
-    { group: "actions", label: t("palette.check_updates"), sub: tf("palette.check_updates_sub", { version }), icon: "external",
-      run: () => navOpenExternal(`${NAV_REPO}/releases/latest`) },
+    { group: "actions", label: t("palette.check_updates"),
+      sub: tf(navIsDesktop() ? "palette.installed" : "palette.check_updates_sub", { version }),
+      icon: navIsDesktop() ? "arrow" : "external", run: checkForUpdates },
     { group: "actions", label: t("timefmt.docs"), icon: "external", run: () => navOpenExternal(navDocsUrl()) },
     { group: "actions", label: t("palette.toggle_time"), icon: "clock", run: () => setTimeDisplay(!navTime.absolute) },
     { group: "actions", label: t("palette.shortcuts"), sub: "?", icon: "key", run: openShortcutHelp }
@@ -1159,6 +1316,7 @@ function openPalette() {
   if (!auth.user) return;
   const modal = document.getElementById("modal-palette");
   if (!modal) return;
+  toggleUserMenu(false);
   if (modal.classList.contains("open")) {
     closeModal("modal-palette");
     return;
