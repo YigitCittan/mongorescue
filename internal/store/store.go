@@ -69,6 +69,9 @@ type Store interface {
 	GetJobRun(ctx context.Context, id string) (*models.JobRun, error)
 	// ListJobRuns returns up to limit runs of a job, newest first.
 	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*models.JobRun, error)
+	// LatestJobRuns maps each of jobIDs that has runs to its newest run, in one
+	// query (per 500 IDs).
+	LatestJobRuns(ctx context.Context, jobIDs []string) (map[string]*models.JobRun, error)
 	// ListRunningJobRuns returns every job run still recorded as running.
 	ListRunningJobRuns(ctx context.Context) ([]*models.JobRun, error)
 

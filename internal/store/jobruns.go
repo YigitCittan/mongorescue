@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -46,6 +47,37 @@ func (s *SQLiteStore) ListJobRuns(ctx context.Context, jobID string, limit int) 
 	}
 	return listRecords[models.JobRun](ctx, s, tableJobRuns, nil,
 		"SELECT id, data FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, id DESC LIMIT ?", jobID, limit)
+}
+
+// latestJobRunsChunk bounds the job IDs of one LatestJobRuns query (SQL variables).
+const latestJobRunsChunk = 500
+
+// LatestJobRuns maps each of jobIDs that has runs to its newest run (by start time,
+// then ID, like ListJobRuns(ctx, id, 1)), in one query per 500 IDs that reads the
+// job_runs_by_job index. A job whose newest run cannot be read is left out (and the
+// row reported), as ListJobRuns(ctx, id, 1) returns no run for it.
+func (s *SQLiteStore) LatestJobRuns(ctx context.Context, jobIDs []string) (map[string]*models.JobRun, error) {
+	out := make(map[string]*models.JobRun, len(jobIDs))
+	for start := 0; start < len(jobIDs); start += latestJobRunsChunk {
+		chunk := jobIDs[start:min(start+latestJobRunsChunk, len(jobIDs))]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		// One constant "?" per ID; the IDs themselves are arguments.
+		query := `SELECT id, data FROM (
+				SELECT id, data, row_number() OVER (PARTITION BY job_id ORDER BY started_at DESC, id DESC) AS rn
+				FROM job_runs WHERE job_id IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)
+			) WHERE rn = 1`
+		list, err := listRecords[models.JobRun](ctx, s, tableJobRuns, nil, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: latest job runs: %w", err)
+		}
+		for _, run := range list {
+			out[run.JobID] = run
+		}
+	}
+	return out, nil
 }
 
 // ListRunningJobRuns returns every job run still recorded as running, oldest first.
