@@ -412,7 +412,7 @@ func (s *Server) registerTools() {
 		}),
 	}, s.listCollections)
 	addTool(s, &sdk.Tool{
-		Name:        ToolListJobs,
+		Name: ToolListJobs,
 		Description: "List scheduled backup jobs (cron schedule, database or database_selection, retention, last and next run). " +
 			"A job backs up one database (database_selection mode single) or several: a list, all databases of the connection, " +
 			"or those matching glob patterns, optionally including new databases automatically.",
