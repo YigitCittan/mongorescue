@@ -149,6 +149,7 @@ type privilege struct {
 		DB          *string `bson:"db"`
 		Collection  *string `bson:"collection"`
 		AnyResource bool    `bson:"anyResource"`
+		Cluster     bool    `bson:"cluster"`
 	} `bson:"resource"`
 	Actions []string `bson:"actions"`
 }

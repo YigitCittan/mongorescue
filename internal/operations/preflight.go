@@ -43,18 +43,9 @@ func (e *PreflightError) Unwrap() error { return ErrPreflightFailed }
 // verifications (implemented by *mongoconn.Prober). Implementations must never
 // include the URI's credentials in errors.
 type RestoreInspector interface {
-	// Ping connects and reports the server version.
-	Ping(ctx context.Context, uri string) (connections.ServerInfo, error)
-	// DatabaseExists reports whether database exists.
-	DatabaseExists(ctx context.Context, uri, database string) (bool, error)
-	// ListCollections returns the collections and views of database.
-	ListCollections(ctx context.Context, uri, database string) ([]connections.Collection, error)
-	// MissingPrivileges returns the entries of actions the user is not granted on the
-	// whole of database.
-	MissingPrivileges(ctx context.Context, uri, database string, actions []string) ([]string, error)
-	// FreeSpace returns the free disk space of the server's data filesystem, when
-	// known.
-	FreeSpace(ctx context.Context, uri, database string) (free int64, ok bool, err error)
+	// OpenTarget opens one client to the server at uri, shared by all the server
+	// checks of a preflight; ctx's deadline bounds it.
+	OpenTarget(ctx context.Context, uri string) (connections.RestoreTarget, error)
 	// Manifest returns the counts and indexes of every collection of database.
 	Manifest(ctx context.Context, uri, database string) (*models.Manifest, error)
 }
@@ -68,8 +59,9 @@ type manifestStore interface {
 
 // Preflight limits.
 const (
-	// preflightTimeout bounds all the checks of one preflight.
-	preflightTimeout = 30 * time.Second
+	// preflightTimeout bounds all the checks of one preflight, which share one
+	// connection to the target.
+	preflightTimeout = 15 * time.Second
 	// maxListedCollections caps the collection names a check message lists.
 	maxListedCollections = 20
 )
@@ -111,11 +103,19 @@ func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreReques
 }
 
 // preflight runs every check of a restore of source described by req into targetDB.
-// It never fails: what cannot be checked is a warning.
+// It never fails: what cannot be checked is a warning. The server checks share one
+// client, bounded by preflightTimeout and by ctx (so a shutdown or a client that
+// goes away ends them).
+//
+// Only these can fail: an unreachable target, a missing decryption key, an existing
+// safe clone name, privileges certainly missing, free space reported by the server
+// smaller than the archive, and a users-and-roles request the backup cannot satisfy.
+// Everything uncertain warns.
 func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB string) *models.PreflightResult {
 	ctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()
 	p := &preflightRun{svc: s, ctx: ctx, req: req, source: source, targetDB: targetDB, res: &models.PreflightResult{OK: true}}
+	defer p.close()
 	p.connection()
 	p.encryption()
 	p.serverVersion()
@@ -136,13 +136,22 @@ type preflightRun struct {
 	targetDB string
 	res      *models.PreflightResult
 
-	// reachable is set when the target answered; version is its version.
+	// target is the open client to the target server; reachable is set when it
+	// answered, version is its version.
+	target    connections.RestoreTarget
 	reachable bool
 	version   string
 }
 
 // inspector returns the inspector, or nil.
 func (p *preflightRun) inspector() RestoreInspector { return p.svc.cfg.Inspector }
+
+// close releases the client to the target.
+func (p *preflightRun) close() {
+	if p.target != nil {
+		p.target.Close()
+	}
+}
 
 // connectionName names the target connection in messages.
 func (p *preflightRun) connectionName() string {
@@ -176,7 +185,14 @@ func (p *preflightRun) connection() {
 		p.res.Add(models.PreflightCheckConnection, models.PreflightWarn, "not checked: the target server cannot be inspected in this setup")
 		return
 	}
-	info, err := p.inspector().Ping(p.ctx, p.req.MongoURI)
+	target, err := p.inspector().OpenTarget(p.ctx, p.req.MongoURI)
+	if err != nil {
+		p.res.Add(models.PreflightCheckConnection, models.PreflightFail,
+			fmt.Sprintf("the target connection %s cannot be opened: %s", p.connectionName(), errText(err)))
+		return
+	}
+	p.target = target
+	info, err := target.Ping(p.ctx)
 	if err != nil {
 		p.res.Add(models.PreflightCheckConnection, models.PreflightFail,
 			fmt.Sprintf("the target connection %s does not answer: %s", p.connectionName(), errText(err)))
@@ -216,9 +232,11 @@ func (p *preflightRun) serverVersion() {
 		return
 	}
 	versions := fmt.Sprintf("backup from MongoDB %s, target runs %s", p.source.ServerVersion, p.version)
+	// Version differences only warn: mongorestore often restores across versions, and
+	// what it rejects depends on the data (index types, collection options).
 	switch {
 	case tgt.Major < src.Major:
-		p.res.Add(id, models.PreflightFail, versions+": the target is an older major version, which may reject the backup's data, indexes or options")
+		p.res.Add(id, models.PreflightWarn, versions+": the target is an older major version; mongorestore may still work, but data, indexes or options newer than the target can be rejected, so try a dry run or a safe clone first")
 	case tgt.Major > src.Major:
 		p.res.Add(id, models.PreflightWarn, versions+": mongorestore supports restoring into the same major version; check the upgrade notes of the versions in between")
 	case tgt.Compare(src) < 0:
@@ -233,7 +251,7 @@ func (p *preflightRun) targetDatabase() {
 	if p.skipServer(id) {
 		return
 	}
-	exists, err := p.inspector().DatabaseExists(p.ctx, p.req.MongoURI, p.targetDB)
+	exists, err := p.target.DatabaseExists(p.ctx, p.targetDB)
 	if err != nil {
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not check whether database %s exists: %s", p.targetDB, errText(err)))
 		return
@@ -268,13 +286,16 @@ func (p *preflightRun) privileges() {
 	if p.req.RestoreUsersAndRoles {
 		actions = append(actions, usersAndRolesActions...)
 	}
-	missing, err := p.inspector().MissingPrivileges(p.ctx, p.req.MongoURI, p.targetDB, actions)
+	// Collection-level grants count for the collections the restore writes, when
+	// they are known.
+	collections, _ := p.restoredCollections()
+	report, err := p.target.Privileges(p.ctx, p.targetDB, actions, collections)
 	if err != nil {
 		p.res.Add(id, models.PreflightWarn, "could not read the privileges of the target connection's user: "+errText(err))
 		return
 	}
 	var core, users []string
-	for _, a := range missing {
+	for _, a := range report.Missing {
 		if slices.Contains(usersAndRolesActions, a) {
 			users = append(users, a)
 		} else {
@@ -282,9 +303,13 @@ func (p *preflightRun) privileges() {
 		}
 	}
 	switch {
-	case len(core) > 0:
+	case len(core) > 0 && report.Certain:
 		p.res.Add(id, models.PreflightFail, fmt.Sprintf(
 			"the user of connection %s may not %s on database %s; grant e.g. readWrite on it, readWriteAnyDatabase or restore",
+			p.connectionName(), strings.Join(core, ", "), p.targetDB))
+	case len(core) > 0:
+		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
+			"the user of connection %s was not found to hold %s on database %s; custom roles or collection-level grants may still allow it",
 			p.connectionName(), strings.Join(core, ", "), p.targetDB))
 	case len(users) > 0:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
@@ -315,12 +340,13 @@ func (p *preflightRun) diskSpace() {
 		return
 	}
 	size := p.source.SizeBytes
-	free, known, err := p.inspector().FreeSpace(p.ctx, p.req.MongoURI, p.targetDB)
+	space, err := p.target.FreeSpace(p.ctx, p.targetDB)
+	free := space.Free
 	switch {
 	case err != nil:
 		p.res.Add(id, models.PreflightWarn, "the free disk space of the target server is unknown: "+errText(err))
 		return
-	case !known:
+	case !space.Known:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("the free disk space of the target server is unknown (the archive holds %s)", formatBytes(size)))
 		return
 	case size <= 0:
@@ -331,9 +357,16 @@ func (p *preflightRun) diskSpace() {
 	if gzip, ok := gzipFromKey(p.source.StorageKey); ok && !gzip {
 		headroom = plainHeadroom
 	}
+	// Only free space the server reports itself can fail the check: the local file
+	// system behind a loopback address may belong to a tunnel or a Docker host, and
+	// an in-place restore with drop_target frees the space of what it replaces.
+	certain := space.Source == connections.DiskSpaceDBStats && (!p.req.InPlace() || !p.req.DropTarget)
 	switch {
-	case free < size:
+	case free < size && certain:
 		p.res.Add(id, models.PreflightFail, fmt.Sprintf("the target has %s free, less than the %s archive", formatBytes(free), formatBytes(size)))
+	case free < size:
+		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("the target seems to have %s free, less than the %s archive (%s)",
+			formatBytes(free), formatBytes(size), diskSpaceCaveat(space.Source)))
 	case free/headroom < size:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the target has %s free for a %s archive; restored data and indexes usually take more room than the archive", formatBytes(free), formatBytes(size)))
@@ -355,7 +388,7 @@ func (p *preflightRun) collections() {
 	if p.skipServer(id) {
 		return
 	}
-	list, err := p.inspector().ListCollections(p.ctx, p.req.MongoURI, p.targetDB)
+	list, err := p.target.ListCollections(p.ctx, p.targetDB)
 	if err != nil {
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not list the collections of %s: %s", p.targetDB, errText(err)))
 		return
@@ -433,6 +466,14 @@ func (p *preflightRun) usersAndRoles() {
 	}
 	p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 		"every user and role defined on %s is replaced with the ones in the backup; users and roles created since are removed", p.source.Database))
+}
+
+// diskSpaceCaveat says why a free space shortage only warns.
+func diskSpaceCaveat(source string) string {
+	if source == connections.DiskSpaceLocal {
+		return "measured on this host's file system for a server on a loopback address, which may be a tunnel or a container network"
+	}
+	return "drop_target frees the space of the collections it replaces"
 }
 
 // manifest returns the manifest of backup source, or nil when it has none or the

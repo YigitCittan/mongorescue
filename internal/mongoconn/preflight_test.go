@@ -67,3 +67,41 @@ func TestLoopbackURI(t *testing.T) {
 		}
 	}
 }
+
+func TestPrivilegeReport(t *testing.T) {
+	str := func(s string) *string { return &s }
+	priv := func(db, coll *string, actions ...string) privilege {
+		var p privilege
+		p.Resource.DB, p.Resource.Collection = db, coll
+		p.Actions = actions
+		return p
+	}
+	write := []string{"createCollection", "createIndex", "insert"}
+	builtin := []roleRef{{Role: "readWrite", DB: "shop"}}
+	for _, tc := range []struct {
+		name        string
+		privs       []privilege
+		roles       []roleRef
+		collections []string
+		missing     []string
+		certain     bool
+	}{
+		{"database-wide grant", []privilege{priv(str("shop"), str(""), write...)}, builtin, nil, nil, true},
+		{"collection grants cover the selection", []privilege{priv(str("shop"), str("orders"), write...), priv(str("shop"), str("users"), write...)},
+			builtin, []string{"orders", "users"}, nil, true},
+		{"collection grants miss a collection", []privilege{priv(str("shop"), str("orders"), write...)},
+			builtin, []string{"orders", "users"}, write, false},
+		{"collection grants without a known collection list", []privilege{priv(str("shop"), str("orders"), write...)},
+			builtin, nil, write, false},
+		{"read only with built-in roles", []privilege{priv(str("shop"), str(""), "find")}, []roleRef{{Role: "read", DB: "shop"}}, nil, write, true},
+		{"a custom role", []privilege{priv(str("shop"), str(""), "find")}, []roleRef{{Role: "appRole", DB: "admin"}}, nil, write, false},
+		{"an admin-only role name in another database", []privilege{priv(str("shop"), str(""), "find")}, []roleRef{{Role: "restore", DB: "shop"}}, nil, write, false},
+		{"an unmodelled resource", []privilege{priv(nil, nil, "insert")}, builtin, nil, write, false},
+		{"the restore role", []privilege{priv(str(""), str(""), write...)}, []roleRef{{Role: "restore", DB: "admin"}}, nil, nil, true},
+	} {
+		got := privilegeReport(tc.privs, tc.roles, "shop", write, tc.collections)
+		if !slices.Equal(got.Missing, tc.missing) || got.Certain != tc.certain {
+			t.Errorf("%s: report = %+v; want missing %v, certain %v", tc.name, got, tc.missing, tc.certain)
+		}
+	}
+}

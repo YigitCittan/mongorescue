@@ -62,6 +62,13 @@ type fixture struct {
 
 func newFixture(t *testing.T, mutate func(*Config)) *fixture {
 	t.Helper()
+	return newFixtureWith(t, mutate, nil)
+}
+
+// newFixtureWith is newFixture whose operations service inspects restore targets
+// with inspector (nil: no preflight).
+func newFixtureWith(t *testing.T, mutate func(*Config), inspector operations.RestoreInspector) *fixture {
+	t.Helper()
 	st := storetest.New(t)
 	mock := storage.NewMockStorage()
 	bRunner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
@@ -87,9 +94,13 @@ func newFixture(t *testing.T, mutate func(*Config)) *fixture {
 	conns := connections.NewService(st, fakeProber{})
 	sched := scheduler.NewScheduler(st, bEngine, mock, nil, scheduler.WithConnectionResolver(conns))
 	registry := runs.NewRegistry()
-	ops := operations.New(operations.Config{
+	opsCfg := operations.Config{
 		Store: st, Backup: bEngine, Restore: rEngine, Jobs: sched, Runs: manager, Registry: registry, Connections: conns, Version: "test",
-	})
+	}
+	if inspector != nil {
+		opsCfg.Inspector = inspector
+	}
+	ops := operations.New(opsCfg)
 	f := &fixture{store: st, audit: audit.NewService(st, nil), registry: registry, observed: map[string]int{}}
 	cfg := Config{
 		Operations: ops, Connections: conns, Audit: f.audit, Version: "test",

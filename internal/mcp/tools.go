@@ -256,6 +256,8 @@ type restoreInput struct {
 	TargetConnectionID string   `json:"target_connection_id,omitempty" jsonschema:"admin API keys only: another connection to restore into (default, and the only choice for operator keys: the backup's own connection)"`
 	Collections        []string `json:"collections,omitempty" jsonschema:"only restore these collections (names from list_backup_collections; default: the whole database)"`
 	Verify             *bool    `json:"verify,omitempty" jsonschema:"verify the archive checksum (and decryption) before restoring (default: the server's verify policy)"`
+	VerifyRestore      bool     `json:"verify_restore,omitempty" jsonschema:"after the restore, compare the document counts and indexes of the restored collections with the backup's manifest (result in the restore's verification)"`
+	Force              bool     `json:"force,omitempty" jsonschema:"WARNING: starts the restore even though a preflight check failed, which may fail or harm the target; set it only after reading the failed checks"`
 }
 
 // Outputs.
@@ -509,7 +511,7 @@ func (s *Server) registerTools() {
 			"In-place restores are not available through MCP. Operator keys restore into the backup's own connection only; " +
 			"target_connection_id (another server) needs an admin key. A preflight checks the target first (connection, server " +
 			"version, clone name, privileges, free disk space): its result is in the output, and a failed check refuses the restore " +
-			"with the reasons.",
+			"with the reasons unless force is set (only after reading them). verify_restore compares the restored collections with the backup's manifest.",
 		Annotations: additive("Restore to a safe clone"),
 		InputSchema: schemaFor[restoreInput](func(p map[string]*jsonschema.Schema) {
 			limitIDs(p, "backup_id", "target_connection_id")
@@ -889,6 +891,8 @@ func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restore
 		TargetConnectionID:  in.TargetConnectionID,
 		SelectedCollections: in.Collections,
 		Verify:              in.Verify,
+		VerifyRestore:       in.VerifyRestore,
+		Force:               in.Force,
 	})
 	if err != nil {
 		return restoreStarted{}, "", err
