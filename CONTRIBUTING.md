@@ -77,6 +77,7 @@ make fuzz FUZZ_TARGETS=./internal/redact:FuzzURI   # one target (<package>:<Fuzz
 ```bash
 make test-e2e                                # build, containers, npm ci, Chromium, the suite
 E2E_SKIP_INSTALL=1 PLAYWRIGHT_ARGS="--headed" make test-e2e   # reuse node_modules, visible browser
+E2E_KEYCLOAK=1 make test-e2e                 # also Keycloak, for the single sign-on spec (skipped otherwise)
 cd e2e && npm run typecheck && npx playwright show-report               # type-check, open the last report
 ```
 

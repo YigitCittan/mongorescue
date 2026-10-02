@@ -16,6 +16,8 @@
 #   MONGO_IMAGE      MongoDB image (default: mongo:7)
 #   E2E_SKIP_INSTALL 1 skips npm ci and the Chromium download (already installed)
 #   PLAYWRIGHT_ARGS  extra arguments for playwright test (e.g. "--headed", "-g backup")
+#   E2E_KEYCLOAK     1 also starts Keycloak (KEYCLOAK_IMAGE) for the single sign-on
+#                    spec, which is skipped without it
 # ==============================================================================
 set -euo pipefail
 
@@ -23,6 +25,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MONGO_IMAGE="${MONGO_IMAGE:-mongo:7}"
 # Same digest-pinned image as the integration suite.
 MINIO_IMAGE="${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1}"
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.3}"
 MINIO_BUCKET="mongorescue-e2e"
 
 PREFIX="mongorescue-e2e-$$"
@@ -117,6 +120,21 @@ export MONGORESCUE_E2E_S3_ENDPOINT="$MINIO_URL"
 export MONGORESCUE_E2E_S3_BUCKET="$MINIO_BUCKET"
 export MONGORESCUE_E2E_S3_ACCESS_KEY="minioadmin"
 export MONGORESCUE_E2E_S3_SECRET_KEY="minioadmin"
+
+# --- Keycloak (optional) -------------------------------------------------------
+# E2E_KEYCLOAK=1 also starts Keycloak in dev mode with the integration test realm,
+# for the single sign-on spec (10-sso.spec.ts), which is skipped otherwise.
+if [ "${E2E_KEYCLOAK:-0}" = 1 ]; then
+  log "starting $KEYCLOAK_IMAGE"
+  docker run -d --name "$PREFIX-keycloak" -p 127.0.0.1::8080 \
+    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD="kc$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" \
+    -v "$ROOT/internal/integration/testdata/keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro" \
+    "$KEYCLOAK_IMAGE" start-dev --import-realm >/dev/null
+  CONTAINERS+=("$PREFIX-keycloak")
+  KEYCLOAK_URL="http://127.0.0.1:$(host_port "$PREFIX-keycloak" 8080)"
+  wait_for "keycloak" 180 curl -fsS "$KEYCLOAK_URL/realms/mongorescue/.well-known/openid-configuration"
+  export MONGORESCUE_E2E_KEYCLOAK_URL="$KEYCLOAK_URL"
+fi
 
 # --- Playwright ----------------------------------------------------------------
 cd "$ROOT/e2e"

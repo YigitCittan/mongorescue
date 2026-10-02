@@ -2073,6 +2073,15 @@ a.btn-block {
   min-width: 0;
 }
 
+/* A URL with a button beside it (Settings → Single sign-on) takes the full width. */
+.input-inline.input-wide .form-input {
+  flex: 1 1 auto;
+}
+
+.input-inline.input-wide .btn {
+  flex: none;
+}
+
 .duration-preview {
   font-size: 12px;
   color: var(--text-muted);
