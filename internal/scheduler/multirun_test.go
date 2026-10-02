@@ -257,6 +257,21 @@ func TestPatternWithAutoIncludeAddsNewDatabasesOnce(t *testing.T) {
 }
 
 func TestCancellingOneDatabaseStopsTheWholeRun(t *testing.T) {
+	for name, cancel := range map[string]func(*runs.Registry, string, runs.Cancellation) error{
+		"registry": func(reg *runs.Registry, id string, c runs.Cancellation) error { return reg.Cancel(id, c) },
+		// The registry cancels the requested database before the others of its run:
+		// the next database must not start in between.
+		"requested database only": func(reg *runs.Registry, id string, c runs.Cancellation) error {
+			return reg.Get(id).Cancel(c)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			testCancellingOneDatabase(t, cancel)
+		})
+	}
+}
+
+func testCancellingOneDatabase(t *testing.T, cancel func(*runs.Registry, string, runs.Cancellation) error) {
 	metaStore := storetest.New(t)
 	var started atomic.Int32
 	blocking := func(ctx context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
@@ -303,7 +318,7 @@ func TestCancellingOneDatabaseStopsTheWholeRun(t *testing.T) {
 			t.Fatal("the first database never started")
 		}
 	}
-	if err := reg.Cancel(plan.Records[0].ID, runs.Cancellation{By: "alice", Kind: runs.ActorUser}); err != nil {
+	if err := cancel(reg, plan.Records[0].ID, runs.Cancellation{By: "alice", Kind: runs.ActorUser}); err != nil {
 		t.Fatal(err)
 	}
 	var run *models.JobRun

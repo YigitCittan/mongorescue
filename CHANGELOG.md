@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cancelling a multi-database job run no longer lets a database that was still waiting start `mongodump` in the moment between the cancellation of the requested database and that of the others: a database of the run now checks, right before its backup starts, whether another database of the run was cancelled, and is recorded as cancelled by the same actor instead.
+
 ## [0.15.0] - 2026-10-02
 
 ### Added

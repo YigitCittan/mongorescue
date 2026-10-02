@@ -282,6 +282,17 @@ func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause e
 	s.releaseJobRun(plan.Job.ID, plan.Run.ID)
 }
 
+// cancellation returns the Cancellation of a database of the run, or nil when none
+// of them was cancelled.
+func (p *JobRunPlan) cancellation() *runs.Cancellation {
+	for _, tracked := range p.trackers {
+		if c := tracked.Cancellation(); c != nil {
+			return c
+		}
+	}
+	return nil
+}
+
 // setDatabase copies rec's outcome into the run's database entry.
 func (p *JobRunPlan) setDatabase(rec *models.BackupRecord) {
 	for i := range p.Run.Databases {
@@ -369,6 +380,13 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 		rec.CompletedAt, rec.Phases.Finished = &now, models.Stamp(now)
 	}
 	if err == nil {
+		// A cancellation of the run reaches its databases one by one (runs.Registry
+		// cancels the requested database before the others), so this database may not
+		// be cancelled yet although another one is: adopt that cancellation, and the
+		// engine records this database as cancelled without starting mongodump.
+		if c := plan.cancellation(); c != nil {
+			_ = tracked.Cancel(*c)
+		}
 		// The backup starts now; it was queued since the run began (Phases.Queued).
 		rec.StartedAt = time.Now().UTC()
 		rec, err = s.backupEngine.Execute(dbCtx, opts, rec)
