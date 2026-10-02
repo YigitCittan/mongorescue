@@ -427,7 +427,7 @@
 
   function hostError(h, srv) {
     if (!h.host) return t("uri_builder.err_host_empty");
-    if (!/^(\[[0-9A-Fa-f:.%a-zA-Z]+\]|[A-Za-z0-9\-._~!$&'()*+;=%]+)$/.test(h.host)) return t("uri_builder.err_host");
+    if (!/^(\[[0-9A-Za-z:.%]+\]|[A-Za-z0-9\-._~!$&'()*+;=%]+)$/.test(h.host)) return t("uri_builder.err_host");
     if (srv && h.port) return t("uri_builder.err_srv_port");
     if (h.port && (!/^\d{1,5}$/.test(h.port) || Number(h.port) < 1 || Number(h.port) > 65535)) return t("uri_builder.err_port");
     return "";
