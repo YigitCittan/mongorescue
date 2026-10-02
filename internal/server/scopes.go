@@ -58,6 +58,9 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/storage-targets/{id}/default": auth.ScopeAdmin,
 
 	"GET /api/v1/stats": auth.ScopeRead,
+	// The dashboard overview (SQL aggregates) and the cron builder's preview.
+	"GET /api/v1/stats/history":    auth.ScopeRead,
+	"GET /api/v1/schedule/preview": auth.ScopeRead,
 
 	"GET /api/v1/jobs":                     auth.ScopeRead,
 	"POST /api/v1/jobs":                    auth.ScopeAdmin,

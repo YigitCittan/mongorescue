@@ -100,6 +100,10 @@ type Store interface {
 	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
 	// RestoreStats returns the number of restores and their counts by status.
 	RestoreStats(ctx context.Context) (*RestoreStats, error)
+	// BackupHistory returns SQL aggregates of the backups over time: outcomes and
+	// sizes per day, each job's newest runs and last success, and failed
+	// verifications (see BackupHistoryQuery).
+	BackupHistory(ctx context.Context, q BackupHistoryQuery) (*BackupHistory, error)
 
 	// CorruptRecords returns the stored rows that lists skipped because they cannot be
 	// read (see CorruptRecord), after checking each again. Rows are never changed.
