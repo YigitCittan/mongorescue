@@ -75,6 +75,8 @@ const (
 	ToolVerifyBackup          = "verify_backup"
 	ToolPinBackup             = "pin_backup"
 	ToolRetentionPreview      = "retention_preview"
+	ToolPreviewJobDatabases   = "preview_job_databases"
+	ToolListJobRuns           = "list_job_runs"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
@@ -99,6 +101,8 @@ var ToolScopes = map[string]auth.Scope{
 	ToolVerifyBackup:          auth.ScopeOperator,
 	ToolPinBackup:             auth.ScopeOperator,
 	ToolRetentionPreview:      auth.ScopeRead,
+	ToolPreviewJobDatabases:   auth.ScopeRead,
+	ToolListJobRuns:           auth.ScopeRead,
 }
 
 // ptr returns a pointer to v.
@@ -205,6 +209,7 @@ type listBackupsInput struct {
 	ConnectionID string `json:"connection_id,omitempty" jsonschema:"only backups taken from this connection"`
 	Status       string `json:"status,omitempty" jsonschema:"only backups in this state"`
 	JobID        string `json:"job_id,omitempty" jsonschema:"only backups taken by this scheduled job"`
+	RunID        string `json:"run_id,omitempty" jsonschema:"only backups of this job run (one per database; see list_job_runs)"`
 	Limit        int    `json:"limit,omitempty" jsonschema:"page size, 1-100 (default 50)"`
 	Cursor       string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous page"`
 }
@@ -332,6 +337,16 @@ func schemaFor[T any](tweak func(props map[string]*jsonschema.Schema)) *jsonsche
 	if err != nil {
 		panic(fmt.Sprintf("mcp: input schema of %T: %v", *new(T), err))
 	}
+	narrowTypes(s)
+	if tweak != nil {
+		tweak(s.Properties)
+	}
+	return s
+}
+
+// narrowTypes narrows the ["null", <type>] properties of s and of its nested
+// objects to the single type (see schemaFor).
+func narrowTypes(s *jsonschema.Schema) {
 	for _, p := range s.Properties {
 		if len(p.Types) == 2 && slices.Contains(p.Types, "null") {
 			p.Type = p.Types[0]
@@ -340,11 +355,8 @@ func schemaFor[T any](tweak func(props map[string]*jsonschema.Schema)) *jsonsche
 			}
 			p.Types = nil
 		}
+		narrowTypes(p)
 	}
-	if tweak != nil {
-		tweak(s.Properties)
-	}
-	return s
 }
 
 // limitIDs bounds the ID-like string properties named.
@@ -401,7 +413,9 @@ func (s *Server) registerTools() {
 	}, s.listCollections)
 	addTool(s, &sdk.Tool{
 		Name:        ToolListJobs,
-		Description: "List scheduled backup jobs (cron schedule, database, retention, last and next run).",
+		Description: "List scheduled backup jobs (cron schedule, database or database_selection, retention, last and next run). " +
+			"A job backs up one database (database_selection mode single) or several: a list, all databases of the connection, " +
+			"or those matching glob patterns, optionally including new databases automatically.",
 		Annotations: readOnly("List jobs"),
 		InputSchema: schemaFor[pageInput](pageProps),
 	}, s.listJobs)
@@ -417,7 +431,7 @@ func (s *Server) registerTools() {
 		Annotations: readOnly("List backups"),
 		InputSchema: schemaFor[listBackupsInput](func(p map[string]*jsonschema.Schema) {
 			pageProps(p)
-			limitIDs(p, "connection_id", "job_id")
+			limitIDs(p, "connection_id", "job_id", "run_id")
 			p["database"].MaxLength = ptr(maxNameLength)
 			p["status"].Enum = []any{string(models.StatusInProgress), string(models.StatusCompleted), string(models.StatusFailed), string(models.StatusCancelled), string(models.StatusPruned), string(models.StatusMissing)}
 		}),
@@ -477,7 +491,9 @@ func (s *Server) registerTools() {
 	addTool(s, &sdk.Tool{
 		Name: ToolRunJob,
 		Description: "Run a scheduled backup job now. Returns immediately with the new backup record (status in_progress); " +
-			"poll get_backup with its id until the status is completed or failed. On-demand runs never delete older backups: " +
+			"poll get_backup with its id until the status is completed or failed. A job with several databases backs up each " +
+			"into its own backup: the record returned is the first one and its run_id names the run; poll list_job_runs (or " +
+			"list_backups with run_id) for all of them. On-demand runs never delete older backups: " +
 			"the job's retention policy is applied by its scheduled runs only.",
 		Annotations: additive("Run job now"),
 		InputSchema: schemaFor[runJobInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "job_id") }),
@@ -498,12 +514,14 @@ func (s *Server) registerTools() {
 		Name: ToolCancelRun,
 		Description: "Cancel a running backup or restore by its id. A backup stops and its partial archive is deleted; a safe-clone " +
 			"restore stops and its partial clone database is dropped. Cancelling an in-place restore needs an admin key, because the " +
-			"target may be left partially restored. Returns at once; poll get_backup or get_restore until the status is cancelled. " +
+			"target may be left partially restored. Cancelling a backup of a multi-database job run stops the whole run (the " +
+			"databases still waiting are cancelled too). Returns at once; poll get_backup or get_restore until the status is cancelled. " +
 			"Fails when the run is not running.",
 		Annotations: stopping("Cancel a running backup or restore"),
 		InputSchema: schemaFor[cancelRunInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
 	}, s.cancelRun)
 	s.registerTrustTools()
+	s.registerJobDatabaseTools()
 }
 
 func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled, string, error) {
@@ -688,7 +706,7 @@ func (s *Server) listBackups(ctx context.Context, in listBackupsInput) (backupLi
 	}
 	// The store pages the query, so a call never loads more than one page of records.
 	res, err := s.cfg.Operations.QueryBackups(ctx, operations.BackupFilter{
-		Database: in.Database, ConnectionID: in.ConnectionID, JobID: in.JobID, Status: models.BackupStatus(in.Status),
+		Database: in.Database, ConnectionID: in.ConnectionID, JobID: in.JobID, RunID: in.RunID, Status: models.BackupStatus(in.Status),
 		Limit: limit, Offset: offset,
 	})
 	if err != nil {
@@ -844,6 +862,10 @@ func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, str
 		return backupStarted{}, "", err
 	}
 	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
+	if job, getErr := s.cfg.Operations.GetJob(ctx, rec.JobID); getErr == nil && job.MultiDatabase() {
+		next = fmt.Sprintf("this job backs up several databases, each into its own backup; poll list_job_runs with job_id %q "+
+			"(or list_backups with run_id %q) until the run's status is no longer running", rec.JobID, rec.RunID)
+	}
 	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Job %s started backup %s; %s.", idText(rec.JobID), idText(rec.ID), next), nil
 }
 
