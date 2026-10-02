@@ -76,11 +76,11 @@ func TestOnDemandRunsNeverPrune(t *testing.T) {
 			}
 			continue
 		}
-		j, rec, err := s.PrepareJobRun(ctx, job.ID, models.TriggerMCP)
+		plan, err := s.PrepareJobRun(ctx, job.ID, models.TriggerMCP)
 		if err != nil {
 			t.Fatalf("PrepareJobRun: %v", err)
 		}
-		if _, err := s.ExecuteJobRun(ctx, j, rec); err != nil {
+		if _, err := s.ExecuteJobRun(ctx, plan); err != nil {
 			t.Fatalf("ExecuteJobRun: %v", err)
 		}
 	}

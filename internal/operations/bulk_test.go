@@ -23,6 +23,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
+	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -524,21 +525,31 @@ type blockingRunner struct {
 	release chan struct{}
 }
 
-func (r blockingRunner) PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.Job, *models.BackupRecord, error) {
+func (r blockingRunner) PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*scheduler.JobRunPlan, error) {
 	job, err := r.st.GetJob(ctx, jobID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return job, &models.BackupRecord{ID: "run_" + jobID, JobID: jobID, Database: job.Database, ConnectionID: job.ConnectionID,
-		Status: models.StatusInProgress, Trigger: trigger, StartedAt: time.Now().UTC()}, nil
+	rec := &models.BackupRecord{ID: "run_" + jobID, JobID: jobID, Database: job.Database, ConnectionID: job.ConnectionID,
+		Status: models.StatusInProgress, Trigger: trigger, StartedAt: time.Now().UTC()}
+	return &scheduler.JobRunPlan{Job: job, Run: &models.JobRun{ID: "jobrun_" + jobID, JobID: jobID}, Records: []*models.BackupRecord{rec}}, nil
 }
 
-func (r blockingRunner) ExecuteJobRun(ctx context.Context, _ *models.Job, record *models.BackupRecord) (*models.BackupRecord, error) {
+func (r blockingRunner) BeginJobRun(context.Context, *scheduler.JobRunPlan) error { return nil }
+
+func (r blockingRunner) AbandonJobRun(context.Context, *scheduler.JobRunPlan, error) {}
+
+func (r blockingRunner) ResolveJobDatabases(_ context.Context, job *models.Job) (*models.DatabaseResolution, error) {
+	res := models.ResolveSelection(job.Selection(), nil, nil)
+	return &res, nil
+}
+
+func (r blockingRunner) ExecuteJobRun(ctx context.Context, plan *scheduler.JobRunPlan) (*models.JobRun, error) {
 	select {
 	case <-r.release:
 	case <-ctx.Done():
 	}
-	return record, nil
+	return plan.Run, nil
 }
 
 func TestBulkRunNow(t *testing.T) {

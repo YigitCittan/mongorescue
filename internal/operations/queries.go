@@ -120,7 +120,7 @@ func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage
 		return nil, public("trigger must be one of "+joinValues(validTriggers), ErrInvalid)
 	}
 	if err := checkText(map[string]string{
-		"database": f.Database, "connection_id": f.ConnectionID, "job_id": f.JobID, "retry_of": f.RetryOf, "q": f.Search,
+		"database": f.Database, "connection_id": f.ConnectionID, "job_id": f.JobID, "retry_of": f.RetryOf, "run_id": f.RunID, "q": f.Search,
 	}); err != nil {
 		return nil, err
 	}

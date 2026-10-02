@@ -285,6 +285,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	mux.HandleFunc("PUT /api/v1/jobs/{id}", s.handleUpdateJob)
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.handleDeleteJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/run", s.handleTriggerJob)
+	s.registerJobDatabaseRoutes(mux)
 
 	// API Backups
 	mux.HandleFunc("GET /api/v1/backups", s.handleListBackups)
@@ -424,7 +425,12 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		cleanName := models.SanitizeIDComponent(strings.ToLower(job.Database), models.MaxIDLength-jobIDOverhead)
+		idName := job.Database
+		if sel := job.DatabaseSelection; idName == "" && sel.Multi() {
+			// A multi-database job is named after its mode ("job_all_…", "job_pattern_…").
+			idName = string(sel.Mode)
+		}
+		cleanName := models.SanitizeIDComponent(strings.ToLower(idName), models.MaxIDLength-jobIDOverhead)
 		job.ID = fmt.Sprintf("job_%s_%d_%s", cleanName, time.Now().Unix(), suffix)
 	} else {
 		found, err := s.metaStore.GetJob(r.Context(), job.ID)
@@ -449,6 +455,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Known databases are server-managed: never taken from the client.
+	operations.CarryKnownDatabases(&job, existing)
 	if err := s.ops.ValidateJob(r.Context(), &job); err != nil {
 		s.writeJobError(w, err)
 		return
@@ -623,6 +631,8 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, operations.ErrDatabaseListing):
+		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
 	case errors.Is(err, operations.ErrKeyRequired):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, auth.ErrForbidden):

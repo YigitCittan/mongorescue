@@ -28,6 +28,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
+	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -67,6 +68,10 @@ var (
 	// repeated as recorded: its connection or storage target no longer exists, or it
 	// has no connection recorded.
 	ErrRetryUnavailable = errors.New("operations: backup cannot be retried as recorded")
+	// ErrDatabaseListing is returned when the databases of a job's connection cannot
+	// be listed to resolve its selection (adapters answer 502 Bad Gateway). It aliases
+	// scheduler.ErrDatabaseListing.
+	ErrDatabaseListing = scheduler.ErrDatabaseListing
 )
 
 // persistTimeout bounds metadata writes of background runs after they finish.
@@ -91,13 +96,23 @@ type RestoreEngine interface {
 }
 
 // JobRunner prepares and executes on-demand runs of scheduled jobs (implemented by
-// *scheduler.Scheduler, which persists the final record and publishes the outcome).
+// *scheduler.Scheduler, which persists the final records and the run and publishes
+// the outcome).
 type JobRunner interface {
-	// PrepareJobRun loads the job and returns the in-progress record of an on-demand
-	// run started by trigger (models.TriggerOnDemand or models.TriggerMCP).
-	PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.Job, *models.BackupRecord, error)
-	// ExecuteJobRun runs the prepared job.
-	ExecuteJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord) (*models.BackupRecord, error)
+	// PrepareJobRun loads the job and plans an on-demand run started by trigger
+	// (models.TriggerOnDemand or models.TriggerMCP): one in-progress record per
+	// database.
+	PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*scheduler.JobRunPlan, error)
+	// BeginJobRun stores, locks and tracks a multi-database plan (a no-op for a
+	// single-database one, whose caller does that).
+	BeginJobRun(ctx context.Context, plan *scheduler.JobRunPlan) error
+	// ExecuteJobRun runs the prepared plan.
+	ExecuteJobRun(ctx context.Context, plan *scheduler.JobRunPlan) (*models.JobRun, error)
+	// AbandonJobRun records a begun multi-database plan that could not start.
+	AbandonJobRun(ctx context.Context, plan *scheduler.JobRunPlan, cause error)
+	// ResolveJobDatabases resolves a job's database selection on its connection now,
+	// exactly as a run does.
+	ResolveJobDatabases(ctx context.Context, job *models.Job) (*models.DatabaseResolution, error)
 }
 
 // Connections resolves managed MongoDB connections (implemented by
@@ -394,26 +409,55 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 }
 
 // RunJob runs the stored job jobID now, in the background, and returns a snapshot of
-// the in-progress record. trigger is models.TriggerMCP for MCP and otherwise recorded
-// as models.TriggerOnDemand; on-demand runs never apply or count towards retention.
-// Expected failures: ErrSchedulerUnavailable, ErrNotFound, ErrInvalid, ErrBusy and
-// ErrShuttingDown.
+// the in-progress record: the job's backup, or for a multi-database job the first
+// database's (its run_id names the run; every database gets its own record).
+// trigger is models.TriggerMCP for MCP and otherwise recorded as
+// models.TriggerOnDemand; on-demand runs never apply or count towards retention.
+// Expected failures: ErrSchedulerUnavailable, ErrNotFound, ErrInvalid (also for a
+// selection that matches no existing database), ErrDatabaseListing, ErrBusy (also
+// while a run of a multi-database job is going) and ErrShuttingDown.
 func (s *Service) RunJob(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.BackupRecord, error) {
 	if s.cfg.Jobs == nil {
 		return nil, ErrSchedulerUnavailable
 	}
 	// Lookup-based: any stored job (including legacy-format IDs) may be triggered.
-	job, record, err := s.cfg.Jobs.PrepareJobRun(ctx, jobID, trigger)
+	plan, err := s.cfg.Jobs.PrepareJobRun(ctx, jobID, trigger)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, public("job not found", ErrNotFound, err)
-		}
-		return nil, invalid(err)
+		return nil, jobRunError(err)
 	}
-	// The scheduler persists the final record and publishes the outcome event.
-	return s.startBackup(ctx, record, func(runCtx context.Context) {
-		_, _ = s.cfg.Jobs.ExecuteJobRun(runCtx, job, record)
-	})
+	if !plan.Multi() {
+		record := plan.First()
+		// The scheduler persists the final record and publishes the outcome event.
+		return s.startBackup(ctx, record, func(runCtx context.Context) {
+			_, _ = s.cfg.Jobs.ExecuteJobRun(runCtx, plan)
+		})
+	}
+	// A multi-database run locks, stores and tracks each database itself.
+	if err := s.cfg.Jobs.BeginJobRun(ctx, plan); err != nil {
+		return nil, jobRunError(err)
+	}
+	snapshot := *plan.First()
+	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
+		_, _ = s.cfg.Jobs.ExecuteJobRun(runCtx, plan)
+	}); err != nil {
+		s.cfg.Jobs.AbandonJobRun(ctx, plan, err)
+		return nil, runError(err, "")
+	}
+	return &snapshot, nil
+}
+
+// jobRunError maps an error of planning or beginning a job run to a client error.
+func jobRunError(err error) error {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return public("job not found", ErrNotFound, err)
+	case errors.Is(err, runs.ErrBusy):
+		return public(redact.Text(err.Error()), ErrBusy, err)
+	case errors.Is(err, scheduler.ErrDatabaseListing):
+		return public(redact.Text(err.Error()), ErrDatabaseListing, err)
+	default:
+		return invalid(err)
+	}
 }
 
 // startBackup reserves the database, persists the in-progress record and runs execute

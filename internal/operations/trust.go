@@ -175,9 +175,14 @@ func (s *Service) RetentionPreview(ctx context.Context, jobID string, days, coun
 	if d < 0 || c < 0 {
 		return nil, invalid(ErrNegativeRetention)
 	}
-	records, err := s.cfg.Store.ListBackupRecords(ctx, job.Database)
+	// Every database of the job: the policy applies to each of them separately.
+	page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID})
 	if err != nil {
 		return nil, fmt.Errorf("list backups: %w", err)
+	}
+	records := make([]*models.BackupRecord, 0, len(page.Rows))
+	for _, row := range page.Rows {
+		records = append(records, row.Record)
 	}
 	// The target is resolved like a scheduled run resolves it, so a legacy job
 	// without a storage_target_id previews its default target's backups.

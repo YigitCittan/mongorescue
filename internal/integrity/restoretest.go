@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -107,18 +108,83 @@ func (s *Service) restoreTestDue(ctx context.Context, job *models.Job) bool {
 		if err != nil {
 			return false
 		}
-		n := 0
+		// A multi-database job counts runs, not the backups of each database.
+		counted := map[string]bool{}
 		for _, r := range records {
 			if r.JobID != job.ID || r.Status != models.StatusCompleted {
 				continue
 			}
 			if last == nil || (r.CompletedAt != nil && r.CompletedAt.After(last.At)) {
-				n++
+				key := r.ID
+				if job.MultiDatabase() && r.RunID != "" {
+					key = r.RunID
+				}
+				counted[key] = true
 			}
 		}
-		return n >= max(p.EveryN, 1)
+		return len(counted) >= max(p.EveryN, 1)
 	}
 	return last == nil || s.now().Sub(last.At) >= p.Interval()-dueSlack
+}
+
+// AfterRun is the scheduler hook for multi-database runs (scheduler.AfterRunFunc):
+// after a scheduled run of job that completed records, when the job's restore test
+// is enabled and due, it tests one database of the run (RestoreTestRotate, the
+// default: the databases take turns in name order) or each of them
+// (RestoreTestAllDatabases), one after the other. It returns once the tests finished.
+func (s *Service) AfterRun(ctx context.Context, job *models.Job, records []*models.BackupRecord) {
+	if !s.restoreTestsAvailable() || job == nil || len(records) == 0 {
+		return
+	}
+	current, err := s.cfg.Store.GetJob(ctx, job.ID)
+	if err != nil {
+		return
+	}
+	if !s.restoreTestDue(ctx, current) {
+		return
+	}
+	release, err := s.cfg.Runs.Acquire(keyPrefixRestoreTest + job.ID)
+	if err != nil {
+		s.logger.Info("skipping the scheduled restore test: one is already running", slog.String("job_id", job.ID))
+		return
+	}
+	defer release()
+	for _, rec := range RestoreTestTargets(current, records) {
+		if ctx.Err() != nil {
+			return
+		}
+		s.runRestoreTest(ctx, current, rec, TriggerScheduled)
+	}
+}
+
+// RestoreTestTargets returns the completed backups of a multi-database run that
+// job's restore test covers: all of them for RestoreTestAllDatabases, sorted by
+// database, else one: the first database after the one tested last (in name order,
+// wrapping around), so every database is tested in turn.
+func RestoreTestTargets(job *models.Job, records []*models.BackupRecord) []*models.BackupRecord {
+	var done []*models.BackupRecord
+	for _, r := range records {
+		if r != nil && r.Status == models.StatusCompleted {
+			done = append(done, r)
+		}
+	}
+	if len(done) == 0 {
+		return nil
+	}
+	slices.SortFunc(done, func(a, b *models.BackupRecord) int { return strings.Compare(a.Database, b.Database) })
+	if job.RestoreTest != nil && job.RestoreTest.Databases == models.RestoreTestAllDatabases {
+		return done
+	}
+	last := ""
+	if job.LastRestoreTest != nil {
+		last = job.LastRestoreTest.Database
+	}
+	for _, r := range done {
+		if r.Database > last {
+			return []*models.BackupRecord{r}
+		}
+	}
+	return done[:1]
 }
 
 // runRestoreTest tests backup of job and records the result; it never returns an

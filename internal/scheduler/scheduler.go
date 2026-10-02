@@ -14,6 +14,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -63,6 +64,13 @@ type Scheduler struct {
 	retentionLog RetentionLog
 	auditor      Auditor
 	afterBackup  AfterBackupFunc
+	afterRun     AfterRunFunc
+
+	// databases lists a connection's databases for multi-database jobs.
+	databases DatabaseLister
+	// jobRunsMu guards jobRuns, the active multi-database run of each job.
+	jobRunsMu sync.Mutex
+	jobRuns   map[string]string
 
 	// mu guards entries, ctx, cancel, started, stopped and paused.
 	mu      sync.Mutex
@@ -454,58 +462,98 @@ func (s *Scheduler) UnregisterJob(jobID string) {
 }
 
 // TriggerJob executes a job immediately on demand and waits for it to finish. Like
-// every on-demand run it never applies retention (see ExecuteJobRun).
+// every on-demand run it never applies retention (see ExecuteJobRun). It returns the
+// backup record of a single-database job, or the first record of a multi-database
+// run.
 func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) (*models.BackupRecord, error) {
-	job, record, err := s.PrepareJobRun(ctx, jobID, models.TriggerOnDemand)
+	plan, err := s.PrepareJobRun(ctx, jobID, models.TriggerOnDemand)
 	if err != nil {
 		return nil, err
 	}
-	return s.ExecuteJobRun(ctx, job, record)
+	if err := s.BeginJobRun(ctx, plan); err != nil {
+		return nil, err
+	}
+	_, err = s.ExecuteJobRun(ctx, plan)
+	return plan.First(), err
 }
 
-// PrepareJobRun loads jobID and returns the job with the in-progress backup record of
-// an on-demand run, without starting it. The record carries trigger (TriggerOnDemand
-// or TriggerMCP; anything else, including TriggerScheduled, is recorded as
-// TriggerOnDemand, so callers cannot make an on-demand run count for retention). It
-// wraps store.ErrNotFound for unknown jobs. Pass both to ExecuteJobRun (typically in
-// the background).
-func (s *Scheduler) PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.Job, *models.BackupRecord, error) {
+// PrepareJobRun loads jobID and plans an on-demand run of it, without starting it:
+// the in-progress backup record of every database it backs up (one for a
+// single-database job), sharing a new run ID. The records carry trigger
+// (TriggerOnDemand or TriggerMCP; anything else, including TriggerScheduled, is
+// recorded as TriggerOnDemand, so callers cannot make an on-demand run count for
+// retention). It wraps store.ErrNotFound for unknown jobs, ErrJobRunning while a
+// multi-database run of the job is still going, ErrDatabaseListing when the
+// selection cannot be resolved and ErrNoDatabases when it matches no existing
+// database. A multi-database plan is started with BeginJobRun and ExecuteJobRun (or
+// given up with AbandonJobRun); the caller of a single-database plan locks, stores
+// and tracks its record, then calls ExecuteJobRun (typically in the background).
+func (s *Scheduler) PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*JobRunPlan, error) {
 	job, err := s.metadataStore.GetJob(ctx, jobID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("retrieve job %s: %w", jobID, err)
+		return nil, fmt.Errorf("retrieve job %s: %w", jobID, err)
 	}
 	if trigger != models.TriggerMCP {
 		trigger = models.TriggerOnDemand
 	}
-	opts, err := s.jobOptions(ctx, job, trigger)
-	if err != nil {
-		return nil, nil, fmt.Errorf("prepare job %s: %w", jobID, err)
+	if job.MultiDatabase() {
+		if current := s.ActiveJobRun(job.ID); current != "" {
+			return nil, fmt.Errorf("prepare job %s: %w (run %s): %w", jobID, ErrJobRunning, current, runs.ErrBusy)
+		}
 	}
-	record, err := s.backupEngine.Prepare(opts)
+	plan, err := s.planRun(ctx, job, newRun(job, trigger))
 	if err != nil {
-		return nil, nil, fmt.Errorf("prepare job %s: %w", jobID, err)
+		return nil, fmt.Errorf("prepare job %s: %w", jobID, err)
 	}
-	return job, record, nil
+	if len(plan.Records) == 0 {
+		detail := "nothing to back up"
+		if res := plan.Resolution; res != nil && len(res.Missing) > 0 {
+			detail = "not found: " + strings.Join(res.Missing, ", ")
+		}
+		return nil, fmt.Errorf("prepare job %s: %w (%s)", jobID, ErrNoDatabases, detail)
+	}
+	return plan, nil
 }
 
-// ExecuteJobRun runs a job prepared by PrepareJobRun: it executes the backup, persists
-// the record and the job's run timestamps and publishes the outcome event.
+// ExecuteJobRun runs a job prepared by PrepareJobRun: it executes the backups,
+// persists the records, the run and the job's run timestamps and publishes the
+// outcome events. A multi-database run backs up its databases in turn (or up to the
+// job's parallelism at once), each under its own run lock, and publishes one summary
+// event for the run; cancelling any of its backups cancels the whole run.
 //
 // On-demand runs never apply the job's retention policy: only cron-triggered runs
 // prune, so a caller that may run jobs (an operator API key, an assistant) cannot
 // delete good backups by running a job repeatedly.
-func (s *Scheduler) ExecuteJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord) (*models.BackupRecord, error) {
+func (s *Scheduler) ExecuteJobRun(ctx context.Context, plan *JobRunPlan) (*models.JobRun, error) {
+	if plan.Multi() {
+		return s.runMulti(ctx, plan, false)
+	}
+	job, record := plan.Job, plan.First()
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
+	s.saveRun(ctx, plan.Run)
 	opts, err := s.jobOptions(ctx, job, record.Trigger)
 	if err != nil {
 		record.Status, record.ErrorMessage = models.StatusFailed, err.Error()
-		return s.finishJobRun(ctx, job, record, err, false)
+		_, err = s.finishJobRun(ctx, job, plan.Run, record, err, false)
+		return plan.Run, err
 	}
 	record, err = s.backupEngine.Execute(ctx, opts, record)
-	return s.finishJobRun(ctx, job, record, err, false)
+	plan.Records[0] = record
+	_, err = s.finishJobRun(ctx, job, plan.Run, record, err, false)
+	return plan.Run, err
+}
+
+// saveRun stores run, logging a failure.
+func (s *Scheduler) saveRun(ctx context.Context, run *models.JobRun) {
+	if run == nil {
+		return
+	}
+	if err := s.metadataStore.SaveJobRun(ctx, run); err != nil {
+		s.logger.Warn("failed to record the job run", slog.String("job_id", run.JobID), slog.String("run_id", run.ID), slog.Any("error", err))
+	}
 }
 
 // runScheduled is the cron callback. It reads the scheduler context under s.mu and
@@ -538,7 +586,8 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 		return
 	}
 
-	if s.guard != nil {
+	// A multi-database run takes the run lock of each database itself.
+	if s.guard != nil && !job.MultiDatabase() {
 		release, err := s.guard(job.ConnectionID, job.Database)
 		if err != nil {
 			s.logger.Warn("skipping scheduled backup: another backup of this database is running",
@@ -589,38 +638,55 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 	return opts, nil
 }
 
-// runBackupForJob executes a scheduled (cron-triggered) run: the backup, the job's
-// timestamps and retention pruning. The in-progress record is stored first, so the run
-// shows up (and can be cancelled through the run registry) while it runs.
+// runBackupForJob executes a scheduled (cron-triggered) run: the backups, the job's
+// timestamps and retention pruning. The in-progress records are stored first, so the
+// run shows up (and can be cancelled through the run registry) while it runs. It
+// returns the record of a single-database job, or the first record of a
+// multi-database run.
 func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*models.BackupRecord, error) {
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
-	opts, err := s.jobOptions(ctx, job, models.TriggerScheduled)
-	if err != nil {
-		return s.finishJobRun(ctx, job, nil, err, true)
+	run := newRun(job, models.TriggerScheduled)
+	if job.MultiDatabase() {
+		if current := s.ActiveJobRun(job.ID); current != "" {
+			s.logger.Warn("skipping scheduled backup: the previous run of this job is still running",
+				slog.String("job_id", job.ID), slog.String("run_id", current))
+			return nil, fmt.Errorf("%w (run %s): %w", ErrJobRunning, current, runs.ErrBusy)
+		}
+		plan, err := s.planRun(ctx, job, run)
+		if err != nil {
+			_, err = s.failRun(ctx, job, run, err)
+			return nil, err
+		}
+		_, err = s.runMulti(ctx, plan, true)
+		return plan.First(), err
 	}
-	record, err := s.backupEngine.Prepare(opts)
+	plan, err := s.planRun(ctx, job, run)
 	if err != nil {
-		return s.finishJobRun(ctx, job, nil, err, true)
+		return s.finishJobRun(ctx, job, run, nil, err, true)
 	}
+	record := plan.First()
+	opts := plan.options[0]
 	if saveErr := s.metadataStore.SaveBackupRecord(ctx, record); saveErr != nil {
 		s.logger.Warn("failed to record the scheduled backup as in progress",
 			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
 	}
-	tracked, regErr := s.registry.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID, JobID: job.ID, Database: job.Database})
+	s.saveRun(ctx, run)
+	tracked, regErr := s.registry.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID, JobID: job.ID, Database: job.Database, Group: run.ID})
 	if regErr != nil {
 		s.logger.Warn("scheduled backup is not tracked", slog.String("backup_id", record.ID), slog.Any("error", regErr))
 	}
 	defer tracked.End()
 	record, err = s.backupEngine.Execute(tracked.Bind(ctx), opts, record)
-	return s.finishJobRun(ctx, job, record, err, true)
+	return s.finishJobRun(ctx, job, run, record, err, true)
 }
 
-// finishJobRun persists a finished run, updates the job, publishes the outcome and,
-// for scheduled runs only, applies retention.
-func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *models.BackupRecord, err error, scheduled bool) (*models.BackupRecord, error) {
+// finishJobRun persists a finished single-database run, updates the job, publishes
+// the outcome and, for scheduled runs only, applies retention. run (nil for none) is
+// the run's summary, completed with the record's outcome.
+func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *models.JobRun, record *models.BackupRecord, err error, scheduled bool) (*models.BackupRecord, error) {
 	// A cancelled run must never be persisted as in-progress.
 	if record != nil && ctx.Err() != nil && record.Status == models.StatusInProgress {
 		record.Status = models.StatusFailed
@@ -634,31 +700,24 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancelPersist()
 
-	// Update job last run time and next run time. Only the run timestamps are written,
-	// under the lock that also covers job updates (ApplyJobUpdate), so an edit saved
-	// while the backup ran is never reverted. The next run follows the registered cron
-	// entry, which is the job's current schedule even when it was edited meanwhile.
-	now := time.Now().UTC()
-	s.mu.Lock()
-	var next *time.Time
-	if entryID, exists := s.entries[job.ID]; exists {
-		if sched := s.cron.Entry(entryID).Schedule; sched != nil {
-			n := sched.Next(now).UTC()
-			next = &n
+	s.recordRunTimes(persistCtx, job)
+
+	if run != nil {
+		switch {
+		case record != nil:
+			record.RunID = run.ID
+			if len(run.Databases) == 0 {
+				run.Databases = []models.JobRunDatabase{{Database: record.Database, BackupID: record.ID}}
+			}
+			run.Databases[0].Status = record.Status
+			if record.Status != models.StatusCompleted {
+				run.Databases[0].Error = redact.Text(record.ErrorMessage)
+			}
+		case err != nil:
+			run.Error = redact.Text(err.Error())
 		}
-	}
-	// A job deleted while it ran stays deleted (ErrNotFound is ignored).
-	saveErr := s.metadataStore.UpdateJobRunTimes(persistCtx, job.ID, &now, next)
-	s.mu.Unlock()
-	job.LastRun = &now
-	if next != nil {
-		job.NextRun = next
-	}
-	if saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
-		s.logger.Error("failed to persist job run metadata",
-			slog.String("job_id", job.ID),
-			slog.Any("error", saveErr),
-		)
+		run.Finish(time.Now())
+		s.saveRun(persistCtx, run)
 	}
 
 	// Persist the backup record last: once a client sees the final status, the
@@ -675,7 +734,11 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 
 	// Emit the outcome once it is persisted; publishing is non-blocking by contract.
 	if s.publisher != nil {
-		s.publisher.Publish(persistCtx, events.BackupEvent(record, err, job.ID, job.Database))
+		e := events.BackupEvent(record, err, job.ID, job.Database)
+		if run != nil {
+			e.RunID, e.Run = run.ID, events.RunSummaryOf(run, false)
+		}
+		s.publisher.Publish(persistCtx, e)
 		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok {
 			s.publisher.Publish(persistCtx, ve)
 		}
@@ -690,16 +753,8 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, record *m
 	}
 
 	// Retention runs after a successful scheduled run only; on-demand runs never prune.
-	if scheduled && record.Status == models.StatusCompleted && (job.RetentionDays > 0 || job.RetentionCount > 0) {
-		history, listErr := s.metadataStore.ListBackupRecords(ctx, job.Database)
-		if listErr == nil {
-			// Retention only ever sees this job's own scheduled backups (see
-			// JobRetentionHistory).
-			history = JobRetentionHistory(job, record.StorageTargetID, history)
-			pruned, _ := prune(ctx, time.Now().UTC(), job.RetentionDays, job.RetentionCount, history,
-				s.metadataStore, s.storageFor, s.logger, s.retentionDeleted)
-			s.removeRunLogs(pruned)
-		}
+	if scheduled {
+		s.applyRetention(ctx, job, record)
 	}
 
 	// Post-backup work (restore tests) runs last, after retention, on the run's

@@ -3,9 +3,11 @@ package operations
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 )
@@ -25,6 +27,12 @@ var (
 	ErrNegativeRetention = errors.New("retention_days and retention_count must not be negative")
 	// ErrPausedUntilPast is returned when paused_until is not in the future.
 	ErrPausedUntilPast = errors.New("paused_until must be in the future")
+	// ErrCollectionsNeedSingle is returned when a job covering several databases
+	// names collections: collection filters only apply to single-database jobs.
+	ErrCollectionsNeedSingle = errors.New("collections and exclude_collections only apply to single-database jobs (database_selection mode single)")
+	// ErrInvalidParallelism is returned when parallelism is outside 1 to
+	// models.MaxJobParallelism.
+	ErrInvalidParallelism = errors.New("parallelism must be between 1 and 4")
 )
 
 // ErrJobChanged is returned by UpdateJob when the request names the job's updated_at
@@ -49,8 +57,14 @@ type JobUpdate struct {
 	Name string `json:"name"`
 	// CronExpression is the schedule; "" means DefaultCronExpression.
 	CronExpression string `json:"cron_expression"`
-	// Database is the database to back up.
+	// Database is the database to back up. Without DatabaseSelection it makes the job
+	// a single-database job (as before selections existed); with neither, a
+	// multi-database job keeps its selection.
 	Database string `json:"database"`
+	// DatabaseSelection, when set, replaces the job's database selection.
+	DatabaseSelection *models.DatabaseSelection `json:"database_selection"`
+	// Parallelism, when set, replaces how many databases a run backs up at once.
+	Parallelism *int `json:"parallelism"`
 	// Collections restricts the dump to these collections.
 	Collections []string `json:"collections"`
 	// ExcludeCollections lists collections skipped by the dump.
@@ -106,10 +120,7 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if err := scheduler.ValidateCron(job.CronExpression); err != nil {
 		return invalid(err)
 	}
-	if strings.TrimSpace(job.Database) == "" {
-		return invalid(ErrDatabaseRequired)
-	}
-	if err := validateNamespaces(job.Database, job.Collections, job.ExcludeCollections); err != nil {
+	if err := normalizeSelection(job); err != nil {
 		return err
 	}
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
@@ -133,7 +144,77 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 		return err
 	}
 	job.StorageTargetID, job.StorageType = target.ID, target.Type
+	s.snapshotKnownDatabases(ctx, job)
 	return nil
+}
+
+// normalizeSelection checks and normalises job's database selection: a job without
+// one (a client that predates selections) becomes a single selection of Database; a
+// single selection names Database (its one database wins over Database), and a
+// multi-database selection clears Database and refuses collection filters.
+func normalizeSelection(job *models.Job) error {
+	sel := job.DatabaseSelection.Clone()
+	if sel.Mode == "" {
+		sel = models.DatabaseSelection{Mode: models.SelectionSingle}
+	}
+	if sel.Mode == models.SelectionSingle && len(sel.Databases) == 0 && strings.TrimSpace(job.Database) != "" {
+		sel.Databases = []string{strings.TrimSpace(job.Database)}
+	}
+	if sel.Mode == models.SelectionSingle && len(sel.Databases) == 0 {
+		return invalid(ErrDatabaseRequired)
+	}
+	if err := sel.Normalize(); err != nil {
+		return invalid(err)
+	}
+	job.DatabaseSelection = sel
+	if job.Parallelism < 0 || job.Parallelism > models.MaxJobParallelism {
+		return invalid(ErrInvalidParallelism)
+	}
+	job.Parallelism = max(job.Parallelism, 1)
+	if !sel.Multi() {
+		job.Database = sel.Databases[0]
+		job.KnownDatabases = nil
+		return validateNamespaces(job.Database, job.Collections, job.ExcludeCollections)
+	}
+	job.Database = ""
+	if len(job.Collections) > 0 || len(job.ExcludeCollections) > 0 {
+		return invalid(ErrCollectionsNeedSingle)
+	}
+	job.Collections, job.ExcludeCollections = nil, nil
+	if !sel.Discovers() {
+		job.KnownDatabases = nil
+	}
+	return nil
+}
+
+// snapshotKnownDatabases records, for an all or pattern job without known databases
+// (a new job, or one whose selection or connection changed), the databases its
+// selection matches now: without auto_include_new its runs back up only those. When
+// the server cannot be asked, the first run records them instead.
+func (s *Service) snapshotKnownDatabases(ctx context.Context, job *models.Job) {
+	if !job.DatabaseSelection.Discovers() || job.KnownDatabases != nil || s.cfg.Jobs == nil {
+		return
+	}
+	probe := job.Clone()
+	probe.KnownDatabases = nil
+	res, err := s.cfg.Jobs.ResolveJobDatabases(ctx, probe)
+	if err != nil {
+		s.logger.Info("the job's databases could not be listed now; its first run records them",
+			logsafe.Attr("job_id", job.ID), logsafe.Error(err))
+		return
+	}
+	job.KnownDatabases = res.Known
+}
+
+// CarryKnownDatabases sets job's known databases (server-managed, never taken from
+// clients) before it is validated: existing's when job replaces existing with the
+// same selection and connection, else none, so ValidateJob records them afresh.
+// existing is nil for a new job.
+func CarryKnownDatabases(job, existing *models.Job) {
+	job.KnownDatabases = nil
+	if existing != nil && job.ConnectionID == existing.ConnectionID && job.Selection().SameMatch(existing.Selection()) {
+		job.KnownDatabases = slices.Clone(existing.KnownDatabases)
+	}
 }
 
 // ValidatePausedUntil checks a paused_until sent by a client: it must be in the
@@ -158,7 +239,19 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	job := existing.Clone()
 	job.Name = u.Name
 	job.CronExpression = u.CronExpression
-	job.Database = u.Database
+	switch {
+	case u.DatabaseSelection != nil:
+		job.DatabaseSelection = u.DatabaseSelection.Clone()
+		job.Database = u.Database
+	case strings.TrimSpace(u.Database) != "":
+		job.DatabaseSelection = models.DatabaseSelection{Mode: models.SelectionSingle, Databases: []string{strings.TrimSpace(u.Database)}}
+		job.Database = u.Database
+	case existing.MultiDatabase():
+		// A client that only knows single-database jobs keeps the selection.
+	default:
+		job.DatabaseSelection, job.Database = models.DatabaseSelection{}, ""
+	}
+	job.Parallelism = derefOr(u.Parallelism, existing.Parallelism)
 	job.Collections = u.Collections
 	job.ExcludeCollections = u.ExcludeCollections
 	job.ConnectionID = u.ConnectionID
@@ -166,6 +259,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	job.RetentionDays = derefOr(u.RetentionDays, existing.RetentionDays)
 	job.RetentionCount = derefOr(u.RetentionCount, existing.RetentionCount)
 	job.Gzip = derefOr(u.Gzip, existing.Gzip)
+	CarryKnownDatabases(job, existing)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
 	switch {
 	case job.Enabled:
@@ -204,6 +298,11 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 			return ErrJobChanged
 		}
 		job.LastRun, job.CreatedAt, job.LastRestoreTest = current.LastRun, current.CreatedAt, current.LastRestoreTest
+		// Known databases a run recorded meanwhile are kept unless the selection changed.
+		if job.KnownDatabases != nil && job.ConnectionID == current.ConnectionID && job.Selection().SameMatch(current.Selection()) &&
+			current.KnownDatabases != nil {
+			job.KnownDatabases = slices.Clone(current.KnownDatabases)
+		}
 		// UpdateJob never recreates a job deleted meanwhile.
 		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
 	}

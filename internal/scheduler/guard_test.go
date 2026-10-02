@@ -102,17 +102,24 @@ func TestPrepareAndExecuteJobRun(t *testing.T) {
 	engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", backup.WithRunner(runner))
 	s := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil)
 
-	if _, _, err := s.PrepareJobRun(context.Background(), "missing", models.TriggerOnDemand); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.PrepareJobRun(context.Background(), "missing", models.TriggerOnDemand); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown job: got %v", err)
 	}
 	_ = metaStore.SaveJob(context.Background(), &models.Job{ID: "j", Database: "shop", CronExpression: "@daily"})
-	job, record, err := s.PrepareJobRun(context.Background(), "j", models.TriggerOnDemand)
-	if err != nil || record.Status != models.StatusInProgress || record.JobID != "j" {
-		t.Fatalf("PrepareJobRun: %+v, %v", record, err)
+	plan, err := s.PrepareJobRun(context.Background(), "j", models.TriggerOnDemand)
+	if err != nil || len(plan.Records) != 1 || plan.First().Status != models.StatusInProgress || plan.First().JobID != "j" {
+		t.Fatalf("PrepareJobRun: %+v, %v", plan, err)
 	}
-	final, err := s.ExecuteJobRun(context.Background(), job, record)
-	if err != nil || final.ID != record.ID || final.Status != models.StatusCompleted {
-		t.Fatalf("ExecuteJobRun: %+v, %v", final, err)
+	record := plan.First()
+	if record.RunID == "" || record.RunID != plan.Run.ID {
+		t.Fatalf("record run id %q, run %q", record.RunID, plan.Run.ID)
+	}
+	run, err := s.ExecuteJobRun(context.Background(), plan)
+	if err != nil || run.Status != models.JobRunOK || plan.First().Status != models.StatusCompleted {
+		t.Fatalf("ExecuteJobRun: %+v, %v", run, err)
+	}
+	if stored, _ := metaStore.GetJobRun(context.Background(), run.ID); stored == nil || stored.Status != models.JobRunOK || len(stored.Databases) != 1 {
+		t.Fatalf("job run not persisted: %+v", stored)
 	}
 	if stored, _ := metaStore.GetBackupRecord(context.Background(), record.ID); stored == nil || stored.Status != models.StatusCompleted {
 		t.Fatalf("final record not persisted: %+v", stored)
