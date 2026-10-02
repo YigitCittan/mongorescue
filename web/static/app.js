@@ -196,6 +196,7 @@ function setupTabs() {
   // #backups?status=failed&page=2 opens a tab with its list filters and page.
   const { tab, params } = readHash();
   if (LIST_KINDS.includes(tab)) applyListParams(tab, params);
+  else if (typeof tablesApplyHash === "function") tablesApplyHash(tab, params);
   const fromHash = `tab-${tab}`;
   if (tab && document.getElementById(fromHash)) {
     activateTab(fromHash, false);
@@ -835,8 +836,8 @@ function emptyFilters(kind) {
 // Filter, page and result state of the Backups and Restores tables. total is the
 // number of matches the server reported for the current filters.
 const lists = {
-  backups: { filters: emptyFilters("backups"), page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null },
-  restores: { filters: emptyFilters("restores"), page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null }
+  backups: { filters: emptyFilters("backups"), sort: "", page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null },
+  restores: { filters: emptyFilters("restores"), sort: "", page: 1, size: DEFAULT_PAGE_SIZE, total: 0, seq: 0, error: "", databases: [], timer: null }
 };
 
 // Every backup record seen in any response, so details dialogs, restore forms and
@@ -882,13 +883,15 @@ function listHashParams(kind) {
     if (!v || ((k === "from" || k === "to") && L.filters.range !== "custom")) return;
     p.set(k, v);
   });
+  if (L.sort) p.set("sort", L.sort);
   if (L.page > 1) p.set("page", String(L.page));
   return p.toString();
 }
 
 function tabHash(id) {
   const name = String(id || "").replace(/^tab-/, "");
-  const qs = LIST_KINDS.includes(name) ? listHashParams(name) : "";
+  let qs = LIST_KINDS.includes(name) ? listHashParams(name) : "";
+  if (!LIST_KINDS.includes(name) && typeof tablesHashParams === "function") qs = tablesHashParams(name);
   return `#${name}${qs ? `?${qs}` : ""}`;
 }
 
@@ -940,8 +943,11 @@ function applyListParams(kind, params) {
     if (DATE_INPUT_RE.test(get("to"))) next.to = get("to");
   }
   const page = Math.max(1, Math.min(1e6, Math.floor(Number(params.get("page"))) || 1));
-  const changed = page !== L.page || LIST_FILTERS[kind].some(k => next[k] !== L.filters[k]);
+  // Only the columns tables.js offers for this list are kept.
+  const sort = typeof tablesValidSort === "function" ? tablesValidSort(kind, get("sort")) : "";
+  const changed = page !== L.page || sort !== L.sort || LIST_FILTERS[kind].some(k => next[k] !== L.filters[k]);
   L.filters = next;
+  L.sort = sort;
   L.page = page;
   return changed;
 }
@@ -952,11 +958,14 @@ function applyHashState() {
   const id = `tab-${tab}`;
   if (!tab || !document.getElementById(id)) return;
   const changed = LIST_KINDS.includes(tab) && applyListParams(tab, params);
+  // Jobs, Connections and Notifications keep their filters in tables.js.
+  const tableChanged = !LIST_KINDS.includes(tab) && typeof tablesApplyHash === "function" && tablesApplyHash(tab, params);
   if (activeTabId() !== id) activateTab(id, false);
   if (changed) {
     renderListControls(tab);
     if (auth.user) loadList(tab);
   }
+  if (tableChanged) tablesRefresh(tab);
 }
 
 // ----- Query -----
@@ -1013,6 +1022,7 @@ function listParams(kind) {
   const { from, to } = rangeBounds(f);
   if (from) p.set("from", from.toISOString());
   if (to) p.set("to", to.toISOString());
+  if (L.sort) p.set("sort", L.sort);
   p.set("limit", String(L.size));
   p.set("offset", String((L.page - 1) * L.size));
   return p.toString();
@@ -1644,7 +1654,15 @@ function renderJobs() {
     return;
   }
 
-  setTbody(tbody, state.jobs.map(job => {
+  const jobs = typeof tablesRows === "function" ? tablesRows("jobs", state.jobs) : state.jobs;
+  if (jobs === null || jobs.length === 0) {
+    // Loading the server-side filter (tables.js), or no job matches it.
+    setTbody(tbody, jobs === null ? tablesSkeleton("jobs") : tablesNoMatch("jobs"));
+    renderJobDetails();
+    return;
+  }
+
+  setTbody(tbody, jobs.map(job => {
     const lastBackup = state.stats && state.stats.job_last_backups ? state.stats.job_last_backups[job.id] : null;
     let lastDot = "";
     // A job with several databases shows its last run (ok, partial, failed), never
@@ -1782,17 +1800,17 @@ function renderBackups() {
   renderListControls("backups");
 
   if (lists.backups.error) {
-    setTbody(tbody, emptyRow(9, lists.backups.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(8, lists.backups.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.backups.length === 0 && activeFilterCount("backups") > 0) {
-    setTbody(tbody, emptyRow(9, t("filters.no_backups_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(8, t("filters.no_backups_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.backups.length === 0) {
     setTbody(tbody, state.loaded.connections && state.connections.length === 0
-      ? emptyRow(9, t("conn.backups_need_connection"), "new-connection", "plus", t("conn.add"))
-      : emptyRow(9, t("tables.empty_backups"), "backup-now", "", t("nav.instant_backup")));
+      ? emptyRow(8, t("conn.backups_need_connection"), "new-connection", "plus", t("conn.add"))
+      : emptyRow(8, t("tables.empty_backups"), "backup-now", "", t("nav.instant_backup")));
     return;
   }
 
@@ -1821,9 +1839,8 @@ function renderBackups() {
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="retry-backup" data-id="${escapeHtml(b.id)}"${retryingBackups.has(b.id) ? " disabled" : ""}>${escapeHtml(t("actions.retry"))}</button>`
       : "";
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
-      ${bulkCell("backups", b.id, b.id)}
-      <td><div class="id-cell">${ellipsis(b.id, "mono muted cell-id")}${copyButton(b.id)}${lock}${trustPinIcon(b)}</div>${retryLinks(b)}</td>
-      <td>${ellipsis(b.database)}<div class="cell-sub">${ellipsis(backupOrigin(b))}</div></td>
+      ${bulkCell("backups", b.id, `${b.database} · ${b.id}`)}
+      <td class="cell-primary"><div class="name-line">${ellipsis(b.database, "ell-md")}${lock}${trustPinIcon(b)}</div><div class="cell-sub">${ellipsis(backupOrigin(b), "ell-md")}</div>${idCopy(b.id, "cell-sub")}${retryLinks(b)}</td>
       <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
@@ -1875,15 +1892,15 @@ function renderRestores() {
   renderRestoreDetails();
 
   if (lists.restores.error) {
-    setTbody(tbody, emptyRow(7, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(6, lists.restores.error, "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.restores.length === 0 && activeFilterCount("restores") > 0) {
-    setTbody(tbody, emptyRow(7, t("filters.no_restores_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
+    setTbody(tbody, emptyRow(6, t("filters.no_restores_match"), "clear-filters", "", t("filters.clear"), "", "btn-secondary"));
     return;
   }
   if (state.restores.length === 0) {
-    setTbody(tbody, emptyRow(7, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
+    setTbody(tbody, emptyRow(6, t("tables.empty_restores"), "goto-tab", "", t("tables.go_backups"), "tab-backups"));
     return;
   }
 
@@ -1904,10 +1921,9 @@ function renderRestores() {
       ? `<div class="cell-sub cross-server" title="${escapeHtml(`${source || "?"} → ${target}`)}">${ellipsis(source || "?")}<span aria-hidden="true">→</span><span class="sr-only">${escapeHtml(t("tables.cross_server"))}:</span>${ellipsis(target)}</div>`
       : "";
     return `<tr class="row-clickable" data-row-action="restore-details" data-id="${escapeHtml(r.id)}" tabindex="0">
-      ${bulkCell("restores", r.id, r.id)}
-      <td><div class="id-cell">${ellipsis(r.id, "mono muted cell-id")}${copyButton(r.id)}</div></td>
+      ${bulkCell("restores", r.id, `${r.target_database} · ${r.id}`)}
+      <td class="cell-primary">${ellipsis(r.target_database, "ell-md")}${cross}${selection}${idCopy(r.id, "cell-sub")}</td>
       <td>${ellipsis(r.source_database)}${source ? `<div class="cell-sub">${ellipsis(source)}</div>` : ""}</td>
-      <td>${ellipsis(r.target_database, "mono")}${cross}${selection}</td>
       <td><div class="status-line">${statusBadge(kind, label, r.error_message)}${chips.join("")}${cancelRunButton("restore", r)}</div>${errorLine}${runProgressHtml(r)}</td>
       <td>${timeCell(r.started_at)}</td>
       <td class="num">${durationCell(r)}</td>
@@ -1954,7 +1970,13 @@ function renderChannels() {
     return;
   }
 
-  setTbody(tbody, state.channels.map(ch => {
+  const channels = typeof tablesRows === "function" ? tablesRows("channels", state.channels) : state.channels;
+  if (channels.length === 0) {
+    setTbody(tbody, tablesNoMatch("channels"));
+    return;
+  }
+
+  setTbody(tbody, channels.map(ch => {
     const ld = ch.last_delivery;
     let delivery = `<span class="muted">${escapeHtml(t("notify.never"))}</span>`;
     if (ld) {
@@ -2155,6 +2177,7 @@ function setTbody(tbody, html) {
   if (renderedTbodies.get(tbody) !== html) {
     tbody.innerHTML = html;
     renderedTbodies.set(tbody, html);
+    if (typeof tablesRendered === "function") tablesRendered(tbody);
     // A re-render replaces the row whose action menu is open.
     if (rowMenu.trigger && !document.contains(rowMenu.trigger)) closeRowMenu(false);
   }
@@ -3717,8 +3740,11 @@ function resetData() {
   document.querySelectorAll("#app-main tbody").forEach(tbody => {
     const cols = tbody.closest("table").querySelectorAll("thead th").length || 1;
     renderedTbodies.delete(tbody);
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols}"><div class="empty-state"><p>${escapeHtml(t("tables.loading"))}</p></div></td></tr>`;
+    tbody.innerHTML = typeof tablesSkeletonFor === "function"
+      ? tablesSkeletonFor(tbody)
+      : `<tr class="empty-row"><td colspan="${cols}"><div class="empty-state"><p>${escapeHtml(t("tables.loading"))}</p></div></td></tr>`;
   });
+  if (typeof tablesReset === "function") tablesReset();
 }
 
 function closeAllModals() {
@@ -3946,13 +3972,19 @@ function renderConnections() {
     return;
   }
 
-  setTbody(tbody, state.connections.map(c => {
+  const connections = typeof tablesRows === "function" ? tablesRows("connections", state.connections) : state.connections;
+  if (connections.length === 0) {
+    setTbody(tbody, tablesNoMatch("connections"));
+    return;
+  }
+
+  setTbody(tbody, connections.map(c => {
     const errorLine = parseDate(c.last_test_at) && !c.last_test_ok && c.last_test_error
       ? errorDetail(c.last_test_error, truncate(errorSummary(c.last_test_error), 70))
       : "";
     const desc = c.description ? `<div class="cell-sub">${ellipsis(c.description)}</div>` : "";
     return `<tr>
-      <td class="cell-primary">${ellipsis(c.name)}${desc}</td>
+      <td class="cell-primary">${ellipsis(c.name)}${desc}${idCopy(c.id, "cell-sub")}</td>
       <td><span class="mono host-cell" title="${escapeHtml(c.uri || "")}">${escapeHtml(maskedHost(c.uri))}</span></td>
       <td>${connectionTestBadge(c)}${errorLine}</td>
       <td>${c.server_version ? `<span class="mono">${escapeHtml(c.server_version)}</span>` : mutedDash()}</td>

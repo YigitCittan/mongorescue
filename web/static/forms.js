@@ -856,6 +856,8 @@
   window.uriBuilderReset = uriBuilderReset;
   window.uriFocusTarget = uriFocusTarget;
   window.loadSessions = loadSessions;
+  // Inline validation of the job, storage and channel forms (tables.js).
+  window.mrLiveValidate = liveValidate;
   // For tests in the browser console and the headless check.
   window.mrForms = { parseMongoURI, buildMongoURI, redactURI, uriTextError };
 
