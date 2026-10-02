@@ -111,3 +111,36 @@ func TestOpenRefusesUnknownAppliedMigration(t *testing.T) {
 		t.Fatalf("OpenSQLite = %v; want ErrMigrationChanged naming 0000_branch", err)
 	}
 }
+
+// TestMigrationChecksumIgnoresLineEndings checks that the same migration checked out
+// with LF or CRLF line endings (Windows with core.autocrlf) gets the same checksum.
+func TestMigrationChecksumIgnoresLineEndings(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		lf := strings.ReplaceAll(m.sql, "\r\n", "\n")
+		crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+		if got, want := migrationChecksum([]byte(crlf)), migrationChecksum([]byte(lf)); got != want {
+			t.Errorf("%s: CRLF checksum %s; LF checksum %s", m.name, got, want)
+		}
+		if got, want := migrationChecksum([]byte(lf+"\r")), migrationChecksum([]byte(lf)); got != want {
+			t.Errorf("%s: a trailing CR changes the checksum", m.name)
+		}
+	}
+}
+
+// TestMigrationChecksumIsPinned pins the checksum of a released migration: a change
+// to the algorithm (or to the released file) would make every existing database
+// refuse to open.
+func TestMigrationChecksumIsPinned(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "fce26819e602ba4a9b974f5be8421d0ca7615a544e4451a4cc5656ca53236a73"
+	if m := migrations[0]; m.name != "0001_init" || m.checksum != want {
+		t.Fatalf("%s checksum = %s; want %s", m.name, m.checksum, want)
+	}
+}
