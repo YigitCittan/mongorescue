@@ -360,13 +360,21 @@ func (s *Service) CorruptRecords(ctx context.Context) ([]store.CorruptRecord, er
 // On an error it returns what it has read so far.
 func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) (Stats, *store.BackupStats, *store.RestoreStats, error) {
 	st := Stats{JobLastBackups: map[string]BackupBrief{}, JobLastRuns: map[string]JobRunBrief{}}
+	var multi []string
 	for _, j := range jobs {
 		if j.Enabled {
 			st.ActiveJobs++
 		}
 		if j.MultiDatabase() {
-			if list, err := s.cfg.Store.ListJobRuns(ctx, j.ID, 1); err == nil && len(list) == 1 {
-				st.JobLastRuns[j.ID] = briefRun(list[0])
+			multi = append(multi, j.ID)
+		}
+	}
+	// The newest run of every multi-database job in one query (the dashboard polls
+	// this). A failed read leaves the map empty, as each failed lookup used to.
+	if len(multi) > 0 {
+		if runs, err := s.cfg.Store.LatestJobRuns(ctx, multi); err == nil {
+			for id, run := range runs {
+				st.JobLastRuns[id] = briefRun(run)
 			}
 		}
 	}
