@@ -304,6 +304,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Verification, pins, retention previews and logs, restore tests, storage scans
 	s.registerIntegrityRoutes(mux)
+	s.registerHistoryRoutes(mux)
 
 	// Bulk actions on backups, restores and jobs
 	s.registerBulkRoutes(mux)

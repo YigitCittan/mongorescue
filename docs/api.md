@@ -55,6 +55,8 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/connections/{id}/databases` | `[{name, size_bytes, empty}]`; `admin`, `config`, `local` only with `?system=true` | 200 | 404, 502 unreachable |
 | `GET` | `/api/v1/connections/{id}/databases/{db}/collections` | `[{name, type}]` | 200 | 404, 502 |
 | `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
+| `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
+| `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, restart_required, warnings}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
@@ -262,6 +264,18 @@ curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026
 ```
 
 `GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For administrators (dashboard sessions and `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
+
+## Overview history and schedule preview
+
+`GET /api/v1/stats/history` (read scope) feeds the dashboard's *Overview* tab. Like `/api/v1/stats` it is computed with SQL aggregates and never reads every record:
+
+- `daily`: one entry per day of the window, oldest first, empty days included: `{date, completed, failed, cancelled, bytes, stored_bytes}`. `days` (1-366, default 30) counts back from today, and `tz_offset` (minutes east of UTC, -840 to 840, e.g. `180` for UTC+3) makes the days start at your midnight. `bytes` sums the day's completed backups that are still on record, and `stored_bytes` is the running total since `stored_bytes_before` (completed backups on record that started earlier). Both describe the archives kept today, so backups that retention has deleted no longer count.
+- `jobs`: each job ID with backups mapped to `{runs, last_success_at}`: its 12 newest backups, oldest first (`{id, status, started_at, duration_seconds}`), and when its newest completed backup started.
+- `upcoming`: the enabled jobs' scheduled runs in the next 24 hours, in order (`{job_id, at}`), at most 96 per job and 500 in total (`upcoming_truncated` says the caps cut the list).
+- `verification_issues`: the 20 newest completed backups whose verification failed (`{id, job_id, database, started_at, verification}`, `mismatch` or `error`), and `verification_issues_total`.
+- `server_time_zone`: `{name, offset_minutes}`, the time zone cron expressions are evaluated in.
+
+`GET /api/v1/schedule/preview?cron=0%202%20*%20*%20*&n=3` (read scope) parses a cron expression with the scheduler's own parser and returns `{valid, error, next_runs, server_time_zone}`: the expression's hours are read in the server's time zone, and `next_runs` are given in UTC. An expression the scheduler rejects is answered with `200` and `"valid": false` plus the reason; a missing or longer than 256 characters `cron`, or `n` outside 1-10, is a `400`. The dashboard's cron builder uses it for its *next runs* line.
 
 ## Bulk actions
 
