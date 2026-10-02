@@ -569,6 +569,8 @@ function cronbPreview(expr) {
         next.textContent = "";
         return;
       }
+      // The job form's RPO hint shows the default of this schedule (readiness.js).
+      if (typeof readinessRpoHint === "function") readinessRpoHint(p.valid ? p.default_rpo_minutes : 0);
       if (!p.valid) {
         next.textContent = t("cronb.invalid");
         next.classList.add("text-danger");

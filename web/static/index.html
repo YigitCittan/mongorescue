@@ -300,6 +300,13 @@
           </div>
           <div id="ov-attention-list"></div>
         </section>
+        <section class="ov-card ov-card-wide" id="ov-readiness-card" aria-labelledby="ov-readiness-title">
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-readiness-title" data-i18n="readiness.title">Recovery readiness</h3>
+          </div>
+          <p class="ov-card-sub" id="ov-readiness-sub" role="status" aria-live="polite"></p>
+          <div class="ov-chart" id="ov-readiness-table"></div>
+        </section>
       </div>
     </section>
 
@@ -1480,6 +1487,11 @@
             <input type="text" id="job-cron" class="form-input mono" value="@daily" placeholder="@daily or 0 2 * * *" aria-describedby="job-cron-hint" required>
             <span class="form-hint" id="job-cron-hint" data-i18n="modal_job.cron_hint">Cron expression (5 fields) or @hourly, @daily, @every 6h.</span>
           </div>
+          <div class="form-group">
+            <label class="form-label" for="job-rpo" data-i18n="readiness.rpo_label">Recovery point objective (hours)</label>
+            <input type="number" id="job-rpo" class="form-input" min="0.25" max="2160" step="any" inputmode="decimal" aria-describedby="job-rpo-hint">
+            <span class="form-hint" id="job-rpo-hint" aria-live="polite">How old the newest successful backup may be. Leave empty for the default: two schedule intervals plus an hour, at least 6 hours. 0.25 (15 minutes) to 2160 (90 days).</span>
+          </div>
           <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="job-retention-days" data-i18n="modal_job.days_label">Keep for (days)</label>
@@ -2532,6 +2544,8 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="retention.deleted"><span data-i18n="notify.events.retention_deleted">Backup deleted by retention</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="metadata_backup.failed"><span data-i18n="notify.events.metadata_backup_failed">Metadata backup failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.verification_failed"><span data-i18n="restore_checks.event_restore_verification_failed">Restore verification failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="job.rpo_missed"><span data-i18n="notify.events.job_rpo_missed">Recovery point objective missed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="job.rpo_recovered"><span data-i18n="notify.events.job_rpo_recovered">Recovery point objective met again</span></label>
             </div>
           </fieldset>
           <div class="form-group">
@@ -2607,6 +2621,7 @@
   <script src="/bulk.js"></script>
   <script src="/nav.js"></script>
   <script src="/overview.js"></script>
+  <script src="/readiness.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

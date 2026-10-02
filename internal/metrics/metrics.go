@@ -85,6 +85,8 @@ type Metrics struct {
 	// Audit log series (see auditlog.go) and the write queue depth source.
 	audit            auditSeries
 	auditQueueSource atomic.Pointer[func() int]
+	// Recovery point objective gauges (see rpo.go).
+	rpo *rpoCollector
 }
 
 // New creates a Metrics instance with its own registry.
@@ -235,6 +237,8 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(activeRuns...)
 	m.registry.MustRegister(m.newMetaBackupSeries()...)
 	m.registry.MustRegister(m.newAuditSeries()...)
+	m.rpo = newRPOCollector()
+	m.registry.MustRegister(m.rpo)
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
 	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)
@@ -350,6 +354,7 @@ func (m *Metrics) ForgetJob(jobID string) {
 	m.jobRunDuration.DeletePartialMatch(byJob)
 	m.lastSuccessBackup.DeleteLabelValues(jobID)
 	m.forgetIntegrityJob(jobID)
+	m.forgetRPOJob(jobID)
 }
 
 // ObserveNotification counts one notification outcome for a channel type.

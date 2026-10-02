@@ -77,6 +77,14 @@ const (
 	// database did not match the backup's manifest (RestoreRequest.VerifyRestore). The
 	// restore stays completed, with a warning; Event.Detail names the first mismatch.
 	RestoreVerificationFailed EventType = "restore.verification_failed"
+	// JobRPOMissed is emitted once when the newest successful backup of one of a
+	// job's databases becomes older than the job's recovery point objective
+	// (Event.Database; Event.Detail gives the age and the objective). It is not
+	// emitted again for the same breach, also not after a restart.
+	JobRPOMissed EventType = "job.rpo_missed"
+	// JobRPORecovered is emitted when a database whose RPO breach was reported
+	// (JobRPOMissed) has a recent enough successful backup again.
+	JobRPORecovered EventType = "job.rpo_recovered"
 )
 
 // Sources of verification events.
@@ -118,7 +126,7 @@ func (t EventType) Broadcast() bool {
 var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
-	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed,
+	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -143,7 +151,7 @@ func (t EventType) Subscribable() bool {
 func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
-		RestoreVerificationFailed:
+		RestoreVerificationFailed, JobRPOMissed:
 		return true
 	default:
 		return false

@@ -61,6 +61,8 @@ var routeScopes = map[string]auth.Scope{
 	// The dashboard overview (SQL aggregates) and the cron builder's preview.
 	"GET /api/v1/stats/history":    auth.ScopeRead,
 	"GET /api/v1/schedule/preview": auth.ScopeRead,
+	// Recovery readiness per database (no credentials, no URIs).
+	"GET /api/v1/readiness": auth.ScopeRead,
 
 	"GET /api/v1/jobs":           auth.ScopeRead,
 	"POST /api/v1/jobs":          auth.ScopeAdmin,

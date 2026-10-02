@@ -41,6 +41,9 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_metadata_backups_total` | counter | `result` | [Metadata snapshots](production.md#metadata-backups) (`ok`, `error`) |
 | `mongorescue_last_successful_metadata_backup_timestamp_seconds` | gauge | | Unix time of the last stored metadata snapshot |
 | `mongorescue_metadata_backup_size_bytes` | gauge | | Size of the last stored metadata snapshot |
+| `mongorescue_job_rpo_seconds` | gauge | `job`, `database` | Age of the newest successful backup of each database of an enabled job (since the job's creation when it has none); see [recovery point objectives](#recovery-point-objectives) |
+| `mongorescue_job_rpo_met` | gauge | `job`, `database` | 1 while that age is within the job's recovery point objective, 0 when it is missed |
+| `mongorescue_job_rpo_target_seconds` | gauge | `job`, `database` | The job's recovery point objective (`rpo_minutes`, or the default from its schedule) |
 
 The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
 
@@ -96,4 +99,20 @@ groups:
           summary: "No passed restore test for job {{ $labels.job }} in 8 days"
 ```
 
-The first rule does not fire for a job that has never succeeded, because the series does not exist yet; pair it with notifications on `backup.failed` (see [notifications.md](notifications.md)).
+The first rule does not fire for a job that has never succeeded, because the series does not exist yet; pair it with notifications on `backup.failed` (see [notifications.md](notifications.md)), or alert on the RPO gauges below, which exist from the job's creation.
+
+## Recovery point objectives
+
+The `mongorescue_job_rpo_*` gauges follow each job's [recovery point objective](api.md#recovery-point-objectives) per database. The RPO checker refreshes their set of series every 5 minutes and right after a job's backup finishes (paused and deleted jobs drop out); the age is computed when Prometheus scrapes, so it grows between checks, and `mongorescue_job_rpo_met` follows it. Unlike the fixed 26 hours of the rule above, the objective follows each job's schedule or its own `rpo_minutes`:
+
+```yaml
+      - alert: MongoRescueRPOMissed
+        expr: mongorescue_job_rpo_met == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Job {{ $labels.job }}: {{ $labels.database }} is past its recovery point objective"
+```
+
+The same breach is published once as `job.rpo_missed` (and `job.rpo_recovered` when it heals) for [notification rules](notifications.md).

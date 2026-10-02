@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +38,10 @@ var (
 	// asks for include_users_and_roles: the admin database holds every user and role
 	// as regular data, so its dumps already contain them.
 	ErrUsersAndRolesAdmin = errors.New("include_users_and_roles does not apply to the admin database: its dumps already contain every user and role")
+	// ErrInvalidRPO is returned when rpo_minutes is set outside
+	// models.MinRPOMinutes to models.MaxRPOMinutes (15 minutes to 90 days).
+	ErrInvalidRPO = fmt.Errorf("rpo_minutes must be 0 (the default) or between %d and %d (15 minutes to 90 days)",
+		models.MinRPOMinutes, models.MaxRPOMinutes)
 )
 
 // ErrJobChanged is returned by UpdateJob when the request names the job's updated_at
@@ -96,6 +101,9 @@ type JobUpdate struct {
 	VerifyAfterBackup *models.VerifyOverride `json:"verify_after_backup"`
 	// RestoreTest, when set, replaces the job's restore test policy.
 	RestoreTest *models.RestoreTestPolicy `json:"restore_test"`
+	// RPOMinutes, when set, replaces the job's recovery point objective in minutes
+	// (0 restores the default from the schedule).
+	RPOMinutes *int `json:"rpo_minutes"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -107,6 +115,11 @@ type JobDetails struct {
 	// NextRuns lists the next JobDetailsNextRuns activations in UTC; it is empty for
 	// a disabled job or an unparsable schedule.
 	NextRuns []time.Time `json:"next_runs"`
+	// EffectiveRPOMinutes is the recovery point objective that applies to the job:
+	// RPOMinutes when set, else the default from its schedule (two intervals plus an
+	// hour, at least six hours). RPODefault reports that the default applies.
+	EffectiveRPOMinutes int  `json:"effective_rpo_minutes"`
+	RPODefault          bool `json:"rpo_default"`
 }
 
 // ValidateJob checks and normalises a job before it is created or updated: an empty
@@ -133,6 +146,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)
 	}
+	if err := ValidateRPO(job.RPOMinutes); err != nil {
+		return err
+	}
 	if job.IncludeUsersAndRoles && !job.MultiDatabase() && job.Database == models.AdminDatabase {
 		return invalid(ErrUsersAndRolesAdmin)
 	}
@@ -155,6 +171,16 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	job.StorageTargetID, job.StorageType = target.ID, target.Type
 	s.snapshotKnownDatabases(ctx, job)
+	return nil
+}
+
+// ValidateRPO checks a job's rpo_minutes: 0 (the default from the schedule) or
+// between models.MinRPOMinutes and models.MaxRPOMinutes. Anything else is an
+// ErrInvalidRPO (ErrInvalid) error.
+func ValidateRPO(minutes int) error {
+	if minutes != 0 && (minutes < models.MinRPOMinutes || minutes > models.MaxRPOMinutes) {
+		return invalid(ErrInvalidRPO)
+	}
 	return nil
 }
 
@@ -296,6 +322,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 		job.PausedUntil = nil
 	}
 	job.VerifyAfterBackup = derefOr(u.VerifyAfterBackup, existing.VerifyAfterBackup)
+	job.RPOMinutes = derefOr(u.RPOMinutes, existing.RPOMinutes)
 	if u.RestoreTest != nil {
 		rt := *u.RestoreTest
 		job.RestoreTest = &rt
@@ -343,6 +370,8 @@ func (s *Service) GetJobDetails(ctx context.Context, id string) (*JobDetails, er
 		return nil, err
 	}
 	details := &JobDetails{Job: job, NextRuns: []time.Time{}}
+	rpo, isDefault := scheduler.EffectiveRPO(job, s.now())
+	details.EffectiveRPOMinutes, details.RPODefault = int(rpo/time.Minute), isDefault
 	if job.Enabled {
 		if runs := scheduler.NextRuns(job.CronExpression, s.now(), JobDetailsNextRuns); runs != nil {
 			details.NextRuns = runs

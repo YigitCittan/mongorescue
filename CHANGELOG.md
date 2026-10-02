@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- RPO/RTO and recovery readiness (#49): jobs take `rpo_minutes`, their recovery point objective (15 minutes to 90 days; 0 or absent keeps the default from the schedule, two intervals plus an hour and at least six hours, the rule the Overview used to apply in the browser). `GET /api/v1/jobs/{id}` adds `effective_rpo_minutes` and `rpo_default`, `GET /api/v1/schedule/preview` adds `default_rpo_minutes`, and the MCP `get_job` tool reports the objective. A checker evaluates every database of every enabled job every 5 minutes and right after a job's backup finishes, publishes `job.rpo_missed` once per breach and `job.rpo_recovered` when it heals (both selectable in notification rules; breaches are kept in the new `rpo_breaches` table, migration 0018, so a restart never alerts again), and exports `mongorescue_job_rpo_seconds`, `mongorescue_job_rpo_met` and `mongorescue_job_rpo_target_seconds` per job and database. `GET /api/v1/readiness` (read scope) returns one row per connection and database a job backs up: the jobs, the last good and last verified backups, the last restore test, the RPO target, age and whether it is met, the estimated RTO with its source (the newest passed restore test, else the newest completed real restore) and whether the keys are escrowed in a recovery kit, with an `ok`, `warn` or `fail` status and its reasons. The Overview has a *Recovery readiness* table, its *Attention needed* list takes the RPO status from the server, and the job form has an RPO field showing the default of the schedule. See [docs/production.md](docs/production.md#rpo-and-rto).
+
 ## [0.15.1] - 2026-10-02
 
 ### Fixed
