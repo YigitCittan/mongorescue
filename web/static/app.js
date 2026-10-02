@@ -2353,6 +2353,7 @@ function setupForms() {
       retention_count: parseInt(getValue("job-retention-count"), 10) || 0,
       ...storageSelection("job-storage"),
       ...trustJobPayload(),
+      include_users_and_roles: document.getElementById("job-users-roles").checked,
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2412,6 +2413,8 @@ function setupForms() {
   const safeClone = document.getElementById("restore-safe-clone");
   safeClone.addEventListener("change", () => updateRestoreMode(true));
   document.getElementById("restore-confirm-in-place").addEventListener("change", () => updateRestoreMode(false));
+  document.getElementById("restore-target-db").addEventListener("input", updateRestoreUsersRoles);
+  onLanguageChange(() => updateRestoreUsersRoles());
   setupRestoreCollections();
 
   document.getElementById("form-restore").addEventListener("submit", async (e) => {
@@ -2423,6 +2426,8 @@ function setupForms() {
     const dropTarget = document.getElementById("restore-drop-target").checked;
     const verify = document.getElementById("restore-verify").checked;
     const targetConnection = document.getElementById("restore-target-connection").value;
+    const usersRoles = document.getElementById("restore-users-roles");
+    const restoreUsersRoles = !isSafeClone && !usersRoles.disabled && usersRoles.checked;
 
     // The API defaults to a safe clone; writing into a named database needs explicit consent.
     const confirmInPlace = !isSafeClone && document.getElementById("restore-confirm-in-place").checked;
@@ -2452,6 +2457,7 @@ function setupForms() {
           dry_run: dryRun,
           drop_target: dropTarget,
           verify: verify,
+          ...(restoreUsersRoles ? { restore_users_and_roles: true } : {}),
           ...(selected.length > 0 ? { selected_collections: selected } : {}),
           ...(targetConnection ? { target_connection_id: targetConnection } : {})
         })
@@ -2506,6 +2512,7 @@ function openJobModal(jobID) {
     setValue("job-retention-days", Number(job.retention_days) || 0);
     setValue("job-retention-count", Number(job.retention_count) || 0);
     document.getElementById("job-enabled").checked = job.enabled !== false;
+    document.getElementById("job-users-roles").checked = job.include_users_and_roles === true;
     presetPicker("job", job);
     fillStorageSelect(document.getElementById("job-storage"), job.storage_target_id);
   } else {
@@ -2514,6 +2521,7 @@ function openJobModal(jobID) {
     if (general.default_retention_days !== undefined) setValue("job-retention-days", general.default_retention_days);
     if (general.default_retention_count !== undefined) setValue("job-retention-count", general.default_retention_count);
     document.getElementById("job-enabled").checked = true;
+    document.getElementById("job-users-roles").checked = false;
     resetPicker("job", "");
     fillStorageSelect(document.getElementById("job-storage"));
   }
@@ -2732,6 +2740,7 @@ function renderJobDetails() {
   options.textContent = "";
   appendKv(options, t("job_details.retention"), retentionText(job));
   appendKv(options, t("job_details.compression"), job.gzip ? t("job_details.gzip_on") : t("job_details.off"));
+  appendKv(options, t("job_details.users_roles"), job.include_users_and_roles ? t("job_details.users_roles_on") : t("job_details.off"));
   const enc = settingsGroup("encryption");
   appendKv(options, t("job_details.encryption"), !state.loaded.settings
     ? ""
@@ -2834,6 +2843,7 @@ function openRestoreModal(backupID, sourceDB) {
   setValue("restore-target-db", sourceDB);
   document.getElementById("restore-confirm-in-place").checked = false;
   document.getElementById("restore-drop-target").checked = false;
+  document.getElementById("restore-users-roles").checked = false;
   // Safe clone is on by default; the verify policy decides the initial checkbox.
   document.getElementById("restore-verify").checked = verifyDefault(true);
   // Target server defaults to the one the backup came from.
@@ -2872,6 +2882,35 @@ function updateRestoreMode(fromSafeCloneToggle) {
   }
   const acked = document.getElementById("restore-confirm-in-place").checked;
   document.getElementById("restore-submit").disabled = !isSafeClone && !acked;
+  updateRestoreUsersRoles();
+}
+
+// "Restore users and roles" is offered only for in-place restores into the backup's
+// own database from a backup taken with them (the server refuses anything else); the
+// hint says why it is disabled.
+function updateRestoreUsersRoles() {
+  const box = document.getElementById("restore-users-roles");
+  const hint = document.getElementById("restore-users-roles-hint");
+  if (!box || !hint) return;
+  const backup = backupCache.get(getValue("restore-backup-id")) || {};
+  const source = String(backup.database || document.getElementById("restore-source-db").textContent || "");
+  const target = getValue("restore-target-db").trim();
+  const inPlace = !document.getElementById("restore-safe-clone").checked;
+  let key = "modal_restore.users_roles_hint";
+  if (!backup.users_and_roles) {
+    key = "modal_restore.users_roles_none";
+  } else if (target !== "" && target !== source) {
+    key = "modal_restore.users_roles_rename";
+  }
+  box.disabled = !inPlace || key !== "modal_restore.users_roles_hint";
+  if (box.disabled) box.checked = false;
+  if (key === "modal_restore.users_roles_rename") {
+    // The message names the database, so it is set directly (and redone on language changes).
+    delete hint.dataset.i18n;
+    hint.textContent = tf(key, { db: source });
+  } else {
+    setI18nText("restore-users-roles-hint", key);
+  }
 }
 
 // ---------------------------------------------------------------------------

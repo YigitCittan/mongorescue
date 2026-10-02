@@ -338,6 +338,10 @@ const translations = {
       view_source_hint: "These views read from a source collection that is not selected: {list}. A view is restored, but shows no data unless its source exists in the target.",
       need_collections: "Select at least one collection, or choose Whole database.",
       submit: "Start restore",
+      users_roles_title: "Restore users and roles",
+      users_roles_hint: "Replaces the users and roles defined on the source database with the ones in the backup; users and roles created since the backup are removed.",
+      users_roles_none: "This backup was taken without users and roles.",
+      users_roles_rename: "Only available when restoring in place into the backup's own database ({db}).",
     },
     ui: {
       more_actions: "More actions",
@@ -399,6 +403,8 @@ const translations = {
       success_rate: "{pct}% successful · {ok} of {n} finished runs",
       no_runs: "No runs yet. Run the job now to take its first backup.",
       col_backup: "Backup",
+      users_roles: "Users and roles",
+      users_roles_on: "Included",
     },
     job_edit: {
       conflict: "The job was changed meanwhile. The list has been refreshed; open it again and retry.",
@@ -410,6 +416,8 @@ const translations = {
       update_failed: "Could not update the job",
       enabled_toast: "Job enabled",
       disabled_toast: "Job disabled",
+      users_roles_label: "Include users and roles",
+      users_roles_hint: "Adds the users and roles defined on each database to its backups, so an in-place restore can bring them back. Does not apply to the admin database, whose backups always contain them.",
     },
     backup_details: {
       title: "Backup details",
@@ -1220,6 +1228,10 @@ const translations = {
       view_source_hint: "Bu görünümlerin kaynak koleksiyonu seçili değil: {list}. Görünüm geri yüklenir, ancak kaynağı hedefte yoksa veri göstermez.",
       need_collections: "En az bir koleksiyon seçin ya da Tüm veritabanı'nı seçin.",
       submit: "Geri yüklemeyi başlat",
+      users_roles_title: "Kullanıcıları ve rolleri geri yükle",
+      users_roles_hint: "Kaynak veritabanında tanımlı kullanıcıları ve rolleri yedektekilerle değiştirir; yedekten sonra oluşturulan kullanıcılar ve roller silinir.",
+      users_roles_none: "Bu yedek kullanıcılar ve roller olmadan alındı.",
+      users_roles_rename: "Yalnızca yedeğin kendi veritabanına ({db}) yerinde geri yüklerken kullanılabilir.",
     },
     ui: {
       more_actions: "Diğer işlemler",
@@ -1281,6 +1293,8 @@ const translations = {
       success_rate: "%{pct} başarılı · tamamlanan {n} çalıştırmanın {ok} tanesi",
       no_runs: "Henüz çalıştırma yok. İlk yedeği almak için görevi şimdi çalıştırın.",
       col_backup: "Yedek",
+      users_roles: "Kullanıcılar ve roller",
+      users_roles_on: "Dahil",
     },
     job_edit: {
       conflict: "Görev bu arada değiştirildi. Liste yenilendi; görevi yeniden açıp tekrar deneyin.",
@@ -1292,6 +1306,8 @@ const translations = {
       update_failed: "Görev güncellenemedi",
       enabled_toast: "Görev etkinleştirildi",
       disabled_toast: "Görev devre dışı bırakıldı",
+      users_roles_label: "Kullanıcıları ve rolleri dahil et",
+      users_roles_hint: "Her veritabanında tanımlı kullanıcıları ve rolleri yedeklerine ekler; böylece yerinde geri yükleme bunları geri getirebilir. Yedekleri bunları her zaman içeren admin veritabanı için geçerli değildir.",
     },
     backup_details: {
       title: "Yedek ayrıntıları",
@@ -2102,6 +2118,10 @@ const translations = {
       view_source_hint: "Die Quell-Collection dieser Views ist nicht ausgewählt: {list}. Eine View wird wiederhergestellt, zeigt aber keine Daten, solange ihre Quelle im Ziel fehlt.",
       need_collections: "Wählen Sie mindestens eine Collection oder Gesamte Datenbank.",
       submit: "Wiederherstellung starten",
+      users_roles_title: "Benutzer und Rollen wiederherstellen",
+      users_roles_hint: "Ersetzt die in der Quelldatenbank definierten Benutzer und Rollen durch die der Sicherung; seit der Sicherung angelegte Benutzer und Rollen werden entfernt.",
+      users_roles_none: "Diese Sicherung wurde ohne Benutzer und Rollen erstellt.",
+      users_roles_rename: "Nur bei einer direkten Wiederherstellung in die eigene Datenbank der Sicherung ({db}) verfügbar.",
     },
     ui: {
       more_actions: "Weitere Aktionen",
@@ -2163,6 +2183,8 @@ const translations = {
       success_rate: "{pct} % erfolgreich · {ok} von {n} abgeschlossenen Läufen",
       no_runs: "Noch keine Läufe. Führen Sie den Auftrag jetzt aus, um das erste Backup zu erstellen.",
       col_backup: "Backup",
+      users_roles: "Benutzer und Rollen",
+      users_roles_on: "Enthalten",
     },
     job_edit: {
       conflict: "Der Auftrag wurde zwischenzeitlich geändert. Die Liste wurde aktualisiert; öffnen Sie ihn erneut und versuchen Sie es noch einmal.",
@@ -2174,6 +2196,8 @@ const translations = {
       update_failed: "Auftrag konnte nicht aktualisiert werden",
       enabled_toast: "Auftrag aktiviert",
       disabled_toast: "Auftrag deaktiviert",
+      users_roles_label: "Benutzer und Rollen einschließen",
+      users_roles_hint: "Nimmt die in jeder Datenbank definierten Benutzer und Rollen in ihre Sicherungen auf, damit eine direkte Wiederherstellung sie zurückholen kann. Gilt nicht für die admin-Datenbank, deren Sicherungen sie immer enthalten.",
     },
     backup_details: {
       title: "Backup-Details",
@@ -2984,6 +3008,10 @@ const translations = {
       view_source_hint: "La colección de origen de estas vistas no está seleccionada: {list}. La vista se restaura, pero no muestra datos mientras su origen no exista en el destino.",
       need_collections: "Seleccione al menos una colección o elija Base de datos completa.",
       submit: "Iniciar restauración",
+      users_roles_title: "Restaurar usuarios y roles",
+      users_roles_hint: "Sustituye los usuarios y roles definidos en la base de datos de origen por los de la copia; se eliminan los usuarios y roles creados después de la copia.",
+      users_roles_none: "Esta copia se hizo sin usuarios ni roles.",
+      users_roles_rename: "Solo disponible al restaurar in situ en la propia base de datos de la copia ({db}).",
     },
     ui: {
       more_actions: "Más acciones",
@@ -3045,6 +3073,8 @@ const translations = {
       success_rate: "{pct} % correctas · {ok} de {n} ejecuciones finalizadas",
       no_runs: "Aún no hay ejecuciones. Ejecuta la tarea ahora para hacer su primera copia.",
       col_backup: "Copia",
+      users_roles: "Usuarios y roles",
+      users_roles_on: "Incluidos",
     },
     job_edit: {
       conflict: "La tarea se modificó mientras tanto. La lista se ha actualizado; ábrela de nuevo y vuelve a intentarlo.",
@@ -3056,6 +3086,8 @@ const translations = {
       update_failed: "No se pudo actualizar la tarea",
       enabled_toast: "Tarea activada",
       disabled_toast: "Tarea desactivada",
+      users_roles_label: "Incluir usuarios y roles",
+      users_roles_hint: "Añade a las copias de cada base de datos los usuarios y roles definidos en ella, para que una restauración in situ pueda recuperarlos. No se aplica a la base de datos admin, cuyas copias siempre los contienen.",
     },
     backup_details: {
       title: "Detalles de la copia",
@@ -3866,6 +3898,10 @@ const translations = {
       view_source_hint: "La collection source de ces vues n'est pas sélectionnée : {list}. La vue est restaurée, mais n'affiche aucune donnée tant que sa source n'existe pas dans la cible.",
       need_collections: "Sélectionnez au moins une collection, ou choisissez Base entière.",
       submit: "Lancer la restauration",
+      users_roles_title: "Restaurer les utilisateurs et les rôles",
+      users_roles_hint: "Remplace les utilisateurs et rôles définis sur la base source par ceux de la sauvegarde ; les utilisateurs et rôles créés depuis la sauvegarde sont supprimés.",
+      users_roles_none: "Cette sauvegarde a été prise sans utilisateurs ni rôles.",
+      users_roles_rename: "Disponible uniquement pour une restauration sur place dans la base de la sauvegarde ({db}).",
     },
     ui: {
       more_actions: "Plus d'actions",
@@ -3927,6 +3963,8 @@ const translations = {
       success_rate: "{pct} % réussies · {ok} sur {n} exécutions terminées",
       no_runs: "Aucune exécution pour l'instant. Lancez la tâche maintenant pour faire sa première sauvegarde.",
       col_backup: "Sauvegarde",
+      users_roles: "Utilisateurs et rôles",
+      users_roles_on: "Inclus",
     },
     job_edit: {
       conflict: "La tâche a été modifiée entre-temps. La liste a été actualisée ; rouvrez-la et réessayez.",
@@ -3938,6 +3976,8 @@ const translations = {
       update_failed: "Impossible de mettre à jour la tâche",
       enabled_toast: "Tâche activée",
       disabled_toast: "Tâche désactivée",
+      users_roles_label: "Inclure les utilisateurs et les rôles",
+      users_roles_hint: "Ajoute aux sauvegardes de chaque base les utilisateurs et rôles qui y sont définis, pour qu'une restauration sur place puisse les rétablir. Ne s'applique pas à la base admin, dont les sauvegardes les contiennent toujours.",
     },
     backup_details: {
       title: "Détails de la sauvegarde",
@@ -4748,6 +4788,10 @@ const translations = {
       view_source_hint: "以下视图的源集合未被选中：{list}。视图会被恢复，但在目标中不存在其源集合时不会显示数据。",
       need_collections: "请至少选择一个集合，或选择“整个数据库”。",
       submit: "开始恢复",
+      users_roles_title: "恢复用户和角色",
+      users_roles_hint: "用备份中的用户和角色替换源数据库中定义的用户和角色；备份之后创建的用户和角色将被删除。",
+      users_roles_none: "此备份未包含用户和角色。",
+      users_roles_rename: "仅在原地恢复到备份自身的数据库（{db}）时可用。",
     },
     ui: {
       more_actions: "更多操作",
@@ -4809,6 +4853,8 @@ const translations = {
       success_rate: "成功率 {pct}% · {n} 次已完成运行中成功 {ok} 次",
       no_runs: "尚无运行记录。立即运行此任务以创建第一个备份。",
       col_backup: "备份",
+      users_roles: "用户和角色",
+      users_roles_on: "包含",
     },
     job_edit: {
       conflict: "该任务已被他人修改。列表已刷新，请重新打开后再试。",
@@ -4820,6 +4866,8 @@ const translations = {
       update_failed: "无法更新任务",
       enabled_toast: "任务已启用",
       disabled_toast: "任务已停用",
+      users_roles_label: "包含用户和角色",
+      users_roles_hint: "将每个数据库中定义的用户和角色加入其备份，以便原地恢复时一并恢复。不适用于 admin 数据库，其备份始终包含它们。",
     },
     backup_details: {
       title: "备份详情",
@@ -5630,6 +5678,10 @@ const translations = {
       view_source_hint: "次のビューのソースコレクションが選択されていません: {list}。ビューはリストアされますが、ターゲットにソースが存在しない限りデータは表示されません。",
       need_collections: "コレクションを 1 つ以上選択するか、「データベース全体」を選んでください。",
       submit: "リストアを開始",
+      users_roles_title: "ユーザーとロールをリストア",
+      users_roles_hint: "ソースデータベースに定義されたユーザーとロールをバックアップのものに置き換えます。バックアップ以降に作成されたユーザーとロールは削除されます。",
+      users_roles_none: "このバックアップはユーザーとロールなしで取得されました。",
+      users_roles_rename: "バックアップ元のデータベース（{db}）へのインプレースリストアでのみ使用できます。",
     },
     ui: {
       more_actions: "その他の操作",
@@ -5691,6 +5743,8 @@ const translations = {
       success_rate: "成功率 {pct}% · 完了した {n} 回中 {ok} 回",
       no_runs: "まだ実行されていません。今すぐジョブを実行して最初のバックアップを作成してください。",
       col_backup: "バックアップ",
+      users_roles: "ユーザーとロール",
+      users_roles_on: "含む",
     },
     job_edit: {
       conflict: "このジョブは他で変更されました。一覧を更新しました。もう一度開いてやり直してください。",
@@ -5702,6 +5756,8 @@ const translations = {
       update_failed: "ジョブを更新できませんでした",
       enabled_toast: "ジョブを有効にしました",
       disabled_toast: "ジョブを無効にしました",
+      users_roles_label: "ユーザーとロールを含める",
+      users_roles_hint: "各データベースに定義されたユーザーとロールをバックアップに含め、インプレースリストアで復元できるようにします。admin データベースには適用されません（そのバックアップには常に含まれます）。",
     },
     backup_details: {
       title: "バックアップの詳細",
@@ -6512,6 +6568,10 @@ const translations = {
       view_source_hint: "Исходная коллекция этих представлений не выбрана: {list}. Представление восстанавливается, но не показывает данных, пока его источника нет в целевой базе.",
       need_collections: "Выберите хотя бы одну коллекцию или «Вся база данных».",
       submit: "Начать восстановление",
+      users_roles_title: "Восстановить пользователей и роли",
+      users_roles_hint: "Заменяет пользователей и роли исходной базы на сохранённые в копии; пользователи и роли, созданные после копии, удаляются.",
+      users_roles_none: "Эта копия сделана без пользователей и ролей.",
+      users_roles_rename: "Доступно только при восстановлении на месте в собственную базу копии ({db}).",
     },
     ui: {
       more_actions: "Другие действия",
@@ -6573,6 +6633,8 @@ const translations = {
       success_rate: "Успешно {pct}% · {ok} из {n} завершённых запусков",
       no_runs: "Запусков пока нет. Запустите задачу сейчас, чтобы сделать первый бэкап.",
       col_backup: "Бэкап",
+      users_roles: "Пользователи и роли",
+      users_roles_on: "Включены",
     },
     job_edit: {
       conflict: "Задача была изменена за это время. Список обновлён; откройте её снова и повторите попытку.",
@@ -6584,6 +6646,8 @@ const translations = {
       update_failed: "Не удалось обновить задачу",
       enabled_toast: "Задача включена",
       disabled_toast: "Задача выключена",
+      users_roles_label: "Включать пользователей и роли",
+      users_roles_hint: "Добавляет в копии каждой базы определённых в ней пользователей и роли, чтобы восстановление на месте могло их вернуть. Не относится к базе admin, копии которой всегда их содержат.",
     },
     backup_details: {
       title: "Детали бэкапа",

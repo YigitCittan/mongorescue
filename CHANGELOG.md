@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - The metadata store records the SHA-256 checksum of every applied schema migration (migration 0014; rows applied by earlier releases are backfilled from this binary on the first start) and refuses to open when an applied migration's recorded checksum no longer matches the SQL embedded in the binary, or when an applied migration is missing from it (`store.ErrMigrationChanged`, naming the migration, before anything is written).
+- Users and roles in backups: jobs and on-demand backups take `include_users_and_roles` (default `false`; migration 0015 sets it on existing jobs) and then dump each database with `mongodump --dumpDbUsersAndRoles`, recorded on the backup as `users_and_roles`. Restores take `restore_users_and_roles`, allowed only for an in-place restore into the backup's own database from a backup that has them (`400` with a safe clone, a renaming `target_database`, a backup without users and roles, or the `admin` database); it replaces the database's users and roles with the ones in the backup. The dashboard has a checkbox in the job form and, for in-place restores, in the restore dialog. See [docs/api.md](docs/api.md#users-and-roles).
 
 ## [0.13.0] - 2026-10-02
 

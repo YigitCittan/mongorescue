@@ -33,6 +33,10 @@ var (
 	// ErrInvalidParallelism is returned when parallelism is outside 1 to
 	// models.MaxJobParallelism.
 	ErrInvalidParallelism = errors.New("parallelism must be between 1 and 4")
+	// ErrUsersAndRolesAdmin is returned when a job or backup of the admin database
+	// asks for include_users_and_roles: the admin database holds every user and role
+	// as regular data, so its dumps already contain them.
+	ErrUsersAndRolesAdmin = errors.New("include_users_and_roles does not apply to the admin database: its dumps already contain every user and role")
 )
 
 // ErrJobChanged is returned by UpdateJob when the request names the job's updated_at
@@ -79,6 +83,9 @@ type JobUpdate struct {
 	RetentionCount *int `json:"retention_count"`
 	// Gzip compresses the dumps when set.
 	Gzip *bool `json:"gzip"`
+	// IncludeUsersAndRoles, when set, replaces whether the dumps include the users and
+	// roles of each database.
+	IncludeUsersAndRoles *bool `json:"include_users_and_roles"`
 	// Enabled schedules (true) or pauses (false) the job when set.
 	Enabled *bool `json:"enabled"`
 	// PausedUntil, for a paused job, resumes it automatically at that time. Pausing
@@ -125,6 +132,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)
+	}
+	if job.IncludeUsersAndRoles && !job.MultiDatabase() && job.Database == models.AdminDatabase {
+		return invalid(ErrUsersAndRolesAdmin)
 	}
 	if job.Enabled {
 		job.PausedUntil = nil
@@ -270,6 +280,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	job.RetentionDays = derefOr(u.RetentionDays, existing.RetentionDays)
 	job.RetentionCount = derefOr(u.RetentionCount, existing.RetentionCount)
 	job.Gzip = derefOr(u.Gzip, existing.Gzip)
+	job.IncludeUsersAndRoles = derefOr(u.IncludeUsersAndRoles, existing.IncludeUsersAndRoles)
 	CarryKnownDatabases(job, existing)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
 	switch {

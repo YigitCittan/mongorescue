@@ -307,6 +307,9 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 			return nil, err
 		}
 	}
+	if req.IncludeUsersAndRoles && strings.TrimSpace(req.Database) == models.AdminDatabase {
+		return nil, invalid(ErrUsersAndRolesAdmin)
+	}
 	return s.startManualBackup(ctx, req, "")
 }
 
@@ -355,6 +358,8 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 			Collections:     slices.Clone(original.Collections),
 			StorageTargetID: original.StorageTargetID,
 			ConnectionID:    original.ConnectionID,
+			// A failed backup records whether it was meant to include users and roles.
+			IncludeUsersAndRoles: original.UsersAndRoles,
 		},
 		Trigger: trigger,
 	}
@@ -365,6 +370,7 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 		if job, jobErr := s.cfg.Store.GetJob(ctx, original.JobID); jobErr == nil {
 			req.JobID = job.ID
 			req.ExcludeCollections = slices.Clone(job.ExcludeCollections)
+			req.IncludeUsersAndRoles = job.IncludeUsersAndRoles
 			gzip := job.Gzip
 			req.Gzip = &gzip
 		}
@@ -560,6 +566,10 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	if err := req.ValidateTarget(); err != nil {
 		return nil, invalid(err)
 	}
+	// Users and roles are restored only in place; the backup is checked below.
+	if err := req.ValidateUsersAndRoles(nil); errors.Is(err, models.ErrUsersAndRolesNotAllowed) {
+		return nil, invalid(err)
+	}
 	// Client-supplied names are checked; the backup's own database name is not, so
 	// every existing backup stays restorable.
 	if target := strings.TrimSpace(req.TargetDatabase); req.InPlace() && target != "" {
@@ -585,6 +595,9 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 			return nil, public("source backup not found", ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("load source backup: %w", err)
+	}
+	if err = req.ValidateUsersAndRoles(source); err != nil {
+		return nil, invalid(err)
 	}
 
 	// The target defaults to the server the backup was taken from; another connection

@@ -282,6 +282,7 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 		StorageType:    opts.StorageType,
 		StorageKey:     targetKey,
 		Collections:    opts.Collections,
+		UsersAndRoles:  opts.UsersAndRolesApply(),
 		StartedAt:      startTime,
 		Phases:         models.RunPhases{Queued: models.Stamp(startTime)},
 
@@ -720,14 +721,20 @@ func trimmedNames(names []string) []string {
 // A collection created between the listing and the dump is not excluded and ends up
 // in the backup as well; that race is accepted, since it can only add data and never
 // drop a requested collection. Without a lister, a single collection is passed to
-// mongodump unchecked and several collections fail with ErrCollectionFilter.
+// mongodump unchecked and several collections fail with ErrCollectionFilter. A dump
+// with users and roles (BackupOptions.UsersAndRolesApply) rewrites a single
+// collection into exclusions as well, since mongodump refuses --collection with
+// --dumpDbUsersAndRoles; without a lister it fails with ErrCollectionFilter.
 func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.BackupOptions) (models.BackupOptions, error) {
 	include := trimmedNames(opts.Collections)
 	if len(include) == 0 {
 		return opts, nil
 	}
+	// mongodump refuses --collection together with --dumpDbUsersAndRoles, so a dump
+	// with users and roles expresses even a single collection as exclusions.
+	single := len(include) == 1 && !opts.UsersAndRolesApply()
 	if e.listCollections == nil {
-		if len(include) == 1 {
+		if single {
 			return opts, nil
 		}
 		return opts, fmt.Errorf("%w: %d collections requested but no collection lister is configured", ErrCollectionFilter, len(include))
@@ -741,7 +748,7 @@ func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.
 			return opts, fmt.Errorf("%w: collection %s not found in database %s", ErrCollectionFilter, want, opts.Database)
 		}
 	}
-	if len(include) == 1 {
+	if single {
 		return opts, nil
 	}
 	keep := func(name string) bool {
@@ -782,6 +789,12 @@ func (e *Engine) buildDumpArgs(configArg string, opts models.BackupOptions) []st
 
 	if opts.Database != "" {
 		args = append(args, fmt.Sprintf("--db=%s", opts.Database))
+	}
+
+	// mongodump needs --db for --dumpDbUsersAndRoles and refuses --collection with it
+	// (expandCollections turns a collection filter into exclusions for such dumps).
+	if opts.UsersAndRolesApply() {
+		args = append(args, "--dumpDbUsersAndRoles")
 	}
 
 	for _, coll := range opts.Collections {

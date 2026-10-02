@@ -59,6 +59,11 @@ type Job struct {
 	// Gzip determines whether dumps are compressed. Default is true.
 	Gzip bool `json:"gzip"`
 
+	// IncludeUsersAndRoles makes every dump of the job include the users and roles
+	// defined on its database (mongodump --dumpDbUsersAndRoles). The admin database is
+	// dumped without the flag: its users and roles are part of its own data.
+	IncludeUsersAndRoles bool `json:"include_users_and_roles"`
+
 	// Enabled controls whether the scheduler actively triggers this job. A job with
 	// Enabled false is paused.
 	Enabled bool `json:"enabled"`

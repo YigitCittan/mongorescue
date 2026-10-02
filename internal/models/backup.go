@@ -2,6 +2,7 @@ package models
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -112,6 +113,11 @@ type BackupRecord struct {
 	// Records written before encryption support decode as false (plaintext).
 	Encrypted bool `json:"encrypted,omitempty"`
 
+	// UsersAndRoles reports that the archive contains the users and roles defined on
+	// Database (dumped with --dumpDbUsersAndRoles), so an in-place restore can
+	// restore them (RestoreRequest.RestoreUsersAndRoles).
+	UsersAndRoles bool `json:"users_and_roles,omitempty"`
+
 	// EncryptionMode is the age recipient type used ("x25519" or "scrypt") when
 	// Encrypted is true. It never contains key material.
 	EncryptionMode string `json:"encryption_mode,omitempty"`
@@ -219,6 +225,11 @@ type BackupOptions struct {
 	// Gzip specifies whether to compress the archive with gzip. Default is true.
 	Gzip bool `json:"gzip"`
 
+	// IncludeUsersAndRoles adds the users and roles defined on Database to the dump
+	// (mongodump --dumpDbUsersAndRoles). It is ignored for the admin database, whose
+	// users and roles are part of its own data. See UsersAndRolesApply.
+	IncludeUsersAndRoles bool `json:"include_users_and_roles,omitempty"`
+
 	// StorageType is the type of the destination target. It is filled from the
 	// resolved target, never read from clients.
 	StorageType StorageType `json:"-"`
@@ -290,4 +301,17 @@ type BackupCollection struct {
 	ViewOn string `json:"view_on,omitempty"`
 	// SizeBytes is the data size recorded in the archive, when it has one.
 	SizeBytes int64 `json:"size_bytes,omitempty"`
+}
+
+// AdminDatabase is MongoDB's admin database, which stores the users and roles of
+// every database.
+const AdminDatabase = "admin"
+
+// UsersAndRolesApply reports whether a dump with these options includes the users and
+// roles of its database: IncludeUsersAndRoles is set and the database is named and
+// is not admin (mongodump needs --db for --dumpDbUsersAndRoles, and the admin
+// database holds every user and role as regular data anyway).
+func (o BackupOptions) UsersAndRolesApply() bool {
+	db := strings.TrimSpace(o.Database)
+	return o.IncludeUsersAndRoles && db != "" && db != AdminDatabase
 }
