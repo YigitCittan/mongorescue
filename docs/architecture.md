@@ -10,7 +10,7 @@ flowchart TB
     subgraph core["Core"]
         OPS["operations<br/>backup, job and restore use cases"]
         AUDIT["audit<br/>API key activity log"]
-        AUTH["auth<br/>setup, users, sessions, API keys"]
+        AUTH["auth<br/>setup, users, sessions, API keys,<br/>single sign-on rules"]
         CONN["connections<br/>managed MongoDB servers"]
         SCHED["Scheduler<br/>cron jobs, retention"]
         BE["Backup engine"]
@@ -75,7 +75,8 @@ flowchart TB
 | `internal/settings` | Dashboard-managed settings (general, security, encryption): validation, keep-secret rule, retired keys, the live snapshot engines and server read |
 | `internal/targets` | Storage targets: validation, keep-secret updates, probe tests, default target, one cached driver per target |
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
-| `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`) |
+| `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`), and the single sign-on rules (`LoginOIDC`: domain filter, group → role mapping, user creation, break-glass) |
+| `internal/auth/oidc` | OpenID Connect protocol glue on `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`: discovery, PKCE and nonce, code exchange, ID token verification (RS256/ES256, `azp`, `iat`, `nbf`), claim extraction; no HTTP handlers. `oidctest` is the fake provider of the tests |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, restore preflights and post-restore verification (behind a `RestoreInspector` port), background runs, records and events; read models (`Status`, `Stats`) |
 | `internal/runs` | The run `Manager` (background runs under the application lifecycle, per-database concurrency keys) and the run `Registry` (active runs: cancellation with who and why, live progress, their log files) |
 | `internal/runlog` | Per-run log files under `<data_dir>/logs`: redacted, bounded lines streamed to disk, capped at 5 MiB with head and tail kept; tail reads and pruning |
@@ -216,9 +217,10 @@ The store serves a single MongoRescue instance; the roadmap includes a pluggable
 
 ## Security boundaries
 
-- Everything under `/api/` except health, setup status, setup and login needs a session cookie or an API key; `/metrics` needs an API key unless made public, and `/mcp` always needs an API key (sessions are never accepted there). Cookie-authenticated unsafe requests must carry the session's CSRF token. Every request has an effective scope, checked against one route table: a session gets the scope of its user's dashboard role (viewer read, operator operator, admin admin), an API key its own scope capped by its creator's current role (see [design/roles.md](design/roles.md)).
+- Everything under `/api/` except health, setup status, setup, login and the sign-in methods needs a session cookie or an API key; `/metrics` needs an API key unless made public, and `/mcp` always needs an API key (sessions are never accepted there). Cookie-authenticated unsafe requests must carry the session's CSRF token. Every request has an effective scope, checked against one route table: a session gets the scope of its user's dashboard role (viewer read, operator operator, admin admin), an API key its own scope capped by its creator's current role (see [design/roles.md](design/roles.md)).
 - The MCP server exposes no tool that deletes, restores in place or reconfigures anything, filters `tools/list` by the key's scope and checks the scope again on every call, rate limits each key and records every call in the audit log with redacted arguments. There is no unauthenticated mode; a fresh instance is in setup mode until the first user is created with the one-time code from the logs.
 - Session cookies are `HttpOnly` and `SameSite=Strict`, and `Secure` over TLS or behind a trusted proxy. Login attempts are reserved atomically before the password check and throttled per (IP, username), with a per-IP failure count that tightens the budget but never blocks a correct password; every login costs exactly one bcrypt comparison whether or not the user exists, public POSTs require a JSON body and a same-origin (or allowed) `Origin`, deleting a user revokes their API keys, and API keys and the imported static key are compared through their SHA-256 digest or HMAC in constant time.
+- [Single sign-on](design/oidc.md) (`/auth/oidc/start`, `/auth/oidc/callback`, not in the desktop app) uses the authorization code flow with S256 PKCE, a nonce and a single-use state kept in a sealed, `SameSite=Lax` flow cookie; ID tokens are verified by go-oidc (RS256 and ES256 only) plus `azp`, `iat` and `nbf` checks; users are identified by issuer and subject only, never linked by name or email; all provider traffic goes through the guarded HTTP client of the notifications (timeout, no redirects, no link-local or metadata addresses) with responses capped at 1 MiB. A local administrator always remains as the break-glass way in.
 - MongoDB URIs are redacted (`internal/redact`) before logging, error messages and API serialization; other secrets are masked in API responses.
 - Tools are started with `exec.CommandContext` and separate argument slices; nothing is passed through a shell, and cancelling the context terminates the child process.
 - Restores default to safe clones in both the API and the dashboard, in-place restores require `confirm_in_place: true`, destructive `drop_target` requires explicit opt-in, and verify-before-restore guards in-place restores.

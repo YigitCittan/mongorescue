@@ -46,7 +46,7 @@ The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secr
 
 Only administrators (the `admin` dashboard role, or an `admin` API key of an administrator) can change settings and storage targets and use the test endpoints, which make outbound connections to the hosts they name. Give other people the `viewer` or `operator` role; see [design/roles.md](design/roles.md).
 
-**Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Security, Users and API keys. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
+**Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Recovery, Security, Audit log, Users, Single sign-on, API keys and Sessions. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
 
 ### General
 
@@ -107,6 +107,28 @@ Retention and forwarding of the hash-chained audit log of every action (Settings
 | `retention_days` | `365` | Keep entries this many days (30 to 36500); older ones are removed hourly, and the last removed hash is kept as the chain anchor |
 | `webhook_url` | empty | `http` or `https` URL every new entry is POSTed to as JSON, in the background (empty = off). Secret: stored encrypted, shown only up to its host |
 | `webhook_secret` | empty | Signs the forwarded requests (`X-MongoRescue-Signature: sha256=<HMAC-SHA256 of the body>`). Secret |
+
+### Single sign-on
+
+Sign-in through an OpenID Connect provider (Settings → Single sign-on, admins only); see [sso.md](sso.md) for provider recipes and [design/oidc.md](design/oidc.md) for the design. Not available in the desktop app.
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `enabled` | `false` | Show the single sign-on button and accept sign-ins. Turning it on checks the section, fetches the provider's discovery document and needs at least one local administrator |
+| `display_name` | `Single sign-on` | Label of the sign-in button (at most 64 characters) |
+| `issuer` | empty | Issuer URL: `https`, `http` only for `localhost`/loopback. Discovery must report exactly this issuer. For Entra ID a tenant issuer; `/common` and `/organizations` are refused |
+| `client_id` | empty | The client registered at the provider |
+| `client_secret` | empty | Its secret: stored encrypted, shown as `******`; sending the mask back keeps it. Empty means a public client (PKCE only) |
+| `scopes` | `openid email profile` | Requested scopes; `openid` is always added |
+| `redirect_url` | empty | The callback URL registered at the provider, never derived from the request. Its path must be exactly `/auth/oidc/callback`. The dashboard pre-fills `<origin>/auth/oidc/callback` |
+| `username_claim` | `preferred_username` | Names new users; falls back to `email`, then `sub`, cleaned to the username characters |
+| `groups_claim` | `groups` | Claim or dot path (`realm_access.roles`) holding a string or a list of strings |
+| `role_mappings` | empty | `{group, role}` pairs, matched exactly; the highest role wins; at most 100 |
+| `default_role` | empty | Role when no mapping matches: empty refuses the sign-in, or `viewer` or `operator`. `admin` is refused here: it only comes from a mapping |
+| `allowed_email_domains` | empty | Only verified emails (`email_verified` the JSON boolean `true`) of these exact domains may sign in; empty allows any |
+| `auto_create_users` | `true` | Create a user at an identity's first sign-in; when off, unknown identities are refused |
+| `local_login` | `all` | `admins_only` limits the password form to local administrators (break-glass) while single sign-on is on, and ends the sessions of the other local users when switched on |
+| `rp_logout` | `false` | Sign single sign-on users out at the provider too (`end_session_endpoint`, with the client ID only) |
 
 ### Encryption
 

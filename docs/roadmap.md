@@ -38,7 +38,7 @@ The goal: after a disaster, nothing MongoRescue needs to restore is missing, and
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
 | 2.1 | **Roles for users** | L | Viewer, operator and admin for dashboard users, mirroring the API key scopes, enforced in `internal/auth`. A later step adds per-connection access, so an operator can be limited to some servers. Needs a migration and a review of every route in the scope table. Shipped in v0.17.0 (`role` on users, migration 0019, see [design/roles.md](design/roles.md)); per-connection access is still to come. |
-| 2.2 | **Single sign-on (OIDC)** | L | Sign in with an OIDC provider (Entra ID, Google, Okta, Keycloak), map groups to roles, and keep local accounts as a break-glass option. Depends on 2.1. |
+| 2.2 | **Single sign-on (OIDC)** | L | Sign in with an OIDC provider (Entra ID, Google, Okta, Keycloak), map groups to roles, and keep local accounts as a break-glass option. Depends on 2.1. Shipped in v0.18.0 (migration 0020, see [design/oidc.md](design/oidc.md) and [sso.md](sso.md)); not in the desktop app. |
 | 2.3 | **CLI** | M | `mongorescue backup`, `restore`, `list`, `verify` and `status`, talking to a running instance through the REST API with an API key, for scripts and CI. Shipped in v0.17.0 ([cli.md](cli.md)). |
 
 **1.0** is cut after phases 1 and 2, together with the criteria in [versioning.md](versioning.md#what-10-means).

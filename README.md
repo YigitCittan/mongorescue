@@ -57,6 +57,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
 - Prometheus metrics, including the time of the last successful backup per job
 - User accounts with sessions (listed and revocable one by one) and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
+- [Single sign-on](docs/sso.md) through an OpenID Connect provider (Entra ID, Google, Okta, Keycloak) with group-to-role mappings, a domain filter and a local administrator as the break-glass way in
 - A hash-chained [audit log](docs/audit.md) of every action (who, what, target, result, source address) with chain verification, retention, JSON Lines export and webhook forwarding
 - An MCP server for AI assistants (Streamable HTTP and stdio) with read-only and safe-clone tools, per-key rate limits and an audit log
 - A [command line](docs/cli.md) for scripts and CI (`mongorescue backup`, `restore`, `list`, `verify`, `status`) with `--wait`, JSON output and stable exit codes
@@ -199,7 +200,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 ## Known limitations
 
 - It runs as a single instance. Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance on the same directory refuses to start.
-- Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but there is no per-connection access yet: an operator may back up and restore every connection, and an admin may change settings, storage targets and use the test endpoints that connect to hosts named in the request. Single sign-on is not implemented yet.
+- Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but there is no per-connection access yet: an operator may back up and restore every connection, and an admin may change settings, storage targets and use the test endpoints that connect to hosts named in the request. Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
 - Losing `secret.key` (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable: keep a copy, stored apart from database backups.
 - Backups are per-database `mongodump` snapshots: users and roles are not included (recreate them after a disaster), and there is no oplog-based point-in-time recovery. See [docs/testing.md](docs/testing.md#known-limits).
 - The dashboard has no automated browser tests yet; the API behind it is covered by Go tests.

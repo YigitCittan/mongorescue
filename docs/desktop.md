@@ -108,7 +108,7 @@ A data directory can be used by one process at a time: stop a server that uses t
 - **Session cookie jar.** WKWebView (macOS) does not reliably store cookies for the custom `wails://` scheme. For same-origin requests (`Sec-Fetch-Site` absent, `same-origin` or `none`, and `Origin` absent or naming the request host) the wrapper records the `mr_session` cookie from `Set-Cookie` responses, forgets it on logout or expiry, and adds it to requests that do not carry it. Cross-site requests never receive the cookie and cannot set or clear it.
 - **Same-origin requests.** The webview's origin is `wails://wails` (macOS, Linux) or `http://wails.localhost` (Windows). The server refuses unauthenticated `POST`s (setup, login) with a non-HTTP `Origin`, so the wrapper drops an `Origin` header that names the request's own host. Requests from any other origin keep it and are judged by the server.
 
-Authentication, CSRF tokens, scopes and settings work exactly as in the browser.
+Authentication, CSRF tokens, scopes and settings work exactly as in the browser, except single sign-on: the desktop app serves only this computer and has no stable callback URL for an identity provider, so the `/auth/oidc/` routes are not registered, `GET /api/v1/auth/methods` reports single sign-on as unavailable, Settings → Single sign-on explains why, and turning it on is refused. Local accounts are the way in.
 
 ## Building
 
