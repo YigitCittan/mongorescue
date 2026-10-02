@@ -59,7 +59,60 @@ func (s *Service) Warnings() []Warning {
 	if s.recoveryKitWarningActive() {
 		out = append(out, Warning{ID: WarningRecoveryKit, Message: recoveryKitMessage, Setting: "recovery"})
 	}
+	if s.oidcRoleKept == warningActive {
+		out = append(out, Warning{ID: WarningOIDCRoleKept, Message: oidcRoleKeptMessage, Setting: "sso"})
+	}
 	return out
+}
+
+// WarningOIDCRoleKept identifies the warning raised when a single sign-on would have
+// demoted the last administrator: the stored role was kept and the sign-in went on.
+const WarningOIDCRoleKept = "oidc_role_kept"
+
+// oidcRoleKeptMessage is the text of the WarningOIDCRoleKept warning.
+const oidcRoleKeptMessage = "A single sign-on would have demoted the last administrator, so the stored admin role was kept. " +
+	"Map an identity provider group to admin or keep a second administrator. See Settings → Single sign-on."
+
+// oidcRoleKeptKey stores the state of the WarningOIDCRoleKept warning.
+const oidcRoleKeptKey = markerPrefix + "warning." + WarningOIDCRoleKept
+
+// RaiseOIDCRoleKeptWarning raises WarningOIDCRoleKept (again, also after it was
+// dismissed: every kept role is a new occurrence).
+func (s *Service) RaiseOIDCRoleKeptWarning(ctx context.Context) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.setOIDCRoleKept(ctx, warningActive)
+}
+
+// setOIDCRoleKept persists the state of WarningOIDCRoleKept. Caller holds writeMu.
+func (s *Service) setOIDCRoleKept(ctx context.Context, state string) error {
+	s.mu.RLock()
+	same := s.oidcRoleKept == state
+	s.mu.RUnlock()
+	if same {
+		return nil
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SaveSettings(ctx, map[string]string{oidcRoleKeptKey: string(raw)}); err != nil {
+		return fmt.Errorf("settings: save warning state: %w", err)
+	}
+	s.mu.Lock()
+	s.oidcRoleKept = state
+	s.stored[oidcRoleKeptKey] = true
+	s.mu.Unlock()
+	return nil
+}
+
+// loadState decodes a stored warning state ("" when never raised).
+func loadState(values map[string]string, key string) string {
+	var state string
+	if raw, ok := values[key]; ok {
+		_ = json.Unmarshal([]byte(raw), &state)
+	}
+	return state
 }
 
 // RaiseEncryptionOffWarning raises WarningEncryptionOff when encryption is off, once:
@@ -130,6 +183,10 @@ func (s *Service) DismissWarning(ctx context.Context, id string) error {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 		return s.dismissRecoveryKit(ctx)
+	case WarningOIDCRoleKept:
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		return s.setOIDCRoleKept(ctx, warningDismissed)
 	}
 	return fmt.Errorf("%w: unknown warning %q", ErrInvalid, id)
 }

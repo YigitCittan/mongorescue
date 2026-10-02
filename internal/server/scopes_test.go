@@ -54,7 +54,7 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	srv := NewServer(bootConfig(), st, base.backupEngine, base.restoreEngine, base.storageDriver, base.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, newTestConfig().Security)),
-		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)))
+		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)), withTestOIDC(t))
 	f := &scopeFixture{srv: srv, h: srv.Handler(), keys: map[auth.Scope]string{}, store: st, auth: svc}
 	for _, scope := range auth.Scopes() {
 		_, plain, err := svc.CreateAPIKey(context.Background(), auth.SystemPrincipal(), string(scope)+" key", scope)
@@ -86,7 +86,7 @@ func (f *scopeFixture) authenticatedPatterns() []string {
 	var out []string
 	for _, p := range f.srv.patterns {
 		_, path := concrete(p)
-		if publicPaths[path] || p == "GET /" {
+		if publicPaths[path] || p == "GET /" || strings.HasPrefix(path, oidcFlowCookiePath) {
 			continue
 		}
 		out = append(out, p)

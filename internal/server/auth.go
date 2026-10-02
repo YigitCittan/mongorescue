@@ -30,12 +30,14 @@ const maxAuthBody = 1 << 20
 
 // publicPaths are served without credentials. Everything under /api/ that is not
 // listed here, and /metrics unless security.metrics_public is on, requires a session
-// or an API key.
+// or an API key. The single sign-on routes (/auth/oidc/) live outside /api/ and are
+// public too.
 var publicPaths = map[string]bool{
 	"/api/v1/health":       true,
 	"/api/v1/setup/status": true,
 	"/api/v1/setup":        true,
 	"/api/v1/auth/login":   true,
+	authMethodsPath:        true,
 }
 
 // Sign-in routes, also their audit log actions.
@@ -373,14 +375,14 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired),
-		errors.Is(err, auth.ErrScopeExceedsRole):
+		errors.Is(err, auth.ErrScopeExceedsRole), errors.Is(err, auth.ErrLocalLoginDisabled):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser),
-		errors.Is(err, auth.ErrLastAdmin):
+		errors.Is(err, auth.ErrLastAdmin), errors.Is(err, auth.ErrLastLocalAdmin), errors.Is(err, auth.ErrRoleManagedByProvider):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrInvalidUsername),
 		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope),
-		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole):
+		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole), errors.Is(err, auth.ErrNoPassword):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, auth.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
@@ -450,7 +452,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	rec := &statusRecorder{ResponseWriter: w}
 	w = rec
 	var user *auth.User
-	defer func() { s.recordSignIn(r, setupRoute, rec, user, req.Username) }()
+	defer func() { s.recordSignIn(r, setupRoute, rec, user, req.Username, nil) }()
 	if !decodeBody(w, r, &req) {
 		return
 	}
@@ -476,12 +478,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	rec := &statusRecorder{ResponseWriter: w}
 	w = rec
 	var user *auth.User
-	defer func() { s.recordSignIn(r, loginRoute, rec, user, req.Username) }()
+	var targets map[string]string
+	defer func() { s.recordSignIn(r, loginRoute, rec, user, req.Username, targets) }()
 	if !decodeBody(w, r, &req) {
 		return
 	}
 	res, err := svc.Login(r.Context(), s.clientIP(r), req.Username, req.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrLocalLoginDisabled) {
+			targets = map[string]string{targetReason: reasonLocalLoginDisabled}
+		}
 		s.writeAuthError(w, err)
 		return
 	}
@@ -502,7 +508,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearSessionCookie(w, r)
-	writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
+	out := logoutResponse{LoggedOut: true, EndSessionURL: s.endSessionURL(r.Context(), auth.PrincipalFrom(r.Context()))}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// logoutResponse is the answer of POST /api/v1/auth/logout.
+type logoutResponse struct {
+	LoggedOut bool `json:"logged_out"`
+	// EndSessionURL, when set, signs a single sign-on user out at the identity
+	// provider too (oidc.rp_logout); the dashboard navigates to it.
+	EndSessionURL string `json:"end_session_url,omitempty"`
 }
 
 // meRoute is the session introspection route; it answers signed-out visitors too.

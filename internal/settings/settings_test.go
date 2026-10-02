@@ -334,7 +334,12 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyAuditWebhookURL) || !IsSecret(KeyAuditWebhookSecret) || IsSecret(KeyAuditRetentionDays) {
 		t.Fatal("audit secret classification is wrong")
 	}
-	if len(Keys()) != 33 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	for _, k := range Keys() {
+		if strings.HasPrefix(k, "oidc.") && IsSecret(k) != (k == KeyOIDCClientSecret) {
+			t.Errorf("IsSecret(%s) = %v; only the OIDC client secret is secret", k, IsSecret(k))
+		}
+	}
+	if len(Keys()) != 48 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

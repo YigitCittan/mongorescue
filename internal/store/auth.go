@@ -14,7 +14,24 @@ import (
 // Compile-time check that SQLiteStore serves the auth port.
 var _ auth.Repository = (*SQLiteStore)(nil)
 
-const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role"
+const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject"
+
+// errInconsistentIdentity is returned when a user's provider, subject and password
+// hash disagree: an OIDC user has a subject and an empty hash, a local user neither
+// a subject nor an empty hash.
+var errInconsistentIdentity = errors.New("store: a user is oidc exactly when it has a subject and no password hash")
+
+// checkIdentity enforces oidc ⇔ subject set ⇔ empty password hash for u.
+func checkIdentity(u *auth.User) error {
+	oidc := u.AuthProvider == auth.ProviderOIDC
+	if u.AuthProvider != auth.ProviderLocal && !oidc {
+		return fmt.Errorf("store: insert user: unknown auth provider %q", u.AuthProvider)
+	}
+	if oidc != (u.Subject != "") || oidc != (u.PasswordHash == "") {
+		return errInconsistentIdentity
+	}
+	return nil
+}
 
 // CountUsers returns the number of users.
 func (s *SQLiteStore) CountUsers(ctx context.Context) (int, error) {
@@ -47,13 +64,25 @@ func (s *SQLiteStore) CreateUser(ctx context.Context, u *auth.User) error {
 // insertUser inserts a user, mapping a username clash to auth.ErrUserExists. The
 // role is always bound: an empty or unknown one is refused (auth.ErrInvalidRole),
 // so the column default (admin, for users stored before roles existed) never
-// applies to a new user.
+// applies to a new user. An empty provider is local; the provider, subject and
+// password hash must agree (checkIdentity).
 func insertUser(ctx context.Context, e execer, u *auth.User) error {
 	if !u.Role.Valid() {
 		return fmt.Errorf("store: insert user: %w: %q", auth.ErrInvalidRole, u.Role)
 	}
-	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?)",
-		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role))
+	if u.AuthProvider == "" {
+		u.AuthProvider = auth.ProviderLocal
+	}
+	if err := checkIdentity(u); err != nil {
+		return err
+	}
+	var subject any
+	if u.Subject != "" {
+		subject = u.Subject
+	}
+	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role),
+		string(u.AuthProvider), subject)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return auth.ErrUserExists
@@ -102,9 +131,20 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*auth.User, error) {
 }
 
 // UpdatePassword stores hash and revokes the user's sessions except keepSessionHash.
+// Single sign-on users have no password (auth.ErrNoPassword).
 func (s *SQLiteStore) UpdatePassword(ctx context.Context, userID, hash string, updatedAt time.Time, keepSessionHash string) error {
+	if hash == "" {
+		return fmt.Errorf("store: update password: %w", errInconsistentIdentity)
+	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+		provider, err := userProvider(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if provider != auth.ProviderLocal {
+			return auth.ErrNoPassword
+		}
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
 			hash, timeKey(updatedAt), userID); err != nil {
 			return err
 		}
@@ -121,8 +161,9 @@ func (s *SQLiteStore) RecordLogin(ctx context.Context, userID string, at time.Ti
 }
 
 // DeleteUser removes a user (sessions cascade). Neither the last user nor the last
-// admin can be deleted, and when actorID is not "" that user must still be an admin.
-func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string) error {
+// admin can be deleted, nor with keepLocalAdmin the last local admin, and when
+// actorID is not "" that user must still be an admin.
+func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string, keepLocalAdmin bool) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		if actorID != "" {
 			if err := requireAdminRole(ctx, tx, actorID); err != nil {
@@ -144,6 +185,11 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string) error 
 			if err = refuseLastAdmin(ctx, tx); err != nil {
 				return err
 			}
+			if keepLocalAdmin {
+				if err = refuseLastLocalAdmin(ctx, tx, id); err != nil {
+					return err
+				}
+			}
 		}
 		// Sessions go with the user (ON DELETE CASCADE); delete explicitly as well so
 		// revocation never depends on the foreign_keys pragma.
@@ -159,9 +205,10 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string) error 
 }
 
 // UpdateUserRole sets the role of userID and revokes the user's sessions, in one
-// transaction, refusing to demote the last admin and, when actorID is not "", to
-// act for a user who is no longer an admin.
-func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string, role auth.Role, updatedAt time.Time) (auth.Role, error) {
+// transaction, refusing to demote the last admin (with keepLocalAdmin also the last
+// local admin) and, when actorID is not "", to act for a user who is no longer an
+// admin.
+func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string, role auth.Role, updatedAt time.Time, keepLocalAdmin bool) (auth.Role, error) {
 	if !role.Valid() {
 		return "", fmt.Errorf("store: update user role: %w: %q", auth.ErrInvalidRole, role)
 	}
@@ -184,20 +231,162 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string
 			if err = refuseLastAdmin(ctx, tx); err != nil {
 				return err
 			}
+			if keepLocalAdmin {
+				if err = refuseLastLocalAdmin(ctx, tx, userID); err != nil {
+					return err
+				}
+			}
 		}
-		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
-			string(role), timeKey(updatedAt), userID); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
-			return fmt.Errorf("store: revoke sessions: %w", err)
-		}
-		return nil
+		return setRole(ctx, tx, userID, role, updatedAt)
 	})
 	if txErr != nil {
 		return "", txErr
 	}
 	return previous, nil
+}
+
+// setRole stores the role of userID and revokes the user's sessions, so they sign in
+// again under the new role.
+func setRole(ctx context.Context, tx *sql.Tx, userID string, role auth.Role, updatedAt time.Time) error {
+	if err := execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
+		string(role), timeKey(updatedAt), userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
+		return fmt.Errorf("store: revoke sessions: %w", err)
+	}
+	return nil
+}
+
+// refuseLastLocalAdmin returns auth.ErrLastLocalAdmin when id is a local admin and
+// no other local admin exists.
+func refuseLastLocalAdmin(ctx context.Context, tx *sql.Tx, id string) error {
+	provider, err := userProvider(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if provider != auth.ProviderLocal {
+		return nil
+	}
+	n, err := countLocalAdmins(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if n <= 1 {
+		return auth.ErrLastLocalAdmin
+	}
+	return nil
+}
+
+// userProvider returns the auth provider of id or auth.ErrUserNotFound.
+func userProvider(ctx context.Context, q queryer, id string) (auth.Provider, error) {
+	var provider string
+	err := q.QueryRowContext(ctx, "SELECT auth_provider FROM users WHERE id = ?", id).Scan(&provider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", auth.ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read user provider: %w", err)
+	}
+	return auth.Provider(provider), nil
+}
+
+// countLocalAdmins returns the number of local users with the admin role.
+func countLocalAdmins(ctx context.Context, q queryer) (int, error) {
+	var n int
+	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE role = ? AND auth_provider = ?",
+		string(auth.RoleAdmin), string(auth.ProviderLocal)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count local admins: %w", err)
+	}
+	return n, nil
+}
+
+// CountLocalAdmins returns the number of local users with the admin role.
+func (s *SQLiteStore) CountLocalAdmins(ctx context.Context) (int, error) {
+	return countLocalAdmins(ctx, s.db)
+}
+
+// DeleteLocalNonAdminSessions removes the sessions of local users without the admin
+// role.
+func (s *SQLiteStore) DeleteLocalNonAdminSessions(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id IN
+		(SELECT id FROM users WHERE auth_provider = ? AND role <> ?)`, string(auth.ProviderLocal), string(auth.RoleAdmin))
+	if err != nil {
+		return 0, fmt.Errorf("store: revoke sessions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: revoke sessions: %w", err)
+	}
+	return int(n), nil
+}
+
+// SignInExternalUser finds the user with in.Subject or creates one (in.AutoCreate),
+// applies in.Role with the rules of UpdateUserRole and records the sign-in, in one
+// transaction. A demotion that would leave no admin keeps the stored role and
+// reports RoleKept. The user is looked up by subject only: an existing user with the
+// same name is a conflict (auth.ErrAccountConflict), never a link.
+func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalSignIn) (*auth.ExternalSignInResult, error) {
+	if in == nil || in.Subject == "" || !in.Role.Valid() {
+		return nil, fmt.Errorf("store: external sign-in: %w", auth.ErrInvalidIdentity)
+	}
+	var out *auth.ExternalSignInResult
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		u, err := scanUser(tx.QueryRowContext(ctx, "SELECT "+userColumns+" FROM users WHERE subject = ?", in.Subject))
+		if errors.Is(err, auth.ErrUserNotFound) {
+			if !in.AutoCreate {
+				return auth.ErrUnknownExternalUser
+			}
+			at := in.At
+			u = &auth.User{ID: in.NewUserID, Username: in.Username, Role: in.Role, AuthProvider: auth.ProviderOIDC,
+				Subject: in.Subject, CreatedAt: at, UpdatedAt: at, LastLoginAt: &at}
+			if err = insertUser(ctx, tx, u); err != nil {
+				if errors.Is(err, auth.ErrUserExists) {
+					return auth.ErrAccountConflict
+				}
+				return err
+			}
+			out = &auth.ExternalSignInResult{User: u, Created: true}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if u.AuthProvider != auth.ProviderOIDC {
+			return fmt.Errorf("store: external sign-in: %w", errInconsistentIdentity)
+		}
+		out = &auth.ExternalSignInResult{User: u, RoleFrom: u.Role}
+		if u.Role != in.Role {
+			kept := false
+			if u.Role == auth.RoleAdmin {
+				switch err = refuseLastAdmin(ctx, tx); {
+				case errors.Is(err, auth.ErrLastAdmin):
+					kept = true
+				case err != nil:
+					return err
+				}
+			}
+			if kept {
+				out.RoleKept = true
+			} else {
+				if err = setRole(ctx, tx, u.ID, in.Role, in.At); err != nil {
+					return err
+				}
+				u.Role = in.Role
+			}
+		}
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET updated_at = ?, last_login_at = ? WHERE id = ?",
+			timeKey(in.At), timeKey(in.At), u.ID); err != nil {
+			return err
+		}
+		at := in.At
+		u.UpdatedAt, u.LastLoginAt = at, &at
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // requireAdminRole refuses (with a *auth.ScopeError) when the user actorID no longer
@@ -421,11 +610,13 @@ func scanUser(r rowScanner) (*auth.User, error) {
 func scanUserInto(r rowScanner, u *auth.User) error {
 	var created, updated int64
 	var lastLogin sql.NullInt64
-	var role string
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role); err != nil {
+	var role, provider string
+	var subject sql.NullString
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject); err != nil {
 		return scanRowError("user", err)
 	}
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.Role = fromKey(created), fromKey(updated), nullableKey(lastLogin), auth.Role(role)
+	u.AuthProvider, u.Subject = auth.Provider(provider), subject.String
 	return nil
 }
 

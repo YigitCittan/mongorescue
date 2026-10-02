@@ -38,7 +38,9 @@ type Service struct {
 	absolute   time.Duration
 	// sessionPolicy, when set, supplies the session timeouts for every request.
 	sessionPolicy func() (idle, absolute time.Duration)
-	throttle      *Throttle
+	// oidcPolicy, when set, supplies the single sign-on policy (see WithOIDCPolicy).
+	oidcPolicy func() OIDCPolicy
+	throttle   *Throttle
 
 	// dummyHash is compared against for unknown usernames so that a login takes the
 	// same time whether or not the account exists.
@@ -266,13 +268,16 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 
 // Login verifies credentials and starts a session. All failures return
 // ErrInvalidCredentials, or a *ThrottledError while the (IP, username) pair is locked
-// out or another attempt for it is in progress.
+// out or another attempt for it is in progress. While the password form is limited to
+// local administrators (OIDCPolicy.AdminsOnly), a local user without the admin role
+// gets ErrLocalLoginDisabled, and only once the password matched.
 //
 // The attempt is reserved before the password is checked, so parallel requests cannot
 // exceed the failure budget. Every request that reaches the check performs exactly one
-// bcrypt comparison, against the user's hash or a dummy hash for unknown users, and
-// over-long passwords are rejected before the user is looked up, so timing does not
-// reveal which usernames exist.
+// bcrypt comparison, against the user's hash or a dummy hash for unknown users and
+// single sign-on users (who have no password), and over-long passwords are rejected
+// before the user is looked up, so timing does not reveal which usernames exist or
+// how they sign in.
 func (s *Service) Login(ctx context.Context, clientIP, username, password string) (*LoginResult, error) {
 	attempt, wait := s.throttle.Reserve("login|"+clientIP+"|"+strings.ToLower(username), "ip|"+clientIP)
 	if attempt == nil {
@@ -286,9 +291,11 @@ func (s *Service) Login(ctx context.Context, clientIP, username, password string
 	user, err := s.repo.GetUserByUsername(ctx, username)
 	hash := s.dummyHash
 	switch {
-	case err == nil:
+	case err == nil && user.Local():
 		hash = []byte(user.PasswordHash)
-	case errors.Is(err, ErrUserNotFound):
+	case err == nil, errors.Is(err, ErrUserNotFound):
+		// Unknown users and single sign-on users are compared against the dummy
+		// hash and always fail.
 		user = nil
 	default:
 		attempt.Released()
@@ -305,6 +312,10 @@ func (s *Service) Login(ctx context.Context, clientIP, username, password string
 		return nil, ErrInvalidCredentials
 	}
 	attempt.Succeeded()
+	if user.Role != RoleAdmin && s.OIDC().AdminsOnly() {
+		s.logger.Info("password sign-in refused: limited to local administrators", slog.String("user_id", user.ID))
+		return nil, ErrLocalLoginDisabled
+	}
 
 	now := s.now().UTC()
 	if err := s.repo.RecordLogin(ctx, user.ID, now); err != nil {
@@ -515,7 +526,8 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 
 // DeleteUser removes a user and revokes their sessions and the API keys they created.
 // It needs the admin scope. Users cannot delete themselves, and neither the last
-// user nor the last admin can be deleted (ErrLastUser, ErrLastAdmin).
+// user nor the last admin can be deleted (ErrLastUser, ErrLastAdmin), nor, while
+// single sign-on is enabled, the last local admin (ErrLastLocalAdmin).
 func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) error {
 	if err := actor.Require(ScopeAdmin); err != nil {
 		return err
@@ -523,7 +535,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) e
 	if actor.UserID() == id {
 		return ErrDeleteSelf
 	}
-	if err := s.repo.DeleteUser(ctx, actor.UserID(), id); err != nil {
+	if err := s.repo.DeleteUser(ctx, actor.UserID(), id, s.OIDC().Enabled); err != nil {
 		return err
 	}
 	s.logger.Info("user deleted", slog.String("user_id", id), slog.String("by", actor.UserID()))
@@ -541,9 +553,12 @@ type RoleChange struct {
 // SetUserRole changes the dashboard role of the user id and ends their sessions, so
 // they sign in again under the new role. It needs the admin scope and returns
 // ErrInvalidRole for an unknown role, ErrChangeOwnRole for the actor's own user,
-// ErrUserNotFound, and ErrLastAdmin when it would demote the last admin. The check
-// that the actor is still an admin and the last-admin check run in the same
-// transaction as the change, so two admins demoting each other cannot both succeed.
+// ErrUserNotFound, and ErrLastAdmin when it would demote the last admin (while
+// single sign-on is enabled, ErrLastLocalAdmin for the last local admin). The role
+// of a single sign-on user cannot be changed by hand while group mappings decide it
+// (ErrRoleManagedByProvider). The check that the actor is still an admin and the
+// last-admin checks run in the same transaction as the change, so two admins
+// demoting each other cannot both succeed.
 func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, role Role) (*RoleChange, error) {
 	if err := actor.Require(ScopeAdmin); err != nil {
 		return nil, err
@@ -555,7 +570,17 @@ func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, 
 	if actor.UserID() == id {
 		return nil, ErrChangeOwnRole
 	}
-	from, err := s.repo.UpdateUserRole(ctx, actor.UserID(), id, role, s.now().UTC())
+	policy := s.OIDC()
+	if len(policy.RoleMappings) > 0 {
+		target, getErr := s.repo.GetUser(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if !target.Local() {
+			return nil, ErrRoleManagedByProvider
+		}
+	}
+	from, err := s.repo.UpdateUserRole(ctx, actor.UserID(), id, role, s.now().UTC(), policy.Enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +598,8 @@ func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, 
 // ChangePassword sets a new password for userID. Changing one's own password needs
 // a signed-in session (ErrSessionRequired for API keys) and the current password;
 // changing another user's needs the admin scope. Every other session of the user is
-// revoked; the actor's own session survives a change of their own password.
+// revoked; the actor's own session survives a change of their own password. Single
+// sign-on users have no password: ErrNoPassword.
 func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, current, newPassword string) error {
 	if actor == nil {
 		return ErrUnauthenticated
@@ -590,6 +616,9 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 	user, err := s.repo.GetUser(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if !user.Local() {
+		return ErrNoPassword
 	}
 	if self {
 		attempt, wait := s.throttle.Reserve("password|"+userID, "")
@@ -634,8 +663,9 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 // session, never an API key) and password must be their current password. Wrong
 // passwords count against the same per-user budget as password changes. It returns
 // ErrUnauthenticated without an actor, ErrSessionRequired for API keys and the
-// system, a *ScopeError without admin, ErrCurrentPassword for a wrong password and
-// a *ThrottledError after too many wrong ones.
+// system, a *ScopeError without admin, ErrNoPassword for a single sign-on user,
+// ErrCurrentPassword for a wrong password and a *ThrottledError after too many
+// wrong ones.
 func (s *Service) ConfirmPassword(ctx context.Context, actor *Principal, password string) error {
 	switch {
 	case actor == nil:
@@ -649,6 +679,9 @@ func (s *Service) ConfirmPassword(ctx context.Context, actor *Principal, passwor
 	user, err := s.repo.GetUser(ctx, actor.User.ID)
 	if err != nil {
 		return err
+	}
+	if !user.Local() {
+		return ErrNoPassword
 	}
 	attempt, wait := s.throttle.Reserve("password|"+user.ID, "")
 	if attempt == nil {
@@ -921,5 +954,5 @@ func (s *Service) newUser(username, password string, role Role) (*User, error) {
 		return nil, err
 	}
 	now := s.now().UTC()
-	return &User{ID: id, Username: username, Role: role, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}, nil
+	return &User{ID: id, Username: username, Role: role, AuthProvider: ProviderLocal, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}, nil
 }

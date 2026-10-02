@@ -43,8 +43,14 @@ type Service struct {
 	// material a kit would carry now (see recoverykit.go).
 	kit        recoveryKitState
 	kitCurrent string
-	enc        *encryption.Encryptor
-	dec        *encryption.Decryptor
+	// oidcRoleKept is the state of WarningOIDCRoleKept (see warning.go).
+	oidcRoleKept string
+	enc          *encryption.Encryptor
+	dec          *encryption.Decryptor
+
+	// oidcGuard checks and applies changes of the OIDC section (see OIDCGuard);
+	// guarded by writeMu.
+	oidcGuard OIDCGuard
 }
 
 // Option customises a Service.
@@ -79,6 +85,7 @@ func NewService(ctx context.Context, repo Repository, opts ...Option) (*Service,
 	s.warnState = loadWarningState(values)
 	_, s.warnNotified = values[warningNotifiedKey]
 	s.kit = loadRecoveryKitState(values)
+	s.oidcRoleKept = loadState(values, oidcRoleKeptKey)
 	s.stored = make(map[string]bool, len(values))
 	for k := range values {
 		s.stored[k] = true
@@ -149,9 +156,20 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 	if err = validate(&next, next.Encryption.Passphrase != cur.Encryption.Passphrase); err != nil {
 		return Settings{}, nil, err
 	}
+	oidcChanged := !cur.OIDC.Equal(next.OIDC)
+	if oidcChanged && s.oidcGuard != nil {
+		if err = s.oidcGuard.CheckOIDC(ctx, cur.OIDC, next.OIDC); err != nil {
+			return Settings{}, nil, err
+		}
+	}
 	changed, err := s.commit(ctx, cur, next)
 	if err != nil {
 		return Settings{}, nil, err
+	}
+	if oidcChanged && s.oidcGuard != nil {
+		if err = s.oidcGuard.OIDCChanged(ctx, cur.OIDC, next.OIDC); err != nil {
+			s.logger.Error("could not apply the changed single sign-on settings", slog.Any("error", err))
+		}
 	}
 	if err = s.noteEncryptionChange(ctx, p, next); err != nil {
 		return Settings{}, nil, err
