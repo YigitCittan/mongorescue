@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/verify"
@@ -58,7 +59,7 @@ func (e *Engine) captureManifest(ctx context.Context, uri string, opts models.Ba
 	if err != nil || m == nil {
 		if err != nil {
 			e.logger.Warn("could not capture the backup manifest; restore tests of this backup will not compare counts and indexes",
-				slog.String("database", opts.Database), slog.String("error", redact.Text(err.Error())))
+				logsafe.Attr("database", opts.Database), slog.String("error", redact.Text(err.Error())))
 		}
 		return nil
 	}
@@ -112,11 +113,11 @@ func (e *Engine) verifyAfterUpload(ctx context.Context, opts models.BackupOption
 	switch res.Status {
 	case models.VerificationOK:
 		e.logger.Info("backup archive verified after upload",
-			slog.String("backup_id", record.ID), slog.Int64("bytes", res.Bytes), slog.Bool("decrypted", res.Decrypted))
+			logsafe.Attr("backup_id", record.ID), slog.Int64("bytes", res.Bytes), slog.Bool("decrypted", res.Decrypted))
 		return nil
 	case models.VerificationMismatch:
 		e.logger.Error("backup archive does not match its checksum after upload; deleting it",
-			slog.String("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
+			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
 		e.deleteArtifact(ctx, record.StorageKey)
 		if errors.Is(res.Err, ErrChecksumMismatch) {
 			return fmt.Errorf("verify after upload: %w", res.Err)
@@ -124,7 +125,7 @@ func (e *Engine) verifyAfterUpload(ctx context.Context, opts models.BackupOption
 		return fmt.Errorf("verify after upload: %w: %w", ErrChecksumMismatch, res.Err)
 	default:
 		e.logger.Warn("backup archive could not be verified after upload",
-			slog.String("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
+			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
 		return nil
 	}
 }

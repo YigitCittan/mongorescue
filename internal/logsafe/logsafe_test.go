@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 )
@@ -35,5 +36,12 @@ func TestAttrs(t *testing.T) {
 	}
 	if a := logsafe.Attr("backup_id", "b\r1"); a.Key != "backup_id" || a.Value.String() != "b1" {
 		t.Fatalf("Attr = %v", a)
+	}
+	at := time.Date(2026, 10, 2, 4, 27, 0, 0, time.UTC)
+	if a := logsafe.Time("next_run", &at); a.Key != "next_run" || a.Value.String() != "2026-10-02T04:27:00Z" {
+		t.Fatalf("Time = %v", a)
+	}
+	if a := logsafe.Time("next_run", nil); a.Key != "next_run" || a.Value.String() != "" {
+		t.Fatalf("Time(nil) = %v", a)
 	}
 }

@@ -3,9 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 )
@@ -62,7 +62,7 @@ func notifyStatus(err error) int {
 func (s *Server) writeNotifyError(w http.ResponseWriter, err error) {
 	status := notifyStatus(err)
 	if status == http.StatusInternalServerError {
-		s.logger.Error("notification api error", slog.Any("error", err))
+		s.logger.Error("notification api error", logsafe.Error(err))
 		writeError(w, status, "internal error")
 		return
 	}

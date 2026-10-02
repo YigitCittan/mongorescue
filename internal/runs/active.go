@@ -194,7 +194,7 @@ func (r *Registry) Register(meta Meta) (*Run, error) {
 	if r.logs != nil {
 		w, err := r.logs.Create(meta.ID)
 		if err != nil {
-			r.logger.Warn("cannot write the log of this run", slog.String("run_id", meta.ID), slog.Any("error", err))
+			r.logger.Warn("cannot write the log of this run", logsafe.Attr("run_id", meta.ID), logsafe.Error(err))
 		} else {
 			run.log = w
 		}
@@ -478,7 +478,7 @@ func (run *Run) End() {
 	run.mu.Unlock()
 	if run.log != nil {
 		if err := run.log.Close(); err != nil {
-			run.reg.logger.Warn("failed to complete the log of this run", slog.String("run_id", run.meta.ID), slog.Any("error", err))
+			run.reg.logger.Warn("failed to complete the log of this run", logsafe.Attr("run_id", run.meta.ID), slog.Any("error", err))
 		}
 	}
 	run.reg.mu.Lock()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -395,8 +396,8 @@ func (s *Scheduler) ApplyJobUpdate(job *models.Job, persist func() error) error 
 	}
 	if err := s.registerJobLocked(job); err != nil {
 		s.logger.Error("failed to register job with scheduler",
-			slog.String("job_id", job.ID),
-			slog.Any("error", err),
+			logsafe.Attr("job_id", job.ID),
+			logsafe.Error(err),
 		)
 	}
 	return nil
@@ -436,16 +437,16 @@ func (s *Scheduler) registerJobLocked(job *models.Job) error {
 	job.NextRun = nextRun(job.CronExpression, time.Now())
 	if err := s.metadataStore.UpdateJobRunTimes(s.ctx, job.ID, nil, job.NextRun); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.logger.Error("failed to update job next run metadata",
-			slog.String("job_id", job.ID),
+			logsafe.Attr("job_id", job.ID),
 			slog.Any("error", err),
 		)
 	}
 
 	s.logger.Info("scheduled backup job registered",
-		slog.String("job_id", job.ID),
-		slog.String("database", job.Database),
-		slog.String("cron", job.CronExpression),
-		slog.Any("next_run", job.NextRun),
+		logsafe.Attr("job_id", job.ID),
+		logsafe.Attr("database", job.Database),
+		logsafe.Attr("cron", job.CronExpression),
+		logsafe.Time("next_run", job.NextRun),
 	)
 
 	return nil
@@ -570,7 +571,7 @@ func (s *Scheduler) runScheduled(jobID string) {
 	}
 	if s.paused {
 		s.mu.Unlock()
-		s.logger.Info("skipping scheduled backup: scheduling is paused", slog.String("job_id", jobID))
+		s.logger.Info("skipping scheduled backup: scheduling is paused", logsafe.Attr("job_id", jobID))
 		return
 	}
 	ctx := s.ctx
@@ -585,7 +586,7 @@ func (s *Scheduler) runScheduled(jobID string) {
 func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	job, err := s.metadataStore.GetJob(ctx, jobID)
 	if err != nil {
-		s.logger.Error("cron triggered for missing job", slog.String("job_id", jobID), slog.Any("error", err))
+		s.logger.Error("cron triggered for missing job", logsafe.Attr("job_id", jobID), slog.Any("error", err))
 		return
 	}
 

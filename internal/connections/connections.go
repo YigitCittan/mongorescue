@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -210,7 +211,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	if err := s.repo.SaveConnection(ctx, c); err != nil {
 		return nil, err
 	}
-	s.logger.Info("connection created", slog.String("connection_id", c.ID), slog.String("uri", redact.URI(c.URI)))
+	s.logger.Info("connection created", slog.String("connection_id", c.ID), logsafe.Attr("uri", redact.URI(c.URI)))
 	return c.Redacted(), nil
 }
 
