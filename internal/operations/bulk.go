@@ -137,6 +137,12 @@ type BulkFilter struct {
 	Q string `json:"q,omitempty"`
 	// Enabled keeps scheduled (true) or paused (false) jobs.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Schedule keeps jobs whose cron schedule has this frequency (one of
+	// JobFrequencies, see ScheduleFrequency).
+	Schedule string `json:"schedule,omitempty"`
+	// LastStatus keeps jobs whose newest backup is in this state (one of
+	// JobLastStatuses).
+	LastStatus string `json:"last_status,omitempty"`
 }
 
 // BulkRequest is the body of POST /api/v1/{backups,restores,jobs}/bulk. Exactly one of
@@ -575,7 +581,7 @@ func (s *Service) tooLarge(n int) error {
 var bulkFilterFields = map[BulkResource][]string{
 	BulkBackups:  {"status", "database", "connection_id", "job_id", "trigger", "retry_of", "from", "to", "q"},
 	BulkRestores: {"status", "database", "backup_id", "from", "to", "q"},
-	BulkJobs:     {"database", "connection_id", "q", "enabled"},
+	BulkJobs:     {"database", "connection_id", "q", "enabled", "schedule", "last_status"},
 }
 
 // checkBulkFilter refuses filter fields that do not apply to resource.
@@ -584,6 +590,7 @@ func checkBulkFilter(resource BulkResource, f *BulkFilter) error {
 		"status": f.Status != "", "database": f.Database != "", "connection_id": f.ConnectionID != "",
 		"job_id": f.JobID != "", "trigger": f.Trigger != "", "retry_of": f.RetryOf != "", "backup_id": f.BackupID != "",
 		"from": f.From != "", "to": f.To != "", "q": f.Q != "", "enabled": f.Enabled != nil,
+		"schedule": f.Schedule != "", "last_status": f.LastStatus != "",
 	}
 	allowed := bulkFilterFields[resource]
 	var bad []string
@@ -687,34 +694,37 @@ func (s *Service) filterRestores(ctx context.Context, f *BulkFilter) ([]BulkItem
 
 // filterJobs returns every job matching f, sorted by name.
 func (s *Service) filterJobs(ctx context.Context, f *BulkFilter) ([]BulkItem, error) {
-	if err := checkText(map[string]string{"database": f.Database, "connection_id": f.ConnectionID, "q": f.Q}); err != nil {
-		return nil, err
-	}
-	jobs, err := s.ListJobs(ctx)
+	jobs, err := s.matchingJobs(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	q := strings.ToLower(f.Q)
-	var items []BulkItem
+	if len(jobs) > s.bulkCap {
+		return nil, s.tooLarge(len(jobs))
+	}
+	items := make([]BulkItem, 0, len(jobs))
 	for _, j := range jobs {
-		switch {
-		// A multi-database job matches every database it covers: one it lists, one it
-		// knows, one its patterns match.
-		case f.Database != "" && !j.Covers(f.Database),
-			f.ConnectionID != "" && j.ConnectionID != f.ConnectionID,
-			f.Enabled != nil && j.Enabled != *f.Enabled,
-			q != "" && !strings.Contains(strings.ToLower(j.ID), q) && !strings.Contains(strings.ToLower(j.Name), q) &&
-				!strings.Contains(strings.ToLower(j.Database), q) &&
-				!strings.Contains(strings.ToLower(j.Selection().SearchText()), q) &&
-				!slices.ContainsFunc(j.KnownDatabases, func(db string) bool { return strings.Contains(strings.ToLower(db), q) }):
-			continue
-		}
 		items = append(items, BulkItem{ID: j.ID, Job: j})
 	}
-	if len(items) > s.bulkCap {
-		return nil, s.tooLarge(len(items))
-	}
 	return items, nil
+}
+
+// jobMatches reports whether j passes the job fields of f other than LastStatus
+// (matchingJobs checks that one). q is f.Q in lower case.
+func jobMatches(j *models.Job, f *BulkFilter, q string) bool {
+	switch {
+	// A multi-database job matches every database it covers: one it lists, one it
+	// knows, one its patterns match.
+	case f.Database != "" && !j.Covers(f.Database),
+		f.ConnectionID != "" && j.ConnectionID != f.ConnectionID,
+		f.Enabled != nil && j.Enabled != *f.Enabled,
+		f.Schedule != "" && ScheduleFrequency(j.CronExpression) != f.Schedule,
+		q != "" && !strings.Contains(strings.ToLower(j.ID), q) && !strings.Contains(strings.ToLower(j.Name), q) &&
+			!strings.Contains(strings.ToLower(j.Database), q) &&
+			!strings.Contains(strings.ToLower(j.Selection().SearchText()), q) &&
+			!slices.ContainsFunc(j.KnownDatabases, func(db string) bool { return strings.Contains(strings.ToLower(db), q) }):
+		return false
+	}
+	return true
 }
 
 // backupsByID loads the backups ids name, in order; missing ones have no record.
