@@ -1665,6 +1665,29 @@
               <span class="form-hint" id="restore-drop-hint" data-i18n="modal_restore.drop_hint">Deletes existing collections in the target database before importing.</span>
             </span>
           </label>
+
+          <label class="check" for="restore-verify-restore">
+            <input type="checkbox" id="restore-verify-restore" checked>
+            <span class="check-text">
+              <span class="check-title" data-i18n="restore_checks.verify_restore_title">Verify the restored data</span>
+              <span class="form-hint" data-i18n="restore_checks.verify_restore_hint">After the restore, compares the document count and the indexes of every restored collection with the backup's manifest.</span>
+            </span>
+          </label>
+
+          <section class="preflight" id="restore-preflight" aria-labelledby="restore-preflight-title" hidden>
+            <div class="preflight-head">
+              <h4 class="detail-heading" id="restore-preflight-title" data-i18n="restore_checks.preflight_title">Preflight</h4>
+              <span class="preflight-summary" id="restore-preflight-summary" role="status" aria-live="polite"></span>
+            </div>
+            <ul class="preflight-list" id="restore-preflight-list"></ul>
+            <label class="check check-danger" for="restore-force" id="restore-force-wrap" hidden>
+              <input type="checkbox" id="restore-force">
+              <span class="check-text">
+                <span class="check-title" data-i18n="restore_checks.force_title">Restore anyway</span>
+                <span class="form-hint" data-i18n="restore_checks.force_hint">A preflight check failed. The restore may fail or harm the target; start it only if you know why the check failed.</span>
+              </span>
+            </label>
+          </section>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-restore" data-i18n="actions.cancel">Cancel</button>
@@ -2041,6 +2064,14 @@
           <h4 class="detail-heading" id="restore-details-h-warning" data-i18n="run.warning">Warning</h4>
           <pre class="error-full detail-warning" id="restore-details-warning-text"></pre>
         </section>
+        <section class="detail-section" id="restore-details-verification" aria-labelledby="restore-details-h-verification" hidden>
+          <h4 class="detail-heading" id="restore-details-h-verification" data-i18n="restore_checks.verification">Verification</h4>
+          <pre class="error-full" id="restore-details-verification-text"></pre>
+        </section>
+        <section class="detail-section" id="restore-details-preflight" aria-labelledby="restore-details-h-preflight" hidden>
+          <h4 class="detail-heading" id="restore-details-h-preflight" data-i18n="restore_checks.preflight_title">Preflight</h4>
+          <ul class="preflight-list" id="restore-details-preflight-list"></ul>
+        </section>
         <section class="detail-section" id="restore-details-error" aria-labelledby="restore-details-h-error" hidden>
           <h4 class="detail-heading" id="restore-details-h-error" data-i18n="backup_details.error">Error</h4>
           <pre class="error-full detail-error" id="restore-details-error-text"></pre>
@@ -2406,6 +2437,7 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="storage.drift_detected"><span data-i18n="notify.events.storage_drift_detected">Storage drift detected</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="retention.deleted"><span data-i18n="notify.events.retention_deleted">Backup deleted by retention</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="metadata_backup.failed"><span data-i18n="notify.events.metadata_backup_failed">Metadata backup failed</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.verification_failed"><span data-i18n="restore_checks.event_restore_verification_failed">Restore verification failed</span></label>
             </div>
           </fieldset>
           <div class="form-group">

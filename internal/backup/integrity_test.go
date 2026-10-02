@@ -133,7 +133,7 @@ func (m *manifestSource) capture(_ context.Context, _, database string) (*models
 		{Name: "orders", DocumentsMin: orders, DocumentsMax: orders, Indexes: []models.IndexSpec{{Name: "_id_", Keys: "_id:1"}}},
 		{Name: "logs", DocumentsMin: 99, DocumentsMax: 99},
 		{Name: "users", DocumentsMin: 3, DocumentsMax: 3},
-	}}, nil
+	}, ServerVersion: "8.0.4"}, nil
 }
 
 func TestManifestCapture(t *testing.T) {
@@ -148,6 +148,9 @@ func TestManifestCapture(t *testing.T) {
 	}
 	if rec.Manifest.Collection("logs") != nil {
 		t.Fatal("excluded collections must not be in the manifest")
+	}
+	if rec.ServerVersion != "8.0.4" {
+		t.Fatalf("server_version = %q; want the version read with the manifest", rec.ServerVersion)
 	}
 	orders := rec.Manifest.Collection("orders")
 	if orders == nil || orders.DocumentsMin != 11 || orders.DocumentsMax != 12 || len(orders.Indexes) != 1 {

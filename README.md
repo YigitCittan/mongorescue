@@ -50,6 +50,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - A dashboard overview of the last 30 days (success rate, storage growth), the next 24 hours of scheduled runs and what needs attention; a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>), keyboard shortcuts (<kbd>?</kbd> lists them) and shareable links to any backup, job or restore (`#/backups/<id>`)
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
+- A preflight before every restore (target reachable, server versions, clone name, privileges, free disk space, the collections an in-place restore replaces) that refuses a restore bound to fail unless forced, and an optional comparison of the restored database with the backup's manifest ([api](docs/api.md#restore-preflight))
 - Restore the whole database or only selected collections, picked from a list read from the backup's archive header
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules

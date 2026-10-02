@@ -17,8 +17,8 @@ import (
 )
 
 // Manifest returns the manifest of database: every collection (views and system
-// collections excluded) with its estimated document count and index
-// specifications. The count is metadata-based (estimatedDocumentCount), so it is
+// collections excluded) with its estimated document count and index specifications,
+// and the server's version (buildInfo). The count is metadata-based (estimatedDocumentCount), so it is
 // cheap on large collections.
 func (p *Prober) Manifest(ctx context.Context, uri, database string) (*models.Manifest, error) {
 	var out *models.Manifest
@@ -28,7 +28,7 @@ func (p *Prober) Manifest(ctx context.Context, uri, database string) (*models.Ma
 		if err != nil {
 			return fmt.Errorf("listCollections: %w", err)
 		}
-		m := &models.Manifest{CapturedAt: time.Now().UTC(), Collections: make([]models.CollectionManifest, 0, len(specs))}
+		m := &models.Manifest{CapturedAt: time.Now().UTC(), Collections: make([]models.CollectionManifest, 0, len(specs)), ServerVersion: serverVersion(ctx, c)}
 		for _, s := range specs {
 			if s.Type != "collection" || strings.HasPrefix(s.Name, "system.") {
 				continue
@@ -49,6 +49,18 @@ func (p *Prober) Manifest(ctx context.Context, uri, database string) (*models.Ma
 		return nil
 	})
 	return out, err
+}
+
+// serverVersion returns the server's buildInfo version, or "" when it cannot be read
+// (a manifest is captured without it then).
+func serverVersion(ctx context.Context, c *mongo.Client) string {
+	var build struct {
+		Version string `bson:"version"`
+	}
+	if err := c.Database("admin").RunCommand(ctx, bson.D{{Key: "buildInfo", Value: 1}}).Decode(&build); err != nil {
+		return ""
+	}
+	return build.Version
 }
 
 // indexDoc is the part of a listIndexes document a manifest records.
@@ -169,24 +181,8 @@ func userPrivileges(ctx context.Context, c *mongo.Client) ([]privilege, int, err
 // missingActions returns the restore test actions privs do not grant on every
 // collection of database.
 func missingActions(privs []privilege, database string) []string {
-	granted := map[string]bool{}
-	for _, p := range privs {
-		r := p.Resource
-		covers := r.AnyResource ||
-			(r.DB != nil && r.Collection != nil && *r.Collection == "" && (*r.DB == "" || *r.DB == database))
-		if !covers {
-			continue
-		}
-		for _, a := range p.Actions {
-			granted[a] = true
-		}
-	}
-	var missing []string
-	for _, a := range restoreTestActions {
-		if !granted[a] {
-			missing = append(missing, a)
-		}
-	}
+	missing := missingFrom(privs, database, restoreTestActions)
+	granted := grantedOn(privs, database)
 	if !granted["dropDatabase"] && !granted["dropCollection"] {
 		missing = append(missing, "dropDatabase")
 	}

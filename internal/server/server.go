@@ -305,6 +305,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/restores", s.handleListRestores)
 	mux.HandleFunc("GET /api/v1/restores/databases", s.handleRestoreDatabases)
 	mux.HandleFunc("POST /api/v1/restore", s.handleRunRestore)
+	mux.HandleFunc("POST /api/v1/restores/preflight", s.handleRestorePreflight)
 
 	// Run control: cancel, logs and live progress
 	s.registerRunRoutes(mux)
@@ -357,10 +358,17 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
+	writeErrorData(w, status, message, nil)
+}
+
+// writeErrorData writes an error response that also carries data (e.g. the checks of
+// a preflight that refused a restore).
+func writeErrorData(w http.ResponseWriter, status int, message string, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(apiResponse{
 		Success: false,
+		Data:    data,
 		Error:   message,
 	})
 }
@@ -639,6 +647,12 @@ func (s *Server) handleBackupCollections(w http.ResponseWriter, r *http.Request)
 // failures are shown as they are (they never carry credentials); anything else is
 // logged and answered with a generic 500.
 func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
+	// A refusing preflight answers 409 with its checks, so clients can show them.
+	var preflight *operations.PreflightError
+	if errors.As(err, &preflight) {
+		writeErrorData(w, http.StatusConflict, err.Error(), preflight.Result)
+		return
+	}
 	switch {
 	// Retry errors come first: they also wrap the connection and target sentinels.
 	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned):
@@ -697,6 +711,22 @@ func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, record)
+}
+
+// handleRestorePreflight runs the checks of a restore request (the body of POST
+// /api/v1/restore) without starting anything and answers the go/no-go summary.
+func (s *Server) handleRestorePreflight(w http.ResponseWriter, r *http.Request) {
+	var req models.RestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request json")
+		return
+	}
+	res, err := s.ops.PreflightRestore(r.Context(), req)
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // currentSettings returns the live settings, or the defaults without a settings service.

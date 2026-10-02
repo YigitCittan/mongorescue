@@ -574,15 +574,55 @@ function renderRestoreDetails() {
     row(t("run.cancelled_by"), [r.cancelled_by || "", absoluteWithRelative(r.cancelled_at)].filter(Boolean).join(" · "));
   }
 
+  const v = r.verification;
+  if (v && v.status) {
+    row(t("restore_checks.verification"), htmlNode(restoreVerificationBadge(v)));
+  }
+  if (r.preflight && Array.isArray(r.preflight.checks)) {
+    row(t("restore_checks.preflight_title"), htmlNode(restorePreflightBadge(r)));
+  }
+
   const warning = document.getElementById("restore-details-warning");
   warning.hidden = !r.warning;
   setText("restore-details-warning-text", r.warning || "");
+  // Mismatches and notes of the comparison with the backup's manifest.
+  const lines = v ? [...(v.mismatches || []), ...(v.notes || [])] : [];
+  document.getElementById("restore-details-verification").hidden = lines.length === 0;
+  setText("restore-details-verification-text", lines.join("\n"));
+  // The checks that ran before the restore started.
+  const preflight = document.getElementById("restore-details-preflight");
+  const checks = r.preflight && Array.isArray(r.preflight.checks) ? r.preflight.checks : [];
+  preflight.hidden = checks.length === 0;
+  fillPreflightList(document.getElementById("restore-details-preflight-list"), checks);
   const errorBox = document.getElementById("restore-details-error");
   setI18nText("restore-details-h-error", r.status === "cancelled" ? "run.cancel_note" : "backup_details.error");
   errorBox.hidden = !r.error_message;
   setText("restore-details-error-text", r.error_message || "");
 
   renderRunPanel("restore", "restore", r);
+}
+
+// The badge of a restore's verification against the backup's manifest.
+function restoreVerificationBadge(v) {
+  switch (v.status) {
+    case "passed":
+      return statusBadge("success", tf("restore_checks.verification_passed", { n: Number(v.collections) || 0 }));
+    case "failed":
+      return statusBadge("danger", tf("restore_checks.verification_failed", { n: (v.mismatches || []).length }));
+    default:
+      return statusBadge("neutral", t("restore_checks.verification_skipped"));
+  }
+}
+
+// The badge of the preflight a restore started with: passed, with warnings, or
+// forced past a failed check.
+function restorePreflightBadge(r) {
+  const checks = r.preflight.checks || [];
+  const failed = checks.filter(c => c.status === "fail").length;
+  const warned = checks.filter(c => c.status === "warn").length;
+  if (failed) return statusBadge("danger", r.forced ? t("restore_checks.forced") : tf("restore_checks.preflight_blocked", { n: failed }));
+  if (warned) return statusBadge("warn", tf("restore_checks.preflight_ready_warn", { n: warned }));
+  return statusBadge("success", t("restore_checks.preflight_ready"));
 }
 
 // Extra rows of the backup details dialog for a cancelled backup; its message is

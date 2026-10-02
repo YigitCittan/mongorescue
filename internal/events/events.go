@@ -73,6 +73,10 @@ const (
 	// MetadataBackupFailed is emitted when a snapshot of MongoRescue's own metadata
 	// database could not be written to its storage target (see internal/metabackup).
 	MetadataBackupFailed EventType = "metadata_backup.failed"
+	// RestoreVerificationFailed is emitted after restore.succeeded when the restored
+	// database did not match the backup's manifest (RestoreRequest.VerifyRestore). The
+	// restore stays completed, with a warning; Event.Detail names the first mismatch.
+	RestoreVerificationFailed EventType = "restore.verification_failed"
 )
 
 // Sources of verification events.
@@ -114,7 +118,7 @@ func (t EventType) Broadcast() bool {
 var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
-	JobDatabasesAdded, MetadataBackupFailed,
+	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -138,7 +142,8 @@ func (t EventType) Subscribable() bool {
 // Failed reports whether t describes a failed operation.
 func (t EventType) Failed() bool {
 	switch t {
-	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed:
+	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
+		RestoreVerificationFailed:
 		return true
 	default:
 		return false

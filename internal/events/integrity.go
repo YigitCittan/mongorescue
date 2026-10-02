@@ -69,6 +69,38 @@ func RestoreTestEvent(r *models.RestoreTestResult) Event {
 	return e
 }
 
+// RestoreVerificationEvent builds a restore.verification_failed event from a restore
+// whose verification failed. ok is false for any other restore (no verification, or
+// one that passed or was skipped).
+func RestoreVerificationEvent(rec *models.RestoreRecord) (Event, bool) {
+	if rec == nil || rec.Verification == nil || rec.Verification.Status != models.RestoreVerificationFailed {
+		return Event{}, false
+	}
+	v := rec.Verification
+	e := Event{
+		Type:         RestoreVerificationFailed,
+		Time:         v.CheckedAt.UTC(),
+		BackupID:     rec.BackupID,
+		RestoreID:    rec.ID,
+		Database:     rec.TargetDatabase,
+		Status:       string(rec.Status),
+		Verification: string(v.Status),
+		Duration:     secondsToDuration(rec.DurationSeconds),
+	}
+	if v.CheckedAt.IsZero() {
+		e.Time = time.Now().UTC()
+	}
+	msg := fmt.Sprintf("%d mismatch(es) with the backup's manifest", len(v.Mismatches))
+	if len(v.Mismatches) > 0 {
+		e.Detail = redact.Text(v.Mismatches[0])
+		if len(v.Mismatches) > 1 {
+			e.Detail += fmt.Sprintf(" (+%d more)", len(v.Mismatches)-1)
+		}
+	}
+	e.Error = failureText(msg, nil)
+	return e, true
+}
+
 // DriftEvent builds a storage.drift_detected event for a storage scan of target
 // targetID that found orphans orphan archives and missing missing ones.
 func DriftEvent(targetID, targetName string, orphans, missing int, source string, at time.Time) Event {

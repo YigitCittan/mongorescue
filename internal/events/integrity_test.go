@@ -49,3 +49,29 @@ func TestRestoreTestDriftAndRetentionEvents(t *testing.T) {
 		t.Fatalf("retention = %+v", r)
 	}
 }
+
+func TestRestoreVerificationEvent(t *testing.T) {
+	for _, rec := range []*models.RestoreRecord{
+		nil,
+		{ID: "r"},
+		{ID: "r", Verification: &models.RestoreVerification{Status: models.RestoreVerificationPassed}},
+		{ID: "r", Verification: &models.RestoreVerification{Status: models.RestoreVerificationSkipped}},
+	} {
+		if _, ok := RestoreVerificationEvent(rec); ok {
+			t.Fatalf("event for %+v", rec)
+		}
+	}
+	at := time.Unix(1_790_000_000, 0).UTC()
+	e, ok := RestoreVerificationEvent(&models.RestoreRecord{ID: "rst_1", BackupID: "bkp_1", TargetDatabase: "shop_rescue", Status: models.RestoreStatusCompleted,
+		Verification: &models.RestoreVerification{Status: models.RestoreVerificationFailed, CheckedAt: at,
+			Mismatches: []string{"collection orders: 3 documents restored, 4 expected", "collection users is missing from the restored copy"}}})
+	if !ok || e.Type != RestoreVerificationFailed || !e.Time.Equal(at) || e.RestoreID != "rst_1" || e.BackupID != "bkp_1" || e.Database != "shop_rescue" {
+		t.Fatalf("event = %+v", e)
+	}
+	if !strings.Contains(e.Detail, "orders") || !strings.Contains(e.Detail, "+1 more") || !strings.Contains(e.Error, "2 mismatch") {
+		t.Fatalf("event detail/error = %q / %q", e.Detail, e.Error)
+	}
+	if !e.Type.Subscribable() || !e.Type.Failed() {
+		t.Fatal("restore.verification_failed must be a subscribable failure")
+	}
+}

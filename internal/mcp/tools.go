@@ -170,6 +170,7 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrNotRunning),
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
 		errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
+		errors.Is(err, operations.ErrPreflightFailed),
 		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),
 		errors.Is(err, operations.ErrUnavailable), errors.Is(err, integrity.ErrNotFound),
 		errors.Is(err, integrity.ErrNotVerifiable):
@@ -324,8 +325,10 @@ type backupStarted struct {
 }
 
 type restoreStarted struct {
-	Restore  *models.RestoreRecord `json:"restore"`
-	NextStep string                `json:"next_step"`
+	Restore *models.RestoreRecord `json:"restore"`
+	// Preflight is the go/no-go summary of the checks run before the restore started.
+	Preflight *models.PreflightResult `json:"preflight,omitempty"`
+	NextStep  string                  `json:"next_step"`
 }
 
 // schemaFor infers the input schema of T and lets tweak add constraints. Optional
@@ -504,7 +507,9 @@ func (s *Server) registerTools() {
 		Description: "Restore a backup into a NEW database named <db>_rescue_<timestamp> (a safe clone); existing data is never overwritten. " +
 			"Returns immediately with the restore record (status in_progress); poll get_restore until completed or failed. " +
 			"In-place restores are not available through MCP. Operator keys restore into the backup's own connection only; " +
-			"target_connection_id (another server) needs an admin key.",
+			"target_connection_id (another server) needs an admin key. A preflight checks the target first (connection, server " +
+			"version, clone name, privileges, free disk space): its result is in the output, and a failed check refuses the restore " +
+			"with the reasons.",
 		Annotations: additive("Restore to a safe clone"),
 		InputSchema: schemaFor[restoreInput](func(p map[string]*jsonschema.Schema) {
 			limitIDs(p, "backup_id", "target_connection_id")
@@ -889,6 +894,24 @@ func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restore
 		return restoreStarted{}, "", err
 	}
 	next := fmt.Sprintf("poll get_restore with id %q until status is completed or failed", rec.ID)
-	return restoreStarted{Restore: rec, NextStep: next},
-		fmt.Sprintf("Restore %s of backup %s into the new database %s started; %s.", idText(rec.ID), idText(rec.BackupID), quoted(rec.TargetDatabase), next), nil
+	return restoreStarted{Restore: rec, Preflight: rec.Preflight, NextStep: next},
+		fmt.Sprintf("Restore %s of backup %s into the new database %s started%s; %s.", idText(rec.ID), idText(rec.BackupID), quoted(rec.TargetDatabase),
+			preflightSummary(rec.Preflight), next), nil
+}
+
+// preflightSummary describes the warnings of a restore's preflight for the summary
+// line (the messages never contain credentials).
+func preflightSummary(p *models.PreflightResult) string {
+	if p == nil {
+		return ""
+	}
+	warnings := p.Warnings()
+	if len(warnings) == 0 {
+		return " (preflight passed)"
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, c := range warnings {
+		parts = append(parts, c.ID+": "+c.Message)
+	}
+	return fmt.Sprintf(" (preflight: %d warning(s): %s)", len(warnings), strings.Join(parts, "; "))
 }

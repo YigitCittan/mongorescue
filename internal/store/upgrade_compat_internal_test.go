@@ -672,6 +672,37 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 16,
+		seed: func(t *testing.T, f *compatFixture) {
+			verification := map[string]any{"status": "failed", "mismatches": []string{"collection orders: 3 documents restored, 4 expected"},
+				"collections": 2, "checked_at": rfc(21 * time.Hour)}
+			f.exec(t, `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, phases, verification, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"rst_v16", "bkp_v15", "shop", "shop_rescue_v16", "completed", ns(20*time.Hour), "{}", jsonDoc(t, verification), jsonDoc(t, map[string]any{
+					"id": "rst_v16", "backup_id": "bkp_v15", "source_database": "shop", "target_database": "shop_rescue_v16",
+					"status": "completed", "started_at": rfc(20 * time.Hour), "forced": true, "verification": verification,
+					"preflight": map[string]any{"ok": false, "checks": []map[string]any{{"id": "disk_space", "status": "fail", "message": "too small"}}},
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			rec, err := s.GetRestoreRecord(ctx, "rst_v16")
+			if err != nil {
+				t.Fatalf("rst_v16: %v", err)
+			}
+			if v := rec.Verification; v == nil || v.Status != models.RestoreVerificationFailed || len(v.Mismatches) != 1 || v.Collections != 2 {
+				t.Errorf("rst_v16 verification = %+v", rec.Verification)
+			}
+			if !rec.Forced || rec.Preflight == nil || rec.Preflight.OK || rec.Preflight.Check(models.PreflightCheckDiskSpace) == nil {
+				t.Errorf("rst_v16 preflight = %+v, forced %v", rec.Preflight, rec.Forced)
+			}
+			// Restores written before 0016 have no verification.
+			var n int
+			if err = s.db.QueryRow("SELECT COUNT(*) FROM restores WHERE verification IS NOT NULL AND id <> 'rst_v16'").Scan(&n); err != nil || n != 0 {
+				t.Errorf("older restores with a verification: %d, %v", n, err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the
