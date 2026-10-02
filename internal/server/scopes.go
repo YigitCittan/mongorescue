@@ -62,21 +62,28 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/stats/history":    auth.ScopeRead,
 	"GET /api/v1/schedule/preview": auth.ScopeRead,
 
-	"GET /api/v1/jobs":                     auth.ScopeRead,
-	"POST /api/v1/jobs":                    auth.ScopeAdmin,
-	"GET /api/v1/jobs/{id}":                auth.ScopeRead,
-	"PUT /api/v1/jobs/{id}":                auth.ScopeAdmin,
-	"DELETE /api/v1/jobs/{id}":             auth.ScopeAdmin,
-	"POST /api/v1/jobs/{id}/run":           auth.ScopeOperator,
-	"GET /api/v1/backups":                  auth.ScopeRead,
-	"GET /api/v1/backups/databases":        auth.ScopeRead,
-	"POST /api/v1/backups":                 auth.ScopeOperator,
-	"DELETE /api/v1/backups/{id}":          auth.ScopeAdmin,
-	"POST /api/v1/backups/{id}/retry":      auth.ScopeOperator,
-	"GET /api/v1/backups/{id}/collections": auth.ScopeRead,
-	"GET /api/v1/restores":                 auth.ScopeRead,
-	"GET /api/v1/restores/databases":       auth.ScopeRead,
-	"POST /api/v1/restore":                 auth.ScopeOperator,
+	"GET /api/v1/jobs":           auth.ScopeRead,
+	"POST /api/v1/jobs":          auth.ScopeAdmin,
+	"GET /api/v1/jobs/{id}":      auth.ScopeRead,
+	"PUT /api/v1/jobs/{id}":      auth.ScopeAdmin,
+	"DELETE /api/v1/jobs/{id}":   auth.ScopeAdmin,
+	"POST /api/v1/jobs/{id}/run": auth.ScopeOperator,
+	// Multi-database jobs: previewing a selection lists the connection's database
+	// names (like GET /api/v1/connections/{id}/databases, read); stopping a job's
+	// run is cancelling its backups (operator, like POST /api/v1/backups/{id}/cancel).
+	"GET /api/v1/jobs/{id}/databases/preview": auth.ScopeRead,
+	"GET /api/v1/jobs/databases/preview":      auth.ScopeRead,
+	"GET /api/v1/jobs/{id}/runs":              auth.ScopeRead,
+	"POST /api/v1/jobs/{id}/cancel":           auth.ScopeOperator,
+	"GET /api/v1/backups":                     auth.ScopeRead,
+	"GET /api/v1/backups/databases":           auth.ScopeRead,
+	"POST /api/v1/backups":                    auth.ScopeOperator,
+	"DELETE /api/v1/backups/{id}":             auth.ScopeAdmin,
+	"POST /api/v1/backups/{id}/retry":         auth.ScopeOperator,
+	"GET /api/v1/backups/{id}/collections":    auth.ScopeRead,
+	"GET /api/v1/restores":                    auth.ScopeRead,
+	"GET /api/v1/restores/databases":          auth.ScopeRead,
+	"POST /api/v1/restore":                    auth.ScopeOperator,
 
 	// Run control. Cancelling an in-place restore needs admin (checked by the
 	// operations service, which knows the restore).

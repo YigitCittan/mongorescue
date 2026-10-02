@@ -344,6 +344,20 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithRetentionLog(metaStore),
 		scheduler.WithAuditor(auditSvc),
 		scheduler.WithAfterBackup(integritySvc.AfterBackup),
+		scheduler.WithAfterRun(integritySvc.AfterRun),
+		// Multi-database jobs resolve their selection against the connection's
+		// databases (system ones included; selections exclude them themselves).
+		scheduler.WithDatabaseLister(func(ctx context.Context, connectionID string) ([]string, error) {
+			dbs, err := connSvc.Databases(ctx, connectionID, true)
+			if err != nil {
+				return nil, err
+			}
+			names := make([]string, len(dbs))
+			for i, d := range dbs {
+				names[i] = d.Name
+			}
+			return names, nil
+		}),
 	)
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 

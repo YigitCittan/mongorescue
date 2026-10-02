@@ -238,9 +238,11 @@ func (it BulkItem) found() bool {
 // BulkRun is the state one bulk operation shares between its items (such as the
 // protected backups or the archive reference counts), filled by the actions.
 type BulkRun struct {
-	// lastGood maps job IDs to their newest completed backup.
-	lastGood map[string]*models.BackupRecord
-	// lastVerified maps job IDs to their newest verified completed backup.
+	// lastGood maps job and database keys (jobDatabaseKey) to the ID of their newest
+	// completed backup.
+	lastGood map[string]string
+	// lastVerified maps job and database keys to their newest verified completed
+	// backup.
 	lastVerified map[string]string
 	// note is the request's pin note.
 	note string
@@ -779,35 +781,48 @@ func (s *Service) failed(err error) BulkItemResult {
 	return BulkItemResult{Error: "internal error (see the server log)"}
 }
 
-// lastVerifiedBackups maps the jobs of items to their newest completed backup whose
-// archive passed verification. Bulk deletes keep it (retention keeps it too).
-func (s *Service) lastVerifiedBackups(ctx context.Context, items []BulkItem) (map[string]string, error) {
-	out := map[string]string{}
+// jobDatabaseKey is the key of b's job and database in the protection maps: a job's
+// protections apply to each of its databases separately.
+func jobDatabaseKey(b *models.BackupRecord) string {
+	return b.JobID + "\x00" + b.Database
+}
+
+// protectedBackups maps the job and database of every job backup of items
+// (jobDatabaseKey) to its newest completed backup (lastGood) and its newest
+// completed backup whose archive passed verification (lastVerified). Bulk deletes
+// keep both (retention keeps them too).
+func (s *Service) protectedBackups(ctx context.Context, items []BulkItem) (lastGood, lastVerified map[string]string, err error) {
+	lastGood, lastVerified = map[string]string{}, map[string]string{}
 	seen := map[string]bool{}
 	for _, it := range items {
-		if it.Backup == nil || it.Backup.JobID == "" || seen[it.Backup.JobID] {
+		if it.Backup == nil || it.Backup.JobID == "" || seen[jobDatabaseKey(it.Backup)] {
 			continue
 		}
-		jobID := it.Backup.JobID
-		seen[jobID] = true
-		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: jobID, Status: models.StatusCompleted})
+		key := jobDatabaseKey(it.Backup)
+		seen[key] = true
+		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{
+			JobID: it.Backup.JobID, Database: it.Backup.Database, Status: models.StatusCompleted,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("load the last verified backups: %w", err)
+			return nil, nil, fmt.Errorf("load the last good and verified backups: %w", err)
 		}
 		// Newest first.
-		for _, row := range page.Rows {
+		for i, row := range page.Rows {
+			if i == 0 {
+				lastGood[key] = row.Record.ID
+			}
 			if row.Record.Verification == models.VerificationOK {
-				out[jobID] = row.Record.ID
+				lastVerified[key] = row.Record.ID
 				break
 			}
 		}
 	}
-	return out, nil
+	return lastGood, lastVerified, nil
 }
 
 // deleteProtection returns why b, as stored now, must not be deleted in bulk, or nil:
-// it is running or pinned, the newest completed backup of its job, or the newest
-// verified one. It reads the store, so callers holding b's deletion lock decide on
+// it is running or pinned, the newest completed backup of its job and database, or
+// the newest verified one. It reads the store, so callers holding b's deletion lock decide on
 // the current state.
 func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, jobName string) (*BulkSkip, error) {
 	switch {
@@ -821,7 +836,7 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 	if jobName == "" {
 		jobName = b.JobID
 	}
-	newest, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Status: models.StatusCompleted, Limit: 1})
+	newest, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, Limit: 1})
 	if err != nil {
 		return nil, fmt.Errorf("load the job's last good backup: %w", err)
 	}
@@ -832,7 +847,7 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 		return nil, nil
 	}
 	// Protected unless a newer completed backup of the job is verified too.
-	newer, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Status: models.StatusCompleted, From: b.StartedAt})
+	newer, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, From: b.StartedAt})
 	if err != nil {
 		return nil, fmt.Errorf("load the job's verified backups: %w", err)
 	}
@@ -848,17 +863,13 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 // single-item routes (see internal/server/scopes.go).
 func (s *Service) registerBulkActions() {
 	// Backups: delete, like DELETE /api/v1/backups/{id} (admin). Running and pinned
-	// backups, the newest completed backup of every job and the job's last verified
-	// backup (retention's floor) are never deleted in bulk.
+	// backups, the newest completed backup of every database of every job and its
+	// last verified backup (retention's floor) are never deleted in bulk.
 	s.RegisterBulkAction(BulkAction{
 		Resource: BulkBackups, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true,
 		Prepare: func(ctx context.Context, s *Service, run *BulkRun, items []BulkItem) error {
-			latest, err := s.cfg.Store.LatestJobBackups(ctx, models.StatusCompleted)
-			if err != nil {
-				return fmt.Errorf("load the last good backups: %w", err)
-			}
-			run.lastGood = latest
-			if run.lastVerified, err = s.lastVerifiedBackups(ctx, items); err != nil {
+			var err error
+			if run.lastGood, run.lastVerified, err = s.protectedBackups(ctx, items); err != nil {
 				return err
 			}
 			run.jobNames = map[string]string{}
@@ -883,10 +894,10 @@ func (s *Service) registerBulkActions() {
 			if name == "" {
 				name = b.JobID
 			}
-			if last := run.lastGood[b.JobID]; b.JobID != "" && last != nil && last.ID == b.ID {
+			if b.JobID != "" && run.lastGood[jobDatabaseKey(b)] == b.ID {
 				return &BulkSkip{Reason: SkipLastGoodBackup, Params: map[string]string{"job": name}, Detail: "last successful backup of job " + name}
 			}
-			if b.JobID != "" && run.lastVerified[b.JobID] == b.ID {
+			if b.JobID != "" && run.lastVerified[jobDatabaseKey(b)] == b.ID {
 				return &BulkSkip{Reason: SkipLastVerified, Params: map[string]string{"job": name}, Detail: "last verified backup of job " + name}
 			}
 			return nil

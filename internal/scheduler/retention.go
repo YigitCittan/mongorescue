@@ -61,6 +61,25 @@ type RetentionPlan struct {
 	Protected []ProtectedBackup `json:"protected"`
 	// Considered counts the completed scheduled backups the policy applies to.
 	Considered int `json:"considered"`
+	// Databases breaks the plan down per database, sorted by name: a job's policy
+	// applies to each of its databases separately.
+	Databases []DatabaseRetention `json:"databases"`
+}
+
+// DatabaseRetention is the part of a retention plan that concerns one database.
+type DatabaseRetention struct {
+	// Database is the database name.
+	Database string `json:"database"`
+	// Considered counts its completed scheduled backups.
+	Considered int `json:"considered"`
+	// Delete counts the ones the policy deletes.
+	Delete int `json:"delete"`
+	// Protected counts the ones a rule selects but that are kept.
+	Protected int `json:"protected"`
+	// Kept counts the ones that stay.
+	Kept int `json:"kept"`
+	// LastGood is the newest completed backup, which is always kept.
+	LastGood string `json:"last_good,omitempty"`
 }
 
 // PlanRetention decides which of records a policy of retentionDays and
@@ -69,23 +88,53 @@ type RetentionPlan struct {
 //
 // Only completed scheduled backups (models.TriggerScheduled, see
 // BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups
-// are never pruned automatically. Floors protect the scheduled ones: the
-// max(retentionCount, 1) most recent are never deleted (by either rule), count-based
-// retention never deletes a backup younger than MinCountPruneAge, pinned backups are
-// never deleted, and neither is the newest backup whose archive passed verification.
+// are never pruned automatically. The policy applies to every database separately
+// (a multi-database job keeps N backups of each of its databases), and so do the
+// floors that protect the scheduled ones: the max(retentionCount, 1) most recent of
+// each database are never deleted (by either rule), so a database whose backup
+// failed today keeps its last good one; count-based retention never deletes a
+// backup younger than MinCountPruneAge, pinned backups are never deleted, and
+// neither is the newest backup of each database whose archive passed verification.
 // Callers pass the records of one job (see JobRetentionHistory).
 func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*models.BackupRecord) RetentionPlan {
-	plan := RetentionPlan{Delete: []RetentionDecision{}, Protected: []ProtectedBackup{}}
+	plan := RetentionPlan{Delete: []RetentionDecision{}, Protected: []ProtectedBackup{}, Databases: []DatabaseRetention{}}
 	if retentionDays <= 0 && retentionCount <= 0 {
 		return plan
 	}
-	var successful []*models.BackupRecord
+	byDatabase := map[string][]*models.BackupRecord{}
 	for _, r := range records {
 		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled {
-			successful = append(successful, r)
+			byDatabase[r.Database] = append(byDatabase[r.Database], r)
 		}
 	}
-	plan.Considered = len(successful)
+	names := make([]string, 0, len(byDatabase))
+	for name := range byDatabase {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		del, protected := planDatabase(now, retentionDays, retentionCount, byDatabase[name])
+		successful := byDatabase[name]
+		plan.Considered += len(successful)
+		plan.Delete = append(plan.Delete, del...)
+		plan.Protected = append(plan.Protected, protected...)
+		plan.Databases = append(plan.Databases, DatabaseRetention{
+			Database: name, Considered: len(successful), Delete: len(del), Protected: len(protected),
+			Kept: len(successful) - len(del), LastGood: successful[0].ID,
+		})
+	}
+	// Oldest first across databases.
+	sort.SliceStable(plan.Delete, func(i, j int) bool {
+		return plan.Delete[i].Backup.StartedAt.Before(plan.Delete[j].Backup.StartedAt)
+	})
+	return plan
+}
+
+// planDatabase plans the retention of the completed scheduled backups of one
+// database; it sorts successful newest first.
+func planDatabase(now time.Time, retentionDays, retentionCount int, successful []*models.BackupRecord) ([]RetentionDecision, []ProtectedBackup) {
+	var del []RetentionDecision
+	var protected []ProtectedBackup
 	// Newest first.
 	sort.SliceStable(successful, func(i, j int) bool {
 		return successful[i].StartedAt.After(successful[j].StartedAt)
@@ -111,15 +160,15 @@ func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*
 		switch {
 		case d == nil:
 		case rec.Pinned:
-			plan.Protected = append(plan.Protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedPinned})
+			protected = append(protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedPinned})
 		case rec.ID == lastVerified:
-			plan.Protected = append(plan.Protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedLastVerified})
+			protected = append(protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedLastVerified})
 		default:
-			plan.Delete = append(plan.Delete, *d)
+			del = append(del, *d)
 		}
 	}
-	slices.Reverse(plan.Delete)
-	return plan
+	slices.Reverse(del)
+	return del, protected
 }
 
 // JobRetentionHistory returns the records job's retention applies to: the job's own

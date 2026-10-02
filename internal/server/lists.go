@@ -121,7 +121,7 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		IDs:    idList(q.Get("id")),
 		Status: models.BackupStatus(q.Get("status")), Database: q.Get("database"),
 		ConnectionID: q.Get("connection_id"), JobID: q.Get("job_id"),
-		Trigger: models.BackupTrigger(q.Get("trigger")), RetryOf: q.Get("retry_of"),
+		Trigger: models.BackupTrigger(q.Get("trigger")), RetryOf: q.Get("retry_of"), RunID: q.Get("run_id"),
 		From: p.from, To: p.to, Search: q.Get("q"), Sort: p.sort, Limit: p.limit, Offset: p.offset,
 	})
 	if err != nil {
