@@ -45,6 +45,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Scheduled and on-demand backups with retention by age or count, a dry-run preview of what retention deletes, pins (legal hold) and a retention history
 - Evidence that backups restore: every archive is re-read and checksum-verified after upload, an optional integrity sweep re-verifies them at rest, automated restore tests restore a job's latest backup into a temporary database and compare collection counts and indexes, and weekly storage scans report orphan and missing archives ([verification](docs/verification.md))
 - Backup and restore history filtered and paginated on the server (status, database, trigger, date range, search), in the dashboard and the API
+- A dashboard overview of the last 30 days (success rate, storage growth), the next 24 hours of scheduled runs and what needs attention; a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>), keyboard shortcuts (<kbd>?</kbd> lists them) and shareable links to any backup, job or restore (`#/backups/<id>`)
 - Several storage targets, managed in the dashboard: local disk and S3-compatible buckets (AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi); every backup remembers its target
 - Safe-clone restores by default; in-place restores require explicit confirmation and are checksum-verified first
 - Restore the whole database or only selected collections, picked from a list read from the backup's archive header

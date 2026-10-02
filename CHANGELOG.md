@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /api/v1/stats/history` (read scope): SQL aggregates for the dashboard overview, namely outcomes and stored size per day (`?days=` 1-366, default 30, cut at your midnight with `?tz_offset=`), each job's 12 newest runs with durations, its last success and run interval, the next 24 hours of scheduled runs, and completed backups whose verification failed. `GET /api/v1/schedule/preview?cron=&n=` (read scope) validates a cron expression with the scheduler's parser and returns its next runs in the server's time zone. No schema migration. See [docs/api.md](docs/api.md#overview-history-and-schedule-preview).
+- Dashboard: an **Overview** tab, now the landing tab, with the success rate and storage growth of the last 30 days, a timeline of the next 24 hours' scheduled runs and an *Attention needed* list (a job whose last run failed, failed verifications, failed restore tests, jobs without a successful backup for two of their intervals, unreadable records). The charts are inline SVG in the theme's colours, each with a text description and a *Show the data* table. The Jobs table's *Last run* cell shows a sparkline of the job's 12 latest outcomes and durations.
+- Dashboard: a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>) that jumps to tabs, settings sections, jobs, connections and backups (searched by ID or database) and runs *Back up now*, *New job* and *Check for updates*. It uses fuzzy matching that ignores accents and is a keyboard-navigable combobox.
+- Dashboard: keyboard shortcuts: <kbd>g</kbd> then <kbd>o</kbd>/<kbd>b</kbd>/<kbd>j</kbd>/<kbd>r</kbd>/<kbd>c</kbd>/<kbd>n</kbd>/<kbd>s</kbd> for the tabs, <kbd>/</kbd> for the search, <kbd>n</kbd> for a new item in the current tab, <kbd>r</kbd> to refresh and <kbd>?</kbd> for the list. They are off while you type or a dialog is open.
+- Dashboard: links to `#/backups/<id>`, `#/jobs/<id>` and `#/restores/<id>` open the details dialog directly, also after a refresh, and follow back and forward. The details dialogs have a *Copy link* button. List links such as `#backups?status=failed` work as before.
+- Dashboard: the job form's schedule gets presets (*Every hour*, *Every night 02:00*, *Every Sunday 03:00*, *Weekdays 22:00*) and a custom editor (repeat, hour, minute, weekdays, day of month) that writes the cron expression. Below it the form shows the expression's reading and its next three runs as the scheduler computes them. The raw expression stays editable. Retention gets presets too (*7 days*, *30 days*, *Last 10 backups*).
+- Dashboard: the user menu can show absolute instead of relative times (remembered in the browser), shows your time zone (and the server's when it differs), and links to the documentation of the running version.
+
+### Changed
+- Dashboard: toasts stack (at most four, then they wait their turn), can be dismissed, may carry an action such as *View* on a finished backup or restore, pause while hovered or focused, and are announced through the shared screen reader live regions.
+
+### Fixed
+- Restore tests (and every other MongoDB call without a deadline) waited only 10 seconds for server selection and overrode the connection string's own `serverSelectionTimeoutMS` and `connectTimeoutMS`. On a busy replica set member, inspecting the restored copy right after a large `mongorestore` could then fail with *server selection error: context deadline exceeded*. The URI's timeouts are now kept, and the default is the driver's 30 seconds.
+- Dashboard: the version next to the brand no longer disappears after switching the language.
+
 ## [0.11.0] - 2026-10-01
 
 ### Added
