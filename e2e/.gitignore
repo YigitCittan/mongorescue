@@ -1,0 +1,6 @@
+node_modules/
+# Playwright output: report, traces, screenshots
+playwright-report/
+test-results/
+# Server state and log of a run (global-setup.ts)
+.run/
