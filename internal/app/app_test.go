@@ -362,6 +362,10 @@ func TestAppImportsDeprecatedEnvironmentOnce(t *testing.T) {
 	if !strings.Contains(logs.String(), config.EnvBackupTimeout+" is deprecated and ignored") {
 		t.Fatalf("second start must warn that the variable is ignored:\n%s", logs.String())
 	}
+	// The imported key is MACed with a subkey of secret.key, so it survives restarts.
+	if p, authErr := second.auth.AuthenticateAPIKey(ctx, env[config.EnvAPIKey]); authErr != nil || p.APIKeyID == "" {
+		t.Fatalf("imported api key after restart = %+v, %v", p, authErr)
+	}
 }
 
 func TestAppImportsLegacyConfigFile(t *testing.T) {

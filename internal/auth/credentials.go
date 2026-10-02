@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -27,7 +28,7 @@ const DefaultBcryptCost = 12
 // API key layout: "mr_" + 8-character prefix + "_" + 32-character secret, all in
 // lowercase base32 (a-z, 2-7).
 const (
-	apiKeyScheme    = "mr_"
+	keyScheme       = "mr_"
 	apiKeyPrefixLen = 8
 	apiKeySecretLen = 32
 )
@@ -94,11 +95,40 @@ func newID(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(b), nil
 }
 
-// HashToken returns the hex SHA-256 of a session token or API key, the only form
-// that is persisted.
+// HashToken returns the hex SHA-256 of a session token or a generated API key, the
+// only form that is persisted. It is for random tokens only (see hashToken).
 func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
+	return hashToken([]byte(token))
+}
+
+// hashToken returns the hex SHA-256 of a high-entropy random token: session tokens
+// (256 bits) and generated API keys (160 bits), both from crypto/rand. Guessing such
+// a token is infeasible however fast the hash, so a plain digest is the right tool
+// and lets the token be looked up by its hash. Passwords never come here (they are
+// bcrypt hashes), nor do user-chosen keys imported from MONGORESCUE_API_KEY (keyed
+// with importedKeyMAC).
+func hashToken(token []byte) string {
+	sum := sha256.Sum256(token)
 	return hex.EncodeToString(sum[:])
+}
+
+// importedKeyMACScheme prefixes the stored hash of an imported key that is an
+// HMAC-SHA256 under the server's imported-key subkey. Stored hashes without it are
+// plain SHA-256 digests (generated keys, and keys imported by earlier releases).
+const importedKeyMACScheme = "hmac-sha256:"
+
+// ImportedKeySubkeyPurpose is the secretbox.DeriveSubkey purpose of the key that
+// MACs imported API keys.
+const ImportedKeySubkeyPurpose = "auth/imported-api-key"
+
+// importedKeyMAC returns the hex HMAC-SHA256 of an imported key under macKey. The
+// key was chosen by an administrator and may have little entropy; keyed with a
+// subkey of secret.key, its stored hash cannot be attacked offline from a copy of
+// the database alone.
+func importedKeyMAC(macKey []byte, key string) string {
+	m := hmac.New(sha256.New, macKey)
+	m.Write([]byte(key))
+	return hex.EncodeToString(m.Sum(nil))
 }
 
 // equalHashes compares two hex digests in constant time.
@@ -106,20 +136,21 @@ func equalHashes(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// newAPIKey returns a new plaintext key and its public prefix.
-func newAPIKey() (key, prefix string, err error) {
+// newGeneratedKey returns a new random API key (160 secret bits from crypto/rand) in
+// plaintext and its public prefix.
+func newGeneratedKey() (key, prefix string, err error) {
 	b, err := randomBytes(25) // 5 bytes -> 8 chars prefix, 20 bytes -> 32 chars secret
 	if err != nil {
 		return "", "", err
 	}
 	prefix = lowerBase32.EncodeToString(b[:5])
 	secret := lowerBase32.EncodeToString(b[5:])
-	return apiKeyScheme + prefix + "_" + secret, prefix, nil
+	return keyScheme + prefix + "_" + secret, prefix, nil
 }
 
 // parseAPIKey returns the prefix of a well-formed key.
 func parseAPIKey(key string) (prefix string, ok bool) {
-	rest, found := strings.CutPrefix(key, apiKeyScheme)
+	rest, found := strings.CutPrefix(key, keyScheme)
 	if !found || len(rest) != apiKeyPrefixLen+1+apiKeySecretLen || rest[apiKeyPrefixLen] != '_' {
 		return "", false
 	}
