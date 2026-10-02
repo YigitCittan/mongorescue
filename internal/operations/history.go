@@ -78,6 +78,9 @@ type HistoryJob struct {
 	Runs []HistoryRun `json:"runs"`
 	// LastSuccessAt is when its newest completed backup started, if any.
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	// IntervalSeconds is the gap between the enabled job's next two scheduled runs
+	// (0 for disabled jobs), so "no success for too long" can follow the schedule.
+	IntervalSeconds float64 `json:"interval_seconds,omitempty"`
 }
 
 // UpcomingRun is a scheduled activation of a job.
@@ -126,7 +129,8 @@ type History struct {
 	Daily []HistoryDay `json:"daily"`
 	// StoredBytesBefore sums the completed backups on record that started earlier.
 	StoredBytesBefore int64 `json:"stored_bytes_before"`
-	// Jobs maps each job ID with backups to its recent runs and last success.
+	// Jobs maps each job ID with backups or an enabled schedule to its recent runs,
+	// last success and run interval.
 	Jobs map[string]HistoryJob `json:"jobs"`
 	// Upcoming lists the enabled jobs' activations in the next UpcomingWindow, in
 	// order; UpcomingTruncated reports that the caps cut the list.
@@ -205,6 +209,19 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 		}
 		hj.LastSuccessAt = &at
 		h.Jobs[jobID] = hj
+	}
+	for _, j := range jobs {
+		if !j.Enabled {
+			continue
+		}
+		if runs := scheduler.NextRuns(j.CronExpression, now, 2); len(runs) == 2 {
+			hj := h.Jobs[j.ID]
+			if hj.Runs == nil {
+				hj.Runs = []HistoryRun{}
+			}
+			hj.IntervalSeconds = runs[1].Sub(runs[0]).Seconds()
+			h.Jobs[j.ID] = hj
+		}
 	}
 	for _, v := range agg.VerificationIssues {
 		h.VerificationIssues = append(h.VerificationIssues, VerificationIssue{

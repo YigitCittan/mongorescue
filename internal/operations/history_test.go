@@ -88,8 +88,15 @@ func TestHistoryAggregatesAndUpcoming(t *testing.T) {
 		t.Errorf("stored curve = %+v", h.Daily)
 	}
 	hj := h.Jobs["j_hourly"]
-	if len(hj.Runs) != 4 || hj.Runs[3].ID != "b3" || hj.LastSuccessAt == nil || !hj.LastSuccessAt.Equal(now.Add(-10*time.Minute)) {
+	if len(hj.Runs) != 4 || hj.Runs[3].ID != "b3" || hj.LastSuccessAt == nil || !hj.LastSuccessAt.Equal(now.Add(-10*time.Minute)) ||
+		hj.IntervalSeconds != 3600 {
 		t.Errorf("job history = %+v", hj)
+	}
+	if m, ok := h.Jobs["j_minute"]; !ok || m.IntervalSeconds != 60 || m.Runs == nil || len(m.Runs) != 0 {
+		t.Errorf("minute job = %+v, %v", m, ok)
+	}
+	if _, ok := h.Jobs["j_off"]; ok {
+		t.Error("the disabled job without backups is listed")
 	}
 	if h.VerificationIssuesTotal != 1 || h.VerificationIssues[0].ID != "b3" {
 		t.Errorf("verification issues = %+v", h.VerificationIssues)
