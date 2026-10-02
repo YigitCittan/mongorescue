@@ -221,6 +221,8 @@ function activateTab(id, focus) {
   });
   // Settings are not polled; pick up changes made elsewhere when the tab opens.
   if (id === "tab-settings" && auth.user) loadSettings(false);
+  if (id === "tab-overview" && typeof overviewRefresh === "function") overviewRefresh(false);
+  if (typeof navHoldsHash === "function" && navHoldsHash()) return;
   try {
     window.history.replaceState(null, "", tabHash(id));
   } catch (err) {
@@ -480,7 +482,8 @@ async function checkHealth() {
 }
 
 function setConnection(dot, status, version) {
-  if (status === "ok") setAppVersion(version);
+  // Re-renders (a language change) pass no version: keep the one shown.
+  if (status === "ok" && version) setAppVersion(version);
   if (!dot) return;
   dot.dataset.status = status;
   const shown = formatVersion(version);
@@ -603,6 +606,8 @@ async function refreshAll() {
   renderRestores();
   renderRules();
   scheduleActivePoll();
+  // The overview's history and the jobs' sparklines (overview.js, throttled).
+  if (typeof overviewRefresh === "function") overviewRefresh(false);
 }
 
 // While any backup or restore is still running, refresh those lists every few
@@ -656,15 +661,19 @@ function reportFinished(kind, records) {
     tracked.delete(id);
     if (typeof noteAnnounced === "function") noteAnnounced(kind, id);
     const db = (kind === "backups" ? rec.database : rec.target_database) || info.database;
+    // "View" opens the run's details dialog (nav.js).
+    const view = typeof navOpenDetail === "function"
+      ? { action: { label: t("toast.view"), run: () => navOpenDetail(kind, id) } } : undefined;
     if (rec.status === "cancelled") {
       reportCancelled(kind, rec, db);
     } else if (rec.status === "failed") {
       const key = kind === "backups" ? "toasts.backup_failed_detail" : "toasts.restore_failed_detail";
-      showToast(tf(key, { db, error: truncate(errorSummary(rec.error_message), 160) }), "error");
+      showToast(tf(key, { db, error: truncate(errorSummary(rec.error_message), 160) }), "error", view);
     } else {
       const key = kind === "backups" ? "toasts.backup_succeeded" : "toasts.restore_succeeded";
-      showToast(tf(key, { db }), "success");
+      showToast(tf(key, { db }), "success", view);
     }
+    if (typeof overviewRefresh === "function") overviewRefresh(true);
   });
 }
 
@@ -888,6 +897,8 @@ function tabHash(id) {
 function writeHash(push) {
   const id = activeTabId();
   if (!id) return;
+  // An open details dialog owns the URL (#/backups/<id>, nav.js).
+  if (typeof navHoldsHash === "function" && navHoldsHash()) return;
   const hash = tabHash(id);
   if (hash === window.location.hash) return;
   try {
@@ -1565,8 +1576,9 @@ function renderStats() {
     } else {
       const d = parseDate(last.started_at);
       const [kind, label] = backupStatus(last.status);
-      valueEl.innerHTML = `<span class="stat-time">${escapeHtml(d ? formatRelative(d) : "—")}</span>${statusBadge(kind, label, last.error_message)}`;
-      valueEl.title = d ? formatAbsolute(d) : "";
+      const [shown, tooltip] = !d ? ["—", ""] : typeof timeDisplay === "function" ? timeDisplay(d) : [formatRelative(d), formatAbsolute(d)];
+      valueEl.innerHTML = `<span class="stat-time">${escapeHtml(shown)}</span>${statusBadge(kind, label, last.error_message)}`;
+      valueEl.title = tooltip;
     }
   }
   if (lastSub) {
@@ -1650,7 +1662,7 @@ function renderJobs() {
       <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
       <td class="cell-wrap-sm">${escapeHtml(retentionText(job))}</td>
       <td>${jobStateBadge(job)}</td>
-      <td>${lastDot}${timeCell(job.last_run)}${trustJobChip(job)}</td>
+      <td>${lastDot}${timeCell(job.last_run)}${trustJobChip(job)}${typeof jobSparkline === "function" ? jobSparkline(job.id) : ""}</td>
       <td>${enabled ? timeCell(job.next_run) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="btn btn-secondary btn-sm" data-action="trigger-job" data-id="${id}">${escapeHtml(t("actions.run_now"))}</button>
@@ -2125,7 +2137,9 @@ function mutedDash() {
 function timeCell(value) {
   const d = parseDate(value);
   if (!d) return mutedDash();
-  return `<time datetime="${escapeHtml(d.toISOString())}" title="${escapeHtml(formatAbsolute(d))}">${escapeHtml(formatRelative(d))}</time>`;
+  // Relative or absolute, as chosen in the user menu (nav.js).
+  const [shown, tooltip] = typeof timeDisplay === "function" ? timeDisplay(d) : [formatRelative(d), formatAbsolute(d)];
+  return `<time datetime="${escapeHtml(d.toISOString())}" title="${escapeHtml(tooltip)}">${escapeHtml(shown)}</time>`;
 }
 
 // Replaces a table body only when its markup changed, so the periodic refresh does
@@ -5904,7 +5918,13 @@ function returnFocus(opener) {
   if (target && visible(target)) target.focus();
 }
 
-function showToast(msg, type = "success") {
+// Shows a toast; opts.action ({label, run}) adds a button. The queue (stacking,
+// dismiss, announcements) lives in nav.js; this fallback only runs without it.
+function showToast(msg, type = "success", opts) {
+  if (typeof toastShow === "function") {
+    toastShow(msg, type, opts);
+    return;
+  }
   const container = document.getElementById("toast-container");
   if (!container) return;
   const toast = document.createElement("div");
