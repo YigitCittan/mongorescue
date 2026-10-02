@@ -418,6 +418,13 @@ func TestHistoryGroupsMultiDatabaseRuns(t *testing.T) {
 		hj.Runs[1].Status != models.StatusFailed || hj.Runs[1].Databases != 2 || hj.Runs[1].Succeeded != 1 {
 		t.Fatalf("runs = %+v; want two runs, the newest partial", hj.Runs)
 	}
+	if !slices.Equal(hj.Runs[1].FailedDatabases, []string{"b"}) {
+		t.Errorf("failed databases of the partial run = %v", hj.Runs[1].FailedDatabases)
+	}
+	stats := e.svc.Stats(ctx)
+	if last := stats.JobLastRuns["job_h"]; last.ID != "run_2" || last.Status != models.JobRunPartial || last.Succeeded != 1 || last.Databases != 2 {
+		t.Errorf("job_last_runs = %+v; want the partial run_2, never a database's backup", stats.JobLastRuns)
+	}
 	if hj.StalestDatabase != "b" || hj.LastSuccessAt == nil || !hj.LastSuccessAt.Equal(old) || len(hj.Databases) != 2 {
 		t.Errorf("last success = %v of %q (%+v); want b's 50-hour-old backup", hj.LastSuccessAt, hj.StalestDatabase, hj.Databases)
 	}

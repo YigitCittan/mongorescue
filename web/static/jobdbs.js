@@ -19,6 +19,8 @@
 const JOBDB_TRANSLATIONS = {
   en: {
     jobdb: {
+      n_of_m: "{ok}/{n} databases",
+      last_run_result: "Last run result",
       mode_label: "Databases",
       mode_single: "Single",
       mode_list: "Selected",
@@ -96,6 +98,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "New databases added to a job" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "failed: {list}",
+      spark_label_multi: "Last {n} runs: {ok} ok, {partial} partial, {failed} failed",
       att_stale_db: "{job}: {db} has no successful backup since {when}",
       att_never_db: "{job}: {db} has no successful backup yet",
       att_partial_last: "{job}: the last run backed up {ok} of {n} databases {when}",
@@ -104,6 +109,8 @@ const JOBDB_TRANSLATIONS = {
   },
   tr: {
     jobdb: {
+      n_of_m: "{ok}/{n} veritabanı",
+      last_run_result: "Son çalıştırma sonucu",
       mode_label: "Veritabanı",
       mode_single: "Tek",
       mode_list: "Seçili",
@@ -156,7 +163,7 @@ const JOBDB_TRANSLATIONS = {
       run_new_n: "{n} yeni veritabanı dahil değil",
       run_added_n: "{n} veritabanı eklendi",
       run_status_ok: "Tamam",
-      run_status_partial: "Kısmi",
+      run_status_partial: "Kısmen",
       run_status_failed: "Başarısız",
       run_status_cancelled: "İptal edildi",
       run_status_running: "Çalışıyor",
@@ -181,6 +188,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "İşe yeni veritabanları eklendi" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "başarısız: {list}",
+      spark_label_multi: "Son {n} çalıştırma: {ok} tamam, {partial} kısmen, {failed} başarısız",
       att_stale_db: "{job}: {db} için {when} tarihinden beri başarılı yedek yok",
       att_never_db: "{job}: {db} için henüz başarılı yedek yok",
       att_partial_last: "{job}: son çalıştırma {when} {n} veritabanından {ok} tanesini yedekledi",
@@ -189,6 +199,8 @@ const JOBDB_TRANSLATIONS = {
   },
   de: {
     jobdb: {
+      n_of_m: "{ok}/{n} Datenbanken",
+      last_run_result: "Ergebnis des letzten Laufs",
       mode_label: "Datenbanken",
       mode_single: "Eine",
       mode_list: "Ausgewählt",
@@ -266,6 +278,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "Neue Datenbanken zu einem Job hinzugefügt" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "fehlgeschlagen: {list}",
+      spark_label_multi: "Letzte {n} Läufe: {ok} ok, {partial} teilweise, {failed} fehlgeschlagen",
       att_stale_db: "{job}: {db} hat seit {when} kein erfolgreiches Backup",
       att_never_db: "{job}: {db} hat noch kein erfolgreiches Backup",
       att_partial_last: "{job}: der letzte Lauf {when} hat {ok} von {n} Datenbanken gesichert",
@@ -274,6 +289,8 @@ const JOBDB_TRANSLATIONS = {
   },
   es: {
     jobdb: {
+      n_of_m: "{ok}/{n} bases de datos",
+      last_run_result: "Resultado de la última ejecución",
       mode_label: "Bases de datos",
       mode_single: "Una",
       mode_list: "Seleccionadas",
@@ -351,6 +368,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "Nuevas bases de datos añadidas a un trabajo" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "fallidas: {list}",
+      spark_label_multi: "Últimas {n} ejecuciones: {ok} correctas, {partial} parciales, {failed} fallidas",
       att_stale_db: "{job}: {db} no tiene una copia correcta desde {when}",
       att_never_db: "{job}: {db} aún no tiene una copia correcta",
       att_partial_last: "{job}: la última ejecución {when} respaldó {ok} de {n} bases de datos",
@@ -359,6 +379,8 @@ const JOBDB_TRANSLATIONS = {
   },
   fr: {
     jobdb: {
+      n_of_m: "{ok}/{n} bases",
+      last_run_result: "Résultat de la dernière exécution",
       mode_label: "Bases de données",
       mode_single: "Une",
       mode_list: "Sélection",
@@ -436,6 +458,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "Nouvelles bases ajoutées à une tâche" } },
     overview: {
+      spark_run_multi: "{when} — {status} : {ok}/{n}",
+      spark_failed_dbs: "en échec : {list}",
+      spark_label_multi: "{n} dernières exécutions : {ok} OK, {partial} partielles, {failed} en échec",
       att_stale_db: "{job} : {db} n’a pas de sauvegarde réussie depuis {when}",
       att_never_db: "{job} : {db} n’a encore aucune sauvegarde réussie",
       att_partial_last: "{job} : la dernière exécution {when} a sauvegardé {ok} bases sur {n}",
@@ -444,6 +469,8 @@ const JOBDB_TRANSLATIONS = {
   },
   zh: {
     jobdb: {
+      n_of_m: "{ok}/{n} 个数据库",
+      last_run_result: "最近一次运行结果",
       mode_label: "数据库",
       mode_single: "单个",
       mode_list: "选定",
@@ -521,6 +548,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "作业新增了数据库" } },
     overview: {
+      spark_run_multi: "{when} — {status}：{ok}/{n}",
+      spark_failed_dbs: "失败：{list}",
+      spark_label_multi: "最近 {n} 次运行：{ok} 次成功，{partial} 次部分成功，{failed} 次失败",
       att_stale_db: "{job}：{db} 自 {when} 起没有成功的备份",
       att_never_db: "{job}：{db} 尚无成功的备份",
       att_partial_last: "{job}：最近一次运行（{when}）备份了 {n} 个数据库中的 {ok} 个",
@@ -529,6 +559,8 @@ const JOBDB_TRANSLATIONS = {
   },
   ja: {
     jobdb: {
+      n_of_m: "{ok}/{n} データベース",
+      last_run_result: "前回の実行結果",
       mode_label: "データベース",
       mode_single: "単一",
       mode_list: "選択",
@@ -606,6 +638,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "ジョブに新しいデータベースを追加" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "失敗: {list}",
+      spark_label_multi: "直近 {n} 回の実行: 成功 {ok}、一部失敗 {partial}、失敗 {failed}",
       att_stale_db: "{job}: {db} は {when} 以降バックアップに成功していません",
       att_never_db: "{job}: {db} はまだバックアップに成功していません",
       att_partial_last: "{job}: 前回の実行（{when}）は {n} 個中 {ok} 個のデータベースをバックアップしました",
@@ -614,6 +649,8 @@ const JOBDB_TRANSLATIONS = {
   },
   ru: {
     jobdb: {
+      n_of_m: "{ok}/{n} баз данных",
+      last_run_result: "Результат последнего запуска",
       mode_label: "Базы данных",
       mode_single: "Одна",
       mode_list: "Выбранные",
@@ -691,6 +728,9 @@ const JOBDB_TRANSLATIONS = {
     },
     notify: { events: { job_databases_added: "В задание добавлены новые базы данных" } },
     overview: {
+      spark_run_multi: "{when} — {status}: {ok}/{n}",
+      spark_failed_dbs: "с ошибкой: {list}",
+      spark_label_multi: "Последние запуски ({n}): успешно {ok}, частично {partial}, с ошибкой {failed}",
       att_stale_db: "{job}: у {db} нет успешной копии с {when}",
       att_never_db: "{job}: у {db} ещё нет успешной копии",
       att_partial_last: "{job}: последний запуск {when} скопировал {ok} из {n} баз данных",
@@ -1159,6 +1199,36 @@ function jobDatabaseSummary(job) {
   return text;
 }
 
+// The newest run of multi-database job job (GET /api/v1/stats job_last_runs), or null.
+function jobLastRun(job) {
+  if (!jobIsMulti(job) || !state.stats || !state.stats.job_last_runs) return null;
+  return state.stats.job_last_runs[job.id] || null;
+}
+
+// Badge kind and label of a job run status.
+function jobRunKind(status) {
+  const kinds = { ok: "success", partial: "warn", failed: "danger", cancelled: "warn", running: "running" };
+  return [kinds[status] || "neutral", t(`jobdb.run_status_${status}`) || status];
+}
+
+// The last-run mark of a multi-database job: "" without runs, null for a
+// single-database job (whose newest backup stands). A partial run is an amber
+// "Partial" badge with "4/5 databases", never a success mark. detailed (the
+// details dialog) also names the failed databases.
+function jobLastRunMark(job, detailed) {
+  if (!jobIsMulti(job)) return null;
+  const run = jobLastRun(job);
+  if (!run) return "";
+  const [kind, label] = jobRunKind(run.status);
+  const failed = run.failed_databases || [];
+  const title = failed.length > 0 ? tf("overview.spark_failed_dbs", { list: failed.join(", ") }) : "";
+  const count = run.status === "running" ? "" : tf("jobdb.n_of_m", { ok: run.succeeded || 0, n: run.databases || 0 });
+  const mark = run.status === "partial" || detailed ? statusBadge(kind, label, title) : statusMark(kind, label);
+  let sub = count ? `<span class="cell-sub jobrun-count"${title ? ` title="${escapeHtml(title)}"` : ""}>${escapeHtml(count)}</span>` : "";
+  if (detailed && failed.length > 0) sub += ` <span class="cell-sub">${escapeHtml(title)}</span>`;
+  return `<span class="jobrun-mark">${mark}${sub}</span>`;
+}
+
 // Whether job covers several databases.
 function jobIsMulti(job) {
   const mode = job && job.database_selection && job.database_selection.mode;
@@ -1205,8 +1275,8 @@ async function jobDbsLoadRuns(jobID) {
 
 // Badge of a job run status.
 function jobRunBadge(status) {
-  const kinds = { ok: "success", partial: "warn", failed: "danger", cancelled: "warn", running: "running" };
-  return statusBadge(kinds[status] || "neutral", t(`jobdb.run_status_${status}`) || status);
+  const [kind, label] = jobRunKind(status);
+  return statusBadge(kind, label);
 }
 
 // Renders the details' run history grouped by run and the newly discovered

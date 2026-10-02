@@ -829,18 +829,26 @@ function jobSparkline(jobID) {
     const dur = Number(r.duration_seconds) || 0;
     const height = maxDur > 0 && dur > 0 ? 3 + (H - 3) * (dur / maxDur) : r.status === "failed" ? H : 4;
     const x = (SPARK_RUNS - runs.length + i) * slot;
-    // A multi-database run is one bar; a partial one is a warning.
+    // A multi-database run is one bar with its summary ("12:00 — partial: 4/5,
+    // failed: app_b"); a partial one is a warning, never a success.
     const partial = r.run_status === "partial";
-    const label = partial
-      ? tf("overview.spark_partial", { ok: r.succeeded || 0, n: r.databases || 0 })
-      : backupStatus(r.status)[1];
     const d = parseDate(r.started_at);
-    const title = tf("overview.spark_run", { when: d ? navAbsoluteShort(d) : "—", status: label, d: dur > 0 ? formatDuration(dur) : "—" });
+    let title;
+    if (r.run_status && typeof jobRunKind === "function") {
+      const status = jobRunKind(r.run_status)[1].toLocaleLowerCase(uiLocale());
+      title = tf("overview.spark_run_multi", { when: d ? navAbsoluteShort(d) : "—", status, ok: r.succeeded || 0, n: r.databases || 0 });
+      if ((r.failed_databases || []).length > 0) title += `, ${tf("overview.spark_failed_dbs", { list: r.failed_databases.join(", ") })}`;
+    } else {
+      title = tf("overview.spark_run", { when: d ? navAbsoluteShort(d) : "—", status: backupStatus(r.status)[1], d: dur > 0 ? formatDuration(dur) : "—" });
+    }
     bars += `<rect class="${partial ? "ov-warn" : SPARK_CLASS[r.status] || "ov-neutral"}" x="${(x + 0.5).toFixed(1)}" y="${(H - height).toFixed(1)}" width="${(slot - 1.5).toFixed(1)}" height="${height.toFixed(1)}" rx="0.5"><title>${escapeHtml(title)}</title></rect>`;
   });
   const ok = runs.filter(r => r.status === "completed").length;
-  const failed = runs.filter(r => r.status === "failed").length;
-  let label = tf("overview.spark_label", { n: runs.length, ok, failed });
+  const partialRuns = runs.filter(r => r.run_status === "partial").length;
+  const failed = runs.filter(r => r.status === "failed").length - partialRuns;
+  let label = partialRuns > 0
+    ? tf("overview.spark_label_multi", { n: runs.length, ok, partial: partialRuns, failed })
+    : tf("overview.spark_label", { n: runs.length, ok, failed });
   if (maxDur > 0) label += ` · ${tf("overview.spark_longest", { d: formatDuration(maxDur) })}`;
   return `<div class="spark" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true" focusable="false">${bars}</svg></div>`;
 }

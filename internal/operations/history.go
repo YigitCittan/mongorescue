@@ -106,6 +106,8 @@ type HistoryRun struct {
 	// Databases and Succeeded count a run's databases and those backed up.
 	Databases int `json:"databases,omitempty"`
 	Succeeded int `json:"succeeded,omitempty"`
+	// FailedDatabases names a run's failed databases.
+	FailedDatabases []string `json:"failed_databases,omitempty"`
 }
 
 // HistoryJob is the recent record of one job.
@@ -306,6 +308,7 @@ func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History
 		hj.Runs = append(hj.Runs, HistoryRun{
 			ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,
 			DurationSeconds: run.DurationSeconds, Databases: len(run.Databases), Succeeded: ok,
+			FailedDatabases: run.FailedDatabases(),
 		})
 	}
 	var js JobStatus
