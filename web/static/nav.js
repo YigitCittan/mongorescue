@@ -556,7 +556,7 @@ function navVersion() {
 // main for development builds and git-describe versions between tags.
 function navDocsRef(version) {
   const v = String(version || "").trim();
-  return /^v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)(?:\.?\d+)*)?$/.test(v) ? v : "main";
+  return /^v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)(?:\.?\d+)?)?$/.test(v) ? v : "main";
 }
 
 function navDocsUrl() {
