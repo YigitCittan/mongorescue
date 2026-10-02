@@ -26,7 +26,7 @@ func historyFixture(tb testing.TB, jobs, rows int) (*SQLiteStore, time.Time) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	for j := range jobs {
-		if err := s.SaveJob(ctx, &models.Job{ID: fmt.Sprintf("job_%02d", j), Name: "j", Database: "db", CronExpression: "@hourly", Enabled: true}); err != nil {
+		if err = s.SaveJob(ctx, &models.Job{ID: fmt.Sprintf("job_%02d", j), Name: "j", Database: "db", CronExpression: "@hourly", Enabled: true}); err != nil {
 			tb.Fatal(err)
 		}
 	}
