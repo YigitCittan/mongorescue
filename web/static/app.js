@@ -1658,7 +1658,7 @@ function renderJobs() {
       ${bulkCell("jobs", job.id, job.name || job.id)}
       <td class="cell-primary">${ellipsis(job.name || job.id, "ell-md")}${idCopy(job.id, "cell-sub")}</td>
       <td>${job.connection_id ? ellipsis(connectionName(job.connection_id), "ell-sm") : mutedDash()}</td>
-      <td>${ellipsis(job.database, "mono ell-sm")}${collectionScope(job)}</td>
+      <td>${typeof jobDatabaseCell === "function" ? jobDatabaseCell(job) : ellipsis(job.database, "mono ell-sm") + collectionScope(job)}</td>
       <td><span class="mono" title="${escapeHtml(meaning)}">${escapeHtml(job.cron_expression)}</span>${meaning ? `<div class="cell-sub">${ellipsis(meaning, "ell-md")}</div>` : ""}</td>
       <td class="cell-wrap-sm">${escapeHtml(retentionText(job))}</td>
       <td>${jobStateBadge(job)}</td>
@@ -2312,7 +2312,8 @@ function truncate(text, max) {
 function setupForms() {
   document.getElementById("form-new-job").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const source = pickerValue("job");
+    // A single database comes from the shared picker, several from jobdbs.js.
+    const source = typeof jobDbsSource === "function" ? jobDbsSource() : pickerValue("job");
     if (!source) return;
     const payload = {
       name: getValue("job-name"),
@@ -2490,6 +2491,8 @@ function openJobModal(jobID) {
   }
   // Verification override, restore test and the retention preview (trust.js).
   trustFillJobForm(job);
+  // Single / Selected / All / Pattern database selection (jobdbs.js).
+  if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
 }
 
@@ -2525,6 +2528,8 @@ async function toggleJob(jobID, btn) {
         name: job.name || "",
         cron_expression: job.cron_expression || "",
         database: job.database || "",
+        database_selection: job.database_selection,
+        parallelism: job.parallelism || 1,
         collections: job.collections || [],
         exclude_collections: job.exclude_collections || [],
         connection_id: job.connection_id || "",
@@ -2564,6 +2569,7 @@ function openJobDetails(jobID) {
   openModal("modal-job-details");
   renderJobDetails();
   loadJobHistory(jobID);
+  if (typeof jobDbsLoadRuns === "function") jobDbsLoadRuns(jobID);
 }
 
 // Fetches the next activations of the job in the details dialog when its schedule
@@ -2640,12 +2646,15 @@ function renderJobDetails() {
   appendKv(overview, t("job_details.id"), idLine.firstElementChild || job.id);
   appendKv(overview, t("job_details.state"), htmlNode(jobStateBadge(job)));
   appendKv(overview, t("job_details.connection"), job.connection_id ? connectionName(job.connection_id) : "");
-  appendKv(overview, t("job_details.database"), job.database, true);
-  const include = job.collections || [];
-  const exclude = job.exclude_collections || [];
-  appendKv(overview, t("job_details.collections"), include.length > 0
-    ? tf("job_details.only", { list: include.join(", ") })
-    : exclude.length > 0 ? tf("job_details.except", { list: exclude.join(", ") }) : t("job_details.all_collections"));
+  // A multi-database job shows its selection instead (jobdbs.js).
+  if (typeof jobDbsDetailsOverview !== "function" || !jobDbsDetailsOverview(job, overview)) {
+    appendKv(overview, t("job_details.database"), job.database, true);
+    const include = job.collections || [];
+    const exclude = job.exclude_collections || [];
+    appendKv(overview, t("job_details.collections"), include.length > 0
+      ? tf("job_details.only", { list: include.join(", ") })
+      : exclude.length > 0 ? tf("job_details.except", { list: exclude.join(", ") }) : t("job_details.all_collections"));
+  }
   appendKv(overview, t("job_details.target"), job.storage_target_id ? storageTargetName(job.storage_target_id) : storageDescription(job.storage_type));
 
   const schedule = document.getElementById("job-details-schedule");
@@ -2691,6 +2700,8 @@ function renderJobDetails() {
   trustJobDetails(job, options);
 
   renderJobHistory(job);
+  // Runs grouped by run, and newly discovered databases (jobdbs.js).
+  if (typeof jobDbsRenderDetails === "function") jobDbsRenderDetails(job);
 
   // Pause (optionally until a time) and resume live in runs.js.
   const toggle = document.getElementById("job-details-toggle");
@@ -4169,6 +4180,8 @@ function setPickerManual(p, manual) {
   select.required = !manual;
   input.hidden = !manual;
   input.required = manual;
+  // A job covering several databases needs neither field (jobdbs.js).
+  if (p.prefix === "job" && typeof jobDbsApplyRequired === "function") jobDbsApplyRequired();
   pickerEl(p, "database-label").htmlFor = manual ? input.id : select.id;
   const fromList = document.querySelector(`[data-action="picker-from-list"][data-picker="${p.prefix}"]`);
   if (fromList) fromList.hidden = !manual || !p.dbs || p.dbs.length === 0;
@@ -4232,6 +4245,8 @@ async function loadPickerDatabases(p) {
     setPickerManual(p, true);
     applyPickerPreset(p);
   }
+  // The multi-database selector of the job form lists the same databases (jobdbs.js).
+  if (typeof jobDbsOnDatabases === "function") jobDbsOnDatabases(p);
 }
 
 // Selects the preset database once the database list has loaded (typing it into
