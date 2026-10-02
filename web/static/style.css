@@ -1552,6 +1552,40 @@ input[type="radio"] {
   height: 36px;
 }
 
+/* Single sign-on on the sign-in card (sso.js): the button is a link. */
+.sso-login {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+a.btn-block {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sso-divider::before,
+.sso-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.sso-login + #form-login {
+  margin-top: 4px;
+}
+
 .code-hint {
   display: flex;
   flex-direction: column;
