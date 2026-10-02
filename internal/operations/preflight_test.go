@@ -21,7 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
-// fakeInspector is a RestoreInspector with canned answers.
+// fakeInspector is a RestoreInspector with canned answers; its target is itself.
 type fakeInspector struct {
 	mu          sync.Mutex
 	pingErr     error
@@ -29,30 +29,55 @@ type fakeInspector struct {
 	exists      map[string]bool
 	collections []connections.Collection
 	missing     []string
+	uncertain   bool
 	privErr     error
+	privColls   []string
 	free        int64
 	freeKnown   bool
+	freeSource  string
 	manifest    *models.Manifest
 	manifestErr error
 	inspected   []string
+	opened      int
+	closed      int
+	deadline    time.Duration
 }
 
-func (f *fakeInspector) Ping(context.Context, string) (connections.ServerInfo, error) {
+func (f *fakeInspector) OpenTarget(ctx context.Context, _ string) (connections.RestoreTarget, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened++
+	if d, ok := ctx.Deadline(); ok {
+		f.deadline = time.Until(d)
+	}
+	return f, nil
+}
+
+func (f *fakeInspector) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
+}
+
+func (f *fakeInspector) Ping(context.Context) (connections.ServerInfo, error) {
 	if f.pingErr != nil {
 		return connections.ServerInfo{}, f.pingErr
 	}
 	return connections.ServerInfo{Version: f.version}, nil
 }
 
-func (f *fakeInspector) DatabaseExists(_ context.Context, _, database string) (bool, error) {
+func (f *fakeInspector) DatabaseExists(_ context.Context, database string) (bool, error) {
 	return f.exists[database], nil
 }
 
-func (f *fakeInspector) ListCollections(context.Context, string, string) ([]connections.Collection, error) {
+func (f *fakeInspector) ListCollections(context.Context, string) ([]connections.Collection, error) {
 	return f.collections, nil
 }
 
-func (f *fakeInspector) MissingPrivileges(_ context.Context, _, _ string, actions []string) ([]string, error) {
+func (f *fakeInspector) Privileges(_ context.Context, _ string, actions, collections []string) (connections.PrivilegeReport, error) {
+	f.mu.Lock()
+	f.privColls = collections
+	f.mu.Unlock()
 	var out []string
 	for _, a := range f.missing {
 		for _, want := range actions {
@@ -61,11 +86,15 @@ func (f *fakeInspector) MissingPrivileges(_ context.Context, _, _ string, action
 			}
 		}
 	}
-	return out, f.privErr
+	return connections.PrivilegeReport{Missing: out, Certain: !f.uncertain}, f.privErr
 }
 
-func (f *fakeInspector) FreeSpace(context.Context, string, string) (int64, bool, error) {
-	return f.free, f.freeKnown, nil
+func (f *fakeInspector) FreeSpace(context.Context, string) (connections.DiskSpace, error) {
+	source := f.freeSource
+	if source == "" {
+		source = connections.DiskSpaceDBStats
+	}
+	return connections.DiskSpace{Known: f.freeKnown, Free: f.free, Source: source}, nil
 }
 
 func (f *fakeInspector) Manifest(_ context.Context, _, database string) (*models.Manifest, error) {
@@ -193,9 +222,11 @@ func TestPreflightCheckMatrix(t *testing.T) {
 			say:  map[string]string{"server_version": "did not answer"},
 		},
 		{
-			name: "a target of an older major version fails",
+			name: "a target of an older major version only warns",
 			ins:  func(f *fakeInspector) { f.version = "6.0.5" },
-			want: want{"server_version": "fail"},
+			ok:   true,
+			want: want{"server_version": "warn"},
+			say:  map[string]string{"server_version": "may still work"},
 		},
 		{
 			name: "a target of a newer major version warns",
@@ -224,6 +255,13 @@ func TestPreflightCheckMatrix(t *testing.T) {
 			say:  map[string]string{"privileges": "createIndex, insert"},
 		},
 		{
+			name: "privileges missing under a custom role only warn",
+			ins:  func(f *fakeInspector) { f.missing, f.uncertain = []string{"insert"}, true },
+			ok:   true,
+			want: want{"privileges": "warn"},
+			say:  map[string]string{"privileges": "custom roles"},
+		},
+		{
 			name: "unreadable privileges warn",
 			ins:  func(f *fakeInspector) { f.privErr = errors.New("connectionStatus: boom") },
 			ok:   true,
@@ -233,6 +271,25 @@ func TestPreflightCheckMatrix(t *testing.T) {
 			name: "too little free space fails",
 			ins:  func(f *fakeInspector) { f.free = 500 },
 			want: want{"disk_space": "fail"},
+		},
+		{
+			name: "too little local free space only warns",
+			ins:  func(f *fakeInspector) { f.free, f.freeSource = 500, connections.DiskSpaceLocal },
+			ok:   true,
+			want: want{"disk_space": "warn"},
+			say:  map[string]string{"disk_space": "loopback"},
+		},
+		{
+			name: "too little free space for an in-place restore with drop only warns",
+			ins:  func(f *fakeInspector) { f.free = 500 },
+			req: func(r models.RestoreRequest) models.RestoreRequest {
+				r = inPlace(r)
+				r.DropTarget = true
+				return r
+			},
+			ok:   true,
+			want: want{"disk_space": "warn"},
+			say:  map[string]string{"disk_space": "drop_target frees"},
 		},
 		{
 			name: "little headroom warns",
@@ -619,5 +676,45 @@ func TestRestoreWithoutVerifyRestoreIsNotVerified(t *testing.T) {
 	}
 	if done := waitRestoreDone(t, env.svc, rec.ID); done.Verification != nil || len(ins.inspected) != 0 {
 		t.Fatalf("verification = %+v, inspected %v; want none (verify_restore defaults to false)", done.Verification, ins.inspected)
+	}
+}
+
+func TestPreflightSharesOneBoundedClient(t *testing.T) {
+	ins := healthyInspector()
+	env := newPreflightEnv(t, ins, nil)
+	if _, err := env.svc.PreflightRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if ins.opened != 1 || ins.closed != 1 {
+		t.Fatalf("opened %d, closed %d target clients; want one shared client, closed", ins.opened, ins.closed)
+	}
+	if ins.deadline <= 0 || ins.deadline > 15*time.Second {
+		t.Fatalf("deadline %s; want at most 15s", ins.deadline)
+	}
+	// The request's context bounds the checks too.
+	ctx, cancel := context.WithTimeout(admin(), 2*time.Second)
+	defer cancel()
+	if _, err := env.svc.PreflightRestore(ctx, models.RestoreRequest{BackupID: env.backup.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if ins.deadline > 2*time.Second {
+		t.Fatalf("deadline %s; want the request's 2s", ins.deadline)
+	}
+}
+
+func TestPreflightPrivilegesCountTheRestoredCollections(t *testing.T) {
+	ins := healthyInspector()
+	env := newPreflightEnv(t, ins, nil)
+	if _, err := env.svc.PreflightRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID, SelectedCollections: []string{"users"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins.privColls) != 1 || ins.privColls[0] != "users" {
+		t.Fatalf("privileges checked for %v; want the selection", ins.privColls)
+	}
+	if _, err := env.svc.PreflightRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins.privColls) != 2 {
+		t.Fatalf("privileges checked for %v; want the manifest's collections", ins.privColls)
 	}
 }
