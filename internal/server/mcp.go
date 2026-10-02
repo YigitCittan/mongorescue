@@ -20,18 +20,14 @@ func WithMCPHandler(h http.Handler) Option {
 	return func(s *Server) { s.mcpHandler = h }
 }
 
-// WithAudit enables GET /api/v1/audit/activity, the log of API/MCP activity.
-// The audit log of every action is WithAuditLog.
+// WithAudit enables GET /api/v1/audit, the log of API/MCP activity.
 func WithAudit(svc *audit.Service) Option {
 	return func(s *Server) { s.audit = svc }
 }
 
-// activityRoute serves the API key activity log (before v0.15.0 GET /api/v1/audit).
-const activityRoute = "GET /api/v1/audit/activity"
-
-// registerMCPRoutes adds the MCP endpoint and the API key activity log.
+// registerMCPRoutes adds the MCP endpoint and the audit log.
 func (s *Server) registerMCPRoutes(mux *router) {
-	mux.HandleFunc(activityRoute, s.handleListAudit)
+	mux.HandleFunc("GET /api/v1/audit", s.handleListAudit)
 	if s.mcpHandler != nil {
 		// Explicit methods: a method-less "/mcp" would conflict with "GET /". The
 		// stateless endpoint answers GET and DELETE with 405 itself.

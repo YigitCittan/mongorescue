@@ -263,7 +263,7 @@ func TestMCPStdioBridgeEndToEnd(t *testing.T) {
 
 	// Every tool call is in the audit log, attributed to its key and the stdio transport.
 	var entries []audit.Entry
-	api.data("GET", "/api/v1/audit/activity", nil, http.StatusOK, &entries)
+	api.data("GET", "/api/v1/audit", nil, http.StatusOK, &entries)
 	if !slices.ContainsFunc(entries, func(e audit.Entry) bool {
 		return e.Tool == "start_backup" && e.APIKeyName == "mcp operator" && e.Transport == audit.TransportStdio && e.Result == audit.ResultOK
 	}) {
@@ -271,14 +271,14 @@ func TestMCPStdioBridgeEndToEnd(t *testing.T) {
 	}
 	// ... and mirrored into the hash-chained audit log of every action.
 	var chain auditlog.Page
-	api.data("GET", "/api/v1/audit?action=MCP+start_backup", nil, http.StatusOK, &chain)
+	api.data("GET", "/api/v1/audit/events?action=MCP+start_backup", nil, http.StatusOK, &chain)
 	if !slices.ContainsFunc(chain.Events, func(e *auditlog.Event) bool {
 		return e.ActorKind == auditlog.ActorAPIKey && e.ActorKeyName == "mcp operator" && e.Outcome == auditlog.OutcomeOK
 	}) {
 		t.Fatalf("audit log of every action lacks the start_backup call: %+v", chain.Events)
 	}
 	var verified auditlog.Verification
-	api.data("GET", "/api/v1/audit/verify", nil, http.StatusOK, &verified)
+	api.data("GET", "/api/v1/audit/events/verify", nil, http.StatusOK, &verified)
 	if !verified.OK || verified.Checked == 0 {
 		t.Fatalf("audit chain verification = %+v", verified)
 	}

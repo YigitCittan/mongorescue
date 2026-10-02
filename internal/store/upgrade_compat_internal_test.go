@@ -841,10 +841,8 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 			if err := s.db.QueryRow("SELECT MAX(version), COUNT(*) FROM schema_migrations").Scan(&current, &applied); err != nil {
 				t.Fatal(err)
 			}
-			// Versions need not be contiguous: a migration number may be reserved by
-			// a change that is not merged yet.
-			if current != latest || applied != len(migrations) {
-				t.Fatalf("schema at %d with %d migrations; want %d with %d", current, applied, latest, len(migrations))
+			if current != latest || applied != latest {
+				t.Fatalf("schema at %d with %d migrations; want %d", current, applied, latest)
 			}
 			for _, step := range compatSteps {
 				if step.version <= version {

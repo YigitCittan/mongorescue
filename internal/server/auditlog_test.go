@@ -216,28 +216,28 @@ func TestAuditLogEndpoints(t *testing.T) {
 	}
 
 	var page auditListResponse
-	decodeData(t, b.do("GET", "/api/v1/audit?limit=2", nil, nil), &page)
+	decodeData(t, b.do("GET", "/api/v1/audit/events?limit=2", nil, nil), &page)
 	if len(page.Events) != 2 || page.NextBeforeID == 0 || page.Events[0].ID <= page.Events[1].ID {
 		t.Fatalf("page = %+v", page)
 	}
 	var next auditListResponse
-	decodeData(t, b.do("GET", "/api/v1/audit?limit=2&before_id="+itoa(page.NextBeforeID), nil, nil), &next)
+	decodeData(t, b.do("GET", "/api/v1/audit/events?limit=2&before_id="+itoa(page.NextBeforeID), nil, nil), &next)
 	if len(next.Events) != 2 || next.Events[0].ID >= page.Events[1].ID {
 		t.Fatalf("next page = %+v", next)
 	}
 	var denied auditListResponse
-	decodeData(t, b.do("GET", "/api/v1/audit?result=denied&actor_kind=anonymous&action=login", nil, nil), &denied)
+	decodeData(t, b.do("GET", "/api/v1/audit/events?result=denied&actor_kind=anonymous&action=login", nil, nil), &denied)
 	if len(denied.Events) != 1 || denied.Events[0].ActorName != "admin" {
 		t.Fatalf("filtered = %+v", denied)
 	}
 	for _, q := range []string{"limit=0", "limit=1001", "result=maybe", "actor_kind=robot", "since=yesterday", "before_id=-1",
 		"since=2026-01-02T00:00:00Z&until=2026-01-01T00:00:00Z"} {
-		if rec := b.do("GET", "/api/v1/audit?"+q, nil, nil); rec.Code != http.StatusBadRequest {
+		if rec := b.do("GET", "/api/v1/audit/events?"+q, nil, nil); rec.Code != http.StatusBadRequest {
 			t.Errorf("?%s = %d; want 400", q, rec.Code)
 		}
 	}
 
-	rec := b.do("GET", "/api/v1/audit/export?actor_kind=user", nil, nil)
+	rec := b.do("GET", "/api/v1/audit/events/export?actor_kind=user", nil, nil)
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/x-ndjson" ||
 		!strings.Contains(rec.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatalf("export = %d %v", rec.Code, rec.Header())
@@ -265,7 +265,7 @@ func TestAuditLogEndpoints(t *testing.T) {
 	}
 
 	var v auditlog.Verification
-	decodeData(t, b.do("GET", "/api/v1/audit/verify", nil, nil), &v)
+	decodeData(t, b.do("GET", "/api/v1/audit/events/verify", nil, nil), &v)
 	if !v.OK || v.Checked < 7 || v.HeadHash == "" || v.Anchor.LastHash != auditlog.GenesisHash {
 		t.Fatalf("verify = %+v", v)
 	}
@@ -274,7 +274,7 @@ func TestAuditLogEndpoints(t *testing.T) {
 	rec = b.do("POST", "/api/v1/api-keys", map[string]string{"name": "ops", "scope": "operator"}, nil)
 	var k createdAPIKey
 	decodeData(t, rec, &k)
-	for _, path := range []string{"/api/v1/audit", "/api/v1/audit/export", "/api/v1/audit/verify", "/api/v1/audit/activity"} {
+	for _, path := range []string{"/api/v1/audit", "/api/v1/audit/events", "/api/v1/audit/events/export", "/api/v1/audit/events/verify"} {
 		if rec := serve(f.h, "GET", path, nil, map[string]string{"X-API-Key": k.Key}); rec.Code != http.StatusForbidden {
 			t.Errorf("operator GET %s = %d; want 403", path, rec.Code)
 		}
@@ -286,7 +286,7 @@ func TestAuditLogNotConfigured(t *testing.T) {
 	f := newAuthFixture(t, nil)
 	b := f.browser(t)
 	b.setup(f)
-	for _, path := range []string{"/api/v1/audit", "/api/v1/audit/export", "/api/v1/audit/verify"} {
+	for _, path := range []string{"/api/v1/audit/events", "/api/v1/audit/events/export", "/api/v1/audit/events/verify"} {
 		if rec := b.do("GET", path, nil, nil); rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("GET %s = %d; want 503", path, rec.Code)
 		}
@@ -304,7 +304,8 @@ func TestAuditsAction(t *testing.T) {
 		{"GET", "/api/v1/jobs", "GET /api/v1/jobs", false},
 		{"HEAD", "/api/v1/jobs", "GET /api/v1/jobs", false},
 		{"OPTIONS", "/api/v1/jobs", "", false},
-		{"GET", "/api/v1/audit/export", auditExportRoute, true},
+		{"GET", "/api/v1/audit/events/export", auditExportRoute, true},
+		{"GET", "/api/v1/audit", "GET /api/v1/audit", false},
 		{"POST", MCPPath, "POST " + MCPPath, false},
 		{"GET", "/metrics", "GET /metrics", false},
 	} {

@@ -24,7 +24,7 @@ const state = {
   connections: [],
   users: [],
   apikeys: [],
-  // Recent MCP tool calls (GET /api/v1/audit/activity), loaded when Settings → Security opens.
+  // Recent MCP tool calls (GET /api/v1/audit), loaded when Settings → Security opens.
   audit: [],
   auditError: "",
   storageTargets: [],
@@ -5801,7 +5801,7 @@ async function loadAudit() {
   if (auditInFlight || !auth.user) return;
   auditInFlight = true;
   try {
-    const json = await apiJSON("/api/v1/audit/activity?limit=200");
+    const json = await apiJSON("/api/v1/audit?limit=200");
     state.auditError = json.success ? "" : (json.error || t("toasts.request_failed"));
     if (json.success) state.audit = json.data || [];
     state.loaded.audit = true;

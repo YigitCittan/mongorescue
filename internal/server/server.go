@@ -112,8 +112,8 @@ type Server struct {
 	mux      *http.ServeMux
 	patterns []string
 
-	// mcpHandler serves /mcp; audit backs GET /api/v1/audit/activity, the API key
-	// activity log, and auditLog the audit log of every action (GET /api/v1/audit).
+	// mcpHandler serves /mcp; audit backs GET /api/v1/audit, the API key activity
+	// log, and auditLog the audit log of every action (GET /api/v1/audit/events).
 	mcpHandler http.Handler
 	audit      *audit.Service
 	auditLog   *auditlog.Service
