@@ -3270,3 +3270,18 @@ fieldset.is-disabled .collections-box {
   align-items: center;
   gap: 6px;
 }
+
+/* The last run of a multi-database job: its own line above the run time. */
+.jobrun-mark {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+
+#job-details-name .jobrun-mark {
+  display: inline-flex;
+  margin: 0 0 0 6px;
+  vertical-align: middle;
+}

@@ -243,6 +243,28 @@ type TargetRef struct {
 	Type models.StorageType `json:"type"`
 }
 
+// JobRunBrief summarises a job run for the dashboard KPIs.
+type JobRunBrief struct {
+	// ID is the run ID.
+	ID string `json:"id"`
+	// Status is the run's outcome (running while it runs).
+	Status models.JobRunStatus `json:"status"`
+	// StartedAt is when it started.
+	StartedAt time.Time `json:"started_at"`
+	// Databases and Succeeded count its databases and those backed up.
+	Databases int `json:"databases"`
+	Succeeded int `json:"succeeded"`
+	// FailedDatabases names the databases that failed.
+	FailedDatabases []string `json:"failed_databases,omitempty"`
+}
+
+// briefRun summarises run.
+func briefRun(run *models.JobRun) JobRunBrief {
+	ok, _, _, _ := run.Counts()
+	return JobRunBrief{ID: run.ID, Status: run.Status, StartedAt: run.StartedAt, Databases: len(run.Databases), Succeeded: ok,
+		FailedDatabases: run.FailedDatabases()}
+}
+
 // BackupBrief summarises a backup for the dashboard KPIs.
 type BackupBrief struct {
 	// ID is the backup ID.
@@ -286,6 +308,9 @@ type Stats struct {
 	LastBackup *BackupBrief `json:"last_backup,omitempty"`
 	// JobLastBackups maps each job ID to its newest backup (without error message).
 	JobLastBackups map[string]BackupBrief `json:"job_last_backups"`
+	// JobLastRuns maps each multi-database job ID to its newest run: a job's last
+	// outcome is its run's (ok, partial, failed), never one database's backup.
+	JobLastRuns map[string]JobRunBrief `json:"job_last_runs"`
 	// StorageType is the type of the default storage target, when there is one.
 	StorageType models.StorageType `json:"storage_type,omitempty"`
 	// DefaultStorageTarget is the default storage target, when there is one.
@@ -334,10 +359,15 @@ func (s *Service) CorruptRecords(ctx context.Context) ([]store.CorruptRecord, er
 // stats computes the KPIs at now, and returns the aggregates they were computed from.
 // On an error it returns what it has read so far.
 func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) (Stats, *store.BackupStats, *store.RestoreStats, error) {
-	st := Stats{JobLastBackups: map[string]BackupBrief{}}
+	st := Stats{JobLastBackups: map[string]BackupBrief{}, JobLastRuns: map[string]JobRunBrief{}}
 	for _, j := range jobs {
 		if j.Enabled {
 			st.ActiveJobs++
+		}
+		if j.MultiDatabase() {
+			if list, err := s.cfg.Store.ListJobRuns(ctx, j.ID, 1); err == nil && len(list) == 1 {
+				st.JobLastRuns[j.ID] = briefRun(list[0])
+			}
 		}
 	}
 	if s.cfg.Targets != nil {

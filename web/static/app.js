@@ -1647,7 +1647,12 @@ function renderJobs() {
   setTbody(tbody, state.jobs.map(job => {
     const lastBackup = state.stats && state.stats.job_last_backups ? state.stats.job_last_backups[job.id] : null;
     let lastDot = "";
-    if (lastBackup) {
+    // A job with several databases shows its last run (ok, partial, failed), never
+    // the newest backup of one of its databases (jobdbs.js).
+    const lastRun = typeof jobLastRunMark === "function" ? jobLastRunMark(job) : null;
+    if (lastRun !== null) {
+      lastDot = lastRun;
+    } else if (lastBackup) {
       const [kind, label] = backupStatus(lastBackup.status);
       lastDot = statusMark(kind, label);
     }
@@ -2638,6 +2643,15 @@ function renderJobDetails() {
   }
   const enabled = job.enabled !== false;
   setText("job-details-name", job.name || job.id);
+  // The header carries the last run's outcome of a multi-database job (jobdbs.js).
+  if (typeof jobLastRunMark === "function") {
+    const headMark = jobLastRunMark(job);
+    if (headMark) {
+      const head = document.getElementById("job-details-name");
+      head.append(" ");
+      head.appendChild(htmlNode(headMark));
+    }
+  }
 
   const overview = document.getElementById("job-details-overview");
   overview.textContent = "";
@@ -2685,6 +2699,11 @@ function renderJobDetails() {
   }
   appendKv(schedule, t("job_details.next_runs"), next);
   appendKv(schedule, t("job_details.last_run"), absoluteWithRelative(job.last_run) || t("job_details.never"));
+  // The outcome of a multi-database job's last run, as in the jobs table (jobdbs.js).
+  if (typeof jobLastRunMark === "function") {
+    const mark = jobLastRunMark(job, true);
+    if (mark) appendKv(schedule, t("jobdb.last_run_result"), htmlNode(mark, "div"));
+  }
 
   const options = document.getElementById("job-details-options");
   options.textContent = "";
