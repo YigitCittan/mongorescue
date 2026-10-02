@@ -43,6 +43,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 
 - Manage many MongoDB servers from one instance: connections are tested, their databases and collections listed, and backups can be restored into another server
 - Scheduled and on-demand backups with retention by age or count, a dry-run preview of what retention deletes, pins (legal hold) and a retention history
+- Jobs that back up one database, a list of them, all databases of a connection or those matching glob patterns such as `prod_*`, each database into its own backup, with a live preview, optional automatic inclusion of new databases and one notification per run ([jobs with several databases](docs/api.md#jobs-with-several-databases))
 - Evidence that backups restore: every archive is re-read and checksum-verified after upload, an optional integrity sweep re-verifies them at rest, automated restore tests restore a job's latest backup into a temporary database and compare collection counts and indexes, and weekly storage scans report orphan and missing archives ([verification](docs/verification.md))
 - Backup and restore history filtered and paginated on the server (status, database, trigger, date range, search), in the dashboard and the API
 - A dashboard overview of the last 30 days (success rate, storage growth), the next 24 hours of scheduled runs and what needs attention; a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>), keyboard shortcuts (<kbd>?</kbd> lists them) and shareable links to any backup, job or restore (`#/backups/<id>`)
@@ -102,6 +103,17 @@ curl -X POST http://localhost:8080/api/v1/restore \
   -H "Authorization: Bearer $KEY" \
   -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e"}'
 ```
+
+A job backs up one database or several. This one backs up every database whose name starts with `prod_` each night, one after another, and reports databases created later instead of silently adding them (an admin key is needed to create jobs):
+
+```bash
+curl -X POST http://localhost:8080/api/v1/jobs \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name": "all prod", "cron_expression": "0 2 * * *", "connection_id": "conn_1a2b3c4d5e6f7a8b",
+       "database_selection": {"mode": "pattern", "include": ["prod_*"], "auto_include_new": false}}'
+```
+
+`GET /api/v1/jobs/{id}/databases/preview` shows what it would back up right now, and `GET /api/v1/jobs/{id}/runs` lists its runs with the outcome of every database. In the dashboard the job form offers the same choice as *Single / Selected / All / Pattern*.
 
 To restore only some collections, list what the backup holds with `GET /api/v1/backups/{id}/collections` (read from the archive header, without downloading the backup) and pass `"selected_collections": ["orders", "customers"]`; the dashboard's restore dialog offers the same list. To restore over the original database, send `"safe_clone": false` together with `"confirm_in_place": true` (with an admin key). The full endpoint list is in [docs/api.md](docs/api.md).
 
