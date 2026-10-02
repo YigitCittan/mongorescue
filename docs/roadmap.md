@@ -17,7 +17,7 @@ Already in place, so not on this list:
 - Versioned metadata migrations that refuse a newer schema.
 - Unit, security, fuzz and integration tests on MongoDB 5.0 to 8.0 and a replica set ([testing.md](testing.md)).
 
-## Phase 1: recovery you can prove (v0.14, v0.15)
+## Phase 1: recovery you can prove (v0.14–v0.16, done)
 
 The goal: after a disaster, nothing MongoRescue needs to restore is missing, and the dashboard shows how ready each database is to be recovered.
 
@@ -28,12 +28,12 @@ The goal: after a disaster, nothing MongoRescue needs to restore is missing, and
 | 1.3 | **Users and roles in backups** | S–M | A per-job option that runs `mongodump --dumpDbUsersAndRoles` and restores them with `--restoreDbUsersAndRoles`, opt-in and never applied to a safe clone by default. Shipped in v0.14.0 (`include_users_and_roles` on jobs and backups, `restore_users_and_roles` for in-place restores, see [api.md](api.md#users-and-roles)). |
 | 1.4 | **Restore preflight** | M | Before a restore starts, check the server version against the version the archive was dumped from, whether the target exists, the user's privileges, the archive size against free space where it can be known, and the collections that would be replaced. Show a single go/no-go summary in the restore dialog and the API. Shipped in v0.15.0. |
 | 1.5 | **Restore verification** | M | After every restore, optionally compare counts and indexes against the backup's manifest (the code restore tests already use) and record the result on the restore. A full document diff stays a test-only tool. Shipped in v0.15.0. |
-| 1.6 | **RPO and RTO** | M | A per-job recovery point objective ("a good backup every 24 h") with alerts when it is missed; the recovery time measured by restore tests; a **Recovery readiness** view per database: last good backup, last verified, last restore test, RPO met, estimated RTO, keys escrowed. |
+| 1.6 | **RPO and RTO** | M | A per-job recovery point objective ("a good backup every 24 h") with alerts when it is missed; the recovery time measured by restore tests; a **Recovery readiness** view per database: last good backup, last verified, last restore test, RPO met, estimated RTO, keys escrowed. Shipped in v0.16.0. |
 | 1.7 | **Audit log for every action** | M–L | Record dashboard and API actions, not only MCP and bulk ones: who, what, target, result and source IP. The log is append-only and hash-chained so tampering is detectable. It gets a retention setting, export to JSON Lines, and an optional forward to syslog or a webhook. Shipped in v0.15.0 with webhook forwarding; syslog is not yet done ([audit.md](audit.md)). |
 | 1.8 | **Browser tests in CI** | M | A Playwright suite against a real server: sign in, create a connection, back up, restore, bulk delete with dry run, update banner. The ad-hoc headless checks we run today become this suite. Shipped in v0.15.0. |
 | 1.9 | **Migration checksums** | S | Record each applied migration's checksum and refuse to start if an applied migration was changed. Shipped in v0.14.0. |
 
-## Phase 2: who may do what (v0.16, v0.17)
+## Phase 2: who may do what (v0.17, v0.18)
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
