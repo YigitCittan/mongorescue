@@ -27,10 +27,56 @@ type SortOrder string
 
 // Sort orders of the filtered list queries.
 const (
-	// SortNewest lists the newest records first (the default).
+	// SortNewest lists the newest records first (the default); with a SortKey other
+	// than SortStartedAt it sorts descending.
 	SortNewest SortOrder = "desc"
-	// SortOldest lists the oldest records first.
+	// SortOldest lists the oldest records first; with a SortKey other than
+	// SortStartedAt it sorts ascending.
 	SortOldest SortOrder = "asc"
+)
+
+// SortKey names the column a filtered list query orders by. Only the keys below are
+// accepted: each maps to a constant SQL expression, so ORDER BY is never built from
+// input.
+type SortKey string
+
+// Sort keys of the filtered list queries.
+const (
+	// SortStartedAt orders by start time (the default).
+	SortStartedAt SortKey = "started_at"
+	// SortDuration orders by run time; records without one sort as zero.
+	SortDuration SortKey = "duration"
+	// SortSize orders backups by archive size (backups only).
+	SortSize SortKey = "size"
+	// SortDatabase orders by database name (restores: the target database).
+	SortDatabase SortKey = "database"
+	// SortStatus orders by status name.
+	SortStatus SortKey = "status"
+)
+
+// BackupSortKeys and RestoreSortKeys are the accepted SortBy values of BackupFilter
+// and RestoreFilter, in documentation order.
+var (
+	BackupSortKeys  = []SortKey{SortStartedAt, SortDuration, SortSize, SortDatabase, SortStatus}
+	RestoreSortKeys = []SortKey{SortStartedAt, SortDuration, SortDatabase, SortStatus}
+)
+
+// backupSortSQL and restoreSortSQL map the sort keys to their constant ORDER BY
+// expressions.
+var (
+	backupSortSQL = map[SortKey]string{
+		SortStartedAt: "b.started_at",
+		SortDuration:  "coalesce(json_extract(b.data, '$.duration_seconds'), 0)",
+		SortSize:      "b.size_bytes",
+		SortDatabase:  "b.database_name",
+		SortStatus:    "b.status",
+	}
+	restoreSortSQL = map[SortKey]string{
+		SortStartedAt: "r.started_at",
+		SortDuration:  "coalesce(json_extract(r.data, '$.duration_seconds'), 0)",
+		SortDatabase:  "r.target_database",
+		SortStatus:    "r.status",
+	}
 )
 
 // BackupFilter selects, orders and pages backup records. Zero fields match
@@ -60,8 +106,11 @@ type BackupFilter struct {
 	// Search keeps backups whose ID or database contains this text literally, ignoring
 	// ASCII case.
 	Search string
-	// Sort orders by start time: SortNewest (also when empty) or SortOldest.
+	// Sort is the direction: SortNewest (descending, also when empty) or SortOldest.
 	Sort SortOrder
+	// SortBy is the column ordered by (one of BackupSortKeys); empty is SortStartedAt.
+	// Ties are broken by start time and ID, newest first.
+	SortBy SortKey
 	// Limit is the page size, 1 to MaxListLimit; 0 returns every match.
 	Limit int
 	// Offset skips this many matches.
@@ -84,8 +133,11 @@ type RestoreFilter struct {
 	// Search keeps restores whose ID, source or target database contains this text
 	// literally, ignoring ASCII case.
 	Search string
-	// Sort orders by start time: SortNewest (also when empty) or SortOldest.
+	// Sort is the direction: SortNewest (descending, also when empty) or SortOldest.
 	Sort SortOrder
+	// SortBy is the column ordered by (one of RestoreSortKeys); empty is
+	// SortStartedAt. Ties are broken by start time and ID, newest first.
+	SortBy SortKey
 	// Limit is the page size, 1 to MaxListLimit; 0 returns every match.
 	Limit int
 	// Offset skips this many matches.
@@ -160,12 +212,35 @@ func validatePage(sort SortOrder, limit, offset int, from, to time.Time) error {
 	return nil
 }
 
+// sortExpr returns the constant ORDER BY expression of key in columns (SortStartedAt
+// when key is empty), or an ErrInvalidFilter error for a key the table has not.
+func sortExpr(columns map[SortKey]string, accepted []SortKey, key SortKey) (string, error) {
+	if key == "" {
+		key = SortStartedAt
+	}
+	expr, ok := columns[key]
+	if !ok {
+		names := make([]string, len(accepted))
+		for i, k := range accepted {
+			names[i] = string(k)
+		}
+		return "", fmt.Errorf("%w: sort column must be one of %s", ErrInvalidFilter, strings.Join(names, ", "))
+	}
+	return expr, nil
+}
+
 // orderAndPage renders the ORDER BY and LIMIT/OFFSET clauses for column prefix p and
-// appends their arguments to args. SQLite reads LIMIT -1 as no limit.
-func orderAndPage(p string, sort SortOrder, limit, offset int, args []any) (string, []any) {
-	order := " ORDER BY " + p + "started_at DESC, " + p + "id DESC"
+// appends their arguments to args. expr is a constant sort expression from sortExpr;
+// other columns than the start time are tie-broken by start time and ID, newest
+// first. SQLite reads LIMIT -1 as no limit.
+func orderAndPage(p, expr string, sort SortOrder, limit, offset int, args []any) (string, []any) {
+	dir := " DESC"
 	if sort == SortOldest {
-		order = " ORDER BY " + p + "started_at ASC, " + p + "id ASC"
+		dir = " ASC"
+	}
+	order := " ORDER BY " + expr + dir + ", " + p + "id" + dir
+	if expr != p+"started_at" {
+		order = " ORDER BY " + expr + dir + ", " + p + "started_at DESC, " + p + "id DESC"
 	}
 	if limit == 0 && offset == 0 {
 		return order, args
@@ -247,8 +322,12 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 	if len(f.IDs) > MaxFilterIDs {
 		return nil, fmt.Errorf("%w: id takes at most %d IDs", ErrInvalidFilter, MaxFilterIDs)
 	}
+	expr, err := sortExpr(backupSortSQL, BackupSortKeys, f.SortBy)
+	if err != nil {
+		return nil, err
+	}
 	c := backupConditions(f)
-	page, args := orderAndPage("b.", f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
+	page, args := orderAndPage("b.", expr, f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
 	query := selectBackupRowsSQL + c.where() + page //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -315,8 +394,12 @@ func (s *SQLiteStore) QueryRestoreRecords(ctx context.Context, f RestoreFilter) 
 	if err := validatePage(f.Sort, f.Limit, f.Offset, f.From, f.To); err != nil {
 		return nil, err
 	}
+	expr, err := sortExpr(restoreSortSQL, RestoreSortKeys, f.SortBy)
+	if err != nil {
+		return nil, err
+	}
 	c := restoreConditions(f)
-	page, args := orderAndPage("r.", f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
+	page, args := orderAndPage("r.", expr, f.Sort, f.Limit, f.Offset, append([]any(nil), c.args...))
 	list, err := listRecords[models.RestoreRecord](ctx, s, tableRestores, nil, "SELECT r.id, r.data FROM restores r"+c.where()+page, args...)
 	if err != nil {
 		return nil, err
