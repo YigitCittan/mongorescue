@@ -338,25 +338,19 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	rec, opts := plan.Records[i], plan.options[i]
 	mu.Unlock()
 
-	var err error
-	release := func() {}
-	// A database whose run was cancelled while it waited goes straight to the engine,
-	// which records the cancellation without starting mongodump.
-	if s.guard != nil && tracked.Cancellation() == nil {
-		var guardErr error
-		if release, guardErr = s.guard(rec.ConnectionID, rec.Database); guardErr != nil {
-			release = func() {}
-			now := time.Now().UTC()
-			rec.Status = models.StatusFailed
-			rec.ErrorMessage = "another backup of database " + rec.Database + " is running; skipped by this job run"
-			rec.CompletedAt, rec.Phases.Finished = &now, models.Stamp(now)
-			err = guardErr
-		}
+	// Bound now, so a cancellation of the run also ends the wait for the lock below.
+	dbCtx := tracked.Bind(ctx)
+	release, err := s.waitForDatabase(dbCtx, rec)
+	if err != nil {
+		now := time.Now().UTC()
+		rec.Status = models.StatusFailed
+		rec.ErrorMessage = fmt.Sprintf("another backup of database %s was still running after %s; skipped by this job run", rec.Database, s.lockWait())
+		rec.CompletedAt, rec.Phases.Finished = &now, models.Stamp(now)
 	}
 	if err == nil {
 		// The backup starts now; it was queued since the run began (Phases.Queued).
 		rec.StartedAt = time.Now().UTC()
-		rec, err = s.backupEngine.Execute(tracked.Bind(ctx), opts, rec)
+		rec, err = s.backupEngine.Execute(dbCtx, opts, rec)
 		if rec != nil && ctx.Err() != nil && rec.Status == models.StatusInProgress {
 			rec.Status = models.StatusFailed
 			if rec.ErrorMessage == "" {
@@ -389,6 +383,64 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	plan.Records[i] = rec
 	plan.setDatabase(rec)
 	mu.Unlock()
+}
+
+// Waiting for a database another run is backing up (see waitForDatabase).
+const (
+	// DefaultLockWait is how long a job run waits for a database another backup
+	// holds before it records that database as failed.
+	DefaultLockWait = 30 * time.Minute
+	// lockPoll is how often the lock is tried while waiting.
+	lockPoll = time.Second
+)
+
+// lockWait returns how long runs wait for a busy database.
+func (s *Scheduler) lockWait() time.Duration {
+	if s.lockWaitFor > 0 {
+		return s.lockWaitFor
+	}
+	return DefaultLockWait
+}
+
+// waitForDatabase takes the run lock of rec's database, waiting while another backup
+// of it runs (a manual backup, another job), up to lockWait. It returns at once,
+// without the lock, when ctx ends (the run was cancelled): the engine then records
+// the cancellation. Without a guard there is nothing to take.
+func (s *Scheduler) waitForDatabase(ctx context.Context, rec *models.BackupRecord) (func(), error) {
+	none := func() {}
+	if s.guard == nil {
+		return none, nil
+	}
+	deadline := time.Now().Add(s.lockWait())
+	poll := lockPoll
+	if s.lockPollEvery > 0 {
+		poll = s.lockPollEvery
+	}
+	logged := false
+	for {
+		if ctx.Err() != nil {
+			return none, nil
+		}
+		release, err := s.guard(rec.ConnectionID, rec.Database)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, runs.ErrBusy) || !time.Now().Before(deadline) {
+			return none, err
+		}
+		if !logged {
+			logged = true
+			s.logger.Info("job run waits for another backup of the database to finish",
+				slog.String("backup_id", rec.ID), slog.String("database", rec.Database))
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return none, nil
+		case <-timer.C:
+		}
+	}
 }
 
 // finishMulti records the outcome of a multi-database run (see runMulti).

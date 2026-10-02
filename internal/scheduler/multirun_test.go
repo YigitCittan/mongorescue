@@ -363,25 +363,44 @@ func TestParallelismBoundsConcurrentDatabases(t *testing.T) {
 	}
 }
 
-func TestBusyDatabaseFailsOnlyThatDatabase(t *testing.T) {
+func TestBusyDatabaseWaitsForItsLock(t *testing.T) {
 	f := newMultiFixture(t, "a", "b")
 	locks := runs.NewManager(nil)
 	f.sched.guard = func(connectionID, database string) (func(), error) {
 		return locks.Acquire(runs.BackupKey(connectionID, database))
 	}
+	f.sched.lockPollEvery = 5 * time.Millisecond
+	f.job(t, "job_busy", models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}, nil)
+
+	// Another backup of b finishes while the run waits: b is backed up after it.
 	release, err := locks.Acquire(runs.BackupKey("conn", "b"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-	f.job(t, "job_busy", models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}, nil)
+	timer := time.AfterFunc(100*time.Millisecond, release)
+	defer timer.Stop()
+	if _, err := f.sched.runBackupForJob(context.Background(), mustJob(t, f.store, "job_busy")); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !slices.Equal(f.dumped, []string{"a", "b"}) {
+		t.Errorf("dumped %v; b must be backed up once its lock is free", f.dumped)
+	}
+
+	// A lock that stays held fails only that database after the wait.
+	f.sched.lockWaitFor = 30 * time.Millisecond
+	f.dumped = nil
+	held, err := locks.Acquire(runs.BackupKey("conn", "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
 	_, _ = f.sched.runBackupForJob(context.Background(), mustJob(t, f.store, "job_busy"))
 	if !slices.Equal(f.dumped, []string{"a"}) {
 		t.Errorf("dumped %v; the database whose lock is held must be skipped", f.dumped)
 	}
 	runList, _ := f.store.ListJobRuns(context.Background(), "job_busy", 1)
-	if len(runList) != 1 || runList[0].Status != models.JobRunPartial {
-		t.Fatalf("run = %+v; want partial", runList)
+	if len(runList) != 1 || runList[0].Status != models.JobRunPartial || !strings.Contains(runList[0].Databases[1].Error, "still running") {
+		t.Fatalf("run = %+v; want partial with b skipped", runList)
 	}
 }
 
