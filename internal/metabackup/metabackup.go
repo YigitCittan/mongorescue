@@ -15,6 +15,7 @@ package metabackup
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,16 +33,37 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
-// Prefix is the storage key prefix of metadata snapshots.
+// Prefix is the storage key prefix of metadata snapshots. Each installation writes
+// below its own sub-prefix, Prefix + install ID + "/" (see InstallID).
 const Prefix = "_mongorescue/metadata/"
 
-// snapshotKeyPattern matches the keys of snapshots written by this package;
-// retention only ever deletes such keys.
-var snapshotKeyPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(Prefix) + `mongorescue-\d{8}T\d{9}Z\.db(\.age)?$`)
+// installIDPurpose derives the install ID from secret.key.
+const installIDPurpose = "metadata-backup-install-id"
+
+// installIDPattern is the shape of an install ID (see InstallID).
+var installIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// snapshotName matches the file name of a snapshot written by this package;
+// retention only ever deletes such keys, and only under the install's prefix.
+var snapshotName = regexp.MustCompile(`^mongorescue-\d{8}T\d{9}Z\.db(\.age)?$`)
+
+// InstallID returns the stable identifier of the installation that owns
+// secretKey: 16 hex characters of an HKDF subkey of secret.key. It is the same on a
+// host restored with the same key, and different for installations with different
+// keys, so installations that share a bucket and prefix keep their snapshots apart.
+// It reveals nothing about the key.
+func InstallID(secretKey []byte) (string, error) {
+	sub, err := secretbox.DeriveSubkey(secretKey, installIDPurpose)
+	if err != nil {
+		return "", fmt.Errorf("metabackup: derive install ID: %w", err)
+	}
+	return hex.EncodeToString(sub[:8]), nil
+}
 
 // tempDirPattern names the temporary directories snapshots are written to.
 const tempDirPattern = ".metabackup-*"
@@ -91,9 +113,11 @@ type Targets interface {
 	Storage(ctx context.Context, id string) (storage.Storage, error)
 }
 
-// Config holds the dependencies of a Service. Store, Targets and DataDir are
-// required.
+// Config holds the dependencies of a Service. Store, Targets, DataDir and InstallID
+// are required.
 type Config struct {
+	// InstallID scopes the snapshots of this installation (see InstallID).
+	InstallID string
 	// Store snapshots the database and persists the status.
 	Store Store
 	// Targets resolves the storage target snapshots are written to.
@@ -124,6 +148,9 @@ type Snapshot struct {
 	// TargetID and TargetName name the storage target.
 	TargetID   string `json:"target_id"`
 	TargetName string `json:"target_name"`
+	// InstallID is the installation that wrote the snapshot; its snapshots are
+	// under Prefix + InstallID + "/".
+	InstallID string `json:"install_id"`
 	// Key is the storage key.
 	Key string `json:"key"`
 	// CreatedAt is when the snapshot was taken.
@@ -138,6 +165,8 @@ type Snapshot struct {
 type Status struct {
 	// Enabled reports whether scheduled snapshots are on.
 	Enabled bool `json:"enabled"`
+	// Prefix is the storage key prefix of this installation's snapshots.
+	Prefix string `json:"prefix"`
 	// Running reports a snapshot in progress.
 	Running bool `json:"running"`
 	// LastRunAt is when the last snapshot (successful or not) started.
@@ -176,8 +205,8 @@ type Service struct {
 // New returns a Service. It panics when a required dependency is missing, which is a
 // wiring bug.
 func New(cfg Config) *Service {
-	if cfg.Store == nil || cfg.Targets == nil || cfg.DataDir == "" {
-		panic("metabackup: Store, Targets and DataDir are required")
+	if cfg.Store == nil || cfg.Targets == nil || cfg.DataDir == "" || !installIDPattern.MatchString(cfg.InstallID) {
+		panic("metabackup: Store, Targets, DataDir and a valid InstallID are required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -193,6 +222,9 @@ func New(cfg Config) *Service {
 	}
 	return &Service{cfg: cfg, logger: cfg.Logger}
 }
+
+// Prefix returns the storage key prefix of this installation's snapshots.
+func (s *Service) Prefix() string { return Prefix + s.cfg.InstallID + "/" }
 
 // settings returns the live metadata backup settings or the defaults.
 func (s *Service) settings() settings.MetadataBackup {
@@ -404,20 +436,20 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 	if s.cfg.Encryptor != nil {
 		enc = s.cfg.Encryptor()
 	}
-	key := snapshotKey(at, enc != nil)
+	key := s.Prefix() + snapshotFile(at, enc != nil)
 	obj, err := upload(ctx, driver, key, file, enc)
 	if err != nil {
 		return res, err
 	}
-	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
+	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, InstallID: s.cfg.InstallID, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
 	res.retentionErr = s.prune(ctx, driver, key)
 	return res, nil
 }
 
-// snapshotKey returns the storage key of a snapshot taken at (sortable by time).
-func snapshotKey(at time.Time, encrypted bool) string {
+// snapshotFile returns the file name of a snapshot taken at (sortable by time).
+func snapshotFile(at time.Time, encrypted bool) string {
 	at = at.UTC()
-	key := fmt.Sprintf("%smongorescue-%s%03dZ.db", Prefix, at.Format("20060102T150405"), at.Nanosecond()/int(time.Millisecond))
+	key := fmt.Sprintf("mongorescue-%s%03dZ.db", at.Format("20060102T150405"), at.Nanosecond()/int(time.Millisecond))
 	if encrypted {
 		key += encryption.FileExtension
 	}
@@ -480,13 +512,18 @@ func (s *Service) prune(ctx context.Context, driver storage.Storage, keep string
 	if limit < 1 {
 		limit = 1
 	}
-	objects, err := driver.List(ctx, Prefix)
+	prefix := s.Prefix()
+	objects, err := driver.List(ctx, prefix)
 	if err != nil {
 		return fmt.Errorf("metabackup: list snapshots: %w", err)
 	}
 	keys := make([]string, 0, len(objects))
 	for _, o := range objects {
-		if o != nil && snapshotKeyPattern.MatchString(o.Key) {
+		// Only this installation's own snapshots, directly under its prefix.
+		if o == nil || !strings.HasPrefix(o.Key, prefix) {
+			continue
+		}
+		if name := strings.TrimPrefix(o.Key, prefix); snapshotName.MatchString(name) {
 			keys = append(keys, o.Key)
 		}
 	}
@@ -564,7 +601,7 @@ func (s *Service) Status(ctx context.Context) Status {
 	running := s.running
 	s.mu.Unlock()
 	return Status{
-		Enabled: s.settings().Enabled, Running: running, LastRunAt: st.LastRunAt, LastTrigger: st.LastTrigger,
+		Enabled: s.settings().Enabled, Prefix: s.Prefix(), Running: running, LastRunAt: st.LastRunAt, LastTrigger: st.LastTrigger,
 		LastError: st.LastError, RetentionError: st.RetentionError, Last: st.Last, NextRunAt: s.nextRun(st),
 	}
 }

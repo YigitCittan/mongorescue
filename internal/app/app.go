@@ -343,7 +343,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	// Scheduled snapshots of the metadata database and the recovery kit, which
 	// carries secret.key and points to the latest snapshot.
+	installID, err := metabackup.InstallID(key.Key)
+	if err != nil {
+		return nil, fmt.Errorf("initialize metadata backups: %w", err)
+	}
 	metaBackupSvc := metabackup.New(metabackup.Config{
+		InstallID: installID,
 		Store:     metaStore,
 		Targets:   targetSvc,
 		DataDir:   cfg.DataDir,
@@ -359,6 +364,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Settings:         settingsSvc,
 		Targets:          targetSvc,
 		LatestSnapshot:   metaBackupSvc.Latest,
+		MetadataPrefix:   metaBackupSvc.Prefix(),
 		Version:          o.version,
 	})
 	if err != nil {

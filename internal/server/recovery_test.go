@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
@@ -34,6 +36,8 @@ type kitFixture struct {
 	*authFixture
 	key   []byte
 	audit *audit.Service
+	// mux serves the routes without the auth middleware.
+	mux http.Handler
 }
 
 func newKitFixture(t *testing.T, staticKey string) *kitFixture {
@@ -54,7 +58,7 @@ func newKitFixture(t *testing.T, staticKey string) *kitFixture {
 	auditSvc := audit.NewService(st, slog.New(slog.DiscardHandler))
 	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, nil,
 		WithAuth(authSvc), WithSettings(settingsSvc), WithStorageTargets(targetSvc), WithRecoveryKit(kit), WithAudit(auditSvc))
-	return &kitFixture{authFixture: &authFixture{h: full.Handler(), auth: authSvc}, key: key, audit: auditSvc}
+	return &kitFixture{authFixture: &authFixture{h: full.Handler(), auth: authSvc}, key: key, audit: auditSvc, mux: full.mux}
 }
 
 func kitWarningActive(t *testing.T, b *browser) bool {
@@ -143,6 +147,82 @@ func TestRecoveryKitDownload(t *testing.T) {
 	}
 }
 
+// kitBody is a valid download request with password.
+func kitBody(password string) map[string]string {
+	return map[string]string{"passphrase": kitPassphrase, "current_password": password}
+}
+
+// TestRecoveryKitRefusesOperatorSessions checks that a signed-in user without the
+// admin scope cannot download the kit, even with the right password. Sessions are
+// admin today, so the principal is attached to the bare routes directly.
+func TestRecoveryKitRefusesOperatorSessions(t *testing.T) {
+	f := newKitFixture(t, "")
+	b := f.browser(t)
+	b.setup(f.authFixture)
+	operator := &auth.Principal{User: &auth.User{ID: "usr_operator", Username: "operator"}, Method: auth.MethodSession, Scope: auth.ScopeOperator}
+	raw, _ := json.Marshal(kitBody(testPassword))
+	rec := httptest.NewRecorder()
+	asPrincipal(f.mux, operator).ServeHTTP(rec, httptest.NewRequest("POST", "/api/v1/recovery-kit", bytes.NewReader(raw)))
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Content-Type") == "application/octet-stream" {
+		t.Fatalf("operator session: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecoveryKitNeedsTheCSRFToken checks that a session request without
+// X-CSRF-Token is refused before the password is checked.
+func TestRecoveryKitNeedsTheCSRFToken(t *testing.T) {
+	f := newKitFixture(t, "")
+	b := f.browser(t)
+	b.setup(f.authFixture)
+	b.csrf = ""
+	if rec := b.do("POST", "/api/v1/recovery-kit", kitBody(testPassword), nil); rec.Code != http.StatusForbidden || rec.Header().Get("Content-Type") == "application/octet-stream" {
+		t.Fatalf("without CSRF: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecoveryKitThrottlesWrongPasswords checks that repeated wrong passwords get
+// 429 with Retry-After, that the right password is then refused too, and that the
+// audit log records the throttled attempts as rate limited with status 429.
+func TestRecoveryKitThrottlesWrongPasswords(t *testing.T) {
+	f := newKitFixture(t, "")
+	b := f.browser(t)
+	b.setup(f.authFixture)
+	throttled := false
+	for range 20 {
+		rec := b.do("POST", "/api/v1/recovery-kit", kitBody("wrong password"), nil)
+		if rec.Code == http.StatusTooManyRequests {
+			if rec.Header().Get("Retry-After") == "" {
+				t.Fatal("429 without Retry-After")
+			}
+			throttled = true
+			break
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("wrong password: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if !throttled {
+		t.Fatal("repeated wrong passwords were never throttled")
+	}
+	if rec := b.do("POST", "/api/v1/recovery-kit", kitBody(testPassword), nil); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("right password while throttled: %d", rec.Code)
+	}
+	entries, err := f.audit.List(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e *audit.Entry) bool {
+		return e.Tool == recoveryKitRoute && e.Result == audit.ResultRateLimited && e.HTTPStatus == http.StatusTooManyRequests
+	}) {
+		t.Fatalf("no rate-limited audit entry with status 429: %+v", entries)
+	}
+	if slices.ContainsFunc(entries, func(e *audit.Entry) bool {
+		return e.Tool == recoveryKitRoute && e.Result == audit.ResultDenied && e.HTTPStatus == http.StatusTooManyRequests
+	}) {
+		t.Fatal("throttled attempts must not be audited as denied")
+	}
+}
+
 // TestMetadataBackupEndpoints checks that a snapshot can be started and its status
 // read, and that a stopped service answers 503.
 func TestMetadataBackupEndpoints(t *testing.T) {
@@ -154,7 +234,7 @@ func TestMetadataBackupEndpoints(t *testing.T) {
 	if _, _, err := targetSvc.EnsureDefault(ctx, filepath.Join(t.TempDir(), "backups")); err != nil {
 		t.Fatal(err)
 	}
-	mb := metabackup.New(metabackup.Config{Store: st, Targets: targetSvc, DataDir: dataDir, Logger: slog.New(slog.DiscardHandler)})
+	mb := metabackup.New(metabackup.Config{InstallID: "0123456789abcdef", Store: st, Targets: targetSvc, DataDir: dataDir, Logger: slog.New(slog.DiscardHandler)})
 	h := keyed{NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, nil,
 		WithAuth(newTestAuth(t, st, testAPIKey)), WithMetadataBackup(mb)).Handler()}
 	do := func(method, path string) *httptest.ResponseRecorder {
@@ -178,7 +258,7 @@ func TestMetadataBackupEndpoints(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		decodeData(t, do("GET", "/api/v1/metadata-backup"), &status)
 	}
-	if !strings.HasPrefix(status.Last.Key, metabackup.Prefix) || status.LastError != "" {
+	if !strings.HasPrefix(status.Last.Key, metabackup.Prefix+"0123456789abcdef/") || status.Prefix != metabackup.Prefix+"0123456789abcdef/" || status.LastError != "" {
 		t.Fatalf("status = %+v", status)
 	}
 }

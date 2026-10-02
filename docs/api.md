@@ -151,7 +151,7 @@ Jobs and manual backups take an optional `storage_target_id` (the default target
 
 ## Metadata backups and the recovery kit
 
-The `metadata_backup` settings group (`enabled`, `interval`, `target_id`, `retention_count`; see [configuration.md](configuration.md#metadata-backups)) schedules snapshots of `mongorescue.db`. `POST /api/v1/metadata-backup/run` takes one now (`202`, `409` while one runs); `GET /api/v1/metadata-backup` reports `{enabled, running, last_run_at, last_trigger, last_error, retention_error, last, next_run_at}`. A failed snapshot publishes `metadata_backup.failed`. The runbook is in [production.md](production.md#restore-mongorescue-from-a-snapshot).
+The `metadata_backup` settings group (`enabled`, `interval`, `target_id`, `retention_count`; see [configuration.md](configuration.md#metadata-backups)) schedules snapshots of `mongorescue.db`. `POST /api/v1/metadata-backup/run` takes one now (`202`, `409` while one runs); `GET /api/v1/metadata-backup` reports `{enabled, prefix, running, last_run_at, last_trigger, last_error, retention_error, last, next_run_at}`; `prefix` is `_mongorescue/metadata/<install_id>/`, this installation's own prefix (derived from `secret.key`), and `last` carries `install_id`. A failed snapshot publishes `metadata_backup.failed`. The runbook is in [production.md](production.md#restore-mongorescue-from-a-snapshot).
 
 `POST /api/v1/recovery-kit` returns the recovery kit as `application/octet-stream` (`Content-Disposition: attachment; filename=mongorescue-recovery-kit-<date>.tar.age`, `Cache-Control: no-store`). The body is `{"passphrase": "...", "current_password": "..."}`:
 
@@ -159,7 +159,7 @@ The `metadata_backup` settings group (`enabled`, `interval`, `target_id`, `reten
 - `current_password` must be the user's password (`403` otherwise; wrong passwords count against the same throttle as password changes, then `429` with `Retry-After`);
 - `passphrase` seals the kit with age scrypt and needs at least 12 characters (`400`). It is not stored.
 
-The kit is a tar archive with `README.txt` (the recovery steps), `secret.key`, `recovery.json` (encryption settings, every storage target with its credentials, the latest metadata snapshot) and `identities.txt` (the age private keys, when one is configured). Passphrases are never included. Open it with `age -d -o kit.tar mongorescue-recovery-kit-<date>.tar.age && tar -xf kit.tar`. Every download and refused attempt is written to the audit log (`POST /api/v1/recovery-kit`, the user, the result), never the passphrase, the password or the content. `GET /api/v1/recovery-kit` returns `{downloaded_at, up_to_date, min_passphrase_length}`.
+The kit is a tar archive with `README.txt` (the recovery steps), `secret.key`, `recovery.json` (encryption settings, every storage target with its credentials, the snapshot prefix `metadata_prefix` and the latest metadata snapshot) and `identities.txt` (the age private keys, only when the server holds one; in recipient-only mode the README points to your own key file instead). Passphrases are never included. Open it with `age -d -o kit.tar mongorescue-recovery-kit-<date>.tar.age && tar -xf kit.tar`. Every download and refused attempt is written to the audit log (`POST /api/v1/recovery-kit`, the user, the result), never the passphrase, the password or the content. `GET /api/v1/recovery-kit` returns `{downloaded_at, up_to_date, min_passphrase_length}`.
 
 ## Restores
 

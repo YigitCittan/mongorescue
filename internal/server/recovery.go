@@ -131,11 +131,20 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := authSvc.ConfirmPassword(r.Context(), p, req.CurrentPassword); err != nil {
-		// API key requests are audited by the auth middleware.
+		// The audit entry carries the status the client gets (403, 429 when
+		// throttled, ...). API key requests are audited by the auth middleware.
+		rec := &statusRecorder{ResponseWriter: w}
+		s.writeAuthError(rec, err)
 		if p.Method == auth.MethodSession {
-			s.auditRecoveryKit(r.Context(), p, start, audit.ResultDenied, http.StatusForbidden, "password not confirmed")
+			result, msg := audit.ResultDenied, "password not confirmed"
+			switch {
+			case rec.status == http.StatusTooManyRequests:
+				result, msg = audit.ResultRateLimited, "too many failed attempts"
+			case rec.status >= http.StatusInternalServerError:
+				result, msg = audit.ResultError, "password check failed"
+			}
+			s.auditRecoveryKit(r.Context(), p, start, result, rec.status, msg)
 		}
-		s.writeAuthError(w, err)
 		return
 	}
 	if err := recoverykit.ValidatePassphrase(req.Passphrase); err != nil {

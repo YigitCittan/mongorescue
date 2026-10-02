@@ -62,7 +62,15 @@ type fixture struct {
 	identity string
 }
 
+const testPrefix = metabackup.Prefix + "0123456789abcdef/"
+
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith applies mutate to the settings before building the kit service.
+func newFixtureWith(t *testing.T, mutate func(*settings.Settings)) *fixture {
 	t.Helper()
 	key, err := secretbox.GenerateKey()
 	if err != nil {
@@ -75,6 +83,9 @@ func newFixture(t *testing.T) *fixture {
 	cur := settings.Defaults()
 	cur.Encryption.Enabled, cur.Encryption.Recipients, cur.Encryption.Identity = true, []string{recipient}, identity
 	cur.Encryption.Passphrase = "a stored backup passphrase"
+	if mutate != nil {
+		mutate(&cur)
+	}
 	f := &fixture{
 		settings: &fakeSettings{cur: cur},
 		targets: &fakeTargets{list: []*models.StorageTarget{{
@@ -87,9 +98,10 @@ func newFixture(t *testing.T) *fixture {
 	f.svc, err = recoverykit.New(recoverykit.Config{
 		SecretKey: key, Settings: f.settings, Targets: f.targets, Version: "v0.14.0", WorkFactor: 10,
 		LatestSnapshot: func(context.Context) *metabackup.Snapshot {
-			return &metabackup.Snapshot{TargetID: "stg_1", Key: metabackup.Prefix + "mongorescue-20261002T100000000Z.db.age", Encrypted: true}
+			return &metabackup.Snapshot{TargetID: "stg_1", InstallID: "0123456789abcdef", Key: testPrefix + "mongorescue-20261002T100000000Z.db.age", Encrypted: true}
 		},
-		Now: func() time.Time { return time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC) },
+		MetadataPrefix: testPrefix,
+		Now:            func() time.Time { return time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +176,7 @@ func TestKitRoundTrip(t *testing.T) {
 	if m.Format != recoverykit.Format || len(m.StorageTargets) != 1 || m.StorageTargets[0].S3.SecretAccessKey != "s3-secret-value" {
 		t.Fatalf("manifest = %+v", m)
 	}
-	if m.MetadataSnapshot == nil || m.MetadataSnapshot.TargetID != "stg_1" || !m.Encryption.PassphraseConfigured {
+	if m.MetadataSnapshot == nil || m.MetadataSnapshot.TargetID != "stg_1" || m.MetadataPrefix != testPrefix || !m.Encryption.PassphraseConfigured {
 		t.Fatalf("manifest = %+v", m)
 	}
 	for name, body := range files {
@@ -178,6 +190,48 @@ func TestKitRoundTrip(t *testing.T) {
 	fp, _ := f.svc.Fingerprint(ctx)
 	if f.settings.downloaded != fp {
 		t.Fatal("MarkDownloaded must record the kit's fingerprint")
+	}
+}
+
+// sealAndOpen prepares, seals and opens a kit of f.
+func sealAndOpen(t *testing.T, f *fixture) map[string]string {
+	t.Helper()
+	kit, err := f.svc.Prepare(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sealed bytes.Buffer
+	if err = f.svc.Seal(&sealed, kit, passphrase); err != nil {
+		t.Fatal(err)
+	}
+	return open(t, sealed.Bytes(), passphrase)
+}
+
+// TestReadmeFollowsTheKeyMaterial checks the decryption step of the README: with
+// identities on the server it points to identities.txt; in recipient-only mode the
+// kit has no identities.txt and the README points to the administrator's own key.
+func TestReadmeFollowsTheKeyMaterial(t *testing.T) {
+	withIdentity := sealAndOpen(t, newFixture(t))
+	readme := withIdentity[recoverykit.ReadmeName]
+	if !strings.Contains(readme, "age -d -i identities.txt") || strings.Contains(readme, "<your key file>") || withIdentity[recoverykit.IdentitiesName] == "" {
+		t.Fatalf("README with identities:\n%s", readme)
+	}
+	if !strings.Contains(readme, testPrefix) {
+		t.Fatal("README must name this installation's snapshot prefix")
+	}
+
+	recipientOnly := sealAndOpen(t, newFixtureWith(t, func(s *settings.Settings) {
+		s.Encryption.Identity, s.Encryption.Passphrase = "", ""
+	}))
+	readme = recipientOnly[recoverykit.ReadmeName]
+	if _, ok := recipientOnly[recoverykit.IdentitiesName]; ok {
+		t.Fatal("a recipient-only kit must not contain identities.txt")
+	}
+	if strings.Contains(readme, "identities.txt") || !strings.Contains(readme, "age -d -i <your key file>") {
+		t.Fatalf("README in recipient-only mode:\n%s", readme)
+	}
+	if strings.Contains(readme, "passphrase encryption") {
+		t.Fatal("README must not describe passphrase decryption without a passphrase")
 	}
 }
 
