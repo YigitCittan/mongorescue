@@ -19,7 +19,8 @@ func (s *Server) registerHistoryRoutes(mux *router) {
 
 // handleStatsHistory serves the outcomes and stored sizes per day, the jobs' recent
 // runs, the next day's scheduled runs and the failed verifications
-// (?days=30&tz_offset=<minutes east of UTC>).
+// (?days=30&tz=<IANA zone>&tz_offset=<minutes east of UTC, used when tz is
+// missing or unknown>).
 func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 	days, ok := optionalInt(w, r, "days")
 	if !ok {
@@ -29,7 +30,7 @@ func (s *Server) handleStatsHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req := operations.HistoryRequest{}
+	req := operations.HistoryRequest{TimeZone: r.URL.Query().Get("tz")}
 	if days != nil {
 		if *days == 0 {
 			// 0 would mean the default in the request; here it is out of range.

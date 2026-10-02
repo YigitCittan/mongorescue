@@ -81,6 +81,15 @@ func TestStatsHistoryEndpoint(t *testing.T) {
 		t.Errorf("upcoming = %d runs", len(h.Upcoming))
 	}
 
+	for q, want := range map[string]string{"tz=Asia%2FTokyo&tz_offset=0": "Asia/Tokyo", "tz=Nowhere%2FCity&tz_offset=-90": "UTC-01:30"} {
+		var zone struct {
+			TimeZone string `json:"time_zone"`
+		}
+		decodeData(t, serve(f.h, "GET", "/api/v1/stats/history?"+q, nil, map[string]string{"X-API-Key": f.keys[auth.ScopeRead]}), &zone)
+		if zone.TimeZone != want {
+			t.Errorf("?%s: time_zone = %q; want %q", q, zone.TimeZone, want)
+		}
+	}
 	for _, q := range []string{"days=0", "days=400", "days=x", "tz_offset=9999", "tz_offset=x"} {
 		rec := serve(f.h, "GET", "/api/v1/stats/history?"+q, nil, map[string]string{"X-API-Key": f.keys[auth.ScopeRead]})
 		if rec.Code != http.StatusBadRequest {

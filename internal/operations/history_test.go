@@ -3,6 +3,8 @@ package operations_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +157,51 @@ func TestPreviewSchedule(t *testing.T) {
 		if _, err := svc.PreviewSchedule(tc.expr, tc.n); !errors.Is(err, operations.ErrInvalid) {
 			t.Errorf("PreviewSchedule(%q, %d) = %v; want ErrInvalid", tc.expr, tc.n, err)
 		}
+	}
+}
+
+// TestHistoryDaysFollowTheCallersZoneAcrossDST cuts days at Berlin's midnights
+// around the end of daylight saving time (25 October 2026, a 25-hour day), where a
+// fixed offset would put a backup on the wrong day.
+func TestHistoryDaysFollowTheCallersZoneAcrossDST(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	for _, r := range []*models.BackupRecord{
+		// 00:30 CEST on the 25th (UTC+2) and 23:30 CET on the 25th (UTC+1).
+		{ID: "early", Database: "shop", Status: models.StatusCompleted, StartedAt: time.Date(2026, 10, 24, 22, 30, 0, 0, time.UTC), SizeBytes: 1},
+		{ID: "late", Database: "shop", Status: models.StatusCompleted, StartedAt: time.Date(2026, 10, 25, 22, 30, 0, 0, time.UTC), SizeBytes: 2},
+	} {
+		if err := st.SaveBackupRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := newServiceWith(t, st)
+	operations.SetNow(svc, func() time.Time { return time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC) })
+
+	h, err := svc.History(ctx, operations.HistoryRequest{Days: 4, TimeZone: "Europe/Berlin", OffsetMinutes: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.TimeZone != "Europe/Berlin" || h.OffsetMinutes != 60 || !h.From.Equal(time.Date(2026, 10, 23, 22, 0, 0, 0, time.UTC)) {
+		t.Fatalf("zone = %s %d, from = %v", h.TimeZone, h.OffsetMinutes, h.From)
+	}
+	got := []string{}
+	for _, d := range h.Daily {
+		got = append(got, fmt.Sprintf("%s:%d", d.Date, d.Completed))
+	}
+	if want := "2026-10-24:0 2026-10-25:2 2026-10-26:0 2026-10-27:0"; strings.Join(got, " ") != want {
+		t.Errorf("days = %s; want %s", strings.Join(got, " "), want)
+	}
+
+	// The summer offset alone (what an old client sends) puts "late" on the 26th.
+	fixed, err := svc.History(ctx, operations.HistoryRequest{Days: 4, TimeZone: "Mars/Olympus_Mons", OffsetMinutes: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixed.TimeZone != "UTC+02:00" || fixed.Daily[1].Completed != 1 || fixed.Daily[2].Completed != 1 {
+		t.Errorf("fallback = %s %+v", fixed.TimeZone, fixed.Daily)
+	}
+	if local, _ := svc.History(ctx, operations.HistoryRequest{Days: 1, TimeZone: "Local", OffsetMinutes: -300}); local == nil || local.TimeZone != "UTC-05:00" {
+		t.Errorf("Local must not select the server's zone: %+v", local)
 	}
 }

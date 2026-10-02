@@ -396,7 +396,16 @@ async function overviewRefresh(force) {
   overview.loading = true;
   const offset = -new Date().getTimezoneOffset();
   try {
-    const json = await apiJSON(`/api/v1/stats/history?days=${OVERVIEW_DAYS}&tz_offset=${offset}`);
+    // Days follow the browser's zone (also across daylight saving changes); the
+    // offset is the fallback for zones the server does not know.
+    let zone = "";
+    try {
+      zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch (err) {
+      zone = "";
+    }
+    const tz = zone ? `&tz=${encodeURIComponent(zone)}` : "";
+    const json = await apiJSON(`/api/v1/stats/history?days=${OVERVIEW_DAYS}${tz}&tz_offset=${offset}`);
     if (json.success && json.data) {
       overview.data = json.data;
       overview.error = "";

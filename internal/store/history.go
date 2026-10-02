@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -14,14 +17,20 @@ const MaxHistoryRunsPerJob = 50
 // MaxHistoryIssues bounds BackupHistoryQuery.MaxIssues.
 const MaxHistoryIssues = 100
 
+// MaxHistoryDays bounds the number of days of a BackupHistoryQuery.
+const MaxHistoryDays = 366
+
+// ErrInvalidHistory is returned by BackupHistory for day boundaries that are
+// missing, too many or not increasing.
+var ErrInvalidHistory = errors.New("store: invalid history query")
+
 // BackupHistoryQuery selects what BackupHistory aggregates.
 type BackupHistoryQuery struct {
-	// From is the start of the first day; backups that started earlier only count
-	// towards BytesBefore.
-	From time.Time
-	// OffsetSeconds shifts start times before they are cut into days, so days follow
-	// the caller's time zone (east of UTC is positive).
-	OffsetSeconds int64
+	// DayStarts are the boundaries of the days, in increasing order: day i spans
+	// [DayStarts[i], DayStarts[i+1]), so n days need n+1 boundaries (at most
+	// MaxHistoryDays days). Callers compute them in the user's time zone, so days
+	// follow its midnights also across daylight saving changes.
+	DayStarts []time.Time
 	// RunsPerJob is how many of each job's newest backups are returned (0 for none,
 	// at most MaxHistoryRunsPerJob).
 	RunsPerJob int
@@ -32,8 +41,8 @@ type BackupHistoryQuery struct {
 
 // BackupDay aggregates the backups that started on one day.
 type BackupDay struct {
-	// Day is the day number: whole days since 1970-01-01 in the query's time zone.
-	Day int64
+	// Day is the index of the day in BackupHistoryQuery.DayStarts.
+	Day int
 	// Completed, Failed and Cancelled count the backups of each final status.
 	Completed, Failed, Cancelled int
 	// CompletedBytes sums the size of the completed ones.
@@ -68,65 +77,120 @@ type VerificationIssue struct {
 
 // BackupHistory holds SQL aggregates of the backups over time.
 type BackupHistory struct {
-	// Days lists the days from the query's From that have backups, oldest first.
+	// Days lists the days that have backups, in day order.
 	Days []BackupDay
-	// BytesBefore sums the size of completed backups that started before From.
+	// BytesBefore sums the size of completed backups that started before the first
+	// day.
 	BytesBefore int64
-	// JobRuns maps each job ID to its newest backups, oldest first.
+	// JobRuns maps the ID of each job (in the jobs table) with backups to its
+	// newest backups, oldest first.
 	JobRuns map[string][]JobRun
-	// LastSuccess maps each job ID with a completed backup to the start time of its
-	// newest one.
+	// LastSuccess maps the ID of each job with a completed backup to the start time
+	// of its newest one.
 	LastSuccess map[string]time.Time
-	// VerificationIssues lists the newest completed backups whose verification
-	// failed (mismatch or error), newest first.
+	// VerificationIssues lists the newest completed backups of the window (started
+	// on or after the first day) whose verification failed (mismatch or error),
+	// newest first.
 	VerificationIssues []VerificationIssue
-	// VerificationIssueTotal counts all of them.
+	// VerificationIssueTotal counts all of them in the window.
 	VerificationIssueTotal int
 }
 
-// BackupHistory returns the per-day outcomes and sizes of the backups that started
-// at or after q.From, the size stored before it, every job's newest runs and last
-// success, and the completed backups whose verification failed. Everything is
-// computed with SQL aggregates; no record is decoded.
+// The history's queries. Each one is answered from an index on backups
+// (started_at, (status, started_at) or (job_id, started_at)) and never scans the
+// table; JSON is read only from the rows the index selected (TestHistoryQueryPlans).
+const (
+	// historyBytesBeforeSQL sums the completed backups that started before ?.
+	historyBytesBeforeSQL = `SELECT coalesce(sum(size_bytes), 0) FROM backups WHERE status = ? AND started_at < ?`
+	// historyRunsSQL lists each job's ? newest backups: one index search per job,
+	// the duration read only from those rows.
+	historyRunsSQL = `SELECT b.job_id, b.id, b.status, b.started_at,
+			CAST(coalesce(json_extract(b.data, '$.duration_seconds'), 0) AS REAL)
+		FROM jobs j JOIN backups b ON b.id IN (
+			SELECT id FROM backups WHERE job_id = j.id ORDER BY started_at DESC, id DESC LIMIT ?)
+		ORDER BY b.job_id, b.started_at, b.id`
+	// historyLastSuccessSQL finds each job's newest completed backup by walking its
+	// backups newest first (job index) until the first completed one; "+status"
+	// keeps the planner from walking every completed backup through the status index.
+	historyLastSuccessSQL = `SELECT j.id, (SELECT started_at FROM backups
+			WHERE job_id = j.id AND +status = ? ORDER BY started_at DESC, id DESC LIMIT 1)
+		FROM jobs j`
+	// historyVerificationSQL lists the completed backups that started at or after ?
+	// and failed verification, with their count; the verification is extracted once
+	// per completed backup of the window, which the (status, started_at) index selects
+	// (the planner would otherwise prefer a full scan when the window holds many rows).
+	historyVerificationSQL = `WITH w AS MATERIALIZED (
+			SELECT id, job_id, database_name, started_at, json_extract(data, '$.verification') AS verification
+			FROM backups INDEXED BY backups_by_status_started WHERE status = ? AND started_at >= ?)
+		SELECT id, job_id, database_name, started_at, verification, count(*) OVER ()
+		FROM w WHERE verification IN (?, ?) ORDER BY started_at DESC, id DESC LIMIT ?`
+)
+
+// historyDaysSQL aggregates the backups per day of n days: day boundaries as a
+// VALUES table, one started_at index range per day.
+func historyDaysSQL(n int) string {
+	rows := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", n), ",")
+	return `WITH d(day, lo, hi) AS (VALUES ` + rows + `)
+		SELECT d.day, b.status, count(*), coalesce(sum(b.size_bytes), 0)
+		FROM d JOIN backups b ON b.started_at >= d.lo AND b.started_at < d.hi
+		GROUP BY d.day, b.status ORDER BY d.day`
+}
+
+// BackupHistory returns the per-day outcomes and sizes of the backups in the days
+// of q, the size stored before them, every job's newest runs and last success, and
+// the window's completed backups whose verification failed. Everything is computed
+// with SQL over indexes; JSON is read only from the selected rows.
 func (s *SQLiteStore) BackupHistory(ctx context.Context, q BackupHistoryQuery) (*BackupHistory, error) {
+	n := len(q.DayStarts) - 1
+	if n < 1 || n > MaxHistoryDays {
+		return nil, fmt.Errorf("%w: %d day boundaries", ErrInvalidHistory, len(q.DayStarts))
+	}
+	for i := 1; i <= n; i++ {
+		if !q.DayStarts[i].After(q.DayStarts[i-1]) {
+			return nil, fmt.Errorf("%w: day boundaries must increase", ErrInvalidHistory)
+		}
+	}
 	h := &BackupHistory{JobRuns: map[string][]JobRun{}, LastSuccess: map[string]time.Time{}}
-	from := timeKey(q.From)
-	if err := s.historyDays(ctx, h, from, q.OffsetSeconds); err != nil {
+	if err := s.historyDays(ctx, h, q.DayStarts); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT coalesce(sum(size_bytes), 0) FROM backups WHERE status = ? AND started_at < ?`,
-		string(models.StatusCompleted), from).Scan(&h.BytesBefore); err != nil {
+	from := timeKey(q.DayStarts[0])
+	if err := s.db.QueryRowContext(ctx, historyBytesBeforeSQL, string(models.StatusCompleted), from).Scan(&h.BytesBefore); err != nil {
 		return nil, fmt.Errorf("store: stored bytes before the history: %w", err)
 	}
-	if n := min(max(q.RunsPerJob, 0), MaxHistoryRunsPerJob); n > 0 {
-		if err := s.historyJobRuns(ctx, h, n); err != nil {
+	if perJob := min(max(q.RunsPerJob, 0), MaxHistoryRunsPerJob); perJob > 0 {
+		if err := s.historyJobRuns(ctx, h, perJob); err != nil {
 			return nil, err
 		}
 	}
 	if err := s.historyLastSuccess(ctx, h); err != nil {
 		return nil, err
 	}
-	if err := s.historyVerification(ctx, h, min(max(q.MaxIssues, 0), MaxHistoryIssues)); err != nil {
+	if err := s.historyVerification(ctx, h, from, min(max(q.MaxIssues, 0), MaxHistoryIssues)); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, from, offset int64) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT (started_at / 1000000000 + ?) / 86400 AS day, status, count(*), coalesce(sum(size_bytes), 0)
-		FROM backups WHERE started_at >= ? GROUP BY day, status ORDER BY day`, offset, from)
+func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, starts []time.Time) error {
+	n := len(starts) - 1
+	args := make([]any, 0, 3*n)
+	for i := range n {
+		args = append(args, i, timeKey(starts[i]), timeKey(starts[i+1]))
+	}
+	rows, err := s.db.QueryContext(ctx, historyDaysSQL(n), args...)
 	if err != nil {
 		return fmt.Errorf("store: backup history: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
-			day    int64
+			day    int
 			status string
-			n      int
+			count  int
 			bytes  int64
 		)
-		if err := rows.Scan(&day, &status, &n, &bytes); err != nil {
+		if err := rows.Scan(&day, &status, &count, &bytes); err != nil {
 			return fmt.Errorf("store: scan backup history: %w", err)
 		}
 		if len(h.Days) == 0 || h.Days[len(h.Days)-1].Day != day {
@@ -135,12 +199,12 @@ func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, from, o
 		d := &h.Days[len(h.Days)-1]
 		switch models.BackupStatus(status) {
 		case models.StatusCompleted:
-			d.Completed += n
+			d.Completed += count
 			d.CompletedBytes += bytes
 		case models.StatusFailed:
-			d.Failed += n
+			d.Failed += count
 		case models.StatusCancelled:
-			d.Cancelled += n
+			d.Cancelled += count
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -150,12 +214,7 @@ func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, from, o
 }
 
 func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJob int) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT job_id, id, status, started_at, duration FROM (
-			SELECT job_id, id, status, started_at,
-				CAST(coalesce(json_extract(data, '$.duration_seconds'), 0) AS REAL) AS duration,
-				row_number() OVER (PARTITION BY job_id ORDER BY started_at DESC, id DESC) AS rn
-			FROM backups WHERE job_id != ''
-		) WHERE rn <= ? ORDER BY job_id, started_at, id`, perJob)
+	rows, err := s.db.QueryContext(ctx, historyRunsSQL, perJob)
 	if err != nil {
 		return fmt.Errorf("store: recent job runs: %w", err)
 	}
@@ -180,8 +239,7 @@ func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJ
 }
 
 func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT job_id, max(started_at) FROM backups
-		WHERE job_id != '' AND status = ? GROUP BY job_id`, string(models.StatusCompleted))
+	rows, err := s.db.QueryContext(ctx, historyLastSuccessSQL, string(models.StatusCompleted))
 	if err != nil {
 		return fmt.Errorf("store: last successful job runs: %w", err)
 	}
@@ -189,12 +247,14 @@ func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) 
 	for rows.Next() {
 		var (
 			jobID   string
-			started int64
+			started sql.NullInt64
 		)
 		if err := rows.Scan(&jobID, &started); err != nil {
 			return fmt.Errorf("store: scan last successful job runs: %w", err)
 		}
-		h.LastSuccess[jobID] = time.Unix(0, started).UTC()
+		if started.Valid {
+			h.LastSuccess[jobID] = time.Unix(0, started.Int64).UTC()
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("store: read last successful job runs: %w", err)
@@ -202,17 +262,14 @@ func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) 
 	return nil
 }
 
-func (s *SQLiteStore) historyVerification(ctx context.Context, h *BackupHistory, limit int) error {
-	const where = `FROM backups WHERE status = ? AND json_extract(data, '$.verification') IN (?, ?)`
-	args := []any{string(models.StatusCompleted), string(models.VerificationMismatch), string(models.VerificationError)}
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) `+where, args...).Scan(&h.VerificationIssueTotal); err != nil {
-		return fmt.Errorf("store: count failed verifications: %w", err)
+func (s *SQLiteStore) historyVerification(ctx context.Context, h *BackupHistory, from int64, limit int) error {
+	if limit == 0 {
+		// Only the count is wanted: one row is enough to carry it.
+		limit = 1
+		defer func() { h.VerificationIssues = nil }()
 	}
-	if limit == 0 || h.VerificationIssueTotal == 0 {
-		return nil
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, job_id, database_name, started_at, json_extract(data, '$.verification') `+where+
-		` ORDER BY started_at DESC, id DESC LIMIT ?`, append(args, limit)...)
+	rows, err := s.db.QueryContext(ctx, historyVerificationSQL, string(models.StatusCompleted), from,
+		string(models.VerificationMismatch), string(models.VerificationError), limit)
 	if err != nil {
 		return fmt.Errorf("store: failed verifications: %w", err)
 	}
@@ -223,7 +280,7 @@ func (s *SQLiteStore) historyVerification(ctx context.Context, h *BackupHistory,
 			started int64
 			status  string
 		)
-		if err := rows.Scan(&v.ID, &v.JobID, &v.Database, &started, &status); err != nil {
+		if err := rows.Scan(&v.ID, &v.JobID, &v.Database, &started, &status, &h.VerificationIssueTotal); err != nil {
 			return fmt.Errorf("store: scan failed verifications: %w", err)
 		}
 		v.StartedAt, v.Verification = time.Unix(0, started).UTC(), models.VerificationStatus(status)
