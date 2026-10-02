@@ -1,6 +1,7 @@
 package operations_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -224,6 +225,61 @@ func TestFilterJobsLastStatusMatchesPerJobRuns(t *testing.T) {
 		if got := jobIDs(jobs); got != strings.Join(expected, ",") {
 			t.Errorf("last_status %s = %s; per-job runs give %s", want, got, strings.Join(expected, ","))
 		}
+	}
+}
+
+// Stats' job_last_runs, read in one batch, is what the per-job ListJobRuns(1)
+// lookups it replaced produced: every multi-database job with runs, its newest run
+// briefed, and no entry for single-database jobs or jobs without runs.
+func TestStatsJobLastRunsMatchesPerJobRuns(t *testing.T) {
+	env := jobListEnv(t)
+	ctx := admin()
+	now := time.Now().UTC()
+	statuses := []models.JobRunStatus{models.JobRunOK, models.JobRunPartial, models.JobRunFailed, models.JobRunCancelled, models.JobRunRunning}
+	for i := range 8 {
+		id := fmt.Sprintf("m_%02d", i)
+		if err := env.st.SaveJob(ctx, &models.Job{ID: id, Name: id, Database: "a", CronExpression: "@daily", ConnectionID: "c1",
+			DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}}); err != nil {
+			t.Fatal(err)
+		}
+		for k := 0; k < 3 && i < 6; k++ {
+			run := &models.JobRun{ID: fmt.Sprintf("run_%02d_%d", i, k), JobID: id, Status: statuses[(i+k)%len(statuses)],
+				StartedAt: now.Add(time.Duration(k) * time.Minute),
+				Databases: []models.JobRunDatabase{{Database: "a", Status: models.StatusCompleted}, {Database: "b", Status: models.StatusFailed, Error: "boom"}}}
+			if err := env.st.SaveJobRun(ctx, run); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// A single-database job's runs never appear.
+	if err := env.st.SaveJobRun(ctx, &models.JobRun{ID: "run_single", JobID: "j_daily", Status: models.JobRunOK, StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	got := env.svc.Stats(ctx).JobLastRuns
+
+	jobs, err := env.st.ListJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]operations.JobRunBrief{}
+	for _, j := range jobs {
+		if !j.MultiDatabase() {
+			continue
+		}
+		list, err := env.st.ListJobRuns(ctx, j.ID, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) == 1 {
+			r := list[0]
+			ok, _, _, _ := r.Counts()
+			want[j.ID] = operations.JobRunBrief{ID: r.ID, Status: r.Status, StartedAt: r.StartedAt, Databases: len(r.Databases), Succeeded: ok, FailedDatabases: r.FailedDatabases()}
+		}
+	}
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) || len(got) != 6 {
+		t.Errorf("job_last_runs =\n%s\nwant (per-job lookups)\n%s", gotJSON, wantJSON)
 	}
 }
 
