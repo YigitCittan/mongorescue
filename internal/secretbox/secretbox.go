@@ -16,7 +16,9 @@ package secretbox
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -91,6 +93,27 @@ func GenerateKey() ([]byte, error) {
 		return nil, fmt.Errorf("secretbox: generate key: %w", err)
 	}
 	return key, nil
+}
+
+// SubkeyInfoPrefix starts the HKDF info string of every subkey DeriveSubkey returns.
+const SubkeyInfoPrefix = "mongorescue/secretbox/subkey/"
+
+// DeriveSubkey derives a KeySize-byte subkey for purpose from the master key with
+// HKDF-SHA256 (no salt, info SubkeyInfoPrefix + purpose). Other components key their
+// MACs with such a subkey and never hold the encryption key itself; different
+// purposes give independent keys.
+func DeriveSubkey(master []byte, purpose string) ([]byte, error) {
+	if len(master) != KeySize {
+		return nil, ErrInvalidKey
+	}
+	if purpose == "" {
+		return nil, errors.New("secretbox: subkey purpose is required")
+	}
+	sub, err := hkdf.Key(sha256.New, master, nil, SubkeyInfoPrefix+purpose, KeySize)
+	if err != nil {
+		return nil, fmt.Errorf("secretbox: derive subkey: %w", err)
+	}
+	return sub, nil
 }
 
 // ParseKey decodes a base64 (standard or URL alphabet, padded or not) key.

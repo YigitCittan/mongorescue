@@ -214,7 +214,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	targetSvc := targets.NewService(metaStore, storage.NewForTarget, cfg.DataDir, targets.WithLogger(logger))
 	prober := mongoconn.New()
 	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger))
+	importedKeySecret, err := secretbox.DeriveSubkey(key.Key, auth.ImportedKeySubkeyPurpose)
+	if err != nil {
+		return nil, fmt.Errorf("initialize authentication: %w", err)
+	}
 	authSvc, err := auth.NewService(metaStore, auth.WithLogger(logger),
+		auth.WithImportedKeySecret(importedKeySecret),
 		auth.WithSessionPolicy(func() (time.Duration, time.Duration) {
 			sec := settingsSvc.Current().Security
 			return sec.SessionIdleTimeout.Std(), sec.SessionAbsoluteTimeout.Std()

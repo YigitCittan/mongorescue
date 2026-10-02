@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -48,6 +49,9 @@ type Service struct {
 	// a slot instead of being refused.
 	hashSlots chan struct{}
 	hashWait  time.Duration
+	// importedKeyMACKey keys the hashes of keys imported from MONGORESCUE_API_KEY
+	// (see WithImportedKeySecret).
+	importedKeyMACKey []byte
 
 	mu        sync.Mutex
 	setupCode string
@@ -58,6 +62,15 @@ type Option func(*Service)
 
 // WithLogger sets the logger.
 func WithLogger(l *slog.Logger) Option { return func(s *Service) { s.logger = l } }
+
+// WithImportedKeySecret sets the key that MACs API keys imported from the deprecated
+// MONGORESCUE_API_KEY: a subkey of secret.key (secretbox.DeriveSubkey with
+// ImportedKeySubkeyPurpose), so imported keys keep verifying across restarts. Without
+// it a random per-process key is used, and keys imported by that Service only verify
+// until it stops.
+func WithImportedKeySecret(key []byte) Option {
+	return func(s *Service) { s.importedKeyMACKey = bytes.Clone(key) }
+}
 
 // WithClock overrides the time source (tests).
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
@@ -129,6 +142,11 @@ func NewService(repo Repository, opts ...Option) (*Service, error) {
 	dummy, err := randomBytes(18)
 	if err != nil {
 		return nil, err
+	}
+	if len(s.importedKeyMACKey) == 0 {
+		if s.importedKeyMACKey, err = randomBytes(32); err != nil {
+			return nil, err
+		}
 	}
 	if s.dummyHash, err = bcrypt.GenerateFromPassword(dummy, s.bcryptCost); err != nil {
 		return nil, fmt.Errorf("auth: prepare dummy hash: %w", err)
@@ -222,7 +240,7 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 	given := normalizeSetupCode(code)
 	want := normalizeSetupCode(expected)
 	if expected == "" || subtle.ConstantTimeCompare([]byte(given), []byte(want)) != 1 {
-		s.logger.Warn("setup attempt with an invalid setup code", slog.String("client_ip", clientIP))
+		s.logger.Warn("setup attempt with an invalid setup code", logsafe.Attr("client_ip", clientIP))
 		if wait := s.throttle.CountFailure("setup|"+clientIP, SetupFreeAttempts, SetupWindow); wait > 0 {
 			return nil, &ThrottledError{RetryAfter: wait}
 		}
@@ -241,7 +259,7 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 		s.setupCode = "" // single use
 	}
 	s.mu.Unlock()
-	s.logger.Info("setup completed: first user created", slog.String("user_id", user.ID), slog.String("username", user.Username))
+	s.logger.Info("setup completed: first user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username))
 	return s.startSession(ctx, user)
 }
 
@@ -282,7 +300,7 @@ func (s *Service) Login(ctx context.Context, clientIP, username, password string
 	}
 	if !matched || user == nil {
 		attempt.Failed()
-		s.logger.Warn("failed login", slog.String("client_ip", clientIP))
+		s.logger.Warn("failed login", logsafe.Attr("client_ip", clientIP))
 		return nil, ErrInvalidCredentials
 	}
 	attempt.Succeeded()
@@ -377,21 +395,14 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 	if key == "" || len(key) > maxAPIKeyLength {
 		return nil, ErrUnauthenticated
 	}
-	prefix, ok := parseAPIKey(key)
-	if !ok {
-		if len(key) < minImportedKeyLength {
-			return nil, ErrUnauthenticated
-		}
-		prefix = importedKeyPrefix(key)
-	}
-	stored, err := s.repo.GetAPIKeyByPrefix(ctx, prefix)
+	stored, err := s.lookupAPIKey(ctx, key)
 	if errors.Is(err, ErrAPIKeyNotFound) {
 		return nil, ErrUnauthenticated
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !equalHashes(HashToken(key), stored.Hash) {
+	if !s.apiKeyMatches(key, stored.Hash) {
 		return nil, ErrUnauthenticated
 	}
 	now := s.now().UTC()
@@ -451,7 +462,7 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	if err := s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
-	s.logger.Info("user created", slog.String("user_id", user.ID), slog.String("username", user.Username),
+	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
 		slog.String("by", actor.UserID()))
 	return user, nil
 }
@@ -533,7 +544,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	if err != nil {
 		return nil, "", err
 	}
-	plain, prefix, err := newAPIKey()
+	plain, prefix, err := newGeneratedKey()
 	if err != nil {
 		return nil, "", err
 	}
@@ -558,10 +569,44 @@ const (
 	importedKeyName = "Imported from MONGORESCUE_API_KEY"
 )
 
-// importedKeyPrefix derives the lookup prefix of an imported key from its hash. The
-// leading upper-case "L" never occurs in generated (lower-case base32) prefixes.
-func importedKeyPrefix(key string) string {
-	return "L" + HashToken(key)[:apiKeyPrefixLen-1]
+// importedKeyPrefix derives the lookup prefix of an imported key from its MAC. The
+// leading upper-case "K" never occurs in generated (lower-case base32) prefixes.
+func (s *Service) importedKeyPrefix(key string) string {
+	return "K" + importedKeyMAC(s.importedKeyMACKey, key)[:apiKeyPrefixLen-1]
+}
+
+// legacyImportedKeyPrefix is the lookup prefix of a key imported by a release before
+// imported keys were MACed: "L" and the start of its SHA-256 (stored as Hash). Such
+// records keep working; only the presented key, never the import input, is hashed
+// this way.
+func legacyImportedKeyPrefix(presented string) string {
+	return "L" + HashToken(presented)[:apiKeyPrefixLen-1]
+}
+
+// lookupAPIKey finds the stored record of a presented key: by the prefix of a
+// generated key, otherwise by the prefix of an imported one (current MAC form first,
+// then the SHA-256 form of earlier releases).
+func (s *Service) lookupAPIKey(ctx context.Context, presented string) (*APIKey, error) {
+	if prefix, ok := parseAPIKey(presented); ok {
+		return s.repo.GetAPIKeyByPrefix(ctx, prefix)
+	}
+	if len(presented) < minImportedKeyLength {
+		return nil, ErrAPIKeyNotFound
+	}
+	stored, err := s.repo.GetAPIKeyByPrefix(ctx, s.importedKeyPrefix(presented))
+	if errors.Is(err, ErrAPIKeyNotFound) {
+		return s.repo.GetAPIKeyByPrefix(ctx, legacyImportedKeyPrefix(presented))
+	}
+	return stored, err
+}
+
+// apiKeyMatches compares a presented key with a stored hash in constant time: an
+// HMAC for keys imported by this release, a SHA-256 digest otherwise.
+func (s *Service) apiKeyMatches(presented, storedHash string) bool {
+	if mac, ok := strings.CutPrefix(storedHash, importedKeyMACScheme); ok {
+		return equalHashes(importedKeyMAC(s.importedKeyMACKey, presented), mac)
+	}
+	return equalHashes(HashToken(presented), storedHash)
 }
 
 // ImportAPIKey stores key, taken from the deprecated MONGORESCUE_API_KEY environment
@@ -572,9 +617,9 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	if len(key) < minImportedKeyLength || len(key) > maxAPIKeyLength {
 		return false, fmt.Errorf("%w: MONGORESCUE_API_KEY must be %d-%d characters", ErrInvalidName, minImportedKeyLength, maxAPIKeyLength)
 	}
-	prefix := importedKeyPrefix(key)
-	if _, ok := parseAPIKey(key); ok {
-		prefix, _ = parseAPIKey(key)
+	prefix := s.importedKeyPrefix(key)
+	if p, ok := parseAPIKey(key); ok {
+		prefix = p
 	}
 	if _, err := s.repo.GetAPIKeyByPrefix(ctx, prefix); err == nil {
 		return false, nil
@@ -585,8 +630,11 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// The imported key keeps the full rights it had before scopes existed.
-	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: HashToken(key), CreatedAt: s.now().UTC()}
+	// The imported key keeps the full rights it had before scopes existed. It was
+	// chosen by an administrator, not generated, so it is stored as a keyed MAC
+	// rather than a plain digest.
+	hash := importedKeyMACScheme + importedKeyMAC(s.importedKeyMACKey, key)
+	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC()}
 	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}
