@@ -470,7 +470,7 @@ func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) (*models.Backu
 	if err != nil {
 		return nil, err
 	}
-	if err := s.BeginJobRun(ctx, plan); err != nil {
+	if err = s.BeginJobRun(ctx, plan); err != nil {
 		return nil, err
 	}
 	_, err = s.ExecuteJobRun(ctx, plan)
