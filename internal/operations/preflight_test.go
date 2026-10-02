@@ -142,6 +142,7 @@ func (e *completingEngine) runs() int {
 type preflightEnv struct {
 	svc       *operations.Service
 	st        *store.SQLiteStore
+	runs      *runs.Manager
 	ins       *fakeInspector
 	engine    *completingEngine
 	publisher *recordingPublisher
@@ -161,7 +162,7 @@ func newPreflightEnv(t *testing.T, ins *fakeInspector, mutate func(*models.Backu
 	st := storetest.New(t)
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
-	env := &preflightEnv{st: st, ins: ins, engine: &completingEngine{prep: restore.NewEngine(nil, "")}, publisher: &recordingPublisher{}}
+	env := &preflightEnv{st: st, runs: manager, ins: ins, engine: &completingEngine{prep: restore.NewEngine(nil, "")}, publisher: &recordingPublisher{}}
 	cfg := operations.Config{
 		Store:       st,
 		Backup:      backup.NewEngine(storage.NewMockStorage(), ""),
@@ -485,10 +486,62 @@ func TestStartRestoreIsRefusedByAFailedPreflight(t *testing.T) {
 	if done.Status != models.RestoreStatusCompleted || !done.Forced || done.Preflight == nil || done.Preflight.OK {
 		t.Fatalf("forced restore = %+v", done)
 	}
+	// The record is completed a moment before the run releases its lock.
+	waitIdle(t, env.runs)
 
 	// A dry run is never refused.
-	if _, err = env.svc.StartRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID, DryRun: true}); err != nil {
+	dry, err := env.svc.StartRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID, DryRun: true})
+	if err != nil {
 		t.Fatalf("dry run: %v", err)
+	}
+	waitRestoreDone(t, env.svc, dry.ID)
+}
+
+func TestDryRunTakesNoTargetLock(t *testing.T) {
+	env := newPreflightEnv(t, healthyInspector(), nil)
+	f := false
+	req := models.RestoreRequest{BackupID: env.backup.ID, SafeClone: &f, ConfirmInPlace: true}
+	release, err := env.runs.Acquire(runs.RestoreKey("conn_a", "shop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// A restore into a database that is being restored is refused; a dry run is not.
+	if _, err = env.svc.StartRestore(admin(), req); !errors.Is(err, operations.ErrBusy) {
+		t.Fatalf("restore while the target is locked: %v; want ErrBusy", err)
+	}
+	req.DryRun = true
+	dry, err := env.svc.StartRestore(admin(), req)
+	if err != nil {
+		t.Fatalf("dry run while the target is locked: %v", err)
+	}
+	if done := waitRestoreDone(t, env.svc, dry.ID); done.Status != models.RestoreStatusCompleted {
+		t.Fatalf("dry run = %+v", done)
+	}
+}
+
+// waitIdle waits until m runs nothing.
+func waitIdle(t *testing.T, m *runs.Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(m.Active()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("runs still active: %v", m.Active())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// awaitVerificationEvents polls for want restore.verification_failed events.
+func (p *recordingPublisher) awaitVerificationEvents(t *testing.T, want int) []events.Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := p.verificationEvents()
+		if len(got) >= want || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -655,7 +708,11 @@ func TestRestoreVerification(t *testing.T) {
 					t.Errorf("inspected %v; want the restored database %s", ins.inspected, done.TargetDatabase)
 				}
 			}
-			failed := env.publisher.verificationEvents()
+			want := 0
+			if tc.status == models.RestoreVerificationFailed {
+				want = 1
+			}
+			failed := env.publisher.awaitVerificationEvents(t, want)
 			switch {
 			case tc.status == models.RestoreVerificationFailed && (len(failed) != 1 || failed[0].RestoreID != done.ID || failed[0].Detail == ""):
 				t.Errorf("verification events = %+v; want one for %s", failed, done.ID)
