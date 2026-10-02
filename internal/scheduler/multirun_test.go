@@ -124,10 +124,10 @@ func TestListModeRecordsMissingDatabasesAndRunsTheOthers(t *testing.T) {
 	}
 	for _, db := range []string{"shop", "billing"} {
 		d := byName[db]
-		rec, err := f.store.GetBackupRecord(ctx, d.BackupID)
-		if err != nil || rec.Status != models.StatusCompleted || rec.RunID != run.ID || rec.Database != db || rec.JobID != "job_list" ||
+		rec, getErr := f.store.GetBackupRecord(ctx, d.BackupID)
+		if getErr != nil || rec.Status != models.StatusCompleted || rec.RunID != run.ID || rec.Database != db || rec.JobID != "job_list" ||
 			!strings.HasPrefix(rec.StorageKey, db+"/") {
-			t.Errorf("backup of %s = %+v, %v", db, rec, err)
+			t.Errorf("backup of %s = %+v, %v", db, rec, getErr)
 		}
 	}
 	page, err := f.store.QueryBackupRecords(ctx, store.BackupFilter{RunID: run.ID})
