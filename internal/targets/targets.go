@@ -20,10 +20,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -302,7 +304,7 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 		t.IsDefault = true
 	}
 	s.logger.Info("storage target created", slog.String("storage_target_id", t.ID),
-		slog.String("type", string(t.Type)), slog.String("location", t.Location()))
+		logsafe.Attr("type", string(t.Type)), logsafe.Attr("location", t.Location()))
 	return t.Redacted(), nil
 }
 
@@ -413,7 +415,10 @@ func (s *Service) TestInput(ctx context.Context, in Input, id string) (TestResul
 	// Testing an unsaved form must not create directories: a missing local path is
 	// reported instead (saving the target creates it).
 	if t.Type == models.StorageLocal {
-		path := s.LocalPath(t.Local.Path)
+		path, err := checkedPath(s.LocalPath(t.Local.Path))
+		if err != nil {
+			return TestResult{}, err
+		}
 		info, statErr := os.Stat(path)
 		switch {
 		case errors.Is(statErr, fs.ErrNotExist):
@@ -487,7 +492,7 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err = driver.Delete(cleanupCtx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), slog.Any("error", err))
+			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), logsafe.Error(err))
 		}
 	}()
 	rc, err := driver.Retrieve(ctx, key)
@@ -578,19 +583,48 @@ func cleanLocalPath(p string) (string, error) {
 	case len(p) > maxFieldLength || strings.ContainsFunc(p, isControl):
 		return "", fmt.Errorf("%w: local.path is not a valid path", ErrInvalid)
 	}
-	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
-		if part == ".." {
-			return "", fmt.Errorf("%w: local.path must not contain \"..\"", ErrInvalid)
-		}
+	if dotDotElement.MatchString(p) {
+		return "", errDotDot
 	}
 	return filepath.Clean(p), nil
+}
+
+// dotDotElement matches a path with a ".." element (separated by / or \); names that
+// merely contain two dots, such as "v1..v2", are fine.
+var dotDotElement = regexp.MustCompile(`(?:^|[/\\])\.\.(?:[/\\]|$)`)
+
+// errDotDot rejects a local path with a ".." element.
+var errDotDot = fmt.Errorf("%w: local.path must not contain \"..\"", ErrInvalid)
+
+// checkedPath is the last check of a resolved local target path before it reaches
+// the file system. The path is admin-supplied by design (any directory the server
+// may write to), so there is no allowed-roots list; the location policy itself lives
+// in checkLocalLocation. checkedPath makes sure the value handed to the file system is
+// what validation saw: no NUL or other control character, no ".." element, absolute,
+// and cleaned.
+func checkedPath(p string) (string, error) {
+	if strings.ContainsFunc(p, isControl) {
+		return "", fmt.Errorf("%w: local.path is not a valid path", ErrInvalid)
+	}
+	if dotDotElement.MatchString(p) {
+		return "", errDotDot
+	}
+	p = filepath.Clean(p)
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%w: local.path must be an absolute path such as /backups", ErrInvalid)
+	}
+	return p, nil
 }
 
 // checkLocalLocation refuses the file system root, the data directory and anything
 // inside it, comparing real paths (symbolic links of the nearest existing ancestor
 // resolved).
 func (s *Service) checkLocalLocation(p string) error {
-	target := realPath(s.LocalPath(p))
+	resolved, err := checkedPath(s.LocalPath(p))
+	if err != nil {
+		return err
+	}
+	target := realPath(resolved)
 	if filepath.Dir(target) == target {
 		return fmt.Errorf("%w: local.path must not be the root directory", ErrInvalid)
 	}
