@@ -100,7 +100,7 @@ flowchart TB
 | `internal/mongouri` | Structural validation of MongoDB connection strings without the driver |
 | `internal/mongotools` | Helpers shared by the tool runners, chiefly passing the URI through a private `--config` file |
 | `internal/integration` | `integration`-tagged end-to-end tests against real tools, MongoDB and S3 providers |
-| `web` | Embedded dashboard assets: `index.html`, `style.css` (theme tokens) and `nav.css`, `i18n.js`, `app.js` and its modules (`runs.js` run control, `trust.js` integrity, `forms.js` forms and accessibility, `bulk.js` selection and bulk actions, `nav.js` command palette, shortcuts, deep links and toasts, `overview.js` the Overview tab, `widgets.js` the cron builder and retention presets) |
+| `web` | Embedded dashboard assets: `index.html`, `style.css` (theme tokens) and `nav.css`, `i18n.js`, `app.js` and its modules (`runs.js` run control, `trust.js` integrity, `forms.js` forms and accessibility, `bulk.js` selection and bulk actions, `nav.js` command palette, shortcuts, deep links and toasts, `overview.js` the Overview tab, `widgets.js` the cron builder and retention presets, `tables.js` and `tables.css` table filters, sorting, saved views, columns, skeletons and form validation) |
 
 ## Backup data flow
 

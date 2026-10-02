@@ -67,7 +67,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/storage-targets/{id}/test` | Test a saved target → `{ok, latency_ms, error}` | 200 | 404 |
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
-| `GET` | `/api/v1/jobs` | List scheduled jobs | 200 | |
+| `GET` | `/api/v1/jobs` | List scheduled jobs, by name; optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated) | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) | 200 | 404 |
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
@@ -310,7 +310,7 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 | `backup_id` | | yes | Restores of this backup |
 | `from`, `to` | yes | yes | `started_at` range in RFC 3339 (`2026-10-01T00:00:00Z`); `from` is inclusive, `to` exclusive |
 | `q` | ID or database | ID, source or target database | Substring, ASCII case-insensitive; `%` and `_` are literal (at most 256 characters) |
-| `sort` | yes | yes | `desc` (newest first, default) or `asc` |
+| `sort` | `started_at`, `duration`, `size`, `database`, `status` | `started_at`, `duration`, `database` (target), `status` | A column for ascending order, `-` and a column for descending (`sort=-size`); ties keep the newest first. `desc` (newest first, the default) and `asc` still sort by start time |
 | `limit` | yes | yes | Page size, 1 to 200 |
 | `offset` | yes | yes | Matches to skip (default 0) |
 
@@ -327,14 +327,35 @@ Without `limit` the response is unchanged from earlier releases: `data` is the a
 
 > **Breaking (API) in 0.9.0:** these parameters are now validated. Earlier releases ignored every query parameter of `GET /api/v1/restores` and every one of `GET /api/v1/backups` except `database` and `job_id`; a malformed `status`, `trigger`, `from`, `to`, `sort`, `limit`, `offset`, `id` (more than 200 IDs) or an over-long `q`, `database`, `connection_id`, `job_id`, `retry_of`, `backup_id` or ID now answers `400` instead of being ignored. Unknown parameter names are still ignored.
 
-`total` counts every match, so a client can show "1–25 of 312"; an `offset` past the end returns an empty `data` with the same `total`. A malformed or out-of-range value (`limit=0`, `limit=500`, `sort=random`, `from=yesterday`, `to` before `from`, an unknown `status` or `trigger`) answers `400` with a message naming the parameter. Backup items carry `retried_by`, the newest backup whose `retry_of` is this one, when there is one; it is computed for each listed row, so retry links work on any page.
+`total` counts every match, so a client can show "1–25 of 312"; an `offset` past the end returns an empty `data` with the same `total`. A malformed or out-of-range value (`limit=0`, `limit=500`, `sort=random`, `sort=id`, `sort=size` on restores, `from=yesterday`, `to` before `from`, an unknown `status` or `trigger`) answers `400` with a message naming the parameter. Backup items carry `retried_by`, the newest backup whose `retry_of` is this one, when there is one; it is computed for each listed row, so retry links work on any page.
 
 ```bash
 curl "http://localhost:8080/api/v1/backups?status=failed&database=shop&from=2026-09-01T00:00:00Z&limit=25&offset=25" \
   -H "X-API-Key: $MONGORESCUE_READ_KEY"
 ```
 
+The sort columns are a fixed list mapped to constant SQL; anything else, a different case or a column the resource has not answers `400` listing the accepted columns.
+
+```bash
+curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25" -H "X-API-Key: $MONGORESCUE_READ_KEY"
+```
+
 `GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For administrators (dashboard sessions and `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
+
+## Listing jobs
+
+`GET /api/v1/jobs` returns every job sorted by name. Optional filters keep only the matching jobs, with the same matcher as the jobs [bulk filter](#bulk-actions), so selecting "all matching" there selects exactly the listed jobs. All given filters must match; without any the response is unchanged.
+
+| Parameter | Meaning |
+| --- | --- |
+| `q` | ID, name, database or a multi-database job's selection contains this text (case-insensitive, at most 256 characters) |
+| `enabled` | `true` scheduled jobs, `false` paused ones (anything else: `400`) |
+| `connection_id` | Jobs of this connection |
+| `database` | Jobs covering this database: a single-database job's database, or one a multi-database job lists, knows or matches with a pattern |
+| `schedule` | Frequency of the cron expression: `hourly` (more than once a day, also `@every` under 24 h), `daily`, `weekly` (some weekdays), `monthly` (some days of the month) or `other` |
+| `last_status` | Outcome of the job's last run: `completed`, `failed`, `partial`, `in_progress`, `cancelled` or `never`. A single-database job's is its newest backup's (a pruned or missing archive still counts as `completed`); a multi-database job's is its newest run's (`ok`, `partial`, `failed`, `cancelled`, `running`), never one database's backup |
+
+An unknown `schedule` or `last_status` value, or an over-long text, answers `400`. Sorting is left to the client (the list is not paged).
 
 ## Overview history and schedule preview
 
@@ -361,7 +382,7 @@ Every query is answered from an index on `backups`, never by scanning the table,
 {"action": "pin", "filter": {"job_id": "job_shop"}, "note": "audit 2026", "confirm_count": 40}
 ```
 
-- Exactly one of `ids` (duplicates count once; each at most 256 bytes) and `filter` selects the items. **Destructive actions (`delete`) take a filter only with `dry_run: true`**: their real run must name the exact IDs, the dry run's `actionable_ids`, and a filter is refused with `400`, because a filter evaluated later could match other records than the ones that were shown. `filter` takes the names and formats of the list endpoints' query parameters (backups: `status`, `database`, `connection_id`, `job_id`, `trigger`, `retry_of`, `from`, `to`, `q`; restores: `status`, `database`, `backup_id`, `from`, `to`, `q`; jobs: `database`, `connection_id`, `q`, `enabled`) and selects every match; paging does not apply. A selection may hold at most **10,000** items (`422` otherwise); the body may be about 5 MiB, enough for 10,000 IDs of the maximum length. Unknown fields, also inside `filter`, and filter fields that do not apply to the resource are refused with `400`, so a misspelt filter can never widen the selection.
+- Exactly one of `ids` (duplicates count once; each at most 256 bytes) and `filter` selects the items. **Destructive actions (`delete`) take a filter only with `dry_run: true`**: their real run must name the exact IDs, the dry run's `actionable_ids`, and a filter is refused with `400`, because a filter evaluated later could match other records than the ones that were shown. `filter` takes the names and formats of the list endpoints' query parameters (backups: `status`, `database`, `connection_id`, `job_id`, `trigger`, `retry_of`, `from`, `to`, `q`; restores: `status`, `database`, `backup_id`, `from`, `to`, `q`; jobs: `database`, `connection_id`, `q`, `enabled`, `schedule`, `last_status`, as in [listing jobs](#listing-jobs)) and selects every match; paging does not apply. A selection may hold at most **10,000** items (`422` otherwise); the body may be about 5 MiB, enough for 10,000 IDs of the maximum length. Unknown fields, also inside `filter`, and filter fields that do not apply to the resource are refused with `400`, so a misspelt filter can never widen the selection.
 - `dry_run: true` changes nothing and answers `{matched, actionable, skipped: [{id, reason, params, detail}], total_size_bytes, actionable_ids}`. `reason` is a stable code (see the table below) that clients translate; `params` fill it in (`job` for `last_good_backup` and `last_verified`, `status` for `in_progress` and `not_running`) and `detail` says the same in English.
 - A real run plans the selection again. When more than 10 items are affected it needs `confirm_count` equal to the dry run's `actionable`; a set `confirm_count` must always match. Otherwise it is refused with `409` and nothing changes, so a stale client can never act on more than it showed. Items are then processed one at a time through the same use cases as the single-item routes (logs, events and the shared-archive rule included). Every deletion of a backup (single, bulk, and retention) holds a lock per job (per connection and database for backups without a job), and bulk deletes decide the protections again inside it on the stored record, right before deleting it; an item that became protected meanwhile (pinned, newly the last good or last verified backup) is added to `skipped` instead. The record and, when no other record names it any more, its archive are deleted under a lock per archive, so records sharing an archive never strand it. The answer adds `succeeded`, `failed` and `results: [{id, ok, error, warning, detail}]` in order. Items are not started once the request ends; an item that started is finished.
 - One `bulk.completed` event (not selectable in notification rules) summarises every real run, and `mongorescue_bulk_operations_total{resource,action}` and `mongorescue_bulk_items_total{resource,action,outcome}` count them. Every real run also writes an audit entry (`tool` *bulk backups delete* and so on, with the actor, the counts and a SHA-256 of the processed IDs, sorted and one per line), whether it was started from a session or with an API key.
