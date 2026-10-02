@@ -100,7 +100,7 @@ test-integration:
 	@echo "==> Running integration tests..."
 	go test -race -tags=integration -count=1 $(INTEGRATION_FLAGS) ./...
 
-## test-integration-docker: Runs integration tests against disposable MongoDB, MinIO and LocalStack containers
+## test-integration-docker: Runs integration tests against disposable MongoDB, MinIO, LocalStack and Keycloak containers
 test-integration-docker:
 	./scripts/test-integration-docker.sh
 

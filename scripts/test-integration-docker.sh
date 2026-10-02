@@ -17,7 +17,10 @@
 #   MONGO_IMAGE    MongoDB image (default: mongo:7; CI runs 5.0, 6.0, 7.0 and 8.0)
 #   MONGO_TOPOLOGY standalone (default) or replset: a single-node replica set with
 #                  a keyfile, initiated after start; clients use directConnection
-#   IT_PROVIDERS   space-separated emulators to start (default: "minio localstack")
+#   IT_PROVIDERS   space-separated services to start (default: "minio localstack keycloak");
+#                  "keycloak" also starts Keycloak (KEYCLOAK_IMAGE) in dev mode
+#                  with the realm of internal/integration/testdata, for the
+#                  single sign-on test (MONGORESCUE_TEST_KEYCLOAK_URL)
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
 #   GOTESTFLAGS    extra flags for go test (e.g. "-run TestStorageConformance -v")
@@ -29,7 +32,9 @@ MONGO_IMAGE="${MONGO_IMAGE:-mongo:7}"
 # image is pinned by digest for reproducible CI runs.
 MINIO_IMAGE="${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1}"
 LOCALSTACK_IMAGE="${LOCALSTACK_IMAGE:-localstack/localstack:4.4}"
-IT_PROVIDERS="${IT_PROVIDERS:-minio localstack}"
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.3}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IT_PROVIDERS="${IT_PROVIDERS:-minio localstack keycloak}"
 MONGO_TOPOLOGY="${MONGO_TOPOLOGY:-standalone}"
 IT_RACE="${IT_RACE:-1}"
 
@@ -208,6 +213,21 @@ if [[ " $IT_PROVIDERS " == *" localstack "* ]]; then
   export MONGORESCUE_TEST_S3_LOCALSTACK_SECRET_KEY="test"
   export MONGORESCUE_TEST_S3_LOCALSTACK_PATH_STYLE="true"
   export MONGORESCUE_TEST_S3_LOCALSTACK_CREATE_BUCKET="true"
+fi
+
+# --- Keycloak (single sign-on) ---------------------------------------------------
+if [[ " $IT_PROVIDERS " == *" keycloak "* ]]; then
+  log "starting $KEYCLOAK_IMAGE"
+  # Dev mode (HTTP, in-memory database) with the test realm imported at start. The
+  # realm only holds test users and a test client secret.
+  docker run -d --name "$PREFIX-keycloak" -p 127.0.0.1::8080 \
+    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD="kc$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" \
+    -v "$ROOT/internal/integration/testdata/keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro" \
+    "$KEYCLOAK_IMAGE" start-dev --import-realm >/dev/null
+  CONTAINERS+=("$PREFIX-keycloak")
+  KEYCLOAK_URL="http://127.0.0.1:$(host_port "$PREFIX-keycloak" 8080)"
+  wait_for "keycloak" 180 curl -fsS "$KEYCLOAK_URL/realms/mongorescue/.well-known/openid-configuration"
+  export MONGORESCUE_TEST_KEYCLOAK_URL="$KEYCLOAK_URL"
 fi
 
 RACE_FLAG="-race"
