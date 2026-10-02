@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
+
+// withoutKitReminder drops the recovery kit reminder, which every fresh App shows.
+func withoutKitReminder(in []settings.Warning) []settings.Warning {
+	return slices.DeleteFunc(slices.Clone(in), func(w settings.Warning) bool { return w.ID == settings.WarningRecoveryKit })
+}
 
 // memSettingsRepo is an in-memory settings.Repository.
 type memSettingsRepo struct {
@@ -254,7 +260,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 	if err = first.settings.MarkImported(ctx, config.EnvEncryptionEnabled, config.EnvEncryptionRecips); err != nil {
 		t.Fatal(err)
 	}
-	if len(first.settings.Warnings()) != 0 {
+	if len(withoutKitReminder(first.settings.Warnings())) != 0 {
 		t.Fatal("no warning before the check ran")
 	}
 	if err = first.Close(); err != nil {
@@ -265,7 +271,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := second.settings.Warnings(); len(w) != 1 || w[0].ID != settings.WarningEncryptionOff {
+	if w := withoutKitReminder(second.settings.Warnings()); len(w) != 1 || w[0].ID != settings.WarningEncryptionOff {
 		t.Fatalf("warnings = %+v; want the encryption warning", w)
 	}
 	if second.settings.Current().Encryption.Enabled {
@@ -284,7 +290,7 @@ func TestAppRaisesEncryptionOffWarningAtStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = third.Close() })
-	if w := third.settings.Warnings(); len(w) != 0 {
+	if w := withoutKitReminder(third.settings.Warnings()); len(w) != 0 {
 		t.Fatalf("warnings after enabling encryption = %+v", w)
 	}
 }

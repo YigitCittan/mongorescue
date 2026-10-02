@@ -21,7 +21,7 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 | `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/jobs/{id}/cancel`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), `POST /api/v1/backups/{id}/verify`, `.../pin` and `POST /api/v1/jobs/{id}/restore-test`, plus the MCP action tools |
 | `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
 
-An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
+The recovery kit (`POST /api/v1/recovery-kit`) is refused to every API key, `admin` included: it needs a signed-in user who confirms their password. An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
 
 Failed logins return a generic `401`. After 5 failures for the same (client IP, username), further attempts for that pair get `429 Too Many Requests` with `Retry-After`; the lockout starts at 30 seconds and doubles up to 15 minutes. Once an IP has 20 recent failures, each further username from it is locked after a single failure, but the correct password of a user that is not locked always works, so clients sharing one address (NAT, a proxy) cannot lock each other out. Only one attempt per (IP, username) is checked at a time, and at most four per IP for usernames that already failed; concurrent extras get `429` with `Retry-After: 2`. Password comparisons share a global pool (twice the number of CPUs): a login waits up to 5 seconds for a free slot rather than being refused. Wrong setup codes are throttled only after 100 per IP within 15 minutes, and the correct code is always accepted. Passwords longer than 72 bytes are rejected without a password check.
 
@@ -57,10 +57,14 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
 | `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
-| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, restart_required, warnings}` | 200 | |
+| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, metadata_backup, restart_required, warnings}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
 | `POST` | `/api/v1/settings/warnings/{id}/dismiss` | Dismiss a persistent warning for good; returns the remaining `{warnings}` | 200, 404 | |
+| `GET` | `/api/v1/metadata-backup` | Status of the [metadata backups](#metadata-backups-and-the-recovery-kit): last snapshot `{target_id, target_name, key, created_at, size_bytes, encrypted}`, last error, next run | 200 | 503 |
+| `POST` | `/api/v1/metadata-backup/run` | Take a metadata snapshot now, in the background (admin) | 202 | 409 already running, 503 |
+| `GET` | `/api/v1/recovery-kit` | When the last recovery kit was downloaded and whether it is still current | 200 | 503 |
+| `POST` | `/api/v1/recovery-kit` | Download the recovery kit `{passphrase, current_password}` as an age-encrypted tar (admin, signed-in users only) ([details](#metadata-backups-and-the-recovery-kit)) | 200 | 400, 403, 429 |
 | `GET` / `POST` | `/api/v1/storage-targets` | List / create `{name, type, local \| s3}` (the first target becomes the default) | 200 / 201 | 400 |
 | `GET` / `PUT` | `/api/v1/storage-targets/{id}` | Get / update a target | 200 | 400, 404, 409 changed meanwhile or location locked |
 | `DELETE` | `/api/v1/storage-targets/{id}` | Delete a target | 200 | 404, 409 default or in use |
@@ -126,7 +130,7 @@ Jobs and manual backups name a `connection_id`. Backup records keep `connection_
 
 ## Settings
 
-`GET /api/v1/settings` returns every setting grouped as `general`, `security` and `encryption` ([descriptions](configuration.md#settings)), plus `restart_required` (always empty: every change applies to the next operation or request) and `warnings`, the persistent notices the dashboard shows as a banner: `[{id, message, setting}]`. The only warning so far is `encryption_off_after_upgrade` (see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)). Durations are Go duration strings (`"6h0m0s"`), secrets (`encryption.identity`, `encryption.passphrase`) are `"******"` when set and `""` when not, and `encryption.retired_keys` lists `{kind, recipient, retired_at}` without key material.
+`GET /api/v1/settings` returns every setting grouped as `general`, `security` and `encryption` ([descriptions](configuration.md#settings)), plus `restart_required` (always empty: every change applies to the next operation or request) and `warnings`, the persistent notices the dashboard shows as a banner: `[{id, message, setting}]`. The warnings are `encryption_off_after_upgrade` (see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)), `metadata_backup_unencrypted` (metadata backups are on but encryption is off; it cannot be dismissed) and `recovery_kit_missing` (no recovery kit was downloaded since `secret.key`, the encryption keys or the storage targets last changed; dismissing it hides it until they change again). Durations are Go duration strings (`"6h0m0s"`), secrets (`encryption.identity`, `encryption.passphrase`) are `"******"` when set and `""` when not, and `encryption.retired_keys` lists `{kind, recipient, retired_at}` without key material.
 
 `PUT /api/v1/settings` takes one or more groups with only the fields to change and answers with the full settings. Unknown fields, invalid values and malformed durations are rejected with `400` and nothing is changed. Sending `"******"` for a secret keeps the stored value; `""` removes it. A replaced or removed identity or passphrase is moved to `retired_keys`, so backups encrypted with it stay restorable.
 
@@ -144,6 +148,18 @@ A target is `{id, name, type: "local"|"s3", is_default, local: {path}, s3: {endp
 Every signed-in user, and every API key with the `admin` scope, has full rights, including settings, storage targets and the connection and storage test endpoints, which connect to hosts named in the request. Roles for users are on the roadmap.
 
 Jobs and manual backups take an optional `storage_target_id` (the default target when omitted). Backup records carry `storage_target_id` and a `storage_target_name` snapshot; restores, deletions and retention use the record's target. Deleting the default target, or a target still used by a job or holding a completed or running backup, answers `409` with the reason.
+
+## Metadata backups and the recovery kit
+
+The `metadata_backup` settings group (`enabled`, `interval`, `target_id`, `retention_count`; see [configuration.md](configuration.md#metadata-backups)) schedules snapshots of `mongorescue.db`. `POST /api/v1/metadata-backup/run` takes one now (`202`, `409` while one runs); `GET /api/v1/metadata-backup` reports `{enabled, running, last_run_at, last_trigger, last_error, retention_error, last, next_run_at}`. A failed snapshot publishes `metadata_backup.failed`. The runbook is in [production.md](production.md#restore-mongorescue-from-a-snapshot).
+
+`POST /api/v1/recovery-kit` returns the recovery kit as `application/octet-stream` (`Content-Disposition: attachment; filename=mongorescue-recovery-kit-<date>.tar.age`, `Cache-Control: no-store`). The body is `{"passphrase": "...", "current_password": "..."}`:
+
+- only a signed-in user may call it, with the session cookie and `X-CSRF-Token`; API keys get `403` whatever their scope;
+- `current_password` must be the user's password (`403` otherwise; wrong passwords count against the same throttle as password changes, then `429` with `Retry-After`);
+- `passphrase` seals the kit with age scrypt and needs at least 12 characters (`400`). It is not stored.
+
+The kit is a tar archive with `README.txt` (the recovery steps), `secret.key`, `recovery.json` (encryption settings, every storage target with its credentials, the latest metadata snapshot) and `identities.txt` (the age private keys, when one is configured). Passphrases are never included. Open it with `age -d -o kit.tar mongorescue-recovery-kit-<date>.tar.age && tar -xf kit.tar`. Every download and refused attempt is written to the audit log (`POST /api/v1/recovery-kit`, the user, the result), never the passphrase, the password or the content. `GET /api/v1/recovery-kit` returns `{downloaded_at, up_to_date, min_passphrase_length}`.
 
 ## Restores
 

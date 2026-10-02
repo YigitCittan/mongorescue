@@ -527,6 +527,48 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 	return nil
 }
 
+// ConfirmPassword re-authenticates actor for a sensitive action (such as
+// downloading the recovery kit): actor must be a signed-in admin user (a browser
+// session, never an API key) and password must be their current password. Wrong
+// passwords count against the same per-user budget as password changes. It returns
+// ErrUnauthenticated without an actor, ErrSessionRequired for API keys and the
+// system, a *ScopeError without admin, ErrCurrentPassword for a wrong password and
+// a *ThrottledError after too many wrong ones.
+func (s *Service) ConfirmPassword(ctx context.Context, actor *Principal, password string) error {
+	switch {
+	case actor == nil:
+		return ErrUnauthenticated
+	case actor.Method != MethodSession || actor.User == nil:
+		return ErrSessionRequired
+	}
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return err
+	}
+	user, err := s.repo.GetUser(ctx, actor.User.ID)
+	if err != nil {
+		return err
+	}
+	attempt, wait := s.throttle.Reserve("password|"+user.ID, "")
+	if attempt == nil {
+		return &ThrottledError{RetryAfter: wait}
+	}
+	if password == "" || len(password) > MaxPasswordBytes {
+		attempt.Failed()
+		return ErrCurrentPassword
+	}
+	matched, err := s.comparePassword(ctx, []byte(user.PasswordHash), []byte(password))
+	if err != nil {
+		attempt.Released()
+		return err
+	}
+	if !matched {
+		attempt.Failed()
+		return ErrCurrentPassword
+	}
+	attempt.Succeeded()
+	return nil
+}
+
 // ListAPIKeys returns all API keys (never their secrets).
 func (s *Service) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 	return s.repo.ListAPIKeys(ctx)

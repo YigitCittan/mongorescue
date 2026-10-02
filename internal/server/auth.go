@@ -328,7 +328,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later")
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, err.Error())
-	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword):
+	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser):
 		writeError(w, http.StatusConflict, err.Error())

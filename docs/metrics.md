@@ -34,6 +34,9 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_storage_missing_archives` | gauge | `target` | Backup records whose archive the last storage scan did not find |
 | `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
 | `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |
+| `mongorescue_metadata_backups_total` | counter | `result` | [Metadata snapshots](production.md#metadata-backups) (`ok`, `error`) |
+| `mongorescue_last_successful_metadata_backup_timestamp_seconds` | gauge | | Unix time of the last stored metadata snapshot |
+| `mongorescue_metadata_backup_size_bytes` | gauge | | Size of the last stored metadata snapshot |
 
 The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
 

@@ -4479,7 +4479,7 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "security", "users", "apikeys", "sessions"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "users", "apikeys", "sessions"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
@@ -4503,6 +4503,8 @@ function showSettingsSection(name, focus) {
   if (name === "security") loadAudit();
   // Sessions too (forms.js).
   if (name === "sessions" && typeof loadSessions === "function") loadSessions();
+  // Metadata backups and the recovery kit (recovery.js).
+  if (name === "recovery" && typeof recoveryRefresh === "function") recoveryRefresh();
 }
 
 function setupSettingsNav() {
@@ -4579,6 +4581,8 @@ function renderWarnings() {
   if (!banner) return;
   const list = state.settings && Array.isArray(state.settings.warnings) ? state.settings.warnings : [];
   banner.hidden = !list.some(w => w && w.id === WARNING_ENCRYPTION_OFF);
+  // Recovery kit reminder and unencrypted metadata backups (recovery.js).
+  if (typeof recoveryRenderWarnings === "function") recoveryRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {
@@ -4617,6 +4621,8 @@ function fillSettingsForms(force) {
   renderRetiredKeys();
   // Settings → Integrity (trust.js).
   trustFillSettings(force);
+  // Settings → Recovery (recovery.js).
+  if (typeof recoveryFillSettings === "function") recoveryFillSettings(force);
 }
 
 function fillGeneral(g) {
@@ -5198,6 +5204,8 @@ function renderStorageTargets() {
   }).join(""));
   // Storage scans of every target (trust.js).
   trustRenderScans();
+  // Target of the metadata backups (recovery.js).
+  if (typeof recoveryFillTargets === "function") recoveryFillTargets();
 }
 
 // Name of the target a backup was written to (snapshot first: the target may be gone).

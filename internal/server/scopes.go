@@ -110,6 +110,14 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/storage-targets/{id}/scan":   auth.ScopeAdmin,
 	"POST /api/v1/storage-targets/{id}/import": auth.ScopeAdmin,
 
+	// Metadata backups: the status is read; taking a snapshot is admin. The recovery
+	// kit carries every secret: admin, and the handler also requires a signed-in
+	// user who confirms their password (API keys are refused by the auth service).
+	"GET /api/v1/metadata-backup":      auth.ScopeRead,
+	"POST /api/v1/metadata-backup/run": auth.ScopeAdmin,
+	"GET /api/v1/recovery-kit":         auth.ScopeRead,
+	"POST /api/v1/recovery-kit":        auth.ScopeAdmin,
+
 	// Bulk endpoints need the lowest scope of their actions (operator: running jobs
 	// now; verifying, pinning and cancelling plug in here too). The operations service
 	// then requires the scope of the requested action, mirroring its single-item

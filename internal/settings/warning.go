@@ -43,13 +43,21 @@ const (
 )
 
 // Warnings returns the active warnings. WarningEncryptionOff is only reported while
-// encryption is still off.
+// encryption is still off; WarningMetadataBackupUnencrypted while metadata backups
+// are on and encryption is off; WarningRecoveryKit while the last recovery kit is
+// missing or outdated (see recoverykit.go).
 func (s *Service) Warnings() []Warning {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := []Warning{}
 	if s.warnState == warningActive && !s.cur.Encryption.Enabled {
 		out = append(out, Warning{ID: WarningEncryptionOff, Message: encryptionOffMessage, Setting: "encryption"})
+	}
+	if s.cur.MetadataBackup.Enabled && !s.cur.Encryption.Enabled {
+		out = append(out, Warning{ID: WarningMetadataBackupUnencrypted, Message: metadataUnencryptedMessage, Setting: "encryption"})
+	}
+	if s.recoveryKitWarningActive() {
+		out = append(out, Warning{ID: WarningRecoveryKit, Message: recoveryKitMessage, Setting: "recovery"})
 	}
 	return out
 }
@@ -109,14 +117,21 @@ func (s *Service) MarkEncryptionOffAlerted(ctx context.Context) error {
 	return nil
 }
 
-// DismissWarning dismisses the warning id for good. Unknown IDs return ErrInvalid.
+// DismissWarning dismisses the warning id: WarningEncryptionOff for good,
+// WarningRecoveryKit until the material a kit carries changes. Unknown IDs, and
+// warnings that cannot be dismissed, return ErrInvalid.
 func (s *Service) DismissWarning(ctx context.Context, id string) error {
-	if id != WarningEncryptionOff {
-		return fmt.Errorf("%w: unknown warning %q", ErrInvalid, id)
+	switch id {
+	case WarningEncryptionOff:
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		return s.setWarningState(ctx, warningDismissed)
+	case WarningRecoveryKit:
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		return s.dismissRecoveryKit(ctx)
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.setWarningState(ctx, warningDismissed)
+	return fmt.Errorf("%w: unknown warning %q", ErrInvalid, id)
 }
 
 // noteEncryptionChange records how an update affects WarningEncryptionOff: turning

@@ -31,6 +31,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.DriftDetected:             {"⚠️", "Storage drift detected"},
 	events.RetentionDeleted:          {"🗑️", "Backup deleted by retention"},
 	events.JobDatabasesAdded:         {"➕", "New databases added to a job"},
+	events.MetadataBackupFailed:      {"❌", "Metadata backup failed"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -83,6 +84,15 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("storage target %s: %d orphan archive(s), %d missing archive(s)", name, e.Orphans, e.Missing)
 	case events.RetentionDeleted:
 		target = fmt.Sprintf("job %s (db %s), backup %s", e.JobID, e.Database, e.BackupID)
+	case events.MetadataBackupFailed:
+		name := e.TargetName
+		if name == "" {
+			name = e.TargetID
+		}
+		if name == "" {
+			name = "(default)"
+		}
+		target = fmt.Sprintf("snapshot of the MongoRescue database to storage target %s", name)
 	}
 
 	subject := singleLine(fmt.Sprintf("%s %s: %s", tpl.icon, tpl.headline, target))

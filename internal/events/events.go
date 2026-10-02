@@ -70,6 +70,9 @@ const (
 	// JobDatabasesAdded is emitted when a job that includes new databases
 	// automatically backs up databases for the first time (Event.Databases).
 	JobDatabasesAdded EventType = "job.databases_added"
+	// MetadataBackupFailed is emitted when a snapshot of MongoRescue's own metadata
+	// database could not be written to its storage target (see internal/metabackup).
+	MetadataBackupFailed EventType = "metadata_backup.failed"
 )
 
 // Sources of verification events.
@@ -111,7 +114,7 @@ func (t EventType) Broadcast() bool {
 var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
-	JobDatabasesAdded,
+	JobDatabasesAdded, MetadataBackupFailed,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -135,7 +138,7 @@ func (t EventType) Subscribable() bool {
 // Failed reports whether t describes a failed operation.
 func (t EventType) Failed() bool {
 	switch t {
-	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected:
+	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed:
 		return true
 	default:
 		return false

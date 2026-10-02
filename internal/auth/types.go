@@ -39,6 +39,9 @@ var (
 	// ErrCurrentPassword is returned when changing one's own password without the
 	// correct current password.
 	ErrCurrentPassword = errors.New("auth: current password is incorrect")
+	// ErrSessionRequired is returned for an action only a signed-in user may take
+	// (API keys are refused).
+	ErrSessionRequired = errors.New("auth: this action requires a signed-in user (API keys are not accepted)")
 	// ErrAPIKeyNotFound is returned for an unknown API key ID.
 	ErrAPIKeyNotFound = errors.New("auth: api key not found")
 	// ErrInvalidName is returned for an empty or overlong API key name.

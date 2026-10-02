@@ -24,10 +24,12 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -95,6 +97,10 @@ type Server struct {
 
 	// integrity verifies archives, runs restore tests and scans storage targets.
 	integrity *integrity.Service
+
+	// metaBackup snapshots the metadata database; recoveryKit builds recovery kits.
+	metaBackup  *metabackup.Service
+	recoveryKit *recoverykit.Service
 
 	// version is reported by the health endpoint.
 	version string
@@ -306,6 +312,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// Verification, pins, retention previews and logs, restore tests, storage scans
 	s.registerIntegrityRoutes(mux)
 	s.registerHistoryRoutes(mux)
+
+	// Metadata backups and the recovery kit
+	s.registerRecoveryRoutes(mux)
 
 	// Bulk actions on backups, restores and jobs
 	s.registerBulkRoutes(mux)

@@ -117,6 +117,9 @@ type Settings struct {
 	// Integrity configures archive verification, the integrity sweep and storage
 	// scans (see integrity.go).
 	Integrity Integrity `json:"integrity"`
+	// MetadataBackup configures the scheduled self-backup of the metadata database
+	// (see metabackup.go).
+	MetadataBackup MetadataBackup `json:"metadata_backup"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -214,7 +217,8 @@ func Defaults() Settings {
 			Recipients:  []string{},
 			RetiredKeys: []RetiredKey{},
 		},
-		Integrity: defaultIntegrity(),
+		Integrity:      defaultIntegrity(),
+		MetadataBackup: defaultMetadataBackup(),
 	}
 }
 
@@ -262,6 +266,8 @@ type Patch struct {
 	Encryption *EncryptionPatch `json:"encryption,omitempty"`
 	// Integrity updates the integrity settings.
 	Integrity *IntegrityPatch `json:"integrity,omitempty"`
+	// MetadataBackup updates the metadata backup settings.
+	MetadataBackup *MetadataBackupPatch `json:"metadata_backup,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -346,6 +352,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		next.Encryption.RetiredKeys = retire(next.Encryption.RetiredKeys, cur.Encryption, next.Encryption, now)
 	}
 	p.Integrity.apply(&next.Integrity)
+	p.MetadataBackup.apply(&next.MetadataBackup)
 	return next, nil
 }
 
@@ -427,6 +434,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 	sec.CORSOrigins = origins
 
 	if err := validateIntegrity(&s.Integrity); err != nil {
+		return err
+	}
+	if err := validateMetadataBackup(&s.MetadataBackup); err != nil {
 		return err
 	}
 	return validateEncryption(&s.Encryption, strictPassphrase)
