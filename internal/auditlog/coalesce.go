@@ -17,6 +17,10 @@ const (
 	TargetNamePrefix = "name_"
 	// TargetNamesMore counts the refusals whose attempted name was not kept.
 	TargetNamesMore = "names_more"
+	// TargetReason is the server-chosen reason of a refusal (such as a single
+	// sign-on failure code). Refusals with different reasons are not identical, and
+	// a summary keeps the reason.
+	TargetReason = "reason"
 )
 
 // window coalesces the identical refusals of one caller: the first is stored at
@@ -41,14 +45,16 @@ func isRefusal(e *Event) bool {
 }
 
 // refusalKey identifies the caller and refusal e belongs to. Anonymous refusals
-// (failed sign-ins, missing credentials) are keyed by client address, action and
-// outcome only: the attempted name is attacker-chosen and must not open new windows.
+// (failed sign-ins, missing credentials) are keyed by client address, action,
+// outcome and reason only: the attempted name is attacker-chosen and must not open
+// new windows (the reason is chosen by the server from a fixed set).
 func refusalKey(e *Event) string {
 	name := e.ActorName
 	if e.ActorKind == ActorAnonymous {
 		name = ""
 	}
-	return strings.Join([]string{e.ActorKind, e.ActorUserID, name, e.ActorKeyID, e.ClientIP, e.Action, e.Outcome, strconv.Itoa(e.Status)}, "\x00")
+	return strings.Join([]string{e.ActorKind, e.ActorUserID, name, e.ActorKeyID, e.ClientIP, e.Action, e.Outcome,
+		strconv.Itoa(e.Status), e.Targets[TargetReason]}, "\x00")
 }
 
 // add counts e into the window.
@@ -79,9 +85,13 @@ func (w *window) summary() (Event, bool) {
 	}
 	e := w.first
 	e.Time, e.Count = w.last, w.suppressed
+	reason := w.first.Targets[TargetReason]
 	e.Targets = map[string]string{
 		TargetCoalescedFrom:  FormatTime(w.since),
 		TargetCoalescedUntil: FormatTime(w.last),
+	}
+	if reason != "" {
+		e.Targets[TargetReason] = reason
 	}
 	if e.ActorKind == ActorAnonymous {
 		e.ActorName = ""

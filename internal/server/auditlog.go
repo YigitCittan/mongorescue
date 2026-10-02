@@ -124,16 +124,21 @@ func setActor(e *auditlog.Event, p *auth.Principal) {
 	}
 }
 
+// reasonLocalLoginDisabled is the audit reason of a password sign-in refused
+// because the password form is limited to local administrators.
+const reasonLocalLoginDisabled = "local_login_disabled"
+
 // recordSignIn records a sign-in or setup attempt: on success the user, otherwise
-// the name that was tried (never the password) as an anonymous actor.
-func (s *Server) recordSignIn(r *http.Request, action string, rec *statusRecorder, user *auth.User, tried string) {
+// the name that was tried (never the password) as an anonymous actor, with the
+// targets (such as the reason of a refusal).
+func (s *Server) recordSignIn(r *http.Request, action string, rec *statusRecorder, user *auth.User, tried string, targets map[string]string) {
 	if s.auditLog == nil {
 		return
 	}
 	status, outcome := recordedStatus(rec, false)
 	e := auditlog.Event{
 		ActorKind: auditlog.ActorAnonymous, ActorName: tried, Action: action, Status: status, Outcome: outcome,
-		ClientIP: s.clientIP(r), UserAgent: r.UserAgent(),
+		ClientIP: s.clientIP(r), UserAgent: r.UserAgent(), Targets: targets,
 	}
 	if user != nil {
 		e.ActorKind, e.ActorUserID, e.ActorName = auditlog.ActorUser, user.ID, user.Username

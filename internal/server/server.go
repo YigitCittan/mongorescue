@@ -19,6 +19,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/auth/oidc"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
@@ -36,6 +37,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -124,6 +126,12 @@ type Server struct {
 
 	// desktopCSP selects desktopContentSecurityPolicy (see WithDesktopCSP).
 	desktopCSP bool
+
+	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
+	// usedStates remembers consumed states (see WithOIDC); nil in the desktop app.
+	oidc       *oidc.Client
+	oidcBox    *secretbox.Box
+	usedStates *stateSet
 }
 
 // WithDesktopCSP makes the server send desktopContentSecurityPolicy, which also
@@ -282,6 +290,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Setup, sessions, users and API keys
 	s.registerAuthRoutes(mux)
+
+	// Single sign-on: the sign-in methods, the provider test and the OIDC flow
+	s.registerOIDCRoutes(mux)
 
 	// Managed MongoDB connections
 	s.registerConnectionRoutes(mux)
@@ -841,7 +852,7 @@ func securityHeadersMiddleware(csp string, next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		if p := r.URL.Path; strings.HasPrefix(p, "/api/") || p == MCPPath || p == "/metrics" {
+		if p := r.URL.Path; strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, oidcFlowCookiePath) || p == MCPPath || p == "/metrics" {
 			h.Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)

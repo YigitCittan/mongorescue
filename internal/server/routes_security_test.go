@@ -213,9 +213,9 @@ func TestUnknownRoutesNeedCredentials(t *testing.T) {
 	}
 }
 
-// TestPublicRoutesAreExactlyTheseFour pins the unauthenticated API surface.
-func TestPublicRoutesAreExactlyTheseFour(t *testing.T) {
-	want := []string{"/api/v1/auth/login", "/api/v1/health", "/api/v1/setup", "/api/v1/setup/status"}
+// TestPublicRoutesAreExactlyTheseFive pins the unauthenticated API surface.
+func TestPublicRoutesAreExactlyTheseFive(t *testing.T) {
+	want := []string{"/api/v1/auth/login", "/api/v1/auth/methods", "/api/v1/health", "/api/v1/setup", "/api/v1/setup/status"}
 	if len(publicPaths) != len(want) {
 		t.Fatalf("publicPaths = %v; want exactly %v", publicPaths, want)
 	}

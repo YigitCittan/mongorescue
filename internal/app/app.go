@@ -23,6 +23,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/auth/oidc"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
@@ -236,10 +237,25 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		auth.WithSessionPolicy(func() (time.Duration, time.Duration) {
 			sec := settingsSvc.Current().Security
 			return sec.SessionIdleTimeout.Std(), sec.SessionAbsoluteTimeout.Std()
-		}))
+		}),
+		auth.WithOIDCPolicy(func() auth.OIDCPolicy { return oidcPolicy(settingsSvc.Current().OIDC, o.desktop) }))
 	if err != nil {
 		return nil, fmt.Errorf("initialize authentication: %w", err)
 	}
+	// Single sign-on: every provider request goes through the guarded notification
+	// client (timeout, no redirects, no link-local or metadata addresses), and the
+	// flow cookie is sealed with its own subkey of secret.key. The desktop app has no
+	// single sign-on.
+	oidcClient := oidc.NewClient(notify.NewHTTPClient(), oidc.WithClock(authSvc.Now))
+	oidcFlowKey, err := secretbox.DeriveSubkey(key.Key, oidc.FlowSubkeyPurpose)
+	if err != nil {
+		return nil, fmt.Errorf("initialize single sign-on: %w", err)
+	}
+	oidcFlowBox, err := secretbox.New(oidcFlowKey)
+	if err != nil {
+		return nil, fmt.Errorf("initialize single sign-on: %w", err)
+	}
+	settingsSvc.SetOIDCGuard(&oidcGuard{auth: authSvc, client: oidcClient, desktop: o.desktop})
 
 	imp := &legacyImport{logger: logger, legacy: legacy, settings: settingsSvc, targets: targetSvc,
 		connections: connSvc, auth: authSvc, store: metaStore}
@@ -525,6 +541,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
+	} else {
+		serverOpts = append(serverOpts, server.WithOIDC(oidcClient, oidcFlowBox))
 	}
 	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger, serverOpts...)
 

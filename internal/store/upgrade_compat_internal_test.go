@@ -787,6 +787,38 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 20,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO users (id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"usr_v20_sso", "jane.doe", "", ns(26*time.Hour), ns(26*time.Hour), ns(26*time.Hour), "operator", "oidc", "https://idp.example.com#248289761001")
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			sso, err := s.GetUser(ctx, "usr_v20_sso")
+			if err != nil || sso.AuthProvider != auth.ProviderOIDC || sso.Subject != "https://idp.example.com#248289761001" ||
+				sso.PasswordHash != "" || sso.Role != auth.RoleOperator {
+				t.Errorf("usr_v20_sso = %+v, %v; want an oidc operator with its subject", sso, err)
+			}
+			// Users stored before 0020 are local, without a subject.
+			for _, id := range []string{"usr_v1", "usr_v19_viewer"} {
+				if u, getErr := s.GetUser(ctx, id); getErr != nil || u.AuthProvider != auth.ProviderLocal || u.Subject != "" {
+					t.Errorf("%s = %+v, %v; want a local user", id, u, getErr)
+				}
+			}
+			if _, err = s.db.Exec(`UPDATE users SET auth_provider = 'saml' WHERE id = 'usr_v20_sso'`); err == nil {
+				t.Error("an unknown auth provider was stored")
+			}
+			if _, err = s.db.Exec(`UPDATE users SET subject = 'https://idp.example.com#248289761001' WHERE id = 'usr_v19_viewer'`); err == nil {
+				t.Error("two users share a subject")
+			}
+			res, err := s.SignInExternalUser(ctx, &auth.ExternalSignIn{Subject: "https://idp.example.com#248289761001",
+				NewUserID: "usr_unused", Username: "jane.doe", Role: auth.RoleOperator, At: compatT0.Add(30 * time.Hour)})
+			if err != nil || res.Created || res.User.ID != "usr_v20_sso" {
+				t.Errorf("sign-in of the stored subject = %+v, %v; want usr_v20_sso", res, err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

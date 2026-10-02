@@ -122,6 +122,9 @@ type Settings struct {
 	MetadataBackup MetadataBackup `json:"metadata_backup"`
 	// Audit configures the retention and forwarding of the audit log (see audit.go).
 	Audit Audit `json:"audit"`
+	// OIDC configures single sign-on through an OpenID Connect provider (see
+	// oidc.go).
+	OIDC OIDC `json:"oidc"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -222,6 +225,7 @@ func Defaults() Settings {
 		Integrity:      defaultIntegrity(),
 		MetadataBackup: defaultMetadataBackup(),
 		Audit:          defaultAudit(),
+		OIDC:           defaultOIDC(),
 	}
 }
 
@@ -230,13 +234,14 @@ func (s Settings) Clone() Settings {
 	s.Security.CORSOrigins = slices.Clone(s.Security.CORSOrigins)
 	s.Encryption.Recipients = slices.Clone(s.Encryption.Recipients)
 	s.Encryption.RetiredKeys = slices.Clone(s.Encryption.RetiredKeys)
+	s.OIDC = s.OIDC.clone()
 	return s
 }
 
 // Masked returns a copy that is safe to serialize to API clients: the identity,
-// passphrase and audit webhook secret are replaced by SecretMask when set, the audit
-// webhook URL is reduced to its origin (retired secrets are never serialized). Nil
-// slices become empty ones.
+// passphrase, audit webhook secret and OIDC client secret are replaced by
+// SecretMask when set, the audit webhook URL is reduced to its origin (retired
+// secrets are never serialized). Nil slices become empty ones.
 func (s Settings) Masked() Settings {
 	out := s.Clone()
 	if out.Encryption.Identity != "" {
@@ -258,6 +263,7 @@ func (s Settings) Masked() Settings {
 		out.Encryption.RetiredKeys = []RetiredKey{}
 	}
 	out.Audit = out.Audit.masked()
+	out.OIDC = out.OIDC.masked()
 	return out
 }
 
@@ -275,6 +281,8 @@ type Patch struct {
 	MetadataBackup *MetadataBackupPatch `json:"metadata_backup,omitempty"`
 	// Audit updates the audit log settings.
 	Audit *AuditPatch `json:"audit,omitempty"`
+	// OIDC updates the single sign-on settings.
+	OIDC *OIDCPatch `json:"oidc,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -361,6 +369,9 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 	p.Integrity.apply(&next.Integrity)
 	p.MetadataBackup.apply(&next.MetadataBackup)
 	if err := p.Audit.apply(&next.Audit); err != nil {
+		return cur, err
+	}
+	if err := p.OIDC.apply(&next.OIDC); err != nil {
 		return cur, err
 	}
 	return next, nil
@@ -450,6 +461,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return err
 	}
 	if err := validateAudit(&s.Audit); err != nil {
+		return err
+	}
+	if err := validateOIDC(&s.OIDC); err != nil {
 		return err
 	}
 	return validateEncryption(&s.Encryption, strictPassphrase)

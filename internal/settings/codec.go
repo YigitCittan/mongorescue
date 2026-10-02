@@ -43,6 +43,21 @@ const (
 	KeyAuditRetentionDays     = "audit.retention_days"
 	KeyAuditWebhookURL        = "audit.webhook_url"
 	KeyAuditWebhookSecret     = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCEnabled            = "oidc.enabled"
+	KeyOIDCDisplayName        = "oidc.display_name"
+	KeyOIDCIssuer             = "oidc.issuer"
+	KeyOIDCClientID           = "oidc.client_id"
+	KeyOIDCClientSecret       = "oidc.client_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCScopes             = "oidc.scopes"
+	KeyOIDCRedirectURL        = "oidc.redirect_url" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCUsernameClaim      = "oidc.username_claim"
+	KeyOIDCGroupsClaim        = "oidc.groups_claim"
+	KeyOIDCRoleMappings       = "oidc.role_mappings"
+	KeyOIDCDefaultRole        = "oidc.default_role"
+	KeyOIDCAllowedDomains     = "oidc.allowed_email_domains"
+	KeyOIDCAutoCreateUsers    = "oidc.auto_create_users"
+	KeyOIDCLocalLogin         = "oidc.local_login"
+	KeyOIDCRPLogout           = "oidc.rp_logout"
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -109,6 +124,21 @@ var keyDefs = []keyDef{
 	field(KeyAuditRetentionDays, false, func(s *Settings) *int { return &s.Audit.RetentionDays }),
 	field(KeyAuditWebhookURL, true, func(s *Settings) *string { return &s.Audit.WebhookURL }),
 	field(KeyAuditWebhookSecret, true, func(s *Settings) *string { return &s.Audit.WebhookSecret }),
+	field(KeyOIDCEnabled, false, func(s *Settings) *bool { return &s.OIDC.Enabled }),
+	field(KeyOIDCDisplayName, false, func(s *Settings) *string { return &s.OIDC.DisplayName }),
+	field(KeyOIDCIssuer, false, func(s *Settings) *string { return &s.OIDC.Issuer }),
+	field(KeyOIDCClientID, false, func(s *Settings) *string { return &s.OIDC.ClientID }),
+	field(KeyOIDCClientSecret, true, func(s *Settings) *string { return &s.OIDC.ClientSecret }),
+	field(KeyOIDCScopes, false, func(s *Settings) *[]string { return &s.OIDC.Scopes }),
+	field(KeyOIDCRedirectURL, false, func(s *Settings) *string { return &s.OIDC.RedirectURL }),
+	field(KeyOIDCUsernameClaim, false, func(s *Settings) *string { return &s.OIDC.UsernameClaim }),
+	field(KeyOIDCGroupsClaim, false, func(s *Settings) *string { return &s.OIDC.GroupsClaim }),
+	field(KeyOIDCRoleMappings, false, func(s *Settings) *[]OIDCRoleMapping { return &s.OIDC.RoleMappings }),
+	field(KeyOIDCDefaultRole, false, func(s *Settings) *string { return &s.OIDC.DefaultRole }),
+	field(KeyOIDCAllowedDomains, false, func(s *Settings) *[]string { return &s.OIDC.AllowedEmailDomains }),
+	field(KeyOIDCAutoCreateUsers, false, func(s *Settings) *bool { return &s.OIDC.AutoCreateUsers }),
+	field(KeyOIDCLocalLogin, false, func(s *Settings) *string { return &s.OIDC.LocalLogin }),
+	field(KeyOIDCRPLogout, false, func(s *Settings) *bool { return &s.OIDC.RPLogout }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,

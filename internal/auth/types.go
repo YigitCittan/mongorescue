@@ -50,6 +50,21 @@ var (
 	ErrCSRF = errors.New("auth: missing or invalid CSRF token")
 	// ErrSessionNotFound is returned by repositories for unknown session hashes.
 	ErrSessionNotFound = errors.New("auth: session not found")
+	// ErrNoPassword is returned when a password is checked or changed for a user who
+	// signs in through single sign-on and so has none.
+	ErrNoPassword = errors.New("auth: this user signs in through single sign-on and has no password")
+)
+
+// Provider says how a user signs in.
+type Provider string
+
+// Authentication providers of users.
+const (
+	// ProviderLocal is a user with a password (a bcrypt hash in the store).
+	ProviderLocal Provider = "local"
+	// ProviderOIDC is a user who signs in through the OpenID Connect provider and has
+	// no password.
+	ProviderOIDC Provider = "oidc"
 )
 
 // ThrottledError reports a lockout and how long the client must wait.
@@ -74,7 +89,13 @@ type User struct {
 	Username string `json:"username"`
 	// Role is the dashboard role (viewer, operator or admin).
 	Role Role `json:"role"`
-	// PasswordHash is the bcrypt hash; it is never serialised.
+	// AuthProvider is how the user signs in: ProviderLocal (a password) or
+	// ProviderOIDC (single sign-on). Empty means local.
+	AuthProvider Provider `json:"auth_provider"`
+	// Subject identifies an OIDC user: the issuer and the provider's subject joined by
+	// "#". It is the only way such a user is recognised and is never serialised.
+	Subject string `json:"-"`
+	// PasswordHash is the bcrypt hash ("" for OIDC users); it is never serialised.
 	PasswordHash string `json:"-"`
 	// CreatedAt is when the user was created.
 	CreatedAt time.Time `json:"created_at"`
@@ -82,6 +103,12 @@ type User struct {
 	UpdatedAt time.Time `json:"-"`
 	// LastLoginAt is the time of the last successful login.
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+}
+
+// Local reports whether u signs in with a password (an empty AuthProvider counts as
+// local).
+func (u *User) Local() bool {
+	return u != nil && (u.AuthProvider == "" || u.AuthProvider == ProviderLocal)
 }
 
 // Session is a server-side login session. Only the SHA-256 hash of the token is stored.
@@ -207,15 +234,28 @@ type Repository interface {
 	RecordLogin(ctx context.Context, userID string, at time.Time) error
 	// DeleteUser removes a user, their sessions and the API keys they created, in one
 	// transaction; it returns ErrUserNotFound, or (atomically) ErrLastUser when it is
-	// the only user, ErrLastAdmin when it is the only admin, and a *ScopeError when
+	// the only user, ErrLastAdmin when it is the only admin, ErrLastLocalAdmin when
+	// keepLocalAdmin is set and it is the only local admin, and a *ScopeError when
 	// actorID is not "" and that user is no longer an admin.
-	DeleteUser(ctx context.Context, actorID, id string) error
+	DeleteUser(ctx context.Context, actorID, id string, keepLocalAdmin bool) error
 	// UpdateUserRole sets the role of userID and deletes the user's sessions, in one
 	// transaction, and returns the previous role. Setting the role a user already
 	// has changes nothing. It returns ErrUserNotFound, ErrLastAdmin (atomically) when
-	// it would demote the only admin, and a *ScopeError when actorID is not "" and
-	// that user is no longer an admin.
-	UpdateUserRole(ctx context.Context, actorID, userID string, role Role, updatedAt time.Time) (previous Role, err error)
+	// it would demote the only admin, ErrLastLocalAdmin when keepLocalAdmin is set
+	// and it would demote the only local admin, and a *ScopeError when actorID is
+	// not "" and that user is no longer an admin.
+	UpdateUserRole(ctx context.Context, actorID, userID string, role Role, updatedAt time.Time, keepLocalAdmin bool) (previous Role, err error)
+	// SignInExternalUser finds the user with in.Subject, or creates one when
+	// in.AutoCreate is set, applies in.Role and records the sign-in, all in one
+	// transaction (see ExternalSignIn). It returns ErrUnknownExternalUser for an
+	// unknown subject without AutoCreate and ErrAccountConflict when the name of a
+	// new user is taken: a user is never linked by username or email.
+	SignInExternalUser(ctx context.Context, in *ExternalSignIn) (*ExternalSignInResult, error)
+	// CountLocalAdmins returns the number of local users with the admin role.
+	CountLocalAdmins(ctx context.Context) (int, error)
+	// DeleteLocalNonAdminSessions removes the sessions of every local user without
+	// the admin role and returns how many it removed.
+	DeleteLocalNonAdminSessions(ctx context.Context) (int, error)
 
 	// CreateSession stores s.
 	CreateSession(ctx context.Context, s *Session) error

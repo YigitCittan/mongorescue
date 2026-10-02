@@ -435,6 +435,27 @@ func TestAnonymousRefusalsKeepTheAttemptedNames(t *testing.T) {
 
 // TestFullCoalescingIndexFlushes proves reaching maxCoalesceKeys writes every open
 // window's summary instead of dropping counts.
+// TestRefusalsWithDifferentReasonsAreNotCoalesced keeps the reason of every
+// refusal: refusals are only identical when their reasons are.
+func TestRefusalsWithDifferentReasonsAreNotCoalesced(t *testing.T) {
+	repo := newMemRepo()
+	s := New(Config{Repo: repo, Now: fixedClock(vectorTime, time.Second)})
+	refuse := func(reason string) {
+		s.Record(context.Background(), Event{ActorKind: ActorAnonymous, Action: "GET /auth/oidc/callback", Status: 302,
+			Outcome: OutcomeDenied, ClientIP: "192.0.2.9", Targets: map[string]string{TargetReason: reason}})
+	}
+	refuse("state_mismatch")
+	refuse("no_role")
+	refuse("no_role") // counted
+	if len(repo.rows) != 2 || repo.rows[0].Targets[TargetReason] != "state_mismatch" || repo.rows[1].Targets[TargetReason] != "no_role" {
+		t.Fatalf("rows = %+v", repo.rows)
+	}
+	s.flushRefusals(vectorTime.Add(time.Hour), false)
+	if len(repo.rows) != 3 || repo.rows[2].Count != 1 || repo.rows[2].Targets[TargetReason] != "no_role" {
+		t.Fatalf("summary = %+v", repo.rows[len(repo.rows)-1])
+	}
+}
+
 func TestFullCoalescingIndexFlushes(t *testing.T) {
 	repo := newMemRepo()
 	now := vectorTime
