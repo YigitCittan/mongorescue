@@ -523,7 +523,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) e
 	if actor.UserID() == id {
 		return ErrDeleteSelf
 	}
-	if err := s.repo.DeleteUser(ctx, id); err != nil {
+	if err := s.repo.DeleteUser(ctx, actor.UserID(), id); err != nil {
 		return err
 	}
 	s.logger.Info("user deleted", slog.String("user_id", id), slog.String("by", actor.UserID()))
@@ -857,25 +857,28 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-// DeleteAPIKey revokes a key. Anyone may revoke the keys their own user created;
-// revoking another user's key (or one without a creator) needs the admin scope.
+// DeleteAPIKey revokes a key. With the admin scope any key may be revoked. Below
+// admin, a signed-in user may revoke the keys their own user created, and an API key
+// only itself: a leaked read or operator key cannot revoke its creator's other keys.
+// Anything else is a *ScopeError; an unknown ID is ErrAPIKeyNotFound for every
+// caller.
 func (s *Service) DeleteAPIKey(ctx context.Context, actor *Principal, id string) error {
 	if err := actor.Require(ScopeRead); err != nil {
 		return err
 	}
 	if !actor.Allows(ScopeAdmin) {
-		keys, err := s.repo.ListAPIKeys(ctx)
+		key, err := s.findAPIKey(ctx, id)
 		if err != nil {
 			return err
 		}
-		own := false
-		for _, k := range keys {
-			if k.ID == id {
-				own = actor.UserID() != "" && k.CreatedBy == actor.UserID()
-				break
-			}
+		allowed := false
+		switch actor.Method {
+		case MethodSession:
+			allowed = actor.UserID() != "" && key.CreatedBy == actor.UserID()
+		case MethodAPIKey:
+			allowed = actor.APIKeyID != "" && key.ID == actor.APIKeyID
 		}
-		if !own {
+		if !allowed {
 			return actor.Require(ScopeAdmin)
 		}
 	}
@@ -884,6 +887,20 @@ func (s *Service) DeleteAPIKey(ctx context.Context, actor *Principal, id string)
 	}
 	s.logger.Info("api key revoked", slog.String("api_key_id", id), slog.String("by", actor.UserID()))
 	return nil
+}
+
+// findAPIKey returns the stored key with id or ErrAPIKeyNotFound.
+func (s *Service) findAPIKey(ctx context.Context, id string) (*APIKey, error) {
+	keys, err := s.repo.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		if k.ID == id {
+			return k, nil
+		}
+	}
+	return nil, ErrAPIKeyNotFound
 }
 
 // newUser validates and hashes a new account with role.

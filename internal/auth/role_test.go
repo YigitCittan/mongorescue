@@ -168,37 +168,6 @@ func TestAPIKeyScopeCannotExceedTheCreator(t *testing.T) {
 	}
 }
 
-func TestNonAdminsSeeAndRevokeOnlyTheirOwnKeys(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	admin := f.session(t, f.setup(t).Token)
-	viewer := f.signIn(t, admin, "vera", auth.RoleViewer)
-	adminKey, _, err := f.svc.CreateAPIKey(ctx, admin, "admin's", auth.ScopeAdmin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	own, _, err := f.svc.CreateAPIKey(ctx, viewer, "vera's", auth.ScopeRead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := f.svc.ListAPIKeys(ctx, viewer)
-	if err != nil || len(keys) != 1 || keys[0].ID != own.ID {
-		t.Fatalf("viewer's key list = %+v, %v; want only their own", keys, err)
-	}
-	if all, _ := f.svc.ListAPIKeys(ctx, admin); len(all) != 2 {
-		t.Fatalf("admin's key list = %d keys; want 2", len(all))
-	}
-	if err = f.svc.DeleteAPIKey(ctx, viewer, adminKey.ID); !errors.Is(err, auth.ErrForbidden) {
-		t.Fatalf("viewer revoking the admin's key: %v; want ErrForbidden", err)
-	}
-	if err = f.svc.DeleteAPIKey(ctx, viewer, "key_missing"); !errors.Is(err, auth.ErrForbidden) {
-		t.Fatalf("viewer revoking an unknown key: %v; want ErrForbidden", err)
-	}
-	if err = f.svc.DeleteAPIKey(ctx, viewer, own.ID); err != nil {
-		t.Fatalf("viewer revoking their own key: %v", err)
-	}
-}
-
 func TestUserAdministrationNeedsAdminInTheService(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

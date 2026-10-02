@@ -207,8 +207,9 @@ type Repository interface {
 	RecordLogin(ctx context.Context, userID string, at time.Time) error
 	// DeleteUser removes a user, their sessions and the API keys they created, in one
 	// transaction; it returns ErrUserNotFound, or (atomically) ErrLastUser when it is
-	// the only user and ErrLastAdmin when it is the only admin.
-	DeleteUser(ctx context.Context, id string) error
+	// the only user, ErrLastAdmin when it is the only admin, and a *ScopeError when
+	// actorID is not "" and that user is no longer an admin.
+	DeleteUser(ctx context.Context, actorID, id string) error
 	// UpdateUserRole sets the role of userID and deletes the user's sessions, in one
 	// transaction, and returns the previous role. Setting the role a user already
 	// has changes nothing. It returns ErrUserNotFound, ErrLastAdmin (atomically) when
