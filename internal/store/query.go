@@ -19,7 +19,7 @@ var ErrInvalidFilter = errors.New("store: invalid list filter")
 // MaxListLimit is the largest page size of QueryBackupRecords and QueryRestoreRecords.
 const MaxListLimit = 200
 
-// MaxFilterIDs is the largest number of IDs in BackupFilter.IDs.
+// MaxFilterIDs is the largest number of IDs in BackupFilter.IDs and RestoreFilter.IDs.
 const MaxFilterIDs = 200
 
 // SortOrder orders filtered list results by start time.
@@ -120,6 +120,8 @@ type BackupFilter struct {
 // RestoreFilter selects, orders and pages restore records. Zero fields match
 // everything; all set fields must match.
 type RestoreFilter struct {
+	// IDs keeps the restores with exactly these IDs (at most MaxFilterIDs).
+	IDs []string
 	// Status keeps restores in this state.
 	Status models.RestoreStatus
 	// BackupID keeps restores of this backup.
@@ -251,6 +253,20 @@ func orderAndPage(p, expr string, sort SortOrder, limit, offset int, args []any)
 	return order + " LIMIT ? OFFSET ?", append(args, limit, offset)
 }
 
+// addIDs keeps the rows (of the table aliased p) whose id is one of ids; no IDs adds
+// no condition.
+func (c *conditions) addIDs(p string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	// One constant "?" per ID; the IDs themselves are arguments.
+	c.add(p+"id IN (?"+strings.Repeat(", ?", len(ids)-1)+")", args...)
+}
+
 // addTimeRange adds the started_at range of a filter.
 func (c *conditions) addTimeRange(p string, from, to time.Time) {
 	if !from.IsZero() {
@@ -269,14 +285,7 @@ const effectiveTriggerSQL = `coalesce(nullif(json_extract(b.data, '$.trigger'), 
 // backupConditions renders f as the WHERE clause of a query over "backups b".
 func backupConditions(f BackupFilter) conditions {
 	var c conditions
-	if len(f.IDs) > 0 {
-		args := make([]any, len(f.IDs))
-		for i, id := range f.IDs {
-			args[i] = id
-		}
-		// One constant "?" per ID; the IDs themselves are arguments.
-		c.add("b.id IN (?"+strings.Repeat(", ?", len(f.IDs)-1)+")", args...)
-	}
+	c.addIDs("b.", f.IDs)
 	if f.Status != "" {
 		c.add("b.status = ?", string(f.Status))
 	}
@@ -370,6 +379,7 @@ func (s *SQLiteStore) QueryBackupRecords(ctx context.Context, f BackupFilter) (*
 // restoreConditions renders f as the WHERE clause of a query over "restores r".
 func restoreConditions(f RestoreFilter) conditions {
 	var c conditions
+	c.addIDs("r.", f.IDs)
 	if f.Status != "" {
 		c.add("r.status = ?", string(f.Status))
 	}
@@ -393,6 +403,9 @@ func restoreConditions(f RestoreFilter) conditions {
 func (s *SQLiteStore) QueryRestoreRecords(ctx context.Context, f RestoreFilter) (*RestorePage, error) {
 	if err := validatePage(f.Sort, f.Limit, f.Offset, f.From, f.To); err != nil {
 		return nil, err
+	}
+	if len(f.IDs) > MaxFilterIDs {
+		return nil, fmt.Errorf("%w: id takes at most %d IDs", ErrInvalidFilter, MaxFilterIDs)
 	}
 	expr, err := sortExpr(restoreSortSQL, RestoreSortKeys, f.SortBy)
 	if err != nil {

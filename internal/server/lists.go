@@ -165,6 +165,7 @@ func (s *Server) handleListRestores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := s.ops.QueryRestores(r.Context(), operations.RestoreFilter{
+		IDs:    idList(q.Get("id")),
 		Status: models.RestoreStatus(q.Get("status")), BackupID: q.Get("backup_id"), TargetDatabase: q.Get("database"),
 		From: p.from, To: p.to, Search: q.Get("q"), Sort: p.sort, SortBy: p.sortBy, Limit: p.limit, Offset: p.offset,
 	})

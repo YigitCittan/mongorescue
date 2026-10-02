@@ -1,0 +1,2 @@
+ID     BACKUP      SOURCE  TARGET                       STATUS     STARTED               DURATION
+rst_1  bkp_shop_1  shop    shop_rescue_20261001_040000  completed  2026-10-01T04:00:00Z  3s

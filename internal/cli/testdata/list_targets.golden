@@ -1,0 +1,3 @@
+ID     NAME     TYPE   DEFAULT  LOCATION
+tgt_1  Local    local  true     /var/lib/mongorescue/backups
+tgt_2  Offsite  s3     false    s3://dr/mr/ (https://minio.example)

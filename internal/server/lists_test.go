@@ -178,6 +178,8 @@ func TestListParamsAreValidated(t *testing.T) {
 		{"/api/v1/restores?status=pruned", "status"},
 		{"/api/v1/restores?from=1", "from"},
 		{"/api/v1/backups?id=" + strings.TrimSuffix(strings.Repeat("bkp_x,", 201), ","), "at most 200"},
+		{"/api/v1/restores?id=" + strings.TrimSuffix(strings.Repeat("rst_x,", 201), ","), "at most 200"},
+		{"/api/v1/restores?id=" + strings.Repeat("x", 300), "id"},
 	} {
 		rec := serve(h, "GET", tc.target, nil, nil)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
@@ -268,5 +270,30 @@ func TestListBackupsByIDs(t *testing.T) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil || stats.Data.ActiveBackups != 1 || stats.Data.ActiveRestores != 1 {
 		t.Fatalf("active counts = %+v, %v; want 1 and 1", stats.Data, err)
+	}
+}
+
+func TestListRestoresByIDs(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	seedLists(t, st)
+	h := srv.buildRoutes()
+
+	// Exact IDs only: rst_0 is a prefix of every seeded ID and matches nothing; the
+	// other filters still apply.
+	code, _, items := getList(t, h, "/api/v1/restores?id=rst_01,%20rst_03,,rst_0,rst_missing")
+	if code != http.StatusOK || strings.Join(itemIDs(items), ",") != "rst_03,rst_01" {
+		t.Fatalf("id filter = %d %v", code, itemIDs(items))
+	}
+	_, _, items = getList(t, h, "/api/v1/restores?id=rst_01,rst_02&database=crm")
+	if strings.Join(itemIDs(items), ",") != "rst_01" {
+		t.Fatalf("id and database filters = %v", itemIDs(items))
+	}
+	_, resp, items := getList(t, h, "/api/v1/restores?id=rst_00,rst_04&limit=1")
+	if len(items) != 1 || resp.Meta == nil || resp.Meta.Total != 2 {
+		t.Fatalf("paged id filter = %v, meta %+v", itemIDs(items), resp.Meta)
+	}
+	_, _, items = getList(t, h, "/api/v1/restores?id="+url.QueryEscape("rst_01' OR '1'='1"))
+	if len(items) != 0 {
+		t.Fatalf("hostile id matched %v", itemIDs(items))
 	}
 }

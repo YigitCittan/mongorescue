@@ -67,7 +67,7 @@ flowchart TB
 
 | Package | Responsibility |
 | :--- | :--- |
-| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-dashboard`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge instead |
+| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-dashboard`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge and `backup`, `restore`, `list`, `verify`, `status` and `help` run the CLI instead |
 | `cmd/mongorescue-desktop` | Desktop entry point (`desktop` build tag, Wails v2): runs `app` without a listener (`App.Start`/`Stop`) and serves `App.Handler` to the webview |
 | `internal/app` | Wires dependencies, starts the HTTP server and scheduler (or, embedded, only the scheduler and background workers), coordinates graceful shutdown |
 | `internal/desktop` | Desktop adapters without Wails: bootstrap config and log file, the session cookie jar and the same-origin fix for the webview's custom scheme |
@@ -82,6 +82,8 @@ flowchart TB
 | `internal/audit` | The activity log of API keys (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/auditlog` | The audit log of every action ([audit.md](audit.md)): hash chain and canonical encoding, verification, retention with the chain anchor, JSON Lines export and webhook forwarding |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
+| `internal/cli` | The CLI commands (`backup`, `restore`, `list`, `verify`, `status`; [cli.md](cli.md)): flags (also after arguments), API key sources (never the server's `MONGORESCUE_API_KEY`), the in-place guard, the restore preflight, `--wait` polling, text and JSON output and the stable exit codes |
+| `internal/apiclient` | Client of the REST API for the CLI: the origin-bound bearer transport (also used by the MCP stdio bridge), no redirects, envelope decoding, `*APIError` with sentinel errors per status, typed methods; it never imports `server` |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
 | `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups, checks the restore and restore test privileges, the free disk space of a target and captures backup manifests (document counts, index specifications and the server version) |
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |

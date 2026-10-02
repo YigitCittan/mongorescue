@@ -7,7 +7,7 @@ Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}
 There is no unauthenticated mode. Apart from the public routes below, every request needs either
 
 - a **session**: the `mr_session` cookie set by `POST /api/v1/setup` or `POST /api/v1/auth/login` (HttpOnly, `SameSite=Strict`, `Secure` over HTTPS). Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) must also send the session's CSRF token as `X-CSRF-Token`, or they are rejected with `403`; or
-- an **API key**: `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys are created under Settings → API keys (`mr_<prefix>_<secret>`, shown once); a `MONGORESCUE_API_KEY` of an earlier build is imported once as a key. API-key requests need no CSRF token.
+- an **API key**: `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys are created under Settings → API keys (`mr_<prefix>_<secret>`, shown once); a `MONGORESCUE_API_KEY` of an earlier build is imported once as a key. API-key requests need no CSRF token. The [command line](cli.md) (`mongorescue backup`, `restore`, `list`, `verify`, `status`) is a client of these routes with an API key.
 
 Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup` and `POST /api/v1/auth/login`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
 
@@ -390,7 +390,7 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 
 | Parameter | Backups | Restores | Meaning |
 | --- | --- | --- | --- |
-| `id` | yes | | Backups with exactly these IDs, comma-separated (at most 200) |
+| `id` | yes | yes | Records with exactly these IDs, comma-separated (at most 200) |
 | `status` | `pending`, `in_progress`, `completed`, `failed`, `cancelled`, `pruned` | `pending`, `in_progress`, `completed`, `failed`, `cancelled` | Records in this state |
 | `database` | Backed-up database | Target database | Exact, case-sensitive match |
 | `connection_id` | yes | | Backups taken from this connection |

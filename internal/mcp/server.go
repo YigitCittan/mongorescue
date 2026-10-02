@@ -24,6 +24,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yigitcittan/mongorescue/internal/apiclient"
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -143,7 +144,7 @@ func transportFrom(ctx context.Context) string {
 
 // TransportHeader is sent by the stdio bridge so that audit records show the
 // transport the assistant used. It is informational only: it grants nothing.
-const TransportHeader = "X-MongoRescue-Transport"
+const TransportHeader = apiclient.TransportHeader
 
 // Handler returns the Streamable HTTP handler of the MCP endpoint. It runs stateless
 // (every POST is self-contained; GET and DELETE answer 405) and answers with JSON

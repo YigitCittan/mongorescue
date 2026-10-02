@@ -225,41 +225,6 @@ func TestBridgeDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-// TestCredentialTransportOnlyAuthenticatesTheEndpoint proves the key is only added
-// to requests for the configured scheme and host.
-func TestCredentialTransportOnlyAuthenticatesTheEndpoint(t *testing.T) {
-	var got []string
-	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		got = append(got, r.URL.String()+" "+r.Header.Get("Authorization"))
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
-	})
-	tr := &credentialTransport{base: base, key: "k", scheme: "https", host: "backup.example:8443"}
-	for _, u := range []string{"https://backup.example:8443/mcp", "https://evil.example/mcp", "http://backup.example:8443/mcp", "https://backup.example/mcp"} {
-		req, _ := http.NewRequest(http.MethodPost, u, nil)
-		req.Header.Set("Authorization", "Bearer smuggled")
-		resp, err := tr.RoundTrip(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-	}
-	want := []string{
-		"https://backup.example:8443/mcp Bearer k",
-		"https://evil.example/mcp ",
-		"http://backup.example:8443/mcp ",
-		"https://backup.example/mcp ",
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("requests = %q; want %q", got, want)
-	}
-}
-
-// roundTripFunc adapts a function to http.RoundTripper.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-// RoundTrip implements http.RoundTripper.
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
 func TestBridgeEndpoint(t *testing.T) {
 	for in, want := range map[string]string{
 		"":                            "http://127.0.0.1:8080/mcp",

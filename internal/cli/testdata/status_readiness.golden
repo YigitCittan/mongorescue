@@ -1,0 +1,17 @@
+Server:        http://127.0.0.1:8080
+Version:       0.17.0 (healthy)
+Signed in as:  admin (api_key)
+Scope:         operator
+Backups:       12 (10 completed, 2 failed, 1 failed in the last 24 h, 1 running), 1.0 GiB stored
+Restores:      3 (0 running)
+Jobs:          2 enabled
+Last backup:   bkp_shop_1 of shop completed at 2026-10-01T03:00:00Z
+Active runs:   1
+Readiness:     1 ok, 0 warn, 1 fail
+
+KIND    ID     DATABASE  PHASE    PROGRESS     STARTED
+backup  bkp_x  crm       dumping  12% 1.0 MiB  2026-10-01T05:00:00Z
+
+CONNECTION  DATABASE  STATUS  RPO AGE / TARGET   LAST GOOD BACKUP  REASONS
+prod        crm       fail    48h0m0s / 24h0m0s  -                 rpo_missed
+prod        shop      ok      3h0m0s / 24h0m0s   bkp_shop_1        -

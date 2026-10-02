@@ -38,6 +38,8 @@ The desktop app packages ship `mongodump` and `mongorestore` in the locations of
 
 `mongorescue mcp`, the stdio bridge for AI assistants, reads only `--url`/`MONGORESCUE_MCP_URL` and `MONGORESCUE_MCP_API_KEY` and never opens the data directory; see [mcp.md](mcp.md#transports).
 
+The CLI commands (`mongorescue backup`, `restore`, `list`, `verify`, `status`) are clients of a running instance and never open the data directory either. They read only `--url`/`MONGORESCUE_URL` (default `http://127.0.0.1:8080`) and the API key from `--api-key-file`, `MONGORESCUE_CLI_API_KEY_FILE`, `MONGORESCUE_CLI_API_KEY` or `--api-key`, in that order; never `MONGORESCUE_API_KEY` or `MONGORESCUE_API_KEY_FILE`, which the server imports as an admin key. See [cli.md](cli.md#connecting).
+
 The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secret.key` or `MONGORESCUE_SECRET_KEY`) encrypts connection strings, notification secrets, storage credentials and encryption keys in the database. Losing it makes them unrecoverable, and MongoRescue refuses to start with a key that does not match the database rather than silently discard them. Keep a copy apart from database backups; see [production.md](production.md#data-directory).
 
 ## Settings
