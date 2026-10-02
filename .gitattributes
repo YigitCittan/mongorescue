@@ -2,3 +2,5 @@
 # dashboard sources): keep LF line endings in every checkout, Windows included.
 *.sql text eol=lf
 *.go text eol=lf
+# Golden test outputs are compared byte for byte.
+*.golden text eol=lf
