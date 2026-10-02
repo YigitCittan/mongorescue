@@ -10,6 +10,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -95,7 +96,7 @@ func (l *legacyImport) importStorage(ctx context.Context) error {
 		t, err := l.targets.Create(ctx, in)
 		if err != nil {
 			l.logger.Warn("could not import the deprecated storage settings; configure a storage target in the dashboard",
-				slog.Any("sources", ls.Sources), slog.Any("error", err))
+				slog.Any("sources", ls.Sources), logsafe.Error(err))
 		} else {
 			l.logger.Info("imported the deprecated storage settings as the default storage target",
 				slog.String("storage_target_id", t.ID), slog.String("location", t.Location()))
@@ -113,7 +114,7 @@ func (l *legacyImport) importMongoURI(ctx context.Context) error {
 	}
 	created, err := l.connections.EnsureDefault(ctx, lg.MongoURI)
 	if err != nil {
-		l.logger.Warn("could not import the deprecated MongoDB connection string", slog.String("source", lg.MongoURISource), slog.Any("error", err))
+		l.logger.Warn("could not import the deprecated MongoDB connection string", slog.String("source", lg.MongoURISource), logsafe.Error(err))
 	} else if created {
 		l.logger.Info("created connection \"default\" from a deprecated setting", slog.String("source", lg.MongoURISource))
 	}
@@ -129,7 +130,7 @@ func (l *legacyImport) importAPIKey(ctx context.Context) error {
 		return nil
 	}
 	if _, err := l.auth.ImportAPIKey(ctx, lg.APIKey); err != nil {
-		l.logger.Warn("could not import the deprecated static API key", slog.String("source", staticAccessSourceName(lg.StaticAccessSource)), slog.Any("error", err))
+		l.logger.Warn("could not import the deprecated static API key", slog.String("source", staticAccessSourceName(lg.StaticAccessSource)), logsafe.Error(err))
 	} else {
 		l.imported = append(l.imported, lg.StaticAccessSource)
 	}

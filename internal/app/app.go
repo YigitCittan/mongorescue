@@ -27,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -901,7 +902,7 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			if b.Status == models.StatusInProgress {
 				b.Status, b.ErrorMessage, b.SizeBytes, b.SHA256 = models.StatusFailed, msg, 0, ""
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
-					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), slog.Any("error", err))
+					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), logsafe.Error(err))
 				}
 			}
 		}
@@ -911,7 +912,7 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			if r.Status == models.RestoreStatusInProgress {
 				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg
 				if err := a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
-					a.logger.Warn("failed to mark interrupted restore", slog.String("restore_id", r.ID), slog.Any("error", err))
+					a.logger.Warn("failed to mark interrupted restore", slog.String("restore_id", r.ID), logsafe.Error(err))
 				}
 			}
 		}
@@ -942,7 +943,7 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			run.Error = msg
 			run.Finish(time.Now())
 			if err := a.metaStore.SaveJobRun(ctx, run); err != nil {
-				a.logger.Warn("failed to mark interrupted job run", slog.String("run_id", run.ID), slog.Any("error", err))
+				a.logger.Warn("failed to mark interrupted job run", slog.String("run_id", run.ID), logsafe.Error(err))
 			}
 		}
 	}
