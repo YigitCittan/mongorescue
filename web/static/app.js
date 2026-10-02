@@ -24,7 +24,7 @@ const state = {
   connections: [],
   users: [],
   apikeys: [],
-  // Recent MCP tool calls (GET /api/v1/audit), loaded when Settings → Security opens.
+  // Recent MCP tool calls (GET /api/v1/audit/activity), loaded when Settings → Security opens.
   audit: [],
   auditError: "",
   storageTargets: [],
@@ -4658,7 +4658,7 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "users", "apikeys", "sessions"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "audit", "users", "apikeys", "sessions"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
@@ -4684,6 +4684,8 @@ function showSettingsSection(name, focus) {
   if (name === "sessions" && typeof loadSessions === "function") loadSessions();
   // Metadata backups and the recovery kit (recovery.js).
   if (name === "recovery" && typeof recoveryRefresh === "function") recoveryRefresh();
+  // The audit log of every action (auditlog.js).
+  if (name === "audit" && typeof auditlogRefresh === "function") auditlogRefresh(false);
 }
 
 function setupSettingsNav() {
@@ -4802,6 +4804,8 @@ function fillSettingsForms(force) {
   trustFillSettings(force);
   // Settings → Recovery (recovery.js).
   if (typeof recoveryFillSettings === "function") recoveryFillSettings(force);
+  // Settings → Audit log (auditlog.js).
+  if (typeof auditlogFillSettings === "function") auditlogFillSettings(force);
 }
 
 function fillGeneral(g) {
@@ -5797,7 +5801,7 @@ async function loadAudit() {
   if (auditInFlight || !auth.user) return;
   auditInFlight = true;
   try {
-    const json = await apiJSON("/api/v1/audit?limit=200");
+    const json = await apiJSON("/api/v1/audit/activity?limit=200");
     state.auditError = json.success ? "" : (json.error || t("toasts.request_failed"));
     if (json.success) state.audit = json.data || [];
     state.loaded.audit = true;

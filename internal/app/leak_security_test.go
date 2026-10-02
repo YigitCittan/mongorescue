@@ -302,7 +302,8 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		"/api/v1/settings", "/api/v1/storage-targets", "/api/v1/storage-targets/" + target.ID, "/api/v1/stats",
 		"/api/v1/jobs", "/api/v1/jobs/" + job.ID, "/api/v1/backups", "/api/v1/backups?database=shop", "/api/v1/restores",
 		"/api/v1/backups/" + backup.ID + "/collections",
-		"/api/v1/notifications/channels", "/api/v1/notifications/rules", "/api/v1/audit",
+		"/api/v1/notifications/channels", "/api/v1/notifications/rules", "/api/v1/audit", "/api/v1/audit/activity",
+		"/api/v1/audit/export", "/api/v1/audit/verify",
 		"/api/v1/connections/nope", "/api/v1/jobs/nope", "/api/v1/storage-targets/nope",
 	}
 	for _, path := range reads {

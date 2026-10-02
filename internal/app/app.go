@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
@@ -70,6 +71,10 @@ const RunLogDirName = "logs"
 // are deleted.
 const runLogPruneInterval = time.Hour
 
+// auditPruneInterval is how often audit log entries older than audit.retention_days
+// are deleted.
+const auditPruneInterval = time.Hour
+
 // ErrStarted is returned by Start when the App was already started (or stopped): its
 // background work runs at most once.
 var ErrStarted = errors.New("app: already started")
@@ -92,6 +97,8 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	auditLog      *auditlog.Service
+	auditForward  *auditlog.Forwarder
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -326,7 +333,24 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	// Integrity: on-demand and swept archive verification, restore tests after
 	// scheduled backups and weekly storage scans.
-	auditSvc := audit.NewService(metaStore, logger)
+	// The audit log of every action (hash-chained, pruned by audit.retention_days,
+	// optionally forwarded to a webhook). MCP tool calls and system actions recorded
+	// in the API key activity log are mirrored into it.
+	auditForwarder := auditlog.NewForwarder(auditlog.ForwarderConfig{
+		Endpoint: func() auditlog.Endpoint {
+			a := settingsSvc.Current().Audit
+			return auditlog.Endpoint{URL: a.WebhookURL, Secret: a.WebhookSecret}
+		},
+		Observe: metricSet.ObserveAuditForward,
+		Logger:  logger,
+	})
+	auditLog := auditlog.New(auditlog.Config{
+		Repo:          metaStore,
+		RetentionDays: func() int { return settingsSvc.Current().Audit.RetentionDays },
+		Forwarder:     auditForwarder,
+		Logger:        logger,
+	})
+	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
 	integritySvc := integrity.New(integrity.Config{
 		Store:       metaStore,
 		Targets:     targetSvc,
@@ -452,6 +476,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithOperations(ops),
 		server.WithMCPHandler(mcpSrv.Handler()),
 		server.WithAudit(auditSvc),
+		server.WithAuditLog(auditLog),
 		server.WithEventPublisher(bus),
 		server.WithNotifications(notifySvc),
 		server.WithMetricsHandler(metricSet.Handler()),
@@ -488,6 +513,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		auditLog:      auditLog,
+		auditForward:  auditForwarder,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 	}, nil
@@ -570,6 +597,16 @@ func (a *App) startBackground() (stop func()) {
 	go func() {
 		defer pruneWG.Done()
 		a.pruneRunLogs(pruneCtx, runLogPruneInterval)
+	}()
+	// Audit log retention, and the worker forwarding new entries to the webhook.
+	pruneWG.Add(2)
+	go func() {
+		defer pruneWG.Done()
+		a.auditLog.RunRetention(pruneCtx, auditPruneInterval)
+	}()
+	go func() {
+		defer pruneWG.Done()
+		a.auditForward.Run(pruneCtx)
 	}()
 
 	return func() {

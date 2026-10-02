@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -703,6 +704,35 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 17,
+		seed: func(t *testing.T, f *compatFixture) {
+			e := &auditlog.Event{
+				ID: 1, Time: time.Unix(0, ns(20*time.Hour)).UTC(), ActorKind: auditlog.ActorUser, ActorUserID: "usr_v17",
+				ActorName: "admin", Action: "POST /api/v1/jobs/{id}/run", Targets: map[string]string{"id": "job_v15"},
+				Status: 202, Outcome: auditlog.OutcomeOK, ClientIP: "192.0.2.17", UserAgent: "compat", Count: 1,
+			}
+			hash, err := auditlog.ChainHash(auditlog.GenesisHash, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.exec(t, `INSERT INTO audit_events (id, at, actor_kind, actor_user_id, actor_name, actor_key_id, actor_key_name, action, targets, status, outcome, client_ip, user_agent, count, hash)
+				VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				e.ID, ns(20*time.Hour), e.ActorKind, e.ActorUserID, e.ActorName, e.Action, `{"id":"job_v15"}`, e.Status, e.Outcome, e.ClientIP, e.UserAgent, e.Count, hash)
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			log := auditlog.New(auditlog.Config{Repo: s})
+			log.Record(ctx, auditlog.Event{ActorKind: auditlog.ActorSystem, ActorName: "compat", Action: "SYSTEM upgrade", Outcome: auditlog.OutcomeOK})
+			v, err := log.Verify(ctx)
+			if err != nil || !v.OK || v.Checked != 2 || v.HeadID != 2 {
+				t.Errorf("audit chain after the upgrade = %+v, %v; want 2 verified entries", v, err)
+			}
+			if _, err := s.db.ExecContext(ctx, "UPDATE audit_events SET actor_name = 'mallory' WHERE id = 1"); err == nil {
+				t.Error("an audit log entry could be updated")
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the
@@ -811,8 +841,10 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 			if err := s.db.QueryRow("SELECT MAX(version), COUNT(*) FROM schema_migrations").Scan(&current, &applied); err != nil {
 				t.Fatal(err)
 			}
-			if current != latest || applied != latest {
-				t.Fatalf("schema at %d with %d migrations; want %d", current, applied, latest)
+			// Versions need not be contiguous: a migration number may be reserved by
+			// a change that is not merged yet.
+			if current != latest || applied != len(migrations) {
+				t.Fatalf("schema at %d with %d migrations; want %d with %d", current, applied, latest, len(migrations))
 			}
 			for _, step := range compatSteps {
 				if step.version <= version {

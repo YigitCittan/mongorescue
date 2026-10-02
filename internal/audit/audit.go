@@ -2,7 +2,9 @@
 // read and prompt request, and every REST request authenticated by an API key, is
 // stored with the calling API key, the transport, the tool (or route), its arguments
 // (secrets redacted), the outcome and the duration. The log is shown in the dashboard and
-// served by GET /api/v1/audit.
+// served by GET /api/v1/audit/activity. The hash-chained audit log of every action is
+// internal/auditlog, which mirrors MCP calls and system actions from here through an
+// observer (see WithObserver).
 //
 // The package is the domain core; persistence is the Repository port implemented by
 // internal/store. Recording never fails the audited operation: write errors are
@@ -137,9 +139,10 @@ var (
 // Service records and lists audit entries. It is safe for concurrent use; a nil
 // *Service records nothing.
 type Service struct {
-	repo   Repository
-	logger *slog.Logger
-	now    func() time.Time
+	repo     Repository
+	logger   *slog.Logger
+	now      func() time.Time
+	observer func(context.Context, Entry)
 
 	// mu guards recent and serialises coalesced writes.
 	mu sync.Mutex
@@ -215,12 +218,26 @@ func (r *recentEntry) merge(raw json.RawMessage) json.RawMessage {
 	return doc
 }
 
+// Option customises a Service.
+type Option func(*Service)
+
+// WithObserver calls fn with every entry Record is given (after redaction, before
+// coalescing), for example to mirror MCP calls into the audit log of every action
+// (internal/auditlog). fn runs synchronously and must not block for long.
+func WithObserver(fn func(context.Context, Entry)) Option {
+	return func(s *Service) { s.observer = fn }
+}
+
 // NewService returns a Service backed by repo. A nil logger means slog.Default().
-func NewService(repo Repository, logger *slog.Logger) *Service {
+func NewService(repo Repository, logger *slog.Logger, opts ...Option) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: repo, logger: logger, now: time.Now, recent: map[string]*recentEntry{}}
+	s := &Service{repo: repo, logger: logger, now: time.Now, recent: map[string]*recentEntry{}}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Record stores e after redacting its arguments and error. Denied, rate-limited and
@@ -241,6 +258,9 @@ func (s *Service) Record(ctx context.Context, e Entry) {
 	e.Error = truncate(redact.Text(e.Error), maxErrorLength)
 	if e.Count < 1 {
 		e.Count = 1
+	}
+	if s.observer != nil {
+		s.observer(ctx, e)
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()

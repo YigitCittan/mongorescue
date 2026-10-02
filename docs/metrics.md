@@ -22,6 +22,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_restores_total` | counter | `status` | Finished restores (`succeeded`, `failed`) |
 | `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure`, `dropped`) |
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
+| `mongorescue_audit_forward_total` | counter | `outcome` | Audit log entries forwarded to the audit webhook: `sent`, `failed` (refused or unreachable) or `dropped` (queue full or stopped); see [audit.md](audit.md#forwarding) |
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
 | `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
 | `mongorescue_bulk_operations_total` | counter | `resource`, `action` | [Bulk operations](api.md#bulk-actions) run (not dry runs; `resource`: `backups`, `restores`, `jobs`) |

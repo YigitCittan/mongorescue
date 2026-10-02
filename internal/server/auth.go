@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/settings"
@@ -37,6 +38,12 @@ var publicPaths = map[string]bool{
 	"/api/v1/auth/login":   true,
 }
 
+// Sign-in routes, also their audit log actions.
+const (
+	setupRoute = "POST /api/v1/setup"
+	loginRoute = "POST /api/v1/auth/login"
+)
+
 // WithAuth sets the authentication service. Without it every protected route answers
 // 401: there is no unauthenticated mode.
 func WithAuth(svc *auth.Service) Option {
@@ -46,8 +53,8 @@ func WithAuth(svc *auth.Service) Option {
 // registerAuthRoutes adds setup, login, session, user and API key endpoints.
 func (s *Server) registerAuthRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
-	mux.HandleFunc("POST /api/v1/setup", s.handleSetup)
-	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc(setupRoute, s.handleSetup)
+	mux.HandleFunc(loginRoute, s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET "+meRoute, s.handleMe)
 	mux.HandleFunc("GET /api/v1/auth/sessions", s.handleListSessions)
@@ -66,8 +73,9 @@ func (s *Server) registerAuthRoutes(mux *router) {
 // authMiddleware authenticates every non-public request by API key (Authorization:
 // Bearer or X-API-Key) or session cookie, stores the principal in the request context,
 // enforces the CSRF token on cookie-authenticated unsafe requests and the scope the
-// matched route requires, and audits REST requests made with an API key (see
-// auditREST). /metrics and /mcp accept API keys only.
+// matched route requires, records mutating requests (and audited downloads) in the
+// audit log (see auditsAction), and audits REST requests made with an API key in the
+// activity log (see auditREST). /metrics and /mcp accept API keys only.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -128,16 +136,25 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized: log in or supply a valid API key")
 			return
 		}
+		ctx := auth.WithPrincipal(r.Context(), principal)
+		ctx = auditlog.WithClient(ctx, auditlog.Client{IP: s.clientIP(r), UserAgent: r.UserAgent()})
+		req := r.WithContext(ctx)
+		pattern := s.routePattern(r)
+		recordsAction := s.auditLog != nil && auditsAction(r.Method, path, pattern)
+		if recordsAction || auditsREST(principal, path) {
+			rec := &statusRecorder{ResponseWriter: w}
+			if recordsAction {
+				defer s.recordAction(req, principal, pattern, rec)
+			}
+			if auditsREST(principal, path) {
+				defer s.auditREST(req, principal, pattern, rec, time.Now())
+			}
+			w = rec
+		}
+		// Refused CSRF tokens are recorded too: they may be a cross-site attack.
 		if err := auth.CheckCSRF(principal, r.Method, r.Header.Get(CSRFHeader)); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden: missing or invalid "+CSRFHeader+" header")
 			return
-		}
-		req := r.WithContext(auth.WithPrincipal(r.Context(), principal))
-		pattern := s.routePattern(r)
-		if auditsREST(principal, path) {
-			rec := &statusRecorder{ResponseWriter: w}
-			defer s.auditREST(req, principal, pattern, rec, time.Now())
-			w = rec
 		}
 		if err := s.checkScope(principal, pattern); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
@@ -400,6 +417,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Username  string `json:"username"`
 		Password  string `json:"password"`
 	}
+	rec := &statusRecorder{ResponseWriter: w}
+	w = rec
+	var user *auth.User
+	defer func() { s.recordSignIn(r, setupRoute, rec, user, req.Username) }()
 	if !decodeBody(w, r, &req) {
 		return
 	}
@@ -408,6 +429,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthError(w, err)
 		return
 	}
+	user = res.User
 	s.setSessionCookie(w, r, res.Token, res.ExpiresAt)
 	writeJSON(w, http.StatusCreated, sessionResponse{User: res.User, CSRFToken: res.CSRFToken, Auth: auth.MethodSession})
 }
@@ -421,6 +443,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
+	rec := &statusRecorder{ResponseWriter: w}
+	w = rec
+	var user *auth.User
+	defer func() { s.recordSignIn(r, loginRoute, rec, user, req.Username) }()
 	if !decodeBody(w, r, &req) {
 		return
 	}
@@ -429,6 +455,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthError(w, err)
 		return
 	}
+	user = res.User
 	s.setSessionCookie(w, r, res.Token, res.ExpiresAt)
 	writeJSON(w, http.StatusOK, sessionResponse{User: res.User, CSRFToken: res.CSRFToken, Auth: auth.MethodSession})
 }

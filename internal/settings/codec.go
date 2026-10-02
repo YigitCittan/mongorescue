@@ -40,6 +40,9 @@ const (
 	KeyMetadataBackupInterval = "metadata_backup.interval"
 	KeyMetadataBackupTarget   = "metadata_backup.target_id"
 	KeyMetadataBackupKeep     = "metadata_backup.retention_count"
+	KeyAuditRetentionDays     = "audit.retention_days"
+	KeyAuditWebhookURL        = "audit.webhook_url"
+	KeyAuditWebhookSecret     = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -103,6 +106,9 @@ var keyDefs = []keyDef{
 	field(KeyMetadataBackupInterval, false, func(s *Settings) *Duration { return &s.MetadataBackup.Interval }),
 	field(KeyMetadataBackupTarget, false, func(s *Settings) *string { return &s.MetadataBackup.TargetID }),
 	field(KeyMetadataBackupKeep, false, func(s *Settings) *int { return &s.MetadataBackup.RetentionCount }),
+	field(KeyAuditRetentionDays, false, func(s *Settings) *int { return &s.Audit.RetentionDays }),
+	field(KeyAuditWebhookURL, true, func(s *Settings) *string { return &s.Audit.WebhookURL }),
+	field(KeyAuditWebhookSecret, true, func(s *Settings) *string { return &s.Audit.WebhookSecret }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,

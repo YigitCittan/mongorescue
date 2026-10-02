@@ -91,10 +91,20 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `session_idle_timeout` | `12h` | End a session after this long without requests (1m to 8760h) |
 | `session_absolute_timeout` | `168h` | End a session this long after login; not shorter than the idle timeout. Shortening it also ends existing older sessions |
 | `secure_cookies` | `auto` | `auto`: `Secure` over TLS or behind a trusted proxy reporting `X-Forwarded-Proto: https`; `always`: for a TLS proxy that does not send it; `never`: plain-HTTP tests only |
-| `trust_proxy_headers` | `false` | Honour `X-Forwarded-For` / `X-Real-IP` (login throttling) and `X-Forwarded-Proto`. Enable only behind a proxy that sets them |
+| `trust_proxy_headers` | `false` | Honour `X-Forwarded-For` / `X-Real-IP` (login throttling, the client address in the audit log) and `X-Forwarded-Proto`. Enable only behind a proxy that sets them |
 | `cors_origins` | empty | Exact origins (`https://ops.example.com`) allowed to call the API cross-origin; no wildcards. Empty disables CORS |
 | `metrics_public` | `false` | Serve `/metrics` without an API key |
 | `mcp_enabled` | `true` | Serve the [MCP endpoint](mcp.md) `/mcp` for AI assistants (API keys only). When off it answers `403` and the stdio bridge cannot connect |
+
+### Audit log
+
+Retention and forwarding of the hash-chained audit log of every action (Settings → Audit log); see [audit.md](audit.md).
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `retention_days` | `365` | Keep entries this many days (30 to 36500); older ones are removed hourly, and the last removed hash is kept as the chain anchor |
+| `webhook_url` | empty | `http` or `https` URL every new entry is POSTed to as JSON, in the background (empty = off). Secret: stored encrypted, shown only up to its host |
+| `webhook_secret` | empty | Signs the forwarded requests (`X-MongoRescue-Signature: sha256=<HMAC-SHA256 of the body>`). Secret |
 
 ### Encryption
 
