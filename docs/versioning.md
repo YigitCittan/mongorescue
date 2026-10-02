@@ -31,7 +31,8 @@ Rules that follow from the table:
 - backups are verified after upload and restorable backups are proven by scheduled restore tests;
 - running backups and restores can be cancelled, and every run keeps its log;
 - the desktop app has updated itself in place on Windows, macOS and Linux in real use;
-- the API has had one minor release without breaking changes.
+- the API has had one minor release without breaking changes;
+- phases 1 and 2 of the [roadmap](roadmap.md) are done: recovery you can prove (self-backup, recovery kit, users and roles, restore preflight and verification, RPO/RTO, a full audit log) and roles with single sign-on.
 
 ## How to cut a release
 
