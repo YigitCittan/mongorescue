@@ -342,6 +342,7 @@ const translations = {
       users_roles_hint: "Replaces the users and roles defined on the source database with the ones in the backup; users and roles created since the backup are removed.",
       users_roles_none: "This backup was taken without users and roles.",
       users_roles_rename: "Only available when restoring in place into the backup's own database ({db}).",
+      users_roles_confirm: "This replaces every user and role defined on {db} with the ones in the backup; users and roles created since the backup are removed, even when only some collections are restored. Continue?",
     },
     ui: {
       more_actions: "More actions",
@@ -1232,6 +1233,7 @@ const translations = {
       users_roles_hint: "Kaynak veritabanında tanımlı kullanıcıları ve rolleri yedektekilerle değiştirir; yedekten sonra oluşturulan kullanıcılar ve roller silinir.",
       users_roles_none: "Bu yedek kullanıcılar ve roller olmadan alındı.",
       users_roles_rename: "Yalnızca yedeğin kendi veritabanına ({db}) yerinde geri yüklerken kullanılabilir.",
+      users_roles_confirm: "Bu işlem {db} üzerinde tanımlı tüm kullanıcıları ve rolleri yedektekilerle değiştirir; yalnızca bazı koleksiyonlar geri yüklense bile yedekten sonra oluşturulan kullanıcılar ve roller silinir. Devam edilsin mi?",
     },
     ui: {
       more_actions: "Diğer işlemler",
@@ -2122,6 +2124,7 @@ const translations = {
       users_roles_hint: "Ersetzt die in der Quelldatenbank definierten Benutzer und Rollen durch die der Sicherung; seit der Sicherung angelegte Benutzer und Rollen werden entfernt.",
       users_roles_none: "Diese Sicherung wurde ohne Benutzer und Rollen erstellt.",
       users_roles_rename: "Nur bei einer direkten Wiederherstellung in die eigene Datenbank der Sicherung ({db}) verfügbar.",
+      users_roles_confirm: "Dadurch werden alle in {db} definierten Benutzer und Rollen durch die der Sicherung ersetzt; seit der Sicherung angelegte Benutzer und Rollen werden entfernt, auch wenn nur einige Sammlungen wiederhergestellt werden. Fortfahren?",
     },
     ui: {
       more_actions: "Weitere Aktionen",
@@ -3012,6 +3015,7 @@ const translations = {
       users_roles_hint: "Sustituye los usuarios y roles definidos en la base de datos de origen por los de la copia; se eliminan los usuarios y roles creados después de la copia.",
       users_roles_none: "Esta copia se hizo sin usuarios ni roles.",
       users_roles_rename: "Solo disponible al restaurar in situ en la propia base de datos de la copia ({db}).",
+      users_roles_confirm: "Esto sustituye todos los usuarios y roles definidos en {db} por los de la copia; se eliminan los usuarios y roles creados después de la copia, aunque solo se restauren algunas colecciones. ¿Continuar?",
     },
     ui: {
       more_actions: "Más acciones",
@@ -3902,6 +3906,7 @@ const translations = {
       users_roles_hint: "Remplace les utilisateurs et rôles définis sur la base source par ceux de la sauvegarde ; les utilisateurs et rôles créés depuis la sauvegarde sont supprimés.",
       users_roles_none: "Cette sauvegarde a été prise sans utilisateurs ni rôles.",
       users_roles_rename: "Disponible uniquement pour une restauration sur place dans la base de la sauvegarde ({db}).",
+      users_roles_confirm: "Cela remplace tous les utilisateurs et rôles définis sur {db} par ceux de la sauvegarde ; les utilisateurs et rôles créés depuis la sauvegarde sont supprimés, même si seules certaines collections sont restaurées. Continuer ?",
     },
     ui: {
       more_actions: "Plus d'actions",
@@ -4792,6 +4797,7 @@ const translations = {
       users_roles_hint: "用备份中的用户和角色替换源数据库中定义的用户和角色；备份之后创建的用户和角色将被删除。",
       users_roles_none: "此备份未包含用户和角色。",
       users_roles_rename: "仅在原地恢复到备份自身的数据库（{db}）时可用。",
+      users_roles_confirm: "这将用备份中的用户和角色替换 {db} 上定义的所有用户和角色；即使只恢复部分集合，备份之后创建的用户和角色也会被删除。是否继续？",
     },
     ui: {
       more_actions: "更多操作",
@@ -5682,6 +5688,7 @@ const translations = {
       users_roles_hint: "ソースデータベースに定義されたユーザーとロールをバックアップのものに置き換えます。バックアップ以降に作成されたユーザーとロールは削除されます。",
       users_roles_none: "このバックアップはユーザーとロールなしで取得されました。",
       users_roles_rename: "バックアップ元のデータベース（{db}）へのインプレースリストアでのみ使用できます。",
+      users_roles_confirm: "{db} に定義されたすべてのユーザーとロールをバックアップのものに置き換えます。一部のコレクションだけをリストアする場合でも、バックアップ以降に作成されたユーザーとロールは削除されます。続行しますか？",
     },
     ui: {
       more_actions: "その他の操作",
@@ -6572,6 +6579,7 @@ const translations = {
       users_roles_hint: "Заменяет пользователей и роли исходной базы на сохранённые в копии; пользователи и роли, созданные после копии, удаляются.",
       users_roles_none: "Эта копия сделана без пользователей и ролей.",
       users_roles_rename: "Доступно только при восстановлении на месте в собственную базу копии ({db}).",
+      users_roles_confirm: "Все пользователи и роли базы {db} будут заменены сохранёнными в копии; пользователи и роли, созданные после копии, удаляются, даже если восстанавливаются только некоторые коллекции. Продолжить?",
     },
     ui: {
       more_actions: "Другие действия",

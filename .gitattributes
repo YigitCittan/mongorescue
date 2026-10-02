@@ -1,0 +1,4 @@
+# Embedded files are checksummed or compared byte for byte (schema migrations,
+# dashboard sources): keep LF line endings in every checkout, Windows included.
+*.sql text eol=lf
+*.go text eol=lf

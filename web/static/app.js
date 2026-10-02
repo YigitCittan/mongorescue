@@ -2443,6 +2443,14 @@ function setupForms() {
     if (!isSafeClone && dropTarget && !(await confirmDialog({ body: dropConfirm, danger: true, confirmLabel: t("dialog.confirm") }))) {
       return;
     }
+    // Restoring users and roles replaces every user and role defined on the database.
+    if (restoreUsersRoles && !(await confirmDialog({
+      body: tf("modal_restore.users_roles_confirm", { db: targetDB || getValue("restore-backup-id") }),
+      danger: true,
+      confirmLabel: t("dialog.confirm")
+    }))) {
+      return;
+    }
 
     try {
       closeModal("modal-restore");

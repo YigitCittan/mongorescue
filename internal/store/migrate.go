@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -30,9 +31,14 @@ type migration struct {
 	checksum string // hex SHA-256 of sql
 }
 
-// migrationChecksum returns the checksum recorded for a migration's SQL.
+// migrationChecksum returns the checksum recorded for a migration's SQL: the hex
+// SHA-256 of the body with line endings normalised to LF (CRLF becomes LF and a
+// trailing CR is dropped), so a binary built from a checkout with CRLF line endings
+// (Windows with core.autocrlf) records the same checksums as every other build.
 func migrationChecksum(body []byte) string {
-	sum := sha256.Sum256(body)
+	normalised := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+	normalised = bytes.TrimSuffix(normalised, []byte("\r"))
+	sum := sha256.Sum256(normalised)
 	return hex.EncodeToString(sum[:])
 }
 
