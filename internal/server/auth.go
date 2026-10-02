@@ -83,7 +83,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		isMCP := path == MCPPath
 		switch {
 		case publicPaths[path]:
-			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowPublicWrite(w, r) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowPublicWriteAudited(w, r) {
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -98,6 +98,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		pattern := s.routePattern(r)
 		var (
 			principal *auth.Principal
 			err       error
@@ -117,6 +118,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			err = auth.ErrUnauthenticated
 		}
 		if err != nil {
+			// Refused mutating requests are recorded, anonymously.
+			if s.auditLog != nil && auditsAction(r.Method, path, pattern) {
+				rec, done := s.auditedAction(w, r, nil, pattern)
+				defer done()
+				w = rec
+			}
 			if !errors.Is(err, auth.ErrUnauthenticated) {
 				s.logger.Error("authentication failed", slog.Any("error", err))
 				writeError(w, http.StatusInternalServerError, "authentication failed")
@@ -138,13 +145,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		ctx := auth.WithPrincipal(r.Context(), principal)
 		ctx = auditlog.WithClient(ctx, auditlog.Client{IP: s.clientIP(r), UserAgent: r.UserAgent()})
-		req := r.WithContext(ctx)
-		pattern := s.routePattern(r)
 		recordsAction := s.auditLog != nil && auditsAction(r.Method, path, pattern)
+		if recordsAction {
+			ctx = auditlog.WithAnnotations(ctx)
+		}
+		req := r.WithContext(ctx)
 		if recordsAction || auditsREST(principal, path) {
 			rec := &statusRecorder{ResponseWriter: w}
 			if recordsAction {
-				defer s.recordAction(req, principal, pattern, rec)
+				// The activity log below is deferred later, so it runs first.
+				wrapped, done := s.auditedAction(w, req, principal, pattern)
+				defer done()
+				rec = wrapped
 			}
 			if auditsREST(principal, path) {
 				defer s.auditREST(req, principal, pattern, rec, time.Now())
@@ -214,6 +226,20 @@ func (s *Server) allowPublicWrite(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// allowPublicWriteAudited is allowPublicWrite recording a refused request in the
+// audit log, anonymously.
+func (s *Server) allowPublicWriteAudited(w http.ResponseWriter, r *http.Request) bool {
+	if s.auditLog == nil {
+		return s.allowPublicWrite(w, r)
+	}
+	rec := &statusRecorder{ResponseWriter: w}
+	if s.allowPublicWrite(rec, r) {
+		return true
+	}
+	s.recordAction(r, nil, s.routePattern(r), rec, false)
+	return false
 }
 
 // sameOrAllowedOrigin reports whether origin (an Origin header value) is the server's

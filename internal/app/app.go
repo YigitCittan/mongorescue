@@ -345,11 +345,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Logger:  logger,
 	})
 	auditLog := auditlog.New(auditlog.Config{
-		Repo:          metaStore,
-		RetentionDays: func() int { return settingsSvc.Current().Audit.RetentionDays },
-		Forwarder:     auditForwarder,
-		Logger:        logger,
+		Repo:           metaStore,
+		RetentionDays:  func() int { return settingsSvc.Current().Audit.RetentionDays },
+		Forwarder:      auditForwarder,
+		PruneInterval:  auditPruneInterval,
+		OnWriteFailure: metricSet.IncAuditWriteFailures,
+		OnSyncWrite:    metricSet.IncAuditSyncWrites,
+		Logger:         logger,
 	})
+	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
 	integritySvc := integrity.New(integrity.Config{
 		Store:       metaStore,
@@ -598,20 +602,22 @@ func (a *App) startBackground() (stop func()) {
 		defer pruneWG.Done()
 		a.pruneRunLogs(pruneCtx, runLogPruneInterval)
 	}()
-	// Audit log retention, and the worker forwarding new entries to the webhook.
-	pruneWG.Add(2)
-	go func() {
-		defer pruneWG.Done()
-		a.auditLog.RunRetention(pruneCtx, auditPruneInterval)
-	}()
-	go func() {
-		defer pruneWG.Done()
-		a.auditForward.Run(pruneCtx)
-	}()
+	// The audit log writer (coalescing flushes and retention included), and the
+	// worker forwarding stored entries to the webhook. The writer stops first, so
+	// that the entries it drains are still forwarded.
+	auditCtx, cancelAudit := context.WithCancel(context.Background())
+	forwardCtx, cancelForward := context.WithCancel(context.Background())
+	var auditWG, forwardWG sync.WaitGroup
+	auditWG.Go(func() { a.auditLog.Run(auditCtx) })
+	forwardWG.Go(func() { a.auditForward.Run(forwardCtx) })
 
 	return func() {
 		cancelPrune()
 		pruneWG.Wait()
+		cancelAudit()
+		auditWG.Wait()
+		cancelForward()
+		forwardWG.Wait()
 		cancelBus()
 		busWG.Wait()
 		cancelNotify()

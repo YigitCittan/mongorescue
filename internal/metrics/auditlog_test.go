@@ -28,3 +28,24 @@ func TestObserveAuditForward(t *testing.T) {
 		t.Error("an unknown outcome created a series")
 	}
 }
+
+func TestAuditWriterSeries(t *testing.T) {
+	m := New(BuildInfo{Version: "test"})
+	if out := scrape(t, m); !strings.Contains(out, "mongorescue_audit_queue_depth 0") {
+		t.Fatal("the queue depth without a source is not 0")
+	}
+	m.SetAuditQueueSource(func() int { return 7 })
+	m.IncAuditWriteFailures()
+	m.IncAuditSyncWrites()
+	m.IncAuditSyncWrites()
+	out := scrape(t, m)
+	for _, w := range []string{
+		"mongorescue_audit_queue_depth 7",
+		"mongorescue_audit_write_failures_total 1",
+		"mongorescue_audit_sync_writes_total 2",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("scrape lacks %s", w)
+		}
+	}
+}

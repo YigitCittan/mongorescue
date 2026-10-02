@@ -270,12 +270,18 @@ func TestMCPStdioBridgeEndToEnd(t *testing.T) {
 		t.Fatalf("audit log lacks the stdio start_backup call: %+v", entries)
 	}
 	// ... and mirrored into the hash-chained audit log of every action.
+	// Entries are written asynchronously: poll briefly.
 	var chain auditlog.Page
-	api.data("GET", "/api/v1/audit/events?action=MCP+start_backup", nil, http.StatusOK, &chain)
-	if !slices.ContainsFunc(chain.Events, func(e *auditlog.Event) bool {
-		return e.ActorKind == auditlog.ActorAPIKey && e.ActorKeyName == "mcp operator" && e.Outcome == auditlog.OutcomeOK
-	}) {
-		t.Fatalf("audit log of every action lacks the start_backup call: %+v", chain.Events)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		api.data("GET", "/api/v1/audit/events?action=MCP+start_backup", nil, http.StatusOK, &chain)
+		if slices.ContainsFunc(chain.Events, func(e *auditlog.Event) bool {
+			return e.ActorKind == auditlog.ActorAPIKey && e.ActorKeyName == "mcp operator" && e.Outcome == auditlog.OutcomeOK
+		}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("audit log of every action lacks the start_backup call: %+v", chain.Events)
+		}
 	}
 	var verified auditlog.Verification
 	api.data("GET", "/api/v1/audit/events/verify", nil, http.StatusOK, &verified)

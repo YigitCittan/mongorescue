@@ -147,10 +147,13 @@ func escapeLike(s string) string {
 // AuditChainAnchor returns the chain anchor.
 func (s *SQLiteStore) AuditChainAnchor(ctx context.Context) (auditlog.Anchor, error) {
 	var a auditlog.Anchor
-	var pruned int64
-	err := s.db.QueryRowContext(ctx, "SELECT last_id, last_hash, pruned_at FROM audit_chain_anchor WHERE id = 1").Scan(&a.LastID, &a.LastHash, &pruned)
+	var lastAt, pruned int64
+	err := s.db.QueryRowContext(ctx, "SELECT last_id, last_hash, last_at, pruned_at FROM audit_chain_anchor WHERE id = 1").Scan(&a.LastID, &a.LastHash, &lastAt, &pruned)
 	if err != nil {
 		return auditlog.Anchor{}, fmt.Errorf("store: read audit chain anchor: %w", err)
+	}
+	if a.LastID != 0 {
+		a.LastTime = fromKey(lastAt)
 	}
 	if pruned != 0 {
 		a.PrunedAt = fromKey(pruned)
@@ -163,18 +166,18 @@ func (s *SQLiteStore) AuditChainAnchor(ctx context.Context) (auditlog.Anchor, er
 func (s *SQLiteStore) PruneAuditEvents(ctx context.Context, cutoff time.Time) (int64, error) {
 	var removed int64
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var lastID int64
+		var lastID, lastAt int64
 		var lastHash string
-		err := tx.QueryRowContext(ctx, `SELECT id, hash FROM audit_events
-			WHERE id = (SELECT MAX(id) FROM audit_events WHERE at < ?)`, timeKey(cutoff)).Scan(&lastID, &lastHash)
+		err := tx.QueryRowContext(ctx, `SELECT id, hash, at FROM audit_events
+			WHERE id = (SELECT MAX(id) FROM audit_events WHERE at < ?)`, timeKey(cutoff)).Scan(&lastID, &lastHash, &lastAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("store: find expired audit log entries: %w", err)
 		}
-		if _, err = tx.ExecContext(ctx, "UPDATE audit_chain_anchor SET last_id = ?, last_hash = ?, pruned_at = ? WHERE id = 1",
-			lastID, lastHash, timeKey(time.Now())); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE audit_chain_anchor SET last_id = ?, last_hash = ?, last_at = ?, pruned_at = ? WHERE id = 1",
+			lastID, lastHash, lastAt, timeKey(time.Now())); err != nil {
 			return fmt.Errorf("store: move audit chain anchor: %w", err)
 		}
 		res, err := tx.ExecContext(ctx, "DELETE FROM audit_events WHERE id <= ?", lastID)

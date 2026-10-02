@@ -166,7 +166,8 @@ async function auditlogVerify(btn) {
     auditlog.verification = json.data || null;
     auditlogRenderVerification();
     const v = auditlog.verification;
-    showToast(v && v.ok ? t("auditlog.verify_ok_toast") : t("auditlog.verify_broken_toast"), v && v.ok ? "success" : "error");
+    if (v && v.ok && v.warning) showToast(t("auditlog.verify_warning_toast"), "error");
+    else showToast(v && v.ok ? t("auditlog.verify_ok_toast") : t("auditlog.verify_broken_toast"), v && v.ok ? "success" : "error");
   } catch (err) {
     setText("auditlog-verify-status", err.message);
   } finally {
@@ -179,10 +180,23 @@ function auditlogRenderVerification() {
   const v = auditlog.verification;
   if (!el || !v) return;
   const head = String(v.head_hash || "").slice(0, 16);
-  el.textContent = v.ok
+  const parts = [v.ok
     ? tf("auditlog.verify_ok", { n: Number(v.checked) || 0, id: Number(v.head_id) || 0, hash: head })
-    : tf("auditlog.verify_broken", { id: Number(v.broken_id) || 0, reason: String(v.reason || "") });
-  el.classList.toggle("text-danger", !v.ok);
+    : tf("auditlog.verify_broken", { id: Number(v.broken_id) || 0, reason: String(v.reason || "") })];
+  const anchor = v.anchor || {};
+  if (Number(anchor.last_id) > 0) {
+    const pruned = parseDate(anchor.pruned_at);
+    parts.push(tf("auditlog.verify_anchor", {
+      id: Number(anchor.last_id) || 0,
+      hash: String(anchor.last_hash || "").slice(0, 16),
+      when: pruned ? formatAbsolute(pruned) : "—"
+    }));
+  } else {
+    parts.push(t("auditlog.verify_no_anchor"));
+  }
+  if (v.warning) parts.push(tf("auditlog.verify_warning", { warning: String(v.warning) }));
+  el.textContent = parts.join(" ");
+  el.classList.toggle("text-danger", !v.ok || !!v.warning);
 }
 
 // Download name from Content-Disposition, restricted to safe characters.

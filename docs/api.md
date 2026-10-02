@@ -578,7 +578,7 @@ Backup records carry the trust fields `verified_at`, `verification` (`ok`, `mism
  "forwarding": {"enabled": true, "queued": 0, "sent": 1840, "failed": 2, "dropped": 0}}
 ```
 
-`GET /api/v1/audit/events/export` takes the same filters (no paging) and streams every matching entry as one JSON object per line, oldest first (`application/x-ndjson`, as a `mongorescue-audit-<time>.jsonl` attachment). `GET /api/v1/audit/events/verify` walks the chain from its anchor and answers `{ok, checked, anchor, head_id, head_hash, broken_id, reason, verified_at}`; `ok` is `false` and `broken_id` names the first entry that was changed, removed or reordered when the chain is broken.
+`GET /api/v1/audit/events/export` takes the same filters (no paging) and streams every matching entry as one JSON object per line, oldest first (`application/x-ndjson`, as a `mongorescue-audit-<time>.jsonl` attachment). `GET /api/v1/audit/events/verify` walks the chain from its anchor and answers `{ok, checked, anchor: {last_id, last_hash, last_time, pruned_at}, head_id, head_hash, broken_id, reason, warning, retention_days, verified_at}`; `ok` is `false` and `broken_id` names the first entry that was changed, removed or reordered when the chain is broken, and `warning` is set when the anchor moved further than the retention explains ([audit.md](audit.md#hash-chain)).
 
 ```bash
 curl -s "http://localhost:8080/api/v1/audit/events/export?since=2026-10-01T00:00:00Z" -H "Authorization: Bearer $KEY" > audit.jsonl

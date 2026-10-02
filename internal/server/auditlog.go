@@ -2,10 +2,13 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -62,19 +65,44 @@ func auditsAction(method, path, pattern string) bool {
 	return true
 }
 
-// recordAction records a request of p in the audit log: the route pattern (never the
-// raw path), its path parameters, the response status and the principal.
-func (s *Server) recordAction(r *http.Request, p *auth.Principal, pattern string, rec *statusRecorder) {
-	status := rec.status
-	if status == 0 {
-		status = http.StatusOK
-	}
+// recordAction records a request of p (nil: not authenticated) in the audit log:
+// the route pattern (never the raw path), its path parameters and the targets the
+// handler added (auditlog.Annotate), the response status and the principal. A
+// handler that panicked or wrote no status is recorded as an error with status 0.
+func (s *Server) recordAction(r *http.Request, p *auth.Principal, pattern string, rec *statusRecorder, panicked bool) {
+	targets := pathTargets(r, pattern)
+	maps.Copy(targets, auditlog.Annotations(r.Context()))
+	status, outcome := recordedStatus(rec, panicked)
 	e := auditlog.Event{
-		Action: routeLabel(r.Method, pattern), Targets: pathTargets(r, pattern), Status: status,
+		Action: routeLabel(r.Method, pattern), Targets: targets, Status: status, Outcome: outcome,
 		ClientIP: s.clientIP(r), UserAgent: r.UserAgent(),
 	}
 	setActor(&e, p)
 	s.auditLog.Record(r.Context(), e)
+}
+
+// recordedStatus returns the status and outcome to record for rec: the status the
+// handler wrote, or 0 and auditlog.OutcomeError when it panicked or wrote none.
+func recordedStatus(rec *statusRecorder, panicked bool) (int, string) {
+	if panicked || rec.status == 0 {
+		return 0, auditlog.OutcomeError
+	}
+	return rec.status, auditlog.OutcomeFor(rec.status)
+}
+
+// auditedAction wraps w so that the request is recorded in the audit log once the
+// handler returns, also when it panics (the panic is recorded, then re-raised so
+// net/http handles it as before). p nil records an anonymous caller. It returns the
+// writer to use and the function to defer.
+func (s *Server) auditedAction(w http.ResponseWriter, r *http.Request, p *auth.Principal, pattern string) (*statusRecorder, func()) {
+	rec := &statusRecorder{ResponseWriter: w}
+	return rec, func() {
+		v := recover()
+		s.recordAction(r, p, pattern, rec, v != nil)
+		if v != nil {
+			panic(v)
+		}
+	}
 }
 
 // setActor fills the actor fields of e from p.
@@ -102,18 +130,64 @@ func (s *Server) recordSignIn(r *http.Request, action string, rec *statusRecorde
 	if s.auditLog == nil {
 		return
 	}
-	status := rec.status
-	if status == 0 {
-		status = http.StatusOK
-	}
+	status, outcome := recordedStatus(rec, false)
 	e := auditlog.Event{
-		ActorKind: auditlog.ActorAnonymous, ActorName: tried, Action: action, Status: status,
+		ActorKind: auditlog.ActorAnonymous, ActorName: tried, Action: action, Status: status, Outcome: outcome,
 		ClientIP: s.clientIP(r), UserAgent: r.UserAgent(),
 	}
 	if user != nil {
 		e.ActorKind, e.ActorUserID, e.ActorName = auditlog.ActorUser, user.ID, user.Username
 	}
 	s.auditLog.Record(r.Context(), e)
+}
+
+// Targets naming changed settings (see annotateSettings).
+const (
+	targetSettingsSections = "sections"
+	targetSettingsKeys     = "keys"
+)
+
+// annotateSettings adds the names of the changed settings to the audit log entry
+// of the request: their sections and keys, comma-separated, never their values.
+// Keys that do not fit one target are counted as "+N more".
+func annotateSettings(ctx context.Context, keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	var sections []string
+	for _, k := range keys {
+		sec, _, _ := strings.Cut(k, ".")
+		if !slices.Contains(sections, sec) {
+			sections = append(sections, sec)
+		}
+	}
+	slices.Sort(sections)
+	auditlog.Annotate(ctx, targetSettingsSections, strings.Join(sections, ","))
+	auditlog.Annotate(ctx, targetSettingsKeys, joinBounded(keys, maxAuditPathValue))
+}
+
+// joinBounded joins items with commas within n bytes, ending with ",+N more" when
+// some did not fit.
+func joinBounded(items []string, n int) string {
+	if all := strings.Join(items, ","); len(all) <= n {
+		return all
+	}
+	var b strings.Builder
+	for i, it := range items {
+		sep := ""
+		if i > 0 {
+			sep = ","
+		}
+		rest := "+" + strconv.Itoa(len(items)-i-1) + " more"
+		if b.Len()+len(sep)+len(it)+1+len(rest) > n {
+			if b.Len() == 0 {
+				return "+" + strconv.Itoa(len(items)) + " more"
+			}
+			return b.String() + ",+" + strconv.Itoa(len(items)-i) + " more"
+		}
+		b.WriteString(sep + it)
+	}
+	return b.String()
 }
 
 // pathTargets returns the path parameters of the matched route.
