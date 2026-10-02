@@ -22,7 +22,7 @@ func newSessionsFixture(t *testing.T) *sessionsFixture {
 	f := newFixture(t)
 	res := f.setup(t)
 	ctx := context.Background()
-	if _, err := f.svc.CreateUser(ctx, f.session(t, res.Token), "bob", adminPassword); err != nil {
+	if _, err := f.svc.CreateUser(ctx, f.session(t, res.Token), "bob", adminPassword, auth.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	f.clock.Advance(2 * time.Minute)
@@ -93,7 +93,7 @@ func TestSessionListNeverCarriesTokensOrHashes(t *testing.T) {
 	}
 }
 
-func TestNonAdminPrincipalsSeeOnlyTheirOwnSessionsAndRevokeNone(t *testing.T) {
+func TestNonAdminPrincipalsSeeAndRevokeOnlyTheirOwnSessions(t *testing.T) {
 	f := newSessionsFixture(t)
 	ctx := context.Background()
 	// A read-scope API key created by bob stands for bob.
@@ -112,17 +112,22 @@ func TestNonAdminPrincipalsSeeOnlyTheirOwnSessionsAndRevokeNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Revoking is admin-only, even for the key creator's own session.
+	// Ending another user's session needs admin.
 	operator := &auth.Principal{User: f.bob.User, Method: auth.MethodAPIKey, APIKeyID: "key_o", Scope: auth.ScopeOperator}
 	for _, p := range []*auth.Principal{key, operator} {
-		for _, id := range []string{adminSessions[0].ID, own[0].ID} {
-			if _, err := f.svc.RevokeSession(ctx, p, id); !errors.Is(err, auth.ErrForbidden) {
-				t.Fatalf("%s key revoking %s: %v; want ErrForbidden", p.Scope, id, err)
-			}
+		if _, err := f.svc.RevokeSession(ctx, p, adminSessions[0].ID); !errors.Is(err, auth.ErrForbidden) {
+			t.Fatalf("%s key revoking the admin's session: %v; want ErrForbidden", p.Scope, err)
 		}
 	}
 	if list, _ := f.svc.ListSessions(ctx, key, false); len(list) != 1 {
 		t.Fatalf("bob's sessions after refused revokes = %d; want 1", len(list))
+	}
+	// Anyone may end their own user's sessions.
+	if _, err := f.svc.RevokeSession(ctx, key, own[0].ID); err != nil {
+		t.Fatalf("read key revoking its creator's session: %v", err)
+	}
+	if list, _ := f.svc.ListSessions(ctx, key, false); len(list) != 0 {
+		t.Fatalf("bob's sessions after revoking his own = %d; want 0", len(list))
 	}
 	// Without a user (the imported static key) there are no own sessions.
 	static := &auth.Principal{Method: auth.MethodAPIKey, APIKeyID: "key_s", Scope: auth.ScopeOperator}

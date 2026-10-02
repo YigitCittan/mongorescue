@@ -172,7 +172,7 @@ func TestSetupFlowOverHTTP(t *testing.T) {
 	}
 	anon := f.browser(t)
 	rec = anon.do("GET", "/api/v1/auth/me", nil, nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"data":{"user":null,"csrf_token":"","auth":""}`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"data":{"user":null,"csrf_token":"","auth":"","role":"","scope":""}`) {
 		t.Fatalf("me without session: %d %s; want 200 with an empty session", rec.Code, rec.Body)
 	}
 	// A stale cookie is cleared and reported as signed out; other routes stay 401.
@@ -348,7 +348,7 @@ func TestUsersAPI(t *testing.T) {
 	}
 	for _, u := range users {
 		for k := range u {
-			if k != "id" && k != "username" && k != "created_at" && k != "last_login_at" {
+			if k != "id" && k != "username" && k != "role" && k != "created_at" && k != "last_login_at" {
 				t.Errorf("unexpected user field %q", k)
 			}
 		}

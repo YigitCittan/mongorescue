@@ -685,7 +685,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	// place needs admin.
 	if req.InPlace() {
 		if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
-			return nil, fmt.Errorf("in-place restores need an admin API key or a session: %w", err)
+			return nil, fmt.Errorf("in-place restores need the admin role or an admin API key: %w", err)
 		}
 	}
 
@@ -706,7 +706,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	// and so needs admin.
 	if req.TargetConnectionID != "" && req.TargetConnectionID != source.ConnectionID {
 		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
-			return nil, fmt.Errorf("restores into another connection than the backup's need an admin API key or a session: %w", scopeErr)
+			return nil, fmt.Errorf("restores into another connection than the backup's need the admin role or an admin API key: %w", scopeErr)
 		}
 	}
 	targetID := req.TargetConnectionID

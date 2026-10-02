@@ -3343,3 +3343,25 @@ fieldset.is-disabled .collections-box {
 .preflight .check {
   margin-top: 10px;
 }
+
+/* Dashboard roles (roles.js): administrator-only areas are hidden from the other
+   roles; the server refuses their requests anyway. */
+body:not([data-scope="admin"]) [data-hide-unless="admin"] {
+  display: none !important;
+}
+
+.chip-warn {
+  border-color: transparent;
+  background: var(--warn-subtle);
+  color: var(--warn);
+}
+
+.user-role-select {
+  width: auto;
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.role-readonly-note {
+  margin-bottom: 12px;
+}

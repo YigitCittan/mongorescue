@@ -6,32 +6,39 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 )
 
-// routeScopes is the single table of the API key scope every authenticated route
-// requires, keyed by its ServeMux pattern. The auth middleware looks the matched
-// pattern up for every request; a route missing from the table requires admin, and a
-// test fails when a registered route is missing or an entry is stale.
+// routeScopes is the single table of the scope every authenticated route requires,
+// keyed by its ServeMux pattern. The scope is the caller's effective scope: an API
+// key's scope (capped by its creator's dashboard role) or a signed-in user's role
+// (viewer read, operator operator, admin admin). The auth middleware looks the
+// matched pattern up for every request; a route missing from the table requires
+// admin, and a test fails when a registered route is missing or an entry is stale.
 //
-// read covers every GET except the audit log and the user list (read keys must not
-// enumerate usernames); operator adds starting, retrying and cancelling backups,
+// read covers every GET except the audit log and the user list (only the IDs and
+// names of users are readable, through /api/v1/users/names), and the
+// selfServiceRoutes, whose finer rules the auth service enforces; operator adds
+// starting, retrying and cancelling backups,
 // running jobs, cancelling restores that are not in place and safe-clone restores into the backup's own connection (in-place and cross-connection
 // restores need admin, which the operations service enforces because it depends on the
 // request body); everything else is admin.
 // Public routes (publicPaths) and the dashboard assets need no credentials at all.
 var routeScopes = map[string]auth.Scope{
-	"POST /api/v1/auth/logout": auth.ScopeAdmin,
-	"GET " + meRoute:           auth.ScopeRead,
+	logoutRoute:      auth.ScopeRead,
+	"GET " + meRoute: auth.ScopeRead,
 	// Without ?all=true a key sees only its creator's sessions; all needs admin,
 	// which the auth service enforces.
-	"GET /api/v1/auth/sessions":         auth.ScopeRead,
-	"DELETE /api/v1/auth/sessions/{id}": auth.ScopeAdmin,
+	"GET /api/v1/auth/sessions": auth.ScopeRead,
+	revokeSessionRoute:          auth.ScopeRead,
 
-	"GET /api/v1/users":                  auth.ScopeAdmin,
-	"POST /api/v1/users":                 auth.ScopeAdmin,
-	"DELETE /api/v1/users/{id}":          auth.ScopeAdmin,
-	"PUT /api/v1/users/{id}/password":    auth.ScopeAdmin,
-	"GET /api/v1/api-keys":               auth.ScopeRead,
-	"POST /api/v1/api-keys":              auth.ScopeAdmin,
-	"DELETE /api/v1/api-keys/{id}":       auth.ScopeAdmin,
+	"GET /api/v1/users":         auth.ScopeAdmin,
+	userNamesRoute:              auth.ScopeRead,
+	"POST /api/v1/users":        auth.ScopeAdmin,
+	"DELETE /api/v1/users/{id}": auth.ScopeAdmin,
+	userRoleRoute:               auth.ScopeAdmin,
+	changePasswordRoute:         auth.ScopeRead,
+	listAPIKeysRoute:            auth.ScopeRead,
+	createAPIKeyRoute:           auth.ScopeRead,
+	deleteAPIKeyRoute:           auth.ScopeRead,
+
 	"GET /api/v1/connections":            auth.ScopeRead,
 	"POST /api/v1/connections":           auth.ScopeAdmin,
 	"POST /api/v1/connections/test":      auth.ScopeAdmin,
@@ -153,6 +160,38 @@ var routeScopes = map[string]auth.Scope{
 	"POST " + MCPPath:   auth.ScopeRead,
 	"GET " + MCPPath:    auth.ScopeRead,
 	"DELETE " + MCPPath: auth.ScopeRead,
+}
+
+// Self-service routes: every signed-in user acts on their own account through them.
+//
+//nolint:gosec // G101: route patterns, not credentials.
+const (
+	logoutRoute         = "POST /api/v1/auth/logout"
+	revokeSessionRoute  = "DELETE /api/v1/auth/sessions/{id}"
+	changePasswordRoute = "PUT /api/v1/users/{id}/password"
+	listAPIKeysRoute    = "GET /api/v1/api-keys"
+	createAPIKeyRoute   = "POST /api/v1/api-keys"
+	deleteAPIKeyRoute   = "DELETE /api/v1/api-keys/{id}"
+)
+
+// User routes beyond the self-service ones.
+const (
+	userNamesRoute = "GET /api/v1/users/names"
+	userRoleRoute  = "PUT /api/v1/users/{id}/role"
+)
+
+// selfServiceRoutes need only the read scope in routeScopes, because every role
+// may use them on its own account; the auth service then applies the finer rule:
+//   - logout ends the request's own session;
+//   - changing your own password needs a session and the current password, another
+//     user's needs admin;
+//   - ending your own session is allowed, another user's needs admin;
+//   - non-admins list only the API keys they created;
+//   - creating a key needs a session or an admin key, and a scope no higher than
+//     the caller's own;
+//   - revoking your own key is allowed, another user's needs admin.
+var selfServiceRoutes = []string{
+	logoutRoute, changePasswordRoute, revokeSessionRoute, listAPIKeysRoute, createAPIKeyRoute, deleteAPIKeyRoute,
 }
 
 // requiredScope returns the scope pattern requires; unknown patterns require admin.

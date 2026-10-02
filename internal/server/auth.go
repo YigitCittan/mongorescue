@@ -55,19 +55,21 @@ func (s *Server) registerAuthRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
 	mux.HandleFunc(setupRoute, s.handleSetup)
 	mux.HandleFunc(loginRoute, s.handleLogin)
-	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	mux.HandleFunc(logoutRoute, s.handleLogout)
 	mux.HandleFunc("GET "+meRoute, s.handleMe)
 	mux.HandleFunc("GET /api/v1/auth/sessions", s.handleListSessions)
-	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.handleRevokeSession)
+	mux.HandleFunc(revokeSessionRoute, s.handleRevokeSession)
 
 	mux.HandleFunc("GET /api/v1/users", s.handleListUsers)
+	mux.HandleFunc(userNamesRoute, s.handleListUserNames)
 	mux.HandleFunc("POST /api/v1/users", s.handleCreateUser)
 	mux.HandleFunc("DELETE /api/v1/users/{id}", s.handleDeleteUser)
-	mux.HandleFunc("PUT /api/v1/users/{id}/password", s.handleChangePassword)
+	mux.HandleFunc(userRoleRoute, s.handleSetUserRole)
+	mux.HandleFunc(changePasswordRoute, s.handleChangePassword)
 
-	mux.HandleFunc("GET /api/v1/api-keys", s.handleListAPIKeys)
-	mux.HandleFunc("POST /api/v1/api-keys", s.handleCreateAPIKey)
-	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", s.handleDeleteAPIKey)
+	mux.HandleFunc(listAPIKeysRoute, s.handleListAPIKeys)
+	mux.HandleFunc(createAPIKeyRoute, s.handleCreateAPIKey)
+	mux.HandleFunc(deleteAPIKeyRoute, s.handleDeleteAPIKey)
 }
 
 // authMiddleware authenticates every non-public request by API key (Authorization:
@@ -198,14 +200,13 @@ func (s *Server) checkScope(p *auth.Principal, pattern string) error {
 	return p.Require(requiredScope(pattern))
 }
 
-// scopeMessage renders a scope error for API clients.
+// scopeMessage renders a scope error for API clients: what the request needs and
+// what limits the caller (their role, the key's scope, or the creator's role
+// capping the key).
 func scopeMessage(err error) string {
 	var se *auth.ScopeError
-	switch {
-	case errors.As(err, &se) && se.Have != "":
-		return fmt.Sprintf("this API key has the %q scope; this request needs %q", se.Have, se.Need)
-	case errors.As(err, &se):
-		return fmt.Sprintf("this request needs the %q scope", se.Need)
+	if errors.As(err, &se) {
+		return se.Message()
 	}
 	return "insufficient scope"
 }
@@ -371,12 +372,15 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later")
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, err.Error())
-	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired):
+	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired),
+		errors.Is(err, auth.ErrScopeExceedsRole):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser):
+	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser),
+		errors.Is(err, auth.ErrLastAdmin):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrInvalidUsername),
-		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope):
+		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope),
+		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, auth.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
@@ -505,11 +509,18 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 const meRoute = "/api/v1/auth/me"
 
 // meResponse is returned by GET /api/v1/auth/me. For a signed-out visitor every
-// field is empty: {"user": null, "csrf_token": "", "auth": ""}.
+// field is empty: {"user": null, "csrf_token": "", "auth": "", "role": "", "scope": ""}.
 type meResponse struct {
 	User      *auth.User  `json:"user"`
 	CSRFToken string      `json:"csrf_token"`
 	Auth      auth.Method `json:"auth"`
+	// Role is the dashboard role of the user ("" for a key without a user).
+	Role auth.Role `json:"role"`
+	// Scope is the effective scope: what the caller may do now.
+	Scope auth.Scope `json:"scope"`
+	// KeyScope is the API key's own scope (API keys only); Scope is lower when the
+	// creator's role caps the key.
+	KeyScope auth.Scope `json:"key_scope,omitempty"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -518,7 +529,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, meResponse{})
 		return
 	}
-	writeJSON(w, http.StatusOK, meResponse{User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method})
+	writeJSON(w, http.StatusOK, meResponse{
+		User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method, Role: p.Role, Scope: p.Scope, KeyScope: p.KeyScope,
+	})
 }
 
 // handleListSessions lists the caller's own sessions, or with ?all=true (admin) those
@@ -577,13 +590,45 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	users, err := svc.ListUsers(r.Context())
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	users, err := svc.ListUsers(r.Context(), p)
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, users)
 }
+
+// handleListUserNames serves the ID and name of every user (read), so dashboards of
+// every role can show who created or pinned something.
+func (s *Server) handleListUserNames(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireAuth(w)
+	if !ok {
+		return
+	}
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	names, err := svc.ListUserNames(r.Context(), p)
+	if err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, names)
+}
+
+// Audit log targets of user and API key changes.
+const (
+	targetRole           = "role"
+	targetRoleFrom       = "role_from"
+	targetRoleTo         = "role_to"
+	targetScope          = "scope"
+	targetCeilingApplied = "ceiling_applied"
+)
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireAuth(w)
@@ -597,16 +642,47 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// Role is viewer, operator or admin; omitted means viewer.
+		Role auth.Role `json:"role"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	user, err := svc.CreateUser(r.Context(), p, req.Username, req.Password)
+	user, err := svc.CreateUser(r.Context(), p, req.Username, req.Password, req.Role)
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
 	}
+	auditlog.Annotate(r.Context(), targetRole, string(user.Role))
 	writeJSON(w, http.StatusCreated, user)
+}
+
+// handleSetUserRole changes a user's dashboard role: 400 for an unknown role or the
+// caller's own user, 404 for an unknown user, 409 when it would demote the last
+// admin. The user's sessions end; their API keys are capped by the new role.
+func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireAuth(w)
+	if !ok {
+		return
+	}
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Role auth.Role `json:"role"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	change, err := svc.SetUserRole(r.Context(), p, r.PathValue("id"), req.Role)
+	if err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	auditlog.Annotate(r.Context(), targetRoleFrom, string(change.From))
+	auditlog.Annotate(r.Context(), targetRoleTo, string(change.User.Role))
+	writeJSON(w, http.StatusOK, change.User)
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -655,7 +731,11 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	keys, err := svc.ListAPIKeys(r.Context())
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	keys, err := svc.ListAPIKeys(r.Context(), p)
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
@@ -691,6 +771,9 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthError(w, err)
 		return
 	}
+	// ceiling_applied: the key has a creator, so that user's role caps it from now on.
+	auditlog.Annotate(r.Context(), targetScope, string(k.Scope))
+	auditlog.Annotate(r.Context(), targetCeilingApplied, strconv.FormatBool(k.CreatedBy != ""))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, createdAPIKey{APIKey: k, Key: plain})
 }

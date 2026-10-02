@@ -6,8 +6,9 @@ import (
 	"fmt"
 )
 
-// Scope limits what an API key may do. Scopes are ordered: every scope includes the
-// rights of the ones below it (read < operator < admin).
+// Scope limits what a caller may do. Scopes are ordered: every scope includes the
+// rights of the ones below it (read < operator < admin). API keys carry a scope;
+// signed-in users get the scope of their dashboard role (see Role.Scope).
 type Scope string
 
 // API key scopes.
@@ -17,7 +18,7 @@ const (
 	// ScopeOperator adds starting backups, running jobs and safe-clone restores.
 	ScopeOperator Scope = "operator"
 	// ScopeAdmin allows everything, including deletions, in-place restores, settings,
-	// users, API keys, connections and storage targets. Browser sessions are admin.
+	// users, API keys, connections and storage targets.
 	ScopeAdmin Scope = "admin"
 )
 
@@ -30,20 +31,52 @@ var (
 	ErrInvalidScope = errors.New("auth: invalid scope")
 )
 
+// ScopeSource names what limits a caller's scope, so refusals can say why.
+type ScopeSource string
+
+// Scope sources.
+const (
+	// SourceRole: a signed-in user, limited by their dashboard role.
+	SourceRole ScopeSource = "role"
+	// SourceKey: an API key, limited by its own scope.
+	SourceKey ScopeSource = "key"
+	// SourceKeyCappedByRole: an API key whose scope is above its creator's current
+	// role, limited by that role.
+	SourceKeyCappedByRole ScopeSource = "key_capped_by_role"
+)
+
 // ScopeError reports which scope an operation required and which the caller had.
 type ScopeError struct {
-	// Have is the caller's scope ("" when there is no authenticated caller).
+	// Have is the caller's effective scope ("" when there is no authenticated caller).
 	Have Scope
 	// Need is the scope the operation requires.
 	Need Scope
+	// Source is what limits Have ("" for the system or no caller).
+	Source ScopeSource
+	// Role is the dashboard role behind Have (SourceRole and SourceKeyCappedByRole).
+	Role Role
+	// KeyScope is the API key's own scope (SourceKey and SourceKeyCappedByRole).
+	KeyScope Scope
 }
 
 // Error implements error.
 func (e *ScopeError) Error() string {
-	if e.Have == "" {
-		return fmt.Sprintf("%s: the %q scope is required", ErrForbidden, e.Need)
+	return fmt.Sprintf("%s: %s", ErrForbidden, e.Message())
+}
+
+// Message describes the refusal for API clients, without the error prefix.
+func (e *ScopeError) Message() string {
+	switch {
+	case e.Have == "":
+		return fmt.Sprintf("this request needs the %q scope", e.Need)
+	case e.Source == SourceRole:
+		return fmt.Sprintf("your role (%s) has the %q scope; this request needs %q", e.Role, e.Have, e.Need)
+	case e.Source == SourceKeyCappedByRole:
+		return fmt.Sprintf("this API key has the %q scope, capped at %q by its creator's role (%s); this request needs %q",
+			e.KeyScope, e.Have, e.Role, e.Need)
+	default:
+		return fmt.Sprintf("this API key has the %q scope; this request needs %q", e.Have, e.Need)
 	}
-	return fmt.Sprintf("%s: the %q scope is required, this API key has %q", ErrForbidden, e.Need, e.Have)
 }
 
 // Unwrap makes errors.Is(err, ErrForbidden) work.
@@ -101,11 +134,72 @@ func (p *Principal) Require(need Scope) error {
 	if p.Allows(need) {
 		return nil
 	}
-	have := Scope("")
-	if p != nil {
-		have = p.Scope
+	if p == nil {
+		return &ScopeError{Need: need}
 	}
-	return &ScopeError{Have: have, Need: need}
+	return &ScopeError{Have: p.Scope, Need: need, Source: p.ScopeSource(), Role: p.Role, KeyScope: p.KeyScope}
+}
+
+// ScopeSource reports what limits the principal's scope: its role for sessions, the
+// key's scope for API keys, or the creator's role for keys it caps. It is "" for
+// the system and a nil principal.
+func (p *Principal) ScopeSource() ScopeSource {
+	if p == nil {
+		return ""
+	}
+	switch p.Method {
+	case MethodSession:
+		return SourceRole
+	case MethodAPIKey:
+		if p.KeyScope.rank() > p.Scope.rank() {
+			return SourceKeyCappedByRole
+		}
+		return SourceKey
+	}
+	return ""
+}
+
+// Access is what a principal may do, as computed by effectiveScope. It is a struct
+// so that finer limits (for example per connection) can join the scope later
+// without changing its callers.
+type Access struct {
+	// Scope is the effective scope.
+	Scope Scope
+}
+
+// effectiveScope is the one place that decides what a caller may do:
+//   - a session has the scope of the user's role;
+//   - an API key with a creator has the lower of its own scope and the creator's
+//     current role, recomputed on every request, so demoting a user caps their keys;
+//   - an API key without a creator (imported from MONGORESCUE_API_KEY, or created
+//     by the system) has its own scope;
+//   - the system is admin.
+//
+// Unknown scopes and roles fail closed to read.
+func effectiveScope(method Method, role Role, keyScope Scope, hasCreator bool) Access {
+	switch method {
+	case MethodSession:
+		return Access{Scope: role.Scope()}
+	case MethodAPIKey:
+		if !keyScope.Valid() {
+			keyScope = ScopeRead
+		}
+		if hasCreator {
+			return Access{Scope: minScope(keyScope, role.Scope())}
+		}
+		return Access{Scope: keyScope}
+	case MethodSystem:
+		return Access{Scope: ScopeAdmin}
+	}
+	return Access{Scope: ScopeRead}
+}
+
+// minScope returns the less privileged of a and b.
+func minScope(a, b Scope) Scope {
+	if a.rank() <= b.rank() {
+		return a
+	}
+	return b
 }
 
 // RequireScope checks the principal stored in ctx (see WithPrincipal) against need.

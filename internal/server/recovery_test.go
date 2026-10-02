@@ -153,8 +153,9 @@ func kitBody(password string) map[string]string {
 }
 
 // TestRecoveryKitRefusesOperatorSessions checks that a signed-in user without the
-// admin scope cannot download the kit, even with the right password. Sessions are
-// admin today, so the principal is attached to the bare routes directly.
+// admin scope cannot download the kit, even with the right password. The principal is
+// attached to the bare routes directly, so the auth service's own check is exercised
+// (TestRecoveryKitNeedsTheAdminRole covers real role sessions).
 func TestRecoveryKitRefusesOperatorSessions(t *testing.T) {
 	f := newKitFixture(t, "")
 	b := f.browser(t)

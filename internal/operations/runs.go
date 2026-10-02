@@ -92,7 +92,7 @@ func (s *Service) CancelRestore(ctx context.Context, id, via string) (*models.Re
 	}
 	if rec.InPlace && !rec.DryRun {
 		if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
-			return nil, fmt.Errorf("cancelling an in-place restore leaves the target partially restored and needs an admin API key or a session: %w", err)
+			return nil, fmt.Errorf("cancelling an in-place restore leaves the target partially restored and needs the admin role or an admin API key: %w", err)
 		}
 	}
 	if err := s.cancel(ctx, id, via); err != nil {

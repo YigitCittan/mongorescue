@@ -82,7 +82,7 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 // failures: ErrNotFound and auth.ErrForbidden.
 func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
-		return nil, fmt.Errorf("lifting a legal hold needs an admin API key or a session: %w", err)
+		return nil, fmt.Errorf("lifting a legal hold needs the admin role or an admin API key: %w", err)
 	}
 	return s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
 		r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy = false, "", nil, ""

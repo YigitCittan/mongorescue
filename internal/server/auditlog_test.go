@@ -119,7 +119,7 @@ func TestAuditLogRecordsSessionActions(t *testing.T) {
 	}
 	if created.ActorKind != auditlog.ActorUser || created.ActorUserID != admin.ID || created.ActorName != "admin" ||
 		created.Status != http.StatusCreated || created.Outcome != auditlog.OutcomeOK || created.ClientIP != "192.0.2.1" ||
-		created.UserAgent != "audit-test/1.0" || len(created.Targets) != 0 || created.ActorKeyID != "" {
+		created.UserAgent != "audit-test/1.0" || len(created.Targets) != 1 || created.Targets["role"] != "viewer" || created.ActorKeyID != "" {
 		t.Fatalf("create user = %+v", created)
 	}
 	if deleted.Targets["id"] != bob.ID || deleted.Status != http.StatusOK {

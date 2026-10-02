@@ -270,8 +270,9 @@ var compatSteps = []compatStep{
 		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
 			ctx := context.Background()
 			user, err := s.GetUserByUsername(ctx, "admin")
+			// Users stored before dashboard roles existed were all administrators.
 			if err != nil || user.ID != "usr_v1" || user.PasswordHash != compatPassword || user.LastLoginAt == nil ||
-				!user.LastLoginAt.Equal(compatT0.Add(time.Hour)) {
+				!user.LastLoginAt.Equal(compatT0.Add(time.Hour)) || user.Role != auth.RoleAdmin {
 				t.Errorf("usr_v1 = %+v, %v", user, err)
 			}
 			sess, err := s.GetSession(ctx, strings.Repeat("5e", 32))
@@ -763,6 +764,26 @@ var compatSteps = []compatStep{
 			// Jobs stored before 0018 keep the default RPO.
 			if old, getErr := s.GetJob(ctx, "job_v1"); getErr == nil && old.RPOMinutes != 0 {
 				t.Errorf("job_v1 rpo_minutes = %d; want 0", old.RPOMinutes)
+			}
+		},
+	},
+	{
+		version: 19,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO users (id, username, password_hash, created_at, updated_at, last_login_at, role) VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+				"usr_v19_viewer", "auditor", compatPassword, ns(24*time.Hour), ns(24*time.Hour), nil, "viewer",
+				"usr_v19_operator", "oncall", compatPassword, ns(24*time.Hour), ns(25*time.Hour), ns(25*time.Hour), "operator")
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			for id, want := range map[string]auth.Role{"usr_v19_viewer": auth.RoleViewer, "usr_v19_operator": auth.RoleOperator, "usr_v1": auth.RoleAdmin} {
+				if u, err := s.GetUser(ctx, id); err != nil || u.Role != want {
+					t.Errorf("%s = %+v, %v; want role %s", id, u, err, want)
+				}
+			}
+			// The CHECK constraint keeps unknown roles out.
+			if _, err := s.db.Exec(`UPDATE users SET role = 'root' WHERE id = 'usr_v19_viewer'`); err == nil {
+				t.Error("an unknown role was stored")
 			}
 		},
 	},

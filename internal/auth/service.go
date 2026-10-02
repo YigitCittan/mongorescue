@@ -247,7 +247,8 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 		return nil, ErrInvalidSetupCode
 	}
 
-	user, err := s.newUser(username, password)
+	// The first user is always an administrator.
+	user, err := s.newUser(username, password, RoleAdmin)
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +387,10 @@ func (s *Service) AuthenticateSession(ctx context.Context, token string) (*Princ
 			s.logger.Warn("failed to update session activity", slog.Any("error", err))
 		}
 	}
-	return &Principal{User: user, Method: MethodSession, SessionHash: hash, CSRFToken: sess.CSRFToken, Scope: ScopeAdmin}, nil
+	return &Principal{
+		User: user, Method: MethodSession, SessionHash: hash, CSRFToken: sess.CSRFToken,
+		Role: user.Role, Scope: effectiveScope(MethodSession, user.Role, "", true).Scope,
+	}, nil
 }
 
 // AuthenticateAPIKey resolves an API key (a key created in the dashboard, or one
@@ -416,7 +420,7 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 		// Fail closed: a key with a scope this build does not know may only read.
 		scope = ScopeRead
 	}
-	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, Scope: scope}
+	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, KeyScope: scope}
 	if stored.CreatedBy != "" {
 		u, err := s.repo.GetUser(ctx, stored.CreatedBy)
 		switch {
@@ -427,8 +431,10 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 		case err != nil:
 			return nil, err
 		}
-		p.User = u
+		p.User, p.Role = u, u.Role
 	}
+	// The creator's current role caps the key on every request.
+	p.Scope = effectiveScope(MethodAPIKey, p.Role, scope, stored.CreatedBy != "").Scope
 	return p, nil
 }
 
@@ -448,14 +454,54 @@ func CheckCSRF(p *Principal, method, token string) error {
 	return nil
 }
 
-// ListUsers returns all users.
-func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
+// ListUsers returns all users. It needs the admin scope.
+func (s *Service) ListUsers(ctx context.Context, actor *Principal) ([]*User, error) {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return nil, err
+	}
 	return s.repo.ListUsers(ctx)
 }
 
-// CreateUser adds a user (every user is an administrator in v0.1.0).
-func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, password string) (*User, error) {
-	user, err := s.newUser(username, password)
+// UserName is the public identity of a user: enough to show who created or pinned
+// something, nothing more.
+type UserName struct {
+	// ID is the user ID.
+	ID string `json:"id"`
+	// Username is the user's name.
+	Username string `json:"username"`
+}
+
+// ListUserNames returns the ID and name of every user, for any authenticated
+// caller (the read scope): roles, sign-in times and other details stay admin-only.
+func (s *Service) ListUserNames(ctx context.Context, actor *Principal) ([]UserName, error) {
+	if err := actor.Require(ScopeRead); err != nil {
+		return nil, err
+	}
+	users, err := s.repo.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UserName, 0, len(users))
+	for _, u := range users {
+		out = append(out, UserName{ID: u.ID, Username: u.Username})
+	}
+	return out, nil
+}
+
+// CreateUser adds a user with role (RoleViewer when empty). It needs the admin
+// scope and returns ErrInvalidRole for an unknown role.
+func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, password string, role Role) (*User, error) {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return nil, err
+	}
+	if role == "" {
+		role = RoleViewer
+	}
+	role, err := ParseRole(string(role))
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.newUser(username, password, role)
 	if err != nil {
 		return nil, err
 	}
@@ -463,13 +509,17 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 		return nil, err
 	}
 	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
-		slog.String("by", actor.UserID()))
+		logsafe.Attr("role", string(user.Role)), slog.String("by", actor.UserID()))
 	return user, nil
 }
 
 // DeleteUser removes a user and revokes their sessions and the API keys they created.
-// Users cannot delete themselves, and the last user cannot be deleted.
+// It needs the admin scope. Users cannot delete themselves, and neither the last
+// user nor the last admin can be deleted (ErrLastUser, ErrLastAdmin).
 func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) error {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return err
+	}
 	if actor.UserID() == id {
 		return ErrDeleteSelf
 	}
@@ -480,15 +530,67 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) e
 	return nil
 }
 
+// RoleChange is the outcome of SetUserRole.
+type RoleChange struct {
+	// User is the user after the change.
+	User *User
+	// From is the role the user had before.
+	From Role
+}
+
+// SetUserRole changes the dashboard role of the user id and ends their sessions, so
+// they sign in again under the new role. It needs the admin scope and returns
+// ErrInvalidRole for an unknown role, ErrChangeOwnRole for the actor's own user,
+// ErrUserNotFound, and ErrLastAdmin when it would demote the last admin. The check
+// that the actor is still an admin and the last-admin check run in the same
+// transaction as the change, so two admins demoting each other cannot both succeed.
+func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, role Role) (*RoleChange, error) {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return nil, err
+	}
+	role, err := ParseRole(string(role))
+	if err != nil {
+		return nil, err
+	}
+	if actor.UserID() == id {
+		return nil, ErrChangeOwnRole
+	}
+	from, err := s.repo.UpdateUserRole(ctx, actor.UserID(), id, role, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.repo.GetUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if from != role {
+		s.logger.Info("user role changed", logsafe.Attr("user_id", user.ID), logsafe.Attr("role_from", string(from)),
+			logsafe.Attr("role_to", string(role)), slog.String("by", actor.UserID()))
+	}
+	return &RoleChange{User: user, From: from}, nil
+}
+
 // ChangePassword sets a new password for userID. Changing one's own password needs
-// the current one. Every other session of the user is revoked; the actor's own
-// session survives a change of their own password.
+// a signed-in session (ErrSessionRequired for API keys) and the current password;
+// changing another user's needs the admin scope. Every other session of the user is
+// revoked; the actor's own session survives a change of their own password.
 func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, current, newPassword string) error {
+	if actor == nil {
+		return ErrUnauthenticated
+	}
+	self := actor.UserID() != "" && actor.UserID() == userID
+	switch {
+	case self && actor.Method != MethodSession:
+		return ErrSessionRequired
+	case !self:
+		if err := actor.Require(ScopeAdmin); err != nil {
+			return err
+		}
+	}
 	user, err := s.repo.GetUser(ctx, userID)
 	if err != nil {
 		return err
 	}
-	self := actor.UserID() == userID
 	if self {
 		attempt, wait := s.throttle.Reserve("password|"+userID, "")
 		if attempt == nil {
@@ -517,7 +619,7 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 		return fmt.Errorf("auth: hash password: %w", err)
 	}
 	keep := ""
-	if self && actor.Method == MethodSession {
+	if self {
 		keep = actor.SessionHash
 	}
 	if err := s.repo.UpdatePassword(ctx, userID, string(hash), s.now().UTC(), keep); err != nil {
@@ -569,15 +671,53 @@ func (s *Service) ConfirmPassword(ctx context.Context, actor *Principal, passwor
 	return nil
 }
 
-// ListAPIKeys returns all API keys (never their secrets).
-func (s *Service) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
-	return s.repo.ListAPIKeys(ctx)
+// ListAPIKeys returns the API keys actor may see (never their secrets), each with
+// its effective scope: every key for an admin, otherwise only the keys actor's user
+// created. It needs the read scope.
+func (s *Service) ListAPIKeys(ctx context.Context, actor *Principal) ([]*APIKey, error) {
+	if err := actor.Require(ScopeRead); err != nil {
+		return nil, err
+	}
+	keys, err := s.repo.ListAPIKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	users, err := s.repo.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roles := make(map[string]Role, len(users))
+	for _, u := range users {
+		roles[u.ID] = u.Role
+	}
+	admin := actor.Allows(ScopeAdmin)
+	out := make([]*APIKey, 0, len(keys))
+	for _, k := range keys {
+		if !admin && (actor.UserID() == "" || k.CreatedBy != actor.UserID()) {
+			continue
+		}
+		// A key whose creator is gone is refused at sign-in; the empty role shows it
+		// as read, the least it could do.
+		k.EffectiveScope = effectiveScope(MethodAPIKey, roles[k.CreatedBy], k.Scope, k.CreatedBy != "").Scope
+		out = append(out, k)
+	}
+	return out, nil
 }
 
 // CreateAPIKey issues a key named name with the given scope (ScopeRead when empty).
-// The plaintext is returned only here. It returns ErrInvalidName for a bad name and
+// The plaintext is returned only here. The actor must be a signed-in user or an
+// admin-scope key (or the system), and the scope may not exceed the actor's own
+// (ErrScopeExceedsRole). It returns ErrInvalidName for a bad name and
 // ErrInvalidScope for an unknown scope.
 func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name string, scope Scope) (*APIKey, string, error) {
+	if actor == nil {
+		return nil, "", ErrUnauthenticated
+	}
+	if actor.Method != MethodSession {
+		if err := actor.Require(ScopeAdmin); err != nil {
+			return nil, "", err
+		}
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxKeyNameLength || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return nil, "", fmt.Errorf("%w: 1-%d printable characters", ErrInvalidName, maxKeyNameLength)
@@ -585,6 +725,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	scope, err := ParseScope(string(scope))
 	if err != nil {
 		return nil, "", err
+	}
+	if !actor.Allows(scope) {
+		return nil, "", fmt.Errorf("%w: the %q scope is above yours (%q)", ErrScopeExceedsRole, scope, actor.Scope)
 	}
 	plain, prefix, err := newGeneratedKey()
 	if err != nil {
@@ -714,8 +857,28 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-// DeleteAPIKey revokes a key.
+// DeleteAPIKey revokes a key. Anyone may revoke the keys their own user created;
+// revoking another user's key (or one without a creator) needs the admin scope.
 func (s *Service) DeleteAPIKey(ctx context.Context, actor *Principal, id string) error {
+	if err := actor.Require(ScopeRead); err != nil {
+		return err
+	}
+	if !actor.Allows(ScopeAdmin) {
+		keys, err := s.repo.ListAPIKeys(ctx)
+		if err != nil {
+			return err
+		}
+		own := false
+		for _, k := range keys {
+			if k.ID == id {
+				own = actor.UserID() != "" && k.CreatedBy == actor.UserID()
+				break
+			}
+		}
+		if !own {
+			return actor.Require(ScopeAdmin)
+		}
+	}
 	if err := s.repo.DeleteAPIKey(ctx, id); err != nil {
 		return err
 	}
@@ -723,8 +886,8 @@ func (s *Service) DeleteAPIKey(ctx context.Context, actor *Principal, id string)
 	return nil
 }
 
-// newUser validates and hashes a new account.
-func (s *Service) newUser(username, password string) (*User, error) {
+// newUser validates and hashes a new account with role.
+func (s *Service) newUser(username, password string, role Role) (*User, error) {
 	username = strings.TrimSpace(username)
 	if err := ValidateUsername(username); err != nil {
 		return nil, err
@@ -741,5 +904,5 @@ func (s *Service) newUser(username, password string) (*User, error) {
 		return nil, err
 	}
 	now := s.now().UTC()
-	return &User{ID: id, Username: username, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}, nil
+	return &User{ID: id, Username: username, Role: role, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}, nil
 }

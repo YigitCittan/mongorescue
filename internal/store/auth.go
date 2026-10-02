@@ -14,7 +14,7 @@ import (
 // Compile-time check that SQLiteStore serves the auth port.
 var _ auth.Repository = (*SQLiteStore)(nil)
 
-const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at"
+const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role"
 
 // CountUsers returns the number of users.
 func (s *SQLiteStore) CountUsers(ctx context.Context) (int, error) {
@@ -44,10 +44,16 @@ func (s *SQLiteStore) CreateUser(ctx context.Context, u *auth.User) error {
 	return insertUser(ctx, s.db, u)
 }
 
-// insertUser inserts a user, mapping a username clash to auth.ErrUserExists.
+// insertUser inserts a user, mapping a username clash to auth.ErrUserExists. The
+// role is always bound: an empty or unknown one is refused (auth.ErrInvalidRole),
+// so the column default (admin, for users stored before roles existed) never
+// applies to a new user.
 func insertUser(ctx context.Context, e execer, u *auth.User) error {
-	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?)",
-		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt))
+	if !u.Role.Valid() {
+		return fmt.Errorf("store: insert user: %w: %q", auth.ErrInvalidRole, u.Role)
+	}
+	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?)",
+		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return auth.ErrUserExists
@@ -114,34 +120,130 @@ func (s *SQLiteStore) RecordLogin(ctx context.Context, userID string, at time.Ti
 	return execOne(ctx, s.db, auth.ErrUserNotFound, "UPDATE users SET last_login_at = ? WHERE id = ?", timeKey(at), userID)
 }
 
-// DeleteUser removes a user (sessions cascade). The last user cannot be deleted.
+// DeleteUser removes a user (sessions cascade). Neither the last user nor the last
+// admin can be deleted.
 func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&n); err != nil {
 			return fmt.Errorf("store: count users: %w", err)
 		}
-		var exists int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE id = ?", id).Scan(&exists); err != nil {
-			return fmt.Errorf("store: check user: %w", err)
+		role, err := userRole(ctx, tx, id)
+		if err != nil {
+			return err
 		}
-		switch {
-		case exists == 0:
-			return auth.ErrUserNotFound
-		case n <= 1:
+		if n <= 1 {
 			return auth.ErrLastUser
+		}
+		if role == auth.RoleAdmin {
+			if err = refuseLastAdmin(ctx, tx); err != nil {
+				return err
+			}
 		}
 		// Sessions go with the user (ON DELETE CASCADE); delete explicitly as well so
 		// revocation never depends on the foreign_keys pragma.
-		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", id); err != nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", id); err != nil {
 			return fmt.Errorf("store: revoke sessions: %w", err)
 		}
 		// API keys the user created would otherwise keep working with full rights.
-		if _, err := tx.ExecContext(ctx, "DELETE FROM api_keys WHERE created_by = ?", id); err != nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM api_keys WHERE created_by = ?", id); err != nil {
 			return fmt.Errorf("store: revoke api keys: %w", err)
 		}
 		return execOne(ctx, tx, auth.ErrUserNotFound, "DELETE FROM users WHERE id = ?", id)
 	})
+}
+
+// UpdateUserRole sets the role of userID and revokes the user's sessions, in one
+// transaction, refusing to demote the last admin and, when actorID is not "", to
+// act for a user who is no longer an admin.
+func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string, role auth.Role, updatedAt time.Time) (auth.Role, error) {
+	if !role.Valid() {
+		return "", fmt.Errorf("store: update user role: %w: %q", auth.ErrInvalidRole, role)
+	}
+	var previous auth.Role
+	txErr := s.withTx(ctx, func(tx *sql.Tx) error {
+		if actorID != "" {
+			if err := requireAdminRole(ctx, tx, actorID); err != nil {
+				return err
+			}
+		}
+		current, err := userRole(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		previous = current
+		if current == role {
+			return nil
+		}
+		if current == auth.RoleAdmin {
+			if err = refuseLastAdmin(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
+			string(role), timeKey(updatedAt), userID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
+			return fmt.Errorf("store: revoke sessions: %w", err)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return "", txErr
+	}
+	return previous, nil
+}
+
+// requireAdminRole refuses (with a *auth.ScopeError) when the user actorID no longer
+// has the admin role, and with auth.ErrUnauthenticated when the user is gone.
+func requireAdminRole(ctx context.Context, tx *sql.Tx, actorID string) error {
+	role, err := userRole(ctx, tx, actorID)
+	if errors.Is(err, auth.ErrUserNotFound) {
+		return auth.ErrUnauthenticated
+	}
+	if err != nil {
+		return err
+	}
+	if role != auth.RoleAdmin {
+		return &auth.ScopeError{Have: role.Scope(), Need: auth.ScopeAdmin, Source: auth.SourceRole, Role: role}
+	}
+	return nil
+}
+
+// refuseLastAdmin returns auth.ErrLastAdmin unless more than one user has the admin
+// role.
+func refuseLastAdmin(ctx context.Context, tx *sql.Tx) error {
+	admins, err := countAdmins(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if admins <= 1 {
+		return auth.ErrLastAdmin
+	}
+	return nil
+}
+
+// userRole returns the stored role of id or auth.ErrUserNotFound.
+func userRole(ctx context.Context, tx *sql.Tx, id string) (auth.Role, error) {
+	var role string
+	err := tx.QueryRowContext(ctx, "SELECT role FROM users WHERE id = ?", id).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", auth.ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read user role: %w", err)
+	}
+	return auth.Role(role), nil
+}
+
+// countAdmins returns the number of users with the admin role.
+func countAdmins(ctx context.Context, tx *sql.Tx) (int, error) {
+	var n int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE role = ?", string(auth.RoleAdmin)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count admins: %w", err)
+	}
+	return n, nil
 }
 
 // CreateSession stores a session.
@@ -314,10 +416,11 @@ func scanUser(r rowScanner) (*auth.User, error) {
 func scanUserInto(r rowScanner, u *auth.User) error {
 	var created, updated int64
 	var lastLogin sql.NullInt64
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin); err != nil {
+	var role string
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role); err != nil {
 		return scanRowError("user", err)
 	}
-	u.CreatedAt, u.UpdatedAt, u.LastLoginAt = fromKey(created), fromKey(updated), nullableKey(lastLogin)
+	u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.Role = fromKey(created), fromKey(updated), nullableKey(lastLogin), auth.Role(role)
 	return nil
 }
 

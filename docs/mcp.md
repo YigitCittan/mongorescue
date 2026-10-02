@@ -29,7 +29,7 @@ Assistants may still be wrong. Review what they propose before you let them star
 
 ## API key scopes
 
-Create a key under **Settings → API keys** and pick its scope (read is the default). Keys created before scopes existed are admin keys; consider replacing them with narrower ones.
+Create a key under **Settings → API keys** and pick its scope (read is the default; scopes above your dashboard role are not offered). Keys created before scopes existed are admin keys; consider replacing them with narrower ones.
 
 | Scope | REST API | MCP tools |
 | :--- | :--- | :--- |
@@ -37,7 +37,7 @@ Create a key under **Settings → API keys** and pick its scope (read is the def
 | `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, safe-clone `POST /api/v1/restore` into the backup's own connection and cancelling runs that are not in-place restores | `read` tools plus `start_backup`, `run_job`, `restore_to_safe_clone` (into the backup's own connection) and `cancel_run` |
 | `admin` | Everything, including deletions, in-place and cross-connection restores, settings, users and keys | Same as `operator`, plus `restore_to_safe_clone` with `target_connection_id` (a clone on another server) and `cancel_run` on an in-place restore |
 
-Browser sessions always have admin rights. See [api.md](api.md#api-key-scopes) for the route table.
+A key never does more than the current [dashboard role](api.md#dashboard-roles) of the user who created it: an `admin` key of a user demoted to viewer acts as a `read` key (and lists only the read tools) until the user is promoted again. Browser sessions get the scope of their user's role. See [api.md](api.md#api-key-scopes) for the route table.
 
 ## Transports
 
@@ -268,6 +268,6 @@ All resources are JSON and need the `read` scope.
 | `403` "cross-origin request" | The client sent an `Origin` header of another site. Add it to `cors_origins` only if you trust that site |
 | `403` "invalid Host header" | MongoRescue listens on loopback behind a reverse proxy that sets another `Host`: enable `trust_proxy_headers` |
 | A tool is missing | The key's scope hides it (for example `start_backup` for a read key); restart the stdio client after changing keys |
-| Tool error "forbidden: ... needs an API key with the "operator" scope" | Use an operator key for actions |
+| Tool error "forbidden: ... needs the "operator" scope" | Use an operator key for actions; if the message says the key is capped by its creator's role, that user needs the operator or admin role |
 | JSON-RPC error `-32029` | Rate limit; wait the indicated seconds |
 | The bridge exits with "cannot connect" | Check `--url` and that the instance is running; the bridge logs to stderr (`--log-level debug`) |

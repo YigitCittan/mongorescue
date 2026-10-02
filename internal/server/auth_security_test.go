@@ -200,7 +200,7 @@ func TestSessionEndsWithItsUser(t *testing.T) {
 	admin := f.browser(t)
 	admin.setup(f.authFixture)
 	var bob auth.User
-	decodeData(t, admin.do("POST", "/api/v1/users", map[string]string{"username": "bob", "password": testPassword}, nil), &bob)
+	decodeData(t, admin.do("POST", "/api/v1/users", map[string]string{"username": "bob", "password": testPassword, "role": "admin"}, nil), &bob)
 	bobSession := f.browser(t)
 	bobSession.session(bobSession.login("bob", testPassword))
 	var key createdAPIKey

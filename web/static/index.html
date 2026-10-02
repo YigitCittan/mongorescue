@@ -66,6 +66,7 @@
             <div class="menu-header">
               <span class="menu-caption" data-i18n="auth.signed_in_as">Signed in as</span>
               <span class="menu-user" id="user-menu-fullname"></span>
+              <span class="menu-note" id="user-menu-role" hidden></span>
             </div>
             <button type="button" role="menuitem" class="menu-item" data-action="change-own-password" data-i18n="auth.change_password">Change password</button>
             <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
@@ -684,8 +685,8 @@
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="encryption" data-i18n="settings.nav_encryption">Encryption</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="recovery" data-i18n="recovery.nav">Recovery</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
-        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="audit" data-i18n="auditlog.title">Audit log</button>
-        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title">Users</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="audit" data-i18n="auditlog.title" data-hide-unless="admin">Audit log</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title" data-hide-unless="admin">Users</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sessions" data-i18n="sessions.title">Sessions</button>
       </nav>
@@ -1144,6 +1145,7 @@
           </div>
         </form>
 
+        <div data-hide-unless="admin">
         <div class="section-header section-spaced">
           <div>
             <h3 class="section-title" id="audit-title" data-i18n="settings.activity_title">Recent API/MCP activity</h3>
@@ -1173,10 +1175,11 @@
             </tbody>
           </table>
         </div>
+        </div>
       </section>
 
       <!-- Audit log: every action, hash-chained (auditlog.js) -->
-      <section class="settings-panel" id="settings-audit" aria-labelledby="settings-audit-title" hidden>
+      <section class="settings-panel" id="settings-audit" aria-labelledby="settings-audit-title" data-hide-unless="admin" hidden>
         <div class="section-header">
           <div>
             <h2 class="section-title" id="settings-audit-title" data-i18n="auditlog.title">Audit log</h2>
@@ -1269,11 +1272,11 @@
       </section>
 
       <!-- Users -->
-      <section class="settings-panel" id="settings-users" aria-labelledby="settings-users-title" hidden>
+      <section class="settings-panel" id="settings-users" aria-labelledby="settings-users-title" data-hide-unless="admin" hidden>
         <div class="section-header">
           <div>
             <h2 class="section-title" id="settings-users-title" data-i18n="settings.users_title">Users</h2>
-            <p class="section-desc" data-i18n="settings.users_desc">Everyone listed here can sign in with full administrative access.</p>
+            <p class="section-desc" data-i18n="settings.user_role_users_desc">People who can sign in. Their dashboard role decides what they may do, and the API keys they create never get more.</p>
           </div>
           <div class="section-actions">
             <button type="button" class="btn btn-primary" data-action="new-user">
@@ -1287,13 +1290,14 @@
             <thead>
               <tr>
                 <th scope="col" data-i18n="settings.col_username">Username</th>
+                <th scope="col" data-i18n="settings.user_role_col">Role</th>
                 <th scope="col" data-i18n="settings.col_created">Created</th>
                 <th scope="col" data-i18n="settings.col_last_login">Last sign-in</th>
                 <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
               </tr>
             </thead>
             <tbody id="users-tbody">
-              <tr class="empty-row"><td colspan="4"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+              <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -2266,6 +2270,15 @@
             <label class="form-label" for="user-password-confirm" data-i18n="auth.confirm_password">Confirm password</label>
             <input type="password" id="user-password-confirm" class="form-input" autocomplete="new-password" minlength="12" required>
           </div>
+          <div class="form-group">
+            <label class="form-label" for="user-role" data-i18n="settings.user_role_label">Role</label>
+            <select id="user-role" class="form-select" aria-describedby="user-role-hint">
+              <option value="viewer" selected data-i18n="settings.user_role_viewer">Viewer</option>
+              <option value="operator" data-i18n="settings.user_role_operator">Operator</option>
+              <option value="admin" data-i18n="settings.user_role_admin">Admin</option>
+            </select>
+            <span class="form-hint" id="user-role-hint" data-i18n="settings.user_role_hint">Viewer: sees everything, changes nothing. Operator: also starts backups, runs jobs and restores into safe clones. Admin: everything, including users, settings and deletions.</span>
+          </div>
           <p class="form-error" id="user-error" role="alert" hidden></p>
         </div>
         <div class="modal-footer">
@@ -2334,6 +2347,7 @@
               <option value="admin" data-i18n="settings.scope_admin">Admin</option>
             </select>
             <span class="form-hint" id="api-key-scope-hint" data-i18n="settings.key_scope_hint">Read only: view everything (GET requests and read-only MCP tools). Operator: also start backups, run jobs and restore into safe clones. Admin: full access, including deletions and settings.</span>
+            <span class="form-hint" id="api-key-scope-limit" data-i18n="settings.user_role_scope_limit" hidden>Scopes above your role are not offered.</span>
           </div>
         </div>
         <div class="modal-body" id="api-key-step-secret" hidden>
@@ -2622,6 +2636,7 @@
   <script src="/nav.js"></script>
   <script src="/overview.js"></script>
   <script src="/readiness.js"></script>
+  <script src="/roles.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>
