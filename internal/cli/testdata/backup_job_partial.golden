@@ -1,0 +1,4 @@
+Run run_1 of job job_multi partial in 5s.
+DATABASE  BACKUP  STATUS     ERROR
+a         bkp_a   completed  -
+b         -       failed     boom

@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yigitcittan/mongorescue/internal/apiclient"
+	"github.com/yigitcittan/mongorescue/internal/audit"
 )
 
 // Bridge errors.
@@ -92,7 +93,7 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return fmt.Errorf("%w: set MONGORESCUE_MCP_API_KEY to an API key created under Settings → API keys", ErrBridgeConfig)
 	}
-	if u, _ := url.Parse(endpoint); u.Scheme == "http" && !isLoopback(u.Hostname()) {
+	if u, _ := url.Parse(endpoint); u.Scheme == "http" && !apiclient.IsLoopback(u.Hostname()) {
 		logger.Warn("the API key is sent over plain HTTP to a non-local host; use https", slog.String("host", u.Host))
 	}
 
@@ -105,10 +106,8 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 		}
 	}
 	endpointURL, _ := url.Parse(endpoint)
-	creds := &credentialTransport{
-		base: base, key: strings.TrimSpace(cfg.APIKey), userAgent: "mongorescue-mcp-bridge/" + cfg.Version,
-		scheme: endpointURL.Scheme, host: endpointURL.Host,
-	}
+	creds := apiclient.NewBearerTransport(base, endpointURL, strings.TrimSpace(cfg.APIKey),
+		"mongorescue-mcp-bridge/"+cfg.Version, audit.TransportStdio)
 	client.Transport = creds
 	// Never follow redirects: a 3xx could send the next request (and, with a
 	// forwarding transport, the API key) to another host. The 3xx response is
@@ -120,13 +119,13 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 		Endpoint: endpoint, HTTPClient: client, DisableStandaloneSSE: true, MaxRetries: -1,
 	}, nil)
 	if err != nil {
-		return connectError(creds.lastStatus.Load(), endpoint, err)
+		return connectError(creds.LastStatus(), endpoint, err)
 	}
 	defer func() { _ = remote.Close() }()
 
 	local, err := mirror(ctx, remote)
 	if err != nil {
-		return connectError(creds.lastStatus.Load(), endpoint, err)
+		return connectError(creds.LastStatus(), endpoint, err)
 	}
 	logger.Info("mcp bridge connected", slog.String("endpoint", endpoint))
 
@@ -148,7 +147,7 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 }
 
 // connectError explains a failed connection, distinguishing refused credentials.
-func connectError(status int32, endpoint string, err error) error {
+func connectError(status int, endpoint string, err error) error {
 	switch status {
 	case http.StatusUnauthorized:
 		return fmt.Errorf("%w (401): check MONGORESCUE_MCP_API_KEY", ErrBridgeAuth)
@@ -226,43 +225,6 @@ func forwardError(err error) error {
 		return wire
 	}
 	return &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "mongorescue server unavailable: " + err.Error()}
-}
-
-// credentialTransport adds the API key and the bridge's identity to every request
-// for the configured endpoint (scheme and host) and remembers the last HTTP status,
-// to explain refused connections. Requests to any other origin never carry the key.
-type credentialTransport struct {
-	base       http.RoundTripper
-	key        string
-	userAgent  string
-	scheme     string
-	host       string
-	lastStatus atomic.Int32
-}
-
-// RoundTrip implements http.RoundTripper.
-func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	r := req.Clone(req.Context())
-	r.Header.Del("Authorization")
-	if strings.EqualFold(r.URL.Scheme, t.scheme) && strings.EqualFold(r.URL.Host, t.host) {
-		r.Header.Set("Authorization", "Bearer "+t.key)
-	}
-	r.Header.Set(TransportHeader, "stdio")
-	r.Header.Set("User-Agent", t.userAgent)
-	resp, err := t.base.RoundTrip(r)
-	if resp != nil {
-		t.lastStatus.Store(int32(resp.StatusCode)) //nolint:gosec // G115: HTTP status codes fit in int32.
-	}
-	return resp, err
-}
-
-// isLoopback reports whether host is localhost or a loopback address.
-func isLoopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // nopReadCloser and nopWriteCloser adapt plain streams for IOTransport.

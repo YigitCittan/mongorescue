@@ -1,0 +1,48 @@
+{
+  "url": "http://127.0.0.1:8080",
+  "health": {
+    "status": "healthy",
+    "version": "0.17.0",
+    "time": "2026-10-01T00:00:00Z"
+  },
+  "me": {
+    "user": null,
+    "csrf_token": "",
+    "auth": "api_key",
+    "scope": "read"
+  },
+  "stats": {
+    "total_backups": 12,
+    "completed_backups": 10,
+    "failed_backups": 2,
+    "failed_backups_24h": 1,
+    "active_backups": 1,
+    "total_bytes": 1073741824,
+    "total_restores": 3,
+    "active_restores": 0,
+    "active_jobs": 2,
+    "last_backup": {
+      "id": "bkp_shop_1",
+      "database": "shop",
+      "status": "completed",
+      "started_at": "2026-10-01T03:00:00Z"
+    },
+    "job_last_backups": {}
+  },
+  "active_runs": [
+    {
+      "id": "bkp_x",
+      "kind": "backup",
+      "database": "crm",
+      "phase": "dumping",
+      "percent": 12.5,
+      "bytes": 1048576,
+      "documents": 10,
+      "collections_done": 0,
+      "collections_total": 3,
+      "bytes_per_second": 1,
+      "started_at": "2026-10-01T05:00:00Z",
+      "updated_at": "2026-10-01T05:00:01Z"
+    }
+  ]
+}

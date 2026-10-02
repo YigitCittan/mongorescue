@@ -180,13 +180,22 @@ func (s *Service) GetBackup(ctx context.Context, id string) (*models.BackupRecor
 }
 
 // QueryRestores returns the page of restores f selects and the number of all matches.
-// Unknown status values and out-of-range paging return ErrInvalid errors.
+// Unknown status values, more than store.MaxFilterIDs IDs and out-of-range paging
+// return ErrInvalid errors.
 func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestorePage, error) {
 	if f.Status != "" && !slices.Contains(validRestoreStatuses, f.Status) {
 		return nil, public("status must be one of "+joinValues(validRestoreStatuses), ErrInvalid)
 	}
 	if err := checkText(map[string]string{"backup_id": f.BackupID, "database": f.TargetDatabase, "q": f.Search}); err != nil {
 		return nil, err
+	}
+	if len(f.IDs) > store.MaxFilterIDs {
+		return nil, public(fmt.Sprintf("id takes at most %d IDs", store.MaxFilterIDs), ErrInvalid)
+	}
+	for _, id := range f.IDs {
+		if err := checkText(map[string]string{"id": id}); err != nil {
+			return nil, err
+		}
 	}
 	page, err := s.cfg.Store.QueryRestoreRecords(ctx, f)
 	if err != nil {

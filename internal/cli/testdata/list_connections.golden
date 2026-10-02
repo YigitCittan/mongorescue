@@ -1,0 +1,2 @@
+ID      NAME  URI                                                         LAST TEST
+conn_1  prod  mongodb://backup:******@db.example:27017/?authSource=admin  ok 2026-10-01T00:00:00Z

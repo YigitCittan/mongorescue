@@ -59,6 +59,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - User accounts with sessions (listed and revocable one by one) and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
 - A hash-chained [audit log](docs/audit.md) of every action (who, what, target, result, source address) with chain verification, retention, JSON Lines export and webhook forwarding
 - An MCP server for AI assistants (Streamable HTTP and stdio) with read-only and safe-clone tools, per-key rate limits and an audit log
+- A [command line](docs/cli.md) for scripts and CI (`mongorescue backup`, `restore`, `list`, `verify`, `status`) with `--wait`, JSON output and stable exit codes
 - Connection strings and notification secrets are encrypted at rest, never logged and never returned by the API
 - One static binary for Linux, macOS and Windows, plus a multi-arch container image
 
@@ -123,6 +124,22 @@ To restore only some collections, list what the backup holds with `GET /api/v1/b
 
 Every key has a scope: `read` (the default) can only look, `operator` can also start backups, run jobs and restore into safe clones, and `admin` can do everything. The examples above need an operator key.
 
+## Command line
+
+The same binary is a client of a running instance, for scripts and CI. It talks to the REST API with an API key read from a file (or `MONGORESCUE_CLI_API_KEY`) and never opens a data directory:
+
+```bash
+export MONGORESCUE_URL=https://backup.example.com
+export MONGORESCUE_CLI_API_KEY_FILE=~/.config/mongorescue/key
+
+mongorescue status
+mongorescue backup --job job_shop_nightly --wait --timeout 30m
+mongorescue list backups --status failed --json
+mongorescue restore bkp_shop_20260924_030000_3f9a1c2e --wait --verify-restore
+```
+
+Restores go into a safe clone unless you pass both `--in-place` and `--confirm`; the CLI never prompts. Exit codes are stable (`0` ok, `1` failed, `2` usage, `3` unauthorized, `4` not found, `5` conflict, `6` wait timed out, `7` unreachable), so a CI step fails when the backup does. See [docs/cli.md](docs/cli.md).
+
 ## Use it from AI assistants
 
 MongoRescue speaks the [Model Context Protocol](https://modelcontextprotocol.io), so Claude, GitHub Copilot in VS Code, Cursor or your own agents can check your backups, diagnose failures, start backups and rehearse restores for you. Create an API key (a `read` key to look, an `operator` key to act) and add the server to your assistant, for example in Claude Code:
@@ -155,6 +172,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Configuration reference](docs/configuration.md)
 - [Desktop app](docs/desktop.md)
 - [REST API](docs/api.md)
+- [Command line](docs/cli.md)
 - [AI assistants (MCP)](docs/mcp.md)
 - [Encryption and verified restores](docs/encryption.md)
 - [Verification, restore tests and retention safety](docs/verification.md)

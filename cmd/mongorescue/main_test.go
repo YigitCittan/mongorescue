@@ -119,3 +119,41 @@ func TestToolsDirFlag(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatch proves the CLI commands do not change the server flags or the mcp
+// subcommand: only the CLI command names are taken from the server.
+func TestDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		env        map[string]string
+		code       int
+		wantOut    string
+		wantErr    string
+		notWantErr string
+	}{
+		{name: "server version", args: []string{"--version"}, code: 0, wantOut: "MongoRescue v"},
+		{name: "server positional", args: []string{"extra"}, code: 2, wantErr: "unexpected arguments"},
+		{name: "server bad flag", args: []string{"-port", "0"}, code: 2, wantErr: "port"},
+		{name: "mcp help", args: []string{"mcp", "-h"}, code: 0, wantErr: "Usage: mongorescue mcp"},
+		{name: "mcp positional", args: []string{"mcp", "extra"}, code: 2, wantErr: "unexpected arguments"},
+		{name: "cli help", args: []string{"help"}, code: 0, wantOut: "Usage: mongorescue <command>"},
+		{name: "cli without key", args: []string{"status"}, code: 2, wantErr: "no API key"},
+		{
+			name: "cli never reads the server's key", args: []string{"list", "backups"},
+			env:  map[string]string{"MONGORESCUE_API_KEY": "mr_admin_secret", "MONGORESCUE_API_KEY_FILE": "/nonexistent"},
+			code: 2, wantErr: "no API key", notWantErr: "mr_admin_secret",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := dispatch(tc.args, env(tc.env), strings.NewReader(""), &stdout, &stderr)
+			if code != tc.code || !strings.Contains(stdout.String(), tc.wantOut) || !strings.Contains(stderr.String(), tc.wantErr) {
+				t.Fatalf("dispatch(%v) = %d\nstdout: %s\nstderr: %s", tc.args, code, stdout.String(), stderr.String())
+			}
+			if tc.notWantErr != "" && strings.Contains(stderr.String()+stdout.String(), tc.notWantErr) {
+				t.Fatalf("output contains %q", tc.notWantErr)
+			}
+		})
+	}
+}

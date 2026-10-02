@@ -4,19 +4,25 @@
 // the optional secret key, the MongoDB Database Tools directory and whether the web
 // dashboard is served); everything else
 // is configured in the dashboard and stored in the database. "mongorescue mcp" runs
-// the stdio bridge for AI assistants instead of the server.
+// the stdio bridge for AI assistants instead of the server, and "mongorescue backup",
+// "restore", "list", "verify" and "status" run the CLI (internal/cli), a client of a
+// running server's REST API.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/yigitcittan/mongorescue/internal/app"
+	"github.com/yigitcittan/mongorescue/internal/cli"
 	"github.com/yigitcittan/mongorescue/internal/config"
 )
 
@@ -28,10 +34,24 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == mcpCommand {
-		os.Exit(runMCP(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(dispatch(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+}
+
+// dispatch runs the command args name: "mcp" (the stdio bridge), a CLI command
+// (backup, restore, list, verify, status, help) or, without one, the server. It
+// returns the process exit code.
+func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch {
+		case args[0] == mcpCommand:
+			return runMCP(args[1:], getenv, stdin, stdout, stderr)
+		case cli.IsCommand(args[0]):
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return (&cli.App{Version: Version}).Run(ctx, args, getenv, stdout, stderr)
+		}
 	}
-	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+	return run(args, getenv, stdout, stderr)
 }
 
 // run parses flags, builds the logger and runs the application. It returns the
@@ -87,7 +107,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 		return config.Default(), slog.LevelInfo, true, nil
 	}
 	if fs.NArg() > 0 {
-		return nil, 0, false, fmt.Errorf("unexpected arguments: %v (everything except the bootstrap flags is configured in the dashboard)", fs.Args())
+		return nil, 0, false, fmt.Errorf("unexpected arguments: %v (everything except the bootstrap flags is configured in the dashboard; CLI commands: backup, restore, list, verify, status, help)", fs.Args())
 	}
 	level, err := config.ParseLogLevel(*logLevel)
 	if err != nil {

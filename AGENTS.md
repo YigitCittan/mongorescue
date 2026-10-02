@@ -52,6 +52,8 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/audit` | Audit log of MCP tool calls |
 | `internal/server` | REST API, auth, route → scope table, dashboard serving |
 | `internal/mcp` | MCP adapter: tools, resources, prompts, Streamable HTTP handler, stdio bridge |
+| `internal/cli` | CLI commands (`backup`, `restore`, `list`, `verify`, `status`) over the REST API: flags, API key sources, `--wait`, output, exit codes |
+| `internal/apiclient` | REST API client: origin-bound bearer transport (shared with the MCP bridge), envelope and error decoding, typed methods; never imports `server` |
 | `internal/redact`, `internal/mongouri`, `internal/mongotools` | Credential scrubbing, URI validation, tool helpers |
 | `internal/integration` | Integration tests (`integration` build tag) |
 | `web/static` | Embedded dashboard |
