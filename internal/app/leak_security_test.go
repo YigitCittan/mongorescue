@@ -326,7 +326,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 	// list_databases and list_collections contact the server; see above.
-	discovery := map[string]bool{mcp.ToolListDatabases: true, mcp.ToolListCollections: true}
+	discovery := map[string]bool{mcp.ToolListDatabases: true, mcp.ToolListCollections: true, mcp.ToolPreviewJobDatabases: true}
 	calls := map[string]map[string]any{
 		mcp.ToolListConnections:       {},
 		mcp.ToolListJobs:              {},
@@ -339,6 +339,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		mcp.ToolGetStatus:             {},
 		mcp.ToolListBackupCollections: {"backup_id": backup.ID},
 		mcp.ToolRetentionPreview:      {"job_id": job.ID},
+		mcp.ToolListJobRuns:           {"job_id": job.ID},
 	}
 	for tool, args := range calls {
 		if _, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: args}); err != nil {
