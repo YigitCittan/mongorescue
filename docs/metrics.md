@@ -103,7 +103,7 @@ The first rule does not fire for a job that has never succeeded, because the ser
 
 ## Recovery point objectives
 
-The `mongorescue_job_rpo_*` gauges follow each job's [recovery point objective](api.md#recovery-point-objectives) per database. The RPO checker refreshes their set of series every 5 minutes and right after a job's backup finishes (paused and deleted jobs drop out); the age is computed when Prometheus scrapes, so it grows between checks, and `mongorescue_job_rpo_met` follows it. Unlike the fixed 26 hours of the rule above, the objective follows each job's schedule or its own `rpo_minutes`:
+The `mongorescue_job_rpo_*` gauges follow each job's [recovery point objective](api.md#recovery-point-objectives) per database. The RPO checker refreshes their set of series every 5 minutes and right after a job's backup finishes or the job is saved, paused, resumed or deleted (paused and deleted jobs drop out); the age is computed when Prometheus scrapes, so it grows between checks, and `mongorescue_job_rpo_met` follows it. Unlike the fixed 26 hours of the rule above, the objective follows each job's schedule or its own `rpo_minutes`:
 
 ```yaml
       - alert: MongoRescueRPOMissed

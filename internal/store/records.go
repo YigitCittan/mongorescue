@@ -125,9 +125,20 @@ func (s *SQLiteStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
 	return listRecords[models.Job](ctx, s, tableJobs, nil, "SELECT id, data FROM jobs ORDER BY name, id")
 }
 
-// DeleteJob removes a job or returns ErrNotFound. Its backup records are kept.
+// DeleteJob removes a job or returns ErrNotFound. Its backup records are kept; its
+// RPO breaches and database join times go with it.
 func (s *SQLiteStore) DeleteJob(ctx context.Context, id string) error {
-	return execOne(ctx, s.db, ErrNotFound, "DELETE FROM jobs WHERE id = ?", id)
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := execOne(ctx, tx, ErrNotFound, "DELETE FROM jobs WHERE id = ?", id); err != nil {
+			return err
+		}
+		for _, q := range []string{"DELETE FROM rpo_breaches WHERE job_id = ?", "DELETE FROM job_database_joins WHERE job_id = ?"} {
+			if _, err := tx.ExecContext(ctx, q, id); err != nil {
+				return fmt.Errorf("store: delete job %s: %w", id, err)
+			}
+		}
+		return nil
+	})
 }
 
 // SaveBackupRecord stores or updates a backup execution record.

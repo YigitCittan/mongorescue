@@ -412,12 +412,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
 		Publisher:    bus,
-		Observe: func(samples []readiness.Sample) {
+		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
 			for i, s := range samples {
 				out[i] = metrics.RPOSample{JobID: s.JobID, Database: s.Database, Since: s.Since, Target: s.Target}
 			}
-			metricSet.SetRPOSamples(out)
+			metricSet.SetRPOSamples(started, out)
 		},
 		Logger: logger,
 	})
@@ -436,6 +436,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithAuditor(auditSvc),
 		scheduler.WithAfterBackup(integritySvc.AfterBackup),
 		scheduler.WithAfterRun(integritySvc.AfterRun),
+		// Job edits, pauses and resumes re-evaluate the RPOs at once.
+		scheduler.WithJobChanged(func(string) { readinessSvc.Kick() }),
 		// Multi-database jobs resolve their selection against the connection's
 		// databases (system ones included; selections exclude them themselves).
 		scheduler.WithDatabaseLister(func(ctx context.Context, connectionID string) ([]string, error) {
@@ -484,8 +486,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Audit:       auditSvc,
 		Logger:      logger,
 		Version:     o.version,
-		// Deleted jobs (single or bulk) drop their metric series.
-		OnJobDeleted: metricSet.ForgetJob,
+		// Deleted jobs (single or bulk) drop their metric series and are no longer
+		// checked.
+		OnJobDeleted: func(jobID string) {
+			metricSet.ForgetJob(jobID)
+			readinessSvc.Kick()
+		},
 	})
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,

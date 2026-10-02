@@ -209,9 +209,17 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	escrowed := s.cfg.KeysEscrowed != nil && s.cfg.KeysEscrowed()
 	names := s.connectionNames(ctx)
 
+	// One query per kind of evidence, whatever the number of jobs.
+	verified, err := s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, true)
+	if err != nil {
+		return nil, fmt.Errorf("%w: verified backups: %w", ErrUnavailable, err)
+	}
+	tests, err := s.cfg.Store.LatestRestoreTestsAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: restore tests: %w", ErrUnavailable, err)
+	}
+
 	rows := map[rowKey]*rowAcc{}
-	verified := map[string]map[string]*models.BackupRecord{}
-	tests := map[string][]*models.RestoreTestResult{}
 	for _, p := range points {
 		rk := rowKey{p.job.ConnectionID, p.database}
 		acc := rows[rk]
@@ -223,9 +231,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			rows[rk] = acc
 		}
 		s.addJob(acc, p, now, since)
-		if err = s.addEvidence(ctx, acc, p, verified, tests); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
-		}
+		addEvidence(acc, p, verified[p.job.ID], tests[p.job.ID])
 	}
 	restores, err := s.cfg.Store.LatestCompletedRestores(ctx)
 	if err != nil {
@@ -290,31 +296,14 @@ func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time
 	}
 }
 
-// addEvidence adds the verified backups and the restore tests of p's job for p's
-// database to acc. verified and tests cache the per-job reads.
-func (s *Service) addEvidence(ctx context.Context, acc *rowAcc, p point,
-	verified map[string]map[string]*models.BackupRecord, tests map[string][]*models.RestoreTestResult) error {
-	v, ok := verified[p.job.ID]
-	if !ok {
-		var err error
-		if v, err = s.cfg.Store.LatestVerifiedJobDatabaseBackups(ctx, p.job.ID); err != nil {
-			return fmt.Errorf("verified backups of job %s: %w", p.job.ID, err)
-		}
-		verified[p.job.ID] = v
-	}
-	if b := v[p.database]; b != nil {
+// addEvidence adds the newest verified backups (by database) and the restore tests
+// (newest first) of p's job for p's database to acc.
+func addEvidence(acc *rowAcc, p point, verified map[string]*models.BackupRecord, list []*models.RestoreTestResult) {
+	if b := verified[p.database]; b != nil {
 		at := finishedAt(b)
 		if cur := acc.row.LastVerifiedBackup; cur == nil || at.After(cur.At) {
 			acc.row.LastVerifiedBackup = &BackupRef{ID: b.ID, At: at, JobID: p.job.ID}
 		}
-	}
-	list, ok := tests[p.job.ID]
-	if !ok {
-		var err error
-		if list, err = s.cfg.Store.ListRestoreTests(ctx, p.job.ID, restoreTestsPerJob); err != nil {
-			return fmt.Errorf("restore tests of job %s: %w", p.job.ID, err)
-		}
-		tests[p.job.ID] = list
 	}
 	for _, t := range list { // newest first
 		db := t.Database
@@ -338,7 +327,6 @@ func (s *Service) addEvidence(ctx context.Context, acc *rowAcc, p point,
 			break // older successes cannot be newer than this one
 		}
 	}
-	return nil
 }
 
 // finishRow sets acc's RPO summary, RTO estimate (restore is the newest completed

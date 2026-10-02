@@ -176,7 +176,8 @@ const (
 	// DefaultRPOFloor is the smallest default RPO: a job without one never counts as
 	// late within six hours of its last success.
 	DefaultRPOFloor = 6 * time.Hour
-	// DefaultRPOSlack is the slack the default RPO adds to two schedule intervals.
+	// DefaultRPOSlack is the slack the default RPO adds to two schedule intervals
+	// (the largest gap between runs, see scheduler.Interval).
 	DefaultRPOSlack = time.Hour
 	// FallbackRPOInterval is the schedule interval assumed when a schedule cannot be
 	// read (one day).
