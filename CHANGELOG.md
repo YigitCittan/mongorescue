@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Restores (`POST /api/v1/restore`, the dashboard and the MCP `restore_to_safe_clone` tool) now run the restore preflight first and are refused with `409 Conflict` when the target is unreachable, the safe clone name already exists, the connection's user certainly lacks the write privileges on the target database, or the free space the server reports (`dbStats`) is smaller than the archive. Send `"force": true` (MCP: `force`; dashboard: *Restore anyway*) to restore anyway. Every other finding, including server version differences, only warns. See [docs/api.md](docs/api.md#restore-preflight).
+- A restore dry run no longer takes the lock on its target database: it writes nothing, so it is no longer refused with `409` while a restore into that database runs, and does not block one.
+- The outcome events of a restore (`restore.succeeded`, `restore.failed`, `restore.cancelled`, `restore.verification_failed`) are now published right before its final record is stored, so a client that sees the restore finished can rely on the events having been published.
 
 ## [0.14.0] - 2026-10-02
 

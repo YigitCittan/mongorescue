@@ -567,7 +567,9 @@ func runError(err error, busyMessage string) error {
 // restore with a *PreflightError (ErrPreflightFailed) unless req.Force is set; dry
 // runs and warnings are never refused. With req.VerifyRestore, a completed restore is
 // compared with the backup's manifest (RestoreRecord.Verification); a failed
-// verification adds a warning and emits restore.verification_failed. Other expected
+// verification adds a warning and emits restore.verification_failed. A dry run
+// takes no lock on the target database (it writes nothing), so it never gets
+// ErrBusy. Other expected
 // failures: ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired,
 // ErrBusy and ErrShuttingDown.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
@@ -595,9 +597,14 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 	}
 
-	release, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
-	if err != nil {
-		return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
+	// A dry run never writes to the target, so it takes no lock on it: it neither
+	// waits for nor blocks a restore into the same database.
+	release := func() {}
+	if !req.DryRun {
+		release, err = s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
+		if err != nil {
+			return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
+		}
 	}
 	snapshot := *record
 	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
@@ -616,15 +623,18 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
+		// The outcome events are published before the final record is stored, so a
+		// client that sees the restore finished (GET /api/v1/restores) can rely on its
+		// events having been published. Publishing never blocks.
+		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
+		if ve, ok := events.RestoreVerificationEvent(final); ok {
+			s.publish(persistCtx, ve)
+		}
 		if saveErr := s.cfg.Store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
 			s.logger.Error("failed to persist restore metadata record",
 				logsafe.Attr("restore_id", final.ID),
 				logsafe.Error(saveErr),
 			)
-		}
-		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
-		if ve, ok := events.RestoreVerificationEvent(final); ok {
-			s.publish(persistCtx, ve)
 		}
 	}); err != nil {
 		tracked.End()
