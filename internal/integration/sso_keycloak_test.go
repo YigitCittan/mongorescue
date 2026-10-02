@@ -219,7 +219,7 @@ func TestKeycloakSingleSignOn(t *testing.T) {
 	code, body = s.admin.do("PUT", "/api/v1/settings", map[string]any{"oidc": map[string]any{
 		"enabled": true, "display_name": "Keycloak", "issuer": issuer, "client_id": keycloakClient,
 		"client_secret": keycloakSecret, "redirect_url": keycloakRedirect, "rp_logout": true,
-		"role_mappings": []map[string]string{{"group": "backup-admins", "role": "admin"}, {"group": "backup-ops", "role": "operator"}},
+		"role_mappings":         []map[string]string{{"group": "backup-admins", "role": "admin"}, {"group": "backup-ops", "role": "operator"}},
 		"allowed_email_domains": []string{"corp.test"},
 	}})
 	if code != http.StatusOK || strings.Contains(string(body), keycloakSecret) {
