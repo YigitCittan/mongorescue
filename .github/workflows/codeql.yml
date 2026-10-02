@@ -29,7 +29,8 @@ jobs:
         include:
           - language: go
             build-mode: manual
-          # The embedded web UI (web/static).
+          # The embedded web UI (web/static) and the Playwright suite (e2e/,
+          # TypeScript; node_modules is never checked in).
           - language: javascript-typescript
             build-mode: none
     steps:

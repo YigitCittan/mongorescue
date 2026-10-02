@@ -1,0 +1,20 @@
+{
+  "name": "mongorescue-e2e",
+  "private": true,
+  "description": "Playwright browser tests for the MongoRescue dashboard (see CONTRIBUTING.md).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3"
+  }
+}

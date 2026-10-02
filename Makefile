@@ -58,7 +58,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker fuzz cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-e2e fuzz cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -104,6 +104,10 @@ test-integration:
 test-integration-docker:
 	./scripts/test-integration-docker.sh
 
+## test-e2e: Runs the Playwright browser suite (e2e/) against the built binary, MongoDB and MinIO in Docker
+test-e2e:
+	./scripts/test-e2e-docker.sh
+
 ## fuzz: Runs each fuzz target in FUZZ_TARGETS for FUZZTIME (default 30s), one after another
 fuzz:
 	@set -e; for target in $(FUZZ_TARGETS); do \
@@ -115,7 +119,7 @@ fuzz:
 ## clean: Removes build artifacts
 clean:
 	@echo "==> Cleaning artifacts..."
-	rm -rf bin $(DIST_DIR) coverage.out integration-coverage.out
+	rm -rf bin $(DIST_DIR) coverage.out integration-coverage.out e2e/playwright-report e2e/test-results e2e/.run
 
 ## cross-compile: Cross-compiles for Linux, macOS, and Windows
 cross-compile:

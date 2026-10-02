@@ -21,6 +21,23 @@ updates:
           - "minor"
           - "patch"
 
+  # The Playwright browser suite (e2e/). Versions are pinned exactly; the
+  # Chromium build follows @playwright/test.
+  - package-ecosystem: "npm"
+    directory: "/e2e"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+    groups:
+      e2e-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
   # Workflow actions are pinned to commit SHAs; Dependabot bumps the SHA and the
   # version comment together.
   - package-ecosystem: "github-actions"
