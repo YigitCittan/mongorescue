@@ -385,8 +385,21 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// handleListJobs lists the jobs, sorted by name. The optional filters q, enabled,
+// connection_id, database, schedule and last_status (see jobListFilter) keep only the
+// matching jobs, with the matcher of the bulk job actions.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.ops.ListJobs(r.Context())
+	f, filtered, err := jobListFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var jobs []*models.Job
+	if filtered {
+		jobs, err = s.ops.FilterJobs(r.Context(), f)
+	} else {
+		jobs, err = s.ops.ListJobs(r.Context())
+	}
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
