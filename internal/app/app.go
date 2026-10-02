@@ -29,12 +29,14 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
+	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -89,6 +91,7 @@ type App struct {
 	settings      *settings.Service
 	targets       *targets.Service
 	integrity     *integrity.Service
+	metaBackup    *metabackup.Service
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -338,6 +341,33 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Logger:      logger,
 	})
 
+	// Scheduled snapshots of the metadata database and the recovery kit, which
+	// carries secret.key and points to the latest snapshot.
+	metaBackupSvc := metabackup.New(metabackup.Config{
+		Store:     metaStore,
+		Targets:   targetSvc,
+		DataDir:   cfg.DataDir,
+		Settings:  settingsSvc.Current,
+		Encryptor: settingsSvc.Encryptor,
+		Publisher: bus,
+		Observe:   metricSet.ObserveMetadataBackup,
+		Logger:    logger,
+	})
+	kitSvc, err := recoverykit.New(recoverykit.Config{
+		SecretKey:        key.Key,
+		SecretKeyFromEnv: key.FromEnv,
+		Settings:         settingsSvc,
+		Targets:          targetSvc,
+		LatestSnapshot:   metaBackupSvc.Latest,
+		Version:          o.version,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize recovery kit: %w", err)
+	}
+	if err = kitSvc.Refresh(ctx); err != nil {
+		logger.Warn("could not check whether the recovery kit is current", logsafe.Error(err))
+	}
+
 	// 5. Initialize scheduler
 	sched := scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
 		scheduler.WithPublisher(bus),
@@ -426,6 +456,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithSettings(settingsSvc),
 		server.WithStorageTargets(targetSvc),
 		server.WithIntegrity(integritySvc),
+		server.WithMetadataBackup(metaBackupSvc),
+		server.WithRecoveryKit(kitSvc),
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
@@ -448,6 +480,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		settings:      settingsSvc,
 		targets:       targetSvc,
 		integrity:     integritySvc,
+		metaBackup:    metaBackupSvc,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 	}, nil
@@ -744,6 +777,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.integrity != nil {
 		a.integrity.Start(context.WithoutCancel(ctx))
 	}
+	// Scheduled snapshots of the metadata database; stopped by shutdownRuns.
+	if a.metaBackup != nil {
+		a.metaBackup.Start(context.WithoutCancel(ctx))
+	}
 	return nil
 }
 
@@ -850,7 +887,7 @@ func (a *App) shutdownRuns() {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(3)
+		wg.Add(4)
 		go func() {
 			defer wg.Done()
 			if err := a.runs.Shutdown(context.Background()); err != nil {
@@ -865,6 +902,12 @@ func (a *App) shutdownRuns() {
 			defer wg.Done()
 			if a.integrity != nil {
 				a.integrity.Stop()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if a.metaBackup != nil {
+				a.metaBackup.Stop()
 			}
 		}()
 		wg.Wait()

@@ -10,7 +10,8 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] One user per person; API keys (not user passwords) for automation, one per consumer, with the smallest scope that works (`read` for dashboards and assistants that only report, `operator` for backup automation).
 - [ ] The [MCP endpoint](mcp.md) switched off under Settings → Security if no AI assistant uses it.
 - [ ] Backups encrypted with X25519 recipients; private key stored off the backup host.
-- [ ] `mongorescue.db` backed up consistently (see [Data directory](#data-directory)) and `secret.key` (or `MONGORESCUE_SECRET_KEY`) stored somewhere safe, separately.
+- [ ] [Metadata backups](#metadata-backups) on (Settings → Recovery), encrypted, to a target other than the one the instance runs on, with a `metadata_backup.failed` notification rule.
+- [ ] A [recovery kit](#recovery-kit) downloaded and stored offline, apart from the backups (it holds `secret.key`); a new one downloaded whenever the dashboard asks for it.
 - [ ] Container image pinned to a release tag.
 - [ ] An alert on stale backups ([metrics.md](metrics.md#alerting)) and a `backup.failed` notification rule ([notifications.md](notifications.md)).
 
@@ -54,13 +55,46 @@ The channel **test** endpoint and the connection test make outbound requests to 
 
 Connection strings and channel secrets are encrypted with AES-256-GCM. **Losing the key loses them**: MongoRescue refuses to start when the key does not match the database (`the secret key does not match the key this database was encrypted with`). Store a copy of `secret.key`, or set `MONGORESCUE_SECRET_KEY` from your secret manager, and keep it apart from database backups so one leaked backup does not reveal both. A refused start changes nothing in the database: put the original key back (file or variable) and the stored credentials open again. `MONGORESCUE_SECRET_KEY` takes precedence over `secret.key` when both exist, and a damaged `secret.key` is reported, never replaced. The age identity used for backup encryption is one of these stored secrets; escrow it separately as well (see [encryption.md](encryption.md#key-management-and-loss)).
 
-Back up the database consistently. It runs in WAL mode, so copying `mongorescue.db` alone while the server is running can miss recent changes or produce a torn copy. Use one of:
+Losing the database does not lose the backup archives, but it loses the records that point to them, your schedules, users and connections. Back it up with [metadata backups](#metadata-backups) and keep `secret.key` in a [recovery kit](#recovery-kit).
 
-- stop MongoRescue (or the container), copy the data directory, start it again;
-- take an online copy with the SQLite CLI: `sqlite3 /data/mongorescue.db ".backup '/backup/mongorescue-$(date +%F).db'"` (or `VACUUM INTO '/backup/mongorescue.db'`), which is safe while the server runs;
-- snapshot the whole data volume atomically (LVM, ZFS, cloud disk snapshot), including the `-wal` file.
+### Metadata backups
 
-Losing the database does not lose the backup archives, but it loses the records that point to them, your schedules, users and connections.
+Settings → Recovery → *Metadata backups* (the `metadata_backup` settings, off by default) takes a snapshot of `mongorescue.db` on a schedule (every 24 hours by default) and on demand (*Back up now*, `POST /api/v1/metadata-backup/run`):
+
+1. SQLite's `VACUUM INTO` writes a consistent copy of the live database to a temporary directory inside the data directory (mode `0700`). It is the only temporary copy MongoRescue writes, and it holds metadata, never a dump.
+2. The copy is streamed through age encryption, with the backup encryption settings (Settings → Encryption), to the chosen storage target as `_mongorescue/metadata/mongorescue-<UTC time>.db.age`, and the temporary copy is removed. Storage scans ignore these objects.
+3. All but the newest `retention_count` snapshots (14 by default) are deleted from the target.
+
+With encryption off, snapshots are still uploaded (as `.db`), and the dashboard warns until encryption is on. Credentials inside a snapshot (connection strings, S3 keys, notification secrets, the age identity and passphrase) stay sealed with `secret.key` either way, so a snapshot alone opens nothing; keep `secret.key` apart from the snapshots. Write the snapshots to a target that does not live on the MongoRescue host, or they share its fate. A failed snapshot is retried after an hour, shown under Settings → Recovery, counted in `mongorescue_metadata_backups_total{result="error"}` and published as `metadata_backup.failed` for notification rules. Alert on `time() - mongorescue_last_successful_metadata_backup_timestamp_seconds` as well.
+
+Other consistent copies still work: stop MongoRescue and copy the data directory, run `sqlite3 /data/mongorescue.db ".backup '/backup/mongorescue.db'"` against the live database, or snapshot the whole volume atomically. Never copy `mongorescue.db` alone while the server runs (WAL mode: the copy may miss changes or be torn).
+
+### Restore MongoRescue from a snapshot
+
+On a new host (or after losing the data directory), with the [recovery kit](#recovery-kit) at hand:
+
+1. Install the same or a newer MongoRescue release. Do not start it yet (a start creates a new `secret.key` and an empty database).
+2. Download the newest snapshot from the target named in the kit (`recovery.json` → `metadata_snapshot`, under `_mongorescue/metadata/`), with the target's credentials from the kit, e.g. `aws s3 cp s3://<bucket>/<prefix>_mongorescue/metadata/mongorescue-<time>.db.age .`. Pick a newer snapshot than the kit names if there is one.
+3. Decrypt it with age: `age -d -i identities.txt -o mongorescue.db mongorescue-<time>.db.age` (X25519; `identities.txt` is in the kit), or `age -d -o mongorescue.db mongorescue-<time>.db.age` and the backup passphrase (passphrase mode; the kit never contains passphrases). A `.db` snapshot is not encrypted: rename it.
+4. Put `mongorescue.db` and the kit's `secret.key` into the data directory, owned by the MongoRescue user, with `chmod 600`. If the old instance used `MONGORESCUE_SECRET_KEY`, set it to the content of `secret.key` instead. The key must be the one the snapshot was written with: with another key MongoRescue refuses to start and changes nothing.
+5. Start MongoRescue. Jobs, backup records, users, settings, storage targets and notification channels are back; sign in with your usual account. Backups taken after the snapshot have no record yet: run a storage scan (Settings → Storage → *Scan now*) and import them.
+
+Without any snapshot, start a fresh instance with the kit's `secret.key`, recreate the storage targets from `recovery.json`, put the private keys from `identities.txt` (or your passphrase) under Settings → Encryption and import the archives a storage scan finds.
+
+### Recovery kit
+
+Settings → Recovery → *Download recovery kit* (or the dashboard banner) asks for a kit passphrase (at least 12 characters, typed twice) and your current password, and downloads `mongorescue-recovery-kit-<date>.tar.age`: a tar archive sealed with age scrypt under that passphrase. MongoRescue does not keep the passphrase. Open it with `age -d -o kit.tar mongorescue-recovery-kit-<date>.tar.age` and `tar -xf kit.tar`. It contains:
+
+| File | Contents |
+| :--- | :--- |
+| `README.txt` | The recovery steps above |
+| `secret.key` | The key sealing the credentials in `mongorescue.db` and its snapshots |
+| `identities.txt` | The age X25519 private keys, current and retired (only when one is configured) |
+| `recovery.json` | Encryption settings (passphrases are only flagged as configured, never included), every storage target with its credentials, and the location of the latest metadata snapshot |
+
+The kit holds every secret in plain form once opened: store it offline (a password manager, an encrypted USB stick, a safe), apart from the backups and from the kit passphrase. Only a signed-in administrator can download it, after confirming their password; API keys are refused whatever their scope. Every download is written to the audit log (who and when, never the passphrase or the content).
+
+Until a kit has been downloaded, and again after `secret.key`, the encryption keys or a storage target change, the dashboard shows a reminder. *Remind me later* hides it until the next such change.
 
 Since v0.14.0 the database records a checksum of every schema migration applied to it, and MongoRescue refuses to start (`ErrMigrationChanged`, naming the migration, nothing written) when a binary embeds an edited version of one; starting an older release on a database migrated by a newer one is refused as before (`ErrSchemaTooNew`).
 

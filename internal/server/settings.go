@@ -42,11 +42,12 @@ func (s *Server) requireSettings(w http.ResponseWriter) (*settings.Service, bool
 	return s.settings, true
 }
 
-func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireSettings(w)
 	if !ok {
 		return
 	}
+	s.refreshRecoveryKit(r.Context())
 	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}, Warnings: svc.Warnings()})
 }
 
@@ -56,6 +57,7 @@ func (s *Server) handleDismissWarning(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.refreshRecoveryKit(r.Context())
 	if err := svc.DismissWarning(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, settings.ErrInvalid) {
 			writeError(w, http.StatusNotFound, "unknown warning")
@@ -88,6 +90,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeSettingsError(w, err)
 		return
 	}
+	s.refreshRecoveryKit(r.Context())
 	writeJSON(w, http.StatusOK, settingsResponse{Settings: updated, RestartRequired: []string{}, Warnings: svc.Warnings()})
 }
 

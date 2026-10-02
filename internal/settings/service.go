@@ -39,8 +39,12 @@ type Service struct {
 	// warnState is the state of WarningEncryptionOff (see warning.go).
 	warnState    string
 	warnNotified bool
-	enc          *encryption.Encryptor
-	dec          *encryption.Decryptor
+	// kit is the stored recovery kit state and kitCurrent the fingerprint of the
+	// material a kit would carry now (see recoverykit.go).
+	kit        recoveryKitState
+	kitCurrent string
+	enc        *encryption.Encryptor
+	dec        *encryption.Decryptor
 }
 
 // Option customises a Service.
@@ -74,6 +78,7 @@ func NewService(ctx context.Context, repo Repository, opts ...Option) (*Service,
 	s.cur, s.enc, s.dec = cur, enc, dec
 	s.warnState = loadWarningState(values)
 	_, s.warnNotified = values[warningNotifiedKey]
+	s.kit = loadRecoveryKitState(values)
 	s.stored = make(map[string]bool, len(values))
 	for k := range values {
 		s.stored[k] = true

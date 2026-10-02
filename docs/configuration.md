@@ -73,6 +73,17 @@ Retention is applied only after a successful **scheduled** (cron) run of a job, 
 
 See [verification.md](verification.md) for what each check proves.
 
+### Metadata backups
+
+Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [production.md](production.md#metadata-backups).
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `enabled` | `false` | Take a snapshot of `mongorescue.db` on a schedule |
+| `interval` | `24h` | Time between snapshots (1h to 720h); a failed snapshot is retried after at most an hour |
+| `target_id` | empty | Storage target the snapshots are written to, under `_mongorescue/metadata/` (empty = the default target) |
+| `retention_count` | `14` | Snapshots kept on the target (1 to 1000); older ones are deleted after each snapshot |
+
 ### Security
 
 | Setting | Default | Description |

@@ -36,6 +36,10 @@ const (
 	KeySweepSchedule          = "integrity.sweep_schedule"
 	KeySweepBandwidthLimit    = "integrity.sweep_bandwidth_limit"
 	KeyStorageScan            = "integrity.storage_scan"
+	KeyMetadataBackupEnabled  = "metadata_backup.enabled"
+	KeyMetadataBackupInterval = "metadata_backup.interval"
+	KeyMetadataBackupTarget   = "metadata_backup.target_id"
+	KeyMetadataBackupKeep     = "metadata_backup.retention_count"
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -95,6 +99,10 @@ var keyDefs = []keyDef{
 	field(KeySweepSchedule, false, func(s *Settings) *SweepSchedule { return &s.Integrity.SweepSchedule }),
 	field(KeySweepBandwidthLimit, false, func(s *Settings) *int { return &s.Integrity.SweepBandwidthLimit }),
 	field(KeyStorageScan, false, func(s *Settings) *bool { return &s.Integrity.StorageScan }),
+	field(KeyMetadataBackupEnabled, false, func(s *Settings) *bool { return &s.MetadataBackup.Enabled }),
+	field(KeyMetadataBackupInterval, false, func(s *Settings) *Duration { return &s.MetadataBackup.Interval }),
+	field(KeyMetadataBackupTarget, false, func(s *Settings) *string { return &s.MetadataBackup.TargetID }),
+	field(KeyMetadataBackupKeep, false, func(s *Settings) *int { return &s.MetadataBackup.RetentionCount }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,
