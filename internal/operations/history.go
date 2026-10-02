@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+	// The IANA zone database, so callers' zones resolve also where the system has
+	// none (Windows, minimal containers).
+	_ "time/tzdata"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -17,7 +20,7 @@ const (
 	// DefaultHistoryDays is the number of days History covers when none is given.
 	DefaultHistoryDays = 30
 	// MaxHistoryDays is the most days History covers.
-	MaxHistoryDays = 366
+	MaxHistoryDays = store.MaxHistoryDays
 	// MaxHistoryOffsetMinutes bounds the time zone offset of History's days.
 	MaxHistoryOffsetMinutes = 14 * 60
 	// HistoryRunsPerJob is how many of each job's newest backups History reports.
@@ -40,9 +43,34 @@ type HistoryRequest struct {
 	// Days is the number of days up to and including today (1 to MaxHistoryDays; 0
 	// means DefaultHistoryDays).
 	Days int
-	// OffsetMinutes is the caller's UTC offset, east positive (e.g. 180 for UTC+3), so
-	// days start at the caller's midnight.
+	// TimeZone is the caller's IANA time zone (e.g. "Europe/Istanbul"): days start
+	// at its local midnights, also across daylight saving changes. An empty or
+	// unknown zone falls back to OffsetMinutes.
+	TimeZone string
+	// OffsetMinutes is the caller's UTC offset, east positive (e.g. 180 for UTC+3),
+	// used as a fixed zone when TimeZone is empty or unknown.
 	OffsetMinutes int
+}
+
+// maxTimeZoneName bounds HistoryRequest.TimeZone (IANA names are far shorter).
+const maxTimeZoneName = 64
+
+// location returns the zone the days of req are cut in and its name: TimeZone when
+// the server knows it, else the fixed OffsetMinutes zone ("UTC+03:00").
+func (req HistoryRequest) location() (*time.Location, string) {
+	name := req.TimeZone
+	// "Local" would be the server's zone, not the caller's; "" is UTC to LoadLocation.
+	if name != "" && name != "Local" && len(name) <= maxTimeZoneName {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc, name
+		}
+	}
+	sign, off := "+", req.OffsetMinutes
+	if off < 0 {
+		sign, off = "-", -off
+	}
+	label := fmt.Sprintf("UTC%s%02d:%02d", sign, off/60, off%60)
+	return time.FixedZone(label, req.OffsetMinutes*60), label
 }
 
 // HistoryDay is one day of History.
@@ -119,7 +147,10 @@ type ServerTimeZone struct {
 type History struct {
 	// Days is the number of days covered.
 	Days int `json:"days"`
-	// OffsetMinutes is the UTC offset the days were cut in.
+	// TimeZone is the zone the days were cut in: the caller's IANA zone, or the
+	// fixed offset ("UTC+03:00") it fell back to.
+	TimeZone string `json:"time_zone"`
+	// OffsetMinutes is that zone's UTC offset now.
 	OffsetMinutes int `json:"offset_minutes"`
 	// From is the start of the first day (UTC).
 	From time.Time `json:"from"`
@@ -159,13 +190,18 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 		return nil, public(fmt.Sprintf("tz_offset must be between %d and %d minutes", -MaxHistoryOffsetMinutes, MaxHistoryOffsetMinutes), ErrInvalid)
 	}
 	now := s.now()
-	offset := int64(req.OffsetMinutes) * 60
-	today := floorDiv(now.Unix()+offset, 86400)
-	first := today - int64(days) + 1
-	from := time.Unix(first*86400-offset, 0).UTC()
+	loc, zoneName := req.location()
+	local := now.In(loc)
+	// Midnights in loc: days are 23 or 25 hours long across daylight saving changes.
+	starts := make([]time.Time, days+1)
+	for i := range starts {
+		starts[i] = time.Date(local.Year(), local.Month(), local.Day()-days+1+i, 0, 0, 0, 0, loc)
+	}
+	from := starts[0].UTC()
+	_, offset := local.Zone()
 
 	agg, err := s.cfg.Store.BackupHistory(ctx, store.BackupHistoryQuery{
-		From: from, OffsetSeconds: offset, RunsPerJob: HistoryRunsPerJob, MaxIssues: HistoryMaxVerificationIssues,
+		DayStarts: starts, RunsPerJob: HistoryRunsPerJob, MaxIssues: HistoryMaxVerificationIssues,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("backup history: %w", err)
@@ -176,21 +212,21 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	}
 
 	h := &History{
-		Days: days, OffsetMinutes: req.OffsetMinutes, From: from, GeneratedAt: now.UTC(),
+		Days: days, TimeZone: zoneName, OffsetMinutes: offset / 60, From: from, GeneratedAt: now.UTC(),
 		Daily: make([]HistoryDay, 0, days), StoredBytesBefore: agg.BytesBefore,
 		Jobs: map[string]HistoryJob{}, Upcoming: []UpcomingRun{}, VerificationIssues: []VerificationIssue{},
 		VerificationIssuesTotal: agg.VerificationIssueTotal, ServerTimeZone: serverTimeZone(now),
 	}
-	byDay := make(map[int64]store.BackupDay, len(agg.Days))
+	byDay := make(map[int]store.BackupDay, len(agg.Days))
 	for _, d := range agg.Days {
 		byDay[d.Day] = d
 	}
 	stored := agg.BytesBefore
-	for day := first; day <= today; day++ {
+	for day := range days {
 		d := byDay[day]
 		stored += d.CompletedBytes
 		h.Daily = append(h.Daily, HistoryDay{
-			Date:      time.Unix(day*86400, 0).UTC().Format(time.DateOnly),
+			Date:      starts[day].Format(time.DateOnly),
 			Completed: d.Completed, Failed: d.Failed, Cancelled: d.Cancelled,
 			Bytes: d.CompletedBytes, StoredBytes: stored,
 		})
@@ -312,13 +348,4 @@ func serverTimeZone(now time.Time) ServerTimeZone {
 		name = abbr
 	}
 	return ServerTimeZone{Name: name, OffsetMinutes: offset / 60}
-}
-
-// floorDiv divides rounding towards negative infinity.
-func floorDiv(a, b int64) int64 {
-	q := a / b
-	if (a%b != 0) && ((a < 0) != (b < 0)) {
-		q--
-	}
-	return q
 }
