@@ -2,6 +2,7 @@ package operations_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -171,6 +172,57 @@ func TestFilterJobsMultiDatabase(t *testing.T) {
 		}
 		if got := jobIDs(jobs); got != tc.want {
 			t.Errorf("%s = %s; want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// last_status of multi-database jobs, read in one batch, matches the newest run each
+// job's ListJobRuns(1) returns (the per-job lookup it replaced).
+func TestFilterJobsLastStatusMatchesPerJobRuns(t *testing.T) {
+	env := jobListEnv(t)
+	ctx := admin()
+	now := time.Now().UTC()
+	statuses := []models.JobRunStatus{models.JobRunOK, models.JobRunPartial, models.JobRunFailed, models.JobRunCancelled, models.JobRunRunning}
+	for i := range 12 {
+		id := fmt.Sprintf("m_%02d", i)
+		if err := env.st.SaveJob(ctx, &models.Job{ID: id, Name: id, Database: "a", CronExpression: "@daily", ConnectionID: "c1",
+			DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}}); err != nil {
+			t.Fatal(err)
+		}
+		// Jobs 10 and 11 never ran; the others have an older run of another status.
+		for k := 0; k < 2 && i < 10; k++ {
+			run := &models.JobRun{ID: fmt.Sprintf("run_%02d_%d", i, k), JobID: id, Status: statuses[(i+k)%len(statuses)], StartedAt: now.Add(time.Duration(k) * time.Minute)}
+			if err := env.st.SaveJobRun(ctx, run); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, want := range operations.JobLastStatuses {
+		jobs, err := env.svc.FilterJobs(ctx, operations.BulkFilter{LastStatus: want, Q: "m_"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var expected []string
+		for i := range 12 {
+			id := fmt.Sprintf("m_%02d", i)
+			runs, err := env.st.ListJobRuns(ctx, id, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := operations.LastRunNever
+			if len(runs) == 1 {
+				status = map[models.JobRunStatus]string{
+					models.JobRunOK: operations.LastRunCompleted, models.JobRunPartial: operations.LastRunPartial,
+					models.JobRunFailed: operations.LastRunFailed, models.JobRunCancelled: operations.LastRunCancelled,
+					models.JobRunRunning: operations.LastRunInProgress,
+				}[runs[0].Status]
+			}
+			if status == want {
+				expected = append(expected, id)
+			}
+		}
+		if got := jobIDs(jobs); got != strings.Join(expected, ",") {
+			t.Errorf("last_status %s = %s; per-job runs give %s", want, got, strings.Join(expected, ","))
 		}
 	}
 }

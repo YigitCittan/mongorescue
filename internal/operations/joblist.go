@@ -164,20 +164,35 @@ func runLastStatus(r *models.JobRun) string {
 	return LastRunInProgress
 }
 
-// jobLastStatus is the BulkFilter.LastStatus value of j; last maps job IDs to their
-// newest backup.
-func (s *Service) jobLastStatus(ctx context.Context, j *models.Job, last map[string]*models.BackupRecord) (string, error) {
+// jobLastStatus is the BulkFilter.LastStatus value of j; lastBackups maps job IDs to
+// their newest backup, lastRuns multi-database job IDs to their newest run.
+func jobLastStatus(j *models.Job, lastBackups map[string]*models.BackupRecord, lastRuns map[string]*models.JobRun) string {
 	if !j.MultiDatabase() {
-		return lastRunStatus(last[j.ID]), nil
+		return lastRunStatus(lastBackups[j.ID])
 	}
-	runs, err := s.cfg.Store.ListJobRuns(ctx, j.ID, 1)
+	return runLastStatus(lastRuns[j.ID])
+}
+
+// lastOutcomes loads, in one query each, the newest backup of every job and the
+// newest run of the multi-database jobs among jobs (never one query per job).
+func (s *Service) lastOutcomes(ctx context.Context, jobs []*models.Job) (map[string]*models.BackupRecord, map[string]*models.JobRun, error) {
+	backups, err := s.cfg.Store.LatestJobBackups(ctx, "")
 	if err != nil {
-		return "", fmt.Errorf("load the last run of job %s: %w", j.ID, err)
+		return nil, nil, fmt.Errorf("load the jobs' last backups: %w", err)
 	}
-	if len(runs) == 0 {
-		return runLastStatus(nil), nil
+	var multi []string
+	for _, j := range jobs {
+		if j.MultiDatabase() {
+			multi = append(multi, j.ID)
+		}
 	}
-	return runLastStatus(runs[0]), nil
+	runs := map[string]*models.JobRun{}
+	if len(multi) > 0 {
+		if runs, err = s.cfg.Store.LatestJobRuns(ctx, multi); err != nil {
+			return nil, nil, fmt.Errorf("load the jobs' last runs: %w", err)
+		}
+	}
+	return backups, runs, nil
 }
 
 // FilterJobs returns the jobs matching f, sorted by name: the filter of
@@ -208,28 +223,25 @@ func (s *Service) matchingJobs(ctx context.Context, f *BulkFilter) ([]*models.Jo
 	if err != nil {
 		return nil, err
 	}
-	var last map[string]*models.BackupRecord
-	if f.LastStatus != "" {
-		if last, err = s.cfg.Store.LatestJobBackups(ctx, ""); err != nil {
-			return nil, fmt.Errorf("load the jobs' last backups: %w", err)
-		}
-	}
 	q := strings.ToLower(f.Q)
 	out := make([]*models.Job, 0, len(jobs))
 	for _, j := range jobs {
-		if !jobMatches(j, f, q) {
-			continue
+		if jobMatches(j, f, q) {
+			out = append(out, j)
 		}
-		if f.LastStatus != "" {
-			status, err := s.jobLastStatus(ctx, j, last)
-			if err != nil {
-				return nil, err
-			}
-			if status != f.LastStatus {
-				continue
-			}
-		}
-		out = append(out, j)
 	}
-	return out, nil
+	if f.LastStatus == "" || len(out) == 0 {
+		return out, nil
+	}
+	lastBackups, lastRuns, err := s.lastOutcomes(ctx, out)
+	if err != nil {
+		return nil, err
+	}
+	kept := out[:0]
+	for _, j := range out {
+		if jobLastStatus(j, lastBackups, lastRuns) == f.LastStatus {
+			kept = append(kept, j)
+		}
+	}
+	return kept, nil
 }
