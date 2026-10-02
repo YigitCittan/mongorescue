@@ -379,3 +379,57 @@ func TestBulkJobFilterCoversSelections(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryGroupsMultiDatabaseRuns(t *testing.T) {
+	e := newMultiEnv(t, "a", "b")
+	ctx := context.Background()
+	e.create(t, &models.Job{ID: "job_h", Name: "h", CronExpression: "@hourly", Enabled: true,
+		DatabaseSelection: models.DatabaseSelection{Mode: models.SelectionList, Databases: []string{"a", "b"}}})
+	now := time.Now().UTC()
+	old := now.Add(-50 * time.Hour)
+	recent := now.Add(-time.Hour)
+	for _, r := range []*models.BackupRecord{
+		{ID: "a1", RunID: "run_1", JobID: "job_h", Database: "a", Status: models.StatusCompleted, StartedAt: old, CompletedAt: &old},
+		{ID: "b1", RunID: "run_1", JobID: "job_h", Database: "b", Status: models.StatusCompleted, StartedAt: old, CompletedAt: &old},
+		{ID: "a2", RunID: "run_2", JobID: "job_h", Database: "a", Status: models.StatusCompleted, StartedAt: recent, CompletedAt: &recent},
+		{ID: "b2", RunID: "run_2", JobID: "job_h", Database: "b", Status: models.StatusFailed, StartedAt: recent, CompletedAt: &recent},
+	} {
+		if err := e.st.SaveBackupRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, run := range []*models.JobRun{
+		{ID: "run_1", JobID: "job_h", StartedAt: old, Databases: []models.JobRunDatabase{
+			{Database: "a", BackupID: "a1", Status: models.StatusCompleted}, {Database: "b", BackupID: "b1", Status: models.StatusCompleted}}},
+		{ID: "run_2", JobID: "job_h", StartedAt: recent, Databases: []models.JobRunDatabase{
+			{Database: "a", BackupID: "a2", Status: models.StatusCompleted}, {Database: "b", BackupID: "b2", Status: models.StatusFailed}}},
+	} {
+		run.Finish(run.StartedAt.Add(time.Minute))
+		if err := e.st.SaveJobRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := e.svc.History(ctx, operations.HistoryRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hj := h.Jobs["job_h"]
+	if len(hj.Runs) != 2 || hj.Runs[0].ID != "run_1" || hj.Runs[1].RunStatus != models.JobRunPartial ||
+		hj.Runs[1].Status != models.StatusFailed || hj.Runs[1].Databases != 2 || hj.Runs[1].Succeeded != 1 {
+		t.Fatalf("runs = %+v; want two runs, the newest partial", hj.Runs)
+	}
+	if hj.StalestDatabase != "b" || hj.LastSuccessAt == nil || !hj.LastSuccessAt.Equal(old) || len(hj.Databases) != 2 {
+		t.Errorf("last success = %v of %q (%+v); want b's 50-hour-old backup", hj.LastSuccessAt, hj.StalestDatabase, hj.Databases)
+	}
+	seen := map[time.Time]int{}
+	for _, u := range h.Upcoming {
+		if u.JobID == "job_h" {
+			seen[u.At]++
+		}
+	}
+	for at, n := range seen {
+		if n != 1 {
+			t.Errorf("upcoming run at %v listed %d times; want the job once", at, n)
+		}
+	}
+}

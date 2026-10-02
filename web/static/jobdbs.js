@@ -95,6 +95,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "not found",
     },
     notify: { events: { job_databases_added: "New databases added to a job" } },
+    overview: {
+      att_stale_db: "{job}: {db} has no successful backup since {when}",
+      att_never_db: "{job}: {db} has no successful backup yet",
+      att_partial_last: "{job}: the last run backed up {ok} of {n} databases {when}",
+      spark_partial: "{ok} of {n} databases",
+    },
   },
   tr: {
     jobdb: {
@@ -174,6 +180,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "bulunamadı",
     },
     notify: { events: { job_databases_added: "İşe yeni veritabanları eklendi" } },
+    overview: {
+      att_stale_db: "{job}: {db} için {when} tarihinden beri başarılı yedek yok",
+      att_never_db: "{job}: {db} için henüz başarılı yedek yok",
+      att_partial_last: "{job}: son çalıştırma {when} {n} veritabanından {ok} tanesini yedekledi",
+      spark_partial: "{n} veritabanından {ok}",
+    },
   },
   de: {
     jobdb: {
@@ -253,6 +265,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "nicht gefunden",
     },
     notify: { events: { job_databases_added: "Neue Datenbanken zu einem Job hinzugefügt" } },
+    overview: {
+      att_stale_db: "{job}: {db} hat seit {when} kein erfolgreiches Backup",
+      att_never_db: "{job}: {db} hat noch kein erfolgreiches Backup",
+      att_partial_last: "{job}: der letzte Lauf {when} hat {ok} von {n} Datenbanken gesichert",
+      spark_partial: "{ok} von {n} Datenbanken",
+    },
   },
   es: {
     jobdb: {
@@ -332,6 +350,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "no encontrada",
     },
     notify: { events: { job_databases_added: "Nuevas bases de datos añadidas a un trabajo" } },
+    overview: {
+      att_stale_db: "{job}: {db} no tiene una copia correcta desde {when}",
+      att_never_db: "{job}: {db} aún no tiene una copia correcta",
+      att_partial_last: "{job}: la última ejecución {when} respaldó {ok} de {n} bases de datos",
+      spark_partial: "{ok} de {n} bases de datos",
+    },
   },
   fr: {
     jobdb: {
@@ -411,6 +435,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "introuvable",
     },
     notify: { events: { job_databases_added: "Nouvelles bases ajoutées à une tâche" } },
+    overview: {
+      att_stale_db: "{job} : {db} n’a pas de sauvegarde réussie depuis {when}",
+      att_never_db: "{job} : {db} n’a encore aucune sauvegarde réussie",
+      att_partial_last: "{job} : la dernière exécution {when} a sauvegardé {ok} bases sur {n}",
+      spark_partial: "{ok} bases sur {n}",
+    },
   },
   zh: {
     jobdb: {
@@ -490,6 +520,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "未找到",
     },
     notify: { events: { job_databases_added: "作业新增了数据库" } },
+    overview: {
+      att_stale_db: "{job}：{db} 自 {when} 起没有成功的备份",
+      att_never_db: "{job}：{db} 尚无成功的备份",
+      att_partial_last: "{job}：最近一次运行（{when}）备份了 {n} 个数据库中的 {ok} 个",
+      spark_partial: "{n} 个数据库中的 {ok} 个",
+    },
   },
   ja: {
     jobdb: {
@@ -569,6 +605,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "見つかりません",
     },
     notify: { events: { job_databases_added: "ジョブに新しいデータベースを追加" } },
+    overview: {
+      att_stale_db: "{job}: {db} は {when} 以降バックアップに成功していません",
+      att_never_db: "{job}: {db} はまだバックアップに成功していません",
+      att_partial_last: "{job}: 前回の実行（{when}）は {n} 個中 {ok} 個のデータベースをバックアップしました",
+      spark_partial: "{n} 個中 {ok} 個のデータベース",
+    },
   },
   ru: {
     jobdb: {
@@ -648,6 +690,12 @@ const JOBDB_TRANSLATIONS = {
       reason_not_found: "не найдена",
     },
     notify: { events: { job_databases_added: "В задание добавлены новые базы данных" } },
+    overview: {
+      att_stale_db: "{job}: у {db} нет успешной копии с {when}",
+      att_never_db: "{job}: у {db} ещё нет успешной копии",
+      att_partial_last: "{job}: последний запуск {when} скопировал {ok} из {n} баз данных",
+      spark_partial: "{ok} из {n} баз данных",
+    },
   },
 };
 

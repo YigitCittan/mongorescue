@@ -643,6 +643,22 @@ function overviewAttention() {
   const upcoming = Array.isArray(h.upcoming) ? h.upcoming : [];
   const failedJobs = new Set();
   state.jobs.forEach(job => {
+    // A job with several databases is judged by its last run, not by the newest
+    // backup of one of its databases.
+    const multi = typeof jobIsMulti === "function" && jobIsMulti(job);
+    if (multi) {
+      const hj = h.jobs ? h.jobs[job.id] : null;
+      const runs = hj && Array.isArray(hj.runs) ? hj.runs.filter(r => r.run_status && r.run_status !== "running") : [];
+      const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
+      if (lastRun && (lastRun.run_status === "failed" || lastRun.run_status === "partial")) {
+        failedJobs.add(job.id);
+        const text = lastRun.run_status === "partial"
+          ? tf("overview.att_partial_last", { job: job.name || job.id, ok: lastRun.succeeded || 0, n: lastRun.databases || 0, when: ovWhen(lastRun.started_at) })
+          : tf("overview.att_failed_last", { job: job.name || job.id, when: ovWhen(lastRun.started_at) });
+        items.push({ sev: lastRun.run_status === "partial" ? "warn" : "danger", text, open: () => navOpenDetail("jobs", job.id) });
+      }
+      return;
+    }
     const last = stats.job_last_backups ? stats.job_last_backups[job.id] : null;
     if (last && last.status === "failed") {
       failedJobs.add(job.id);
@@ -670,16 +686,21 @@ function overviewAttention() {
       // Two missed runs (plus an hour of slack), and never less than six hours.
       const threshold = Math.max(2 * ovJobInterval(job, upcoming, hj) + HOUR_MS, 6 * HOUR_MS);
       const success = hj ? parseDate(hj.last_success_at) : null;
+      // A job with several databases is as fresh as its stalest database.
+      const db = hj && hj.stalest_database ? hj.stalest_database : "";
       if (success) {
         if (now - success.getTime() > threshold) {
-          items.push({ sev: "warn", text: tf("overview.att_stale", { job: job.name || job.id, hours: Math.floor((now - success.getTime()) / HOUR_MS) }),
-            open: () => navOpenDetail("jobs", job.id) });
+          const text = db
+            ? tf("overview.att_stale_db", { job: job.name || job.id, db, when: ovWhen(success.toISOString()) })
+            : tf("overview.att_stale", { job: job.name || job.id, hours: Math.floor((now - success.getTime()) / HOUR_MS) });
+          items.push({ sev: "warn", text, open: () => navOpenDetail("jobs", job.id) });
         }
         return;
       }
       const created = parseDate(job.created_at);
       if (created && now - created.getTime() > threshold) {
-        items.push({ sev: "warn", text: tf("overview.att_never", { job: job.name || job.id }), open: () => navOpenDetail("jobs", job.id) });
+        const text = db ? tf("overview.att_never_db", { job: job.name || job.id, db }) : tf("overview.att_never", { job: job.name || job.id });
+        items.push({ sev: "warn", text, open: () => navOpenDetail("jobs", job.id) });
       }
     });
   }
@@ -808,10 +829,14 @@ function jobSparkline(jobID) {
     const dur = Number(r.duration_seconds) || 0;
     const height = maxDur > 0 && dur > 0 ? 3 + (H - 3) * (dur / maxDur) : r.status === "failed" ? H : 4;
     const x = (SPARK_RUNS - runs.length + i) * slot;
-    const [, label] = backupStatus(r.status);
+    // A multi-database run is one bar; a partial one is a warning.
+    const partial = r.run_status === "partial";
+    const label = partial
+      ? tf("overview.spark_partial", { ok: r.succeeded || 0, n: r.databases || 0 })
+      : backupStatus(r.status)[1];
     const d = parseDate(r.started_at);
     const title = tf("overview.spark_run", { when: d ? navAbsoluteShort(d) : "—", status: label, d: dur > 0 ? formatDuration(dur) : "—" });
-    bars += `<rect class="${SPARK_CLASS[r.status] || "ov-neutral"}" x="${(x + 0.5).toFixed(1)}" y="${(H - height).toFixed(1)}" width="${(slot - 1.5).toFixed(1)}" height="${height.toFixed(1)}" rx="0.5"><title>${escapeHtml(title)}</title></rect>`;
+    bars += `<rect class="${partial ? "ov-warn" : SPARK_CLASS[r.status] || "ov-neutral"}" x="${(x + 0.5).toFixed(1)}" y="${(H - height).toFixed(1)}" width="${(slot - 1.5).toFixed(1)}" height="${height.toFixed(1)}" rx="0.5"><title>${escapeHtml(title)}</title></rect>`;
   });
   const ok = runs.filter(r => r.status === "completed").length;
   const failed = runs.filter(r => r.status === "failed").length;
