@@ -70,6 +70,8 @@ type RunProgress struct {
 	Kind RunKind `json:"kind"`
 	// JobID is the job of a backup run, if any.
 	JobID string `json:"job_id,omitempty"`
+	// RunID is the job run a backup belongs to, if any (see BackupRecord.RunID).
+	RunID string `json:"run_id,omitempty"`
 	// Database is the backed-up database, or the restore target.
 	Database string `json:"database,omitempty"`
 	// Phase is the current phase (see the Phase constants).

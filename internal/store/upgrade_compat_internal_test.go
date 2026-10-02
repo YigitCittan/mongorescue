@@ -156,6 +156,12 @@ var compatSteps = []compatStep{
 				!job.CreatedAt.Equal(compatT0) || !job.UpdatedAt.Equal(compatT0.Add(time.Minute)) {
 				t.Errorf("job_v1 = %+v", job)
 			}
+			// 0013: every job written before database selections backs up its one
+			// database as a single selection.
+			if sel := job.DatabaseSelection; sel.Mode != models.SelectionSingle || !slices.Equal(sel.Databases, []string{"shop"}) ||
+				sel.AutoIncludeNew || job.MultiDatabase() || job.KnownDatabases != nil {
+				t.Errorf("job_v1 selection = %+v, known %v", sel, job.KnownDatabases)
+			}
 			// The legacy job URI becomes a managed connection, as the app does at startup.
 			if _, err = s.MigrateLegacyJobURIs(ctx, ""); err != nil {
 				t.Fatal(err)
@@ -572,6 +578,53 @@ var compatSteps = []compatStep{
 			}
 			if ok, err := s.LoadIntegrityState(ctx, "sweep", &sweep); err != nil || !ok || sweep.Verified != 3 {
 				t.Errorf("sweep state = %+v, %v, %v", sweep, ok, err)
+			}
+		},
+	},
+	{
+		version: 13,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"job_v13", "all prod", "", 1, ns(16*time.Hour), "conn_v2", "tgt_local", jsonDoc(t, map[string]any{
+					"id": "job_v13", "name": "all prod", "cron_expression": "@daily", "database": "",
+					"database_selection": map[string]any{"mode": "pattern", "databases": []string{"billing"},
+						"include": []string{"prod_*"}, "exclude": []string{"prod_tmp?"}, "auto_include_new": false},
+					"known_databases": []string{"prod_a", "prod_b"}, "parallelism": 2,
+					"connection_id": "conn_v2", "storage_target_id": "tgt_local", "storage_type": "local",
+					"gzip": true, "enabled": true, "created_at": rfc(16 * time.Hour), "updated_at": rfc(16 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, size_bytes, phases, run_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"bkp_v13", "job_v13", "prod_a", "completed", ns(17*time.Hour), "conn_v2", "tgt_local", "", 77, "{}", "run_v13", jsonDoc(t, map[string]any{
+					"id": "bkp_v13", "job_id": "job_v13", "run_id": "run_v13", "trigger": "scheduled", "database": "prod_a",
+					"status": "completed", "connection_id": "conn_v2", "storage_type": "local", "storage_target_id": "tgt_local",
+					"storage_key": "prod_a/2026/09/bkp_v13.archive.gz", "size_bytes": 77, "started_at": rfc(17 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO job_runs (id, job_id, started_at, status, data) VALUES (?, ?, ?, ?, ?)`,
+				"run_v13", "job_v13", ns(17*time.Hour), "partial", jsonDoc(t, map[string]any{
+					"id": "run_v13", "job_id": "job_v13", "trigger": "scheduled", "status": "partial", "started_at": rfc(17 * time.Hour),
+					"databases": []any{
+						map[string]any{"database": "prod_a", "backup_id": "bkp_v13", "status": "completed"},
+						map[string]any{"database": "billing", "status": "failed", "error": "database not found"},
+					},
+					"new_databases": []string{"prod_c"},
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			job, err := s.GetJob(ctx, "job_v13")
+			if err != nil || !job.MultiDatabase() || job.DatabaseSelection.Mode != models.SelectionPattern ||
+				!slices.Equal(job.DatabaseSelection.Include, []string{"prod_*"}) || !slices.Equal(job.KnownDatabases, []string{"prod_a", "prod_b"}) ||
+				job.Parallelism != 2 {
+				t.Errorf("job_v13 = %+v, %v", job, err)
+			}
+			page, err := s.QueryBackupRecords(ctx, BackupFilter{RunID: "run_v13"})
+			if err != nil || page.Total != 1 || page.Rows[0].Record.ID != "bkp_v13" || page.Rows[0].Record.RunID != "run_v13" {
+				t.Errorf("backups of run_v13 = %+v, %v", page, err)
+			}
+			runs, err := s.ListJobRuns(ctx, "job_v13", 10)
+			if err != nil || len(runs) != 1 || runs[0].Status != models.JobRunPartial || len(runs[0].Databases) != 2 ||
+				!slices.Equal(runs[0].NewDatabases, []string{"prod_c"}) {
+				t.Errorf("runs of job_v13 = %+v, %v", runs, err)
 			}
 		},
 	},

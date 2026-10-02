@@ -16,10 +16,27 @@ type Job struct {
 	// CronExpression specifies the schedule (e.g. "0 2 * * *" or "@daily", "@every 6h").
 	CronExpression string `json:"cron_expression"`
 
-	// Database is the target database name to back up.
+	// Database is the database of a single-database job (DatabaseSelection mode
+	// single), kept for clients that predate database selections. It is empty for
+	// jobs that cover several databases.
 	Database string `json:"database"`
 
-	// Collections optionally restricts the dump to specific collections.
+	// DatabaseSelection chooses the databases the job backs up. Jobs stored before
+	// selections existed decode without one and back up Database (see Selection).
+	DatabaseSelection DatabaseSelection `json:"database_selection"`
+
+	// KnownDatabases are the databases an all or pattern selection matched when the
+	// job was saved or last ran. Without AutoIncludeNew a run backs up only these
+	// (plus the named ones) and reports the others as new. It is managed by the
+	// server and never taken from clients.
+	KnownDatabases []string `json:"known_databases,omitzero"`
+
+	// Parallelism is how many databases a run backs up at the same time (1 to
+	// MaxJobParallelism; 0 means 1). Every database keeps its own run lock.
+	Parallelism int `json:"parallelism,omitempty"`
+
+	// Collections optionally restricts the dump to specific collections. Only
+	// single-database jobs use collection filters.
 	Collections []string `json:"collections,omitempty"`
 
 	// ExcludeCollections lists collections skipped by the dump.
@@ -84,6 +101,8 @@ func (j *Job) Clone() *Job {
 	}
 	clone := *j
 	clone.Collections = slices.Clone(j.Collections)
+	clone.DatabaseSelection = j.DatabaseSelection.Clone()
+	clone.KnownDatabases = slices.Clone(j.KnownDatabases)
 	clone.ExcludeCollections = slices.Clone(j.ExcludeCollections)
 	if j.PausedUntil != nil {
 		until := *j.PausedUntil
@@ -98,4 +117,27 @@ func (j *Job) Clone() *Job {
 		clone.LastRestoreTest = &lt
 	}
 	return &clone
+}
+
+// Selection returns the job's database selection: DatabaseSelection, or for jobs
+// stored without one a single selection of Database.
+func (j *Job) Selection() DatabaseSelection {
+	if j.DatabaseSelection.Mode == "" {
+		sel := DatabaseSelection{Mode: SelectionSingle}
+		if j.Database != "" {
+			sel.Databases = []string{j.Database}
+		}
+		return sel
+	}
+	return j.DatabaseSelection.Clone()
+}
+
+// MultiDatabase reports whether the job's selection can cover several databases.
+func (j *Job) MultiDatabase() bool {
+	return j.Selection().Multi()
+}
+
+// EffectiveParallelism returns Parallelism within 1 and MaxJobParallelism.
+func (j *Job) EffectiveParallelism() int {
+	return min(max(j.Parallelism, 1), MaxJobParallelism)
 }

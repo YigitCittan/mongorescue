@@ -123,6 +123,10 @@ type Meta struct {
 	JobID string
 	// Database is the backed-up database or the restore target.
 	Database string
+	// Group is the job run the backup belongs to (models.BackupRecord.RunID), if any.
+	// Cancelling one run of a group cancels the whole group: stopping a job run
+	// stops its running database and every database still waiting.
+	Group string
 }
 
 // Registry tracks the backup and restore runs active in this process: it cancels
@@ -209,13 +213,77 @@ func (r *Registry) Get(id string) *Run {
 }
 
 // Cancel cancels the active run id. It returns ErrNotRunning when no such run is
-// active. Cancelling a run twice keeps the first Cancellation.
+// active. Cancelling a run twice keeps the first Cancellation. A run of a group
+// (Meta.Group) cancels the other active runs of its group too, whatever its own
+// outcome: a job run stops as a whole.
 func (r *Registry) Cancel(id string, c Cancellation) error {
 	run := r.Get(id)
 	if run == nil {
 		return fmt.Errorf("%w: %s", ErrNotRunning, id)
 	}
-	return run.Cancel(c)
+	err := run.Cancel(c)
+	if run.meta.Group != "" {
+		r.cancelWhere(c, func(m Meta) bool { return m.Group == run.meta.Group && m.ID != id })
+	}
+	return err
+}
+
+// CancelGroup cancels every active run of group (a job run) and returns the IDs of
+// the runs it cancelled.
+func (r *Registry) CancelGroup(group string, c Cancellation) []string {
+	if group == "" {
+		return nil
+	}
+	return r.cancelWhere(c, func(m Meta) bool { return m.Group == group })
+}
+
+// CancelJob cancels every active backup of job jobID (every database of its current
+// run) and returns the IDs of the runs it cancelled.
+func (r *Registry) CancelJob(jobID string, c Cancellation) []string {
+	if jobID == "" {
+		return nil
+	}
+	return r.cancelWhere(c, func(m Meta) bool { return m.Kind == models.RunBackup && m.JobID == jobID })
+}
+
+// JobRuns returns the active backup runs of job jobID.
+func (r *Registry) JobRuns(jobID string) []*Run {
+	if r == nil || jobID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*Run
+	for _, run := range r.active {
+		if run.meta.Kind == models.RunBackup && run.meta.JobID == jobID {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+// cancelWhere cancels the active runs whose Meta match and returns the IDs of the
+// runs it cancelled, sorted.
+func (r *Registry) cancelWhere(c Cancellation, match func(Meta) bool) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	var list []*Run
+	for _, run := range r.active {
+		if match(run.meta) {
+			list = append(list, run)
+		}
+	}
+	r.mu.Unlock()
+	var ids []string
+	for _, run := range list {
+		if newly, err := run.cancelRun(c); err == nil && newly {
+			ids = append(ids, run.meta.ID)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // CancelAll cancels every active run with c and returns the IDs of the runs it
@@ -697,7 +765,7 @@ func (run *Run) Snapshot() models.RunProgress {
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	p := models.RunProgress{
-		ID: run.meta.ID, Kind: run.meta.Kind, JobID: run.meta.JobID, Database: run.meta.Database,
+		ID: run.meta.ID, Kind: run.meta.Kind, JobID: run.meta.JobID, RunID: run.meta.Group, Database: run.meta.Database,
 		Phase: run.phase, Bytes: run.bytes.Load(), TotalBytes: run.totalBytes,
 		CurrentCollection: run.current, StartedAt: run.startedAt, UpdatedAt: run.updatedAt,
 		Cancelling: run.cancellation != nil, Phases: run.phases,

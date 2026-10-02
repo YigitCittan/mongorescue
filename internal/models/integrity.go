@@ -248,7 +248,23 @@ type RestoreTestPolicy struct {
 	// ConnectionID selects a dedicated test server; empty restores into the server
 	// the backup was taken from (into the temporary database only).
 	ConnectionID string `json:"connection_id,omitempty"`
+	// Databases says which databases of a multi-database run are tested when a test
+	// is due: RestoreTestRotate (also when empty) tests one per run, taking turns,
+	// RestoreTestAllDatabases tests each of them. Single-database jobs ignore it.
+	Databases RestoreTestScope `json:"databases,omitempty"`
 }
+
+// RestoreTestScope says which databases of a multi-database job run a restore test
+// covers.
+type RestoreTestScope string
+
+// Restore test scopes.
+const (
+	// RestoreTestRotate tests one database per run, taking turns in name order.
+	RestoreTestRotate RestoreTestScope = "rotate"
+	// RestoreTestAllDatabases tests every database the run backed up.
+	RestoreTestAllDatabases RestoreTestScope = "all"
+)
 
 // Validate normalises and checks p. Errors wrap ErrInvalidRestoreTest.
 func (p *RestoreTestPolicy) Validate() error {
@@ -256,6 +272,11 @@ func (p *RestoreTestPolicy) Validate() error {
 		return nil
 	}
 	p.ConnectionID = strings.TrimSpace(p.ConnectionID)
+	switch p.Databases {
+	case "", RestoreTestRotate, RestoreTestAllDatabases:
+	default:
+		return fmt.Errorf("%w: databases must be rotate or all", ErrInvalidRestoreTest)
+	}
 	if p.Frequency == "" {
 		p.Frequency = RestoreTestWeekly
 	}
@@ -357,7 +378,7 @@ func (r *RestoreTestResult) Summary() *RestoreTestSummary {
 			detail += fmt.Sprintf(" (+%d more)", len(r.Mismatches)-1)
 		}
 	}
-	return &RestoreTestSummary{ID: r.ID, BackupID: r.BackupID, Status: r.Status, At: at, DurationSeconds: r.DurationSeconds, Detail: detail}
+	return &RestoreTestSummary{ID: r.ID, BackupID: r.BackupID, Database: r.Database, Status: r.Status, At: at, DurationSeconds: r.DurationSeconds, Detail: detail}
 }
 
 // RestoreTestSummary is the latest restore test of a job or a backup.
@@ -366,6 +387,9 @@ type RestoreTestSummary struct {
 	ID string `json:"id"`
 	// BackupID is the tested backup.
 	BackupID string `json:"backup_id,omitempty"`
+	// Database is the tested backup's database (multi-database jobs test their
+	// databases in turn).
+	Database string `json:"database,omitempty"`
 	// Status is the outcome.
 	Status RestoreTestStatus `json:"status"`
 	// At is when the test finished.

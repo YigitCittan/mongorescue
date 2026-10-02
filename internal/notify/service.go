@@ -441,7 +441,9 @@ func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
 		s.broadcast(ctx, e)
 		return
 	}
-	if !e.Type.Subscribable() {
+	// The per-database events of a multi-database job run are summarised by one
+	// event for the whole run.
+	if !e.Type.Subscribable() || e.InRun {
 		return
 	}
 	rules, err := s.repo.ListRules(ctx)

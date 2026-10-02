@@ -133,7 +133,7 @@ var ErrPruneRefused = errors.New("store: retention must keep this backup")
 
 // PruneBackupRecord marks completed backup id pruned, in one transaction that
 // re-checks what retention must keep: a pinned backup, a backup that is no longer
-// completed, and the newest backup of its job (same connection, storage target and
+// completed, and the newest backup of its job and database (same connection, storage target and
 // scheduled trigger) whose verification is ok, so a verification recorded after
 // retention planned cannot be overtaken. A refusal wraps ErrPruneRefused; an unknown
 // id returns ErrNotFound.
@@ -154,7 +154,7 @@ func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string) (*models
 			// Strict: an unreadable sibling could be the newest verified backup, so a
 			// row that does not decode refuses the prune instead of being skipped.
 			siblings, err := listRecordsStrict[models.BackupRecord](ctx, tx,
-				"SELECT data FROM backups WHERE job_id = ? AND status = ?", rec.JobID, string(models.StatusCompleted))
+				"SELECT data FROM backups WHERE job_id = ? AND database_name = ? AND status = ?", rec.JobID, rec.Database, string(models.StatusCompleted))
 			if err != nil {
 				return fmt.Errorf("%w: the job's other backups cannot all be read: %w", ErrPruneRefused, err)
 			}
@@ -168,7 +168,7 @@ func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string) (*models
 				}
 			}
 			if !newer {
-				return fmt.Errorf("%w: backup %s is the job's newest verified backup", ErrPruneRefused, id)
+				return fmt.Errorf("%w: backup %s is the newest verified backup of its job and database", ErrPruneRefused, id)
 			}
 		}
 		rec.Status = models.StatusPruned
