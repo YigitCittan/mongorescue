@@ -569,6 +569,7 @@ function trustFillJobForm(job) {
   if (enabled) enabled.checked = !!rt.enabled;
   setValue("job-rt-frequency", rt.frequency || "weekly");
   setValue("job-rt-every-n", rt.every_n || 7);
+  setValue("job-rt-databases", rt.databases || "rotate");
   const conn = document.getElementById("job-rt-connection");
   if (conn) {
     conn.textContent = "";
@@ -612,6 +613,9 @@ function trustJobPayload() {
     connection_id: getValue("job-rt-connection")
   };
   if (frequency === "every_n") policy.every_n = parseInt(getValue("job-rt-every-n"), 10) || 1;
+  // Which databases of a multi-database run are tested (jobdbs.js shows the field).
+  const scope = document.getElementById("job-rt-databases-group");
+  if (scope && !scope.hidden) policy.databases = getValue("job-rt-databases") || "rotate";
   return { verify_after_backup: getValue("job-verify"), restore_test: policy };
 }
 
@@ -635,6 +639,9 @@ async function trustRetentionPreview() {
     const kept = (json.data.protected || []).length;
     let text = n > 0 ? tf("trust.retention_preview_n", { n }) : t("trust.retention_preview_none");
     if (kept > 0) text += ` ${tf("trust.retention_preview_protected", { n: kept })}`;
+    // A multi-database job keeps N backups of each database (jobdbs.js).
+    const perDb = typeof jobDbsRetentionBreakdown === "function" ? jobDbsRetentionBreakdown(json.data) : "";
+    if (perDb) text += ` ${perDb}`;
     hint.textContent = text;
     hint.classList.toggle("text-danger", n > 0);
     hint.hidden = false;

@@ -250,6 +250,8 @@ async function setJobPaused(jobID, paused, until) {
       name: job.name || "",
       cron_expression: job.cron_expression || "",
       database: job.database || "",
+      database_selection: job.database_selection,
+      parallelism: job.parallelism || 1,
       collections: job.collections || [],
       exclude_collections: job.exclude_collections || [],
       connection_id: job.connection_id || "",
@@ -284,10 +286,15 @@ async function setJobPaused(jobID, paused, until) {
   }
 }
 
-// Cancels the running backup of job jobID.
+// Stops the current run of job jobID: its running backup and, for a job with
+// several databases, every database still waiting (POST /api/v1/jobs/{id}/cancel).
 function stopJobRun(jobID) {
-  const run = jobActiveRun(jobID);
-  if (run) cancelRun("backup", run.id);
+  if (!jobActiveRun(jobID)) return;
+  if (typeof jobDbsStopRun === "function") {
+    jobDbsStopRun(jobID);
+    return;
+  }
+  cancelRun("backup", jobActiveRun(jobID).id);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +328,8 @@ function handleRunAction(action, id, btn) {
       loadRunLog(true);
       return true;
   }
-  return false;
+  // Multi-database job actions live in jobdbs.js.
+  return typeof handleJobDbAction === "function" ? handleJobDbAction(action, id, btn) : false;
 }
 
 function setupRunControls() {
