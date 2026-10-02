@@ -48,6 +48,12 @@ func (s *SQLiteStore) ListJobRuns(ctx context.Context, jobID string, limit int) 
 		"SELECT id, data FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, id DESC LIMIT ?", jobID, limit)
 }
 
+// ListRunningJobRuns returns every job run still recorded as running, oldest first.
+func (s *SQLiteStore) ListRunningJobRuns(ctx context.Context) ([]*models.JobRun, error) {
+	return listRecords[models.JobRun](ctx, s, tableJobRuns, nil,
+		"SELECT id, data FROM job_runs WHERE status = ? ORDER BY started_at, id", string(models.JobRunRunning))
+}
+
 // UpdateJobKnownDatabases stores known as the job's KnownDatabases without touching
 // its settings or UpdatedAt (a run finishing never reverts an edit saved meanwhile).
 // It returns ErrNotFound when the job was deleted.

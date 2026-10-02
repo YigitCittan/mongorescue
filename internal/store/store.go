@@ -68,6 +68,8 @@ type Store interface {
 	GetJobRun(ctx context.Context, id string) (*models.JobRun, error)
 	// ListJobRuns returns up to limit runs of a job, newest first.
 	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*models.JobRun, error)
+	// ListRunningJobRuns returns every job run still recorded as running.
+	ListRunningJobRuns(ctx context.Context) ([]*models.JobRun, error)
 
 	// SaveBackupRecord creates or replaces a backup record.
 	SaveBackupRecord(ctx context.Context, record *models.BackupRecord) error

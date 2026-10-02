@@ -911,6 +911,21 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			}
 		}
 	}
+	// Job runs end with their databases: those still waiting or running failed too.
+	if jobRuns, err := a.metaStore.ListRunningJobRuns(ctx); err == nil {
+		for _, run := range jobRuns {
+			for i := range run.Databases {
+				if d := &run.Databases[i]; d.Status == models.StatusInProgress || d.Status == models.StatusPending {
+					d.Status, d.Error = models.StatusFailed, msg
+				}
+			}
+			run.Error = msg
+			run.Finish(time.Now())
+			if err := a.metaStore.SaveJobRun(ctx, run); err != nil {
+				a.logger.Warn("failed to mark interrupted job run", slog.String("run_id", run.ID), slog.Any("error", err))
+			}
+		}
+	}
 }
 
 // isLoopbackHost reports whether host binds only to the local loopback interface.
