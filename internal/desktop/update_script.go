@@ -29,10 +29,21 @@ import (
 // "Later"). Release notes are set with textContent
 // only, after stripping common markdown marks; nothing is ever parsed as markup.
 // Strings are in English, or Turkish when the dashboard's saved language (or,
-// without one, navigator.language) starts with "tr".
+// without one, navigator.language) starts with "tr". The script exposes
+// window.__mongorescueUpdate = {check, install, status} for the dashboard's command
+// palette, which runs the same check and install flows.
 const updateScript = `(function (paths, header) {
   if (window.__mongorescueUpdate) { return; }
-  window.__mongorescueUpdate = true;
+  // The dashboard's API (nav.js): its presence also tells the page it runs in the
+  // desktop app. check() resolves with the status after a check (rejects with the
+  // error), install() runs the same flow as the Update button (bar, progress,
+  // waiting and error states; the release page without an installable file) and
+  // rejects when it could not start, status() is the last status seen.
+  window.__mongorescueUpdate = {
+    check: function () { return requestCheck(); },
+    install: function () { return startUpdate(true); },
+    status: function () { return status; }
+  };
   var STRINGS = {
     en: {
       required: "Update required",
@@ -242,19 +253,25 @@ const updateScript = `(function (paths, header) {
     });
   }
 
+  // install starts the download and install. It resolves with the error text when
+  // the updater refused or could not be reached ("" when it started); the error is
+  // shown in the bar either way.
   function install() {
     if (ui) { ui.update.disabled = true; }
-    post(paths.install).then(function (r) {
+    return post(paths.install).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (body) {
         if (!r.ok) {
-          if (ui) { ui.update.disabled = false; ui.state.textContent = t("failed", { error: body.error || r.status }); }
-          return;
+          var error = String(body.error || r.status);
+          if (ui) { ui.update.disabled = false; ui.state.textContent = t("failed", { error: error }); }
+          return error;
         }
         render(body);
         schedule();
+        return "";
       });
     }, function (err) {
       if (ui) { ui.update.disabled = false; ui.state.textContent = t("failed", { error: err }); }
+      return String(err && err.message ? err.message : err);
     });
   }
   function openReleasePage() {
@@ -377,13 +394,22 @@ const updateScript = `(function (paths, header) {
   // install for this platform.
   function headerClick() {
     if (!status || !status.available || status.mandatory) { return; }
+    startUpdate(false);
+  }
+  // startUpdate shows the bar again (even after "Later") and installs, or opens the
+  // release page when there is nothing to install for this platform. For the
+  // dashboard API (reject set) the promise rejects when the update did not start.
+  function startUpdate(reject) {
+    var fail = function (msg) { return reject ? Promise.reject(new Error(msg)) : Promise.resolve(); };
+    if (!status || !status.available) { return fail("no update is available"); }
+    if (busyState(status.state)) { return Promise.resolve(); }
     if (!status.installable && status.state !== "error") {
       openReleasePage();
-      return;
+      return Promise.resolve();
     }
     clearLater();
     render(status);
-    install();
+    return install().then(function (error) { return error ? fail(error) : undefined; });
   }
 
   // versionLabel makes the header's version label open the check popover. The
@@ -457,21 +483,25 @@ const updateScript = `(function (paths, header) {
   function checkNow(p) {
     p.check.disabled = true;
     p.state.textContent = t("checkingUpdates");
-    post(paths.check).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (body) {
-        p.check.disabled = false;
-        if (!r.ok) { p.state.textContent = t("checkFailed", { error: body.error || r.status }); return; }
-        if (body.available) {
-          p.state.textContent = t("available", { latest: body.latest });
-          clearLater();
-        } else {
-          p.state.textContent = t("upToDate", { version: vname(body.current) });
-        }
-        render(body);
-      });
+    requestCheck().then(function (body) {
+      p.check.disabled = false;
+      p.state.textContent = body.available ? t("available", { latest: body.latest }) : t("upToDate", { version: vname(body.current) });
     }, function (err) {
       p.check.disabled = false;
-      p.state.textContent = t("checkFailed", { error: err });
+      p.state.textContent = t("checkFailed", { error: err && err.message ? err.message : err });
+    });
+  }
+  // requestCheck asks the app to check for releases now. It resolves with the
+  // status (a newer version also shows the update bar, even after "Later") and
+  // rejects with the error.
+  function requestCheck() {
+    return post(paths.check).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) { throw new Error(String(body.error || r.status)); }
+        if (body.available) { clearLater(); }
+        render(body);
+        return body;
+      });
     });
   }
 
