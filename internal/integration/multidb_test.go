@@ -33,9 +33,9 @@ func TestPatternJobOverRealDatabases(t *testing.T) {
 			}
 			ctx := context.Background()
 			metaStore := storetest.New(t)
-			st, err := storage.NewLocalStorage(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
+			st, stErr := storage.NewLocalStorage(t.TempDir())
+			if stErr != nil {
+				t.Fatal(stErr)
 			}
 			prober := mongoconn.New()
 			sched := scheduler.NewScheduler(metaStore, newBackupEngine(env, st), st, discardLogger,
