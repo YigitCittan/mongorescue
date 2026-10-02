@@ -611,15 +611,16 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 // connection. Without a ConnectionResolver the engine's default URI applies.
 func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger models.BackupTrigger) (models.BackupOptions, error) {
 	opts := models.BackupOptions{
-		JobID:              job.ID,
-		Trigger:            trigger,
-		Database:           job.Database,
-		Collections:        job.Collections,
-		ExcludeCollections: job.ExcludeCollections,
-		StorageType:        job.StorageType,
-		Gzip:               job.Gzip,
-		ConnectionID:       job.ConnectionID,
-		Verify:             job.VerifyAfterBackup,
+		JobID:                job.ID,
+		Trigger:              trigger,
+		Database:             job.Database,
+		Collections:          job.Collections,
+		ExcludeCollections:   job.ExcludeCollections,
+		StorageType:          job.StorageType,
+		Gzip:                 job.Gzip,
+		ConnectionID:         job.ConnectionID,
+		IncludeUsersAndRoles: job.IncludeUsersAndRoles,
+		Verify:               job.VerifyAfterBackup,
 	}
 	if s.targets != nil {
 		target, err := s.targets.Resolve(ctx, job.StorageTargetID)

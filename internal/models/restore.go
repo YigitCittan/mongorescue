@@ -15,6 +15,16 @@ import (
 // "safe_clone": false and "confirm_in_place": true.
 var ErrInPlaceNotConfirmed = errors.New(`in-place restore not confirmed: set "safe_clone": false and "confirm_in_place": true`)
 
+// ErrUsersAndRolesNotAllowed is returned when a restore asks for
+// "restore_users_and_roles" but is not an in-place restore into the backup's own
+// database: mongorestore restores users and roles under the source database name, so
+// a safe clone or a renamed target would get the users of another database.
+var ErrUsersAndRolesNotAllowed = errors.New(`"restore_users_and_roles" is only allowed for an in-place restore into the backup's own database`)
+
+// ErrNoUsersAndRoles is returned when a restore asks for "restore_users_and_roles" but
+// the backup was taken without its database's users and roles.
+var ErrNoUsersAndRoles = errors.New("the backup does not contain users and roles")
+
 // RestoreStatus represents the execution state of a restore operation.
 type RestoreStatus string
 
@@ -92,6 +102,12 @@ type RestoreRequest struct {
 	// DryRun validates headers, connection, and namespace parameters without writing data.
 	DryRun bool `json:"dry_run"`
 
+	// RestoreUsersAndRoles restores the users and roles stored in the archive into the
+	// source database (mongorestore --restoreDbUsersAndRoles), replacing the users and
+	// roles defined there. It needs an in-place restore into the backup's own database
+	// and a backup taken with them; see ValidateUsersAndRoles.
+	RestoreUsersAndRoles bool `json:"restore_users_and_roles,omitempty"`
+
 	// TargetConnectionID selects the Connection to restore into. Empty means the
 	// connection the backup was taken from; a different one restores across servers.
 	TargetConnectionID string `json:"target_connection_id,omitempty"`
@@ -140,6 +156,33 @@ func (r RestoreRequest) ValidateTarget() error {
 	}
 	if !r.ConfirmInPlace {
 		return ErrInPlaceNotConfirmed
+	}
+	return nil
+}
+
+// ValidateUsersAndRoles checks RestoreUsersAndRoles against the backup to restore:
+// the restore must be in place (not a safe clone) into source's own database (no
+// rename through target_database), and source must contain users and roles. Errors
+// wrap ErrUsersAndRolesNotAllowed or ErrNoUsersAndRoles. Without
+// RestoreUsersAndRoles it returns nil.
+func (r RestoreRequest) ValidateUsersAndRoles(source *BackupRecord) error {
+	if !r.RestoreUsersAndRoles {
+		return nil
+	}
+	if r.IsSafeClone() {
+		return fmt.Errorf(`%w: a safe clone restores into a new database; set "safe_clone": false and "confirm_in_place": true`, ErrUsersAndRolesNotAllowed)
+	}
+	if source == nil {
+		return fmt.Errorf("%w: unknown source backup", ErrNoUsersAndRoles)
+	}
+	if target := strings.TrimSpace(r.TargetDatabase); target != "" && target != source.Database {
+		return fmt.Errorf("%w: target_database %q renames the restore away from %q; omit target_database", ErrUsersAndRolesNotAllowed, target, source.Database)
+	}
+	if source.Database == AdminDatabase {
+		return fmt.Errorf("%w: the admin database keeps users and roles as regular data; restore it without restore_users_and_roles", ErrUsersAndRolesNotAllowed)
+	}
+	if !source.UsersAndRoles {
+		return fmt.Errorf("%w: backup %s was taken without include_users_and_roles", ErrNoUsersAndRoles, source.ID)
 	}
 	return nil
 }
@@ -222,6 +265,10 @@ type RestoreRecord struct {
 	// InPlace reports that the restore writes into an existing namespace instead of a
 	// fresh safe clone.
 	InPlace bool `json:"in_place,omitempty"`
+
+	// UsersAndRoles reports that the restore also restored the users and roles of the
+	// source database (RestoreRequest.RestoreUsersAndRoles).
+	UsersAndRoles bool `json:"users_and_roles,omitempty"`
 
 	// CancelledBy names who cancelled the restore when Status is
 	// RestoreStatusCancelled.

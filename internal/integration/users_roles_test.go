@@ -16,31 +16,36 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
 	"github.com/yigitcittan/mongorescue/internal/restore"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
-// TestUsersAndRolesAreNotBackedUp documents current behaviour: a per-database backup
-// does not use --dumpDbUsersAndRoles, so users and roles defined on the database are
-// neither in the archive nor in the restored clone. They must be recreated (or
-// backed up separately) after a disaster.
-func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
-	env := requireMongo(t)
-	st := storageTargets(t)[0].Storage
-	db := env.uniqueDB(t, "usr")
-	env.seed(t, db, "orders", 10)
+const itUser, itRole = "it_app_user_marker", "it_app_role_marker"
 
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-	const user, role = "it_app_user_marker", "it_app_role_marker"
-	run := func(target string, cmd bson.D) bson.M {
+// usersRolesDB seeds a database with a role and a user that has it, dropped again on
+// cleanup. run executes a command on a database; count counts the users (usersInfo,
+// "users") or roles (rolesInfo, "roles") of one.
+func usersRolesDB(t *testing.T, env *mongoEnv) (db string, run func(target string, cmd bson.D) bson.M, count func(target, cmd, field string) int) {
+	t.Helper()
+	db = env.uniqueDB(t, "usr")
+	env.seed(t, db, "orders", 10)
+	run = func(target string, cmd bson.D) bson.M {
 		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+		defer cancel()
 		var out bson.M
 		if err := env.Client.Database(target).RunCommand(ctx, cmd).Decode(&out); err != nil {
 			t.Fatalf("%v on %s: %v", cmd[0].Key, target, err)
 		}
 		return out
 	}
+	count = func(target, cmd, field string) int {
+		t.Helper()
+		res := run(target, bson.D{{Key: cmd, Value: 1}})
+		list, _ := res[field].(bson.A)
+		return len(list)
+	}
 	run(db, bson.D{
-		{Key: "createRole", Value: role},
+		{Key: "createRole", Value: itRole},
 		{Key: "privileges", Value: bson.A{bson.D{
 			{Key: "resource", Value: bson.D{{Key: "db", Value: db}, {Key: "collection", Value: "orders"}}},
 			{Key: "actions", Value: bson.A{"find"}},
@@ -48,9 +53,9 @@ func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
 		{Key: "roles", Value: bson.A{}},
 	})
 	run(db, bson.D{
-		{Key: "createUser", Value: user},
+		{Key: "createUser", Value: itUser},
 		{Key: "pwd", Value: randomHex(t, 12)},
-		{Key: "roles", Value: bson.A{bson.D{{Key: "role", Value: role}, {Key: "db", Value: db}}}},
+		{Key: "roles", Value: bson.A{bson.D{{Key: "role", Value: itRole}, {Key: "db", Value: db}}}},
 	})
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), opTimeout)
@@ -58,27 +63,44 @@ func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
 		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropAllUsersFromDatabase", Value: 1}}).Err()
 		_ = env.Client.Database(db).RunCommand(cctx, bson.D{{Key: "dropAllRolesFromDatabase", Value: 1}}).Err()
 	})
+	return db, run, count
+}
 
-	bkp := mustBackup(t, env, st, models.BackupOptions{Database: db})
-	rc, err := st.Retrieve(ctx, bkp.StorageKey)
+// archiveBytes reads a small test archive.
+func archiveBytes(t *testing.T, st storage.Storage, key string) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	rc, err := st.Retrieve(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive, err := io.ReadAll(rc) // a small test archive
+	archive, err := io.ReadAll(rc)
 	_ = rc.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(archive, []byte(user)) || bytes.Contains(archive, []byte(role)) {
+	return archive
+}
+
+// TestUsersAndRolesAreNotBackedUp pins the default: a per-database backup without
+// include_users_and_roles does not use --dumpDbUsersAndRoles, so users and roles
+// defined on the database are neither in the archive nor in the restored clone.
+func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
+	env := requireMongo(t)
+	st := storageTargets(t)[0].Storage
+	db, _, count := usersRolesDB(t, env)
+
+	bkp := mustBackup(t, env, st, models.BackupOptions{Database: db})
+	if bkp.UsersAndRoles {
+		t.Fatal("a backup without include_users_and_roles is recorded with users and roles")
+	}
+	archive := archiveBytes(t, st, bkp.StorageKey)
+	if bytes.Contains(archive, []byte(itUser)) || bytes.Contains(archive, []byte(itRole)) {
 		t.Fatal("the archive unexpectedly contains the database's users or roles; update docs/testing.md")
 	}
 
 	rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
-	count := func(target, cmd, field string) int {
-		res := run(target, bson.D{{Key: cmd, Value: 1}})
-		list, _ := res[field].(bson.A)
-		return len(list)
-	}
 	if n := count(rst.TargetDatabase, "usersInfo", "users"); n != 0 {
 		t.Fatalf("restored clone has %d users; users are not part of per-database backups", n)
 	}
@@ -87,6 +109,49 @@ func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
 	}
 	if count(db, "usersInfo", "users") != 1 || count(db, "rolesInfo", "roles") != 1 {
 		t.Fatal("the source's users and roles must be untouched")
+	}
+}
+
+// TestUsersAndRolesSurviveInPlaceRestore backs up a database with
+// include_users_and_roles, drops its users and roles, and restores them in place
+// with restore_users_and_roles. A safe clone of the same backup refuses the option.
+func TestUsersAndRolesSurviveInPlaceRestore(t *testing.T) {
+	env := requireMongo(t)
+	st := storageTargets(t)[0].Storage
+	db, run, count := usersRolesDB(t, env)
+
+	bkp := mustBackup(t, env, st, models.BackupOptions{Database: db, IncludeUsersAndRoles: true, Gzip: true})
+	if !bkp.UsersAndRoles {
+		t.Fatal("the backup is not recorded with users and roles")
+	}
+
+	if _, err := tryRestore(t, env, st, models.RestoreRequest{RestoreUsersAndRoles: true}, bkp); !errors.Is(err, models.ErrUsersAndRolesNotAllowed) {
+		t.Fatalf("safe clone with restore_users_and_roles = %v; want ErrUsersAndRolesNotAllowed", err)
+	}
+
+	// The disaster: the database loses its users and roles.
+	run(db, bson.D{{Key: "dropAllUsersFromDatabase", Value: 1}})
+	run(db, bson.D{{Key: "dropAllRolesFromDatabase", Value: 1}})
+	if count(db, "usersInfo", "users") != 0 || count(db, "rolesInfo", "roles") != 0 {
+		t.Fatal("users and roles were not dropped")
+	}
+
+	no := false
+	rst := mustRestore(t, env, st, models.RestoreRequest{
+		SafeClone: &no, ConfirmInPlace: true, DropTarget: true, RestoreUsersAndRoles: true,
+	}, bkp)
+	if !rst.UsersAndRoles || rst.TargetDatabase != db {
+		t.Fatalf("restore record = %+v", rst)
+	}
+	users := run(db, bson.D{{Key: "usersInfo", Value: itUser}})
+	if list, _ := users["users"].(bson.A); len(list) != 1 {
+		t.Fatalf("user %s not restored: %v", itUser, users)
+	}
+	if n := count(db, "rolesInfo", "roles"); n != 1 {
+		t.Fatalf("restored database has %d roles; want 1", n)
+	}
+	if n := env.count(t, db, "orders"); n != 10 {
+		t.Fatalf("restored %d documents; want 10", n)
 	}
 }
 

@@ -1360,6 +1360,13 @@
               </div>
             </div>
           </fieldset>
+          <label class="check" for="job-users-roles">
+            <input type="checkbox" id="job-users-roles">
+            <span class="check-text">
+              <span class="check-title" data-i18n="job_edit.users_roles_label">Include users and roles</span>
+              <span class="form-hint" data-i18n="job_edit.users_roles_hint">Adds the users and roles defined on each database to its backups, so an in-place restore can bring them back. Does not apply to the admin database, whose backups always contain them.</span>
+            </span>
+          </label>
           <label class="check" for="job-enabled">
             <input type="checkbox" id="job-enabled" checked>
             <span class="check-text">
@@ -1503,6 +1510,13 @@
               <input type="checkbox" id="restore-confirm-in-place">
               <span class="check-text">
                 <span class="check-title" data-i18n="modal_restore.in_place_ack">I understand this writes into an existing database and may overwrite its data.</span>
+              </span>
+            </label>
+            <label class="check" for="restore-users-roles">
+              <input type="checkbox" id="restore-users-roles" disabled>
+              <span class="check-text">
+                <span class="check-title" data-i18n="modal_restore.users_roles_title">Restore users and roles</span>
+                <span class="form-hint" id="restore-users-roles-hint" data-i18n="modal_restore.users_roles_hint">Replaces the users and roles defined on the source database with the ones in the backup; users and roles created since the backup are removed.</span>
               </span>
             </label>
           </div>

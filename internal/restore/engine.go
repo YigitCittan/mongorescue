@@ -288,6 +288,9 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 	if err := req.ValidateTarget(); err != nil {
 		return nil, fmt.Errorf("restore: %w", err)
 	}
+	if err := req.ValidateUsersAndRoles(sourceRecord); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
+	}
 
 	startTime := time.Now().UTC()
 	// Sanitize the database component so the derived ID satisfies models.ValidateID.
@@ -328,6 +331,7 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 		DryRun:               req.DryRun,
 		SelectedCollections:  selectedCollections(req.SelectedCollections),
 		InPlace:              req.InPlace(),
+		UsersAndRoles:        req.RestoreUsersAndRoles,
 		Phases:               models.RunPhases{Queued: models.Stamp(startTime)},
 	}, nil
 }
@@ -767,6 +771,9 @@ func failRestore(record *models.RestoreRecord, err error, message string) (*mode
 
 // buildRestoreArgs constructs safe CLI arguments for mongorestore. configArg is the
 // "--config=<file>" argument carrying the connection URI (see mongotools.WriteURIConfig).
+// Users and roles (req.RestoreUsersAndRoles) are only restored in place, into the
+// source database: mongorestore needs --db for --restoreDbUsersAndRoles and restores
+// them under the source name, so they are never combined with --nsFrom/--nsTo.
 func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req models.RestoreRequest, isGzip bool) []string {
 	args := []string{
 		configArg,
@@ -785,6 +792,11 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 	// only the selected collections are dropped; the others in the target are kept.
 	if req.DropTarget {
 		args = append(args, "--drop")
+	}
+
+	if req.RestoreUsersAndRoles && sourceDB != "" && (targetDB == "" || targetDB == sourceDB) {
+		// --db takes the name literally (no namespace pattern).
+		args = append(args, fmt.Sprintf("--db=%s", sourceDB), "--restoreDbUsersAndRoles")
 	}
 
 	// Every name goes through escapeNamespace: only the trailing ".*" of a

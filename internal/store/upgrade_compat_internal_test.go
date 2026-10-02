@@ -635,6 +635,43 @@ var compatSteps = []compatStep{
 			assertChecksumsRecorded(t, s)
 		},
 	},
+	{
+		version: 15,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"job_v15", "shop with users", "shop", 1, ns(18*time.Hour), "conn_v2", "tgt_local", jsonDoc(t, map[string]any{
+					"id": "job_v15", "name": "shop with users", "cron_expression": "@daily", "database": "shop",
+					"connection_id": "conn_v2", "storage_target_id": "tgt_local", "storage_type": "local",
+					"gzip": true, "enabled": true, "include_users_and_roles": true,
+					"created_at": rfc(18 * time.Hour), "updated_at": rfc(18 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, size_bytes, phases, run_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"bkp_v15", "job_v15", "shop", "completed", ns(19*time.Hour), "conn_v2", "tgt_local", "", 88, "{}", "", jsonDoc(t, map[string]any{
+					"id": "bkp_v15", "job_id": "job_v15", "trigger": "scheduled", "database": "shop", "users_and_roles": true,
+					"status": "completed", "connection_id": "conn_v2", "storage_type": "local", "storage_target_id": "tgt_local",
+					"storage_key": "shop/2026/09/bkp_v15.archive.gz", "size_bytes": 88, "started_at": rfc(19 * time.Hour),
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			job, err := s.GetJob(ctx, "job_v15")
+			if err != nil || !job.IncludeUsersAndRoles {
+				t.Errorf("job_v15 = %+v, %v; want include_users_and_roles", job, err)
+			}
+			rec, err := s.GetBackupRecord(ctx, "bkp_v15")
+			if err != nil || !rec.UsersAndRoles {
+				t.Errorf("bkp_v15 = %+v, %v; want users_and_roles", rec, err)
+			}
+			// Jobs stored before 0015 explicitly do not include users and roles.
+			var raw string
+			if err = s.db.QueryRow("SELECT json_extract(data, '$.include_users_and_roles') FROM jobs WHERE id = 'job_v1'").Scan(&raw); err != nil || raw != "0" {
+				t.Errorf("job_v1 include_users_and_roles = %q, %v; want false", raw, err)
+			}
+			if old, getErr := s.GetJob(ctx, "job_v1"); getErr == nil && old.IncludeUsersAndRoles {
+				t.Error("job_v1 includes users and roles after the upgrade")
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the
