@@ -26,8 +26,11 @@ var _ connections.Prober = (*Prober)(nil)
 // appName identifies MongoRescue in server logs and currentOp.
 const appName = "mongorescue"
 
-// fallbackTimeout bounds server selection when ctx carries no deadline.
-const fallbackTimeout = 10 * time.Second
+// fallbackTimeout bounds server selection and connecting when neither ctx nor the
+// connection string sets a limit. It is the driver's default: ten seconds made
+// restore tests fail on busy replica set members whose first handshake after a
+// large mongorestore took longer, and overrode the URI's own timeouts.
+const fallbackTimeout = 30 * time.Second
 
 // Prober opens a short-lived client per call. It is safe for concurrent use.
 type Prober struct{}
@@ -189,15 +192,7 @@ func grantsBypass(privs []privilege, database string) bool {
 
 // withClient runs fn with a client for uri and always disconnects it.
 func withClient(ctx context.Context, uri string, fn func(*mongo.Client) error) (err error) {
-	timeout := fallbackTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		timeout = max(time.Until(deadline), time.Millisecond)
-	}
-	opts := options.Client().ApplyURI(uri).
-		SetAppName(appName).
-		SetServerSelectionTimeout(timeout).
-		SetConnectTimeout(timeout)
-	client, err := mongo.Connect(opts)
+	client, err := mongo.Connect(clientOptions(ctx, uri))
 	if err != nil {
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return errors.New("invalid connection string")
@@ -208,4 +203,24 @@ func withClient(ctx context.Context, uri string, fn func(*mongo.Client) error) (
 		_ = client.Disconnect(dctx)
 	}()
 	return fn(client)
+}
+
+// clientOptions returns the options of a client for uri. The connection string's
+// own serverSelectionTimeoutMS and connectTimeoutMS are kept, like every other
+// option (replicaSet, directConnection, TLS); missing ones default to
+// fallbackTimeout. A deadline on ctx caps both.
+func clientOptions(ctx context.Context, uri string) *options.ClientOptions {
+	opts := options.Client().ApplyURI(uri).SetAppName(appName)
+	selection, connect := fallbackTimeout, fallbackTimeout
+	if opts.ServerSelectionTimeout != nil && *opts.ServerSelectionTimeout > 0 {
+		selection = *opts.ServerSelectionTimeout
+	}
+	if opts.ConnectTimeout != nil && *opts.ConnectTimeout > 0 {
+		connect = *opts.ConnectTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		left := max(time.Until(deadline), time.Millisecond)
+		selection, connect = min(selection, left), min(connect, left)
+	}
+	return opts.SetServerSelectionTimeout(selection).SetConnectTimeout(connect)
 }

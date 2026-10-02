@@ -39,3 +39,31 @@ func TestInvalidURIIsNotEchoed(t *testing.T) {
 		t.Fatalf("invalid uri error = %v", err)
 	}
 }
+
+// TestClientOptionsTimeouts checks that the connection string's own timeouts and
+// topology options survive, the fallback applies otherwise and a context deadline
+// caps both.
+func TestClientOptionsTimeouts(t *testing.T) {
+	opts := clientOptions(context.Background(), "mongodb://127.0.0.1:27017/?replicaSet=rs0")
+	if *opts.ServerSelectionTimeout != fallbackTimeout || *opts.ConnectTimeout != fallbackTimeout {
+		t.Fatalf("defaults = %v / %v; want %v", *opts.ServerSelectionTimeout, *opts.ConnectTimeout, fallbackTimeout)
+	}
+	if opts.ReplicaSet == nil || *opts.ReplicaSet != "rs0" {
+		t.Fatalf("replicaSet = %v; want rs0", opts.ReplicaSet)
+	}
+
+	opts = clientOptions(context.Background(), "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=45000&connectTimeoutMS=5000")
+	if *opts.ServerSelectionTimeout != 45*time.Second || *opts.ConnectTimeout != 5*time.Second {
+		t.Fatalf("URI timeouts = %v / %v; want 45s / 5s", *opts.ServerSelectionTimeout, *opts.ConnectTimeout)
+	}
+	if opts.Direct == nil || !*opts.Direct {
+		t.Fatal("directConnection was dropped")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	opts = clientOptions(ctx, "mongodb://127.0.0.1:27017/?serverSelectionTimeoutMS=45000")
+	if *opts.ServerSelectionTimeout > 2*time.Second || *opts.ConnectTimeout > 2*time.Second {
+		t.Fatalf("deadline caps = %v / %v; want at most 2s", *opts.ServerSelectionTimeout, *opts.ConnectTimeout)
+	}
+}
