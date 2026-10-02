@@ -754,7 +754,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		s.logger.Debug("http request completed",
 			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
+			logsafe.Attr("path", r.URL.Path),
 			slog.Duration("duration", time.Since(start)),
 		)
 	})

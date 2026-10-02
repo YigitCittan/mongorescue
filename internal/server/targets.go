@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/targets"
@@ -67,7 +67,7 @@ func (s *Server) writeTargetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, targets.ErrInvalid), errors.Is(err, targets.ErrMaskedSecret):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		s.logger.Error("storage target request failed", slog.Any("error", err))
+		s.logger.Error("storage target request failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

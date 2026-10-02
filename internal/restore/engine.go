@@ -229,7 +229,7 @@ func (e *Engine) bypassValidation(ctx context.Context, uri, database string) boo
 	ok, err := e.canBypass(ctx, uri, database)
 	if err != nil {
 		e.logger.Warn("could not check the bypassDocumentValidation privilege; documents are validated",
-			slog.String("target_db", database), slog.String("error", redact.Text(err.Error())))
+			logsafe.Attr("target_db", database), slog.String("error", redact.Text(err.Error())))
 		return false
 	}
 	return ok
@@ -404,12 +404,12 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 
 	e.logger.Info("initiating mongodb streaming restore",
 		slog.String("restore_id", restoreID),
-		slog.String("backup_id", req.BackupID),
+		logsafe.Attr("backup_id", req.BackupID),
 		slog.String("source_db", sourceRecord.Database),
-		slog.String("target_db", targetDB),
+		logsafe.Attr("target_db", targetDB),
 		slog.Bool("safe_clone", !req.InPlace()),
 		slog.Bool("dry_run", req.DryRun),
-		slog.String("mongo_uri", redact.URI(mongoURI)),
+		logsafe.Attr("mongo_uri", redact.URI(mongoURI)),
 		slog.Bool("encrypted", sourceRecord.Encrypted),
 	)
 	tracker := runs.FromContext(ctx)
@@ -461,7 +461,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		tracker.Printf("backup artifact verified (sha256 %s)", sourceRecord.SHA256)
 		e.logger.Info("backup artifact verified before restore",
 			slog.String("restore_id", restoreID),
-			slog.String("backup_id", req.BackupID),
+			logsafe.Attr("backup_id", req.BackupID),
 		)
 	}
 	tracker.Phase(models.PhaseRestoring, record.Phases)
@@ -509,7 +509,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 	if isGzip != keyGzip(sourceRecord.StorageKey) {
 		e.logger.Warn("backup compression differs from its storage key; using the archive content",
-			slog.String("backup_id", req.BackupID), slog.Bool("gzip", isGzip))
+			logsafe.Attr("backup_id", req.BackupID), slog.Bool("gzip", isGzip))
 	}
 	input := &errTrackingReader{r: plain}
 
@@ -571,7 +571,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		defer cancel()
 		if err := e.admin.DropDatabase(dropCtx, mongoURI, targetDB); err != nil {
 			e.logger.Warn("failed to drop the safe clone of a failed restore",
-				slog.String("restore_id", restoreID), slog.String("target_db", targetDB),
+				slog.String("restore_id", restoreID), logsafe.Attr("target_db", targetDB),
 				slog.String("error", redact.Text(err.Error())))
 			return fmt.Sprintf("; dropping the partially restored clone %s failed (%v), drop it manually", targetDB, err)
 		}
@@ -664,7 +664,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if !ok && !req.DryRun {
 		addWarning(record, "document counts unavailable: mongorestore printed no restored/failed summary")
 		e.logger.Warn("mongorestore printed no document summary; document counts unavailable",
-			slog.String("restore_id", restoreID), slog.String("target_db", targetDB))
+			slog.String("restore_id", restoreID), logsafe.Attr("target_db", targetDB))
 	}
 
 	record.Status = models.RestoreStatusCompleted
@@ -673,7 +673,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	tracker.Printf("restore completed into %s.* in %.1fs", targetDB, record.DurationSeconds)
 	e.logger.Info("mongodb streaming restore finished successfully",
 		slog.String("restore_id", restoreID),
-		slog.String("target_db", targetDB),
+		logsafe.Attr("target_db", targetDB),
 		slog.Float64("duration_sec", record.DurationSeconds),
 		slog.Bool("dry_run", req.DryRun),
 	)

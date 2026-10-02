@@ -8,6 +8,7 @@ package logsafe
 import (
 	"log/slog"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -48,4 +49,14 @@ func Error(err error) slog.Attr {
 		return slog.String("error", "")
 	}
 	return slog.String("error", String(err.Error()))
+}
+
+// Time returns an attribute with t in RFC 3339 form, through String like every other
+// value derived from client input (a schedule computed from a stored cron expression,
+// for example). A nil time gives an empty value.
+func Time(key string, t *time.Time) slog.Attr {
+	if t == nil {
+		return slog.String(key, "")
+	}
+	return slog.String(key, String(t.Format(time.RFC3339)))
 }

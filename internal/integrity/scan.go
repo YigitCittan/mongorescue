@@ -15,6 +15,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -606,10 +607,10 @@ func (s *Service) finishImport(ctx context.Context, driver storage.Storage, rec 
 		return nil
 	})
 	if err != nil {
-		s.logger.Warn("failed to complete an imported backup", slog.String("backup_id", rec.ID), slog.Any("error", err))
+		s.logger.Warn("failed to complete an imported backup", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
 		return
 	}
-	s.logger.Info("orphan archive imported", slog.String("backup_id", rec.ID), slog.String("storage_key", rec.StorageKey), slog.Int64("size_bytes", size))
+	s.logger.Info("orphan archive imported", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_key", rec.StorageKey), slog.Int64("size_bytes", size))
 }
 
 // failImport marks an imported record failed and detaches it from its archive.
@@ -621,9 +622,9 @@ func (s *Service) failImport(ctx context.Context, rec *models.BackupRecord, caus
 		r.Status, r.ErrorMessage, r.StorageKey = models.StatusFailed, msg, ""
 		return nil
 	}); err != nil {
-		s.logger.Warn("failed to record a failed import", slog.String("backup_id", rec.ID), slog.Any("error", err))
+		s.logger.Warn("failed to record a failed import", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
 	}
-	s.logger.Warn("orphan archive import failed", slog.String("backup_id", rec.ID), slog.String("error", msg))
+	s.logger.Warn("orphan archive import failed", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("error", msg))
 }
 
 // hashObject streams object key through SHA-256 and returns the hex digest and the

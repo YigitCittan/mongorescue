@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -368,10 +369,10 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 
 	e.logger.Info("initiating mongodb streaming backup",
-		slog.String("backup_id", backupID),
-		slog.String("database", opts.Database),
-		slog.String("target_key", targetKey),
-		slog.String("mongo_uri", redact.URI(mongoURI)),
+		logsafe.Attr("backup_id", backupID),
+		logsafe.Attr("database", opts.Database),
+		logsafe.Attr("target_key", targetKey),
+		logsafe.Attr("mongo_uri", redact.URI(mongoURI)),
 		slog.Bool("encrypted", record.Encrypted),
 	)
 
@@ -511,7 +512,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("backup completed: %d bytes, sha256 %s, %.1fs", record.SizeBytes, record.SHA256, record.DurationSeconds)
 	e.logger.Info("mongodb streaming backup completed successfully",
-		slog.String("backup_id", backupID),
+		logsafe.Attr("backup_id", backupID),
 		slog.Int64("size_bytes", record.SizeBytes),
 		slog.String("sha256", record.SHA256),
 		slog.Float64("duration_sec", record.DurationSeconds),
@@ -619,7 +620,7 @@ func (e *Engine) deleteArtifact(ctx context.Context, key string) {
 	defer cancel()
 	if err := e.storage.Delete(cleanupCtx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		e.logger.Warn("failed to delete partial backup artifact",
-			slog.String("storage_key", key),
+			logsafe.Attr("storage_key", key),
 			slog.Any("error", err),
 		)
 	}

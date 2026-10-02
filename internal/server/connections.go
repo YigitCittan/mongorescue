@@ -2,11 +2,11 @@ package server
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 )
 
@@ -52,7 +52,7 @@ func (s *Server) writeConnectionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, connections.ErrUnavailable):
 		writeError(w, http.StatusBadGateway, err.Error())
 	default:
-		s.logger.Error("connection request failed", slog.Any("error", err))
+		s.logger.Error("connection request failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

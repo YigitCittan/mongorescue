@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
@@ -226,7 +227,7 @@ func (s *S3Storage) abortFailedUpload(ctx context.Context, objKey string, upload
 	if err != nil && (!errors.As(err, &apiErr) || apiErr.ErrorCode() != "NoSuchUpload") {
 		s.logger.Warn("failed to abort the multipart upload of a failed backup; its parts stay in the bucket until a lifecycle rule removes them",
 			slog.String("bucket", s.bucket),
-			slog.String("key", objKey),
+			logsafe.Attr("key", objKey),
 			slog.String("error", redact.Text(err.Error())),
 		)
 	}
