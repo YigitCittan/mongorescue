@@ -9,7 +9,7 @@ There is no unauthenticated mode. Apart from the public routes below, every requ
 - a **session**: the `mr_session` cookie set by `POST /api/v1/setup` or `POST /api/v1/auth/login` (HttpOnly, `SameSite=Strict`, `Secure` over HTTPS). Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) must also send the session's CSRF token as `X-CSRF-Token`, or they are rejected with `403`; or
 - an **API key**: `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys are created under Settings → API keys (`mr_<prefix>_<secret>`, shown once); a `MONGORESCUE_API_KEY` of an earlier build is imported once as a key. API-key requests need no CSRF token. The [command line](cli.md) (`mongorescue backup`, `restore`, `list`, `verify`, `status`) is a client of these routes with an API key.
 
-Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup` and `POST /api/v1/auth/login`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": "", "role": "", "scope": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
+Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup`, `POST /api/v1/auth/login`, `GET /api/v1/auth/methods` and the [single sign-on](#single-sign-on) routes `GET /auth/oidc/start` and `GET /auth/oidc/callback`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": "", "role": "", "scope": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
 
 ### Dashboard roles
 
@@ -35,6 +35,15 @@ Failed logins return a generic `401`. After 5 failures for the same (client IP, 
 
 Sessions end after the `security.session_idle_timeout` without requests (default 12 hours) or the `security.session_absolute_timeout` after login (default 7 days), on logout, when they are revoked from the session list (`DELETE /api/v1/auth/sessions/{id}`, the dashboard's user menu → *Sessions*), and when the user's password changes (other sessions) or the user is deleted. Deleting a user also revokes the API keys they created.
 
+### Single sign-on
+
+With the [`oidc` settings](configuration.md#single-sign-on) on, people sign in through an OpenID Connect provider ([recipes](sso.md), [design](design/oidc.md)); API keys, the CLI and MCP are unchanged. The desktop app has no single sign-on. The browser routes live outside `/api/` and need no credentials:
+
+- `GET /auth/oidc/start?return_to=/path` answers `404` while single sign-on is off. Otherwise it sets the `mr_oidc` flow cookie (state, nonce and PKCE verifier, sealed with a subkey of `secret.key`; `HttpOnly`, `Path=/auth/oidc/`, `Max-Age=600`, `SameSite=Lax`, `Secure` like the session cookie) and redirects to the provider (authorization code flow, S256 PKCE, query response mode). `return_to` must be a path on this server; anything else becomes `/`. Starts are throttled per client address (30 a minute) and not audited.
+- `GET /auth/oidc/callback?code=…&state=…` clears the flow cookie, checks the state (single use, at most 10 minutes old), exchanges the code with the verifier, verifies the ID token (signature RS256 or ES256, `iss`, `aud`, `azp`, nonce, `exp`, `nbf`, `iat` with 60 seconds of leeway), applies the domain filter and the group mappings, finds the user by issuer and subject or creates one, and redirects to `return_to` with a session cookie. Failures redirect to `/?oidc_error=<code>`: `state_mismatch`, `idp_error`, `token_invalid`, `domain_not_allowed`, `no_role` (also an unknown identity while `auto_create_users` is off), `account_conflict` (a user with that name exists: users are never linked by name or email), `disabled` or `throttled`. Tokens, the code and claims never appear in responses, logs or the audit log; access and refresh tokens are discarded.
+
+The role of a single sign-on user is recomputed at every sign-in (a change ends their sessions, like `PUT /api/v1/users/{id}/role`), and changing it by hand is refused with `409` while group mappings exist. Single sign-on users have no password: the password form never signs them in (it takes as long as for an unknown name) and changing or confirming their password answers `400`, so the recovery kit needs a local administrator. While single sign-on is on, the last local administrator can be neither demoted nor deleted (`409`); with `oidc.local_login` `admins_only`, a local user without the admin role gets `403` from `POST /api/v1/auth/login`, only after the password matched.
+
 ## Endpoints
 
 | Method | Endpoint | Description | Success | Errors |
@@ -42,16 +51,17 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`) | 200 | |
 | `GET` | `/api/v1/setup/status` | `{"setup_required": bool}` | 200 | |
 | `POST` | `/api/v1/setup` | `{setup_code, username, password}` → first user and session: `{user, csrf_token}` | 201 | 400, 403 wrong code, 409 already set up, 429 |
-| `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin, 415, 429 |
-| `POST` | `/api/v1/auth/logout` | Revoke the current session | 200 | |
+| `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin or [password sign-in limited to local admins](#single-sign-on), 415, 429 |
+| `GET` | `/api/v1/auth/methods` | Sign-in methods: `{local: "all"\|"admins_only", oidc: {enabled, display_name, available}}` (public) | 200 | |
+| `POST` | `/api/v1/auth/logout` | Revoke the current session → `{logged_out, end_session_url}` (`end_session_url` only for single sign-on users with `oidc.rp_logout`) | 200 | |
 | `GET` | `/api/v1/auth/me` | `{user, csrf_token, auth: "session"\|"api_key", role, scope, key_scope}` (`scope` is the effective scope; `key_scope` only for API keys); signed out: `{user: null, csrf_token: "", auth: "", role: "", scope: ""}` | 200 | |
 | `GET` | `/api/v1/auth/sessions` | Your own live sessions, most recently active first: `[{id, user_id, username, created_at, last_seen_at, expires_at, current}]`; `?all=true` lists every user's (admin only). Never carries tokens or their hashes; an API key sees the sessions of the user who created it | 200 | 400, 403 |
 | `DELETE` | `/api/v1/auth/sessions/{id}` | Revoke a session → `{revoked_id, current}`: your own user's from a session of any role, any user's with admin; API keys below admin may revoke none. Revoking your own current session also clears the cookie | 200 | 403, 404 |
-| `GET` / `POST` | `/api/v1/users` | List users `[{id, username, role, created_at, last_login_at}]` / create one `{username, password, role}` (`role`: `viewer` (default), `operator` or `admin`); admin only | 200 / 201 | 400, 403, 409 username taken |
+| `GET` / `POST` | `/api/v1/users` | List users `[{id, username, role, auth_provider, created_at, last_login_at}]` (`auth_provider`: `local` or `oidc`) / create a local user `{username, password, role}` (`role`: `viewer` (default), `operator` or `admin`); admin only | 200 / 201 | 400, 403, 409 username taken |
 | `GET` | `/api/v1/users/names` | `[{id, username}]` of every user, to show who created or pinned something; read | 200 | |
-| `PUT` | `/api/v1/users/{id}/role` | `{role}` → the user; ends their sessions (their API keys are capped by the new role); admin only | 200 | 400 unknown role or yourself, 403, 404, 409 last admin |
-| `DELETE` | `/api/v1/users/{id}` | Delete a user and revoke their sessions and API keys; admin only | 200 | 400 yourself, 403, 404, 409 last user or last admin |
-| `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}`: your own from a session with the current password, another user's (no current password) with admin | 200 | 400, 403 wrong current password, an API key for your own, or not admin, 404 |
+| `PUT` | `/api/v1/users/{id}/role` | `{role}` → the user; ends their sessions (their API keys are capped by the new role); admin only | 200 | 400 unknown role or yourself, 403, 404, 409 last admin, last local admin while single sign-on is on, or a single sign-on user whose role the group mappings decide |
+| `DELETE` | `/api/v1/users/{id}` | Delete a user and revoke their sessions and API keys; admin only | 200 | 400 yourself, 403, 404, 409 last user, last admin, or last local admin while single sign-on is on |
+| `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}`: your own from a session with the current password, another user's (no current password) with admin | 200 | 400 (also for single sign-on users, who have no password), 403 wrong current password, an API key for your own, or not admin, 404 |
 | `GET` / `POST` | `/api/v1/api-keys` | List keys (admins see all, others their own) with `effective_scope` / create `{name, scope}` (`scope`: `read` (default), `operator` or `admin`, at most your own) → `{api_key, key}` (plaintext only here) | 200 / 201 | 400, 403 scope above yours or a non-admin key |
 | `DELETE` | `/api/v1/api-keys/{id}` | Revoke a key: the keys your user created from a session of any role, only itself with an API key below admin, any key with admin | 200 | 403, 404 |
 | `GET` | `/api/v1/audit` | Recent API key activity (MCP calls and REST requests), newest first (`?limit=` 1-1000, default 200); admin only ([details](#api-key-activity)) | 200 | 400, 403 |
@@ -73,6 +83,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
 | `POST` | `/api/v1/settings/warnings/{id}/dismiss` | Dismiss a persistent warning for good; returns the remaining `{warnings}` | 200, 404 | |
+| `POST` | `/api/v1/settings/oidc/test` | Fetch the provider's discovery document and keys: `{issuer}` (optional; the stored issuer when omitted) → `{issuer, authorization_endpoint, token_endpoint, jwks_uri, end_session_endpoint, signing_algorithms, usable_algorithms, pkce_methods, keys, key_types}`, never secrets; admin only | 200 | 400 invalid issuer, 404 desktop app, 502 provider unreachable or unusable |
 | `GET` | `/api/v1/metadata-backup` | Status of the [metadata backups](#metadata-backups-and-the-recovery-kit): last snapshot `{target_id, target_name, key, created_at, size_bytes, encrypted}`, last error, next run | 200 | 503 |
 | `POST` | `/api/v1/metadata-backup/run` | Take a metadata snapshot now, in the background (admin) | 202 | 409 already running, 503 |
 | `GET` | `/api/v1/recovery-kit` | When the last recovery kit was downloaded and whether it is still current | 200 | 503 |
@@ -150,6 +161,8 @@ Jobs and manual backups name a `connection_id`. Backup records keep `connection_
 curl -X PUT http://localhost:8080/api/v1/settings -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' -d '{"general": {"backup_timeout": "3h", "default_retention_days": 14}}'
 ```
+
+The `oidc` group configures [single sign-on](#single-sign-on) ([fields](configuration.md#single-sign-on)); `client_secret` is stored encrypted and shown as `"******"`. Turning `enabled` on, or `local_login` to `admins_only`, needs a local administrator, and turning single sign-on on (or changing the issuer while it is on) fetches the provider's discovery document and keys first; a failure answers `400` and changes nothing. Single sign-on adds the warning `oidc_role_kept` (a sign-in would have demoted the last administrator, so the stored role was kept).
 
 The `audit` group holds `retention_days` (default 365, 30 to 36500), `webhook_url` and `webhook_secret` ([audit.md](audit.md#forwarding)). Both are stored encrypted; `webhook_url` is shown only up to its host (`"https://siem.example.com/******"`, a bare origin unchanged) and `webhook_secret` as `"******"`. Sending either back as shown keeps the stored value, `""` removes it.
 
