@@ -379,7 +379,7 @@ func TestBusyDatabaseWaitsForItsLock(t *testing.T) {
 	}
 	timer := time.AfterFunc(100*time.Millisecond, release)
 	defer timer.Stop()
-	if _, err := f.sched.runBackupForJob(context.Background(), mustJob(t, f.store, "job_busy")); err != nil {
+	if _, err = f.sched.runBackupForJob(context.Background(), mustJob(t, f.store, "job_busy")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if !slices.Equal(f.dumped, []string{"a", "b"}) {
