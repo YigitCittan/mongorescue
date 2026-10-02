@@ -1,0 +1,56 @@
+name: SSO
+
+# Single sign-on against a real identity provider: Keycloak in dev mode with the
+# realm of internal/integration/testdata, driven through its login form. Runs on
+# pushes to main and nightly, never on pull requests (the fake provider of
+# internal/auth/oidc/oidctest is the pull request gate), and is not a required check.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26'
+  MONGO_TOOLS_VERSION: '100.12.2'
+
+jobs:
+  integration-keycloak:
+    name: Integration (Keycloak SSO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Run the Keycloak single sign-on test
+        env:
+          MONGO_IMAGE: mongo:7.0
+          IT_PROVIDERS: keycloak
+          GOTESTFLAGS: -v -run TestKeycloakSingleSignOn
+        run: ./scripts/test-integration-docker.sh

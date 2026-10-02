@@ -12,6 +12,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, an 8.0 replica set, MinIO and LocalStack | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
 | Large data | `TestThroughputAndMemory` with `MONGORESCUE_TEST_LARGE=1` | nightly, 03:00 UTC, on every MongoDB version | About 2 GiB streams through backup and restore with peak process memory below 256 MiB; throughput is reported. |
+| Single sign-on | Unit: `internal/auth/oidc` against the fake provider `oidctest`, `internal/auth`, `internal/server`. Integration: `TestKeycloakSingleSignOn` | unit tests on every push and pull request; Keycloak in the job "Integration (Keycloak SSO)" on pushes to `main` and nightly (not required) | Forged, replayed, misdirected and stale tokens and states are refused (the full list is in [design/oidc.md](design/oidc.md#tests)); a real Keycloak sign-in through its login form maps groups to roles, applies the domain filter and logs out at the provider, without tokens in logs or the audit log. |
 
 ## What the integration suite proves
 
@@ -40,13 +41,13 @@ make test-race                  # unit tests
 make test-integration-docker    # integration suite against disposable containers
 ```
 
-`make test-integration-docker` needs Docker, curl, Go and the MongoDB Database Tools (100.3 or newer) on `PATH`. It starts MongoDB with a random root password, MinIO and LocalStack on random loopback ports and removes them afterwards. Knobs:
+`make test-integration-docker` needs Docker, curl, Go and the MongoDB Database Tools (100.3 or newer) on `PATH`. It starts MongoDB with a random root password, MinIO, LocalStack and Keycloak (dev mode, with the test realm of `internal/integration/testdata/keycloak-realm.json`) on random loopback ports and removes them afterwards. Knobs:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `MONGO_IMAGE` | `mongo:7` | Server image, e.g. `mongo:5.0` or `mongo:8.0` |
 | `MONGO_TOPOLOGY` | `standalone` | `replset` starts a single-node replica set (keyfile, `rs.initiate`, `directConnection=true`) |
-| `IT_PROVIDERS` | `minio localstack` | S3 emulators to start (`none` for local disk only) |
+| `IT_PROVIDERS` | `minio localstack keycloak` | Services to start: the S3 emulators and Keycloak for the single sign-on test (`none` for local disk only) |
 | `IT_RACE` | `1` | `0` runs without the race detector |
 | `GOTESTFLAGS` | | Extra `go test` flags, e.g. `-run TestRestoreFidelity -v` |
 | `MONGORESCUE_TEST_LARGE` | | `1` runs the large-data test with about 2 GiB |

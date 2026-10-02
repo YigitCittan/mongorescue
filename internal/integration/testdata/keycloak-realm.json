@@ -1,0 +1,83 @@
+{
+  "realm": "mongorescue",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 300,
+  "groups": [
+    { "name": "backup-admins" },
+    { "name": "backup-ops" }
+  ],
+  "clients": [
+    {
+      "clientId": "mongorescue",
+      "name": "MongoRescue integration tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "mongorescue-it-client-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["https://mongorescue.test/auth/oidc/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://mongorescue.test/"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "jane",
+      "enabled": true,
+      "email": "jane@corp.test",
+      "emailVerified": true,
+      "firstName": "Jane",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "jane-it-password-1", "temporary": false }],
+      "groups": ["backup-admins"],
+      "requiredActions": []
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@corp.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Operator",
+      "credentials": [{ "type": "password", "value": "bob-it-password-1", "temporary": false }],
+      "groups": ["backup-ops"],
+      "requiredActions": []
+    },
+    {
+      "username": "eve",
+      "enabled": true,
+      "email": "eve@other.test",
+      "emailVerified": true,
+      "firstName": "Eve",
+      "lastName": "Outsider",
+      "credentials": [{ "type": "password", "value": "eve-it-password-1", "temporary": false }],
+      "groups": ["backup-ops"],
+      "requiredActions": []
+    }
+  ]
+}
