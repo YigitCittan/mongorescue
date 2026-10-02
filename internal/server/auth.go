@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
@@ -93,7 +94,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			principal *auth.Principal
 			err       error
 		)
-		if key := apiKeyFromRequest(r); key != "" {
+		if key := presentedKey(r); key != "" {
 			principal, err = s.auth.AuthenticateAPIKey(r.Context(), key)
 		} else if isMetrics || isMCP {
 			// Prometheus and MCP clients use bearer tokens; sessions are for the
@@ -213,12 +214,22 @@ func (s *Server) sameOrAllowedOrigin(origin, host string) bool {
 	return strings.EqualFold(u.Host, host)
 }
 
-// apiKeyFromRequest extracts an API key from Authorization: Bearer or X-API-Key.
-func apiKeyFromRequest(r *http.Request) string {
+// keyHeader is the canonical form (http.CanonicalHeaderKey) of the X-API-Key header.
+const keyHeader = "X-Api-Key"
+
+// presentedKey extracts the key a client presents, from Authorization: Bearer or
+// X-API-Key. It is a generated 160-bit random key (or one imported from the deprecated
+// MONGORESCUE_API_KEY), never a password: auth compares it through its SHA-256 digest
+// or HMAC, see auth.HashToken. X-API-Key is read from the canonical header map entry,
+// which is what Header.Get does.
+func presentedKey(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); len(h) > len("Bearer ") && strings.EqualFold(h[:len("Bearer ")], "Bearer ") {
 		return strings.TrimSpace(h[len("Bearer "):])
 	}
-	return strings.TrimSpace(r.Header.Get("X-API-Key"))
+	if v := r.Header[keyHeader]; len(v) > 0 {
+		return strings.TrimSpace(v[0])
+	}
+	return ""
 }
 
 // clientIP returns the address used for login throttling. Forwarding headers are
@@ -259,39 +270,43 @@ func (s *Server) secureRequest(r *http.Request) bool {
 	return sec.TrustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// setSessionCookie issues the session cookie (HttpOnly, SameSite=Strict, Path=/).
+// sessionCookie builds the session cookie (HttpOnly, SameSite=Strict, Path=/). It is
+// the only place the cookie is constructed, so issuing and clearing it cannot drift.
+//
+// Secure follows the security.secure_cookies policy (secureRequest): by default it is
+// set whenever the request arrived over TLS, directly or through a trusted proxy
+// reporting https. It stays off only for plain-HTTP requests (the desktop app on
+// localhost, development setups), where the browser would drop a Secure cookie and
+// no login could succeed.
+func (s *Server) sessionCookie(r *http.Request, value string, expires time.Time, maxAge int) *http.Cookie {
+	c := &http.Cookie{ //nolint:gosec // G124: Secure is set below on TLS requests.
+		Name:     SessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	}
+	if s.secureRequest(r) {
+		c.Secure = true
+	}
+	return c
+}
+
+// setSessionCookie issues the session cookie. Max-Age is measured on the auth
+// service's clock, the one that set expires, so the two attributes always agree.
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
-	// Secure follows the security.secure_cookies policy: by default whenever the request
-	// arrived over TLS (directly or via a trusted proxy); plain-HTTP localhost setups
-	// must still work. Max-Age is measured on the auth service's clock, the one that
-	// set expires, so the two attributes always agree.
 	now := time.Now()
 	if s.auth != nil {
 		now = s.auth.Now()
 	}
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is decided per request.
-		Name:     SessionCookieName,
-		Value:    token,
-		Path:     "/",
-		Expires:  expires,
-		MaxAge:   int(expires.Sub(now).Seconds()),
-		HttpOnly: true,
-		Secure:   s.secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
-	})
+	http.SetCookie(w, s.sessionCookie(r, token, expires, int(expires.Sub(now).Seconds())))
 }
 
 // clearSessionCookie deletes the session cookie in the browser.
 func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is decided per request.
-		Name:     SessionCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   s.secureRequest(r),
-		SameSite: http.SameSiteStrictMode,
-	})
+	http.SetCookie(w, s.sessionCookie(r, "", time.Time{}, -1))
 }
 
 // decodeBody decodes a bounded JSON request body into v.
@@ -331,7 +346,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrUnauthenticated):
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 	default:
-		s.logger.Error("auth request failed", slog.Any("error", err))
+		s.logger.Error("auth request failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }
