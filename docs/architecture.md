@@ -76,13 +76,13 @@ flowchart TB
 | `internal/targets` | Storage targets: validation, keep-secret updates, probe tests, default target, one cached driver per target |
 | `internal/models` | Domain types: `Job`, `Connection`, `BackupRecord`, `RestoreRequest`, `RestoreRecord`, `VerifyPolicy`, ID validation |
 | `internal/auth` | Setup mode and setup code, users (bcrypt), sessions with CSRF tokens, login throttling, API keys and their scopes (`read` < `operator` < `admin`) |
-| `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, background runs, records and events; read models (`Status`, `Stats`) |
+| `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, restore preflights and post-restore verification (behind a `RestoreInspector` port), background runs, records and events; read models (`Status`, `Stats`) |
 | `internal/runs` | The run `Manager` (background runs under the application lifecycle, per-database concurrency keys) and the run `Registry` (active runs: cancellation with who and why, live progress, their log files) |
 | `internal/runlog` | Per-run log files under `<data_dir>/logs`: redacted, bounded lines streamed to disk, capped at 5 MiB with head and tail kept; tail reads and pruning |
 | `internal/audit` | The audit log of API key activity (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/mcp` | MCP delivery adapter (official Go SDK): tools, resources and prompts, the scope/rate-limit/audit middleware, the Streamable HTTP handler and the stdio bridge |
 | `internal/connections` | Managed MongoDB connections: validation, keep-secret updates, tests, database/collection discovery |
-| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups, checks the restore and restore test privileges and captures backup manifests (document counts and index specifications) |
+| `internal/mongoconn` | The only production user of the MongoDB Go driver: implements `connections.Prober`, lists collections for multi-collection backups, checks the restore and restore test privileges, the free disk space of a target and captures backup manifests (document counts, index specifications and the server version) |
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
 | `internal/backup` | Backup engine: runs `mongodump`, hashes, optionally encrypts, streams to storage, cleans up on failure |
 | `internal/restore` | Restore engine: safe-clone namespace mapping, verify-before-restore, decryption, runs `mongorestore` |
@@ -97,6 +97,7 @@ flowchart TB
 | `internal/metrics` | Prometheus metrics on a dedicated registry |
 | `internal/server` | REST API, authentication, scope (route → scope table) and CORS middleware, the `/mcp` mount with its Origin and Host checks, embedded dashboard serving |
 | `internal/redact` | Dependency-free helpers that scrub credentials from URIs and free text |
+| `internal/diskspace` | Free space of a local filesystem (`statfs`, `GetDiskFreeSpaceExW` on Windows) for restore preflights of a server on the same host |
 | `internal/mongouri` | Structural validation of MongoDB connection strings without the driver |
 | `internal/mongotools` | Helpers shared by the tool runners, chiefly passing the URI through a private `--config` file |
 | `internal/integration` | `integration`-tagged end-to-end tests against real tools, MongoDB and S3 providers |

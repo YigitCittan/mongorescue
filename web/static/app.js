@@ -1951,7 +1951,8 @@ function channelTypeLabel(type) {
 }
 
 function eventLabel(ev) {
-  return t(`notify.events.${String(ev).replace(".", "_")}`, String(ev));
+  const key = String(ev).replace(".", "_");
+  return t(`notify.events.${key}`, t(`restore_checks.event_${key}`, String(ev)));
 }
 
 function enabledBadge(enabled) {
@@ -2416,16 +2417,13 @@ function setupForms() {
   document.getElementById("restore-target-db").addEventListener("input", updateRestoreUsersRoles);
   onLanguageChange(() => updateRestoreUsersRoles());
   setupRestoreCollections();
+  setupRestorePreflight();
 
   document.getElementById("form-restore").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const backupID = getValue("restore-backup-id");
     const isSafeClone = document.getElementById("restore-safe-clone").checked;
     const targetDB = getValue("restore-target-db");
-    const dryRun = document.getElementById("restore-dry-run").checked;
     const dropTarget = document.getElementById("restore-drop-target").checked;
-    const verify = document.getElementById("restore-verify").checked;
-    const targetConnection = document.getElementById("restore-target-connection").value;
     const usersRoles = document.getElementById("restore-users-roles");
     const restoreUsersRoles = !isSafeClone && !usersRoles.disabled && usersRoles.checked;
 
@@ -2437,6 +2435,11 @@ function setupForms() {
     }
     const selected = restoreSelection();
     if (selected === null) return;
+    // A failed preflight blocks the restore until "Restore anyway" is ticked.
+    if (restorePreflightBlocks()) {
+      document.getElementById("restore-force").focus();
+      return;
+    }
     const dropConfirm = selected.length > 0
       ? tf("modal_restore.drop_confirm_selected", { list: selected.join(", ") })
       : t("modal_restore.drop_confirm");
@@ -2452,28 +2455,26 @@ function setupForms() {
       return;
     }
 
+    const body = restoreRequestBody(selected);
+    if (restorePreflightFailing() && document.getElementById("restore-force").checked) body.force = true;
+
     try {
       closeModal("modal-restore");
       const json = await apiJSON("/api/v1/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          backup_id: backupID,
-          safe_clone: isSafeClone,
-          confirm_in_place: confirmInPlace,
-          target_database: isSafeClone ? "" : targetDB,
-          dry_run: dryRun,
-          drop_target: dropTarget,
-          verify: verify,
-          ...(restoreUsersRoles ? { restore_users_and_roles: true } : {}),
-          ...(selected.length > 0 ? { selected_collections: selected } : {}),
-          ...(targetConnection ? { target_connection_id: targetConnection } : {})
-        })
+        body: JSON.stringify(body)
       });
       if (json.success) {
         const target = json.data && json.data.target_database ? json.data.target_database : "";
         showToast(tf("toasts.restore_started", { db: target }), "info");
         trackRestore(json.data);
+      } else if (json.data && Array.isArray(json.data.checks)) {
+        // Refused by the server's preflight (409): show its checks in the dialog again.
+        Object.assign(restorePreflight, { loading: false, result: json.data, error: "" });
+        openModal("modal-restore");
+        renderRestorePreflight();
+        showToast(json.error || t("toasts.restore_failed"), "error");
       } else {
         showToast(json.error || t("toasts.restore_failed"), "error");
       }
@@ -2871,9 +2872,12 @@ function openRestoreModal(backupID, sourceDB) {
   Array.from(select.options).forEach(opt => {
     if (opt.value && opt.value === backup.connection_id) opt.textContent = tf("conn.source_named", { name: opt.textContent });
   });
+  document.getElementById("restore-verify-restore").checked = true;
+  document.getElementById("restore-force").checked = false;
   updateRestoreMode(false);
   resetRestoreCollections(backupID);
   openModal("modal-restore");
+  resetRestorePreflight();
 }
 
 // Shows the in-place target + consent box when safe clone is off and keeps the
@@ -2888,9 +2892,183 @@ function updateRestoreMode(fromSafeCloneToggle) {
     document.getElementById("restore-verify").checked = verifyDefault(isSafeClone);
     if (isSafeClone) document.getElementById("restore-confirm-in-place").checked = false;
   }
-  const acked = document.getElementById("restore-confirm-in-place").checked;
-  document.getElementById("restore-submit").disabled = !isSafeClone && !acked;
+  updateRestoreSubmit();
   updateRestoreUsersRoles();
+}
+
+// Enables the submit button once an in-place restore is acknowledged and no failed
+// preflight check stands in the way (unless "Restore anyway" is ticked).
+function updateRestoreSubmit() {
+  const isSafeClone = document.getElementById("restore-safe-clone").checked;
+  const acked = document.getElementById("restore-confirm-in-place").checked;
+  const failing = restorePreflightFailing();
+  const forceWrap = document.getElementById("restore-force-wrap");
+  const force = document.getElementById("restore-force");
+  if (forceWrap) {
+    forceWrap.hidden = !failing;
+    if (!failing) force.checked = false;
+  }
+  document.getElementById("restore-submit").disabled = (!isSafeClone && !acked) || restorePreflightBlocks();
+}
+
+// Builds the body of a restore request (POST /api/v1/restore, and its preflight)
+// from the dialog; selected lists the chosen collections ([] = whole database).
+function restoreRequestBody(selected) {
+  const isSafeClone = document.getElementById("restore-safe-clone").checked;
+  const usersRoles = document.getElementById("restore-users-roles");
+  const targetConnection = document.getElementById("restore-target-connection").value;
+  return {
+    backup_id: getValue("restore-backup-id"),
+    safe_clone: isSafeClone,
+    confirm_in_place: !isSafeClone && document.getElementById("restore-confirm-in-place").checked,
+    target_database: isSafeClone ? "" : getValue("restore-target-db"),
+    dry_run: document.getElementById("restore-dry-run").checked,
+    drop_target: document.getElementById("restore-drop-target").checked,
+    verify: document.getElementById("restore-verify").checked,
+    verify_restore: document.getElementById("restore-verify-restore").checked,
+    ...(!isSafeClone && !usersRoles.disabled && usersRoles.checked ? { restore_users_and_roles: true } : {}),
+    ...(selected.length > 0 ? { selected_collections: selected } : {}),
+    ...(targetConnection ? { target_connection_id: targetConnection } : {})
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Restore dialog: preflight (go/no-go checks before the restore is started)
+// ---------------------------------------------------------------------------
+
+// The preflight of the restore dialog, re-run (debounced) whenever an option changes.
+// seq discards answers to older requests; result is the last summary
+// ({ ok, checks: [{ id, status, message }] }), error why none could be run.
+const restorePreflight = { seq: 0, timer: 0, loading: false, result: null, error: "" };
+const RESTORE_PREFLIGHT_DELAY_MS = 400;
+
+function setupRestorePreflight() {
+  const form = document.getElementById("form-restore");
+  // Options that do not change what the restore does to the target are ignored.
+  const ignored = new Set(["restore-force", "restore-verify-restore", "restore-verify", "restore-colls-search"]);
+  const changed = (e) => {
+    if (e.target && ignored.has(e.target.id)) return;
+    scheduleRestorePreflight();
+  };
+  form.addEventListener("change", changed);
+  form.addEventListener("input", changed);
+  ["restore-colls-all", "restore-colls-none"].forEach(id => {
+    document.getElementById(id).addEventListener("click", scheduleRestorePreflight);
+  });
+  document.getElementById("restore-force").addEventListener("change", updateRestoreSubmit);
+  onLanguageChange(() => renderRestorePreflight());
+}
+
+// Forgets the previous dialog's preflight and checks the new one.
+function resetRestorePreflight() {
+  clearTimeout(restorePreflight.timer);
+  Object.assign(restorePreflight, { seq: restorePreflight.seq + 1, timer: 0, loading: false, result: null, error: "" });
+  renderRestorePreflight();
+  scheduleRestorePreflight();
+}
+
+function scheduleRestorePreflight() {
+  clearTimeout(restorePreflight.timer);
+  restorePreflight.timer = setTimeout(runRestorePreflight, RESTORE_PREFLIGHT_DELAY_MS);
+}
+
+// restorePreflightFailing reports whether the last preflight has a failed check.
+function restorePreflightFailing() {
+  const r = restorePreflight.result;
+  return Boolean(r && r.ok === false);
+}
+
+// restorePreflightBlocks reports whether a failed check blocks the submit: dry runs
+// are never blocked, and "Restore anyway" overrides the checks.
+function restorePreflightBlocks() {
+  if (!restorePreflightFailing() || document.getElementById("restore-dry-run").checked) return false;
+  return !document.getElementById("restore-force").checked;
+}
+
+async function runRestorePreflight() {
+  restorePreflight.timer = 0;
+  const modal = document.getElementById("modal-restore");
+  if (!modal || !modal.classList.contains("open") || !getValue("restore-backup-id")) return;
+  const seq = ++restorePreflight.seq;
+  const selected = restoreSelection(true);
+  if (selected === null) {
+    // "Selected collections" without a selection yet: nothing to check.
+    Object.assign(restorePreflight, { loading: false, result: null, error: "" });
+    renderRestorePreflight();
+    return;
+  }
+  restorePreflight.loading = true;
+  renderRestorePreflight();
+  let result = null;
+  let error = "";
+  try {
+    const json = await apiJSON("/api/v1/restores/preflight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(restoreRequestBody(selected))
+    });
+    if (json.success && json.data && Array.isArray(json.data.checks)) result = json.data;
+    else error = json.error || t("restore_checks.preflight_unavailable");
+  } catch (err) {
+    error = err.message;
+  }
+  if (seq !== restorePreflight.seq) return;
+  Object.assign(restorePreflight, { loading: false, result, error });
+  renderRestorePreflight();
+}
+
+// Shows the go/no-go summary of the restore dialog's preflight.
+function renderRestorePreflight() {
+  const box = document.getElementById("restore-preflight");
+  if (!box) return;
+  const { loading, result, error } = restorePreflight;
+  box.hidden = !loading && !result && !error;
+  box.classList.remove("preflight-ok", "preflight-warn", "preflight-fail");
+  const list = document.getElementById("restore-preflight-list");
+  let summary = "";
+  if (result) {
+    const checks = result.checks || [];
+    const failed = checks.filter(c => c.status === "fail").length;
+    const warned = checks.filter(c => c.status === "warn").length;
+    summary = failed ? tf("restore_checks.preflight_blocked", { n: failed })
+      : warned ? tf("restore_checks.preflight_ready_warn", { n: warned })
+        : t("restore_checks.preflight_ready");
+    box.classList.add(failed ? "preflight-fail" : warned ? "preflight-warn" : "preflight-ok");
+    fillPreflightList(list, checks);
+  } else {
+    list.textContent = "";
+  }
+  if (error && !loading) summary = tf("restore_checks.preflight_error", { error });
+  if (loading) summary = summary ? `${summary} ${t("restore_checks.preflight_running")}` : t("restore_checks.preflight_running");
+  setText("restore-preflight-summary", summary);
+  updateRestoreSubmit();
+}
+
+// Fills list with one row per preflight check: a status badge, the check's name and
+// its message (server text, set as text).
+function fillPreflightList(list, checks) {
+  if (!list) return;
+  list.textContent = "";
+  for (const c of checks || []) {
+    const item = document.createElement("li");
+    item.className = "preflight-item";
+    const badge = htmlNode(preflightBadge(c.status)).firstElementChild;
+    if (badge) item.appendChild(badge);
+    const name = document.createElement("span");
+    name.className = "preflight-check";
+    name.textContent = t(`restore_checks.check_${c.id}`, String(c.id || ""));
+    const message = document.createElement("span");
+    message.className = "preflight-message";
+    message.textContent = c.message || "";
+    item.append(name, message);
+    list.appendChild(item);
+  }
+}
+
+// preflightBadge returns the status badge of a preflight check.
+function preflightBadge(status) {
+  const kind = status === "pass" ? "success" : status === "fail" ? "danger" : "warn";
+  return statusBadge(kind, t(`restore_checks.status_${status}`, String(status || "")));
 }
 
 // "Restore users and roles" is offered only for in-place restores into the backup's
@@ -3080,17 +3258,18 @@ function setVisibleRestoreCollections(on) {
 }
 
 // Returns the selected collection names, or null when "Selected collections" is on
-// and none is selected (after focusing the field to fix).
-function restoreSelection() {
+// and none is selected (after focusing the field to fix, unless quiet).
+function restoreSelection(quiet) {
   if (restoreCollMode() !== "selected") return [];
   if (restoreColls.loading) {
-    showToast(t("modal_restore.coll_loading"), "info");
+    if (!quiet) showToast(t("modal_restore.coll_loading"), "info");
     return null;
   }
   const names = restoreColls.manual
     ? parseList(getValue("restore-colls-manual"))
     : (restoreColls.items || []).map(c => c.name).filter(n => restoreColls.selected.has(n));
   if (names.length === 0) {
+    if (quiet) return null;
     const focus = restoreColls.manual ? document.getElementById("restore-colls-manual") : document.querySelector("#restore-colls-list input");
     if (focus) focus.focus();
     showToast(t("modal_restore.need_collections"), "error");

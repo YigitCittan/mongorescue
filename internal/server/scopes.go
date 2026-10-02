@@ -84,6 +84,9 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/restores":                    auth.ScopeRead,
 	"GET /api/v1/restores/databases":          auth.ScopeRead,
 	"POST /api/v1/restore":                    auth.ScopeOperator,
+	// A preflight applies the scope rules of the restore it checks (in-place and
+	// cross-connection need admin, enforced by the operations service).
+	"POST /api/v1/restores/preflight": auth.ScopeOperator,
 
 	// Run control. Cancelling an in-place restore needs admin (checked by the
 	// operations service, which knows the restore).

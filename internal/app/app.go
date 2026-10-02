@@ -431,6 +431,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Settings:    settingsSvc.Current,
 		Publisher:   bus,
 		Verifier:    integritySvc,
+		Inspector:   prober,
 		Audit:       auditSvc,
 		Logger:      logger,
 		Version:     o.version,

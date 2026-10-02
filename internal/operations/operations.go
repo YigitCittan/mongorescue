@@ -210,6 +210,10 @@ type Config struct {
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
 	// ErrUnavailable.
 	Verifier Verifier
+	// Inspector inspects the target server of restores: StartRestore runs a preflight
+	// with it and verifies restored databases. nil skips both (PreflightRestore then
+	// reports the server checks as not checked).
+	Inspector RestoreInspector
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Version is the build version reported by Status.
@@ -556,10 +560,97 @@ func runError(err error, busyMessage string) error {
 // which must be confirmed (models.ErrInPlaceNotConfirmed, an ErrInvalid) and needs a
 // principal with the admin scope in ctx (auth.ErrForbidden). Restoring into another
 // connection than the backup's (req.TargetConnectionID) needs admin too: an operator
-// may only safe-clone into the server the backup was taken from. Other expected failures:
-// ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired, ErrBusy
-// and ErrShuttingDown.
+// may only safe-clone into the server the backup was taken from.
+//
+// With an inspector configured, the checks of PreflightRestore run first and are
+// recorded on the restore (RestoreRecord.Preflight): a failed check refuses the
+// restore with a *PreflightError (ErrPreflightFailed) unless req.Force is set; dry
+// runs and warnings are never refused. With req.VerifyRestore, a completed restore is
+// compared with the backup's manifest (RestoreRecord.Verification); a failed
+// verification adds a warning and emits restore.verification_failed. Other expected
+// failures: ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired,
+// ErrBusy and ErrShuttingDown.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
+	plan, err := s.planRestore(ctx, req, false)
+	if err != nil {
+		return nil, err
+	}
+	req, source := plan.req, plan.source
+
+	record, err := s.cfg.Restore.Prepare(req, source)
+	if err != nil {
+		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
+	}
+	if s.cfg.Inspector != nil {
+		pre := s.preflight(ctx, req, source, record.TargetDatabase)
+		if !pre.OK && !req.Force && !req.DryRun {
+			return nil, &PreflightError{Result: pre}
+		}
+		record.Preflight, record.Forced = pre, !pre.OK && req.Force
+	}
+	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
+	if source.ConnectionID != "" && s.cfg.Connections != nil {
+		if src, getErr := s.cfg.Connections.Get(ctx, source.ConnectionID); getErr == nil {
+			record.SourceConnectionName = src.Name
+		}
+	}
+
+	release, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
+	if err != nil {
+		return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
+	}
+	snapshot := *record
+	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
+		release()
+		return nil, fmt.Errorf("save restore record: %w", err)
+	}
+
+	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
+	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
+		defer release()
+		defer tracked.End()
+		runCtx = tracked.Bind(runCtx)
+		final, runErr := s.cfg.Restore.Execute(runCtx, req, source, record)
+		if runErr == nil && req.VerifyRestore {
+			s.verifyRestore(runCtx, req, source, final)
+		}
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
+		defer cancel()
+		if saveErr := s.cfg.Store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
+			s.logger.Error("failed to persist restore metadata record",
+				logsafe.Attr("restore_id", final.ID),
+				logsafe.Error(saveErr),
+			)
+		}
+		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
+		if ve, ok := events.RestoreVerificationEvent(final); ok {
+			s.publish(persistCtx, ve)
+		}
+	}); err != nil {
+		tracked.End()
+		release()
+		snapshot.Status = models.RestoreStatusFailed
+		snapshot.ErrorMessage = "restore not started: " + err.Error()
+		if saveErr := s.cfg.Store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
+			s.logger.Error("failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
+		}
+		return nil, runError(err, "")
+	}
+	return &snapshot, nil
+}
+
+// restorePlan is a validated restore request, resolved to its target connection, and
+// the backup it restores.
+type restorePlan struct {
+	req    models.RestoreRequest
+	source *models.BackupRecord
+}
+
+// planRestore validates req, applies the scope rules of StartRestore, loads the source
+// backup and resolves the target connection into req. A preflight (forPreflight)
+// leaves users-and-roles and decryption problems to its checks instead of refusing
+// the request.
+func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, forPreflight bool) (*restorePlan, error) {
 	if req.BackupID == "" {
 		return nil, public("backup_id required", ErrInvalid)
 	}
@@ -567,7 +658,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		return nil, invalid(err)
 	}
 	// Users and roles are restored only in place; the backup is checked below.
-	if err := req.ValidateUsersAndRoles(nil); errors.Is(err, models.ErrUsersAndRolesNotAllowed) {
+	if err := req.ValidateUsersAndRoles(nil); !forPreflight && errors.Is(err, models.ErrUsersAndRolesNotAllowed) {
 		return nil, invalid(err)
 	}
 	// Client-supplied names are checked; the backup's own database name is not, so
@@ -596,7 +687,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		return nil, fmt.Errorf("load source backup: %w", err)
 	}
-	if err = req.ValidateUsersAndRoles(source); err != nil {
+	if err = req.ValidateUsersAndRoles(source); err != nil && !forPreflight {
 		return nil, invalid(err)
 	}
 
@@ -627,57 +718,10 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = target.ID, target.Name, target.URI
 
 	// Key material is checked synchronously so the client learns about it immediately.
-	if (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {
+	if !forPreflight && (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {
 		return nil, fmt.Errorf("%w: backup %s is encrypted; %s", ErrKeyRequired, source.ID, restore.KeyRequiredHint)
 	}
-
-	record, err := s.cfg.Restore.Prepare(req, source)
-	if err != nil {
-		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
-	}
-	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
-	if source.ConnectionID != "" && s.cfg.Connections != nil {
-		if src, getErr := s.cfg.Connections.Get(ctx, source.ConnectionID); getErr == nil {
-			record.SourceConnectionName = src.Name
-		}
-	}
-
-	release, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
-	if err != nil {
-		return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
-	}
-	snapshot := *record
-	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
-		release()
-		return nil, fmt.Errorf("save restore record: %w", err)
-	}
-
-	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
-	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
-		defer release()
-		defer tracked.End()
-		runCtx = tracked.Bind(runCtx)
-		final, runErr := s.cfg.Restore.Execute(runCtx, req, source, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		if saveErr := s.cfg.Store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist restore metadata record",
-				slog.String("restore_id", final.ID),
-				slog.Any("error", saveErr),
-			)
-		}
-		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
-	}); err != nil {
-		tracked.End()
-		release()
-		snapshot.Status = models.RestoreStatusFailed
-		snapshot.ErrorMessage = "restore not started: " + err.Error()
-		if saveErr := s.cfg.Store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
-			s.logger.Error("failed to persist abandoned restore record", slog.String("restore_id", snapshot.ID), slog.Any("error", saveErr))
-		}
-		return nil, runError(err, "")
-	}
-	return &snapshot, nil
+	return &restorePlan{req: req, source: source}, nil
 }
 
 // ResolveConnection returns connection id with its full URI. It returns

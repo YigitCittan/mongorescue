@@ -32,6 +32,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.RetentionDeleted:          {"🗑️", "Backup deleted by retention"},
 	events.JobDatabasesAdded:         {"➕", "New databases added to a job"},
 	events.MetadataBackupFailed:      {"❌", "Metadata backup failed"},
+	events.RestoreVerificationFailed: {"⚠️", "Restore verification failed"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -66,7 +67,7 @@ func Render(e events.Event) Message {
 		}
 	case events.JobDatabasesAdded:
 		target = fmt.Sprintf("job %s now also backs up %d database(s)", e.JobID, len(e.Databases))
-	case events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled:
+	case events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled, events.RestoreVerificationFailed:
 		target = fmt.Sprintf("backup %s → db %s", e.BackupID, e.Database)
 	case events.NotificationTest:
 		target = "MongoRescue notification channel check"

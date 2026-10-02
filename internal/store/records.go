@@ -25,11 +25,12 @@ const (
 			retry_of = excluded.retry_of, size_bytes = excluded.size_bytes, phases = excluded.phases,
 			run_id = excluded.run_id, data = excluded.data`
 
-	upsertRestoreSQL = `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, phases, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	upsertRestoreSQL = `INSERT INTO restores (id, backup_id, source_database, target_database, status, started_at, phases, verification, data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET backup_id = excluded.backup_id, source_database = excluded.source_database,
 			target_database = excluded.target_database, status = excluded.status,
-			started_at = excluded.started_at, phases = excluded.phases, data = excluded.data`
+			started_at = excluded.started_at, phases = excluded.phases, verification = excluded.verification,
+			data = excluded.data`
 )
 
 // SaveJob creates or updates a scheduled backup job. It sets CreatedAt (when zero) and
@@ -241,9 +242,16 @@ func putRestore(ctx context.Context, e execer, record *models.RestoreRecord) err
 	if err != nil {
 		return err
 	}
+	// The verification column mirrors data.verification; NULL when none ran.
+	var verification any
+	if stored.Verification != nil {
+		if verification, err = encode(stored.Verification); err != nil {
+			return err
+		}
+	}
 	if _, err := e.ExecContext(ctx, upsertRestoreSQL,
 		record.ID, record.BackupID, record.SourceDatabase, record.TargetDatabase,
-		string(record.Status), timeKey(record.StartedAt), phases, data); err != nil {
+		string(record.Status), timeKey(record.StartedAt), phases, verification, data); err != nil {
 		return fmt.Errorf("store: save restore record %s: %w", record.ID, err)
 	}
 	return nil

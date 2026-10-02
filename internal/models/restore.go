@@ -125,6 +125,17 @@ type RestoreRequest struct {
 	// mongorestore starts. When nil, the server's VerifyPolicy decides.
 	Verify *bool `json:"verify,omitempty"`
 
+	// VerifyRestore, when true, compares the restored database with the manifest
+	// captured at backup time once the restore succeeded: per collection, the document
+	// count and the indexes (see RestoreRecord.Verification). It is off when omitted,
+	// which keeps API clients of earlier releases unchanged; the dashboard turns it on.
+	// A failed verification keeps the restore completed and adds a warning.
+	VerifyRestore bool `json:"verify_restore,omitempty"`
+
+	// Force starts the restore although its preflight failed (see PreflightResult).
+	// Warnings never block a restore; Force only overrides failed checks.
+	Force bool `json:"force,omitempty"`
+
 	// CloneDatabase, when set, names the safe clone instead of the default
 	// <db>_rescue_<timestamp> (automated restore tests restore into
 	// <db>_rescue_verify_<timestamp>). It only applies to safe-clone restores and is
@@ -279,6 +290,18 @@ type RestoreRecord struct {
 
 	// Phases holds the timestamps of the run's phases.
 	Phases RunPhases `json:"phases,omitzero"`
+
+	// Preflight is the go/no-go summary of the checks that ran before the restore
+	// started; nil when none ran (restores of earlier releases, restore tests).
+	Preflight *PreflightResult `json:"preflight,omitempty"`
+
+	// Forced reports that the restore was started with "force": true although a
+	// preflight check failed.
+	Forced bool `json:"forced,omitempty"`
+
+	// Verification is the comparison of the restored database with the backup's
+	// manifest (RestoreRequest.VerifyRestore); nil when it was not requested.
+	Verification *RestoreVerification `json:"verification,omitempty"`
 
 	// Progress is the live progress of a running restore. It is filled in API
 	// responses only and never stored.

@@ -3285,3 +3285,61 @@ fieldset.is-disabled .collections-box {
   margin: 0 0 0 6px;
   vertical-align: middle;
 }
+
+/* --------------------------------------------------------------------------
+   Restore preflight (restore dialog and restore details)
+   -------------------------------------------------------------------------- */
+.preflight {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.preflight-warn {
+  border-color: var(--warn);
+}
+
+.preflight-fail {
+  border-color: var(--danger);
+}
+
+.preflight-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.preflight-head .detail-heading {
+  margin: 0;
+}
+
+.preflight-summary {
+  font-size: 13px;
+}
+
+.preflight-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.preflight-item {
+  display: grid;
+  grid-template-columns: auto minmax(8em, max-content) 1fr;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.preflight-message {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.preflight .check {
+  margin-top: 10px;
+}

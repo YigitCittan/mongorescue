@@ -173,6 +173,11 @@ type BackupRecord struct {
 	// HasManifest reports that a manifest was captured for this backup.
 	HasManifest bool `json:"has_manifest,omitempty"`
 
+	// ServerVersion is the MongoDB version (buildInfo) of the server the backup was
+	// taken from, recorded with the manifest; empty for backups of earlier releases
+	// and when it could not be read. Restore preflights compare it with the target.
+	ServerVersion string `json:"server_version,omitempty"`
+
 	// Pinned puts the backup on legal hold: retention never deletes it, and it can
 	// only be deleted after it is unpinned.
 	Pinned bool `json:"pinned,omitempty"`

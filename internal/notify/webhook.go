@@ -35,6 +35,7 @@ const (
 //	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|restore.succeeded|
 //	                                     // restore.failed|restore.cancelled|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
+//	                                     // restore.verification_failed|
 //	                                     // storage.drift_detected|retention.deleted|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs

@@ -64,7 +64,9 @@ The test never writes to the source database: the temporary name always differs 
 
 ### Manifest
 
-Every backup captures a manifest through the MongoDB driver: per collection (views and `system.*` collections excluded) the `estimatedDocumentCount` and the index specifications, once before and once after the dump, so the count is a range when the collection changed while it was dumped. A manifest that cannot be captured (missing privileges, a timeout of two minutes) only logs a warning; restore tests of such a backup restore it and note that counts and indexes were not compared. Manifests are stored apart from the backup record (the record says `has_manifest`) and deleted with it.
+Every backup captures a manifest through the MongoDB driver: per collection (views and `system.*` collections excluded) the `estimatedDocumentCount` and the index specifications, once before and once after the dump, so the count is a range when the collection changed while it was dumped. A manifest that cannot be captured (missing privileges, a timeout of two minutes) only logs a warning; restore tests of such a backup restore it and note that counts and indexes were not compared. Manifests are stored apart from the backup record (the record says `has_manifest`) and deleted with it. The same capture records the source server's version (`server_version` on the backup), which [restore preflights](api.md#restore-preflight) compare with the target's.
+
+Any restore can be compared with its backup's manifest too: `"verify_restore": true` (on by default in the dashboard) checks the restored database itself once the restore completed, without a temporary database. See [restore verification](api.md#restore-verification).
 
 ## Retention
 

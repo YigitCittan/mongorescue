@@ -173,6 +173,59 @@ curl -s -X POST http://localhost:8080/api/v1/restore \
 
 Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are always verified first (`verify` and the policy apply to safe clones only). A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started.
 
+### Restore preflight
+
+`POST /api/v1/restores/preflight` (operator scope) takes the body of a restore request and answers the go/no-go summary without starting anything:
+
+```json
+{
+  "ok": false,
+  "checks": [
+    {"id": "connection", "status": "pass", "message": "connected to prod (MongoDB 7.0.14)"},
+    {"id": "encryption", "status": "pass", "message": "the backup is not encrypted"},
+    {"id": "server_version", "status": "warn", "message": "the backup's server version is unknown (backups of earlier releases do not record it); the target runs MongoDB 7.0.14"},
+    {"id": "target_database", "status": "pass", "message": "restores into the new database shop_rescue_20261002_120000; existing data is untouched"},
+    {"id": "privileges", "status": "pass", "message": "the user of connection prod may restore into shop_rescue_20261002_120000"},
+    {"id": "disk_space", "status": "fail", "message": "the target has 120.0 MiB free, less than the 2.1 GiB archive"},
+    {"id": "collections", "status": "pass", "message": "a safe clone restores into a new database; no existing collection is replaced"},
+    {"id": "users_and_roles", "status": "pass", "message": "users and roles are not restored"}
+  ]
+}
+```
+
+`status` is `pass`, `warn` or `fail`; `ok` is `false` when a check failed. The checks, in this order:
+
+| ID | Checks |
+| :--- | :--- |
+| `connection` | The target server answers (`fail` otherwise; the server checks below are then `warn` "not checked"). |
+| `encryption` | An encrypted backup has a decryption key configured. |
+| `server_version` | The target's MongoDB version against the version recorded on the backup (`server_version`, read with `buildInfo` while the manifest is captured; backups of earlier releases have none and warn "unknown"). An older major version fails, a newer major version or an older release of the same major version warns. |
+| `target_database` | Whether the target database exists; for a safe clone the clone name must be free (two restores of a database within the same second share one). |
+| `privileges` | The connection's user holds `createCollection`, `createIndex` and `insert` on the target database (`connectionStatus`), plus `dropCollection` for an in-place restore with `drop_target`; missing user administration actions for `restore_users_and_roles` only warn. |
+| `disk_space` | The archive size against the free space of the target server's data filesystem, from `dbStats` (`fsTotalSize - fsUsedSize`) or, for a server on the same host, from the file system of its `dbPath`. Less free space than the archive fails; less than twice (uncompressed) or four times (compressed or unknown) the archive warns; unknown free space warns. |
+| `collections` | For an in-place restore, the existing collections the restore writes into (from the selection, the backup's manifest or its collection filter, against `listCollections`): dropped and replaced with `drop_target`, otherwise documents are added. Listed as a warning. |
+| `users_and_roles` | `restore_users_and_roles` against the backup (fails where `POST /api/v1/restore` answers `400`); a valid request warns that the database's users and roles are replaced. |
+
+A preflight applies the scope rules of the restore it checks: an in-place or cross-connection preflight needs admin. `confirm_in_place` is not needed to ask (it is still needed to start the restore). Dry runs need neither privileges nor space.
+
+`POST /api/v1/restore` runs the same checks before it starts and stores them on the restore record (`preflight`). A failed check refuses the restore with `409 Conflict`, the checks in `data` and the failed ones in `error`; send `"force": true` to restore anyway (the record then has `"forced": true`). Warnings never block, and dry runs are never refused. The dashboard runs the preflight while the restore dialog's options change and shows *Restore anyway* when a check failed.
+
+### Restore verification
+
+`"verify_restore": true` compares the restored database with the manifest the backup captured (per collection: the document count range and the indexes) once the restore completed, like an [automated restore test](verification.md#automated-restore-tests) does with a temporary database. It is off when omitted, so API clients of earlier releases are unchanged; the dashboard turns it on by default. Only the restored collections are compared: the selection of a selective restore, and for an in-place restore only the collections in the backup (others in the target are ignored). An in-place restore without `drop_target` adds documents to the ones already there, so a larger count is a note, not a mismatch. The result is stored on the record:
+
+```json
+"verification": {
+  "status": "failed",
+  "mismatches": ["collection orders: 9 documents restored, 10 expected"],
+  "notes": [],
+  "collections": 2,
+  "checked_at": "2026-10-02T12:00:41Z"
+}
+```
+
+`status` is `passed`, `failed` or `skipped` (a dry run, a backup without a manifest, a target that could not be inspected; `notes` says why). A failed verification keeps the restore `completed`, adds a warning to it and publishes `restore.verification_failed` (selectable in notification rules): the data is applied, but it does not match what the backup recorded. The dashboard shows the result in the restore details.
+
 ### Selective restores
 
 `selected_collections` restores only the named collections of the backup (one `--nsInclude` each, with `*` and `\` escaped, so a name always means exactly that collection); omitted or empty, the whole database is restored. The restore record repeats the selection in `selected_collections`. With `drop_target`, `mongorestore` drops each collection right before restoring it, so only the selected collections are dropped in the target; its other collections are kept. A view is restored from its definition and reads from its source collection (`view_on`), which is not restored with it unless it is selected too.

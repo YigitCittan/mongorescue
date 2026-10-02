@@ -86,8 +86,14 @@ func (e *Engine) finishManifest(ctx context.Context, uri string, opts models.Bac
 	}
 	if after := e.captureManifest(ctx, uri, opts); after != nil {
 		before.MergeCounts(after)
+		if before.ServerVersion == "" {
+			before.ServerVersion = after.ServerVersion
+		}
 	}
 	record.Manifest, record.HasManifest = before, true
+	// The source server's version travels with the manifest (one connection less);
+	// restore preflights compare it with the target's.
+	record.ServerVersion = before.ServerVersion
 }
 
 // shouldVerify resolves the post-upload verification of a run with opts.

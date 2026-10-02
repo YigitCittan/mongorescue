@@ -63,6 +63,9 @@ type Manifest struct {
 	CapturedAt time.Time `json:"captured_at"`
 	// Collections lists the collections of the backup, sorted by name.
 	Collections []CollectionManifest `json:"collections"`
+	// ServerVersion is the MongoDB version (buildInfo) of the server the manifest was
+	// read from; empty when it could not be read. It never takes part in comparisons.
+	ServerVersion string `json:"server_version,omitempty"`
 }
 
 // CollectionManifest describes one collection of a Manifest.
