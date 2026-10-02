@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/events"
 )
 
 // Webhook protocol constants.
@@ -83,6 +85,12 @@ type WebhookPayload struct {
 	Missing int `json:"missing,omitempty"`
 	// Detail is a short redacted explanation (a retention rule, a drop failure).
 	Detail string `json:"detail,omitempty"`
+	// RunID is the job run of a backup event.
+	RunID string `json:"run_id,omitempty"`
+	// Run summarises a whole job run (its databases' outcomes).
+	Run *events.RunSummary `json:"run,omitempty"`
+	// Databases names the databases of a job.databases_added event.
+	Databases []string `json:"databases,omitempty"`
 	// Subject is the rendered one-line summary.
 	Subject string `json:"subject"`
 	// Text is the rendered human-readable body.
@@ -110,6 +118,9 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 		Orphans:         e.Orphans,
 		Missing:         e.Missing,
 		Detail:          e.Detail,
+		RunID:           e.RunID,
+		Run:             e.Run,
+		Databases:       e.Databases,
 		Subject:         msg.Subject,
 		Text:            msg.Body,
 	}
