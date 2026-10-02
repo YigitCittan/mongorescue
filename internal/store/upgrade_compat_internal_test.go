@@ -628,6 +628,32 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 14,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			assertChecksumsRecorded(t, s)
+		},
+	},
+}
+
+// assertChecksumsRecorded fails unless every applied migration carries the
+// checksum of its embedded SQL.
+func assertChecksumsRecorded(t *testing.T, s *SQLiteStore) {
+	t.Helper()
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		var got string
+		if err := s.db.QueryRow("SELECT checksum FROM schema_migrations WHERE version = ?", m.version).Scan(&got); err != nil {
+			t.Fatalf("checksum of %s: %v", m.name, err)
+		}
+		if got != m.checksum {
+			t.Errorf("checksum of %s = %q; want %q", m.name, got, m.checksum)
+		}
+	}
 }
 
 func findAudit(t *testing.T, s *SQLiteStore, tool string) *audit.Entry {
@@ -663,7 +689,7 @@ func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
 			break
 		}
 		f.exec(t, m.sql)
-		f.exec(t, "INSERT INTO schema_migrations VALUES (?, ?, ?)", m.version, m.name, rfc(time.Duration(m.version)*time.Hour))
+		f.exec(t, "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", m.version, m.name, rfc(time.Duration(m.version)*time.Hour))
 		for _, step := range compatSteps {
 			if step.version == m.version {
 				step.seed(t, f)
@@ -803,7 +829,7 @@ func TestNewerSchemaIsRefusedUntouched(t *testing.T) {
 		if _, err = db.Exec(m.sql); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.Exec("INSERT INTO schema_migrations VALUES (?, ?, ?)", m.version, m.name, "x"); err != nil {
+		if _, err = db.Exec("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", m.version, m.name, "x"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -811,7 +837,7 @@ func TestNewerSchemaIsRefusedUntouched(t *testing.T) {
 		"CREATE TABLE future_things (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL) STRICT",
 		"INSERT INTO future_things VALUES ('f1', '{}')",
 		"ALTER TABLE backups ADD COLUMN future_column TEXT NOT NULL DEFAULT 'x'",
-		fmt.Sprintf("INSERT INTO schema_migrations VALUES (%d, '%04d_future', 'x')", latest+1, latest+1),
+		fmt.Sprintf("INSERT INTO schema_migrations (version, name, applied_at) VALUES (%d, '%04d_future', 'x')", latest+1, latest+1),
 		"DELETE FROM settings WHERE key = 'secrets_format'",
 	} {
 		if _, err = db.Exec(q); err != nil {

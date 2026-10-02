@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -22,9 +24,16 @@ var migrationFiles embed.FS
 
 // migration is one embedded schema migration.
 type migration struct {
-	version int
-	name    string
-	sql     string
+	version  int
+	name     string
+	sql      string
+	checksum string // hex SHA-256 of sql
+}
+
+// migrationChecksum returns the checksum recorded for a migration's SQL.
+func migrationChecksum(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // loadMigrations parses the embedded migrations, sorted by version.
@@ -50,7 +59,7 @@ func loadMigrations() ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store: read migration %q: %w", name, err)
 		}
-		list = append(list, migration{version: version, name: strings.TrimSuffix(name, ".sql"), sql: string(body)})
+		list = append(list, migration{version: version, name: strings.TrimSuffix(name, ".sql"), sql: string(body), checksum: migrationChecksum(body)})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].version < list[j].version })
 	return list, nil
@@ -80,6 +89,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	if latest := migrations[len(migrations)-1].version; current > latest {
 		return fmt.Errorf("%w: database is at version %d, this binary knows up to %d", ErrSchemaTooNew, current, latest)
 	}
+	// Refuse edited migrations before anything is written.
+	if err := s.verifyMigrationChecksums(ctx, migrations); err != nil {
+		return err
+	}
 
 	for _, m := range migrations {
 		if m.version <= current {
@@ -99,8 +112,19 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 				return fmt.Errorf("store: apply migration %s: %w", m.name, err)
 			}
-			if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-				m.version, m.name, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			hasChecksum, err := checksumColumnExists(ctx, tx)
+			if err != nil {
+				return err
+			}
+			appliedAt := time.Now().UTC().Format(time.RFC3339Nano)
+			if hasChecksum {
+				_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)",
+					m.version, m.name, appliedAt, m.checksum)
+			} else {
+				_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+					m.version, m.name, appliedAt)
+			}
+			if err != nil {
 				return fmt.Errorf("store: record migration %s: %w", m.name, err)
 			}
 			applied = true
@@ -114,5 +138,77 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 				slog.Int("version", m.version), slog.String("name", m.name), slog.String("path", s.path))
 		}
 	}
+	return s.backfillMigrationChecksums(ctx, migrations)
+}
+
+// checksumColumnExists reports whether schema_migrations has its checksum column,
+// added by migration 0014.
+func checksumColumnExists(ctx context.Context, q queryer) (bool, error) {
+	var n int
+	if err := q.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM pragma_table_info('schema_migrations') WHERE name = 'checksum'").Scan(&n); err != nil {
+		return false, fmt.Errorf("store: inspect schema_migrations: %w", err)
+	}
+	return n > 0, nil
+}
+
+// verifyMigrationChecksums compares the checksum recorded for every applied
+// migration with the SQL embedded in this binary. Rows without a checksum (applied
+// before migration 0014 and not yet backfilled) are skipped. A mismatch, or an
+// applied version this binary does not embed, returns ErrMigrationChanged.
+func (s *SQLiteStore) verifyMigrationChecksums(ctx context.Context, migrations []migration) error {
+	hasChecksum, err := checksumColumnExists(ctx, s.db)
+	if err != nil || !hasChecksum {
+		return err
+	}
+	embedded := make(map[int]migration, len(migrations))
+	for _, m := range migrations {
+		embedded[m.version] = m
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return fmt.Errorf("store: read applied migrations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			version        int
+			name, recorded string
+		)
+		if err = rows.Scan(&version, &name, &recorded); err != nil {
+			return fmt.Errorf("store: read applied migrations: %w", err)
+		}
+		m, ok := embedded[version]
+		if !ok {
+			return fmt.Errorf("%w: applied migration %s (version %d) is not part of this binary", ErrMigrationChanged, name, version)
+		}
+		if recorded != "" && recorded != m.checksum {
+			return fmt.Errorf("%w: migration %s was applied with checksum %s but this binary embeds %s; "+
+				"released migrations must never be edited, run the MongoRescue release that applied it or restore the original file",
+				ErrMigrationChanged, m.name, recorded, m.checksum)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("store: read applied migrations: %w", err)
+	}
 	return nil
+}
+
+// backfillMigrationChecksums records the embedded checksum for applied migrations
+// that have none: rows written before migration 0014 added the column. It trusts
+// the SQL embedded in the running binary, which applied or inherited them.
+func (s *SQLiteStore) backfillMigrationChecksums(ctx context.Context, migrations []migration) error {
+	hasChecksum, err := checksumColumnExists(ctx, s.db)
+	if err != nil || !hasChecksum {
+		return err
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, m := range migrations {
+			if _, err := tx.ExecContext(ctx, "UPDATE schema_migrations SET checksum = ? WHERE version = ? AND checksum = ''",
+				m.checksum, m.version); err != nil {
+				return fmt.Errorf("store: record checksum of migration %s: %w", m.name, err)
+			}
+		}
+		return nil
+	})
 }

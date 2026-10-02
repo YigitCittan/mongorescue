@@ -24,6 +24,11 @@ var (
 	// ErrSchemaTooNew is returned when the database was migrated by a newer MongoRescue
 	// release than the running one; downgrading the schema is not supported.
 	ErrSchemaTooNew = errors.New("store: database schema is newer than this binary supports")
+	// ErrMigrationChanged is returned when a migration applied to the database no
+	// longer matches the SQL embedded in this binary (its recorded SHA-256 checksum
+	// differs), or an applied migration is missing from the binary. The store is not
+	// opened and nothing is written.
+	ErrMigrationChanged = errors.New("store: an applied schema migration has changed")
 	// ErrNoSecretBox is returned by operations on encrypted fields when the store was
 	// opened without WithSecretBox.
 	ErrNoSecretBox = errors.New("store: no secret key configured for encrypted fields")
