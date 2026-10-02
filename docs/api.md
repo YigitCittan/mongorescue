@@ -17,9 +17,9 @@ Every API key has a scope, chosen when it is created (`read` when omitted); sess
 
 | Scope | Allowed |
 | :--- | :--- |
-| `read` | Every `GET` route except `GET /api/v1/audit` and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
+| `read` | Every `GET` route except the audit logs (`GET /api/v1/audit`, `/api/v1/audit/export`, `/api/v1/audit/verify`, `/api/v1/audit/activity`) and `GET /api/v1/users`, plus `/metrics` and the MCP endpoint (read tools only) |
 | `operator` | `read` plus `POST /api/v1/backups`, `POST /api/v1/backups/{id}/retry`, `POST /api/v1/jobs/{id}/run`, `POST /api/v1/jobs/{id}/cancel`, `POST /api/v1/restore` into a safe clone on the backup's own connection, and cancelling backups and restores that are not in place (`POST /api/v1/backups/{id}/cancel`, `POST /api/v1/restores/{id}/cancel`), `POST /api/v1/backups/{id}/verify`, `.../pin` and `POST /api/v1/jobs/{id}/restore-test`, plus the MCP action tools |
-| `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit log |
+| `admin` | Everything: deletions, in-place and cross-connection restores, jobs, connections, storage targets, notifications, settings, users (including the user list), API keys and the audit logs |
 
 The recovery kit (`POST /api/v1/recovery-kit`) is refused to every API key, `admin` included: it needs a signed-in user who confirms their password. An in-place restore (`"safe_clone": false` or a `target_database`) and a restore into another connection than the backup's (`target_connection_id`) need `admin` even though the route itself needs `operator`, and so does cancelling a running in-place restore (it may leave the target partially restored). Keys created before scopes existed (and a key imported from `MONGORESCUE_API_KEY`) are `admin` keys.
 
@@ -46,7 +46,10 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `PUT` | `/api/v1/users/{id}/password` | `{current_password, new_password}` (current required for your own account) | 200 | 400, 403 wrong current password, 404 |
 | `GET` / `POST` | `/api/v1/api-keys` | List keys / create `{name, scope}` (`scope`: `read` (default), `operator` or `admin`) → `{api_key, key}` (plaintext only here) | 200 / 201 | 400 |
 | `DELETE` | `/api/v1/api-keys/{id}` | Revoke a key | 200 | 404 |
-| `GET` | `/api/v1/audit` | Recent API key activity (MCP calls and REST requests), newest first (`?limit=` 1-1000, default 200); admin only | 200 | 400, 403 |
+| `GET` | `/api/v1/audit` | The audit log of every action, newest first, with filters and pages ([details](#audit-log)); admin only | 200 | 400, 403 |
+| `GET` | `/api/v1/audit/export` | The audit log as JSON Lines, oldest first, same filters; admin only | 200 | 400, 403 |
+| `GET` | `/api/v1/audit/verify` | Verify the audit log's hash chain and report the first broken entry; admin only | 200 | 403 |
+| `GET` | `/api/v1/audit/activity` | Recent API key activity (MCP calls and REST requests), newest first (`?limit=` 1-1000, default 200); admin only ([details](#api-key-activity)) | 200 | 400, 403 |
 | `GET` / `POST` | `/api/v1/connections` | List / create `{name, uri, description}` | 200 / 201 | 400 |
 | `GET` / `PUT` | `/api/v1/connections/{id}` | Get / update a connection | 200 | 400, 404 |
 | `DELETE` | `/api/v1/connections/{id}` | Delete a connection | 200 | 404, 409 used by jobs |
@@ -138,6 +141,8 @@ Jobs and manual backups name a `connection_id`. Backup records keep `connection_
 curl -X PUT http://localhost:8080/api/v1/settings -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' -d '{"general": {"backup_timeout": "3h", "default_retention_days": 14}}'
 ```
+
+The `audit` group holds `retention_days` (default 365, 30 to 36500), `webhook_url` and `webhook_secret` ([audit.md](audit.md#forwarding)). Both are stored encrypted; `webhook_url` is shown only up to its host (`"https://siem.example.com/******"`, a bare origin unchanged) and `webhook_secret` as `"******"`. Sending either back as shown keeps the stored value, `""` removes it.
 
 To encrypt new backups with a fresh key pair, call `POST /api/v1/settings/encryption/generate-key`, store the returned `identity` safely, and send `{"encryption": {"enabled": true, "mode": "x25519", "recipients": ["<recipient>"], "identity": "<identity>"}}`. The passphrase of `passphrase` mode needs at least 16 characters.
 
@@ -552,7 +557,37 @@ Backup records carry the trust fields `verified_at`, `verification` (`ok`, `mism
 
 ## Audit log
 
-`GET /api/v1/audit` (admin) returns the most recent activity of API keys, newest first: [MCP](mcp.md) tool calls, resource reads (`tool` is `resources/read`, the URI in `arguments.resource`) and prompt requests (`prompts/get`), and REST requests to `/api/...` authenticated by an API key. Browser sessions and `/metrics` scrapes are not audited.
+`GET /api/v1/audit` (admin) returns the hash-chained audit log of every action: each mutating REST request from a session or an API key, sign-ins and failed sign-ins, sign-out, setup, the recovery kit and audit log downloads, MCP tool calls and system actions. Entries name the actor, the route pattern, the path parameters, the HTTP status and outcome, the client address and the user agent, never request bodies. The format, the hash chain, retention and forwarding are described in [audit.md](audit.md).
+
+| Parameter | Meaning |
+| :--- | :--- |
+| `actor` | User ID, user name, API key ID or API key name (exact) |
+| `actor_kind` | `user`, `api_key`, `system` or `anonymous` |
+| `action` | Part of the action, case-insensitive (`jobs`, `DELETE`, `MCP start_backup`) |
+| `result` | `ok`, `error`, `denied` or `rate_limited` |
+| `since`, `until` | RFC 3339 times; `since` inclusive, `until` exclusive |
+| `limit` | Page size, 1-1000 (default 100) |
+| `before_id` | Return entries older than this ID: the `next_before_id` of the previous page |
+
+```json
+{"events": [{"id": 1842, "time": "2026-10-02T12:30:45.123456789Z", "actor_kind": "api_key", "actor_user_id": "",
+  "actor_name": "", "actor_key_id": "key_9f8e7d6c5b4a3928", "actor_key_name": "ci", "action": "DELETE /api/v1/backups/{id}",
+  "targets": {"id": "bkp_shop_20260901_030000_1a2b3c4d"}, "status": 403, "outcome": "denied", "client_ip": "192.0.2.10",
+  "user_agent": "curl/8.7.1", "count": 1, "hash": "…"}],
+ "next_before_id": 1842,
+ "forwarding": {"enabled": true, "queued": 0, "sent": 1840, "failed": 2, "dropped": 0}}
+```
+
+`GET /api/v1/audit/export` takes the same filters (no paging) and streams every matching entry as one JSON object per line, oldest first (`application/x-ndjson`, as a `mongorescue-audit-<time>.jsonl` attachment). `GET /api/v1/audit/verify` walks the chain from its anchor and answers `{ok, checked, anchor, head_id, head_hash, broken_id, reason, verified_at}`; `ok` is `false` and `broken_id` names the first entry that was changed, removed or reordered when the chain is broken.
+
+```bash
+curl -s "http://localhost:8080/api/v1/audit/export?since=2026-10-01T00:00:00Z" -H "Authorization: Bearer $KEY" > audit.jsonl
+curl -s http://localhost:8080/api/v1/audit/verify -H "Authorization: Bearer $KEY"
+```
+
+### API key activity
+
+`GET /api/v1/audit/activity` (admin; `GET /api/v1/audit` before v0.15.0) returns the most recent activity of API keys, newest first: [MCP](mcp.md) tool calls, resource reads (`tool` is `resources/read`, the URI in `arguments.resource`) and prompt requests (`prompts/get`), and REST requests to `/api/...` authenticated by an API key. Browser sessions and `/metrics` scrapes are not audited.
 
 ```json
 {"id": 42, "time": "2026-09-25T10:15:03Z", "api_key_id": "key_1a2b3c4d5e6f7a8b", "api_key_name": "claude-desktop",

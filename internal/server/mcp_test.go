@@ -155,17 +155,17 @@ func TestAuditEndpoint(t *testing.T) {
 	f.audit.Record(context.Background(), audit.Entry{APIKeyID: "key_1", APIKeyName: "ci", Transport: audit.TransportStdio,
 		Tool: "start_backup", Arguments: json.RawMessage(`{"database":"shop"}`), Result: audit.ResultOK})
 	admin := map[string]string{"X-API-Key": f.keys[auth.ScopeAdmin]}
-	rec := serve(f.h, "GET", "/api/v1/audit?limit=10", nil, admin)
+	rec := serve(f.h, "GET", "/api/v1/audit/activity?limit=10", nil, admin)
 	var res struct {
 		Data []audit.Entry `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || rec.Code != http.StatusOK || len(res.Data) != 1 || res.Data[0].Tool != "start_backup" {
-		t.Fatalf("GET /api/v1/audit = %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("GET /api/v1/audit/activity = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := serve(f.h, "GET", "/api/v1/audit?limit=0", nil, admin); rec.Code != http.StatusBadRequest {
+	if rec := serve(f.h, "GET", "/api/v1/audit/activity?limit=0", nil, admin); rec.Code != http.StatusBadRequest {
 		t.Fatalf("limit=0 = %d; want 400", rec.Code)
 	}
-	if rec := serve(f.h, "GET", "/api/v1/audit", nil, map[string]string{"X-API-Key": f.keys[auth.ScopeOperator]}); rec.Code != http.StatusForbidden {
+	if rec := serve(f.h, "GET", "/api/v1/audit/activity", nil, map[string]string{"X-API-Key": f.keys[auth.ScopeOperator]}); rec.Code != http.StatusForbidden {
 		t.Fatalf("operator reading the audit log = %d; want 403", rec.Code)
 	}
 }

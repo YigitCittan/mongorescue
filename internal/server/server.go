@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
@@ -111,9 +112,11 @@ type Server struct {
 	mux      *http.ServeMux
 	patterns []string
 
-	// mcpHandler serves /mcp; audit backs GET /api/v1/audit.
+	// mcpHandler serves /mcp; audit backs GET /api/v1/audit/activity, the API key
+	// activity log, and auditLog the audit log of every action (GET /api/v1/audit).
 	mcpHandler http.Handler
 	audit      *audit.Service
+	auditLog   *auditlog.Service
 
 	// desktopCSP selects desktopContentSecurityPolicy (see WithDesktopCSP).
 	desktopCSP bool
@@ -325,6 +328,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// MCP endpoint and the audit log of API/MCP activity
 	s.registerMCPRoutes(mux)
+
+	// The audit log of every action: list, export and chain verification
+	s.registerAuditLogRoutes(mux)
 
 	// Prometheus metrics
 	if s.metricsHandler != nil {

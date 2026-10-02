@@ -331,7 +331,10 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsKnown(KeyCORSOrigins) || !IsKnown("legacy_import.X") || IsKnown("secret_key_check") {
 		t.Fatal("known key classification is wrong")
 	}
-	if len(Keys()) != 30 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if !IsSecret(KeyAuditWebhookURL) || !IsSecret(KeyAuditWebhookSecret) || IsSecret(KeyAuditRetentionDays) {
+		t.Fatal("audit secret classification is wrong")
+	}
+	if len(Keys()) != 33 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

@@ -667,7 +667,7 @@
       </div>
     </section>
 
-    <!-- Settings: general, storage, encryption, security, users, API keys -->
+    <!-- Settings: general, storage, encryption, security, audit log, users, API keys -->
     <section id="tab-settings" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-settings" hidden>
      <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings" data-i18n-aria-label="tabs.settings">
@@ -677,6 +677,7 @@
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="encryption" data-i18n="settings.nav_encryption">Encryption</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="recovery" data-i18n="recovery.nav">Recovery</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="audit" data-i18n="auditlog.title">Audit log</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title">Users</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sessions" data-i18n="sessions.title">Sessions</button>
@@ -1165,6 +1166,99 @@
             </tbody>
           </table>
         </div>
+      </section>
+
+      <!-- Audit log: every action, hash-chained (auditlog.js) -->
+      <section class="settings-panel" id="settings-audit" aria-labelledby="settings-audit-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-audit-title" data-i18n="auditlog.title">Audit log</h2>
+            <p class="section-desc" data-i18n="auditlog.desc">Every change made in the dashboard or with an API key, every sign-in and failed sign-in, MCP tool calls and the actions MongoRescue takes on its own. Entries are hash-chained, so a changed or removed entry is detected. Request bodies are never stored.</p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="btn btn-secondary btn-sm" data-action="auditlog-verify" data-i18n="auditlog.verify">Verify chain</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-action="auditlog-export" data-i18n="auditlog.export">Export JSON Lines</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-action="auditlog-refresh">
+              <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>
+              <span data-i18n="settings.activity_refresh">Refresh</span>
+            </button>
+          </div>
+        </div>
+        <p class="form-hint" id="auditlog-verify-status" role="status" aria-live="polite"></p>
+        <div class="filter-bar" role="search" aria-label="Filter the audit log" data-i18n-aria-label="auditlog.filters_label">
+          <div class="filter-search">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+            <input type="search" class="form-input" id="auditlog-filter-actor" maxlength="256" autocomplete="off" spellcheck="false" placeholder="User, API key or ID" data-i18n-placeholder="auditlog.filter_actor" aria-label="Actor" data-i18n-aria-label="auditlog.col_actor">
+          </div>
+          <input type="search" class="form-input" id="auditlog-filter-action" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Action, such as jobs" data-i18n-placeholder="auditlog.filter_action" aria-label="Action" data-i18n-aria-label="auditlog.col_action">
+          <select class="form-select" id="auditlog-filter-kind" aria-label="Actor kind" data-i18n-aria-label="auditlog.filter_kind">
+            <option value="" data-i18n="auditlog.kind_all">All actors</option>
+            <option value="user" data-i18n="auditlog.kind_user">User</option>
+            <option value="api_key" data-i18n="auditlog.kind_api_key">API key</option>
+            <option value="system" data-i18n="auditlog.kind_system">System</option>
+            <option value="anonymous" data-i18n="auditlog.kind_anonymous">Not signed in</option>
+          </select>
+          <select class="form-select" id="auditlog-filter-result" aria-label="Result" data-i18n-aria-label="settings.col_result">
+            <option value="" data-i18n="auditlog.result_all">All results</option>
+            <option value="ok" data-i18n="settings.result_ok">OK</option>
+            <option value="error" data-i18n="settings.result_error">Error</option>
+            <option value="denied" data-i18n="settings.result_denied">Denied</option>
+            <option value="rate_limited" data-i18n="settings.result_rate_limited">Rate limited</option>
+          </select>
+          <select class="form-select" id="auditlog-filter-range" aria-label="Date range" data-i18n-aria-label="filters.range">
+            <option value="" data-i18n="filters.range_any">Any time</option>
+            <option value="24h" data-i18n="auditlog.range_24h">Last 24 hours</option>
+            <option value="7d" data-i18n="filters.range_7d">Last 7 days</option>
+            <option value="30d" data-i18n="filters.range_30d">Last 30 days</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="table" aria-labelledby="settings-audit-title">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="settings.col_time">Time</th>
+                <th scope="col" data-i18n="auditlog.col_actor">Actor</th>
+                <th scope="col" data-i18n="auditlog.col_action">Action</th>
+                <th scope="col" data-i18n="auditlog.col_targets">Targets</th>
+                <th scope="col" data-i18n="settings.col_result">Result</th>
+                <th scope="col" data-i18n="auditlog.col_client">Client</th>
+              </tr>
+            </thead>
+            <tbody id="auditlog-tbody">
+              <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="settings-footer">
+          <button type="button" class="btn btn-secondary btn-sm" id="auditlog-more" data-action="auditlog-more" data-i18n="auditlog.load_more" hidden>Load older entries</button>
+        </div>
+
+        <form id="form-auditlog" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="auditlog.settings_title">Retention and forwarding</legend>
+            <div class="form-group">
+              <label class="form-label" for="auditlog-retention" data-i18n="auditlog.retention">Keep entries for (days)</label>
+              <input type="number" id="auditlog-retention" class="form-input" min="30" max="36500" value="365" aria-describedby="auditlog-retention-hint">
+              <span class="form-hint" id="auditlog-retention-hint" data-i18n="auditlog.retention_hint">At least 30 days. Older entries are removed; the hash of the last removed entry is kept, so the chain still verifies.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="auditlog-webhook-url" data-i18n="auditlog.webhook_url">Forward to webhook</label>
+              <input type="url" id="auditlog-webhook-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://siem.example.com/ingest" aria-describedby="auditlog-webhook-url-hint">
+              <span class="form-hint" id="auditlog-webhook-url-hint" data-i18n="auditlog.webhook_url_hint">Every new entry is POSTed as JSON, in the background; leave empty to turn forwarding off. The URL is stored encrypted and shown only up to its host.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="auditlog-webhook-secret" data-i18n="auditlog.webhook_secret">Signing secret</label>
+              <input type="password" id="auditlog-webhook-secret" class="form-input mono" maxlength="1024" autocomplete="new-password" spellcheck="false" aria-describedby="auditlog-webhook-secret-hint">
+              <span class="form-hint" id="auditlog-webhook-secret-hint" data-i18n="auditlog.webhook_secret_hint">Optional. Requests carry X-MongoRescue-Signature: sha256=HMAC of the body with this secret.</span>
+            </div>
+            <p class="form-hint" id="auditlog-forward-status" role="status" aria-live="polite"></p>
+          </fieldset>
+          <p class="form-error" id="auditlog-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="auditlog-save-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
       </section>
 
       <!-- Users -->
@@ -2507,6 +2601,7 @@
   <script src="/runs.js"></script>
   <script src="/trust.js"></script>
   <script src="/recovery.js"></script>
+  <script src="/auditlog.js"></script>
   <script src="/jobdbs.js"></script>
   <script src="/forms.js"></script>
   <script src="/bulk.js"></script>

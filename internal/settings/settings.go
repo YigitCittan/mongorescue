@@ -120,6 +120,8 @@ type Settings struct {
 	// MetadataBackup configures the scheduled self-backup of the metadata database
 	// (see metabackup.go).
 	MetadataBackup MetadataBackup `json:"metadata_backup"`
+	// Audit configures the retention and forwarding of the audit log (see audit.go).
+	Audit Audit `json:"audit"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -219,6 +221,7 @@ func Defaults() Settings {
 		},
 		Integrity:      defaultIntegrity(),
 		MetadataBackup: defaultMetadataBackup(),
+		Audit:          defaultAudit(),
 	}
 }
 
@@ -230,9 +233,10 @@ func (s Settings) Clone() Settings {
 	return s
 }
 
-// Masked returns a copy that is safe to serialize to API clients: the identity and
-// passphrase are replaced by SecretMask when set (retired secrets are never
-// serialized). Nil slices become empty ones.
+// Masked returns a copy that is safe to serialize to API clients: the identity,
+// passphrase and audit webhook secret are replaced by SecretMask when set, the audit
+// webhook URL is reduced to its origin (retired secrets are never serialized). Nil
+// slices become empty ones.
 func (s Settings) Masked() Settings {
 	out := s.Clone()
 	if out.Encryption.Identity != "" {
@@ -253,6 +257,7 @@ func (s Settings) Masked() Settings {
 	if out.Encryption.RetiredKeys == nil {
 		out.Encryption.RetiredKeys = []RetiredKey{}
 	}
+	out.Audit = out.Audit.masked()
 	return out
 }
 
@@ -268,6 +273,8 @@ type Patch struct {
 	Integrity *IntegrityPatch `json:"integrity,omitempty"`
 	// MetadataBackup updates the metadata backup settings.
 	MetadataBackup *MetadataBackupPatch `json:"metadata_backup,omitempty"`
+	// Audit updates the audit log settings.
+	Audit *AuditPatch `json:"audit,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -353,6 +360,9 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 	}
 	p.Integrity.apply(&next.Integrity)
 	p.MetadataBackup.apply(&next.MetadataBackup)
+	if err := p.Audit.apply(&next.Audit); err != nil {
+		return cur, err
+	}
 	return next, nil
 }
 
@@ -437,6 +447,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return err
 	}
 	if err := validateMetadataBackup(&s.MetadataBackup); err != nil {
+		return err
+	}
+	if err := validateAudit(&s.Audit); err != nil {
 		return err
 	}
 	return validateEncryption(&s.Encryption, strictPassphrase)

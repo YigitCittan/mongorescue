@@ -56,6 +56,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
 - Prometheus metrics, including the time of the last successful backup per job
 - User accounts with sessions (listed and revocable one by one) and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
+- A hash-chained [audit log](docs/audit.md) of every action (who, what, target, result, source address) with chain verification, retention, JSON Lines export and webhook forwarding
 - An MCP server for AI assistants (Streamable HTTP and stdio) with read-only and safe-clone tools, per-key rate limits and an audit log
 - Connection strings and notification secrets are encrypted at rest, never logged and never returned by the API
 - One static binary for Linux, macOS and Windows, plus a multi-arch container image

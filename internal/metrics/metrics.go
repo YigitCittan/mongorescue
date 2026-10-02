@@ -82,6 +82,8 @@ type Metrics struct {
 	integrity integritySeries
 	// Metadata self-backup series (see metabackup.go).
 	metaBackup metaBackupSeries
+	// auditForwarded counts forwarded audit log entries (see auditlog.go).
+	auditForwarded *prometheus.CounterVec
 }
 
 // New creates a Metrics instance with its own registry.
@@ -231,6 +233,7 @@ func New(info BuildInfo) *Metrics {
 	)
 	m.registry.MustRegister(activeRuns...)
 	m.registry.MustRegister(m.newMetaBackupSeries()...)
+	m.registry.MustRegister(m.newAuditForwardSeries())
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
 	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)
