@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard: the translation merge skips `__proto__`, `constructor` and `prototype` keys, so it can never pollute `Object.prototype`; the URI builder's IPv6 host pattern no longer has overlapping character ranges (it accepts the same hosts).
 - Log attributes that may carry client input (IDs, database names, storage keys, cron expressions, error messages) go through `internal/logsafe` everywhere, which strips CR, LF and other control characters and cuts values at 1 KiB. slog already quoted such values; this makes the guarantee explicit. The `next_run` attribute of *scheduled backup job registered* is now RFC 3339 text.
 
+### Added
+- The metadata store records the SHA-256 checksum of every applied schema migration (migration 0014; rows applied by earlier releases are backfilled from this binary on the first start) and refuses to open when an applied migration's recorded checksum no longer matches the SQL embedded in the binary, or when an applied migration is missing from it (`store.ErrMigrationChanged`, naming the migration, before anything is written).
+
 ## [0.13.0] - 2026-10-02
 
 ### Added

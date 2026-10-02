@@ -36,7 +36,7 @@ func TestBackupsWrittenBeforeTriggersAreBackfilled(t *testing.T) {
 		if _, err = db.ExecContext(ctx, m.sql); err != nil {
 			t.Fatalf("apply %s: %v", m.name, err)
 		}
-		if _, err = db.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?, ?, ?)", m.version, m.name, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err = db.ExecContext(ctx, "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)", m.version, m.name, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 	}
