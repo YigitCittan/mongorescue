@@ -733,6 +733,35 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 18,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"job_v18", "shop hourly", "shop", 1, ns(22*time.Hour), "conn_v2", "tgt_local", jsonDoc(t, map[string]any{
+					"id": "job_v18", "name": "shop hourly", "cron_expression": "@hourly", "database": "shop",
+					"connection_id": "conn_v2", "storage_target_id": "tgt_local", "storage_type": "local",
+					"gzip": true, "enabled": true, "rpo_minutes": 90,
+					"created_at": rfc(22 * time.Hour), "updated_at": rfc(22 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO rpo_breaches (job_id, database_name, since) VALUES (?, ?, ?)`, "job_v18", "shop", ns(23*time.Hour))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			job, err := s.GetJob(ctx, "job_v18")
+			if err != nil || job.RPOMinutes != 90 {
+				t.Errorf("job_v18 = %+v, %v; want rpo_minutes 90", job, err)
+			}
+			breaches, err := s.ListRPOBreaches(ctx)
+			if err != nil || len(breaches) != 1 || breaches[0].JobID != "job_v18" || breaches[0].Database != "shop" ||
+				!breaches[0].Since.Equal(time.Unix(0, ns(23*time.Hour)).UTC()) {
+				t.Errorf("rpo breaches = %+v, %v", breaches, err)
+			}
+			// Jobs stored before 0018 keep the default RPO.
+			if old, getErr := s.GetJob(ctx, "job_v1"); getErr == nil && old.RPOMinutes != 0 {
+				t.Errorf("job_v1 rpo_minutes = %d; want 0", old.RPOMinutes)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

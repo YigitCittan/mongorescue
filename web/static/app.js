@@ -82,7 +82,7 @@ let detailsBackupId = "";
 // Job shown in the job details dialog, and its next activations from
 // GET /api/v1/jobs/{id} (refetched when the job's schedule changes).
 let detailsJobId = "";
-const jobNextRuns = { key: "", runs: null, failed: false, seq: 0 };
+const jobNextRuns = { key: "", runs: null, failed: false, seq: 0, rpoMinutes: 0, rpoDefault: false };
 // Job being edited in the job form ("" while creating a new job) and the updated_at
 // it had when the form opened (sent back as the save's precondition).
 let editingJobId = "";
@@ -2355,6 +2355,7 @@ function setupForms() {
       ...storageSelection("job-storage"),
       ...trustJobPayload(),
       include_users_and_roles: document.getElementById("job-users-roles").checked,
+      ...(typeof readinessJobPayload === "function" ? readinessJobPayload() : {}),
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2374,6 +2375,8 @@ function setupForms() {
         showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
         closeModal("modal-new-job");
         refreshAll();
+        // The schedule and RPO feed the readiness report: refetch it now.
+        if (typeof overviewRefresh === "function") overviewRefresh(true);
       } else if (editing && json.httpStatus === 409) {
         showToast(t("job_edit.conflict"), "error");
         refreshAll();
@@ -2536,6 +2539,8 @@ function openJobModal(jobID) {
   }
   // Verification override, restore test and the retention preview (trust.js).
   trustFillJobForm(job);
+  // The recovery point objective (readiness.js).
+  if (typeof readinessFillJobForm === "function") readinessFillJobForm(job);
   // Single / Selected / All / Pattern database selection (jobdbs.js).
   if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
@@ -2606,6 +2611,7 @@ function openJobDetails(jobID) {
   if (detailsJobId !== jobID) {
     jobNextRuns.key = "";
     jobNextRuns.runs = null;
+    jobNextRuns.rpoMinutes = 0;
     jobHistory.jobId = "";
     jobHistory.runs = null;
     jobHistory.failed = false;
@@ -2632,6 +2638,8 @@ function refreshJobNextRuns(job) {
       if (seq !== jobNextRuns.seq) return;
       if (!json.success) throw new Error(json.error || "");
       jobNextRuns.runs = (json.data && json.data.next_runs) || [];
+      jobNextRuns.rpoMinutes = (json.data && Number(json.data.effective_rpo_minutes)) || 0;
+      jobNextRuns.rpoDefault = !!(json.data && json.data.rpo_default);
     })
     .catch(() => {
       if (seq !== jobNextRuns.seq) return;
@@ -2750,6 +2758,11 @@ function renderJobDetails() {
   appendKv(options, t("job_details.retention"), retentionText(job));
   appendKv(options, t("job_details.compression"), job.gzip ? t("job_details.gzip_on") : t("job_details.off"));
   appendKv(options, t("job_details.users_roles"), job.include_users_and_roles ? t("job_details.users_roles_on") : t("job_details.off"));
+  // The effective recovery point objective, from GET /api/v1/jobs/{id} (readiness.js).
+  if (typeof readinessDuration === "function" && jobNextRuns.rpoMinutes > 0) {
+    const rpo = readinessDuration(jobNextRuns.rpoMinutes * 60);
+    appendKv(options, t("readiness.details_rpo"), jobNextRuns.rpoDefault ? tf("readiness.details_rpo_default", { rpo }) : rpo);
+  }
   const enc = settingsGroup("encryption");
   appendKv(options, t("job_details.encryption"), !state.loaded.settings
     ? ""

@@ -60,6 +60,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
 | `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
+| `GET` | `/api/v1/readiness` | One row per database a job backs up: last good, verified and restore-tested backups, RPO, estimated RTO, escrowed keys and an `ok` / `warn` / `fail` status ([details](#recovery-readiness)) | 200 | |
 | `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, metadata_backup, restart_required, warnings}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
@@ -76,7 +77,7 @@ Sessions end after the `security.session_idle_timeout` without requests (default
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
 | `GET` | `/api/v1/jobs` | List scheduled jobs, by name; optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated) | 201 | 400 |
-| `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) | 200 | 404 |
+| `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) and its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) | 200 | 404 |
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/run` | Run a job now: the body is the backup record, or for a job with several databases the run (`status: "running"`), whose databases are resolved and backed up in the background | 202 | 400, 404, 409 |
@@ -278,7 +279,7 @@ The MCP tools do not take these options: `restore_to_safe_clone` only restores i
 
 ## Updating a job
 
-`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip`, `include_users_and_roles` ([users and roles](#users-and-roles)), `enabled`, `verify_after_backup` (`""` follows the `integrity.verify_after_backup` setting, `"on"`, `"off"`) and `restore_test` (`{enabled, frequency, every_n, connection_id}`, see [verification.md](verification.md#automated-restore-tests)) are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention, and `last_restore_test` is managed by the server and never taken from requests. Pausing with `"paused_until": "<RFC 3339 time>"` resumes the job on its own at that time (the scheduler checks every minute; the time must be in the future, else `400`); pausing without it pauses until the job is resumed, an edit that keeps the job paused keeps its `paused_until`, and resuming (`"enabled": true`) clears it. A paused job's run in progress continues; stop it with [cancel](#cancelling-a-run). The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
+`PUT /api/v1/jobs/{id}` (admin scope, like creating a job) replaces a job's `name`, `cron_expression`, `database`, `collections`, `exclude_collections`, `connection_id` and `storage_target_id`. `retention_days`, `retention_count`, `gzip`, `include_users_and_roles` ([users and roles](#users-and-roles)), `rpo_minutes` ([RPO](#recovery-point-objectives)), `enabled`, `verify_after_backup` (`""` follows the `integrity.verify_after_backup` setting, `"on"`, `"off"`) and `restore_test` (`{enabled, frequency, every_n, connection_id}`, see [verification.md](verification.md#automated-restore-tests)) are optional: an omitted field keeps the job's current value, so `{"enabled": false, ...}` pauses a job without touching its retention, and `last_restore_test` is managed by the server and never taken from requests. Pausing with `"paused_until": "<RFC 3339 time>"` resumes the job on its own at that time (the scheduler checks every minute; the time must be in the future, else `400`); pausing without it pauses until the job is resumed, an edit that keeps the job paused keeps its `paused_until`, and resuming (`"enabled": true`) clears it. A paused job's run in progress continues; stop it with [cancel](#cancelling-a-run). The job is validated exactly like a new one: the cron expression must parse (five fields or a descriptor such as `@daily` or `@every 6h`; an empty one means `@daily`), `database` and a known `connection_id` are required, retention must not be negative, and `storage_target_id` must name a target (empty means the default target).
 
 The new schedule takes effect immediately, without a restart: the job's cron entry is replaced, or removed for a disabled job, and `next_run` is recomputed. The id, `created_at`, `last_run` and the job's backups (`GET /api/v1/backups?job_id={id}`) are kept. The response is the updated job. Concurrent updates are stored and scheduled in the same order, and a backup that finishes while the job is being edited only records its run times, so it never reverts the edit.
 
@@ -286,7 +287,7 @@ To avoid overwriting someone else's change, send the job's current `updated_at` 
 
 | Status | When |
 | --- | --- |
-| `400 Bad Request` | Invalid JSON, cron expression, database, retention, connection or storage target |
+| `400 Bad Request` | Invalid JSON, cron expression, database, retention, `rpo_minutes`, connection or storage target |
 | `404 Not Found` | No job `{id}` |
 | `409 Conflict` | `updated_at` was sent and the job was changed since |
 
@@ -460,7 +461,31 @@ An unknown `schedule` or `last_status` value, or an over-long text, answers `400
 Every query is answered from an index on `backups`, never by scanning the table, and record JSON is read only for the rows the index selected (a job's newest runs, the window's completed backups).
 - `server_time_zone`: `{name, offset_minutes}`, the time zone cron expressions are evaluated in.
 
-`GET /api/v1/schedule/preview?cron=0%202%20*%20*%20*&n=3` (read scope) parses a cron expression with the scheduler's own parser and returns `{valid, error, next_runs, server_time_zone}`: the expression's hours are read in the server's time zone, and `next_runs` are given in UTC. An expression the scheduler rejects is answered with `200` and `"valid": false` plus the reason; a missing or longer than 256 characters `cron`, or `n` outside 1-10, is a `400`. The dashboard's cron builder uses it for its *next runs* line.
+`GET /api/v1/schedule/preview?cron=0%202%20*%20*%20*&n=3` (read scope) parses a cron expression with the scheduler's own parser and returns `{valid, error, next_runs, server_time_zone, default_rpo_minutes}`: the expression's hours are read in the server's time zone, and `next_runs` are given in UTC. `default_rpo_minutes` is the [recovery point objective](#recovery-point-objectives) a job with this schedule has when it sets none. An expression the scheduler rejects is answered with `200` and `"valid": false` plus the reason; a missing or longer than 256 characters `cron`, or `n` outside 1-10, is a `400`. The dashboard's cron builder uses it for its *next runs* line and the job form's RPO hint.
+
+## Recovery point objectives
+
+A job's `rpo_minutes` (`POST /api/v1/jobs`, `PUT /api/v1/jobs/{id}`, returned by `GET /api/v1/jobs/{id}` and the MCP `get_job` tool) is its recovery point objective: how old, in minutes, the newest successful backup of each of its databases may be. `0` or absent means the default from the schedule: two schedule intervals (the gap between its next two runs) plus an hour, at least six hours, so `@hourly` gets 6 hours, `@every 6h` 13 hours and `@daily` 49 hours; a schedule that cannot be read counts as daily. When set it must be between 15 (15 minutes) and 129600 (90 days), else `400`. An update without `rpo_minutes` keeps it; `0` restores the default. `GET /api/v1/jobs/{id}` adds `effective_rpo_minutes` (the objective that applies) and `rpo_default`.
+
+Every 5 minutes, and right after a job's backup finished, the server checks every database of every enabled job: the age of its newest successful backup (since the job's creation when it has none) against the job's objective. When it is missed, `job.rpo_missed` is published once (`job_id`, `database`, the age and the objective in `detail`); when a recent enough backup heals it, `job.rpo_recovered`. Breaches are kept in the metadata database (`rpo_breaches`, migration 0018), so a restart does not report a breach again; pausing or deleting the job, or removing the database from its selection, drops the breach without an event. Both events are selectable in [notification rules](notifications.md), and the age and objective are exported as [metrics](metrics.md#recovery-point-objectives).
+
+## Recovery readiness
+
+`GET /api/v1/readiness` (read scope) answers "could we recover each database, and how fast?". It returns `{generated_at, keys_escrowed, summary: {ok, warn, fail}, rows}` with one row per connection and database a job backs up (paused jobs included), failing rows first:
+
+| Field | Meaning |
+| --- | --- |
+| `connection_id`, `connection_name`, `database` | The database |
+| `jobs` | `[{id, name, enabled, target_seconds, default, age_seconds, no_backup, met, breached_since}]`: each job backing it up, with its objective, the age of its newest successful backup of the database and whether the objective is met |
+| `last_good_backup` | `{id, at, job_id}`: the newest completed backup by any of them |
+| `last_verified_backup` | The newest completed backup whose archive passed [verification](verification.md) |
+| `last_restore_test` | `{id, job_id, at, status, duration_seconds}`: the newest [restore test](verification.md#automated-restore-tests) of the database (`ok`, `mismatch` or `error`) |
+| `rpo` | `{target_seconds, age_seconds, met}`: the strictest objective of the enabled jobs, the age of `last_good_backup`, and whether every enabled job meets its objective (`met` is absent when every job is paused) |
+| `rto` | `{seconds, source, id, measured_at}`: the estimated recovery time, the duration of the newest successful restore test (`source: "restore_test"`), else of the newest completed real restore of the whole database (`"restore"`; dry runs and selective restores do not count); absent when neither exists |
+| `keys_escrowed`, `encrypted` | Whether a [recovery kit](#metadata-backups-and-the-recovery-kit) was downloaded for the current `secret.key`, encryption keys and storage targets, and whether `last_good_backup` is encrypted |
+| `status`, `reasons` | `fail` for `rpo_missed`, `restore_test_failed` (the newest test failed) or `verification_failed` (the newest good backup failed verification); `warn` for `no_backup`, `paused`, `not_verified`, `no_restore_test` or `keys_not_escrowed` (an encrypted backup without an escrowed key); `ok` otherwise |
+
+The dashboard's *Overview* shows it as the *Recovery readiness* table, and its *Attention needed* list reports the jobs whose objective is missed from the same data.
 
 ## Bulk actions
 

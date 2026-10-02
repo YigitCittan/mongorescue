@@ -405,7 +405,12 @@ async function overviewRefresh(force) {
       zone = "";
     }
     const tz = zone ? `&tz=${encodeURIComponent(zone)}` : "";
-    const json = await apiJSON(`/api/v1/stats/history?days=${OVERVIEW_DAYS}${tz}&tz_offset=${offset}`);
+    // The readiness report (readiness.js) also feeds the RPO entries of "Attention
+    // needed"; it never throws.
+    const [json] = await Promise.all([
+      apiJSON(`/api/v1/stats/history?days=${OVERVIEW_DAYS}${tz}&tz_offset=${offset}`),
+      typeof readinessLoad === "function" ? readinessLoad() : Promise.resolve(),
+    ]);
     if (json.success && json.data) {
       overview.data = json.data;
       overview.error = "";
@@ -623,24 +628,10 @@ function ovTimeline(upcoming, now) {
 // Attention needed
 // ---------------------------------------------------------------------------
 
-// The interval between a job's runs: the server's reading of its schedule, else its
-// next two runs today, else the gap between its last and next run, else a day.
-function ovJobInterval(job, upcoming, hj) {
-  if (hj && Number(hj.interval_seconds) > 0) return Number(hj.interval_seconds) * 1000;
-  const runs = upcoming.filter(u => u.job_id === job.id).map(u => Date.parse(u.at)).filter(Number.isFinite);
-  if (runs.length >= 2) return runs[1] - runs[0];
-  const next = parseDate(job.next_run);
-  const last = parseDate(job.last_run);
-  if (next && last && next > last) return next - last;
-  return 24 * HOUR_MS;
-}
-
 function overviewAttention() {
   const items = [];
   const h = overview.data || {};
   const stats = state.stats || {};
-  const now = Date.now();
-  const upcoming = Array.isArray(h.upcoming) ? h.upcoming : [];
   const failedJobs = new Set();
   state.jobs.forEach(job => {
     // A job with several databases is judged by its last run, not by the newest
@@ -679,31 +670,9 @@ function overviewAttention() {
     const key = rt.status === "mismatch" ? "overview.att_restore_mismatch" : "overview.att_restore_test";
     items.push({ sev: "danger", text: tf(key, { job: job.name || job.id, when: ovWhen(rt.at) }), open: () => navOpenDetail("jobs", job.id) });
   });
-  if (overview.data) {
-    state.jobs.forEach(job => {
-      if (job.enabled === false || failedJobs.has(job.id)) return;
-      const hj = h.jobs ? h.jobs[job.id] : null;
-      // Two missed runs (plus an hour of slack), and never less than six hours.
-      const threshold = Math.max(2 * ovJobInterval(job, upcoming, hj) + HOUR_MS, 6 * HOUR_MS);
-      const success = hj ? parseDate(hj.last_success_at) : null;
-      // A job with several databases is as fresh as its stalest database.
-      const db = hj && hj.stalest_database ? hj.stalest_database : "";
-      if (success) {
-        if (now - success.getTime() > threshold) {
-          const text = db
-            ? tf("overview.att_stale_db", { job: job.name || job.id, db, when: ovWhen(success.toISOString()) })
-            : tf("overview.att_stale", { job: job.name || job.id, hours: Math.floor((now - success.getTime()) / HOUR_MS) });
-          items.push({ sev: "warn", text, open: () => navOpenDetail("jobs", job.id) });
-        }
-        return;
-      }
-      const created = parseDate(job.created_at);
-      if (created && now - created.getTime() > threshold) {
-        const text = db ? tf("overview.att_never_db", { job: job.name || job.id, db }) : tf("overview.att_never", { job: job.name || job.id });
-        items.push({ sev: "warn", text, open: () => navOpenDetail("jobs", job.id) });
-      }
-    });
-  }
+  // Jobs whose recovery point objective is missed, as the server reports it
+  // (GET /api/v1/readiness), unless their last run already failed.
+  if (typeof readinessAttention === "function") readinessAttention(failedJobs).forEach(it => items.push(it));
   const corrupt = Array.isArray(stats.corrupt_records) ? stats.corrupt_records.length : 0;
   if (corrupt > 0) {
     items.push({ sev: "danger", text: tf("overview.att_corrupt", { n: corrupt }),
@@ -743,6 +712,8 @@ function overviewRender() {
   ovSetText("overview-status", !h && overview.loading ? t("overview.loading") : overview.error);
   const status = document.getElementById("overview-status");
   if (status) status.classList.toggle("text-danger", !!overview.error);
+  // Recovery readiness (readiness.js) does not depend on the history.
+  if (typeof readinessRender === "function") readinessRender();
   if (!h) return;
   const daily = Array.isArray(h.daily) ? h.daily : [];
 

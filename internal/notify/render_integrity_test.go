@@ -27,6 +27,10 @@ func TestRenderIntegrityEvents(t *testing.T) {
 			[]string{"Storage drift detected: storage target S3 prod: 2 orphan archive(s), 1 missing archive(s)", "Detail: 2 orphan"}},
 		{events.Event{Type: events.RetentionDeleted, JobID: "nightly", Database: "shop", BackupID: "bkp_0", Detail: "older than 30 days", Time: at},
 			[]string{"Backup deleted by retention: job nightly (db shop), backup bkp_0", "Detail: older than 30 days"}},
+		{events.Event{Type: events.JobRPOMissed, JobID: "hourly", Database: "shop", Detail: "no successful backup for 7h 12m; objective 6h", Time: at},
+			[]string{"Recovery point objective missed: job hourly (db shop)", "Detail: no successful backup for 7h 12m"}},
+		{events.Event{Type: events.JobRPORecovered, JobID: "hourly", Database: "shop", Time: at},
+			[]string{"Recovery point objective met again: job hourly (db shop)"}},
 	} {
 		msg := Render(tc.e)
 		for _, want := range tc.want {

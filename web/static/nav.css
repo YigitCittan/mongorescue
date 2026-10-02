@@ -437,6 +437,48 @@ a.menu-item {
   background: transparent;
 }
 
+/* Recovery readiness (readiness.js): a full-width card with a real table. */
+.ov-card-wide {
+  grid-column: 1 / -1;
+}
+
+.rd-table-wrap {
+  margin-top: 6px;
+  overflow-x: auto;
+  box-shadow: none;
+}
+
+.rd-table th,
+.rd-table td {
+  padding: 6px 10px;
+  font-size: 12px;
+  vertical-align: top;
+}
+
+.rd-table th[scope="row"] {
+  color: var(--text);
+  font-weight: 500;
+  background: transparent;
+}
+
+.rd-sub,
+.rd-reasons {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.rd-met {
+  color: var(--success);
+}
+
+.rd-missed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .ov-next {
   display: grid;
   gap: 4px;

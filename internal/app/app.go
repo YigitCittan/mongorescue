@@ -37,6 +37,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
@@ -97,6 +98,7 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	readiness     *readiness.Service
 	auditLog      *auditlog.Service
 	auditForward  *auditlog.Forwarder
 
@@ -402,6 +404,25 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		logger.Warn("could not check whether the recovery kit is current", logsafe.Error(err))
 	}
 
+	// Recovery readiness: the RPO checker (job.rpo_missed / job.rpo_recovered, the
+	// job_rpo_* gauges) and the per-database readiness report. A finished backup
+	// asks for an early check.
+	readinessSvc := readiness.New(readiness.Config{
+		Store:        metaStore,
+		Connections:  connSvc,
+		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
+		Publisher:    bus,
+		Observe: func(samples []readiness.Sample) {
+			out := make([]metrics.RPOSample, len(samples))
+			for i, s := range samples {
+				out[i] = metrics.RPOSample{JobID: s.JobID, Database: s.Database, Since: s.Since, Target: s.Target}
+			}
+			metricSet.SetRPOSamples(out)
+		},
+		Logger: logger,
+	})
+	bus.Subscribe(readinessSvc.HandleEvent)
+
 	// 5. Initialize scheduler
 	sched := scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
 		scheduler.WithPublisher(bus),
@@ -494,6 +515,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithIntegrity(integritySvc),
 		server.WithMetadataBackup(metaBackupSvc),
 		server.WithRecoveryKit(kitSvc),
+		server.WithReadiness(readinessSvc),
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
@@ -517,6 +539,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
 		storeCloser:   metaStore,
@@ -831,6 +854,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.metaBackup != nil {
 		a.metaBackup.Start(context.WithoutCancel(ctx))
 	}
+	// The RPO checker; stopped by shutdownRuns.
+	if a.readiness != nil {
+		a.readiness.Start(context.WithoutCancel(ctx))
+	}
 	return nil
 }
 
@@ -937,7 +964,7 @@ func (a *App) shutdownRuns() {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(4)
+		wg.Add(5)
 		go func() {
 			defer wg.Done()
 			if err := a.runs.Shutdown(context.Background()); err != nil {
@@ -958,6 +985,12 @@ func (a *App) shutdownRuns() {
 			defer wg.Done()
 			if a.metaBackup != nil {
 				a.metaBackup.Stop()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if a.readiness != nil {
+				a.readiness.Stop()
 			}
 		}()
 		wg.Wait()

@@ -30,6 +30,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -102,6 +103,9 @@ type Server struct {
 	// metaBackup snapshots the metadata database; recoveryKit builds recovery kits.
 	metaBackup  *metabackup.Service
 	recoveryKit *recoverykit.Service
+
+	// readiness reports the RPO, RTO and evidence of every database a job backs up.
+	readiness *readiness.Service
 
 	// version is reported by the health endpoint.
 	version string
@@ -219,6 +223,9 @@ func NewServer(
 	if s.ops == nil {
 		s.ops = operations.New(s.operationsConfig())
 	}
+	if s.readiness == nil {
+		s.readiness = s.defaultReadiness()
+	}
 
 	mux := s.buildRoutes()
 
@@ -319,6 +326,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Metadata backups and the recovery kit
 	s.registerRecoveryRoutes(mux)
+
+	// Recovery readiness: RPO, RTO and evidence per database
+	s.registerReadinessRoutes(mux)
 
 	// Bulk actions on backups, restores and jobs
 	s.registerBulkRoutes(mux)

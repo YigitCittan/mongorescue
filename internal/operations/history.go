@@ -378,6 +378,10 @@ type SchedulePreview struct {
 	NextRuns []time.Time `json:"next_runs"`
 	// ServerTimeZone is the zone the expression is evaluated in.
 	ServerTimeZone ServerTimeZone `json:"server_time_zone"`
+	// DefaultRPOMinutes is the recovery point objective a job with this schedule has
+	// when it sets none: two intervals plus an hour, at least six hours (0 when the
+	// expression is not valid).
+	DefaultRPOMinutes int `json:"default_rpo_minutes,omitempty"`
 }
 
 // PreviewSchedule reports whether expr is a valid schedule and its next n
@@ -402,6 +406,7 @@ func (s *Service) PreviewSchedule(expr string, n int) (*SchedulePreview, error) 
 	if runs := scheduler.NextRuns(expr, now, n); runs != nil {
 		p.NextRuns = runs
 	}
+	p.DefaultRPOMinutes = int(scheduler.DefaultRPO(expr, now) / time.Minute)
 	return p, nil
 }
 

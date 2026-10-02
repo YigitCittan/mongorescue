@@ -21,6 +21,8 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/readiness"
+	"github.com/yigitcittan/mongorescue/internal/scheduler"
 )
 
 // Output size caps.
@@ -427,7 +429,7 @@ func (s *Server) registerTools() {
 	}, s.listJobs)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetJob,
-		Description: "Get one scheduled backup job by ID.",
+		Description: "Get one scheduled backup job by ID, with its recovery point objective (rpo_minutes; 0 means the default from the schedule: two intervals plus an hour, at least six hours).",
 		Annotations: readOnly("Get job"),
 		InputSchema: schemaFor[idInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "id") }),
 	}, s.getJob)
@@ -704,7 +706,13 @@ func (s *Server) getJob(ctx context.Context, in idInput) (*models.Job, string, e
 	if err != nil {
 		return nil, "", err
 	}
-	return job, fmt.Sprintf("Job %s (enabled: %v): last run %s, next run %s.", idText(job.ID), job.Enabled, timestamp(job.LastRun), timestamp(job.NextRun)), nil
+	rpo, isDefault := scheduler.EffectiveRPO(job, time.Now())
+	source := "set"
+	if isDefault {
+		source = "default"
+	}
+	return job, fmt.Sprintf("Job %s (enabled: %v): last run %s, next run %s, RPO %s (%s).", idText(job.ID), job.Enabled,
+		timestamp(job.LastRun), timestamp(job.NextRun), readiness.FormatDuration(rpo), source), nil
 }
 
 func (s *Server) listBackups(ctx context.Context, in listBackupsInput) (backupList, string, error) {

@@ -14,6 +14,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] A [recovery kit](#recovery-kit) downloaded and stored offline, apart from the backups (it holds `secret.key`); a new one downloaded whenever the dashboard asks for it.
 - [ ] Container image pinned to a release tag.
 - [ ] An alert on stale backups ([metrics.md](metrics.md#alerting)) and a `backup.failed` notification rule ([notifications.md](notifications.md)).
+- [ ] An [RPO](#rpo-and-rto) set on every job whose default does not match what you promised, a `job.rpo_missed` notification rule, and no `fail` row under Overview → *Recovery readiness*.
 
 ## TLS and the reverse proxy
 
@@ -101,6 +102,14 @@ Since v0.14.0 the database records a checksum of every schema migration applied 
 A single damaged row (a record whose stored JSON no longer fits, or whose credentials cannot be decrypted) does not take a list down: it is skipped, logged with its table and ID, shown to administrators in a dashboard banner and left unchanged on disk. [troubleshooting.md](troubleshooting.md#unreadable-records) shows how to back up the database, inspect the row with `sqlite3`, and repair, export or remove it.
 
 Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#json-file)). Job connection strings from those releases become managed connections.
+
+## RPO and RTO
+
+The recovery point objective (RPO) is how much data you can afford to lose: how old the newest good backup may be when disaster strikes. Every job has one: its *Recovery point objective* in the job form (`rpo_minutes`, 15 minutes to 90 days), or by default two schedule intervals plus an hour, at least six hours (an hourly job gets 6 hours, a daily one 49). MongoRescue checks every database of every enabled job every 5 minutes, publishes `job.rpo_missed` once when its newest successful backup is older than that and `job.rpo_recovered` when it is fresh again, and exports `mongorescue_job_rpo_seconds` and `mongorescue_job_rpo_met` ([metrics.md](metrics.md#recovery-point-objectives)). Set the RPO to what you promised, not to the schedule: a daily job whose data must never be more than a day old needs `24` hours, not the default 49.
+
+The recovery time objective (RTO) is how long a restore may take. MongoRescue estimates it per database from the newest passed [restore test](verification.md#automated-restore-tests) (restoring into a temporary database, so the figure includes the copy and the index builds), else from the newest completed real restore of the whole database; without either it is *Unknown*. Turn on restore tests to keep the estimate current, and compare it with your objective: the estimate grows with the data.
+
+Overview → *Recovery readiness* (and `GET /api/v1/readiness`, [api.md](api.md#recovery-readiness)) brings this together per database: the last good, verified and restore-tested backups, the RPO with its current age, the estimated RTO, and whether the keys are in a recovery kit. A row is *Not ready* when an RPO is missed or the newest restore test or verification failed, and shows a *Warning* when it was never verified or restore-tested, its jobs are paused, or its encrypted backups have no escrowed key.
 
 ## Encryption
 

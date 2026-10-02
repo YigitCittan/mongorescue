@@ -97,6 +97,12 @@ type Job struct {
 	// LastRestoreTest is the latest restore test of the job. It is managed by the
 	// server (like LastRun) and never taken from clients.
 	LastRestoreTest *RestoreTestSummary `json:"last_restore_test,omitempty"`
+
+	// RPOMinutes is the job's recovery point objective: how old, in minutes, the
+	// newest successful backup of each of its databases may be. 0 means unset: the
+	// default from the schedule applies (see DefaultRPO). When set it is between
+	// MinRPOMinutes and MaxRPOMinutes.
+	RPOMinutes int `json:"rpo_minutes,omitempty"`
 }
 
 // Clone returns a deep copy of the job.
@@ -159,4 +165,51 @@ func (j *Job) Covers(name string) bool {
 func (j *Job) SameSource(o *Job) bool {
 	a, b := j.Selection(), o.Selection()
 	return j.ConnectionID == o.ConnectionID && a.SameMatch(b) && a.AutoIncludeNew == b.AutoIncludeNew
+}
+
+// Bounds and defaults of a job's recovery point objective (Job.RPOMinutes).
+const (
+	// MinRPOMinutes is the smallest RPO a job may set (15 minutes).
+	MinRPOMinutes = 15
+	// MaxRPOMinutes is the largest RPO a job may set (90 days).
+	MaxRPOMinutes = 90 * 24 * 60
+	// DefaultRPOFloor is the smallest default RPO: a job without one never counts as
+	// late within six hours of its last success.
+	DefaultRPOFloor = 6 * time.Hour
+	// DefaultRPOSlack is the slack the default RPO adds to two schedule intervals.
+	DefaultRPOSlack = time.Hour
+	// FallbackRPOInterval is the schedule interval assumed when a schedule cannot be
+	// read (one day).
+	FallbackRPOInterval = 24 * time.Hour
+)
+
+// DefaultRPO returns the RPO of a job without one, for a schedule whose runs are
+// interval apart: two missed runs plus DefaultRPOSlack, never less than
+// DefaultRPOFloor. A non-positive interval is read as FallbackRPOInterval.
+func DefaultRPO(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = FallbackRPOInterval
+	}
+	return max(2*interval+DefaultRPOSlack, DefaultRPOFloor)
+}
+
+// RPO returns the job's recovery point objective: RPOMinutes when set, else
+// DefaultRPO(interval), where interval is the gap between the job's scheduled runs.
+// The second result reports whether the default applies.
+func (j *Job) RPO(interval time.Duration) (time.Duration, bool) {
+	if j.RPOMinutes > 0 {
+		return time.Duration(j.RPOMinutes) * time.Minute, false
+	}
+	return DefaultRPO(interval), true
+}
+
+// RPOBreach records that a job's recovery point objective is missed for one of its
+// databases: Since is when the breach was first seen.
+type RPOBreach struct {
+	// JobID is the job.
+	JobID string `json:"job_id"`
+	// Database is the database whose newest successful backup is too old.
+	Database string `json:"database"`
+	// Since is when the breach was first seen (UTC).
+	Since time.Time `json:"since"`
 }
