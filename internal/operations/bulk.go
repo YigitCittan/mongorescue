@@ -698,11 +698,15 @@ func (s *Service) filterJobs(ctx context.Context, f *BulkFilter) ([]BulkItem, er
 	var items []BulkItem
 	for _, j := range jobs {
 		switch {
-		case f.Database != "" && j.Database != f.Database,
+		// A multi-database job matches every database it covers: one it lists, one it
+		// knows, one its patterns match.
+		case f.Database != "" && !j.Covers(f.Database),
 			f.ConnectionID != "" && j.ConnectionID != f.ConnectionID,
 			f.Enabled != nil && j.Enabled != *f.Enabled,
 			q != "" && !strings.Contains(strings.ToLower(j.ID), q) && !strings.Contains(strings.ToLower(j.Name), q) &&
-				!strings.Contains(strings.ToLower(j.Database), q):
+				!strings.Contains(strings.ToLower(j.Database), q) &&
+				!strings.Contains(strings.ToLower(j.Selection().SearchText()), q) &&
+				!slices.ContainsFunc(j.KnownDatabases, func(db string) bool { return strings.Contains(strings.ToLower(db), q) }):
 			continue
 		}
 		items = append(items, BulkItem{ID: j.ID, Job: j})
@@ -1064,11 +1068,11 @@ func (s *Service) registerBulkActions() {
 		Resource: BulkJobs, Name: BulkRunNow, Scope: auth.ScopeOperator,
 		Available: func(s *Service) bool { return s.cfg.Jobs != nil },
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
-			rec, err := s.RunJob(ctx, it.ID, models.TriggerOnDemand)
+			started, err := s.RunJob(ctx, it.ID, models.TriggerOnDemand)
 			if err != nil {
 				return s.failed(err)
 			}
-			return BulkItemResult{OK: true, Detail: rec.ID}
+			return BulkItemResult{OK: true, Detail: started.ID()}
 		},
 	})
 	s.RegisterBulkAction(BulkAction{

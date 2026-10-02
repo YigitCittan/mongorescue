@@ -113,6 +113,35 @@ type JobRunner interface {
 	// ResolveJobDatabases resolves a job's database selection on its connection now,
 	// exactly as a run does.
 	ResolveJobDatabases(ctx context.Context, job *models.Job) (*models.DatabaseResolution, error)
+	// StartJobRun starts a run of a multi-database job through spawn and returns its
+	// running JobRun at once; the databases are resolved in the background.
+	StartJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger, spawn func(func(context.Context)) error) (*models.JobRun, error)
+}
+
+// JobStart is what RunJob started: the in-progress backup of a single-database job,
+// or the run of a multi-database job, whose databases are resolved and backed up in
+// the background.
+type JobStart struct {
+	// Backup is the backup of a single-database job.
+	Backup *models.BackupRecord
+	// Run is the run of a multi-database job (status running).
+	Run *models.JobRun
+}
+
+// ID returns the backup's or the run's ID.
+func (j *JobStart) ID() string {
+	if j.Backup != nil {
+		return j.Backup.ID
+	}
+	return j.Run.ID
+}
+
+// Body returns what the REST API answers: the backup, or the run.
+func (j *JobStart) Body() any {
+	if j.Backup != nil {
+		return j.Backup
+	}
+	return j.Run
 }
 
 // Connections resolves managed MongoDB connections (implemented by
@@ -408,42 +437,48 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 	})
 }
 
-// RunJob runs the stored job jobID now, in the background, and returns a snapshot of
-// the in-progress record: the job's backup, or for a multi-database job the first
-// database's (its run_id names the run; every database gets its own record).
-// trigger is models.TriggerMCP for MCP and otherwise recorded as
+// RunJob runs the stored job jobID now, in the background. For a single-database job
+// it returns a snapshot of the in-progress backup record. A multi-database job
+// returns at once with its run (status running): its databases are resolved and
+// backed up in the background, each into its own record sharing the run's ID, and
+// planning failures (databases that cannot be listed, none that exist) are recorded
+// in the run. trigger is models.TriggerMCP for MCP and otherwise recorded as
 // models.TriggerOnDemand; on-demand runs never apply or count towards retention.
-// Expected failures: ErrSchedulerUnavailable, ErrNotFound, ErrInvalid (also for a
-// selection that matches no existing database), ErrDatabaseListing, ErrBusy (also
+// Expected failures: ErrSchedulerUnavailable, ErrNotFound, ErrInvalid, ErrBusy (also
 // while a run of a multi-database job is going) and ErrShuttingDown.
-func (s *Service) RunJob(ctx context.Context, jobID string, trigger models.BackupTrigger) (*models.BackupRecord, error) {
+func (s *Service) RunJob(ctx context.Context, jobID string, trigger models.BackupTrigger) (*JobStart, error) {
 	if s.cfg.Jobs == nil {
 		return nil, ErrSchedulerUnavailable
 	}
 	// Lookup-based: any stored job (including legacy-format IDs) may be triggered.
+	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, jobRunError(err)
+	}
+	if job.MultiDatabase() {
+		run, startErr := s.cfg.Jobs.StartJobRun(ctx, jobID, trigger, func(fn func(context.Context)) error {
+			return s.cfg.Runs.Go("", fn)
+		})
+		if startErr != nil {
+			if errors.Is(startErr, runs.ErrShuttingDown) {
+				return nil, runError(startErr, "")
+			}
+			return nil, jobRunError(startErr)
+		}
+		return &JobStart{Run: run}, nil
+	}
 	plan, err := s.cfg.Jobs.PrepareJobRun(ctx, jobID, trigger)
 	if err != nil {
 		return nil, jobRunError(err)
 	}
-	if !plan.Multi() {
-		record := plan.First()
-		// The scheduler persists the final record and publishes the outcome event.
-		return s.startBackup(ctx, record, func(runCtx context.Context) {
-			_, _ = s.cfg.Jobs.ExecuteJobRun(runCtx, plan)
-		})
-	}
-	// A multi-database run locks, stores and tracks each database itself.
-	if err := s.cfg.Jobs.BeginJobRun(ctx, plan); err != nil {
-		return nil, jobRunError(err)
-	}
-	snapshot := *plan.First()
-	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
+	// The scheduler persists the final record and publishes the outcome event.
+	record, err := s.startBackup(ctx, plan.First(), func(runCtx context.Context) {
 		_, _ = s.cfg.Jobs.ExecuteJobRun(runCtx, plan)
-	}); err != nil {
-		s.cfg.Jobs.AbandonJobRun(ctx, plan, err)
-		return nil, runError(err, "")
+	})
+	if err != nil {
+		return nil, err
 	}
-	return &snapshot, nil
+	return &JobStart{Backup: record}, nil
 }
 
 // jobRunError maps an error of planning or beginning a job run to a client error.

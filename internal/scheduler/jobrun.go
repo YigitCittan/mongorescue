@@ -30,6 +30,9 @@ var (
 	ErrJobRunning = errors.New("scheduler: a run of this job is already running")
 	// ErrRunFailed is returned by a job run in which some or all databases failed.
 	ErrRunFailed = errors.New("scheduler: job run failed")
+	// ErrNotMulti is returned by StartJobRun for a single-database job, which is
+	// started with PrepareJobRun and ExecuteJobRun.
+	ErrNotMulti = errors.New("scheduler: the job backs up a single database")
 )
 
 // DatabaseLister lists the database names of a managed connection, including the
@@ -302,7 +305,14 @@ func (s *Scheduler) runMulti(ctx context.Context, plan *JobRunPlan, scheduled bo
 	if err := s.BeginJobRun(ctx, plan); err != nil {
 		return plan.Run, err
 	}
-	defer s.releaseJobRun(plan.Job.ID, plan.Run.ID)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			s.releaseJobRun(plan.Job.ID, plan.Run.ID)
+		}
+	}
+	defer release()
 	s.logger.Info("running multi-database backup job",
 		slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID),
 		slog.Int("databases", len(plan.Records)), slog.Int("parallelism", plan.Job.EffectiveParallelism()))
@@ -324,7 +334,14 @@ func (s *Scheduler) runMulti(ctx context.Context, plan *JobRunPlan, scheduled bo
 	}
 	close(work)
 	wg.Wait()
-	return s.finishMulti(ctx, plan, scheduled)
+	run, err := s.finishMulti(ctx, plan)
+	// The run is over: the next one may start while retention and the restore tests
+	// (which take their own locks) still run.
+	release()
+	if scheduled {
+		s.afterMulti(ctx, plan)
+	}
+	return run, err
 }
 
 // runDatabase backs up database i of plan; mu guards the plan's records and run.
@@ -344,7 +361,11 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	if err != nil {
 		now := time.Now().UTC()
 		rec.Status = models.StatusFailed
-		rec.ErrorMessage = fmt.Sprintf("another backup of database %s was still running after %s; skipped by this job run", rec.Database, s.lockWait())
+		if errors.Is(err, runs.ErrBusy) {
+			rec.ErrorMessage = fmt.Sprintf("another backup of database %s was still running after %s; skipped by this job run", rec.Database, s.lockWait())
+		} else {
+			rec.ErrorMessage = fmt.Sprintf("the run lock of database %s could not be taken: %s", rec.Database, redact.Text(err.Error()))
+		}
 		rec.CompletedAt, rec.Phases.Finished = &now, models.Stamp(now)
 	}
 	if err == nil {
@@ -379,9 +400,16 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 			slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID),
 			slog.String("database", rec.Database), slog.String("status", string(rec.Status)), slog.Any("error", err))
 	}
+	// The run is stored after every database, so a crash leaves the outcome of the
+	// databases that finished (saved under mu, so an older state never overwrites a
+	// newer one).
 	mu.Lock()
 	plan.Records[i] = rec
 	plan.setDatabase(rec)
+	if saveErr := s.metadataStore.SaveJobRun(persistCtx, plan.Run); saveErr != nil {
+		s.logger.Warn("failed to record the progress of the job run",
+			slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID), slog.Any("error", saveErr))
+	}
 	mu.Unlock()
 }
 
@@ -444,19 +472,14 @@ func (s *Scheduler) waitForDatabase(ctx context.Context, rec *models.BackupRecor
 }
 
 // finishMulti records the outcome of a multi-database run (see runMulti).
-func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan, scheduled bool) (*models.JobRun, error) {
+func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan) (*models.JobRun, error) {
 	job, run := plan.Job, plan.Run
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 
 	run.Finish(time.Now())
 	s.recordRunTimes(persistCtx, job)
-	if res := plan.Resolution; res != nil && res.Known != nil && !slices.Equal(res.Known, job.KnownDatabases) {
-		if err := s.metadataStore.UpdateJobKnownDatabases(persistCtx, job.ID, res.Known); err != nil && !errors.Is(err, store.ErrNotFound) {
-			s.logger.Error("failed to store the job's known databases", slog.String("job_id", job.ID), slog.Any("error", err))
-		}
-		job.KnownDatabases = slices.Clone(res.Known)
-	}
+	run.AddedDatabases = s.storeKnownDatabases(persistCtx, plan)
 	if err := s.metadataStore.SaveJobRun(persistCtx, run); err != nil {
 		s.logger.Error("failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
@@ -472,23 +495,6 @@ func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan, scheduled
 		slog.Int("succeeded", ok), slog.Int("failed", failed), slog.Int("cancelled", cancelled),
 		slog.Int("new_databases", len(run.NewDatabases)))
 
-	var completed []*models.BackupRecord
-	for _, rec := range plan.Records {
-		if rec.Status == models.StatusCompleted {
-			completed = append(completed, rec)
-		}
-	}
-	if scheduled {
-		// Retention is decided per database: a database that failed today keeps
-		// every backup, including its last good one.
-		for _, rec := range completed {
-			s.applyRetention(ctx, job, rec)
-		}
-		if len(completed) > 0 && s.afterRun != nil {
-			s.afterRun(ctx, job, completed)
-		}
-	}
-
 	switch run.Status {
 	case models.JobRunFailed, models.JobRunPartial:
 		reason := strings.Join(run.FailedDatabases(), ", ")
@@ -498,6 +504,135 @@ func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan, scheduled
 		return run, fmt.Errorf("%w (%s): %s", ErrRunFailed, run.Status, reason)
 	}
 	return run, nil
+}
+
+// completedRecords returns the backups of plan that completed.
+func (p *JobRunPlan) completedRecords() []*models.BackupRecord {
+	var out []*models.BackupRecord
+	for _, rec := range p.Records {
+		if rec.Status == models.StatusCompleted {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// afterMulti is the work after a scheduled multi-database run, once its slot is
+// released: retention per database (a database that failed today keeps every
+// backup, including its last good one) and the restore tests.
+func (s *Scheduler) afterMulti(ctx context.Context, plan *JobRunPlan) {
+	completed := plan.completedRecords()
+	for _, rec := range completed {
+		s.applyRetention(ctx, plan.Job, rec)
+	}
+	if len(completed) > 0 && s.afterRun != nil {
+		s.afterRun(ctx, plan.Job, completed)
+	}
+}
+
+// storeKnownDatabases records the databases the run resolved as the job's known
+// databases, against the job as it is stored now (read and written in one
+// transaction, under the lock of job updates). When the job's connection and
+// selection are those the run was planned with, the resolved known databases are
+// merged into the stored ones (a newer entry is never dropped); when they changed
+// meanwhile, only the databases the run backed up that the current selection still
+// matches are added, and a job without known databases is left for its next save
+// or run to record them. It returns the databases added for the first time that the
+// run included automatically (AddedDatabases), for job.databases_added.
+func (s *Scheduler) storeKnownDatabases(ctx context.Context, plan *JobRunPlan) []string {
+	res := plan.Resolution
+	if res == nil || res.Known == nil {
+		return plan.Run.AddedDatabases
+	}
+	var added []string
+	update := func(current *models.Job) ([]string, bool) {
+		sel := current.Selection()
+		if !sel.Discovers() {
+			return nil, false
+		}
+		var candidates []string
+		switch {
+		case current.SameSource(plan.Job):
+			if current.KnownDatabases == nil {
+				candidates = res.Known
+			} else {
+				candidates = append(slices.Clone(current.KnownDatabases), res.Known...)
+			}
+		case current.KnownDatabases == nil:
+			return nil, false
+		default:
+			candidates = slices.Clone(current.KnownDatabases)
+			for _, rec := range plan.completedRecords() {
+				if sel.Matches(rec.Database) {
+					candidates = append(candidates, rec.Database)
+				}
+			}
+		}
+		known := slices.Clone(candidates)
+		slices.Sort(known)
+		known = slices.Compact(known)
+		for _, db := range plan.Run.AddedDatabases {
+			if slices.Contains(known, db) && !slices.Contains(current.KnownDatabases, db) {
+				added = append(added, db)
+			}
+		}
+		was := slices.Clone(current.KnownDatabases)
+		slices.Sort(was)
+		return known, current.KnownDatabases == nil || !slices.Equal(known, was)
+	}
+	s.mu.Lock()
+	err := s.metadataStore.UpdateJobKnownDatabases(ctx, plan.Job.ID, update)
+	s.mu.Unlock()
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.logger.Error("failed to store the job's known databases", slog.String("job_id", plan.Job.ID), slog.Any("error", err))
+		}
+		return nil
+	}
+	return added
+}
+
+// StartJobRun starts an on-demand run of multi-database job jobID in the
+// background and returns at once with the run (status running): the selection is
+// resolved and the databases are backed up by the function spawn starts (typically
+// runs.Manager.Go); planning errors, such as databases that cannot be listed, are
+// recorded in the run. trigger is models.TriggerMCP or models.TriggerOnDemand.
+// Expected failures: store.ErrNotFound, ErrNotMulti, ErrJobRunning (also matching
+// runs.ErrBusy) and the error of spawn.
+func (s *Scheduler) StartJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger, spawn func(func(context.Context)) error) (*models.JobRun, error) {
+	job, err := s.metadataStore.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve job %s: %w", jobID, err)
+	}
+	if !job.MultiDatabase() {
+		return nil, fmt.Errorf("start job %s: %w", jobID, ErrNotMulti)
+	}
+	if trigger != models.TriggerMCP {
+		trigger = models.TriggerOnDemand
+	}
+	run := newRun(job, trigger)
+	if err = s.claimJobRun(job.ID, run.ID); err != nil {
+		return nil, fmt.Errorf("start job %s: %w", jobID, err)
+	}
+	s.saveRun(ctx, run)
+	snapshot := run.Clone()
+	err = spawn(func(runCtx context.Context) {
+		plan, planErr := s.planRun(runCtx, job, run)
+		if planErr != nil {
+			s.releaseJobRun(job.ID, run.ID)
+			_, _ = s.failRun(runCtx, job, run, planErr)
+			return
+		}
+		_, _ = s.runMulti(runCtx, plan, false)
+	})
+	if err != nil {
+		s.releaseJobRun(job.ID, run.ID)
+		run.Error = "run not started: " + redact.Text(err.Error())
+		run.Finish(time.Now())
+		s.saveRun(context.WithoutCancel(ctx), run)
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 // failRun records a multi-database run that could not be planned (its databases

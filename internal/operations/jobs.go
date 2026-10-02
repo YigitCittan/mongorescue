@@ -206,6 +206,17 @@ func (s *Service) snapshotKnownDatabases(ctx context.Context, job *models.Job) {
 	job.KnownDatabases = res.Known
 }
 
+// RefreshKnownDatabases is called right before job replaces current, under the
+// scheduler's lock: when both back up the same databases from the same connection,
+// job takes current's known databases, so ones a run recorded since job was read are
+// never dropped (and never announced as added again).
+func RefreshKnownDatabases(job, current *models.Job) {
+	if current != nil && current.KnownDatabases != nil && job.ConnectionID == current.ConnectionID &&
+		job.Selection().SameMatch(current.Selection()) {
+		job.KnownDatabases = slices.Clone(current.KnownDatabases)
+	}
+}
+
 // CarryKnownDatabases sets job's known databases (server-managed, never taken from
 // clients) before it is validated: existing's when job replaces existing with the
 // same selection and connection, else none, so ValidateJob records them afresh.
@@ -298,11 +309,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 			return ErrJobChanged
 		}
 		job.LastRun, job.CreatedAt, job.LastRestoreTest = current.LastRun, current.CreatedAt, current.LastRestoreTest
-		// Known databases a run recorded meanwhile are kept unless the selection changed.
-		if job.KnownDatabases != nil && job.ConnectionID == current.ConnectionID && job.Selection().SameMatch(current.Selection()) &&
-			current.KnownDatabases != nil {
-			job.KnownDatabases = slices.Clone(current.KnownDatabases)
-		}
+		RefreshKnownDatabases(job, current)
 		// UpdateJob never recreates a job deleted meanwhile.
 		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
 	}

@@ -141,3 +141,17 @@ func (j *Job) MultiDatabase() bool {
 func (j *Job) EffectiveParallelism() int {
 	return min(max(j.Parallelism, 1), MaxJobParallelism)
 }
+
+// Covers reports whether the job backs up database name: its selection matches it
+// (see DatabaseSelection.Matches) or it is one of the job's known databases.
+func (j *Job) Covers(name string) bool {
+	return name != "" && (j.Selection().Matches(name) || slices.Contains(j.KnownDatabases, name))
+}
+
+// SameSource reports whether j and o back up the same databases from the same
+// connection: the same connection and selection (mode, databases, patterns and
+// AutoIncludeNew).
+func (j *Job) SameSource(o *Job) bool {
+	a, b := j.Selection(), o.Selection()
+	return j.ConnectionID == o.ConnectionID && a.SameMatch(b) && a.AutoIncludeNew == b.AutoIncludeNew
+}

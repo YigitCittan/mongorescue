@@ -318,7 +318,8 @@ type targetList struct {
 }
 
 type backupStarted struct {
-	Backup   *models.BackupRecord `json:"backup"`
+	Backup   *models.BackupRecord `json:"backup,omitempty"`
+	Run      *models.JobRun       `json:"run,omitempty"`
 	NextStep string               `json:"next_step"`
 }
 
@@ -492,7 +493,7 @@ func (s *Server) registerTools() {
 		Name: ToolRunJob,
 		Description: "Run a scheduled backup job now. Returns immediately with the new backup record (status in_progress); " +
 			"poll get_backup with its id until the status is completed or failed. A job with several databases backs up each " +
-			"into its own backup: the record returned is the first one and its run_id names the run; poll list_job_runs (or " +
+			"into its own backup: the result is then the run (status running), resolved in the background; poll list_job_runs (or " +
 			"list_backups with run_id) for all of them. On-demand runs never delete older backups: " +
 			"the job's retention policy is applied by its scheduled runs only.",
 		Annotations: additive("Run job now"),
@@ -857,15 +858,17 @@ func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, str
 	if err := requireID("job_id", in.JobID); err != nil {
 		return backupStarted{}, "", err
 	}
-	rec, err := s.cfg.Operations.RunJob(ctx, in.JobID, models.TriggerMCP)
+	started, err := s.cfg.Operations.RunJob(ctx, in.JobID, models.TriggerMCP)
 	if err != nil {
 		return backupStarted{}, "", err
 	}
-	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
-	if job, getErr := s.cfg.Operations.GetJob(ctx, rec.JobID); getErr == nil && job.MultiDatabase() {
-		next = fmt.Sprintf("this job backs up several databases, each into its own backup; poll list_job_runs with job_id %q "+
-			"(or list_backups with run_id %q) until the run's status is no longer running", rec.JobID, rec.RunID)
+	if run := started.Run; run != nil {
+		next := fmt.Sprintf("this job backs up several databases, each into its own backup; poll list_job_runs with job_id %q "+
+			"(or list_backups with run_id %q) until the run's status is no longer running", run.JobID, run.ID)
+		return backupStarted{Run: run, NextStep: next}, fmt.Sprintf("Job %s started run %s; %s.", idText(run.JobID), idText(run.ID), next), nil
 	}
+	rec := started.Backup
+	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
 	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Job %s started backup %s; %s.", idText(rec.JobID), idText(rec.ID), next), nil
 }
 

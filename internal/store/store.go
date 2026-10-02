@@ -58,9 +58,10 @@ type Store interface {
 	ListJobs(ctx context.Context) ([]*models.Job, error)
 	// DeleteJob removes a job or returns ErrNotFound.
 	DeleteJob(ctx context.Context, id string) error
-	// UpdateJobKnownDatabases stores only a job's KnownDatabases, never its settings
-	// or UpdatedAt, or returns ErrNotFound when the job was deleted.
-	UpdateJobKnownDatabases(ctx context.Context, id string, known []string) error
+	// UpdateJobKnownDatabases stores only a job's KnownDatabases, as update decides
+	// from the job as stored now (in one transaction), never its settings or
+	// UpdatedAt, or returns ErrNotFound when the job was deleted.
+	UpdateJobKnownDatabases(ctx context.Context, id string, update func(job *models.Job) (known []string, write bool)) error
 
 	// SaveJobRun creates or replaces a job run.
 	SaveJobRun(ctx context.Context, run *models.JobRun) error
@@ -110,6 +111,9 @@ type Store interface {
 	// LatestJobBackups maps every job ID with backups to its newest backup, only
 	// considering backups in status when it is not empty.
 	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
+	// LatestJobDatabaseBackups maps every database of a job with backups in status
+	// (any when empty) to its newest one.
+	LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error)
 	// RestoreStats returns the number of restores and their counts by status.
 	RestoreStats(ctx context.Context) (*RestoreStats, error)
 	// BackupHistory returns SQL aggregates of the backups over time: outcomes and

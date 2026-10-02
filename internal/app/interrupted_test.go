@@ -58,3 +58,44 @@ func TestFailInterruptedJobRuns(t *testing.T) {
 		t.Errorf("a finished run was changed: %+v", kept)
 	}
 }
+
+// TestInterruptedJobRunKeepsCompletedDatabases checks that recovery rebuilds a run's
+// databases from its backup records: a database that completed before the crash
+// stays completed even when the stored run still lists it as running.
+func TestInterruptedJobRunKeepsCompletedDatabases(t *testing.T) {
+	ctx := context.Background()
+	fs := storetest.New(t)
+	at := time.Now().Add(-time.Hour)
+	for _, b := range []*models.BackupRecord{
+		{ID: "bkp_a", RunID: "run_2", JobID: "job", Database: "a", Status: models.StatusCompleted, StartedAt: at, SHA256: "aa"},
+		{ID: "bkp_b", RunID: "run_2", JobID: "job", Database: "b", Status: models.StatusInProgress, StartedAt: at},
+		{ID: "bkp_c", RunID: "run_2", JobID: "job", Database: "c", Status: models.StatusInProgress, StartedAt: at},
+	} {
+		if err := fs.SaveBackupRecord(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &models.JobRun{ID: "run_2", JobID: "job", Status: models.JobRunRunning, StartedAt: at, Databases: []models.JobRunDatabase{
+		{Database: "a", BackupID: "bkp_a", Status: models.StatusInProgress},
+		{Database: "b", BackupID: "bkp_b", Status: models.StatusInProgress},
+		{Database: "c", BackupID: "bkp_c", Status: models.StatusInProgress},
+	}}
+	if err := fs.SaveJobRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{metaStore: fs, logger: slog.Default()}
+	a.failInterruptedRuns(ctx)
+
+	got, err := fs.GetJobRun(ctx, "run_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.JobRunPartial || got.Databases[0].Status != models.StatusCompleted ||
+		got.Databases[1].Status != models.StatusFailed || got.Databases[2].Status != models.StatusFailed ||
+		got.Databases[1].Error == "" {
+		t.Fatalf("recovered run = %+v; want a completed, b and c failed (partial)", got)
+	}
+	if b, _ := fs.GetBackupRecord(ctx, "bkp_a"); b.Status != models.StatusCompleted {
+		t.Errorf("completed backup changed: %+v", b)
+	}
+}

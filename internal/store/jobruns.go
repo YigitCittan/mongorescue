@@ -54,14 +54,20 @@ func (s *SQLiteStore) ListRunningJobRuns(ctx context.Context) ([]*models.JobRun,
 		"SELECT id, data FROM job_runs WHERE status = ? ORDER BY started_at, id", string(models.JobRunRunning))
 }
 
-// UpdateJobKnownDatabases stores known as the job's KnownDatabases without touching
-// its settings or UpdatedAt (a run finishing never reverts an edit saved meanwhile).
-// It returns ErrNotFound when the job was deleted.
-func (s *SQLiteStore) UpdateJobKnownDatabases(ctx context.Context, id string, known []string) error {
+// UpdateJobKnownDatabases reads job id and, in the same transaction, stores the
+// known databases update returns for it as its KnownDatabases, without touching its
+// settings or UpdatedAt (a run finishing never reverts an edit saved meanwhile).
+// update sees the job as it is stored now and returns write false to leave it as it
+// is. It returns ErrNotFound when the job was deleted.
+func (s *SQLiteStore) UpdateJobKnownDatabases(ctx context.Context, id string, update func(job *models.Job) (known []string, write bool)) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		job, err := getRecord[models.Job](ctx, tx, ErrNotFound, "SELECT data FROM jobs WHERE id = ?", id)
 		if err != nil {
 			return err
+		}
+		known, write := update(job.Clone())
+		if !write {
+			return nil
 		}
 		if known == nil {
 			known = []string{}
