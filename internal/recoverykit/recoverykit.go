@@ -105,6 +105,9 @@ type Config struct {
 	Targets Targets
 	// LatestSnapshot returns the last stored metadata snapshot (nil when none).
 	LatestSnapshot func(ctx context.Context) *metabackup.Snapshot
+	// MetadataPrefix is the storage key prefix of this installation's metadata
+	// snapshots (metabackup.Service.Prefix).
+	MetadataPrefix string
 	// Version is the MongoRescue version written to the kit.
 	Version string
 	// Now is the clock; nil means time.Now.
@@ -229,6 +232,8 @@ type Manifest struct {
 	Encryption EncryptionInfo `json:"encryption"`
 	// StorageTargets lists every storage target with its credentials.
 	StorageTargets []*models.StorageTarget `json:"storage_targets"`
+	// MetadataPrefix is where this installation stores its metadata snapshots.
+	MetadataPrefix string `json:"metadata_prefix,omitempty"`
 	// MetadataSnapshot is the latest metadata snapshot (nil when none was stored).
 	MetadataSnapshot *metabackup.Snapshot `json:"metadata_snapshot"`
 }
@@ -297,6 +302,7 @@ func (s *Service) Prepare(ctx context.Context) (*Kit, error) {
 			PassphraseConfigured: enc.Passphrase != "",
 		},
 		StorageTargets: []*models.StorageTarget{},
+		MetadataPrefix: s.cfg.MetadataPrefix,
 	}
 	if m.Encryption.Recipients == nil {
 		m.Encryption.Recipients = []string{}
@@ -400,57 +406,4 @@ func (s *Service) Seal(w io.Writer, kit *Kit, passphrase string) error {
 // the material changes.
 func (s *Service) MarkDownloaded(ctx context.Context, kit *Kit) error {
 	return s.cfg.Settings.MarkRecoveryKitDownloaded(ctx, kit.fingerprint, kit.manifest.CreatedAt)
-}
-
-// readme returns the recovery steps of kit.
-func readme(kit *Kit) string {
-	m := kit.manifest
-	var b strings.Builder
-	fmt.Fprintf(&b, "MongoRescue recovery kit\n========================\n\nCreated %s", m.CreatedAt.Format(time.RFC3339))
-	if m.Version != "" {
-		fmt.Fprintf(&b, " by MongoRescue %s", m.Version)
-	}
-	b.WriteString(".\n\n")
-	b.WriteString(`This kit holds secrets in plain form. Keep it offline (a password manager, an
-encrypted USB stick, a safe), separate from your backups, and never commit or
-mail it. Download a new kit whenever MongoRescue reminds you to.
-
-Contents
---------
-secret.key      The key that seals the credentials stored in mongorescue.db and in
-                its metadata snapshots. A database copy cannot be used without it.
-recovery.json   Encryption settings, every storage target with its credentials and
-                the location of the latest metadata snapshot.
-identities.txt  The age private keys (current and retired) that decrypt encrypted
-                backups and metadata snapshots. Only present when one is configured.
-                Passphrases are never part of the kit.
-
-Restore MongoRescue from a metadata snapshot
---------------------------------------------
-1. Install the same or a newer MongoRescue release on the new host. Do not start it.
-2. Download the latest snapshot named in recovery.json (metadata_snapshot: target
-   and key, under the _mongorescue/metadata/ prefix) from that storage target, using
-   the target's credentials in recovery.json.
-3. Decrypt it with age:
-     age -d -i identities.txt -o mongorescue.db mongorescue-<time>.db.age
-   With passphrase encryption, run age -d -o mongorescue.db <file> and enter the
-   backup passphrase. A snapshot ending in .db is not encrypted: rename it.
-4. Put mongorescue.db and secret.key into the data directory and restrict them:
-     chmod 600 mongorescue.db secret.key
-   If the old installation used MONGORESCUE_SECRET_KEY, set it to the content of
-   secret.key instead of copying the file.
-5. Start MongoRescue. Jobs, backup records, users, settings and storage targets are
-   back; sign in with your usual account.
-
-Without a snapshot
-------------------
-Start a fresh installation with this secret.key, recreate the storage targets from
-recovery.json, put the private keys from identities.txt (or your passphrase) under
-Settings > Encryption, and import the archives found by a storage scan (Settings >
-Storage > Scan now, then Import).
-`)
-	if m.MetadataSnapshot == nil {
-		b.WriteString("\nNote: no metadata snapshot had been stored when this kit was created. Turn on\nSettings > Recovery > Metadata backups.\n")
-	}
-	return b.String()
 }

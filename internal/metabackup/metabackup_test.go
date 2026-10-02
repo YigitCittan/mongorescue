@@ -17,6 +17,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -86,8 +87,28 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureOn(t, &fakeStorage{MockStorage: storage.NewMockStorage()}, newInstallID(t))
+}
+
+// newInstallID derives the install ID of a fresh secret.key.
+func newInstallID(t *testing.T) string {
+	t.Helper()
+	key, err := secretbox.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := metabackup.InstallID(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// newFixtureOn returns an installation with installID writing to shared.
+func newFixtureOn(t *testing.T, shared *fakeStorage, installID string) *fixture {
+	t.Helper()
 	f := &fixture{
-		storage: &fakeStorage{MockStorage: storage.NewMockStorage()},
+		storage: shared,
 		rec:     &recorder{},
 		dataDir: t.TempDir(),
 		cfg:     settings.Defaults(),
@@ -95,6 +116,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.cfg.MetadataBackup.Enabled = true
 	f.svc = metabackup.New(metabackup.Config{
+		InstallID: installID,
 		Store:     storetest.New(t),
 		Targets:   &fakeTargets{target: &models.StorageTarget{ID: "stg_1", Name: "primary"}, driver: f.storage},
 		DataDir:   f.dataDir,
@@ -108,10 +130,10 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
-// snapshotKeys lists the stored snapshot keys.
+// snapshotKeys lists the keys under this installation's prefix.
 func (f *fixture) snapshotKeys(t *testing.T) []string {
 	t.Helper()
-	objs, err := f.storage.List(context.Background(), metabackup.Prefix)
+	objs, err := f.storage.List(context.Background(), f.svc.Prefix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +187,8 @@ func TestRunStoresEncryptedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(snap.Key, metabackup.Prefix) || !strings.HasSuffix(snap.Key, ".db.age") || !snap.Encrypted || snap.TargetID != "stg_1" {
+	if !strings.HasPrefix(snap.Key, f.svc.Prefix()) || !strings.HasPrefix(f.svc.Prefix(), metabackup.Prefix+snap.InstallID+"/") ||
+		!strings.HasSuffix(snap.Key, ".db.age") || !snap.Encrypted || snap.TargetID != "stg_1" {
 		t.Fatalf("snapshot = %+v", snap)
 	}
 	dec, err := encryption.NewDecryptor(encryption.DecryptorConfig{Identity: identity})
@@ -213,7 +236,7 @@ func TestRetentionKeepsTheNewestSnapshots(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	f.cfg.MetadataBackup.RetentionCount = 2
-	for _, k := range []string{metabackup.Prefix + "notes.txt", "shop/2026/10/bkp_1.archive.gz"} {
+	for _, k := range []string{f.svc.Prefix() + "notes.txt", "shop/2026/10/bkp_1.archive.gz"} {
 		if _, err := f.storage.MockStorage.Save(ctx, k, strings.NewReader("x")); err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +251,7 @@ func TestRetentionKeepsTheNewestSnapshots(t *testing.T) {
 		keys = append(keys, snap.Key)
 	}
 	got := f.snapshotKeys(t)
-	want := map[string]bool{keys[2]: true, keys[3]: true, metabackup.Prefix + "notes.txt": true}
+	want := map[string]bool{keys[2]: true, keys[3]: true, f.svc.Prefix() + "notes.txt": true}
 	if len(got) != len(want) {
 		t.Fatalf("kept %v, want %v", got, want)
 	}
@@ -239,6 +262,56 @@ func TestRetentionKeepsTheNewestSnapshots(t *testing.T) {
 	}
 	if _, err := f.storage.Stat(ctx, "shop/2026/10/bkp_1.archive.gz"); err != nil {
 		t.Fatal("retention must not touch backup archives")
+	}
+}
+
+// TestInstallsSharingAStorageKeepTheirSnapshots checks that two installations
+// writing to the same bucket and prefix use their own sub-prefix and that
+// retention of one never deletes the other's snapshots.
+func TestInstallsSharingAStorageKeepTheirSnapshots(t *testing.T) {
+	ctx := context.Background()
+	shared := &fakeStorage{MockStorage: storage.NewMockStorage()}
+	a := newFixtureOn(t, shared, newInstallID(t))
+	b := newFixtureOn(t, shared, newInstallID(t))
+	if a.svc.Prefix() == b.svc.Prefix() {
+		t.Fatal("installations with different keys must not share a prefix")
+	}
+	a.cfg.MetadataBackup.RetentionCount, b.cfg.MetadataBackup.RetentionCount = 1, 1
+	for i := range 3 {
+		for _, f := range []*fixture{a, b} {
+			f.clock = f.clock.Add(time.Duration(i+1) * time.Hour)
+			if _, err := f.svc.Run(ctx, metabackup.TriggerScheduled); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, f := range []*fixture{a, b} {
+		keys := f.snapshotKeys(t)
+		if last := f.svc.Latest(ctx); len(keys) != 1 || last == nil || keys[0] != last.Key {
+			t.Fatalf("%s keeps %v, want only its latest snapshot", f.svc.Prefix(), keys)
+		}
+	}
+	all, err := shared.List(ctx, metabackup.Prefix)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("shared storage holds %d snapshots (%v), want one per installation", len(all), err)
+	}
+}
+
+// TestInstallIDIsStable checks that the install ID follows secret.key.
+func TestInstallIDIsStable(t *testing.T) {
+	key, err := secretbox.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := metabackup.InstallID(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := metabackup.InstallID(key); again != first || len(first) != 16 || strings.Contains(first, secretbox.EncodeKey(key)) {
+		t.Fatalf("install ID %q is not stable", first)
+	}
+	if _, err = metabackup.InstallID([]byte("short")); err == nil {
+		t.Fatal("an invalid key must be refused")
 	}
 }
 
