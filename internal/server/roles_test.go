@@ -89,15 +89,15 @@ func selfServiceRefused(t *testing.T, pattern string, session bool, have auth.Sc
 	t.Helper()
 	admin := have.Allows(auth.ScopeAdmin)
 	switch pattern {
-	case logoutRoute, listAPIKeysRoute, revokeSessionRoute:
-		// Everyone may sign out, list their own keys, and end their own sessions
-		// (an unknown session is 404 for everyone).
+	case logoutRoute, listAPIKeysRoute, deleteAPIKeyRoute:
+		// Everyone may sign out and list their own keys; revoking an unknown key is
+		// 404 for everyone (who may revoke what is pinned by the auth tests).
 		return false
-	case createAPIKeyRoute:
-		// Signed-in users of every role may create keys (up to their role); API keys
-		// need the admin scope.
+	case revokeSessionRoute, createAPIKeyRoute:
+		// Signed-in users of every role may end their own sessions (an unknown one is
+		// 404) and create keys up to their role; API keys need the admin scope.
 		return !session && !admin
-	case changePasswordRoute, deleteAPIKeyRoute:
+	case changePasswordRoute:
 		// The placeholder ID is not the caller's own: another user's needs admin.
 		return !admin
 	}

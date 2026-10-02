@@ -89,10 +89,10 @@ own account; the auth service applies the finer rule (`selfServiceRoutes` in
 | :--- | :--- |
 | `POST /api/v1/auth/logout` | ends the request's own session |
 | `PUT /api/v1/users/{id}/password` | your own: a session and the current password; another user's: admin |
-| `DELETE /api/v1/auth/sessions/{id}` | your own sessions: allowed; another user's: admin |
+| `DELETE /api/v1/auth/sessions/{id}` | from a session: your own user's sessions; another user's: admin; an API key below admin: none, not even its creator's |
 | `GET /api/v1/api-keys` | non-admins see only the keys they created |
 | `POST /api/v1/api-keys` | a session, or an admin-scope key; the scope may not exceed the caller's |
-| `DELETE /api/v1/api-keys/{id}` | your own keys: allowed; another user's: admin |
+| `DELETE /api/v1/api-keys/{id}` | from a session: the keys your user created; an API key below admin: only itself, never its creator's other keys; admin: any; an unknown ID is 404 for everyone |
 
 Every other route keeps its scope, including the settings `GET` (read, secrets
 masked), live database and collection listings, target scans and run logs (read),
@@ -116,7 +116,7 @@ metadata backup run and integrity sweep (admin), and dismissing warnings (admin)
 
 `UpdateUserRole` runs in one transaction: it checks that the acting user is still an
 admin (a stale principal of a demoted admin is refused), refuses to demote the last
-admin, updates the role and deletes the user's sessions. SQLite write transactions
+admin, updates the role and deletes the user's sessions. `DeleteUser` checks in its transaction that the acting user is still an admin too. SQLite write transactions
 are serialized (`_txlock=immediate`, one connection), so when two admins demote each
 other at the same moment exactly one succeeds; a test runs that race.
 

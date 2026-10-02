@@ -121,9 +121,14 @@ func (s *SQLiteStore) RecordLogin(ctx context.Context, userID string, at time.Ti
 }
 
 // DeleteUser removes a user (sessions cascade). Neither the last user nor the last
-// admin can be deleted.
-func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
+// admin can be deleted, and when actorID is not "" that user must still be an admin.
+func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if actorID != "" {
+			if err := requireAdminRole(ctx, tx, actorID); err != nil {
+				return err
+			}
+		}
 		var n int
 		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&n); err != nil {
 			return fmt.Errorf("store: count users: %w", err)

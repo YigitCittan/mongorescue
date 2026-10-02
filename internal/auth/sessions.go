@@ -126,14 +126,20 @@ func isCurrentSession(actor *Principal, sess *Session) bool {
 	return actor.Method == MethodSession && actor.SessionHash != "" && equalHashes(sess.TokenHash, actor.SessionHash)
 }
 
-// RevokeSession ends the session with the public ID id. Anyone may end the sessions
-// of their own user; ending another user's session needs the admin scope (a
-// *ScopeError wrapping ErrForbidden otherwise). An unknown ID answers
+// RevokeSession ends the session with the public ID id. A signed-in user may end
+// the sessions of their own user; ending another user's session needs the admin
+// scope, and an API key below admin may end no session at all, not even its
+// creator's (a *ScopeError wrapping ErrForbidden). An unknown ID answers
 // ErrSessionNotFound. It reports whether the revoked session is the one actor
 // is using.
 func (s *Service) RevokeSession(ctx context.Context, actor *Principal, id string) (current bool, err error) {
 	if err = actor.Require(ScopeRead); err != nil {
 		return false, err
+	}
+	if actor.Method != MethodSession {
+		if err = actor.Require(ScopeAdmin); err != nil {
+			return false, err
+		}
 	}
 	if len(id) != len(sessionIDPrefix)+sessionIDLen {
 		return false, ErrSessionNotFound
