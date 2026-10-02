@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-02
+
 ### Added
 - `GET /api/v1/stats/history` (read scope): SQL aggregates for the dashboard overview, namely outcomes and stored size per day (`?days=` 1-366, default 30, cut at your local midnights with `?tz=<IANA zone>`, also across daylight saving changes, or a fixed `?tz_offset=`), each job's 12 newest runs with durations, its last success and run interval, the next 24 hours of scheduled runs, and the window's completed backups whose verification failed. Every query is answered from an index on the backups table, without a table scan. `GET /api/v1/schedule/preview?cron=&n=` (read scope) validates a cron expression with the scheduler's parser and returns its next runs in the server's time zone. No schema migration. See [docs/api.md](docs/api.md#overview-history-and-schedule-preview).
 - Dashboard: an **Overview** tab, now the landing tab, with the success rate and storage growth of the last 30 days, a timeline of the next 24 hours' scheduled runs and an *Attention needed* list (a job whose last run failed, failed verifications, failed restore tests, jobs without a successful backup for two of their intervals, unreadable records). The charts are inline SVG in the theme's colours, each with a text description and a *Show the data* table. The Jobs table's *Last run* cell shows a sparkline of the job's 12 latest outcomes and durations.
