@@ -364,6 +364,10 @@ a.menu-item {
   fill: var(--danger);
 }
 
+.ov-warn {
+  fill: var(--warn);
+}
+
 .ov-neutral {
   fill: var(--text-subtle);
 }

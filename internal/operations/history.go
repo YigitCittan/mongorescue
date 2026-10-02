@@ -98,14 +98,29 @@ type HistoryRun struct {
 	StartedAt time.Time `json:"started_at"`
 	// DurationSeconds is how long it ran (0 while running or unknown).
 	DurationSeconds float64 `json:"duration_seconds"`
+	// RunStatus is the outcome of a multi-database job's run (ok, partial, failed,
+	// cancelled, running): such a job lists its runs, each as one entry whose ID is
+	// the run's, not one per database. Status is then completed for ok, failed for
+	// partial and failed runs, cancelled, or in_progress.
+	RunStatus models.JobRunStatus `json:"run_status,omitempty"`
+	// Databases and Succeeded count a run's databases and those backed up.
+	Databases int `json:"databases,omitempty"`
+	Succeeded int `json:"succeeded,omitempty"`
 }
 
 // HistoryJob is the recent record of one job.
 type HistoryJob struct {
 	// Runs are its newest backups (at most HistoryRunsPerJob), oldest first.
 	Runs []HistoryRun `json:"runs"`
-	// LastSuccessAt is when its newest completed backup started, if any.
+	// LastSuccessAt is when its newest completed backup started, if any. For a job
+	// with several databases it is the oldest of its databases' newest successes
+	// (the stalest database), empty while one of them never succeeded.
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	// StalestDatabase names the database LastSuccessAt belongs to, or the first one
+	// that never succeeded (multi-database jobs).
+	StalestDatabase string `json:"stalest_database,omitempty"`
+	// Databases breaks the last successes down per database (multi-database jobs).
+	Databases []DatabaseStatus `json:"databases,omitempty"`
 	// IntervalSeconds is the gap between the enabled job's next two scheduled runs
 	// (0 for disabled jobs), so "no success for too long" can follow the schedule.
 	IntervalSeconds float64 `json:"interval_seconds,omitempty"`
@@ -259,6 +274,13 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 			h.Jobs[j.ID] = hj
 		}
 	}
+	for _, j := range jobs {
+		if j.MultiDatabase() {
+			if err := s.multiJobHistory(ctx, j, h); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for _, v := range agg.VerificationIssues {
 		h.VerificationIssues = append(h.VerificationIssues, VerificationIssue{
 			ID: v.ID, JobID: v.JobID, Database: v.Database, StartedAt: v.StartedAt, Verification: v.Verification,
@@ -266,6 +288,47 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	}
 	h.Upcoming, h.UpcomingTruncated = upcomingRuns(jobs, now)
 	return h, nil
+}
+
+// multiJobHistory replaces the per-backup history of multi-database job j with its
+// runs (one entry per run, however many databases it backed up) and reports its
+// stalest database as its last success.
+func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History) error {
+	list, err := s.cfg.Store.ListJobRuns(ctx, j.ID, HistoryRunsPerJob)
+	if err != nil {
+		return fmt.Errorf("runs of job %s: %w", j.ID, err)
+	}
+	hj := h.Jobs[j.ID]
+	hj.Runs = make([]HistoryRun, 0, len(list))
+	for i := len(list) - 1; i >= 0; i-- { // oldest first
+		run := list[i]
+		ok, _, _, _ := run.Counts()
+		hj.Runs = append(hj.Runs, HistoryRun{
+			ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,
+			DurationSeconds: run.DurationSeconds, Databases: len(run.Databases), Succeeded: ok,
+		})
+	}
+	var js JobStatus
+	if err := s.multiJobStatus(ctx, j, &js); err != nil {
+		return err
+	}
+	hj.LastSuccessAt, hj.StalestDatabase, hj.Databases = js.LastSuccessAt, js.StalestDatabase, js.Databases
+	h.Jobs[j.ID] = hj
+	return nil
+}
+
+// runBackupStatus is the backup status a job run's outcome is shown as.
+func runBackupStatus(st models.JobRunStatus) models.BackupStatus {
+	switch st {
+	case models.JobRunOK:
+		return models.StatusCompleted
+	case models.JobRunCancelled:
+		return models.StatusCancelled
+	case models.JobRunRunning:
+		return models.StatusInProgress
+	default:
+		return models.StatusFailed
+	}
 }
 
 // upcomingRuns lists the activations of the enabled jobs in the next UpcomingWindow,
