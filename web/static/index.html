@@ -8,6 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css">
+  <link rel="stylesheet" href="/tables.css">
 </head>
 <body class="is-booting">
 
@@ -334,8 +335,7 @@
           <thead>
             <tr>
               <th scope="col" class="col-select"><input type="checkbox" class="bulk-check-all" data-bulk-kind="backups" aria-label="Select all rows on this page" data-i18n-aria-label="bulk.select_page"></th>
-              <th scope="col" data-i18n="tables.backup_id">ID</th>
-              <th scope="col" data-i18n="tables.database">Database</th>
+              <th scope="col" data-i18n="tv.col_backup">Backup</th>
               <th scope="col" data-i18n="tables.status">Status</th>
               <th scope="col" data-i18n="tables.started_at">Started</th>
               <th scope="col" class="num" data-i18n="tables.duration">Duration</th>
@@ -345,7 +345,7 @@
             </tr>
           </thead>
           <tbody id="backups-tbody">
-            <tr class="empty-row"><td colspan="9"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            <tr class="empty-row"><td colspan="8"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -376,6 +376,44 @@
             <span data-i18n="nav.new_job">New job</span>
           </button>
         </div>
+      </div>
+      <div class="filter-bar" role="search" aria-label="Filter jobs" data-i18n-aria-label="tv.jobs_label" data-tv-filters="jobs">
+        <div class="filter-search">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+          <input type="search" class="form-input" id="jobs-tfilter-q" data-tfilter="q" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Search name, ID or database" data-i18n-placeholder="tv.search_jobs" aria-label="Search" data-i18n-aria-label="filters.search">
+        </div>
+        <select class="form-select" id="jobs-tfilter-status" data-tfilter="status" aria-label="State" data-i18n-aria-label="tv.state">
+          <option value="" data-i18n="tv.state_all">All states</option>
+          <option value="enabled" data-i18n="tv.state_enabled">Scheduled</option>
+          <option value="paused" data-i18n="tv.state_paused">Paused</option>
+        </select>
+        <select class="form-select" id="jobs-tfilter-connection" data-tfilter="connection" aria-label="Connection" data-i18n-aria-label="tables.connection">
+          <option value="" data-i18n="tv.connection_all">All connections</option>
+        </select>
+        <select class="form-select" id="jobs-tfilter-database" data-tfilter="database" aria-label="Database" data-i18n-aria-label="filters.database">
+          <option value="" data-i18n="filters.database_all">All databases</option>
+        </select>
+        <select class="form-select" id="jobs-tfilter-schedule" data-tfilter="schedule" aria-label="Frequency" data-i18n-aria-label="tv.schedule">
+          <option value="" data-i18n="tv.schedule_all">Any frequency</option>
+          <option value="hourly" data-i18n="tv.schedule_hourly">Hourly or more often</option>
+          <option value="daily" data-i18n="tv.schedule_daily">Daily</option>
+          <option value="weekly" data-i18n="tv.schedule_weekly">Weekly</option>
+          <option value="monthly" data-i18n="tv.schedule_monthly">Monthly</option>
+          <option value="other" data-i18n="tv.schedule_other">Other schedules</option>
+        </select>
+        <select class="form-select" id="jobs-tfilter-last" data-tfilter="last" aria-label="Last run" data-i18n-aria-label="tables.last_run">
+          <option value="" data-i18n="tv.last_all">Any last run</option>
+          <option value="completed" data-i18n="tv.last_completed">Last run succeeded</option>
+          <option value="failed" data-i18n="tv.last_failed">Last run failed</option>
+          <option value="partial" data-i18n="tv.last_partial">Last run partly failed</option>
+          <option value="in_progress" data-i18n="tv.last_in_progress">Running now</option>
+          <option value="cancelled" data-i18n="tv.last_cancelled">Last run cancelled</option>
+          <option value="never" data-i18n="tv.last_never">Never ran</option>
+        </select>
+        <span class="filter-meta">
+          <span class="filter-count" id="jobs-tfilter-count" hidden></span>
+          <button type="button" class="link-btn" id="jobs-tfilter-clear" data-tv="clear" data-tv-table="jobs" hidden data-i18n="filters.clear">Clear filters</button>
+        </span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -447,16 +485,15 @@
           <thead>
             <tr>
               <th scope="col" class="col-select"><input type="checkbox" class="bulk-check-all" data-bulk-kind="restores" aria-label="Select all rows on this page" data-i18n-aria-label="bulk.select_page"></th>
-              <th scope="col" data-i18n="tables.restore_id">ID</th>
+              <th scope="col" data-i18n="tv.col_restore">Restore</th>
               <th scope="col" data-i18n="tables.source_db">Source</th>
-              <th scope="col" data-i18n="tables.target_db">Target</th>
               <th scope="col" data-i18n="tables.status">Status</th>
               <th scope="col" data-i18n="tables.started_at">Started</th>
               <th scope="col" class="num" data-i18n="tables.duration">Duration</th>
             </tr>
           </thead>
           <tbody id="restores-tbody">
-            <tr class="empty-row"><td colspan="7"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+            <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -487,6 +524,22 @@
             <span data-i18n="conn.add">Add connection</span>
           </button>
         </div>
+      </div>
+      <div class="filter-bar" role="search" aria-label="Filter connections" data-i18n-aria-label="tv.connections_label" data-tv-filters="connections">
+        <div class="filter-search">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+          <input type="search" class="form-input" id="connections-tfilter-q" data-tfilter="q" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Search name, host or ID" data-i18n-placeholder="tv.search_connections" aria-label="Search" data-i18n-aria-label="filters.search">
+        </div>
+        <select class="form-select" id="connections-tfilter-test" data-tfilter="test" aria-label="Last test" data-i18n-aria-label="conn.col_status">
+          <option value="" data-i18n="tv.test_all">Any test result</option>
+          <option value="ok" data-i18n="tv.test_ok">Reachable</option>
+          <option value="failed" data-i18n="tv.test_failed">Test failed</option>
+          <option value="untested" data-i18n="tv.test_untested">Not tested</option>
+        </select>
+        <span class="filter-meta">
+          <span class="filter-count" id="connections-tfilter-count" hidden></span>
+          <button type="button" class="link-btn" id="connections-tfilter-clear" data-tv="clear" data-tv-table="connections" hidden data-i18n="filters.clear">Clear filters</button>
+        </span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -520,6 +573,28 @@
             <span data-i18n="notify.add_channel">Add channel</span>
           </button>
         </div>
+      </div>
+      <div class="filter-bar" role="search" aria-label="Filter channels" data-i18n-aria-label="tv.channels_label" data-tv-filters="channels">
+        <div class="filter-search">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+          <input type="search" class="form-input" id="channels-tfilter-q" data-tfilter="q" maxlength="256" autocomplete="off" spellcheck="false" placeholder="Search name or ID" data-i18n-placeholder="tv.search_channels" aria-label="Search" data-i18n-aria-label="filters.search">
+        </div>
+        <select class="form-select" id="channels-tfilter-type" data-tfilter="type" aria-label="Type" data-i18n-aria-label="notify.col_type">
+          <option value="" data-i18n="tv.type_all">All types</option>
+          <option value="webhook" data-i18n="notify.type_webhook">Webhook</option>
+          <option value="telegram" data-i18n="notify.type_telegram">Telegram</option>
+          <option value="email" data-i18n="notify.type_email">E-mail (SMTP)</option>
+          <option value="twilio" data-i18n="notify.type_twilio">SMS (Twilio)</option>
+        </select>
+        <select class="form-select" id="channels-tfilter-enabled" data-tfilter="enabled" aria-label="Status" data-i18n-aria-label="notify.col_enabled">
+          <option value="" data-i18n="tv.enabled_all">Enabled and disabled</option>
+          <option value="enabled" data-i18n="status.enabled">Enabled</option>
+          <option value="disabled" data-i18n="status.disabled">Disabled</option>
+        </select>
+        <span class="filter-meta">
+          <span class="filter-count" id="channels-tfilter-count" hidden></span>
+          <button type="button" class="link-btn" id="channels-tfilter-clear" data-tv="clear" data-tv-table="channels" hidden data-i18n="filters.clear">Clear filters</button>
+        </span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -2269,5 +2344,6 @@
   <script src="/nav.js"></script>
   <script src="/overview.js"></script>
   <script src="/widgets.js"></script>
+  <script src="/tables.js"></script>
 </body>
 </html>

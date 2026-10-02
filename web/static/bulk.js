@@ -736,15 +736,22 @@ function bulkActionLabel(name) {
   return t(`bulk.action_${name}`, String(name || ""));
 }
 
-// The filter state a selection is made under ("" for the Jobs table).
+// The filter state a selection is made under (the Jobs filters live in tables.js).
 function bulkFilterKey(kind) {
+  if (kind === "jobs") return typeof tablesFilterKey === "function" ? tablesFilterKey("jobs") : "";
   return typeof lists === "object" && lists[kind] ? JSON.stringify(lists[kind].filters) : "";
 }
 
 // Records matching the current filters.
 function bulkTotal(kind) {
-  if (kind === "jobs") return state.jobs.length;
+  if (kind === "jobs") return typeof tablesTotal === "function" ? tablesTotal("jobs") : state.jobs.length;
   return lists[kind] ? lists[kind].total : 0;
+}
+
+// Whether kind's list is narrowed by filters.
+function bulkFiltered(kind) {
+  if (kind === "jobs") return typeof tablesActiveCount === "function" && tablesActiveCount("jobs") > 0;
+  return typeof activeFilterCount === "function" && activeFilterCount(kind) > 0;
 }
 
 function bulkCount(kind) {
@@ -893,7 +900,7 @@ function renderBulkUI(kind) {
     return;
   }
   const total = bulkTotal(kind);
-  const filtered = kind !== "jobs" && typeof activeFilterCount === "function" && activeFilterCount(kind) > 0;
+  const filtered = bulkFiltered(kind);
   let banner = "";
   if (sel.mode === "all") {
     banner = `<span class="bulk-banner">${escapeHtml(tf(filtered ? "bulk.all_matching_selected" : "bulk.all_selected", { total: formatCount(total) }))}</span>`;
@@ -1138,12 +1145,13 @@ function bulkPost(kind, body) {
   });
 }
 
-// The list filters of kind in the API's names, without paging.
+// The list filters of kind in the API's names, without paging and sorting.
 function bulkApiFilter(kind) {
-  if (kind === "jobs") return {};
+  if (kind === "jobs") return typeof tablesApiFilter === "function" ? tablesApiFilter("jobs") : {};
   const p = new URLSearchParams(listParams(kind));
   p.delete("limit");
   p.delete("offset");
+  p.delete("sort");
   const f = {};
   p.forEach((v, k) => { f[k] = v; });
   return f;
