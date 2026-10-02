@@ -3939,6 +3939,8 @@ function showLogin(notice) {
   } else {
     username.focus();
   }
+  // The single sign-on button and a failed sign-in (sso.js).
+  if (typeof ssoRenderLogin === "function") ssoRenderLogin();
 }
 
 function enterApp() {
@@ -4133,13 +4135,22 @@ async function submitLogin(e) {
 
 async function logout() {
   toggleUserMenu(false);
+  let endSession = "";
   try {
-    await apiFetch("/api/v1/auth/logout", { method: "POST" });
+    const res = await apiFetch("/api/v1/auth/logout", { method: "POST" });
+    const json = await readJSON(res);
+    // Single sign-on users may also be signed out at the identity provider.
+    const url = json && json.data ? json.data.end_session_url : "";
+    if (typeof url === "string" && /^https?:\/\//i.test(url)) endSession = url;
   } catch (err) {
     // The session is discarded locally either way.
   }
   sessionExpiredShown = true;
   clearAuth();
+  if (endSession) {
+    window.location.assign(endSession);
+    return;
+  }
   showLogin(t("auth.signed_out"));
 }
 
@@ -4147,6 +4158,9 @@ function renderUserMenu() {
   const name = auth.user ? auth.user.username || "" : "";
   setText("user-menu-name", name);
   setText("user-menu-fullname", name);
+  // Single sign-on users have no password to change.
+  const pw = document.querySelector("#user-menu-list [data-action='change-own-password']");
+  if (pw) pw.hidden = !!(auth.user && auth.user.auth_provider === "oidc");
 }
 
 function toggleUserMenu(force) {
@@ -4694,8 +4708,8 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "audit", "users", "apikeys", "sessions"];
-const ADMIN_SETTINGS_SECTIONS = ["audit", "users"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "audit", "users", "sso", "apikeys", "sessions"];
+const ADMIN_SETTINGS_SECTIONS = ["audit", "users", "sso"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
@@ -4803,6 +4817,8 @@ function renderWarnings() {
   banner.hidden = !list.some(w => w && w.id === WARNING_ENCRYPTION_OFF);
   // Recovery kit reminder and unencrypted metadata backups (recovery.js).
   if (typeof recoveryRenderWarnings === "function") recoveryRenderWarnings(list);
+  // A single sign-on kept the last administrator's role (sso.js).
+  if (typeof ssoRenderWarnings === "function") ssoRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {
@@ -4845,6 +4861,8 @@ function fillSettingsForms(force) {
   if (typeof recoveryFillSettings === "function") recoveryFillSettings(force);
   // Settings → Audit log (auditlog.js).
   if (typeof auditlogFillSettings === "function") auditlogFillSettings(force);
+  // Settings → Single sign-on (sso.js).
+  if (typeof ssoFillSettings === "function") ssoFillSettings(force);
 }
 
 function fillGeneral(g) {
@@ -5916,13 +5934,18 @@ function renderUsers() {
     const lastAdmin = u.role === "admin" && admins <= 1;
     const deleteTitle = self ? t("settings.cannot_delete_self") : onlyOne ? t("settings.cannot_delete_last")
       : lastAdmin ? t("settings.user_role_last_admin") : "";
+    // Single sign-on users (sso.js) have no password, and their role follows the
+    // group mappings while there are any.
+    const external = u.auth_provider === "oidc";
+    const badge = typeof ssoProviderBadge === "function" ? ssoProviderBadge(u) : "";
+    const managed = typeof ssoRoleManaged === "function" && ssoRoleManaged(u);
     return `<tr>
-      <td class="cell-primary"><span class="user-cell">${escapeHtml(u.username)}${self ? `<span class="chip">${escapeHtml(t("settings.you"))}</span>` : ""}</span></td>
-      <td>${userRoleSelect(u, self, lastAdmin)}</td>
+      <td class="cell-primary"><span class="user-cell">${escapeHtml(u.username)}${self ? `<span class="chip">${escapeHtml(t("settings.you"))}</span>` : ""}${badge}</span></td>
+      <td>${userRoleSelect(u, self, lastAdmin, managed)}</td>
       <td>${timeCell(u.created_at)}</td>
       <td>${parseDate(u.last_login_at) ? timeCell(u.last_login_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
       <td class="col-actions"><div class="row-actions">
-        <button type="button" class="btn btn-secondary btn-sm" data-action="change-user-password" data-id="${escapeHtml(u.id)}">${escapeHtml(t("auth.change_password"))}</button>
+        ${external ? "" : `<button type="button" class="btn btn-secondary btn-sm" data-action="change-user-password" data-id="${escapeHtml(u.id)}">${escapeHtml(t("auth.change_password"))}</button>`}
         <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="delete-user" data-id="${escapeHtml(u.id)}"${deleteTitle ? ` disabled title="${escapeHtml(deleteTitle)}"` : ""}>${escapeHtml(t("actions.delete"))}</button>
       </div></td>
     </tr>`;

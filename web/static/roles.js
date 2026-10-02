@@ -446,11 +446,13 @@ function guardOpeners() {
 // ---------------------------------------------------------------------------
 
 // userRoleSelect renders the role of u: a select for administrators, disabled for
-// their own user and for the last administrator.
-function userRoleSelect(u, self, lastAdmin) {
+// their own user, for the last administrator and for single sign-on users whose
+// role the identity provider's group mappings decide (managed).
+function userRoleSelect(u, self, lastAdmin, managed) {
   const role = USER_ROLES.includes(u.role) ? u.role : "viewer";
-  const locked = self || lastAdmin;
-  const title = self ? t("settings.user_role_self") : lastAdmin ? t("settings.user_role_last_admin") : "";
+  const locked = self || lastAdmin || !!managed;
+  const title = self ? t("settings.user_role_self") : lastAdmin ? t("settings.user_role_last_admin")
+    : managed ? t("sso.role_managed") : "";
   const options = USER_ROLES.map(r =>
     `<option value="${r}"${r === role ? " selected" : ""}>${escapeHtml(roleLabel(r))}</option>`).join("");
   return `<select class="form-select user-role-select" data-id="${escapeHtml(u.id)}" data-role="${role}"

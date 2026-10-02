@@ -122,6 +122,13 @@
       <h1 class="auth-title" id="login-title" data-i18n="auth.login_title">Sign in</h1>
       <p class="auth-desc" data-i18n="auth.login_desc">Sign in to manage backups and restores.</p>
       <p class="form-notice" id="login-notice" role="status" hidden></p>
+      <p class="form-error" id="sso-login-error" role="alert" hidden></p>
+      <!-- Single sign-on (sso.js): a plain link, so form-action 'self' needs no exception -->
+      <div class="sso-login" id="sso-login" hidden>
+        <a class="btn btn-primary btn-block" id="sso-login-link" href="/auth/oidc/start"><span id="sso-login-label">Single sign-on</span></a>
+        <p class="sso-divider"><span data-i18n="sso.or">or</span></p>
+        <button type="button" class="btn btn-ghost btn-block" id="login-local-toggle" data-action="sso-show-local" data-i18n="sso.local_toggle" hidden>Sign in with a local account</button>
+      </div>
       <form id="form-login" class="auth-form" novalidate>
         <div class="form-group">
           <label class="form-label" for="login-username" data-i18n="auth.username">Username</label>
@@ -687,6 +694,7 @@
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="audit" data-i18n="auditlog.title" data-hide-unless="admin">Audit log</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title" data-hide-unless="admin">Users</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sso" data-i18n="sso.nav" data-hide-unless="admin">Single sign-on</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sessions" data-i18n="sessions.title">Sessions</button>
       </nav>
@@ -1301,6 +1309,149 @@
             </tbody>
           </table>
         </div>
+      </section>
+
+      <!-- Single sign-on (sso.js) -->
+      <section class="settings-panel" id="settings-sso" aria-labelledby="settings-sso-title" data-hide-unless="admin" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-sso-title" data-i18n="sso.nav">Single sign-on</h2>
+            <p class="section-desc" data-i18n="sso.desc">Let people sign in with your identity provider over OpenID Connect (Entra ID, Google, Okta, Keycloak). Local accounts remain, and a local administrator can always sign in with a password.</p>
+          </div>
+        </div>
+        <div id="sso-role-warning" class="callout callout-warning" role="status" aria-labelledby="sso-role-warning-title" hidden>
+          <div>
+            <h3 class="callout-title" id="sso-role-warning-title" data-i18n="sso.warn_title">An administrator role was kept</h3>
+            <p class="section-desc" data-i18n="sso.warn">A single sign-on would have demoted the last administrator, so the stored admin role was kept. Map an identity provider group to admin or keep a second administrator.</p>
+          </div>
+          <div class="callout-actions">
+            <button type="button" class="btn btn-secondary" data-action="sso-dismiss-warning"><span data-i18n="sso.warn_dismiss">Dismiss</span></button>
+          </div>
+        </div>
+        <p class="notice" id="sso-desktop-note" data-i18n="sso.desktop" hidden>Single sign-on is not available in the desktop app, which serves only this computer: local accounts are the way in. Run the server or the Docker image to use single sign-on.</p>
+        <form id="form-sso" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="sso.group_provider">Identity provider</legend>
+            <label class="check" for="sso-enabled">
+              <input type="checkbox" id="sso-enabled">
+              <span class="check-text">
+                <span class="check-title" data-i18n="sso.enabled">Enable single sign-on</span>
+                <span class="form-hint" data-i18n="sso.enabled_hint">Turning it on checks the provider's discovery document and needs at least one local administrator.</span>
+              </span>
+            </label>
+            <div class="form-group">
+              <label class="form-label" for="sso-display-name" data-i18n="sso.display_name">Button label</label>
+              <input type="text" id="sso-display-name" class="form-input" maxlength="64" autocomplete="off" placeholder="Single sign-on">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="sso-issuer" data-i18n="sso.issuer">Issuer URL</label>
+              <div class="input-inline">
+                <input type="url" id="sso-issuer" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://keycloak.example.com/realms/ops" aria-describedby="sso-issuer-hint sso-test-result">
+                <button type="button" class="btn btn-secondary" data-action="sso-test" data-i18n="sso.test">Test provider</button>
+              </div>
+              <span class="form-hint" id="sso-issuer-hint" data-i18n="sso.issuer_hint">Such as https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0 or https://keycloak.example.com/realms/ops. https only.</span>
+              <span class="form-hint" id="sso-test-result" role="status" aria-live="polite"></span>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="sso-client-id" data-i18n="sso.client_id">Client ID</label>
+                <input type="text" id="sso-client-id" class="form-input mono" maxlength="256" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="sso-client-secret" data-i18n="sso.client_secret">Client secret</label>
+                <input type="password" id="sso-client-secret" class="form-input mono" maxlength="1024" autocomplete="new-password" spellcheck="false" aria-describedby="sso-client-secret-hint">
+                <span class="form-hint" id="sso-client-secret-hint" data-i18n="sso.client_secret_hint">Stored encrypted. Leave empty for a public client (PKCE only).</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="sso-redirect-url" data-i18n="sso.redirect_url">Callback URL</label>
+              <div class="input-inline">
+                <input type="url" id="sso-redirect-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" aria-describedby="sso-redirect-url-hint">
+                <button type="button" class="btn btn-secondary" data-action="sso-copy-callback" data-i18n="sso.copy">Copy</button>
+              </div>
+              <span class="form-hint" id="sso-redirect-url-hint" data-i18n="sso.redirect_url_hint">Register exactly this URL at your provider. Its path must be /auth/oidc/callback.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="sso-scopes" data-i18n="sso.scopes">Scopes</label>
+              <input type="text" id="sso-scopes" class="form-input mono" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="openid email profile" aria-describedby="sso-scopes-hint">
+              <span class="form-hint" id="sso-scopes-hint" data-i18n="sso.scopes_hint">Separated by spaces; openid is always requested.</span>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="sso-username-claim" data-i18n="sso.username_claim">Username claim</label>
+                <input type="text" id="sso-username-claim" class="form-input mono" maxlength="128" autocomplete="off" spellcheck="false" placeholder="preferred_username" aria-describedby="sso-username-claim-hint">
+                <span class="form-hint" id="sso-username-claim-hint" data-i18n="sso.username_claim_hint">Names new users; falls back to email, then the subject.</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="sso-groups-claim" data-i18n="sso.groups_claim">Groups claim</label>
+                <input type="text" id="sso-groups-claim" class="form-input mono" maxlength="128" autocomplete="off" spellcheck="false" placeholder="groups" aria-describedby="sso-groups-claim-hint">
+                <span class="form-hint" id="sso-groups-claim-hint" data-i18n="sso.groups_claim_hint">A claim or dot path, such as groups or realm_access.roles.</span>
+              </div>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="sso.group_roles">Roles</legend>
+            <p class="form-hint" id="sso-mappings-hint" data-i18n="sso.mappings_hint">Members of a group get its role, matched exactly; the highest role wins. The admin role only ever comes from a mapping.</p>
+            <div class="table-wrap">
+              <table class="table" aria-label="Group mappings" data-i18n-aria-label="sso.mappings" aria-describedby="sso-mappings-hint">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="sso.mapping_group">Group</th>
+                    <th scope="col" data-i18n="sso.mapping_role">Role</th>
+                    <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody id="sso-mappings-tbody"></tbody>
+              </table>
+            </div>
+            <div class="settings-footer">
+              <button type="button" class="btn btn-secondary btn-sm" id="sso-add-mapping" data-action="sso-add-mapping" data-i18n="sso.mapping_add">Add mapping</button>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="sso-default-role" data-i18n="sso.default_role">Role without a matching group</label>
+              <select id="sso-default-role" class="form-select">
+                <option value="" data-i18n="sso.default_deny">None: refuse the sign-in</option>
+                <option value="viewer" data-i18n="settings.user_role_viewer">Viewer</option>
+                <option value="operator" data-i18n="settings.user_role_operator">Operator</option>
+              </select>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="sso.group_access">Who may sign in</legend>
+            <div class="form-group">
+              <label class="form-label" for="sso-domains" data-i18n="sso.domains">Allowed email domains</label>
+              <textarea id="sso-domains" class="form-input mono" rows="3" spellcheck="false" placeholder="example.com" aria-describedby="sso-domains-hint"></textarea>
+              <span class="form-hint" id="sso-domains-hint" data-i18n="sso.domains_hint">One per line, such as example.com. Requires a verified email. Leave empty to allow any.</span>
+            </div>
+            <label class="check" for="sso-auto-create">
+              <input type="checkbox" id="sso-auto-create">
+              <span class="check-text">
+                <span class="check-title" data-i18n="sso.auto_create">Create users at their first sign-in</span>
+                <span class="form-hint" data-i18n="sso.auto_create_hint">When off, only people who already have a user can sign in.</span>
+              </span>
+            </label>
+            <div class="form-group">
+              <label class="form-label" for="sso-local-login" data-i18n="sso.local_login">Password sign-in</label>
+              <select id="sso-local-login" class="form-select" aria-describedby="sso-local-login-hint">
+                <option value="all" data-i18n="sso.local_all">Every local user</option>
+                <option value="admins_only" data-i18n="sso.local_admins">Local administrators only (break-glass)</option>
+              </select>
+              <span class="form-hint" id="sso-local-login-hint" data-i18n="sso.local_login_hint">Switching to administrators only ends the sessions of the other local users.</span>
+            </div>
+            <label class="check" for="sso-rp-logout">
+              <input type="checkbox" id="sso-rp-logout">
+              <span class="check-text">
+                <span class="check-title" data-i18n="sso.rp_logout">Also sign out at the identity provider</span>
+                <span class="form-hint" data-i18n="sso.rp_logout_hint">Signing out of MongoRescue then ends the session at the provider too.</span>
+              </span>
+            </label>
+          </fieldset>
+          <p class="form-error" id="sso-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="sso-save-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
       </section>
 
       <!-- API keys -->
@@ -2637,6 +2788,7 @@
   <script src="/overview.js"></script>
   <script src="/readiness.js"></script>
   <script src="/roles.js"></script>
+  <script src="/sso.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>
