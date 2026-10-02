@@ -253,8 +253,11 @@ const TRUST_TRANSLATIONS = {
 };
 
 // mergeTranslations deep-merges src into dst without replacing existing strings.
+// Keys that reach Object.prototype (__proto__, constructor, prototype) are skipped,
+// so a merge can never pollute it.
 function mergeTranslations(dst, src) {
   Object.keys(src).forEach(k => {
+    if (k === "__proto__" || k === "constructor" || k === "prototype") return;
     if (typeof src[k] === "object" && src[k] !== null) {
       if (typeof dst[k] !== "object" || dst[k] === null) dst[k] = {};
       mergeTranslations(dst[k], src[k]);
