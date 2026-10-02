@@ -1,0 +1,657 @@
+/* ==========================================================================
+   mongorescue dashboard: navigation, overview and job form widgets
+   (nav.js, overview.js, widgets.js). Colours come only from the tokens in
+   style.css, so both themes follow automatically.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Toast queue
+   -------------------------------------------------------------------------- */
+#toast-container .toast {
+  pointer-events: auto; /* toasts carry a dismiss (and maybe an action) button */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-action {
+  flex-shrink: 0;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  background: var(--panel-header);
+  color: var(--text);
+}
+
+.toast-close .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* --------------------------------------------------------------------------
+   Command palette
+   -------------------------------------------------------------------------- */
+.palette-backdrop {
+  padding-top: 12vh;
+}
+
+.palette-card {
+  max-width: 620px;
+}
+
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.palette-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+
+.palette-input:focus {
+  outline: none;
+}
+
+.palette-card:focus-within {
+  box-shadow: var(--shadow-lg), 0 0 0 2px var(--focus);
+}
+
+.palette-esc,
+.shortcut-list kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.palette-list {
+  max-height: min(380px, 56vh);
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.palette-group {
+  padding: 8px 10px 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.palette-option.active {
+  background: var(--accent-subtle);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.palette-option.active .palette-icon {
+  color: var(--accent);
+}
+
+.palette-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-sub {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.palette-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-header);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Shortcut help
+   -------------------------------------------------------------------------- */
+.shortcut-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.shortcut-list dt {
+  white-space: nowrap;
+}
+
+.shortcut-list dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.kbd-sep {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* --------------------------------------------------------------------------
+   User menu: time display toggle, time zone, documentation link
+   -------------------------------------------------------------------------- */
+.menu-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.menu-check-box {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--panel);
+}
+
+.menu-check[aria-checked="true"] .menu-check-box {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--panel);
+}
+
+.menu-check-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.menu-note {
+  max-width: 260px;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: normal;
+}
+
+a.menu-item {
+  text-decoration: none;
+}
+
+/* --------------------------------------------------------------------------
+   Overview
+   -------------------------------------------------------------------------- */
+.ov-status:empty {
+  display: none;
+}
+
+.ov-status {
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.ov-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.ov-card {
+  min-width: 0;
+  padding: 14px 16px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.ov-card-alert {
+  border-color: var(--danger);
+}
+
+.ov-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ov-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ov-figure {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ov-figure-alert {
+  color: var(--danger);
+}
+
+.ov-card-sub {
+  min-height: 17px;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ov-chart {
+  margin-top: 10px;
+}
+
+.ov-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.ov-svg text {
+  font-family: var(--font-sans);
+}
+
+.ov-axis-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.ov-row-label {
+  fill: var(--text);
+  font-size: 11px;
+}
+
+.ov-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.ov-track {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.ov-now {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+
+.ov-now-label {
+  fill: var(--warn);
+}
+
+.ov-ok {
+  fill: var(--success);
+}
+
+.ov-bad {
+  fill: var(--danger);
+}
+
+.ov-neutral {
+  fill: var(--text-subtle);
+}
+
+.ov-running {
+  fill: var(--info);
+}
+
+.ov-empty {
+  fill: var(--border-strong);
+}
+
+.ov-area {
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.ov-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.ov-dot,
+.ov-run {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+
+.ov-hit {
+  fill: transparent;
+}
+
+.ov-hit:hover {
+  fill: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.ov-data {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.ov-data summary {
+  width: max-content;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.ov-table-wrap {
+  max-height: 240px;
+  margin-top: 6px;
+  overflow-y: auto;
+  box-shadow: none;
+}
+
+.ov-table th,
+.ov-table td {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.ov-table th[scope="row"] {
+  color: var(--text);
+  font-weight: 500;
+  background: transparent;
+}
+
+.ov-next {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.ov-next li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ov-next .link-btn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-next-time {
+  min-width: 92px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ov-more,
+.ov-empty-text {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ov-attention {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ov-att {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 7px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.ov-att-danger {
+  background: var(--danger-subtle);
+}
+
+.ov-att-warn {
+  background: var(--warn-subtle);
+}
+
+.ov-att-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.ov-att-danger .ov-att-icon {
+  color: var(--danger);
+}
+
+.ov-att-warn .ov-att-icon {
+  color: var(--warn);
+}
+
+.ov-att-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ov-all-good {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--success);
+  font-size: 13px;
+}
+
+/* Sparkline inside the Jobs table's "Last run" cell */
+.spark {
+  display: block;
+  width: 60px;
+  height: 14px;
+  margin-top: 4px;
+  line-height: 0;
+}
+
+.spark svg {
+  display: block;
+}
+
+@media (max-width: 960px) {
+  .ov-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Job form: cron builder and retention presets
+   -------------------------------------------------------------------------- */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cronb .preset-row {
+  margin-top: 2px;
+}
+
+.retention-presets {
+  margin-bottom: -6px;
+}
+
+.preset-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.preset-btn:hover {
+  background: var(--panel-header);
+}
+
+.preset-btn[aria-pressed="true"],
+.preset-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.preset-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.cronb-editor {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.cronb-editor[hidden],
+.cronb-field[hidden],
+.cronb-days[hidden] {
+  display: none;
+}
+
+.cronb-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cronb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 96px;
+}
+
+.cronb-days {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.cronb-day-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cronb-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cronb-day:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.cronb-preview {
+  display: block;
+  margin-top: 6px;
+}
+
+.cronb-preview span:empty {
+  display: none;
+}
+
+.cronb-preview span:not(:empty) ~ span:not(:empty)::before {
+  content: " · ";
+  color: var(--text-subtle);
+}
+
+.cronb-reading {
+  color: var(--text);
+}

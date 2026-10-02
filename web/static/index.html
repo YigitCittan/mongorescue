@@ -7,6 +7,7 @@
   <title>mongorescue</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/nav.css">
 </head>
 <body class="is-booting">
 
@@ -68,6 +69,13 @@
             <button type="button" role="menuitem" class="menu-item" data-action="change-own-password" data-i18n="auth.change_password">Change password</button>
             <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
             <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="sessions" data-i18n="sessions.menu">Active sessions</button>
+            <div class="menu-sep" role="separator"></div>
+            <button type="button" role="menuitemcheckbox" aria-checked="false" class="menu-item menu-check" id="user-menu-time" data-action="nav-toggle-time" aria-describedby="user-menu-tz">
+              <span class="menu-check-box" aria-hidden="true"></span>
+              <span class="menu-check-text"><span data-i18n="timefmt.absolute">Show absolute times</span><span class="menu-note" id="user-menu-tz"></span></span>
+            </button>
+            <button type="button" role="menuitem" class="menu-item" data-action="nav-shortcuts" data-i18n="palette.shortcuts">Keyboard shortcuts</button>
+            <a role="menuitem" class="menu-item" id="user-menu-docs" href="https://github.com/YigitCittan/mongorescue/tree/main/docs" target="_blank" rel="noopener noreferrer" data-i18n="timefmt.docs">Help &amp; documentation</a>
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="menu-item" data-action="logout" data-i18n="auth.logout">Log out</button>
           </div>
@@ -208,7 +216,8 @@
 
     <!-- Tabs -->
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button type="button" class="tab-btn active" role="tab" id="tabbtn-backups" aria-selected="true" aria-controls="tab-backups" data-tab="tab-backups"><span data-i18n="tabs.backups">Backups</span><span class="tab-count" id="count-backups"></span></button>
+      <button type="button" class="tab-btn active" role="tab" id="tabbtn-overview" aria-selected="true" aria-controls="tab-overview" data-tab="tab-overview"><span data-i18n="tabs.overview">Overview</span></button>
+      <button type="button" class="tab-btn" role="tab" id="tabbtn-backups" aria-selected="false" aria-controls="tab-backups" tabindex="-1" data-tab="tab-backups"><span data-i18n="tabs.backups">Backups</span><span class="tab-count" id="count-backups"></span></button>
       <button type="button" class="tab-btn" role="tab" id="tabbtn-jobs" aria-selected="false" aria-controls="tab-jobs" tabindex="-1" data-tab="tab-jobs"><span data-i18n="tabs.jobs">Jobs</span><span class="tab-count" id="count-jobs"></span></button>
       <button type="button" class="tab-btn" role="tab" id="tabbtn-restores" aria-selected="false" aria-controls="tab-restores" tabindex="-1" data-tab="tab-restores"><span data-i18n="tabs.restores">Restores</span><span class="tab-count" id="count-restores"></span></button>
       <button type="button" class="tab-btn" role="tab" id="tabbtn-connections" aria-selected="false" aria-controls="tab-connections" tabindex="-1" data-tab="tab-connections"><span data-i18n="tabs.connections">Connections</span><span class="tab-count" id="count-connections"></span></button>
@@ -216,8 +225,62 @@
       <button type="button" class="tab-btn" role="tab" id="tabbtn-settings" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="tab-settings"><span data-i18n="tabs.settings">Settings</span></button>
     </nav>
 
+    <!-- Overview (overview.js) -->
+    <section id="tab-overview" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-overview">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title" data-i18n="tabs.overview">Overview</h2>
+          <p class="section-desc" data-i18n="overview.desc">Backup health over the last 30 days, the next 24 hours of scheduled runs and what needs attention.</p>
+        </div>
+        <div class="section-actions">
+          <button type="button" class="btn btn-secondary" data-action="refresh">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M13.5 2.5v3h-3"/></svg>
+            <span data-i18n="tables.refresh">Refresh</span>
+          </button>
+          <button type="button" class="btn btn-primary" data-action="backup-now" data-needs-connection><span data-i18n="nav.instant_backup">Back up now</span></button>
+        </div>
+      </div>
+      <p class="ov-status" id="overview-status" role="status" aria-live="polite"></p>
+      <div class="ov-grid">
+        <section class="ov-card" aria-labelledby="ov-success-title">
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-success-title" data-i18n="overview.success_title">Success rate</h3>
+            <span class="ov-figure" id="ov-success-figure">—</span>
+          </div>
+          <p class="ov-card-sub" id="ov-success-sub"></p>
+          <p class="sr-only" id="ov-success-desc"></p>
+          <div class="ov-chart" id="ov-success-chart"></div>
+        </section>
+        <section class="ov-card" aria-labelledby="ov-storage-title">
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-storage-title" data-i18n="overview.storage_title">Storage growth</h3>
+            <span class="ov-figure" id="ov-storage-figure">—</span>
+          </div>
+          <p class="ov-card-sub" id="ov-storage-sub"></p>
+          <p class="sr-only" id="ov-storage-desc"></p>
+          <div class="ov-chart" id="ov-storage-chart"></div>
+        </section>
+        <section class="ov-card" aria-labelledby="ov-upcoming-title">
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-upcoming-title" data-i18n="overview.upcoming_title">Next 24 hours</h3>
+            <span class="ov-figure" id="ov-upcoming-figure">—</span>
+          </div>
+          <p class="ov-card-sub" id="ov-upcoming-sub"></p>
+          <p class="sr-only" id="ov-upcoming-desc"></p>
+          <div class="ov-chart" id="ov-upcoming-chart"></div>
+        </section>
+        <section class="ov-card" id="ov-attention-card" aria-labelledby="ov-attention-title">
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-attention-title" data-i18n="overview.attention_title">Attention needed</h3>
+            <span class="ov-figure ov-figure-alert" id="ov-attention-figure"></span>
+          </div>
+          <div id="ov-attention-list"></div>
+        </section>
+      </div>
+    </section>
+
     <!-- Backups -->
-    <section id="tab-backups" class="tab-pane active" role="tabpanel" aria-labelledby="tabbtn-backups" data-list="backups">
+    <section id="tab-backups" class="tab-pane" role="tabpanel" aria-labelledby="tabbtn-backups" data-list="backups" hidden>
       <div class="section-header">
         <div>
           <h2 class="section-title" data-i18n="tabs.backups">Backups</h2>
@@ -1622,6 +1685,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-job-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary" data-action="nav-copy-link" data-i18n="links.copy">Copy link</button>
         <button type="button" class="btn btn-secondary btn-danger-text" id="job-details-stop" data-action="stop-job-run" data-i18n="run.stop_current" hidden>Stop current run</button>
         <button type="button" class="btn btn-secondary" id="job-details-toggle" data-action="pause-job" data-i18n="run.pause">Pause</button>
         <button type="button" class="btn btn-secondary" id="job-details-run" data-action="trigger-job" data-i18n="actions.run_now">Run now</button>
@@ -1672,6 +1736,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-backup-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary" data-action="nav-copy-link" data-i18n="links.copy">Copy link</button>
         <button type="button" class="btn btn-secondary btn-danger-text" id="backup-details-cancel" data-action="cancel-run" data-kind="backup" data-i18n="run.cancel" hidden>Cancel run</button>
         <button type="button" class="btn btn-primary" id="backup-details-retry" data-action="retry-backup" data-i18n="actions.retry" hidden>Retry</button>
       </div>
@@ -1720,6 +1785,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary footer-start" data-action="close-modal" data-target="modal-restore-details" data-i18n="actions.close">Close</button>
+        <button type="button" class="btn btn-secondary" data-action="nav-copy-link" data-i18n="links.copy">Copy link</button>
         <button type="button" class="btn btn-secondary btn-danger-text" id="restore-details-cancel" data-action="cancel-run" data-kind="restore" data-i18n="run.cancel" hidden>Cancel run</button>
       </div>
     </div>
@@ -2086,7 +2152,43 @@
   <!-- Shared action menu of table rows (filled and positioned by app.js) -->
   <div class="menu row-menu" id="row-menu" role="menu" hidden></div>
 
-  <div id="toast-container" aria-live="polite"></div>
+  <!-- Command palette (nav.js): Ctrl/Cmd+K -->
+  <div id="modal-palette" class="modal-backdrop palette-backdrop" aria-hidden="true">
+    <div class="modal-card palette-card" role="dialog" aria-modal="true" aria-labelledby="palette-title">
+      <h3 class="sr-only" id="palette-title" data-i18n="palette.title">Command palette</h3>
+      <div class="palette-search">
+        <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 13.5 13.5"/></svg>
+        <input type="text" id="palette-input" class="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" maxlength="256" placeholder="Search or jump to…" data-i18n-placeholder="palette.placeholder" aria-label="Search commands, backups, jobs and connections" data-i18n-aria-label="palette.label">
+        <kbd class="palette-esc">Esc</kbd>
+      </div>
+      <ul class="palette-list" id="palette-list" role="listbox" aria-label="Search commands, backups, jobs and connections" data-i18n-aria-label="palette.label"></ul>
+      <div class="palette-footer">
+        <span data-i18n="palette.hint">↑ ↓ to move · Enter to open · Esc to close</span>
+        <span class="palette-status" id="palette-status" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard shortcuts (nav.js): ? -->
+  <div id="modal-shortcuts" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="shortcuts-title" data-i18n="keys.title">Keyboard shortcuts</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-shortcuts" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <dl class="shortcut-list" id="shortcuts-list"></dl>
+        <p class="form-hint" data-i18n="keys.note">Single-key shortcuts are off while you type in a field or a dialog is open.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-action="close-modal" data-target="modal-shortcuts" data-i18n="actions.close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container" role="region" aria-label="Messages"></div>
   <!-- Screen reader announcements of background changes (forms.js announce()). -->
   <div id="sr-announce-polite" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="sr-announce-assertive" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
@@ -2097,5 +2199,8 @@
   <script src="/trust.js"></script>
   <script src="/forms.js"></script>
   <script src="/bulk.js"></script>
+  <script src="/nav.js"></script>
+  <script src="/overview.js"></script>
+  <script src="/widgets.js"></script>
 </body>
 </html>
