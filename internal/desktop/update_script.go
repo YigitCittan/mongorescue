@@ -184,6 +184,7 @@ const updateScript = `(function (paths, header) {
     try { window.localStorage.setItem(LEGACY_KEY, "1"); } catch (e) { /* hidden for this page only */ }
     if (legacyUI) { legacyUI.root.remove(); legacyUI = null; }
     legacyHidden = true;
+    bottomOffset();
   }
   function busyState(state) {
     return state === "downloading" || state === "checking" || state === "installing" || state === "restarting" || state === "waiting";
@@ -633,6 +634,23 @@ const updateScript = `(function (paths, header) {
     ui.root.remove();
     ui = null;
     if (legacyUI) { legacyUI.root.style.bottom = "0"; }
+    bottomOffset();
+  }
+
+  // bottomOffset publishes the height of the bars at the bottom of the window as
+  // --mr-bottom-offset on <html>, so the dashboard's toasts stay above them. A
+  // ResizeObserver follows bars that wrap or show their release notes.
+  var barObserver = null;
+  function bottomOffset() {
+    var h = 0;
+    if (ui && !ui.mandatory && ui.root.isConnected) { h += ui.root.offsetHeight; }
+    if (legacyUI && legacyUI.root.isConnected) { h += legacyUI.root.offsetHeight; }
+    document.documentElement.style.setProperty("--mr-bottom-offset", h + "px");
+    if (typeof ResizeObserver !== "function") { return; }
+    if (!barObserver) { barObserver = new ResizeObserver(function () { bottomOffset(); }); }
+    barObserver.disconnect();
+    if (ui && !ui.mandatory) { barObserver.observe(ui.root); }
+    if (legacyUI) { barObserver.observe(legacyUI.root); }
   }
 
   function render(s) {
@@ -640,6 +658,7 @@ const updateScript = `(function (paths, header) {
     headerButton(s);
     renderUpdate(s);
     renderLegacy(s);
+    bottomOffset();
   }
   function renderUpdate(s) {
     if (!s.available) { remove(); return; }

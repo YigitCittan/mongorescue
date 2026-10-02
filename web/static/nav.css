@@ -7,6 +7,12 @@
 /* --------------------------------------------------------------------------
    Toast queue
    -------------------------------------------------------------------------- */
+/* Above the desktop app's update and legacy-copy bars (update_script.go sets
+   --mr-bottom-offset to their height while they are shown). */
+#toast-container {
+  bottom: calc(16px + var(--mr-bottom-offset, 0px));
+}
+
 #toast-container .toast {
   pointer-events: auto; /* toasts carry a dismiss (and maybe an action) button */
   display: flex;

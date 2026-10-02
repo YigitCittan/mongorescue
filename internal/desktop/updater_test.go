@@ -1088,7 +1088,9 @@ func TestUpdateScript(t *testing.T) {
 		"s.checking", "visibilitychange", "window.mrAnnounce",
 		// The dashboard API used by the command palette (web/static/nav.js).
 		"window.__mongorescueUpdate = {", "check: function () { return requestCheck(); }",
-		"install: function () { return startUpdate(true); }", "status: function () { return status; }"} {
+		"install: function () { return startUpdate(true); }", "status: function () { return status; }",
+		// Toasts (web/static/nav.css) stay above the bars.
+		`"--mr-bottom-offset"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q", want)
 		}
