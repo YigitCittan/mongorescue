@@ -186,14 +186,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 
 ## Roadmap
 
-Planned for upcoming releases:
-
-- Backup scope per server (all databases), per database or per collection, each schedulable separately
-- Roles for users (viewer, operator, admin, as API keys already have) and single sign-on (OIDC)
-- Storage targets (local disk, S3-compatible buckets) and backup encryption managed in the dashboard
-- Point-in-time recovery from the oplog
-- `backup` / `restore` / `list` CLI commands
-- A shared metadata store for running several instances
+The plan to production readiness, from provable recovery (self-backup, a recovery kit, users and roles, restore preflight and verification, RPO/RTO, a full audit log) through roles and single sign-on to point-in-time recovery and immutable storage, is in [docs/roadmap.md](docs/roadmap.md).
 
 Ideas and help are welcome in [issues](https://github.com/YigitCittan/mongorescue/issues).
 
