@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -231,6 +232,32 @@ func TestConfigValidation(t *testing.T) {
 		if IsLoopback(host) != want {
 			t.Errorf("IsLoopback(%q) = %v", host, !want)
 		}
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for in, want := range map[string]time.Duration{
+		"":                              0,
+		"7":                             7 * time.Second,
+		"0":                             0,
+		"-3":                            0,
+		"soon":                          0,
+		"Thu, 01 Oct 2026 12:00:30 GMT": 30 * time.Second,
+		"Thu, 01 Oct 2026 11:00:00 GMT": 0,
+	} {
+		if got := retryAfter(in, now); got != want {
+			t.Errorf("retryAfter(%q) = %s; want %s", in, got, want)
+		}
+	}
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "4")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"success":false,"error":"slow down"}`)
+	})
+	_, err := c.Stats(context.Background())
+	if apiErr, ok := AsAPIError(err); !ok || apiErr.RetryAfter != 4*time.Second || !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("err = %#v", err)
 	}
 }
 

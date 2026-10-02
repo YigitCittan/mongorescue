@@ -13,7 +13,7 @@ mongorescue restore bkp_shop_20261001_030000_3f9a1c2e --wait --verify-restore
 mongorescue verify bkp_shop_20261001_030000_3f9a1c2e --wait
 ```
 
-Without one of these commands `mongorescue` runs the server as before, and `mongorescue mcp` runs the [MCP stdio bridge](mcp.md). `mongorescue help` lists the commands and `mongorescue help <command>` (or `<command> -h`) its flags.
+Without one of these commands `mongorescue` runs the server as before, and `mongorescue mcp` runs the [MCP stdio bridge](mcp.md). `mongorescue help` lists the commands and `mongorescue help <command>` (or `<command> -h`) its flags. Until v0.16 `mongorescue help` was an unexpected argument of the server and exited `2`; it now prints this help and exits `0` (`mongorescue -h` still lists the server's flags).
 
 ## Connecting
 
@@ -24,9 +24,11 @@ Without one of these commands `mongorescue` runs the server as before, and `mong
 | | `MONGORESCUE_CLI_API_KEY` | The API key itself |
 | `--api-key` | | The API key on the command line (discouraged: other users can read it in the process list) |
 
-The key is taken from the first of `--api-key-file`, `MONGORESCUE_CLI_API_KEY_FILE`, `MONGORESCUE_CLI_API_KEY` and `--api-key` that is set; `--api-key` prints a warning, and a warning says when it is ignored. The CLI never reads `MONGORESCUE_API_KEY` or `MONGORESCUE_API_KEY_FILE`: the server imports those as an admin key, so a shell that has them set for the server does not lend them to the CLI.
+The key is taken from the first of `--api-key-file`, `MONGORESCUE_CLI_API_KEY_FILE`, `MONGORESCUE_CLI_API_KEY` and `--api-key` that is set; `--api-key` prints a warning, and a warning says when it is ignored. On Linux and macOS a key file that its group or other users may read or write (`mode & 0o077`, for example `0644`) prints a warning (`readable by other users; chmod 600`) and is still used; Windows is not checked. The CLI never reads `MONGORESCUE_API_KEY` or `MONGORESCUE_API_KEY_FILE`: the server imports those as an admin key, so a shell that has them set for the server does not lend them to the CLI.
 
 The key is sent as `Authorization: Bearer` to the URL's origin only. Redirects are never followed (the command fails and names the redirect target; set `--url` to the final address), so a redirect cannot carry the key to another host. Sending the key over plain `http` to a host that is not this machine prints a warning; use `https`. Requests identify themselves with `User-Agent: mongorescue-cli/<version>` and `X-MongoRescue-Transport: cli`.
+
+`HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honoured; with an `http://` URL the request, API key included, reaches the proxy in clear text (with `https://` the proxy only tunnels it).
 
 Use the smallest scope that does the job ([scopes](api.md#api-key-scopes)): `read` for `list` and `status`, `operator` for `backup`, `verify` and restores into a safe clone, `admin` only for in-place and cross-connection restores.
 
@@ -46,7 +48,19 @@ Every command takes `--url`, `--api-key-file`, `--api-key` and:
 | `--wait` | Poll every 2 seconds until the run finishes, with progress lines on stderr, then print the final record. The exit code tells how it ended. |
 | `--timeout DURATION` | With `--wait`: stop waiting after this long (`90s`, `30m`, `2h`); `0` (the default) waits until the run finishes |
 
-`--timeout` and Ctrl-C stop only the waiting: the backup, restore or verification goes on on the server. The command exits `6` and prints the run's ID and the command that shows it later (`mongorescue list backups --id …`). To stop a run, cancel it in the dashboard or with `POST /api/v1/backups/{id}/cancel`.
+`--timeout` and Ctrl-C stop only the waiting: the backup, restore or verification goes on on the server. The command exits `6` and prints the run's ID and the command that shows it later (`mongorescue list backups --id …`). To stop a run, cancel it in the dashboard or with `POST /api/v1/backups/{id}/cancel`. `verify --wait` stops waiting after one hour unless `--timeout` is given (`--timeout 0` waits until the result is in), since a verification the server never runs would leave nothing to wait for.
+
+While waiting, a poll that fails transiently is retried, up to 3 failures in a row (a warning each time; a successful poll resets the count): a `429` waits for the server's `Retry-After` (at most 30 seconds, at least the poll interval), and a `5xx` or a network error is retried after the poll interval (or its `Retry-After`). The fourth failure in a row ends the command with that failure's exit code (`7`, or `1` for `429`); the run goes on on the server. Any other refusal (`401`, `403`, `404`) ends it at once.
+
+Ctrl-C at other moments:
+
+| When | Exit | What happened |
+| :--- | :--- | :--- |
+| While `--wait` polls | `6` | The run started and goes on; its ID and a `mongorescue list` command are printed |
+| During the request that starts the run (`backup`, `backup --job`, `restore`, `verify`), before its answer arrived | `1` | `cancelled before the request completed; the run may or may not have started, check mongorescue list …`: the server may have received the request, so look before you start it again |
+| Before that request (for example during the restore preflight, or in `list` and `status`) | `1` | `interrupted before the request completed`: nothing was started |
+
+A start request that fails with a network error after it was sent (exit `7`) may likewise have started the run; check `mongorescue list` before retrying.
 
 Flags may come before or after the arguments: `mongorescue restore bkp_1 --dry-run` and `mongorescue restore --dry-run bkp_1` are the same. Everything after `--` is an argument.
 
@@ -118,7 +132,7 @@ A filter that does not apply to the listed resource is a usage error (exit `2`).
 mongorescue verify BACKUP_ID [--wait]
 ```
 
-Starts a [verification](verification.md) of the backup's archive (`POST /api/v1/backups/{id}/verify`): the server re-reads it from storage and compares it with the checksum recorded at backup time. With `--wait` it polls until the backup's `verified_at` changes and exits `1` on a `mismatch` or an `error`.
+Starts a [verification](verification.md) of the backup's archive (`POST /api/v1/backups/{id}/verify`): the server re-reads it from storage and compares it with the checksum recorded at backup time. With `--wait` it polls until the backup's `verified_at` changes and exits `1` on a `mismatch` or an `error`; it stops waiting after one hour (exit `6`) unless `--timeout` is given.
 
 ### status
 
@@ -135,12 +149,12 @@ The exit codes are a stable contract:
 | Code | Meaning |
 | :--- | :--- |
 | `0` | Success |
-| `1` | The operation failed: a backup, restore or verification failed, a restore preflight failed, a readiness check failed, or the server refused the request as invalid (`400`, `422`, `429`) |
+| `1` | The operation failed: a backup, restore or verification failed, a restore preflight failed, a readiness check failed, or the server refused the request as invalid (`400`, `422`, `429`), or Ctrl-C before a run was known to have started |
 | `2` | Usage: unknown command or flag, missing or extra arguments, `--in-place` without `--confirm`, an invalid URL, no API key |
 | `3` | The server refused the API key (`401`) or its scope does not allow the request (`403`) |
 | `4` | Not found (`404`): the backup, restore or job does not exist |
 | `5` | Conflict (`409`): for example a backup of the same database is already running |
-| `6` | `--wait` stopped (`--timeout` or Ctrl-C) before the run finished; it goes on on the server |
+| `6` | `--wait` stopped (`--timeout`, the one-hour default of `verify --wait`, or Ctrl-C) before the run finished; it goes on on the server |
 | `7` | The server is unreachable, answered `5xx`, redirected, or is not a MongoRescue API at the URL |
 
 ## CI examples

@@ -132,6 +132,9 @@ func (a *App) Run(ctx context.Context, args []string, getenv func(string) string
 	if err == nil || errors.Is(err, errHelp) {
 		return ExitOK
 	}
+	if errors.Is(err, context.Canceled) && !errors.Is(err, ErrFailed) {
+		err = fmt.Errorf("%w: interrupted before the request completed: %w", ErrFailed, err)
+	}
 	code := ExitCode(err)
 	var done *reportedError
 	if !errors.As(err, &done) {

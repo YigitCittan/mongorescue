@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +73,8 @@ type APIError struct {
 	Data json.RawMessage
 	// Location is the redirect target of a 3xx response (redacted).
 	Location string
+	// RetryAfter is the delay a 429 or 503 response asked for (Retry-After), or 0.
+	RetryAfter time.Duration
 }
 
 // Error implements error.
@@ -269,12 +272,33 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if resp.StatusCode < 400 {
 			apiErr.Location = redact.URI(resp.Header.Get("Location"))
 		}
+		apiErr.RetryAfter = retryAfter(resp.Header.Get("Retry-After"), time.Now())
+
 		return nil, apiErr
 	}
 	if decodeErr != nil {
 		return nil, fmt.Errorf("%w: %s %s answered %d with a body that is not a MongoRescue API response; check the URL", ErrUnexpectedResponse, method, path, resp.StatusCode)
 	}
 	return &env, nil
+}
+
+// retryAfter parses a Retry-After header: delay seconds or an HTTP date. It returns
+// 0 for a missing, invalid or past value.
+func retryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil && t.After(now) {
+		return t.Sub(now)
+	}
+	return 0
 }
 
 // transportMessage describes a transport failure without the request URL, redacted.

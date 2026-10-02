@@ -33,6 +33,9 @@ func (t handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	rec := httptest.NewRecorder()
 	t.h.ServeHTTP(rec, r)
+	if err := r.Context().Err(); err != nil {
+		return nil, err // cancelled while the server was answering
+	}
 	resp := rec.Result()
 	resp.Request = r
 	return resp, nil
