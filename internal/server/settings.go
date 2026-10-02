@@ -85,11 +85,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request json: "+jsonProblem(err))
 		return
 	}
-	updated, err := svc.Update(r.Context(), patch)
+	updated, changed, err := svc.UpdateChanged(r.Context(), patch)
 	if err != nil {
 		s.writeSettingsError(w, err)
 		return
 	}
+	annotateSettings(r.Context(), changed)
 	s.refreshRecoveryKit(r.Context())
 	writeJSON(w, http.StatusOK, settingsResponse{Settings: updated, RestartRequired: []string{}, Warnings: svc.Warnings()})
 }

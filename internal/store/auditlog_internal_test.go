@@ -169,20 +169,25 @@ func TestAuditRetentionMovesTheAnchor(t *testing.T) {
 		t.Fatalf("Prune = %d, %v; want 20", n, err)
 	}
 	anchor, err := s.AuditChainAnchor(ctx)
-	if err != nil || anchor.LastID != 20 || anchor.LastHash != all[19].Hash || anchor.PrunedAt.IsZero() {
+	if err != nil || anchor.LastID != 20 || anchor.LastHash != all[19].Hash || !anchor.LastTime.Equal(all[19].Time) || anchor.PrunedAt.IsZero() {
 		t.Fatalf("anchor = %+v, %v", anchor, err)
 	}
 	v, err := log.Verify(ctx)
-	if err != nil || !v.OK || v.Checked != 30 || v.Anchor.LastID != 20 || v.HeadID != 50 {
+	// The prune itself is recorded (entry 51, day 51).
+	if err != nil || !v.OK || v.Checked != 31 || v.Anchor.LastID != 20 || v.HeadID != 51 || v.Warning != "" {
 		t.Fatalf("Verify = %+v, %v", v, err)
 	}
-	// Every clock read is a day: Verify read day 51, so this prune runs on day 52
-	// and removes days 20 and 21.
-	if n, _ = log.Prune(ctx); n != 2 {
-		t.Fatalf("second Prune = %d; want 2", n)
+	last, _ := s.ListAuditEvents(ctx, auditlog.Filter{Limit: 1})
+	if last[0].Action != auditlog.PruneAction || last[0].Targets["removed"] != "20" || last[0].Targets["anchor_id"] != "20" {
+		t.Fatalf("prune entry = %+v", last[0])
+	}
+	// Every clock read is a day: Verify read day 52, so this prune runs on day 53
+	// and removes days 20 to 22.
+	if n, _ = log.Prune(ctx); n != 3 {
+		t.Fatalf("second Prune = %d; want 3", n)
 	}
 	log.Record(ctx, auditlog.Event{ActorKind: auditlog.ActorUser, ActorName: "admin", Action: "POST /after", Status: 200})
-	if v, _ = log.Verify(ctx); !v.OK || v.HeadID != 51 || v.Checked != 29 || v.Anchor.LastID != 22 {
+	if v, _ = log.Verify(ctx); !v.OK || v.HeadID != 53 || v.Checked != 30 || v.Anchor.LastID != 23 {
 		t.Fatalf("Verify after prune and append = %+v", v)
 	}
 }

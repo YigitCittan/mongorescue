@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ import (
 type auditLogFixture struct {
 	*authFixture
 	log *auditlog.Service
+	srv *Server
 }
 
 func newAuditLogFixture(t *testing.T) *auditLogFixture {
@@ -33,7 +35,7 @@ func newAuditLogFixture(t *testing.T) *auditLogFixture {
 	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, newTestConfig().Security)),
 		WithAudit(audit.NewService(st, slog.New(slog.DiscardHandler), audit.WithObserver(log.Mirror()))), WithAuditLog(log))
-	return &auditLogFixture{authFixture: &authFixture{h: full.Handler(), auth: svc}, log: log}
+	return &auditLogFixture{authFixture: &authFixture{h: full.Handler(), auth: svc}, log: log, srv: full}
 }
 
 // events returns every entry, oldest first.
@@ -318,4 +320,144 @@ func TestAuditsAction(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// TestAuditLogRecordsUnauthenticatedRefusals proves mutating requests without valid
+// credentials and refused public writes (wrong media type, cross-origin) are
+// recorded anonymously, and coalesced per address.
+func TestAuditLogRecordsUnauthenticatedRefusals(t *testing.T) {
+	f := newAuditLogFixture(t)
+	b := f.browser(t)
+	b.setup(f.authFixture)
+	anon := f.browser(t)
+	anon.ip = "198.51.100.9"
+	if rec := anon.do("POST", "/api/v1/backups", map[string]string{"database": "shop"}, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST without credentials = %d", rec.Code)
+	}
+	if rec := anon.do("DELETE", "/api/v1/jobs/job_1", nil, map[string]string{"Authorization": "Bearer not-a-key"}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE with a bad key = %d", rec.Code)
+	}
+	anon.do("GET", "/api/v1/jobs", nil, nil) // reads stay unrecorded
+	if rec := anon.do("POST", "/api/v1/auth/login", nil, map[string]string{"Content-Type": "text/plain"}); rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain login = %d", rec.Code)
+	}
+	if rec := anon.do("POST", "/api/v1/auth/login", map[string]string{"username": "a", "password": "b"}, map[string]string{"Origin": "https://evil.example"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin login = %d", rec.Code)
+	}
+	events := f.events(t)
+	for _, want := range []struct {
+		action string
+		status int
+	}{
+		{"POST /api/v1/backups", http.StatusUnauthorized},
+		{"DELETE /api/v1/jobs/{id}", http.StatusUnauthorized},
+		{loginRoute, http.StatusUnsupportedMediaType},
+		{loginRoute, http.StatusForbidden},
+	} {
+		if !slices.ContainsFunc(events, func(e *auditlog.Event) bool {
+			return e.Action == want.action && e.Status == want.status && e.ActorKind == auditlog.ActorAnonymous && e.ClientIP == "198.51.100.9"
+		}) {
+			t.Errorf("no anonymous %s %d entry in %+v", want.action, want.status, events)
+		}
+	}
+	if len(find(events, "GET /api/v1/jobs")) != 0 {
+		t.Error("an unauthenticated read was recorded")
+	}
+	// A flood from one address is one entry per window plus a summary.
+	for range 20 {
+		anon.do("POST", "/api/v1/backups", map[string]string{"database": "shop"}, nil)
+	}
+	f.log.Flush()
+	posts := find(f.events(t), "POST /api/v1/backups")
+	total := 0
+	for _, e := range posts {
+		total += e.Count
+	}
+	if len(posts) != 2 || total != 21 {
+		t.Fatalf("POST /api/v1/backups entries = %d standing for %d; want 2 standing for 21", len(posts), total)
+	}
+}
+
+// TestAuditLogRecordsPanicsAndMissingStatus proves a handler that panics, or writes
+// no status, is recorded as an error with status 0, and the panic still reaches
+// net/http.
+func TestAuditLogRecordsPanicsAndMissingStatus(t *testing.T) {
+	f := newAuditLogFixture(t)
+	p := &auth.Principal{Method: auth.MethodSession, User: &auth.User{ID: "usr_1", Username: "admin"}}
+	run := func(h func(http.ResponseWriter)) (panicked any) {
+		defer func() { panicked = recover() }()
+		req := httptest.NewRequest("POST", "/api/v1/jobs", nil)
+		rec, done := f.srv.auditedAction(httptest.NewRecorder(), req, p, "POST /api/v1/jobs")
+		defer done()
+		h(rec)
+		return nil
+	}
+	if v := run(func(http.ResponseWriter) { panic("boom") }); v != "boom" {
+		t.Fatalf("recovered %v; the panic must be re-raised", v)
+	}
+	if v := run(func(http.ResponseWriter) {}); v != nil {
+		t.Fatalf("recovered %v", v)
+	}
+	if v := run(func(w http.ResponseWriter) { w.WriteHeader(http.StatusCreated) }); v != nil {
+		t.Fatalf("recovered %v", v)
+	}
+	events := f.events(t)
+	if len(events) != 3 {
+		t.Fatalf("entries = %+v", events)
+	}
+	for i, want := range []struct {
+		status  int
+		outcome string
+	}{{0, auditlog.OutcomeError}, {0, auditlog.OutcomeError}, {http.StatusCreated, auditlog.OutcomeOK}} {
+		if e := events[i]; e.Status != want.status || e.Outcome != want.outcome || e.ActorUserID != "usr_1" {
+			t.Errorf("entry %d = %+v; want %d %s", i, e, want.status, want.outcome)
+		}
+	}
+}
+
+// TestAuditLogNamesChangedSettings proves a settings update records the sections
+// and keys it changed, never their values.
+func TestAuditLogNamesChangedSettings(t *testing.T) {
+	f := newAuditLogFixture(t)
+	b := f.browser(t)
+	b.setup(f.authFixture)
+	const secret = "webhook-signing-s3cret"
+	rec := b.do("PUT", "/api/v1/settings", map[string]any{
+		"audit":   map[string]any{"retention_days": 90, "webhook_secret": secret},
+		"general": map[string]any{"default_gzip": false},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT settings = %d %s", rec.Code, rec.Body.String())
+	}
+	b.do("PUT", "/api/v1/settings", map[string]any{"audit": map[string]any{"retention_days": 90}}, nil) // no change
+	entries := find(f.events(t), "PUT /api/v1/settings")
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if e := entries[0]; e.Targets["sections"] != "audit,general" || e.Targets["keys"] != "audit.retention_days,audit.webhook_secret,general.default_gzip" {
+		t.Fatalf("targets = %v", e.Targets)
+	}
+	if len(entries[1].Targets) != 0 {
+		t.Fatalf("an update that changed nothing names %v", entries[1].Targets)
+	}
+	assertNoBodies(t, f.events(t), secret)
+}
+
+func TestJoinBounded(t *testing.T) {
+	for _, tc := range []struct {
+		items []string
+		n     int
+		want  string
+	}{
+		{[]string{"a", "b"}, 10, "a,b"},
+		{[]string{"aaaa", "bbbb", "cccc"}, 14, "aaaa,bbbb,cccc"},
+		{[]string{"aaaa", "bbbb", "cccc"}, 13, "aaaa,+2 more"},
+		{[]string{"aaaa", "bbbb", "cccc"}, 11, "+3 more"},
+		{[]string{"aaaaaaaaaaaa", "b"}, 5, "+2 more"},
+		{[]string{"aaaa", "bbbb"}, 9, "aaaa,bbbb"},
+	} {
+		if got := joinBounded(tc.items, tc.n); got != tc.want || (len(got) > tc.n && !strings.HasPrefix(got, "+")) {
+			t.Errorf("joinBounded(%q, %d) = %q; want %q", tc.items, tc.n, got, tc.want)
+		}
+	}
 }

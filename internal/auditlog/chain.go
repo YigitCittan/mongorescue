@@ -32,18 +32,31 @@ type canonicalEvent struct {
 	Count        int               `json:"count"`
 }
 
-// FormatTime renders t as the entries' canonical time: RFC 3339 in UTC with
-// nanoseconds, trailing zeros trimmed (time.RFC3339Nano), as in the JSON of an Event.
+// TimeFormat is the entries' canonical time: RFC 3339 in UTC with exactly nine
+// fractional digits, the form of Event.Time in JSON too.
+const TimeFormat = "2006-01-02T15:04:05.000000000Z"
+
+// FormatTime renders t in TimeFormat.
 func FormatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(TimeFormat)
+}
+
+// MarshalJSON encodes e with its time in TimeFormat, so an exported entry carries
+// exactly the time its hash covers.
+func (e Event) MarshalJSON() ([]byte, error) {
+	type plain Event
+	return json.Marshal(struct {
+		plain
+		Time string `json:"time"`
+	}{plain(e), FormatTime(e.Time)})
 }
 
 // Canonical returns the canonical JSON of e without its hash: the fields of the
 // exported Event in the order id, time, actor_kind, actor_user_id, actor_name,
 // actor_key_id, actor_key_name, action, targets, status, outcome, client_ip,
 // user_agent, count; no whitespace; targets with sorted keys ({} when empty); no
-// HTML escaping. Stored strings hold no control characters (see Service.Record), so
-// the only escapes are \" and \\.
+// HTML escaping; time in TimeFormat. Stored strings hold no control characters
+// (see Service.Record), so the only escapes are \" and \\.
 func Canonical(e *Event) ([]byte, error) {
 	targets := e.Targets
 	if targets == nil {

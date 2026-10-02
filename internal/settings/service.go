@@ -130,29 +130,36 @@ func (s *Service) Decryptor() *encryption.Decryptor {
 // Update validates and applies a partial update and returns the new settings
 // (masked). Changes take effect for every operation started afterwards.
 func (s *Service) Update(ctx context.Context, p Patch) (Settings, error) {
+	next, _, err := s.UpdateChanged(ctx, p)
+	return next, err
+}
+
+// UpdateChanged is Update that also returns the sorted keys of the settings that
+// changed (names only, for the audit log; never their values).
+func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []string, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	cur := s.Current()
 	next, err := p.apply(cur, s.now())
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
 	// The passphrase length rule applies to new passphrases only: one imported from an
 	// older release must not block unrelated changes.
 	if err = validate(&next, next.Encryption.Passphrase != cur.Encryption.Passphrase); err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
 	changed, err := s.commit(ctx, cur, next)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
 	if err = s.noteEncryptionChange(ctx, p, next); err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
 	if len(changed) > 0 {
 		s.logger.Info("settings updated", slog.Any("keys", changed))
 	}
-	return next.Masked(), nil
+	return next.Masked(), changed, nil
 }
 
 // commit persists the keys that differ between cur and next and swaps the snapshot.

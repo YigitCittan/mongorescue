@@ -12,13 +12,15 @@ The activity log stores arguments, which the audit log never does, and merges re
 | Action | Actor | `action` |
 | :--- | :--- | :--- |
 | Every REST request that can change something (`POST`, `PUT`, `PATCH`, `DELETE`), from a dashboard session or an API key, including refused ones (wrong scope, missing CSRF token, validation errors) | `user` or `api_key` | The route pattern, e.g. `POST /api/v1/jobs/{id}/run`, or `POST (no route)` |
+| The same requests without valid credentials (`401`), and sign-in or setup requests refused before they are read (`415` wrong media type, `403` cross-origin) | `anonymous` | The route pattern |
+| Settings changes: the names of the changed sections and keys in `targets` (`{"sections": "audit,general", "keys": "audit.retention_days,general.default_gzip"}`), never their values | `user` or `api_key` | `PUT /api/v1/settings` |
 | Sign-in, successful or not, and setup | `user` on success, otherwise `anonymous` with the name that was tried | `POST /api/v1/auth/login`, `POST /api/v1/setup` |
 | Sign-out | `user` | `POST /api/v1/auth/logout` |
 | Downloads that copy data out: the recovery kit (`POST`) and the audit log export (`GET`) | `user` or `api_key` | `POST /api/v1/recovery-kit`, `GET /api/v1/audit/events/export` |
 | MCP tool calls (not resource reads or prompts) | `api_key` | `MCP <tool>`, e.g. `MCP start_backup` |
-| Actions MongoRescue takes on its own (retention deleting a backup) | `system` | `SYSTEM <action>` |
+| Actions MongoRescue takes on its own: retention deleting a backup, and the audit log's own retention (`targets`: `removed`, the new `anchor_id` and `anchor_hash`) | `system` | `SYSTEM <action>`, `SYSTEM audit.prune` |
 
-Other `GET` requests, `/metrics` scrapes and requests without valid credentials (other than sign-in and setup) are not recorded.
+Other `GET` requests (with or without credentials), `/metrics` scrapes and MCP requests other than tool calls are not recorded.
 
 ## Entry
 
@@ -33,21 +35,23 @@ Other `GET` requests, `/metrics` scrapes and requests without valid credentials 
 | Field | Meaning |
 | :--- | :--- |
 | `id` | Position in the chain: the previous entry's ID + 1 |
-| `time` | When the entry was recorded (after the response was written), UTC, nanoseconds |
+| `time` | When the entry was recorded (after the response was written), UTC, always nine fractional digits (`2026-10-02T12:31:00.000000000Z`) |
 | `actor_kind` | `user` (session), `api_key`, `system` or `anonymous` |
 | `actor_user_id`, `actor_name` | The user and a snapshot of their name. For a failed sign-in, the name that was tried (never the password); for system actions the component (`retention`) |
 | `actor_key_id`, `actor_key_name` | The API key and a snapshot of its name |
 | `action` | Route pattern, `MCP <tool>` or `SYSTEM <action>`; never the raw path or query |
-| `targets` | The path parameters (`{"id": "job_1"}`), or the `id`/`*_id` arguments of a tool call or system action |
-| `status`, `outcome` | HTTP status (0 for MCP and system entries) and `ok` (below 400), `denied` (401, 403), `rate_limited` (429) or `error` |
+| `targets` | The path parameters (`{"id": "job_1"}`), names the handler adds (changed settings), the `id`/`*_id` arguments of a tool call or system action, or the window of a summary entry (below) |
+| `status`, `outcome` | HTTP status and `ok` (below 400), `denied` (401, 403), `rate_limited` (429) or `error`. Status 0 for MCP and system entries, and with outcome `error` for a request whose handler panicked or wrote no status |
 | `client_ip` | The client address; `X-Forwarded-For` (last entry) or `X-Real-IP` only with **Trust proxy headers** (`security.trust_proxy_headers`), the same rule as sign-in throttling |
 | `user_agent` | The `User-Agent` header, cut at 256 bytes |
-| `count` | `1`, or for a refusal the number of identical refusals it stands for (see below) |
+| `count` | `1`, or for a summary entry the number of identical refusals it stands for (see below) |
 | `hash` | The chain hash |
 
 Request and response bodies are never stored. Strings are stored as valid UTF-8 without control characters, and lengths are bounded (names and IDs 128 bytes, actions and target values 256 bytes, at most 16 targets).
 
-Identical refusals (`denied` or `rate_limited`, same actor, client, action and status) within 10 seconds are counted instead of stored one by one, so a client hammering a refused route or the sign-in form cannot fill the database. The next stored refusal of that caller carries the count of the ones it stands for. Counts of a burst that ends just before a restart are lost; the first refusal of every burst is always stored.
+Refusals (`denied` or `rate_limited`) are coalesced so that a client hammering a refused route or the sign-in form cannot fill the database, without losing any of them. The first refusal of a caller opens a 10-second window and is stored at once; identical refusals within the window are counted. When the window closes (checked every second), when the service stops, or when 4096 windows are open at once, a **summary entry** is written with the same actor, action, status and client, `count` set to the number of counted refusals and `targets` `coalesced_from` and `coalesced_until` (the window). Authenticated callers are matched by user or key; anonymous ones (failed sign-ins, missing credentials) by client address, action and outcome only, whatever name they try, so the entries per address stay bounded: the summary keeps up to 10 distinct attempted names (`name_1` … `name_10`, 64 bytes each) and counts the refusals whose name it did not keep in `names_more`. So each caller produces at most two entries per window.
+
+Entries are written by one writer goroutine through a queue of 4096, off the request path. When the queue is full, the request writes its entry itself rather than dropping it (`mongorescue_audit_sync_writes_total`); at shutdown the open windows are summarised and the queue is drained before the database closes. A failed write is logged and counted (`mongorescue_audit_write_failures_total`); `mongorescue_audit_queue_depth` shows the backlog ([metrics.md](metrics.md)).
 
 ## Hash chain
 
@@ -62,7 +66,7 @@ where `prev_hash` is the previous entry's `hash` as 64 ASCII characters (64 zero
 - exactly the fields `id, time, actor_kind, actor_user_id, actor_name, actor_key_id, actor_key_name, action, targets, status, outcome, client_ip, user_agent, count`, in this order;
 - no whitespace, UTF-8, no escaping beyond `\"` and `\\` (stored strings hold no control characters), `<`, `>` and `&` unescaped;
 - `targets` as an object with its keys sorted (`{}` when empty);
-- `time` as RFC 3339 in UTC with nanoseconds, trailing zeros removed (`2026-10-02T12:31:00Z`, `2026-10-02T12:30:45.123456789Z`), exactly as in the exported entry.
+- `time` as RFC 3339 in UTC with exactly nine fractional digits (Go layout `2006-01-02T15:04:05.000000000Z`: `2026-10-02T12:31:00.000000000Z`), exactly as in the exported entry.
 
 An exported line therefore verifies with nothing but its predecessor: drop `hash`, re-encode the fields in this order (in Python, `json.dumps(fields, separators=(",", ":"), ensure_ascii=False)` with the dict built in this order and `targets` sorted), prepend the previous hash, hash. The test vectors in `internal/auditlog/auditlog_test.go` (`TestCanonicalVector`, two chained entries with their canonical JSON and hashes, checked independently with Python's `json` and `hashlib`) pin the encoding.
 
@@ -71,17 +75,20 @@ Entries are appended in one write transaction that reads the newest entry (or th
 `GET /api/v1/audit/events/verify` (admin) and **Verify chain** in the dashboard walk the chain from the anchor and report the first entry whose ID does not follow its predecessor (removed or reordered entries) or whose hash does not match (a changed entry, or a changed predecessor):
 
 ```json
-{"ok": false, "checked": 1203, "anchor": {"last_id": 640, "last_hash": "…", "pruned_at": "2026-09-30T00:00:00Z"},
+{"ok": false, "checked": 1203,
+ "anchor": {"last_id": 640, "last_hash": "…", "last_time": "2025-09-29T23:58:12.000000000Z", "pruned_at": "2026-09-30T00:00:00Z"},
  "head_id": 1843, "head_hash": "…", "broken_id": 1844,
  "reason": "the hash does not match the entry's content and its predecessor's hash: the entry, or the one before it, was changed",
- "verified_at": "2026-10-02T12:40:00Z"}
+ "retention_days": 365, "verified_at": "2026-10-02T12:40:00Z"}
 ```
+
+A chain that verifies can still carry a `warning`: when the last removed entry (`anchor.last_time`) is newer than now minus `audit.retention_days` (with a day of tolerance), the anchor moved further than retention explains, so entries may have been removed early (or the retention was raised after the last prune). The dashboard shows the anchor, when retention last pruned, and the warning.
 
 What the chain does and does not prove: it detects any change to an entry and any removal from the middle of the log by someone who does not also rewrite every later entry. Someone with write access to `mongorescue.db` can drop the triggers, rewrite the chain from some point on, or cut off the newest entries; the hash function has no secret. Keep a copy outside the host to detect that: forward entries to a webhook (below), export the log regularly, or note `head_id` and `head_hash` from a verification and compare them later.
 
 ## Retention
 
-`audit.retention_days` (Settings → Audit log, default 365, at least 30, at most 36500) is applied at start and hourly. Pruning removes every entry recorded before the cutoff, and first stores the last removed entry's ID and hash as the chain **anchor** (one row in `audit_chain_anchor`, which only moves forward), so verification starts from a known hash and still detects changes to every kept entry. The anchor is part of the verification result.
+`audit.retention_days` (Settings → Audit log, default 365, at least 30, at most 36500) is applied at start and hourly. Pruning removes every entry recorded before the cutoff, and first stores the last removed entry's ID, hash and time as the chain **anchor** (one row in `audit_chain_anchor`, which only moves forward), so verification starts from a known hash and still detects changes to every kept entry. The anchor is part of the verification result, and every prune writes a `SYSTEM audit.prune` entry with the number of removed entries and the new anchor.
 
 ## Export
 

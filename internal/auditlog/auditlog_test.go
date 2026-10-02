@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -83,7 +84,7 @@ func (m *memRepo) PruneAuditEvents(_ context.Context, cutoff time.Time) (int64, 
 	if last < 0 {
 		return 0, nil
 	}
-	m.anchor = Anchor{LastID: m.rows[last].ID, LastHash: m.rows[last].Hash, PrunedAt: time.Now()}
+	m.anchor = Anchor{LastID: m.rows[last].ID, LastHash: m.rows[last].Hash, LastTime: m.rows[last].Time, PrunedAt: time.Now()}
 	m.rows = slices.Clone(m.rows[last+1:])
 	return int64(last + 1), nil
 }
@@ -131,12 +132,19 @@ func TestCanonicalVector(t *testing.T) {
 
 	e2 := &Event{ID: 2, Time: time.Date(2026, 10, 2, 12, 31, 0, 0, time.UTC), ActorKind: ActorAnonymous, ActorName: "mallory",
 		Action: "POST /api/v1/auth/login", Status: 401, Outcome: OutcomeDenied, ClientIP: "198.51.100.7", Count: 3}
-	const doc2 = `{"id":2,"time":"2026-10-02T12:31:00Z","actor_kind":"anonymous","actor_user_id":"","actor_name":"mallory","actor_key_id":"","actor_key_name":"","action":"POST /api/v1/auth/login","targets":{},"status":401,"outcome":"denied","client_ip":"198.51.100.7","user_agent":"","count":3}`
+	const doc2 = `{"id":2,"time":"2026-10-02T12:31:00.000000000Z","actor_kind":"anonymous","actor_user_id":"","actor_name":"mallory","actor_key_id":"","actor_key_name":"","action":"POST /api/v1/auth/login","targets":{},"status":401,"outcome":"denied","client_ip":"198.51.100.7","user_agent":"","count":3}`
 	if got, _ := Canonical(e2); string(got) != doc2 {
 		t.Fatalf("Canonical(e2) = %s; want %s (nil targets encode as {})", got, doc2)
 	}
-	if h, _ := ChainHash(hash1, e2); h != "71ea4665433dfeec33bbdff59064f103afa52f7b893748727704a418d0943e15" {
+	if h, _ := ChainHash(hash1, e2); h != "4307256ac0f7677a4ce10bdff537809accfbf3bce4b868a46fada725d39cfe88" {
 		t.Fatalf("ChainHash(hash1, e2) = %s", h)
+	}
+	// The time always has nine fractional digits, in JSON too.
+	if got := FormatTime(time.Date(2026, 1, 2, 3, 4, 5, 500_000_000, time.FixedZone("x", 3600))); got != "2026-01-02T02:04:05.500000000Z" {
+		t.Fatalf("FormatTime = %s", got)
+	}
+	if raw, _ := json.Marshal(e2); !strings.Contains(string(raw), `"time":"2026-10-02T12:31:00.000000000Z"`) {
+		t.Fatalf("JSON time = %s", raw)
 	}
 	if len(GenesisHash) != 64 || strings.Trim(GenesisHash, "0") != "" {
 		t.Fatalf("GenesisHash = %q", GenesisHash)
@@ -234,7 +242,8 @@ func TestTamperDetection(t *testing.T) {
 }
 
 // TestRetentionKeepsTheAnchor proves pruning removes the oldest entries, moves the
-// anchor to the last removed one and leaves a chain that still verifies.
+// anchor to the last removed one, records a system entry with the count and the
+// anchor, and leaves a chain that still verifies.
 func TestRetentionKeepsTheAnchor(t *testing.T) {
 	repo := newMemRepo()
 	clock := fixedClock(vectorTime, 24*time.Hour)
@@ -247,16 +256,21 @@ func TestRetentionKeepsTheAnchor(t *testing.T) {
 	if err != nil || n != 10 {
 		t.Fatalf("Prune = %d, %v; want 10", n, err)
 	}
-	if repo.anchor.LastID != 10 || repo.anchor.LastHash != lastRemovedHash {
+	if repo.anchor.LastID != 10 || repo.anchor.LastHash != lastRemovedHash || !repo.anchor.LastTime.Equal(vectorTime.AddDate(0, 0, 9)) {
 		t.Fatalf("anchor = %+v", repo.anchor)
 	}
+	prune := repo.rows[len(repo.rows)-1]
+	if prune.Action != PruneAction || prune.ActorKind != ActorSystem || prune.Targets["removed"] != "10" ||
+		prune.Targets["anchor_id"] != "10" || prune.Targets["anchor_hash"] != lastRemovedHash {
+		t.Fatalf("prune entry = %+v", prune)
+	}
 	v, err := s.Verify(context.Background())
-	if err != nil || !v.OK || v.Checked != 30 || v.Anchor.LastID != 10 || v.HeadID != 40 {
+	if err != nil || !v.OK || v.Checked != 31 || v.Anchor.LastID != 10 || v.HeadID != 41 || v.Warning != "" || v.RetentionDays != MinRetentionDays {
 		t.Fatalf("Verify after prune = %+v, %v", v, err)
 	}
 	// Appending continues the chain from the newest entry.
 	s.Record(context.Background(), Event{ActorKind: ActorSystem, ActorName: "test", Action: "SYSTEM check", Outcome: OutcomeOK})
-	if v, _ = s.Verify(context.Background()); !v.OK || v.HeadID != 41 {
+	if v, _ = s.Verify(context.Background()); !v.OK || v.HeadID != 42 {
 		t.Fatalf("Verify after append = %+v", v)
 	}
 	// Pruning everything leaves the anchor as the head.
@@ -275,6 +289,32 @@ func TestRetentionKeepsTheAnchor(t *testing.T) {
 	}
 }
 
+// TestVerifyWarnsAboutAnEarlyAnchor proves a chain whose anchor moved further than
+// the retention explains verifies with a warning.
+func TestVerifyWarnsAboutAnEarlyAnchor(t *testing.T) {
+	repo := newMemRepo()
+	now := vectorTime
+	s := New(Config{Repo: repo, Now: func() time.Time { return now }, RetentionDays: func() int { return 30 }})
+	for i := range 10 {
+		s.Record(context.Background(), Event{Time: now.AddDate(0, 0, -10+i), ActorKind: ActorUser, Action: "POST /x", Status: 200})
+	}
+	// Someone moved the anchor to entry 5 (five days old), with a consistent hash.
+	repo.anchor = Anchor{LastID: 5, LastHash: repo.rows[4].Hash, LastTime: repo.rows[4].Time, PrunedAt: now}
+	repo.rows = repo.rows[5:]
+	v, err := s.Verify(context.Background())
+	if err != nil || !v.OK || !strings.Contains(v.Warning, "#5") || v.Anchor.PrunedAt.IsZero() {
+		t.Fatalf("Verify = %+v, %v; want OK with a warning", v, err)
+	}
+	// An anchor older than the retention (with a day of tolerance) is expected.
+	repo.anchor.LastTime = now.AddDate(0, 0, -30)
+	if v, _ = s.Verify(context.Background()); !v.OK || v.Warning != "" {
+		t.Fatalf("Verify with an expected anchor = %+v", v)
+	}
+	repo.anchor.LastTime = now.AddDate(0, 0, -30).Add(23 * time.Hour)
+	if v, _ = s.Verify(context.Background()); v.Warning != "" {
+		t.Fatalf("Verify within the tolerance = %+v", v)
+	}
+}
 func TestRecordNormalizes(t *testing.T) {
 	repo := newMemRepo()
 	s := newTestService(repo)
@@ -306,18 +346,36 @@ func TestOutcomeFor(t *testing.T) {
 	}
 }
 
-// TestRefusalsAreCoalesced proves a flood of identical refusals stores one entry per
-// window, the next one carrying the count, while successes are always stored.
+// TestRefusalsAreCoalesced proves a flood of identical refusals stores the first of
+// every window and a summary with the count of the others when the window closes,
+// so no refusal is lost, while successes are always stored.
 func TestRefusalsAreCoalesced(t *testing.T) {
 	repo := newMemRepo()
 	clock := fixedClock(vectorTime, time.Second)
 	s := New(Config{Repo: repo, Now: clock})
 	fail := Event{ActorKind: ActorAnonymous, ActorName: "admin", Action: "POST /api/v1/auth/login", Status: 401, ClientIP: "192.0.2.9"}
-	for range 25 { // 25 seconds: windows start at 0s, 10s and 20s
+	for range 25 { // 25 seconds: windows open at 0s, 10s and 20s
 		s.Record(context.Background(), fail)
 	}
-	if len(repo.rows) != 3 || repo.rows[0].Count != 1 || repo.rows[1].Count != 10 || repo.rows[2].Count != 10 {
-		t.Fatalf("rows = %d, counts %v", len(repo.rows), counts(repo.rows))
+	if got := counts(repo.rows); !slices.Equal(got, []int{1, 9, 1, 9, 1}) {
+		t.Fatalf("counts = %v; want the first of each window and the summaries of the closed ones", got)
+	}
+	sum := repo.rows[1]
+	if sum.Targets[TargetCoalescedFrom] != FormatTime(vectorTime) || sum.Targets[TargetCoalescedUntil] != FormatTime(vectorTime.Add(9*time.Second)) ||
+		sum.ActorName != "" || sum.Targets["name_1"] != "admin" || sum.Outcome != OutcomeDenied || sum.ClientIP != "192.0.2.9" {
+		t.Fatalf("summary = %+v", sum)
+	}
+	// The open window's four refusals are written by the flush.
+	s.flushRefusals(vectorTime.Add(time.Hour), false)
+	if got := counts(repo.rows); !slices.Equal(got, []int{1, 9, 1, 9, 1, 4}) {
+		t.Fatalf("counts after flush = %v", got)
+	}
+	total := 0
+	for _, e := range repo.rows {
+		total += e.Count
+	}
+	if total != 25 {
+		t.Fatalf("the entries stand for %d refusals; want 25", total)
 	}
 	other := fail
 	other.ClientIP = "192.0.2.10"
@@ -325,7 +383,7 @@ func TestRefusalsAreCoalesced(t *testing.T) {
 	ok := Event{ActorKind: ActorUser, ActorName: "admin", Action: "POST /api/v1/auth/login", Status: 200}
 	s.Record(context.Background(), ok)
 	s.Record(context.Background(), ok)
-	if len(repo.rows) != 6 {
+	if len(repo.rows) != 9 {
 		t.Fatalf("rows = %d; a new caller and successes are stored", len(repo.rows))
 	}
 	if v, _ := s.Verify(context.Background()); !v.OK {
@@ -333,6 +391,77 @@ func TestRefusalsAreCoalesced(t *testing.T) {
 	}
 }
 
+// TestAnonymousRefusalsKeepTheAttemptedNames proves failed sign-ins from one address
+// share one window whatever name they try, and the summary keeps up to
+// MaxSummaryNames distinct names, capped, plus how many were not kept.
+func TestAnonymousRefusalsKeepTheAttemptedNames(t *testing.T) {
+	repo := newMemRepo()
+	now := vectorTime
+	s := New(Config{Repo: repo, Now: func() time.Time { return now }})
+	long := strings.Repeat("x", 200)
+	for i := range 30 {
+		name := "user" + string(rune('a'+i%15))
+		if i == 3 {
+			name = long
+		}
+		s.Record(context.Background(), Event{ActorKind: ActorAnonymous, ActorName: name, Action: "POST /api/v1/auth/login", Status: 401, ClientIP: "203.0.113.1"})
+	}
+	if len(repo.rows) != 1 || repo.rows[0].ActorName != "usera" {
+		t.Fatalf("rows = %+v; one entry per window and address", repo.rows)
+	}
+	s.Flush()
+	if len(repo.rows) != 2 {
+		t.Fatalf("rows after flush = %d", len(repo.rows))
+	}
+	sum := repo.rows[1]
+	var names []string
+	for i := 1; i <= MaxSummaryNames+1; i++ {
+		if n, ok := sum.Targets[TargetNamePrefix+strconv.Itoa(i)]; ok {
+			names = append(names, n)
+		}
+	}
+	if sum.Count != 29 || len(names) != MaxSummaryNames || names[0] != "userb" || names[2] != strings.Repeat("x", maxSummaryNameLength) {
+		t.Fatalf("summary = %+v (names %q)", sum, names)
+	}
+	// 29 counted refusals, 10 kept names; userb..userd and the long name appear
+	// again later, so the rest (names not kept, or repeats of kept ones) is counted.
+	if sum.Targets[TargetNamesMore] == "" {
+		t.Fatalf("summary lacks %s: %+v", TargetNamesMore, sum.Targets)
+	}
+	if sum.ActorName != "" || len(sum.Targets) > maxTargets {
+		t.Fatalf("summary = %+v", sum)
+	}
+}
+
+// TestFullCoalescingIndexFlushes proves reaching maxCoalesceKeys writes every open
+// window's summary instead of dropping counts.
+func TestFullCoalescingIndexFlushes(t *testing.T) {
+	repo := newMemRepo()
+	now := vectorTime
+	s := New(Config{Repo: repo, Now: func() time.Time { return now }})
+	refuse := func(ip string) {
+		s.Record(context.Background(), Event{ActorKind: ActorAnonymous, Action: "POST /x", Status: 401, ClientIP: ip})
+	}
+	for i := range maxCoalesceKeys {
+		ip := "10.0." + strconv.Itoa(i/256) + "." + strconv.Itoa(i%256)
+		refuse(ip)
+		refuse(ip) // counted
+	}
+	if len(repo.rows) != maxCoalesceKeys {
+		t.Fatalf("rows = %d", len(repo.rows))
+	}
+	refuse("192.0.2.200") // the index is full: every window is flushed first
+	if len(repo.rows) != 2*maxCoalesceKeys+1 {
+		t.Fatalf("rows = %d; want %d first entries, %d summaries and the new one", len(repo.rows), maxCoalesceKeys, maxCoalesceKeys)
+	}
+	total := 0
+	for _, e := range repo.rows {
+		total += e.Count
+	}
+	if total != 2*maxCoalesceKeys+1 {
+		t.Fatalf("the entries stand for %d refusals; want %d", total, 2*maxCoalesceKeys+1)
+	}
+}
 func counts(rows []*Event) []int {
 	out := make([]int, 0, len(rows))
 	for _, e := range rows {

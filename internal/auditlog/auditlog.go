@@ -27,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,8 +93,22 @@ const (
 	writeTimeout = 5 * time.Second
 	// walkBatch is the page size of Verify and Export.
 	walkBatch = 500
-	// maxCoalesceKeys bounds the in-memory index of coalesced refusals.
+	// maxCoalesceKeys bounds the in-memory index of coalesced refusals; reaching it
+	// flushes every open window.
 	maxCoalesceKeys = 4096
+	// MaxSummaryNames is how many distinct attempted names a summary entry keeps.
+	MaxSummaryNames = 10
+	// maxSummaryNameLength caps one attempted name in a summary entry, in bytes.
+	maxSummaryNameLength = 64
+	// DefaultWriteQueueSize bounds the entries waiting for the writer; when it is full,
+	// Record writes synchronously instead.
+	DefaultWriteQueueSize = 4096
+	// flushInterval is how often closed coalescing windows are written.
+	flushInterval = time.Second
+	// DefaultPruneInterval is how often Run applies the retention.
+	DefaultPruneInterval = time.Hour
+	// retentionSlack is the clock tolerance of the anchor check in Verify.
+	retentionSlack = 24 * time.Hour
 )
 
 // Errors.
@@ -171,6 +187,8 @@ type Anchor struct {
 	LastID int64 `json:"last_id"`
 	// LastHash is its hash; the first kept entry chains to it.
 	LastHash string `json:"last_hash"`
+	// LastTime is when that entry was recorded (zero when nothing was removed).
+	LastTime time.Time `json:"last_time,omitzero"`
 	// PrunedAt is when retention last removed entries (zero when never).
 	PrunedAt time.Time `json:"pruned_at,omitzero"`
 }
@@ -200,31 +218,45 @@ type Config struct {
 	RetentionDays func() int
 	// Forwarder, when set, receives every stored entry.
 	Forwarder *Forwarder
+	// QueueSize bounds the write queue (DefaultWriteQueueSize when <= 0).
+	QueueSize int
+	// PruneInterval is how often Run applies the retention (DefaultPruneInterval
+	// when <= 0).
+	PruneInterval time.Duration
+	// OnWriteFailure is called for every entry that could not be stored.
+	OnWriteFailure func()
+	// OnSyncWrite is called for every entry written on the caller's goroutine
+	// because the write queue was full.
+	OnSyncWrite func()
 	// Logger reports write failures (slog.Default() when nil).
 	Logger *slog.Logger
 	// Now is the clock (time.Now when nil).
 	Now func() time.Time
 }
 
-// Service records, lists, verifies, exports and prunes the audit log. It is safe for
+// Service records, lists, verifies, exports and prunes the audit log. While Run is
+// running, entries are written by its single writer goroutine through a bounded
+// queue, off the request path; when the queue is full, or Run is not running,
+// Record writes synchronously instead, so no entry is ever dropped. It is safe for
 // concurrent use; a nil *Service records nothing.
 type Service struct {
-	cfg Config
+	cfg    Config
+	writes chan Event
 
-	// mu guards refusals.
+	// gate guards running: Record enqueues only while Run accepts entries, so
+	// nothing is enqueued after Run's final drain.
+	gate    sync.RWMutex
+	running bool
+
+	// mu guards windows.
 	mu sync.Mutex
-	// refusals indexes the latest stored refusal of every caller and how many
-	// identical ones were counted since.
-	refusals map[string]*refusal
+	// windows are the open coalescing windows of refusals, by caller (see
+	// coalesce.go).
+	windows map[string]*window
 }
 
-// refusal is the coalescing state of one caller's identical refusals.
-type refusal struct {
-	since      time.Time
-	suppressed int
-}
-
-// New returns a Service.
+// New returns a Service. Start its writer, coalescing flushes and retention with
+// Run.
 func New(cfg Config) *Service {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -232,7 +264,13 @@ func New(cfg Config) *Service {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{cfg: cfg, refusals: map[string]*refusal{}}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = DefaultWriteQueueSize
+	}
+	if cfg.PruneInterval <= 0 {
+		cfg.PruneInterval = DefaultPruneInterval
+	}
+	return &Service{cfg: cfg, writes: make(chan Event, cfg.QueueSize), windows: map[string]*window{}}
 }
 
 // OutcomeFor maps an HTTP status to an outcome.
@@ -250,10 +288,10 @@ func OutcomeFor(status int) string {
 }
 
 // Record normalises e (time, lengths, control characters, the client from ctx, see
-// WithClient), chains and stores it and hands it to the forwarder. Identical
-// refusals of one caller within CoalesceWindow are counted, not stored: the next
-// stored one carries the count. Record never fails the caller: the write is
-// detached from ctx's cancellation, bounded by a timeout, and errors are logged.
+// WithClient) and queues it to be chained and stored, then forwarded. Identical
+// refusals of one caller within CoalesceWindow are counted into a summary entry
+// written when the window closes (see coalesce.go). Record never fails the caller:
+// errors are logged and counted (Config.OnWriteFailure).
 func (s *Service) Record(ctx context.Context, e Event) {
 	if s == nil || s.cfg.Repo == nil {
 		return
@@ -273,44 +311,119 @@ func (s *Service) Record(ctx context.Context, e Event) {
 	if s.coalesce(&e) {
 		return
 	}
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+	s.submit(e)
+}
+
+// submit hands e to the writer, or writes it at once when the writer is not
+// running or its queue is full.
+func (s *Service) submit(e Event) {
+	s.gate.RLock()
+	if s.running {
+		select {
+		case s.writes <- e:
+			s.gate.RUnlock()
+			return
+		default:
+		}
+		s.gate.RUnlock()
+		if s.cfg.OnSyncWrite != nil {
+			s.cfg.OnSyncWrite()
+		}
+		s.write(e)
+		return
+	}
+	s.gate.RUnlock()
+	s.write(e)
+}
+
+// write chains and stores e and forwards it, logging and counting failures.
+func (s *Service) write(e Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
-	if err := s.cfg.Repo.AppendAuditEvent(writeCtx, &e); err != nil {
+	if err := s.cfg.Repo.AppendAuditEvent(ctx, &e); err != nil {
 		// The entry's fields stay out of the log: it is the audit log's job.
 		s.cfg.Logger.Error("failed to write audit log entry", logsafe.Error(err))
+		if s.cfg.OnWriteFailure != nil {
+			s.cfg.OnWriteFailure()
+		}
 		return
 	}
 	s.cfg.Forwarder.Enqueue(e)
 }
 
-// coalesce reports whether the refusal e is counted instead of stored; for a stored
-// refusal it sets e.Count to include the ones counted since the previous one.
-func (s *Service) coalesce(e *Event) bool {
-	if e.Outcome != OutcomeDenied && e.Outcome != OutcomeRateLimited {
-		return false
+// QueueDepth returns the number of entries waiting for the writer.
+func (s *Service) QueueDepth() int {
+	if s == nil {
+		return 0
 	}
-	key := strings.Join([]string{e.ActorKind, e.ActorUserID, e.ActorName, e.ActorKeyID, e.ClientIP, e.Action, e.Outcome, fmt.Sprint(e.Status)}, "\x00")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r, ok := s.refusals[key]; ok {
-		if !e.Time.Before(r.since) && e.Time.Sub(r.since) < CoalesceWindow {
-			r.suppressed++
-			return true
-		}
-		e.Count += r.suppressed
+	return len(s.writes)
+}
+
+// Run writes queued entries, writes the summaries of closed coalescing windows
+// every second and applies the retention at start and every PruneInterval, until
+// ctx ends. It then writes the summaries of every open window and drains the queue
+// before returning, so no entry recorded before the end is lost.
+func (s *Service) Run(ctx context.Context) {
+	if s == nil || s.cfg.Repo == nil {
+		return
 	}
-	if len(s.refusals) >= maxCoalesceKeys {
-		for k, r := range s.refusals {
-			if e.Time.Sub(r.since) >= CoalesceWindow {
-				delete(s.refusals, k)
-			}
-		}
-		if len(s.refusals) >= maxCoalesceKeys {
-			clear(s.refusals)
+	s.gate.Lock()
+	s.running = true
+	s.gate.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Go(func() { s.maintain(ctx) })
+	for done := false; !done; {
+		select {
+		case e := <-s.writes:
+			s.write(e)
+		case <-ctx.Done():
+			done = true
 		}
 	}
-	s.refusals[key] = &refusal{since: e.Time}
-	return false
+	wg.Wait()
+	s.flushRefusals(time.Time{}, true)
+
+	s.gate.Lock()
+	s.running = false
+	s.gate.Unlock()
+	for {
+		select {
+		case e := <-s.writes:
+			s.write(e)
+		default:
+			return
+		}
+	}
+}
+
+// maintain flushes closed coalescing windows and applies the retention until ctx
+// ends.
+func (s *Service) maintain(ctx context.Context) {
+	flush := time.NewTicker(flushInterval)
+	defer flush.Stop()
+	prune := time.NewTicker(s.cfg.PruneInterval)
+	defer prune.Stop()
+	s.pruneLogged(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-flush.C:
+			s.flushRefusals(s.cfg.Now(), false)
+		case <-prune.C:
+			s.pruneLogged(ctx)
+		}
+	}
+}
+
+// pruneLogged applies the retention, logging the outcome.
+func (s *Service) pruneLogged(ctx context.Context) {
+	if n, err := s.Prune(ctx); err != nil && ctx.Err() == nil {
+		s.cfg.Logger.Warn("failed to prune the audit log", logsafe.Error(err))
+	} else if n > 0 {
+		s.cfg.Logger.Info("expired audit log entries removed", slog.Int64("removed", n))
+	}
 }
 
 // normalize makes e storable: UTC time with its monotonic reading dropped, bounded
@@ -335,13 +448,18 @@ func normalize(e *Event) {
 		e.Outcome = OutcomeFor(e.Status)
 	}
 	e.Outcome = clean(e.Outcome, maxNameLength)
+	keys := make([]string, 0, len(e.Targets))
+	for k := range e.Targets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // which targets survive the cap must not depend on map order
 	targets := make(map[string]string, len(e.Targets))
-	for k, v := range e.Targets {
-		k = clean(k, maxTargetKeyLength)
-		if k == "" || len(targets) >= maxTargets {
+	for _, k := range keys {
+		ck := clean(k, maxTargetKeyLength)
+		if ck == "" || len(targets) >= maxTargets {
 			continue
 		}
-		targets[k] = clean(v, maxTargetValueLength)
+		targets[ck] = clean(e.Targets[k], maxTargetValueLength)
 	}
 	e.Targets = targets
 	e.Count = max(e.Count, 1)
@@ -456,7 +574,7 @@ type Verification struct {
 	OK bool `json:"ok"`
 	// Checked is the number of entries checked.
 	Checked int64 `json:"checked"`
-	// Anchor is where the chain started.
+	// Anchor is where the chain started, with when retention last pruned.
 	Anchor Anchor `json:"anchor"`
 	// HeadID and HeadHash identify the newest entry checked (the anchor when the log
 	// is empty); compare them with a copy kept elsewhere to detect removed tails.
@@ -466,13 +584,20 @@ type Verification struct {
 	BrokenID int64 `json:"broken_id,omitempty"`
 	// Reason says why it does not verify.
 	Reason string `json:"reason,omitempty"`
+	// Warning reports a chain that verifies but whose anchor moved further than the
+	// retention explains: the last removed entry is newer than now minus the
+	// retention (with a day of tolerance), so entries may have been removed early.
+	Warning string `json:"warning,omitempty"`
+	// RetentionDays is the retention the anchor was checked against.
+	RetentionDays int `json:"retention_days"`
 	// VerifiedAt is when the check ran.
 	VerifiedAt time.Time `json:"verified_at"`
 }
 
 // Verify walks the chain from the anchor and reports the first entry whose ID does
 // not follow its predecessor's or whose hash does not match its content chained to
-// the predecessor's hash.
+// the predecessor's hash. It also checks the anchor against the retention (see
+// Verification.Warning).
 func (s *Service) Verify(ctx context.Context) (Verification, error) {
 	if s == nil || s.cfg.Repo == nil {
 		return Verification{}, ErrNoRepository
@@ -481,7 +606,13 @@ func (s *Service) Verify(ctx context.Context) (Verification, error) {
 	if err != nil {
 		return Verification{}, err
 	}
-	v := Verification{Anchor: anchor, HeadID: anchor.LastID, HeadHash: anchor.LastHash, VerifiedAt: s.cfg.Now().UTC()}
+	now := s.cfg.Now().UTC()
+	days := s.retentionDays()
+	v := Verification{Anchor: anchor, HeadID: anchor.LastID, HeadHash: anchor.LastHash, RetentionDays: days, VerifiedAt: now}
+	if limit := now.AddDate(0, 0, -days).Add(retentionSlack); anchor.LastID > 0 && anchor.LastTime.After(limit) {
+		v.Warning = fmt.Sprintf("the last removed entry (#%d) was recorded at %s, less than the retention of %d days ago: entries were removed earlier than the retention explains, or the retention was raised since",
+			anchor.LastID, FormatTime(anchor.LastTime), days)
+	}
 	f := Filter{Ascending: true, AfterID: anchor.LastID, Limit: walkBatch}
 	for {
 		list, err := s.cfg.Repo.ListAuditEvents(ctx, f)
@@ -489,7 +620,7 @@ func (s *Service) Verify(ctx context.Context) (Verification, error) {
 			return Verification{}, err
 		}
 		for _, e := range list {
-			if reason := s.check(v.HeadID, v.HeadHash, e); reason != "" {
+			if reason := check(v.HeadID, v.HeadHash, e); reason != "" {
 				v.BrokenID, v.Reason = e.ID, reason
 				return v, nil
 			}
@@ -505,7 +636,7 @@ func (s *Service) Verify(ctx context.Context) (Verification, error) {
 }
 
 // check returns why e does not follow the entry (prevID, prevHash), or "".
-func (s *Service) check(prevID int64, prevHash string, e *Event) string {
+func check(prevID int64, prevHash string, e *Event) string {
 	if e.ID != prevID+1 {
 		return fmt.Sprintf("entry %d follows entry %d: entries %d to %d are missing", e.ID, prevID, prevID+1, e.ID-1)
 	}
@@ -528,34 +659,27 @@ func (s *Service) retentionDays() int {
 	return max(days, MinRetentionDays)
 }
 
-// Prune removes the entries older than the retention and returns how many.
+// PruneAction is the action of the system entry retention writes after pruning.
+const PruneAction = "SYSTEM audit.prune"
+
+// Prune removes the entries older than the retention and returns how many. When it
+// removed any, it records a system entry with the count and the new anchor.
 func (s *Service) Prune(ctx context.Context) (int64, error) {
 	if s == nil || s.cfg.Repo == nil {
 		return 0, ErrNoRepository
 	}
 	cutoff := s.cfg.Now().UTC().AddDate(0, 0, -s.retentionDays())
-	return s.cfg.Repo.PruneAuditEvents(ctx, cutoff)
-}
-
-// RunRetention prunes now and then every interval until ctx ends.
-func (s *Service) RunRetention(ctx context.Context, interval time.Duration) {
-	if s == nil || s.cfg.Repo == nil {
-		return
+	n, err := s.cfg.Repo.PruneAuditEvents(ctx, cutoff)
+	if err != nil || n == 0 {
+		return n, err
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		if n, err := s.Prune(ctx); err != nil && ctx.Err() == nil {
-			s.cfg.Logger.Warn("failed to prune the audit log", logsafe.Error(err))
-		} else if n > 0 {
-			s.cfg.Logger.Info("expired audit log entries removed", slog.Int64("removed", n))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+	targets := map[string]string{"removed": strconv.FormatInt(n, 10)}
+	if anchor, aerr := s.cfg.Repo.AuditChainAnchor(ctx); aerr == nil {
+		targets["anchor_id"] = strconv.FormatInt(anchor.LastID, 10)
+		targets["anchor_hash"] = anchor.LastHash
 	}
+	s.Record(ctx, Event{ActorKind: ActorSystem, ActorName: "retention", Action: PruneAction, Targets: targets, Outcome: OutcomeOK})
+	return n, nil
 }
 
 // Forwarding returns the forwarder's status (zero without a forwarder).

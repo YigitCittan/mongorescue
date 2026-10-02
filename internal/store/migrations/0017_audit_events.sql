@@ -9,9 +9,9 @@
 -- so a missing row is visible as a gap.
 --
 -- Rows are never updated. Retention deletes the oldest rows only after moving the
--- chain anchor (the single audit_chain_anchor row) to the newest deleted one, which
--- the triggers enforce; verification starts from the anchor. Request bodies are
--- never stored.
+-- chain anchor (the single audit_chain_anchor row: its ID, hash and time) to the
+-- newest deleted one, which the triggers enforce; verification starts from the
+-- anchor. Request bodies are never stored.
 
 CREATE TABLE audit_events (
     id             INTEGER PRIMARY KEY,
@@ -37,11 +37,12 @@ CREATE TABLE audit_chain_anchor (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     last_id   INTEGER NOT NULL,
     last_hash TEXT    NOT NULL,
+    last_at   INTEGER NOT NULL,
     pruned_at INTEGER NOT NULL
 ) STRICT;
 
-INSERT INTO audit_chain_anchor (id, last_id, last_hash, pruned_at)
-VALUES (1, 0, '0000000000000000000000000000000000000000000000000000000000000000', 0);
+INSERT INTO audit_chain_anchor (id, last_id, last_hash, last_at, pruned_at)
+VALUES (1, 0, '0000000000000000000000000000000000000000000000000000000000000000', 0, 0);
 
 CREATE TRIGGER audit_events_append_only
 BEFORE UPDATE ON audit_events
