@@ -6,14 +6,15 @@ import (
 	"testing"
 )
 
-// readStatic returns an embedded dashboard file.
+// readStatic returns an embedded dashboard file with LF line endings (a Windows
+// checkout may have CRLF).
 func readStatic(t *testing.T, name string) string {
 	t.Helper()
 	b, err := StaticFS.ReadFile("static/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }
 
 // TestHostPatternHasNoOverlappingRanges extracts the host pattern of the URI builder
@@ -87,7 +88,11 @@ func TestMergeTranslationsSkipsPrototypeKeys(t *testing.T) {
 		t.Fatal("mergeTranslations not found in trust.js")
 	}
 	body := src[start:]
-	body = body[:strings.Index(body, "\n}\n")]
+	end := strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatal("end of mergeTranslations not found in trust.js")
+	}
+	body = body[:end]
 	guard := strings.Index(body, `if (k === "__proto__" || k === "constructor" || k === "prototype") return;`)
 	if guard < 0 {
 		t.Fatal("mergeTranslations must skip __proto__, constructor and prototype")
