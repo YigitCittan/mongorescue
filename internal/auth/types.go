@@ -66,12 +66,14 @@ func (e *ThrottledError) Error() string {
 // Unwrap makes errors.Is(err, ErrThrottled) work.
 func (e *ThrottledError) Unwrap() error { return ErrThrottled }
 
-// User is an account. In v0.1.0 every user is an administrator.
+// User is an account. Its dashboard role decides what it may do.
 type User struct {
 	// ID is the unique identifier ("usr_" + hex).
 	ID string `json:"id"`
 	// Username is unique, compared case-insensitively.
 	Username string `json:"username"`
+	// Role is the dashboard role (viewer, operator or admin).
+	Role Role `json:"role"`
 	// PasswordHash is the bcrypt hash; it is never serialised.
 	PasswordHash string `json:"-"`
 	// CreatedAt is when the user was created.
@@ -117,6 +119,9 @@ type APIKey struct {
 	CreatedAt time.Time `json:"created_at"`
 	// LastUsedAt is updated (at most once a minute) when the key authenticates.
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// EffectiveScope is what the key may do today: its scope, capped by the current
+	// role of its creator. It is computed by Service.ListAPIKeys and never stored.
+	EffectiveScope Scope `json:"effective_scope,omitempty"`
 }
 
 // Method identifies how a request was authenticated.
@@ -147,9 +152,15 @@ type Principal struct {
 	APIKeyID string
 	// APIKeyName is the label of the API key (MethodAPIKey only), for audit records.
 	APIKeyName string
-	// Scope is what the caller may do: the key's scope for API keys, ScopeAdmin for
-	// sessions (every user is an administrator).
+	// Scope is the effective scope, what the caller may do (see effectiveScope): the
+	// user's role for sessions, the key's scope capped by its creator's current role
+	// for API keys, ScopeAdmin for the system.
 	Scope Scope
+	// Role is the acting user's dashboard role ("" without a user).
+	Role Role
+	// KeyScope is the scope the API key was created with (MethodAPIKey only); Scope
+	// is below it when the creator's role caps the key.
+	KeyScope Scope
 }
 
 // UserID returns the acting user's ID or "".
@@ -195,9 +206,15 @@ type Repository interface {
 	// RecordLogin sets LastLoginAt.
 	RecordLogin(ctx context.Context, userID string, at time.Time) error
 	// DeleteUser removes a user, their sessions and the API keys they created, in one
-	// transaction; it returns ErrUserNotFound, or ErrLastUser (atomically) when it is
-	// the only user.
+	// transaction; it returns ErrUserNotFound, or (atomically) ErrLastUser when it is
+	// the only user and ErrLastAdmin when it is the only admin.
 	DeleteUser(ctx context.Context, id string) error
+	// UpdateUserRole sets the role of userID and deletes the user's sessions, in one
+	// transaction, and returns the previous role. Setting the role a user already
+	// has changes nothing. It returns ErrUserNotFound, ErrLastAdmin (atomically) when
+	// it would demote the only admin, and a *ScopeError when actorID is not "" and
+	// that user is no longer an admin.
+	UpdateUserRole(ctx context.Context, actorID, userID string, role Role, updatedAt time.Time) (previous Role, err error)
 
 	// CreateSession stores s.
 	CreateSession(ctx context.Context, s *Session) error

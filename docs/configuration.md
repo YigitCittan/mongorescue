@@ -44,7 +44,7 @@ The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secr
 
 ## Settings
 
-In v0.1.0 every signed-in user and every API key is a full administrator: they can change settings and storage targets, and the test endpoints make outbound connections to the hosts they name. Grant access accordingly; roles (RBAC) are on the roadmap.
+Only administrators (the `admin` dashboard role, or an `admin` API key of an administrator) can change settings and storage targets and use the test endpoints, which make outbound connections to the hosts they name. Give other people the `viewer` or `operator` role; see [design/roles.md](design/roles.md).
 
 **Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Security, Users and API keys. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
 

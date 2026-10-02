@@ -31,7 +31,7 @@ func newSessionsFixture(t *testing.T) *sessionsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.auth.CreateUser(ctx, admin, "bob", testPassword); err != nil {
+	if _, err = f.auth.CreateUser(ctx, admin, "bob", testPassword, auth.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	bob, err := f.auth.Login(ctx, "192.0.2.1", "bob", testPassword)

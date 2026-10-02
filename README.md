@@ -199,7 +199,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 ## Known limitations
 
 - It runs as a single instance. Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance on the same directory refuses to start.
-- Every user is an administrator, including settings, storage targets and the test endpoints that connect to hosts named in the request; only API keys can be limited (read, operator). Roles for users and single sign-on are not implemented yet.
+- Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but there is no per-connection access yet: an operator may back up and restore every connection, and an admin may change settings, storage targets and use the test endpoints that connect to hosts named in the request. Single sign-on is not implemented yet.
 - Losing `secret.key` (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable: keep a copy, stored apart from database backups.
 - Backups are per-database `mongodump` snapshots: users and roles are not included (recreate them after a disaster), and there is no oplog-based point-in-time recovery. See [docs/testing.md](docs/testing.md#known-limits).
 - The dashboard has no automated browser tests yet; the API behind it is covered by Go tests.

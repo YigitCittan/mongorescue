@@ -2,7 +2,7 @@
 // journey against one server (global-setup.ts) and run in order in one worker:
 // auth.setup.ts creates the administrator, the numbered specs build on each other
 // (connection, storage target, backup, restore, bulk delete, update banner,
-// recovery readiness).
+// recovery readiness, a viewer).
 import { defineConfig, devices } from "@playwright/test";
 import { ADMIN_STATE_FILE } from "./paths.js";
 

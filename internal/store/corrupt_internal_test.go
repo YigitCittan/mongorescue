@@ -46,7 +46,7 @@ func TestListsSkipRowsWithColumnsOfTheWrongType(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	now := time.Now().UTC()
 	for _, id := range []string{"usr_a", "usr_bad"} {
-		if err = s.CreateUser(ctx, &auth.User{ID: id, Username: id, PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err = s.CreateUser(ctx, &auth.User{ID: id, Username: id, Role: auth.RoleAdmin, PasswordHash: "hash", CreatedAt: now, UpdatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}

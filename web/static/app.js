@@ -37,8 +37,21 @@ const state = {
   }
 };
 
-// Signed-in user, CSRF token for unsafe requests and how the session was authenticated.
-const auth = { user: null, csrf: "", mode: "" };
+// Signed-in user, CSRF token for unsafe requests and how the session was authenticated,
+// with the dashboard role and the effective scope (GET /api/v1/auth/me). The scope
+// only shapes the UI; the server enforces it on every request.
+const auth = { user: null, csrf: "", mode: "", role: "", scope: "", keyScope: "" };
+
+// Scopes from the least to the most privileged, and the scope of each dashboard role.
+const SCOPE_RANK = { read: 1, operator: 2, admin: 3 };
+const ROLE_SCOPES = { viewer: "read", operator: "operator", admin: "admin" };
+
+// can reports whether the signed-in caller's effective scope includes scope.
+function can(scope) {
+  const have = SCOPE_RANK[auth.scope] || 0;
+  const need = SCOPE_RANK[scope] || 4;
+  return have >= need;
+}
 
 const STORAGE_KEYS = {
   theme: "mongorescue_theme"
@@ -3872,13 +3885,23 @@ function setAuth(data) {
   auth.user = data.user || null;
   auth.csrf = data.csrf_token || "";
   auth.mode = data.auth || "session";
+  // Sign-in and setup answers carry the user (with its role); /auth/me also the
+  // effective scope. An unknown role gets read only, like on the server.
+  auth.role = data.role || (auth.user && auth.user.role) || "";
+  auth.scope = data.scope || ROLE_SCOPES[auth.role] || "read";
+  auth.keyScope = data.key_scope || "";
   renderUserMenu();
+  if (typeof applyRole === "function") applyRole();
 }
 
 function clearAuth() {
   auth.user = null;
   auth.csrf = "";
   auth.mode = "";
+  auth.role = "";
+  auth.scope = "";
+  auth.keyScope = "";
+  if (typeof applyRole === "function") applyRole();
 }
 
 function showScreen(name) {
@@ -4672,9 +4695,12 @@ function pickerValue(prefix) {
 // ---------------------------------------------------------------------------
 
 const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "audit", "users", "apikeys", "sessions"];
+const ADMIN_SETTINGS_SECTIONS = ["audit", "users"];
 
 function showSettingsSection(name, focus) {
   if (!SETTINGS_SECTIONS.includes(name)) return;
+  // Users and the audit log are for administrators only.
+  if (ADMIN_SETTINGS_SECTIONS.includes(name) && !can("admin")) name = "general";
   document.querySelectorAll(".settings-nav-btn").forEach(btn => {
     const active = btn.dataset.section === name;
     btn.classList.toggle("active", active);
@@ -5786,7 +5812,8 @@ async function deleteStorageTarget(id) {
 
 async function loadUsers() {
   try {
-    const json = await apiJSON("/api/v1/users");
+    // Non-admins get only IDs and names, to show who created or pinned something.
+    const json = await apiJSON(can("admin") ? "/api/v1/users" : "/api/v1/users/names");
     if (!noteLoad("users", json)) return;
     state.users = json.data || [];
     state.loaded.users = true;
@@ -5811,7 +5838,7 @@ async function loadApiKeys() {
 let auditInFlight = false;
 
 async function loadAudit() {
-  if (auditInFlight || !auth.user) return;
+  if (auditInFlight || !auth.user || !can("admin")) return;
   auditInFlight = true;
   try {
     const json = await apiJSON("/api/v1/audit?limit=200");
@@ -5881,13 +5908,17 @@ function userName(id) {
 
 function renderUsers() {
   const tbody = document.getElementById("users-tbody");
-  if (!tbody || !state.loaded.users) return;
+  if (!tbody || !state.loaded.users || !can("admin")) return;
   const onlyOne = state.users.length <= 1;
+  const admins = state.users.filter(u => u.role === "admin").length;
   setTbody(tbody, state.users.map(u => {
     const self = auth.user && u.id === auth.user.id;
-    const deleteTitle = self ? t("settings.cannot_delete_self") : onlyOne ? t("settings.cannot_delete_last") : "";
+    const lastAdmin = u.role === "admin" && admins <= 1;
+    const deleteTitle = self ? t("settings.cannot_delete_self") : onlyOne ? t("settings.cannot_delete_last")
+      : lastAdmin ? t("settings.user_role_last_admin") : "";
     return `<tr>
       <td class="cell-primary"><span class="user-cell">${escapeHtml(u.username)}${self ? `<span class="chip">${escapeHtml(t("settings.you"))}</span>` : ""}</span></td>
+      <td>${userRoleSelect(u, self, lastAdmin)}</td>
       <td>${timeCell(u.created_at)}</td>
       <td>${parseDate(u.last_login_at) ? timeCell(u.last_login_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
       <td class="col-actions"><div class="row-actions">
@@ -5923,7 +5954,7 @@ function renderApiKeys() {
   setTbody(tbody, state.apikeys.map(k => `<tr>
       <td class="cell-primary">${escapeHtml(k.name)}</td>
       <td><span class="mono muted">${escapeHtml(apiKeyDisplay(k))}</span></td>
-      <td>${scopeChip(k.scope)}</td>
+      <td>${scopeChip(k.scope)}${keyCapNote(k)}</td>
       <td>${k.created_by ? escapeHtml(userName(k.created_by)) : mutedDash()}</td>
       <td>${timeCell(k.created_at)}</td>
       <td>${parseDate(k.last_used_at) ? timeCell(k.last_used_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
@@ -5936,6 +5967,8 @@ function renderApiKeys() {
 function openUserModal() {
   const form = document.getElementById("form-user");
   if (form) form.reset();
+  // New users are viewers unless an administrator picks more.
+  setValue("user-role", "viewer");
   hideFormError("user-error");
   openModal("modal-user");
 }
@@ -5951,11 +5984,12 @@ async function saveUser(e) {
     showFormError("user-error", error);
     return;
   }
+  const role = ROLE_SCOPES[getValue("user-role")] ? getValue("user-role") : "viewer";
   try {
     const json = await apiJSON("/api/v1/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password, role })
     });
     if (json.success) {
       showToast(t("settings.user_created"), "success");
@@ -6040,6 +6074,15 @@ async function savePassword(e) {
 function openApiKeyModal() {
   const form = document.getElementById("form-api-key");
   if (form) form.reset();
+  // A key never gets more than its creator may do: scopes above the caller's are
+  // not offered (the server refuses them too).
+  document.querySelectorAll("#api-key-scope option").forEach(opt => {
+    const allowed = can(opt.value);
+    opt.hidden = !allowed;
+    opt.disabled = !allowed;
+  });
+  const hint = document.getElementById("api-key-scope-limit");
+  if (hint) hint.hidden = can("admin");
   showApiKeyStep("name");
   openModal("modal-api-key");
 }

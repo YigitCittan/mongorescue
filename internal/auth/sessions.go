@@ -126,14 +126,13 @@ func isCurrentSession(actor *Principal, sess *Session) bool {
 	return actor.Method == MethodSession && actor.SessionHash != "" && equalHashes(sess.TokenHash, actor.SessionHash)
 }
 
-// RevokeSession ends the session with the public ID id, of any user. It needs the
-// admin scope (a *ScopeError wrapping ErrForbidden otherwise), as does the route
-// DELETE /api/v1/auth/sessions/{id}: every signed-in user is an administrator, and
-// API keys below admin may list their creator's sessions but not end them. An
-// unknown ID answers ErrSessionNotFound. It reports whether the revoked session is
-// the one actor is using.
+// RevokeSession ends the session with the public ID id. Anyone may end the sessions
+// of their own user; ending another user's session needs the admin scope (a
+// *ScopeError wrapping ErrForbidden otherwise). An unknown ID answers
+// ErrSessionNotFound. It reports whether the revoked session is the one actor
+// is using.
 func (s *Service) RevokeSession(ctx context.Context, actor *Principal, id string) (current bool, err error) {
-	if err = actor.Require(ScopeAdmin); err != nil {
+	if err = actor.Require(ScopeRead); err != nil {
 		return false, err
 	}
 	if len(id) != len(sessionIDPrefix)+sessionIDLen {
@@ -146,6 +145,11 @@ func (s *Service) RevokeSession(ctx context.Context, actor *Principal, id string
 	for _, sess := range sessions {
 		if sessionID(sess.TokenHash) != id {
 			continue
+		}
+		if own := actor.UserID() != "" && sess.UserID == actor.UserID(); !own {
+			if err = actor.Require(ScopeAdmin); err != nil {
+				return false, err
+			}
 		}
 		if err := s.repo.DeleteSession(ctx, sess.TokenHash); err != nil {
 			return false, err

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -105,7 +106,7 @@ func (s *Server) callTool(ctx context.Context, p *auth.Principal, next sdk.Metho
 	}
 	if known {
 		if err := p.Require(spec.scope); err != nil {
-			msg := fmt.Sprintf("forbidden: %s needs an API key with the %q scope; this key has %q", name, spec.scope, p.Scope)
+			msg := fmt.Sprintf("forbidden: %s needs the %q scope; %s", name, spec.scope, scopeRefusal(err))
 			finish(audit.ResultDenied, msg)
 			return errorResult(msg), nil
 		}
@@ -200,4 +201,14 @@ func truncateName(name string) string {
 		name = name[:maxToolName]
 	}
 	return strings.ToValidUTF8(name, "?")
+}
+
+// scopeRefusal says what limits the caller of a refused call: the key's scope, or
+// its creator's dashboard role capping the key.
+func scopeRefusal(err error) string {
+	var se *auth.ScopeError
+	if errors.As(err, &se) {
+		return se.Message()
+	}
+	return err.Error()
 }

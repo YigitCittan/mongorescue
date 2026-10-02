@@ -108,6 +108,10 @@ func TestEveryRouteHasAScope(t *testing.T) {
 		}
 		method, _ := concrete(p)
 		switch {
+		case slices.Contains(selfServiceRoutes, p):
+			if need != auth.ScopeRead {
+				t.Errorf("%q needs %q; self-service routes need read (the auth service applies the finer rule)", p, need)
+			}
 		case strings.HasSuffix(p, " "+MCPPath):
 			if need != auth.ScopeRead {
 				t.Errorf("%q needs %q; the MCP endpoint needs read (tools check their own scope)", p, need)
@@ -131,11 +135,19 @@ func TestEveryRouteHasAScope(t *testing.T) {
 			t.Errorf("routeScopes has a stale entry %q", p)
 		}
 	}
+	for _, p := range selfServiceRoutes {
+		if !slices.Contains(patterns, p) {
+			t.Errorf("selfServiceRoutes has a stale entry %q", p)
+		}
+	}
 }
 
 func TestScopesAreEnforcedForEveryRoute(t *testing.T) {
 	f := newScopeFixture(t)
 	for _, p := range f.authenticatedPatterns() {
+		if slices.Contains(selfServiceRoutes, p) {
+			continue // TestRolesAreEnforcedForEveryRoute pins their finer rules.
+		}
 		need := requiredScope(p)
 		method, path := concrete(p)
 		for _, have := range auth.Scopes() {

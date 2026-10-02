@@ -492,7 +492,7 @@ func TestPasswordChangeRevokesOtherSessions(t *testing.T) {
 
 	// Resetting another user's password needs no current password and revokes all of
 	// that user's sessions.
-	bob, err := f.svc.CreateUser(ctx, actor, "bob", adminPassword)
+	bob, err := f.svc.CreateUser(ctx, actor, "bob", adminPassword, auth.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,22 +517,22 @@ func TestUserManagement(t *testing.T) {
 	ctx := context.Background()
 	admin := f.session(t, res.Token)
 
-	if _, err := f.svc.CreateUser(ctx, admin, "Admin", adminPassword); !errors.Is(err, auth.ErrUserExists) {
+	if _, err := f.svc.CreateUser(ctx, admin, "Admin", adminPassword, auth.RoleAdmin); !errors.Is(err, auth.ErrUserExists) {
 		t.Fatalf("duplicate username (case-insensitive): %v", err)
 	}
 	for _, bad := range []string{"", "has space", "semi;colon", strings.Repeat("a", 65)} {
-		if _, err := f.svc.CreateUser(ctx, admin, bad, adminPassword); !errors.Is(err, auth.ErrInvalidUsername) {
+		if _, err := f.svc.CreateUser(ctx, admin, bad, adminPassword, auth.RoleAdmin); !errors.Is(err, auth.ErrInvalidUsername) {
 			t.Errorf("username %q: %v", bad, err)
 		}
 	}
-	if _, err := f.svc.CreateUser(ctx, admin, "carol", strings.Repeat("x", auth.MaxPasswordBytes+1)); !errors.Is(err, auth.ErrInvalidPassword) {
+	if _, err := f.svc.CreateUser(ctx, admin, "carol", strings.Repeat("x", auth.MaxPasswordBytes+1), auth.RoleAdmin); !errors.Is(err, auth.ErrInvalidPassword) {
 		t.Fatalf("password over 72 bytes: %v", err)
 	}
-	carol, err := f.svc.CreateUser(ctx, admin, "carol", adminPassword)
+	carol, err := f.svc.CreateUser(ctx, admin, "carol", adminPassword, auth.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	users, err := f.svc.ListUsers(ctx)
+	users, err := f.svc.ListUsers(ctx, admin)
 	if err != nil || len(users) != 2 {
 		t.Fatalf("ListUsers = %d, %v", len(users), err)
 	}
@@ -559,7 +559,7 @@ func TestUserManagement(t *testing.T) {
 	}
 
 	// The static API key has no user, so only the last-user rule stops it.
-	static := &auth.Principal{Method: auth.MethodAPIKey}
+	static := &auth.Principal{Method: auth.MethodAPIKey, Scope: auth.ScopeAdmin, KeyScope: auth.ScopeAdmin}
 	if err := f.svc.DeleteUser(ctx, static, admin.User.ID); !errors.Is(err, auth.ErrLastUser) {
 		t.Fatalf("delete last user: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestAPIKeys(t *testing.T) {
 	if err != nil || stored.Hash != auth.HashToken(plain) || strings.Contains(stored.Hash, plain) {
 		t.Fatalf("stored key = %+v, %v", stored, err)
 	}
-	list, _ := f.svc.ListAPIKeys(ctx)
+	list, _ := f.svc.ListAPIKeys(ctx, admin)
 	raw, _ := json.Marshal(list)
 	if len(list) != 1 || strings.Contains(string(raw), plain[len("mr_"+k.Prefix+"_"):]) || strings.Contains(string(raw), stored.Hash) {
 		t.Fatalf("listing leaks key material: %s", raw)
@@ -664,7 +664,7 @@ func TestDeletingAUserRevokesTheirAPIKeys(t *testing.T) {
 	res := f.setup(t)
 	ctx := context.Background()
 	admin := f.session(t, res.Token)
-	carol, err := f.svc.CreateUser(ctx, admin, "carol", adminPassword)
+	carol, err := f.svc.CreateUser(ctx, admin, "carol", adminPassword, auth.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,7 +691,7 @@ func TestDeletingAUserRevokesTheirAPIKeys(t *testing.T) {
 	if _, err = f.svc.AuthenticateAPIKey(ctx, carolKey); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("key of a deleted user: %v; want ErrUnauthenticated", err)
 	}
-	keys, err := f.svc.ListAPIKeys(ctx)
+	keys, err := f.svc.ListAPIKeys(ctx, admin)
 	if err != nil || len(keys) != 1 || keys[0].CreatedBy != admin.User.ID {
 		t.Fatalf("keys after deleting carol = %+v, %v; want only the admin's", keys, err)
 	}

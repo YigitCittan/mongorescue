@@ -132,8 +132,14 @@ func TestRouteSecurityMatrix(t *testing.T) {
 				}
 			}
 
-			// 4. The required scope gets through the middleware.
-			rec = serve(f.h, method, path, []byte(`{}`), with(map[string]string{"Authorization": "Bearer " + f.keys[need]}))
+			// 4. The required scope gets through the middleware. Self-service routes
+			// need read here but apply finer rules in the auth service (pinned by
+			// TestRolesAreEnforcedForEveryRoute); an admin key passes those.
+			key := f.keys[need]
+			if slices.Contains(selfServiceRoutes, p) {
+				key = f.keys[auth.ScopeAdmin]
+			}
+			rec = serve(f.h, method, path, []byte(`{}`), with(map[string]string{"Authorization": "Bearer " + key}))
 			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
 				t.Errorf("%s key: %d %s; want the handler's answer", need, rec.Code, rec.Body)
 			}

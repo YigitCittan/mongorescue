@@ -14,6 +14,7 @@ The activity log stores arguments, which the audit log never does, and merges re
 | Every REST request that can change something (`POST`, `PUT`, `PATCH`, `DELETE`), from a dashboard session or an API key, including refused ones (wrong scope, missing CSRF token, validation errors) | `user` or `api_key` | The route pattern, e.g. `POST /api/v1/jobs/{id}/run`, or `POST (no route)` |
 | The same requests without valid credentials (`401`), and sign-in or setup requests refused before they are read (`415` wrong media type, `403` cross-origin) | `anonymous` | The route pattern |
 | Settings changes: the names of the changed sections and keys in `targets` (`{"sections": "audit,general", "keys": "audit.retention_days,general.default_gzip"}`), never their values | `user` or `api_key` | `PUT /api/v1/settings` |
+| User and key changes: the `role` of a new user, `role_from` and `role_to` of a [role change](design/roles.md), the `scope` of a new API key and `ceiling_applied` (`true` when the key has a creator whose role caps it) | `user` or `api_key` | `POST /api/v1/users`, `PUT /api/v1/users/{id}/role`, `POST /api/v1/api-keys` |
 | Sign-in, successful or not, and setup | `user` on success, otherwise `anonymous` with the name that was tried | `POST /api/v1/auth/login`, `POST /api/v1/setup` |
 | Sign-out | `user` | `POST /api/v1/auth/logout` |
 | Downloads that copy data out: the recovery kit (`POST`) and the audit log export (`GET`) | `user` or `api_key` | `POST /api/v1/recovery-kit`, `GET /api/v1/audit/events/export` |
