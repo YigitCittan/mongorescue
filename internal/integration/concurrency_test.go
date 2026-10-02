@@ -86,6 +86,8 @@ func TestConcurrentRuns(t *testing.T) {
 	if done.Status != models.StatusCompleted {
 		t.Fatalf("first backup: %s (%s)", done.Status, done.ErrorMessage)
 	}
+	// The record is completed a moment before the run releases its lock.
+	waitIdle(t, manager)
 
 	// A restore of the database and a new backup of it at the same time.
 	rst, err := svc.StartRestore(ctx, models.RestoreRequest{BackupID: done.ID})
@@ -155,4 +157,16 @@ func waitRestore(t *testing.T, svc *operations.Service, id string) *models.Resto
 	}
 	t.Fatalf("restore %s did not finish", id)
 	return nil
+}
+
+// waitIdle waits until the run manager holds no run.
+func waitIdle(t *testing.T, m *runs.Manager) {
+	t.Helper()
+	deadline := time.Now().Add(opTimeout)
+	for len(m.Active()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("runs still active: %v", m.Active())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
