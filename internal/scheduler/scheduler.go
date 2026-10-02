@@ -71,6 +71,9 @@ type Scheduler struct {
 	// jobRunsMu guards jobRuns, the active multi-database run of each job.
 	jobRunsMu sync.Mutex
 	jobRuns   map[string]string
+	// lockWaitFor and lockPollEvery bound the wait for a busy database (0 means
+	// DefaultLockWait and lockPoll; lowered by tests).
+	lockWaitFor, lockPollEvery time.Duration
 
 	// mu guards entries, ctx, cancel, started, stopped and paused.
 	mu      sync.Mutex
