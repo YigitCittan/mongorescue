@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -346,6 +347,9 @@ func TestOplogFilterReplaysIntoSafeClone(t *testing.T) {
 	env.seed(t, src, "customers", 10)
 	env.seed(t, other, "moved", 5)
 	env.seed(t, other, "keep", 3)
+	for _, name := range []string{"logs", "capsrc", "report", "ren", "dst"} {
+		env.seed(t, src, name, 4)
+	}
 
 	// The base backup.
 	before := env.lastOplogTS(t)
@@ -419,6 +423,36 @@ func TestOplogFilterReplaysIntoSafeClone(t *testing.T) {
 	must("rename after index build", env.Client.Database("admin").RunCommand(ctx, bson.D{{Key: "renameCollection", Value: src + ".staging"}, {Key: "to", Value: src + ".final"}}).Err())
 	_, err = odb.Collection("keep").InsertOne(ctx, bson.D{{Key: "seq", Value: 2000}})
 	must("write to the other database", err)
+
+	// Replacements: convertToCapped and cloneCollectionAsCapped copy with fromMigrate
+	// inserts; $out over an existing collection and a rename with dropTarget log
+	// dropTarget as the old target's UUID.
+	must("convertToCapped", sdb.RunCommand(ctx, bson.D{{Key: "convertToCapped", Value: "logs"}, {Key: "size", Value: 1 << 20}}).Err())
+	must("cloneCollectionAsCapped", sdb.RunCommand(ctx, bson.D{{Key: "cloneCollectionAsCapped", Value: "capsrc"}, {Key: "toCollection", Value: "capclone"}, {Key: "size", Value: 1 << 20}}).Err())
+	out, err := orders.Aggregate(ctx, mongo.Pipeline{{{Key: "$match", Value: bson.D{{Key: "status", Value: "paid"}}}}, {{Key: "$out", Value: "report"}}})
+	must("$out", err)
+	must("$out cursor", out.Close(ctx))
+	must("rename with dropTarget", env.Client.Database("admin").RunCommand(ctx, bson.D{{Key: "renameCollection", Value: src + ".ren"}, {Key: "to", Value: src + ".dst"}, {Key: "dropTarget", Value: true}}).Err())
+
+	// A transaction too large for one oplog entry whose first entry only touches the
+	// other database: the filter drops that entry, so the rest of the chain points to
+	// an entry mongorestore never sees.
+	big := strings.Repeat("x", 5<<20)
+	sess, err = env.Client.StartSession()
+	must("session", err)
+	_, err = sess.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+		for i := 0; i < 4; i++ {
+			if _, ierr := odb.Collection("big").InsertOne(ctx, bson.D{{Key: "_id", Value: i}, {Key: "pad", Value: big}}); ierr != nil {
+				return nil, ierr
+			}
+		}
+		if _, ierr := orders.InsertOne(ctx, bson.D{{Key: "seq", Value: 3000}, {Key: "bigTxn", Value: true}}); ierr != nil {
+			return nil, ierr
+		}
+		return sdb.Collection("clients").UpdateMany(ctx, bson.D{}, bson.D{{Key: "$set", Value: bson.D{{Key: "bigTxn", Value: true}}}})
+	})
+	sess.EndSession(ctx)
+	must("large transaction", err)
 	end := env.lastOplogTS(t)
 
 	wantSrc := env.state(t, src)
@@ -435,6 +469,7 @@ func TestOplogFilterReplaysIntoSafeClone(t *testing.T) {
 		Limit:  limit,
 	}
 	chunk := env.readOplog(t, before)
+	requireSplitTransaction(t, chunk, other)
 	stderr := env.runTool(t, "mongorestore", func(stdin io.Writer) error {
 		a, err := oplog.NewArchiveWriter(stdin, opts)
 		if err != nil {
@@ -456,5 +491,36 @@ func TestOplogFilterReplaysIntoSafeClone(t *testing.T) {
 	// limit: the filter must have stopped there, or the clone would not match.
 	if !filter.LimitReached() {
 		t.Error("the filter did not stop at the limit")
+	}
+}
+
+// requireSplitTransaction fails the test unless chunk holds a transaction split into
+// partialTxn entries whose first entry only touches database db.
+func requireSplitTransaction(t *testing.T, chunk []byte, db string) {
+	t.Helper()
+	r := oplog.NewReader(bytes.NewReader(chunk))
+	for {
+		e, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			t.Fatal("no transaction split into partialTxn entries in the oplog")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if partial, ok := e.Lookup("o", "partialTxn").BooleanOK(); !ok || !partial {
+			continue
+		}
+		if secs, _, ok := e.Lookup("prevOpTime", "ts").TimestampOK(); ok && secs != 0 {
+			continue // not the first entry of its transaction
+		}
+		ops, _ := e.Lookup("o", "applyOps").Array().Values()
+		only := len(ops) > 0
+		for _, op := range ops {
+			ns, _ := op.Document().Lookup("ns").StringValueOK()
+			only = only && strings.HasPrefix(ns, db+".")
+		}
+		if only {
+			return
+		}
 	}
 }

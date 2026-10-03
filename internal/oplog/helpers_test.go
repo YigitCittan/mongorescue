@@ -23,6 +23,7 @@ var fixtureScenarios = map[string][]string{
 	"indexbuild": {"fx_idx"},
 	"timeseries": {"fx_ts"},
 	"crossdb":    {"fx_xa", "fx_xb"},
+	"replace":    {"fx_rep"},
 }
 
 // readFixture returns the raw bytes of a fixture.
