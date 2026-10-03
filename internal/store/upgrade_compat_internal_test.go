@@ -20,6 +20,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
@@ -816,6 +817,65 @@ var compatSteps = []compatStep{
 				NewUserID: "usr_unused", Username: "jane.doe", Role: auth.RoleOperator, At: compatT0.Add(30 * time.Hour)})
 			if err != nil || res.Created || res.User.ID != "usr_v20_sso" {
 				t.Errorf("sign-in of the stored subject = %+v, %v; want usr_v20_sso", res, err)
+			}
+		},
+	},
+	{
+		version: 21,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO pitr_streams (id, connection_id, replica_set, target_id, enabled, base_cron, base_keep_count,
+					base_keep_days, oplog_max_days, chunk_seconds, data, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"pst_v21", "conn_v2", "rs0", "tgt_local", 1, "0 3 * * *", 7, 14, 0, 60,
+				`{"base_on_gap":true,"read_preference":"secondaryPreferred"}`, ns(27*time.Hour), ns(27*time.Hour))
+			f.exec(t, `INSERT INTO pitr_chains (stream_id, chain_id, start_t, start_i, end_t, end_i, end_reason, ended_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+				"pst_v21", "chain_old", 1790000000, 1, 1790000300, 2, "gap", ns(28*time.Hour),
+				"pst_v21", "chain_new", 1790000400, 1)
+			f.exec(t, `INSERT INTO oplog_chunks (id, stream_id, chain_id, target_id, storage_key, from_t, from_i, to_t, to_i,
+					first_term, last_term, entries, size_bytes, sha256, encrypted, encryption_mode, status, created_at,
+					verified_at, verify_error)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"chk_v21", "pst_v21", "chain_new", "tgt_local",
+				"_mongorescue/oplog/conn_v2/rs0/chain_new/1790000400.0000000001-1790000460.0000000003.bson.gz.age",
+				1790000400, 1, 1790000460, 3, 4, 4, 25, 1024, "deadbeef", 1, "x25519", "committed", ns(29*time.Hour),
+				ns(30*time.Hour), "")
+			f.exec(t, `INSERT INTO pitr_state (stream_id, chain_id, last_t, last_i, last_term, status, last_error, lag_since, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"pst_v21", "chain_new", 1790000460, 3, 4, "running", "", nil, ns(29*time.Hour))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			st, err := s.GetStreamByConnection(ctx, "conn_v2")
+			if err != nil || st.ID != "pst_v21" || !st.Enabled || !st.BaseOnGap || st.ReadPreference != "secondaryPreferred" ||
+				st.ChunkSeconds != 60 || st.BaseKeepCount != 7 || !st.CreatedAt.Equal(time.Unix(0, ns(27*time.Hour)).UTC()) {
+				t.Errorf("pst_v21 = %+v, %v", st, err)
+			}
+			chains, err := s.ListChains(ctx, "pst_v21")
+			if err != nil || len(chains) != 2 || chains[0].EndReason != pitr.EndGap || chains[0].End != (pitr.Timestamp{T: 1790000300, I: 2}) ||
+				!chains[1].Open() {
+				t.Errorf("chains of pst_v21 = %+v, %v", chains, err)
+			}
+			chunks, err := s.ListChunks(ctx, pitr.ChunkQuery{StreamID: "pst_v21", ChainID: "chain_new"})
+			if err != nil || len(chunks) != 1 || chunks[0].Entries != 25 || chunks[0].To != (pitr.Timestamp{T: 1790000460, I: 3}) ||
+				chunks[0].VerifiedAt == nil || chunks[0].Status != pitr.ChunkCommitted {
+				t.Errorf("chunks of pst_v21 = %+v, %v", chunks, err)
+			}
+			state, err := s.LoadState(ctx, "pst_v21")
+			if err != nil || state.ChainID != "chain_new" || state.Last != (pitr.OpTime{TS: pitr.Timestamp{T: 1790000460, I: 3}, Term: 4}) {
+				t.Errorf("state of pst_v21 = %+v, %v", state, err)
+			}
+			// The stored position continues: the next chunk commits.
+			next := &pitr.Chunk{ID: "chk_v21_next", StreamID: "pst_v21", ChainID: "chain_new", TargetID: "tgt_local",
+				StorageKey: "next", From: state.Last.TS, To: pitr.Timestamp{T: 1790000520, I: 1}, LastTerm: 4}
+			if err = s.CommitChunk(ctx, next); err != nil {
+				t.Errorf("commit after the upgrade: %v", err)
+			}
+			if _, err = s.db.Exec(`UPDATE oplog_chunks SET status = 'lost' WHERE id = 'chk_v21'`); err == nil {
+				t.Error("an unknown chunk status was stored")
+			}
+			if _, err = s.db.Exec(`INSERT INTO pitr_chains (stream_id, chain_id, start_t, start_i) VALUES ('pst_v21', 'chain_third', 1, 1)`); err == nil {
+				t.Error("a stream got two open chains")
 			}
 		},
 	},
