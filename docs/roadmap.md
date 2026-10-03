@@ -49,7 +49,7 @@ This changes the backup model, so it starts with a design document that has to b
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Open questions: how this fits per-database jobs, where oplog chunks are stored and for how long, encryption and verification of chunks, what happens when the oplog window is lost, and support for sharded clusters (out of scope at first). |
+| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Open questions: how this fits per-database jobs, where oplog chunks are stored and for how long, encryption and verification of chunks, what happens when the oplog window is lost, and support for sharded clusters (out of scope at first). Agreed: [design/pitr.md](design/pitr.md). |
 | 3.2 | **Oplog collector** | L | A long-running tailer of `local.oplog.rs` that resumes from its last position, writes compressed and encrypted chunks to the storage target, verifies them, and alerts when the gap to the primary grows or the oplog window is about to be overrun. |
 | 3.3 | **PITR restore** | XL | Restore to a chosen time: the nearest base backup, then the oplog chunks replayed with `mongorestore --oplogReplay --oplogLimit`, into a safe clone by default, with the same preflight and verification as other restores. |
 | 3.4 | **Sharded clusters** | XL | Research first: consistent backups across shards need cluster-wide coordination, which is a separate project. |
