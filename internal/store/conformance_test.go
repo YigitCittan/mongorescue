@@ -11,6 +11,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -39,10 +40,11 @@ var (
 )
 
 // backend is the contract exercised by the conformance suite: every metadata store
-// serves both the store and the notification ports.
+// serves the store, notification and PITR ports.
 type backend interface {
 	store.Store
 	notify.Repository
+	pitr.Repository
 	Close() error
 }
 
@@ -60,6 +62,8 @@ func runConformance(t *testing.T, open opener) {
 	t.Run("InvalidRecords", func(t *testing.T) { testInvalidRecords(t, open(t, t.TempDir())) })
 	t.Run("EmptyListsAreNotNil", func(t *testing.T) { testEmptyLists(t, open(t, t.TempDir())) })
 	t.Run("Persistence", func(t *testing.T) { testPersistence(t, open) })
+	t.Run("PITRStreams", func(t *testing.T) { testPITRStreams(t, open(t, t.TempDir())) })
+	t.Run("PITRChainsAndChunks", func(t *testing.T) { testPITRChainsAndChunks(t, open(t, t.TempDir())) })
 }
 
 func TestSQLiteStoreConformance(t *testing.T) {

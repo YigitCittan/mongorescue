@@ -1,0 +1,352 @@
+package mongoconn
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+
+	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/redact"
+)
+
+// DefaultOplogReadPreference is the read preference of oplog reads unless a stream
+// sets another: the collector reads from a secondary when one is available.
+const DefaultOplogReadPreference = "secondaryPreferred"
+
+// oplogDB and oplogColl name the replica set oplog.
+const (
+	oplogDB   = "local"
+	oplogColl = "oplog.rs"
+)
+
+// ErrInvalidReadPreference is returned by OpenOplogSession for an unknown read
+// preference mode.
+var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
+
+// OplogSession is one long-lived client to a replica set, opened once per PITR
+// stream so the collector does not reconnect at every tick. Every read uses the
+// session's read preference. It is safe for concurrent use; Close disconnects it.
+type OplogSession struct {
+	client *mongo.Client
+	rp     *readpref.ReadPref
+}
+
+// OpenOplogSession returns a session for uri reading with readPreference (empty
+// means DefaultOplogReadPreference). The connection string's own timeouts apply,
+// capped by ctx's deadline at connect time. Errors never quote the URI.
+func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference string) (*OplogSession, error) {
+	if readPreference == "" {
+		readPreference = DefaultOplogReadPreference
+	}
+	mode, err := readpref.ModeFromString(readPreference)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidReadPreference, readPreference)
+	}
+	rp, err := readpref.New(mode)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidReadPreference, readPreference)
+	}
+	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp))
+	if err != nil {
+		// Parse errors may quote parts of the URI; never return them verbatim.
+		return nil, errors.New("invalid connection string")
+	}
+	return &OplogSession{client: client, rp: rp}, nil
+}
+
+// Close disconnects the session's client.
+func (s *OplogSession) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.client.Disconnect(ctx)
+}
+
+// OplogWindow opens a short-lived session for uri and returns its oplog window
+// (see OplogSession.OplogWindow).
+func (p *Prober) OplogWindow(ctx context.Context, uri string) (pitr.OplogWindow, error) {
+	var w pitr.OplogWindow
+	err := p.withOplogSession(ctx, uri, func(s *OplogSession) (err error) {
+		w, err = s.OplogWindow(ctx)
+		return err
+	})
+	return w, err
+}
+
+// ReadOplog opens a short-lived session for uri and copies the oplog range
+// (from, to] to w (see OplogSession.ReadOplog).
+func (p *Prober) ReadOplog(ctx context.Context, uri string, from, to pitr.Timestamp, w io.Writer) (pitr.OplogStats, error) {
+	var stats pitr.OplogStats
+	err := p.withOplogSession(ctx, uri, func(s *OplogSession) (err error) {
+		stats, err = s.ReadOplog(ctx, from, to, w)
+		return err
+	})
+	return stats, err
+}
+
+// EntryAt opens a short-lived session for uri and looks up the oplog entry at ts
+// (see OplogSession.EntryAt).
+func (p *Prober) EntryAt(ctx context.Context, uri string, ts pitr.Timestamp) (term int64, found bool, err error) {
+	err = p.withOplogSession(ctx, uri, func(s *OplogSession) (err error) {
+		term, found, err = s.EntryAt(ctx, ts)
+		return err
+	})
+	return term, found, err
+}
+
+// CanReadOplog opens a short-lived session for uri and reports whether its user
+// may read the oplog (see OplogSession.CanReadOplog).
+func (p *Prober) CanReadOplog(ctx context.Context, uri string) (bool, error) {
+	var ok bool
+	err := p.withOplogSession(ctx, uri, func(s *OplogSession) (err error) {
+		ok, err = s.CanReadOplog(ctx)
+		return err
+	})
+	return ok, err
+}
+
+// withOplogSession runs fn with a session for uri using the default read
+// preference and always closes it. Errors are redacted.
+func (p *Prober) withOplogSession(ctx context.Context, uri string, fn func(*OplogSession) error) error {
+	s, err := p.OpenOplogSession(ctx, uri, "")
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return redactErr(fn(s))
+}
+
+// OplogWindow returns the oldest and newest oplog entries of the member the read
+// preference selects, the majority-committed optime (hello.lastWrite.majorityOpTime)
+// and the replica set name and ID. It returns pitr.ErrNotReplicaSet for a server
+// that is not a replica set member. Errors are redacted.
+func (s *OplogSession) OplogWindow(ctx context.Context) (pitr.OplogWindow, error) {
+	var w pitr.OplogWindow
+	var hello struct {
+		SetName   string `bson:"setName"`
+		LastWrite struct {
+			MajorityOpTime struct {
+				TS bson.Timestamp `bson:"ts"`
+				T  int64          `bson:"t"`
+			} `bson:"majorityOpTime"`
+		} `bson:"lastWrite"`
+	}
+	admin := s.client.Database("admin")
+	if err := admin.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}, options.RunCmd().SetReadPreference(s.rp)).Decode(&hello); err != nil {
+		return w, redactErr(fmt.Errorf("hello: %w", err))
+	}
+	if hello.SetName == "" {
+		return w, pitr.ErrNotReplicaSet
+	}
+	w.ReplicaSet = hello.SetName
+	mt := hello.LastWrite.MajorityOpTime
+	w.MajorityOpTime = pitr.OpTime{TS: pitr.Timestamp{T: mt.TS.T, I: mt.TS.I}, Term: mt.T}
+
+	oplog := s.client.Database(oplogDB).Collection(oplogColl)
+	for _, end := range []struct {
+		dir int
+		dst *pitr.Timestamp
+	}{{1, &w.Oldest}, {-1, &w.Newest}} {
+		opts := options.FindOne().SetSort(bson.D{{Key: "$natural", Value: end.dir}}).
+			SetProjection(bson.D{{Key: "ts", Value: 1}, {Key: "_id", Value: 0}})
+		raw, err := oplog.FindOne(ctx, bson.D{}, opts).Raw()
+		if err != nil {
+			return w, redactErr(fmt.Errorf("read the oplog's ends: %w", err))
+		}
+		t, i, ok := raw.Lookup("ts").TimestampOK()
+		if !ok {
+			return w, errors.New("read the oplog's ends: an entry has no ts timestamp")
+		}
+		*end.dst = pitr.Timestamp{T: t, I: i}
+	}
+
+	id, err := s.replicaSetID(ctx)
+	if err != nil {
+		return w, redactErr(err)
+	}
+	w.ReplicaSetID = id
+	return w, nil
+}
+
+// replicaSetID returns the hex settings.replicaSetId of the replica set
+// configuration, through replSetGetConfig or else local.system.replset. It is
+// empty when the user may read neither.
+func (s *OplogSession) replicaSetID(ctx context.Context) (string, error) {
+	var cfg struct {
+		Config struct {
+			Settings struct {
+				ID bson.ObjectID `bson:"replicaSetId"`
+			} `bson:"settings"`
+		} `bson:"config"`
+	}
+	err := s.client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetGetConfig", Value: 1}},
+		options.RunCmd().SetReadPreference(s.rp)).Decode(&cfg)
+	if err == nil {
+		return objectIDHex(cfg.Config.Settings.ID), nil
+	}
+	if !unauthorized(err) {
+		return "", fmt.Errorf("replSetGetConfig: %w", err)
+	}
+	var doc struct {
+		Settings struct {
+			ID bson.ObjectID `bson:"replicaSetId"`
+		} `bson:"settings"`
+	}
+	err = s.client.Database(oplogDB).Collection("system.replset").FindOne(ctx, bson.D{},
+		options.FindOne().SetProjection(bson.D{{Key: "settings.replicaSetId", Value: 1}})).Decode(&doc)
+	switch {
+	case err == nil:
+		return objectIDHex(doc.Settings.ID), nil
+	case unauthorized(err), errors.Is(err, mongo.ErrNoDocuments):
+		return "", nil
+	default:
+		return "", fmt.Errorf("read local.system.replset: %w", err)
+	}
+}
+
+// objectIDHex renders id in hex, or "" for the zero ID.
+func objectIDHex(id bson.ObjectID) string {
+	if id.IsZero() {
+		return ""
+	}
+	return id.Hex()
+}
+
+// unauthorized reports whether err is the server's missing-privilege error.
+func unauthorized(err error) bool {
+	var se mongo.ServerError
+	return errors.As(err, &se) && se.HasErrorCode(unauthorizedCode)
+}
+
+// ReadOplog copies the oplog entries in the range (from, to] to w in $natural
+// order, each as its raw BSON document exactly as the server sent it, so memory use
+// is bounded by one cursor batch. to must be the timestamp of an existing entry,
+// such as OplogWindow's MajorityOpTime.TS: when the member that answered has no
+// entry at to yet, ReadOplog returns pitr.ErrOplogBehind after writing what it
+// read, and nothing written may be kept. An empty range (to not after from) writes
+// nothing. Errors are redacted.
+func (s *OplogSession) ReadOplog(ctx context.Context, from, to pitr.Timestamp, w io.Writer) (pitr.OplogStats, error) {
+	var stats pitr.OplogStats
+	if to.Compare(from) <= 0 {
+		return stats, nil
+	}
+	filter := bson.D{{Key: "ts", Value: bson.D{
+		{Key: "$gt", Value: bson.Timestamp{T: from.T, I: from.I}},
+		{Key: "$lte", Value: bson.Timestamp{T: to.T, I: to.I}},
+	}}}
+	cur, err := s.client.Database(oplogDB).Collection(oplogColl).Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
+	if err != nil {
+		return stats, redactErr(fmt.Errorf("find oplog entries: %w", err))
+	}
+	defer func() { _ = cur.Close(context.WithoutCancel(ctx)) }()
+	prev := from
+	for cur.Next(ctx) {
+		doc := cur.Current
+		t, i, ok := doc.Lookup("ts").TimestampOK()
+		if !ok {
+			return stats, fmt.Errorf("oplog entry %d has no ts timestamp", stats.Entries+1)
+		}
+		op := pitr.OpTime{TS: pitr.Timestamp{T: t, I: i}}
+		if op.TS.Compare(prev) <= 0 {
+			return stats, fmt.Errorf("oplog entry %s is not after %s", op.TS, prev)
+		}
+		op.Term, _ = doc.Lookup("t").AsInt64OK()
+		if _, err = w.Write(doc); err != nil {
+			return stats, fmt.Errorf("write oplog entry: %w", err)
+		}
+		if stats.Entries == 0 {
+			stats.First = op
+		}
+		stats.Last = op
+		stats.Entries++
+		prev = op.TS
+	}
+	if err = cur.Err(); err != nil {
+		return stats, redactErr(fmt.Errorf("read oplog entries: %w", err))
+	}
+	if stats.Last.TS != to {
+		return stats, fmt.Errorf("%w: read up to %s of %s", pitr.ErrOplogBehind, stats.Last.TS, to)
+	}
+	return stats, nil
+}
+
+// EntryAt looks up the oplog entry at ts and returns its term; found is false when
+// the member that answered has no entry there (it was truncated, rolled back or
+// never replicated). Errors are redacted.
+func (s *OplogSession) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error) {
+	raw, err := s.client.Database(oplogDB).Collection(oplogColl).FindOne(ctx,
+		bson.D{{Key: "ts", Value: bson.Timestamp{T: ts.T, I: ts.I}}},
+		options.FindOne().SetProjection(bson.D{{Key: "t", Value: 1}, {Key: "_id", Value: 0}})).Raw()
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, redactErr(fmt.Errorf("find oplog entry %s: %w", ts, err))
+	}
+	term, _ = raw.Lookup("t").AsInt64OK()
+	return term, true, nil
+}
+
+// CanReadOplog reports whether the session's user may run find on
+// local.oplog.rs, from connectionStatus: a privilege on any resource, on the local
+// database or on local.oplog.rs itself (granted by backup, read on local or a
+// custom role). readAnyDatabase does not grant it: its database wildcard excludes
+// local. A server without access control allows it. Errors are redacted.
+func (s *OplogSession) CanReadOplog(ctx context.Context) (bool, error) {
+	var res struct {
+		AuthInfo struct {
+			Users      []bson.Raw  `bson:"authenticatedUsers"`
+			Privileges []privilege `bson:"authenticatedUserPrivileges"`
+		} `bson:"authInfo"`
+	}
+	cmd := bson.D{{Key: "connectionStatus", Value: 1}, {Key: "showPrivileges", Value: true}}
+	if err := s.client.Database("admin").RunCommand(ctx, cmd).Decode(&res); err != nil {
+		return false, redactErr(fmt.Errorf("connectionStatus: %w", err))
+	}
+	return len(res.AuthInfo.Users) == 0 || grantsOplogFind(res.AuthInfo.Privileges), nil
+}
+
+// grantsOplogFind reports whether privs allow find on local.oplog.rs. A database
+// wildcard (db "") does not cover local.
+func grantsOplogFind(privs []privilege) bool {
+	for _, p := range privs {
+		r := p.Resource
+		covers := r.AnyResource ||
+			(r.DB != nil && r.Collection != nil && *r.DB == oplogDB && (*r.Collection == "" || *r.Collection == oplogColl))
+		if covers && slices.Contains(p.Actions, "find") {
+			return true
+		}
+	}
+	return false
+}
+
+// redactedError carries a message scrubbed by redact.Text while still unwrapping to
+// the original error, so errors.Is and errors.As keep working.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactErr returns err with credentials and connection strings in its message
+// masked; nil stays nil.
+func redactErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := redact.Text(err.Error())
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}

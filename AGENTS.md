@@ -48,6 +48,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/encryption` | age encryption |
 | `internal/events`, `internal/notify`, `internal/metrics` | Event bus, notifications, Prometheus |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and MCP |
+| `internal/pitr` | Point-in-time recovery domain: streams, chains, oplog chunks, collector state and the `Repository` port (store in `internal/store`, oplog reads in `internal/mongoconn`) |
 | `internal/runlog` | Per-run log files under `<datadir>/logs` (redacted, 5 MiB cap with head and tail), read by the run registry in `internal/runs` |
 | `internal/audit` | Audit log of MCP tool calls |
 | `internal/server` | REST API, auth, route → scope table, dashboard serving |
