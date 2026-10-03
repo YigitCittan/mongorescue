@@ -166,6 +166,7 @@ func scenarios() []scenario {
 		{name: "indexbuild", dbs: []string{"fx_idx"}, run: indexBuildScenario},
 		{name: "timeseries", dbs: []string{"fx_ts"}, run: timeseriesScenario},
 		{name: "crossdb", dbs: []string{"fx_xa", "fx_xb"}, run: crossDBScenario},
+		{name: "replace", dbs: []string{"fx_rep"}, run: replaceScenario},
 	}
 }
 
@@ -293,6 +294,15 @@ func txnScenario(ctx context.Context, c *mongo.Client) error {
 	}); err != nil {
 		return err
 	}
+	// A transaction whose first entry only touches fx_txn2.
+	if _, err := sess.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+		if _, err := other.InsertMany(ctx, []any{bson.D{{Key: "_id", Value: "o1"}}, bson.D{{Key: "_id", Value: "o2"}}}); err != nil {
+			return nil, err
+		}
+		return a.InsertMany(ctx, []any{bson.D{{Key: "_id", Value: "late1"}}, bson.D{{Key: "_id", Value: "late2"}}})
+	}); err != nil {
+		return err
+	}
 	// An aborted transaction leaves no entry.
 	errAbort := errors.New("abort")
 	_, err = sess.WithTransaction(ctx, func(ctx context.Context) (any, error) {
@@ -364,4 +374,30 @@ func crossDBScenario(ctx context.Context, c *mongo.Client) error {
 		return err
 	}
 	return cmd(ctx, c, "admin", bson.D{{Key: "renameCollection", Value: "fx_xa.src"}, {Key: "to", Value: "fx_xb.dst"}})
+}
+
+// replaceScenario replaces collections: convertToCapped and cloneCollectionAsCapped
+// (whose copies are marked fromMigrate), $out over an existing collection and a rename
+// with dropTarget (both log dropTarget as the old target's UUID).
+func replaceScenario(ctx context.Context, c *mongo.Client) error {
+	db := c.Database("fx_rep")
+	for _, name := range []string{"logs", "src", "report", "ren", "dst"} {
+		if _, err := db.Collection(name).InsertMany(ctx, docs(0, 3)); err != nil {
+			return err
+		}
+	}
+	if err := cmd(ctx, c, "fx_rep", bson.D{{Key: "convertToCapped", Value: "logs"}, {Key: "size", Value: 100000}}); err != nil {
+		return err
+	}
+	if err := cmd(ctx, c, "fx_rep", bson.D{{Key: "cloneCollectionAsCapped", Value: "src"}, {Key: "toCollection", Value: "src_capped"}, {Key: "size", Value: 100000}}); err != nil {
+		return err
+	}
+	cur, err := db.Collection("src").Aggregate(ctx, mongo.Pipeline{{{Key: "$match", Value: bson.D{{Key: "k", Value: 1}}}}, {{Key: "$out", Value: "report"}}})
+	if err != nil {
+		return err
+	}
+	if err := cur.Close(ctx); err != nil {
+		return err
+	}
+	return cmd(ctx, c, "admin", bson.D{{Key: "renameCollection", Value: "fx_rep.ren"}, {Key: "to", Value: "fx_rep.dst"}, {Key: "dropTarget", Value: true}})
 }

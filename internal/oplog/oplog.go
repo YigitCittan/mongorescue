@@ -31,7 +31,10 @@ var (
 	// ErrCrossSelectionRename indicates a rename between a selected and an unselected
 	// database, which a filtered replay cannot reproduce.
 	ErrCrossSelectionRename = errors.New("oplog: rename across the database selection")
-	// ErrBadRename indicates that Filter.Rename returned an invalid database name.
+	// ErrNoTarget indicates a Filter with neither Rename nor InPlace, or both.
+	ErrNoTarget = errors.New("oplog: filter needs either Rename or InPlace")
+	// ErrBadRename indicates that Filter.Rename returned an invalid database name or
+	// the source name itself.
 	ErrBadRename = errors.New("oplog: invalid renamed database name")
 	// ErrServerVersion indicates an ArchiveOptions.ServerVersion that mongorestore
 	// cannot parse.

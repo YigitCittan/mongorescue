@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -42,10 +41,6 @@ var txnFields = map[string]bool{"lsid": true, "txnNumber": true, "prevOpTime": t
 // of replicated record IDs, which mongorestore skips as well.
 var ignoredOps = map[string]bool{"n": true, "cd": true, "ci": true, "cu": true, "km": true}
 
-// renameTemp matches the temporary collection of a rename across databases
-// (tmpXXXXX.renameCollection), whose copy inserts MongoDB 5.0 marks fromMigrate.
-var renameTemp = regexp.MustCompile(`^tmp[A-Za-z0-9]{5}\.renameCollection$`)
-
 // Filter rewrites a stream of oplog entries for a filtered, renamed replay. It reads
 // one entry at a time and writes the entries to replay:
 //
@@ -59,16 +54,21 @@ var renameTemp = regexp.MustCompile(`^tmp[A-Za-z0-9]{5}\.renameCollection$`)
 //     user-level create, collMod and drop commands, which applyOps accepts
 //     (views.go).
 //   - Entries of other databases, of admin, config (config.system.indexBuilds
-//     included) and local, no-ops, fromMigrate entries (except the copy into the
-//     temporary collection of a rename across databases, which MongoDB 5.0 marks so)
-//     and dbCheck entries are dropped. Collection UUIDs (ui) and retryable-write fields
-//     (lsid, txnNumber, stmtId, prevOpTime and the findAndModify image references) are
-//     removed.
+//     included) and local, no-ops and dbCheck entries are dropped. Collection UUIDs
+//     (ui), fromMigrate and the retryable-write fields (lsid, txnNumber, stmtId,
+//     prevOpTime and the findAndModify image references) are removed. fromMigrate
+//     entries are kept: on a replica set they are the copies made by
+//     convertToCapped, cloneCollectionAsCapped and (5.0) renames across databases,
+//     and dropping them would leave those collections empty.
 //   - Each commitIndexBuild becomes one createIndexes entry per index at the commit's
 //     position; startIndexBuild and abortIndexBuild are dropped. mongorestore builds
 //     replayed indexes only at the end, by collection name, so after a rename the
 //     Filter also writes the entries that move the indexes it wrote to the new name
 //     (indexes.go).
+//   - A rename over an existing collection (dropTarget, also written by $out and
+//     convertToCapped) becomes a drop of the target followed by the rename without
+//     dropTarget: applyOps would move the clone's target aside to a tmpXXXXX.rename
+//     collection instead of dropping it, as dropTarget names the source's UUID.
 //   - A renameCollection between a selected and an unselected database returns
 //     ErrCrossSelectionRename, an unknown command ErrUnknownCommand and an unknown
 //     operation type ErrUnknownOp: such a stream cannot be replayed safely.
@@ -76,17 +76,20 @@ var renameTemp = regexp.MustCompile(`^tmp[A-Za-z0-9]{5}\.renameCollection$`)
 //     sees an entry past --oplogLimit.
 //
 // Ops counts the operations written the way mongorestore counts "applied N oplog
-// entries", so the two can be compared after a replay. The zero Filter keeps every
-// database except admin, config and local, under its own name. A Filter is not safe
-// for concurrent use.
+// entries", so the two can be compared after a replay. A Filter needs either Rename
+// or InPlace: the zero Filter refuses to run (ErrNoTarget), so a caller cannot replay
+// into the source databases by accident. A Filter is not safe for concurrent use.
 type Filter struct {
 	// Select lists the databases to keep; nil keeps every database except admin,
 	// config and local, which are always dropped.
 	Select map[string]bool
-	// Rename maps a kept database to the database to replay it into (nil keeps the
-	// name). It must return a valid database name, or the Filter fails with
-	// ErrBadRename.
+	// Rename maps a kept database to the database to replay it into. It must return
+	// a valid database name other than db, or the Filter fails with ErrBadRename.
+	// Exactly one of Rename and InPlace must be set.
 	Rename func(db string) string
+	// InPlace replays the kept databases under their own names, over the source:
+	// the destructive mode, which must be chosen explicitly.
+	InPlace bool
 	// Limit is the exclusive end of the replay, the --oplogLimit position; the zero
 	// Timestamp sets none.
 	Limit bson.Timestamp
@@ -154,6 +157,9 @@ func (f *Filter) Copy(ctx context.Context, dst EntryWriter, src io.Reader) error
 // per index of a commitIndexBuild). It returns stop = true, without calling emit, for
 // an entry at or after Limit: the stream must end there.
 func (f *Filter) Apply(entry bson.Raw, emit func([]byte) error) (stop bool, err error) {
+	if (f.Rename == nil) == !f.InPlace {
+		return false, ErrNoTarget
+	}
 	if f.limitReached {
 		return true, nil
 	}
@@ -355,9 +361,6 @@ func (f *Filter) op(doc bson.Raw, depth int) ([]bson.D, int64, error) {
 	}
 	switch opType {
 	case "i", "u", "d":
-		if fromMigrate(doc) && !renameTemp.MatchString(coll) {
-			return nil, 0, nil
-		}
 		if !f.selected(db) {
 			return nil, 0, nil
 		}
@@ -404,9 +407,6 @@ func (f *Filter) command(doc bson.Raw, db string, depth int) ([]bson.D, int64, e
 		return nil, 0, fmt.Errorf("%w: empty command", ErrMalformed)
 	}
 	name := first.Key()
-	if fromMigrate(doc) {
-		return nil, 0, nil
-	}
 	if name == "renameCollection" {
 		// Checked before the database: a rename out of admin into a selected
 		// database must be refused, not dropped.
@@ -547,6 +547,8 @@ func (f *Filter) renameCollection(doc, o bson.Raw) ([]bson.D, int64, error) {
 					return renameNS(from, fromDB, newFrom), true, nil
 				case "to":
 					return renameNS(to, toDB, newTo), true, nil
+				case "dropTarget":
+					return false, true, nil
 				}
 				return ov, true, nil
 			})
@@ -557,11 +559,25 @@ func (f *Filter) renameCollection(doc, o bson.Raw) ([]bson.D, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	var out []bson.D
+	// dropTarget is a UUID or true when set; false or absent when not.
+	if dt := o.Lookup("dropTarget"); dt.Type != 0 && (dt.Type != bson.TypeBoolean || dt.Boolean()) {
+		drop := bson.D{{Key: "drop", Value: toColl}}
+		dd, derr := f.commandEntry(doc, newTo, drop)
+		if derr != nil {
+			return nil, 0, derr
+		}
+		out = append(out, dd)
+		if err = f.trackIndexes("drop", mustRaw(drop), newTo); err != nil {
+			return nil, 0, err
+		}
+	}
 	moves, err := f.moveIndexes(doc, newFrom, fromColl, newTo, toColl)
 	if err != nil {
 		return nil, 0, err
 	}
-	return append([]bson.D{d}, moves...), int64(1 + len(moves)), nil
+	out = append(append(out, d), moves...)
+	return out, int64(len(out)), nil
 }
 
 // ddl rewrites a DDL command on db: its ns, and the "ns" fields older servers put in
@@ -670,11 +686,11 @@ func (f *Filter) selected(db string) bool {
 
 // rename returns the database db is replayed into.
 func (f *Filter) rename(db string) (string, error) {
-	if f.Rename == nil {
+	if f.InPlace {
 		return db, nil
 	}
 	to := f.Rename(db)
-	if to == "" || len(to) > maxDatabaseName || strings.ContainsAny(to, "./\\ \"$\x00") || systemDB(to) {
+	if to == db || to == "" || len(to) > maxDatabaseName || strings.ContainsAny(to, "./\\ \"$\x00") || systemDB(to) {
 		return "", fmt.Errorf("%w: %q", ErrBadRename, to)
 	}
 	return to, nil
@@ -685,8 +701,14 @@ func systemDB(db string) bool {
 	return db == "admin" || db == "config" || db == "local"
 }
 
-// fromMigrate reports whether an entry is marked fromMigrate: true.
-func fromMigrate(doc bson.Raw) bool { return isTrue(doc, "fromMigrate") }
+// mustRaw encodes a small command document built here; it cannot fail.
+func mustRaw(d bson.D) bson.Raw {
+	b, err := bson.Marshal(d)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
 
 // isTrue reports whether field key of doc is the boolean true.
 func isTrue(doc bson.Raw, key string) bool {
