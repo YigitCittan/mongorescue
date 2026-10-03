@@ -11,14 +11,14 @@ This changes the backup model: until now every backup covered one database.
 
 ## Facts about the tools that shape the design
 
-Spikes S1–S3 confirm these on Database Tools 100.12 and 100.16 before any code is written.
+Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 100.12.2 and 100.16.0, which behaved the same.
 
 1. **`mongodump --oplog`** works only for a whole instance on a replica set member. It refuses `--db`, `--collection` and `--query`. Writes made during the dump land in the archive's `oplog` namespace, so the dump is consistent as of its last oplog entry.
 2. **`mongorestore --oplogReplay`** replays the `oplog` namespace of an archive, or `oplog.bson` in a directory.
    - `--oplogLimit=<secs>[:<ord>]` is exclusive.
    - Entries are applied through `applyOps`, and inserts become upserts, so replaying entries that are already in the base is harmless.
-3. **`--nsFrom`/`--nsTo` do not rewrite oplog entries.** A safe-clone restore with `--oplogReplay` would write into the **source** database. MongoRescue therefore never hands mongorestore an oplog it has not rewritten itself when namespaces are renamed.
-4. **Replaying the oplog needs a custom role with `anyAction` on `anyResource`** on the target. The built-in `restore` role is not enough.
+3. **mongorestore refuses `--nsFrom`/`--nsTo`, `--nsInclude` and `--nsExclude` together with `--oplogReplay`** (S1, exit 1). The oplog cannot be renamed or filtered by the tool, so MongoRescue rewrites and filters it itself for safe clones and single-database restores.
+4. **Replay checks privileges per operation** (S1). `restore` alone fails at the first update, and `restore` + `readWriteAnyDatabase` fails at `dropDatabase`. `restore` + `readWriteAnyDatabase` + `dbAdminAnyDatabase` replayed CRUD, DDL and transactions on 5.0 and 8.0. That is the documented minimum; `anyAction` also works.
 5. **Change streams are not used.** They deliver change events, not oplog entries, so `--oplogReplay` cannot consume them.
 
 ## Model
@@ -94,23 +94,41 @@ Spikes S1–S3 confirm these on Database Tools 100.12 and 100.16 before any code
   - `mongorestore --archive --oplogReplay --oplogLimit=…`, reading a **synthetic oplog-only archive** from stdin.
   - The archive is built on the fly by `internal/oplog`: chunks are fetched in order, hashed while streaming, decrypted, gunzipped and filtered.
   - No temporary copy is made.
-  - If spike S2 shows mongorestore refuses an oplog-only archive, it falls back to a bounded `oplog.bson` temp directory. That would be a documented exception to the "never buffer" invariant: its space is checked in preflight and it is removed on every exit path.
+  - S2 confirmed that mongorestore accepts an oplog-only archive on stdin when the namespace is database `""`, collection `oplog`. `local.oplog.rs` is refused. No temp file is needed.
 - **Namespace filter (`internal/oplog`, fuzzed):**
   - keeps the entries of the selected databases;
   - rewrites `ns` and the namespace-carrying arguments of command entries (`create`, `drop`, `renameCollection`/`to`, `createIndexes`, `startIndexBuild`, `commitIndexBuild`), recursing into `applyOps`, which covers transactions and `partialTxn`;
   - drops `ui` and no-op entries;
   - refuses renames across the selection boundary;
   - refuses unknown command entries;
-  - enforces `--oplogLimit` a second time.
+  - enforces `--oplogLimit` itself and ends the synthetic archive before the limit. In archive mode mongorestore exits 1 ("archive reading interrupted") when entries at or past the limit are still in the stream, even though the replay was correct (S1);
+  - turns each `startIndexBuild`/`commitIndexBuild` pair into one `createIndexes` at the commit's position, and drops `abortIndexBuild`. mongorestore defers `commitIndexBuild` to the end of the replay, so a build followed by a rename or drop would otherwise recreate an empty collection (S1);
+  - also handles `collMod`, `dropDatabase`, `dropIndexes`, transactions (`admin.$cmd` `applyOps` with `partialTxn`/`count`) and cross-database renames, which appear as a create of `tmp*.renameCollection` in the target, copy inserts, a rename within the target and a drop in the source. It drops `config.system.indexBuilds` writes, `fromMigrate` entries and retryable-write fields (`lsid`, `txnNumber`, `stmtId`, `prevOpTime`);
 - **Preflight additions:**
   - chain coverage, and keys for every encryption mode in the chain;
-  - `anyAction` on the target;
+  - `restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase` (or `anyAction`) on the target;
   - disk space;
   - Database Tools ≥ 100.12.
 - **Verification:**
   - Chunk hashes are checked inline.
-  - The replayed entry count is compared with mongorestore's output.
+  - The filter counts the operations it emits, with `applyOps` expanded and skipped entries left out, and compares that with mongorestore's "applied N oplog entries". The chunk entry count is not comparable (S1).
   - A scheduled **chain test** PITR-restores base B1 up to the consistent point of B2 into a `_rescue_verify_` clone, compares the result with B2's manifest, then drops the clone.
+
+## Spike results (S1–S3)
+
+Also confirmed:
+
+- `--oplogFile` is refused together with `--archive`.
+- `--oplogLimit` is exclusive, so a time S maps to `(S+1):0`.
+- Replaying entries that are already in the base is idempotent.
+- The range read on `local.oplog.rs` is a bounded scan: 27 entries examined for 25 returned, even with an oplog of 807k entries on 5.0.
+- `hello.lastWrite.majorityOpTime` has the shape `{ts: Timestamp, t: int64}`.
+
+Not yet tested:
+
+- a real secondary or a 3-node replica set (covered by the nightly job);
+- whether mongorestore checks the archive CRC;
+- the privileges for writes to `admin.*` and `config.*`.
 
 ## Data model, API, UI, metrics
 
@@ -132,9 +150,10 @@ Spikes S1–S3 confirm these on Database Tools 100.12 and 100.16 before any code
 ## Security
 
 - **Privileges:**
-  - The collector needs `find` on `local.oplog.rs`.
+  - The collector needs `find` on `local.oplog.rs`: `backup`, `read` on `local`, or a custom role.
   - Base backups need the `backup` role.
-  - Restores need `anyAction` on the target, ideally through a separate user and connection.
+  - Restores need `restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase` (or `anyAction`) on the target, ideally through a separate user and connection.
+  - `readAnyDatabase` does **not** grant `find` on `local.oplog.rs`; `backup`, `read` on `local`, or a custom role does (S3).
   - Preflight checks each of these through `connectionStatus`.
 - **Oplog contents.** The oplog holds every write, including data that was later deleted. Deleted data survives in the chunks until retention removes it, which matters for erasure requests. Therefore:
   - **encryption is required** for PITR streams: a stream can't be enabled on a target without age keys;
@@ -154,7 +173,7 @@ The rule "the MongoDB driver only in `internal/mongoconn`" keeps every database 
 | 1 | The collector uses bounded range reads up to `majorityOpTime` through `mongoconn`. A tailable cursor and mongodump slices were rejected. |
 | 2 | Chunk keys follow `_mongorescue/oplog/<conn_id>/<rs>/<chain>/<from>-<to>.bson.gz.age`. |
 | 3 | `internal/oplog` may use the driver's `bson` package and nothing else from the driver. |
-| 4 | Pass 2 reads a synthetic oplog-only archive from stdin. A bounded temp file is used only if spike S2 fails. |
+| 4 | Pass 2 reads a synthetic oplog-only archive (namespace `"".oplog`) from stdin; S2 confirmed it. |
 | 5 | The base's consistent point is recorded through `hello` (`T_before`/`T_after`). |
 | 6 | A gap triggers an automatic base backup and a critical alert. It can be turned off per stream. |
 | 7 | Encryption is required for PITR streams. |
