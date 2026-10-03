@@ -26,7 +26,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 - Use `log/slog` for logging, pass `context.Context` to all I/O, wrap errors with `%w`, and expose sentinel errors.
 - Every exported identifier has a Godoc comment; every package has a package comment.
 - No orphan goroutines: bind lifecycles to a context and a WaitGroup or errgroup.
-- The MongoDB Go driver is allowed only in `internal/mongoconn` and `_test.go` files.
+- The MongoDB Go driver is allowed only in `internal/mongoconn` and `_test.go` files; `internal/oplog` may import `go.mongodb.org/mongo-driver/v2/bson` and nothing else from the driver (CI checks both).
 - Credentials at rest (connection URIs, notification secrets) go through `internal/secretbox` in the store; passwords are bcrypt hashes, session tokens and API keys SHA-256 hashes. Auth rules live in `internal/auth`, not in HTTP handlers.
 - Unit tests are hermetic (no network, no external binaries).
 
@@ -55,6 +55,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/cli` | CLI commands (`backup`, `restore`, `list`, `verify`, `status`) over the REST API: flags, API key sources, `--wait`, output, exit codes |
 | `internal/apiclient` | REST API client: origin-bound bearer transport (shared with the MCP bridge), envelope and error decoding, typed methods; never imports `server` |
 | `internal/redact`, `internal/mongouri`, `internal/mongotools` | Credential scrubbing, URI validation, tool helpers |
+| `internal/oplog` | PITR oplog codec: chunk scanner, namespace filter, synthetic oplog-only archive |
 | `internal/integration` | Integration tests (`integration` build tag) |
 | `web/static` | Embedded dashboard |
 | `docs/` | User and design documentation |

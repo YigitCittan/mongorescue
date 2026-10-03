@@ -127,8 +127,16 @@ Also confirmed:
 Not yet tested:
 
 - a real secondary or a 3-node replica set (covered by the nightly job);
-- whether mongorestore checks the archive CRC;
 - the privileges for writes to `admin.*` and `config.*`.
+
+Found while building `internal/oplog` (5.0.33 and 8.0.32, Database Tools 100.16.0; fixtures in `internal/oplog/testdata`):
+
+- mongorestore checks the archive CRC (CRC-64-ECMA of the namespace's documents) and needs a parseable `server_version` in the header. An archive whose oplog namespace has no segment before its EOF block fails with "archive io error", so an empty synthetic archive still has an empty segment.
+- MongoDB 5.0 marks the copy inserts of a rename across databases `fromMigrate`. The filter keeps `fromMigrate` writes to `tmpXXXXX.renameCollection` and drops the others.
+- Views are oplogged as writes to `<db>.system.views`, time-series collections as `create system.buckets.<name>` plus such a view. applyOps refuses both writes to `system.views` even for `root`, so the filter replays `create`/`collMod`/`drop` of the view and `create <name> {timeseries}` instead. `collMod <name>` of a time-series collection is refused by applyOps; `collMod system.buckets.<name>` is replayed as it is.
+- mongorestore also defers `createIndexes` to the end of the replay, in a catalog keyed by collection name that follows `drop` and `dropIndexes` but not `renameCollection`. After a rename the filter writes `dropIndexes "*"`/`createIndexes` entries that move the indexes it wrote to the new name. mongorestore applies `dropIndexes` and index-only `collMod` to its catalog only, so an index of the base that is dropped or hidden during the window stays as it was in the clone.
+- Transaction entries keep `lsid`, `txnNumber` and `prevOpTime`: mongorestore groups `partialTxn` chains and prepared transactions by them. Retryable batched inserts (`multiOpType: 1`, 8.0) lose them and are replayed as plain `applyOps`.
+- mongorestore's "applied N" counts a non-transaction `applyOps` and each operation in it, and a committed transaction's operations; the filter's count matches it.
 
 ## Data model, API, UI, metrics
 

@@ -46,6 +46,8 @@ FUZZ_TARGETS?= \
 	./internal/notify:FuzzValidateEmail \
 	./internal/notify:FuzzValidateWebhook \
 	./internal/notify:FuzzWebhookHostForms \
+	./internal/oplog:FuzzFilter \
+	./internal/oplog:FuzzScanner \
 	./internal/redact:FuzzTextPassword \
 	./internal/redact:FuzzURI \
 	./internal/redact:FuzzURIPassword \

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Groundwork for point-in-time recovery (no user-visible change yet).
+
 ## [0.18.0] - 2026-10-03
 
 ### Added
