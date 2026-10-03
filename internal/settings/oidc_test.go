@@ -133,15 +133,121 @@ func TestOIDCClientSecretIsMaskedSealedAndKept(t *testing.T) {
 	}
 }
 
+// TestSecretsAreNeverKeptForANewDestination: a stored OIDC client secret or audit
+// signing secret is not carried to another issuer or webhook host; the secret must
+// be sent again.
+func TestSecretsAreNeverKeptForANewDestination(t *testing.T) {
+	ctx := context.Background()
+	svc := newSvc(t, &memRepo{})
+	p := validOIDC()
+	p.ClientSecret = ptr("first-secret")
+	if _, err := svc.Update(ctx, Patch{OIDC: p}); err != nil {
+		t.Fatal(err)
+	}
+	other := "https://evil.example.com/realms/ops"
+	for name, patch := range map[string]*OIDCPatch{
+		"masked":  {Issuer: ptr(other), ClientSecret: ptr(SecretMask)},
+		"omitted": {Issuer: ptr(other)},
+	} {
+		if _, err := svc.Update(ctx, Patch{OIDC: patch}); !errors.Is(err, ErrSecretReentry) {
+			t.Errorf("%s secret with a new issuer = %v; want ErrSecretReentry", name, err)
+		}
+	}
+	if o := svc.Current().OIDC; o.Issuer != "https://idp.example.com/realms/ops" || o.ClientSecret != "first-secret" {
+		t.Fatalf("a refused change was applied: %+v", o)
+	}
+	// The same issuer keeps the masked secret; a new issuer with the secret again,
+	// or a public client, is fine.
+	if _, err := svc.Update(ctx, Patch{OIDC: &OIDCPatch{Issuer: ptr(" https://idp.example.com/realms/ops "), ClientSecret: ptr(SecretMask)}}); err != nil {
+		t.Errorf("same issuer: %v", err)
+	}
+	if _, err := svc.Update(ctx, Patch{OIDC: &OIDCPatch{Issuer: ptr(other), ClientSecret: ptr("second-secret")}}); err != nil {
+		t.Errorf("new issuer with its secret: %v", err)
+	}
+	if _, err := svc.Update(ctx, Patch{OIDC: &OIDCPatch{Issuer: ptr("https://third.example.com"), ClientSecret: ptr("")}}); err != nil {
+		t.Errorf("new issuer as a public client: %v", err)
+	}
+
+	// The audit webhook: another host needs the signing secret again.
+	if _, err := svc.Update(ctx, Patch{Audit: &AuditPatch{WebhookURL: ptr("https://siem.example.com/in"), WebhookSecret: ptr("hmac")}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, patch := range map[string]*AuditPatch{
+		"masked":  {WebhookURL: ptr("https://attacker.example.com/in"), WebhookSecret: ptr(SecretMask)},
+		"omitted": {WebhookURL: ptr("https://attacker.example.com/in")},
+		"port":    {WebhookURL: ptr("https://siem.example.com:8443/in")},
+	} {
+		if _, err := svc.Update(ctx, Patch{Audit: patch}); !errors.Is(err, ErrSecretReentry) {
+			t.Errorf("%s secret with a new webhook host = %v; want ErrSecretReentry", name, err)
+		}
+	}
+	for name, patch := range map[string]*AuditPatch{
+		"same host, new path": {WebhookURL: ptr("https://SIEM.example.com/other"), WebhookSecret: ptr(SecretMask)},
+		"new host and secret": {WebhookURL: ptr("https://new.example.com/in"), WebhookSecret: ptr("hmac-2")},
+		"forwarding off":      {WebhookURL: ptr("")},
+	} {
+		if _, err := svc.Update(ctx, Patch{Audit: patch}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 type recordingGuard struct {
 	refuse  error
+	pre     []Precondition
 	checks  int
 	applied []OIDC
 }
 
-func (g *recordingGuard) CheckOIDC(_ context.Context, _, _ OIDC) error {
+func (g *recordingGuard) CheckOIDC(_ context.Context, _, _ OIDC) ([]Precondition, error) {
 	g.checks++
-	return g.refuse
+	return g.pre, g.refuse
+}
+
+// preconditionRepo is a memRepo whose preconditions hold while ok is set.
+type preconditionRepo struct {
+	memRepo
+	ok   bool
+	seen []Precondition
+}
+
+func (r *preconditionRepo) SaveSettingsWith(ctx context.Context, values map[string]string, pre []Precondition) error {
+	r.seen = append(r.seen, pre...)
+	if !r.ok {
+		return ErrPreconditionFailed
+	}
+	return r.SaveSettings(ctx, values)
+}
+
+// TestOIDCPreconditionsAreCheckedInTheSave proves the guard's preconditions reach
+// the repository's saving transaction, and that a failed one changes nothing.
+func TestOIDCPreconditionsAreCheckedInTheSave(t *testing.T) {
+	ctx := context.Background()
+	repo := &preconditionRepo{}
+	svc, err := NewService(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetOIDCGuard(&recordingGuard{pre: []Precondition{PreconditionLocalAdmin}})
+	if _, err := svc.Update(ctx, Patch{OIDC: validOIDC()}); !errors.Is(err, ErrInvalid) || !errors.Is(err, ErrPreconditionFailed) {
+		t.Fatalf("failed precondition = %v; want ErrInvalid", err)
+	}
+	if svc.Current().OIDC.Enabled || newSvc(t, &repo.memRepo).Current().OIDC.Enabled {
+		t.Fatal("a change with a failed precondition was applied")
+	}
+	repo.ok = true
+	if _, err := svc.Update(ctx, Patch{OIDC: validOIDC()}); err != nil || !svc.Current().OIDC.Enabled {
+		t.Fatalf("held precondition: %v", err)
+	}
+	if len(repo.seen) != 2 || repo.seen[0] != PreconditionLocalAdmin {
+		t.Fatalf("preconditions seen = %v", repo.seen)
+	}
+	// A repository without precondition support refuses such a change.
+	plain := newSvc(t, &memRepo{})
+	plain.SetOIDCGuard(&recordingGuard{pre: []Precondition{PreconditionLocalAdmin}})
+	if _, err := plain.Update(ctx, Patch{OIDC: validOIDC()}); err == nil {
+		t.Fatal("a precondition was skipped")
+	}
 }
 
 func (g *recordingGuard) OIDCChanged(_ context.Context, _, next OIDC) error {

@@ -109,7 +109,7 @@ func (s *Server) handleGenerateKey(w http.ResponseWriter, _ *http.Request) {
 // writeSettingsError maps settings errors to HTTP responses without key material.
 func (s *Server) writeSettingsError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret):
+	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		s.logger.Error("settings request failed", slog.Any("error", err))

@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -174,6 +175,12 @@ type OIDCPatch struct {
 func (p *OIDCPatch) apply(o *OIDC) error {
 	if p == nil {
 		return nil
+	}
+	// A stored client secret is never sent to another issuer: changing the issuer
+	// needs the secret again (or "" for a public client), not the mask.
+	if p.Issuer != nil && o.ClientSecret != "" && strings.TrimSpace(*p.Issuer) != o.Issuer &&
+		(p.ClientSecret == nil || *p.ClientSecret == SecretMask) {
+		return fmt.Errorf("%w: oidc.client_secret: the issuer changed; enter the client secret again", ErrSecretReentry)
 	}
 	setIf(&o.Enabled, p.Enabled)
 	setIf(&o.DisplayName, p.DisplayName)
@@ -442,11 +449,37 @@ func validateOIDC(o *OIDC) error {
 type OIDCGuard interface {
 	// CheckOIDC runs before a changed OIDC section is stored; an error refuses the
 	// whole update. It checks, for example, that a local administrator exists and
-	// that the provider answers discovery when single sign-on is turned on.
-	CheckOIDC(ctx context.Context, prev, next OIDC) error
+	// that the provider answers discovery when single sign-on is turned on. The
+	// preconditions it returns are checked again by the repository inside the
+	// transaction that stores the change (see PreconditionRepository), so they
+	// cannot be invalidated in between.
+	CheckOIDC(ctx context.Context, prev, next OIDC) ([]Precondition, error)
 	// OIDCChanged runs after a changed OIDC section was stored, for example to end
 	// the sessions the change no longer allows. Its error is logged.
 	OIDCChanged(ctx context.Context, prev, next OIDC) error
+}
+
+// Precondition names a condition the repository checks inside the transaction that
+// saves a change of the settings.
+type Precondition string
+
+// Preconditions.
+const (
+	// PreconditionLocalAdmin: at least one local user with the admin role exists.
+	PreconditionLocalAdmin Precondition = "local_admin"
+)
+
+// ErrPreconditionFailed is returned by a PreconditionRepository when a
+// precondition does not hold in the saving transaction; nothing is saved.
+var ErrPreconditionFailed = errors.New("settings: a precondition of the change does not hold")
+
+// PreconditionRepository is implemented by repositories that can check
+// preconditions in the transaction that saves settings. Updates with
+// preconditions need it.
+type PreconditionRepository interface {
+	// SaveSettingsWith upserts values in one transaction after checking pre in it,
+	// returning an error wrapping ErrPreconditionFailed when one does not hold.
+	SaveSettingsWith(ctx context.Context, values map[string]string, pre []Precondition) error
 }
 
 // WithOIDCGuard sets the guard of single sign-on changes.

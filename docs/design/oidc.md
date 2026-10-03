@@ -38,6 +38,12 @@ The libraries are configured strictly:
   `oidc.ClientContext`, which stores it under `oauth2.HTTPClient`, the key x/oauth2
   reads too. Its transport is wrapped so that every response body (discovery, JWKS,
   token) fails beyond 1 MiB. `internal/auth` does not import `notify`.
+- Every discovery, not only the settings test, requires https for the
+  authorization, token, JWKS and end-session endpoints (http only for loopback
+  endpoints of a loopback issuer).
+- Provider errors are reported from a fixed set of messages with the endpoint's
+  host and at most the HTTP status code: response bodies, OAuth error codes and
+  descriptions are never echoed in errors, logs or the settings test.
 - The protocol glue (provider cache, authorization URL, exchange, verification,
   claim extraction) is `internal/auth/oidc`; it has no HTTP handlers and decides
   nothing about users or roles.
@@ -50,7 +56,10 @@ issuer, for an hour.
 
 `internal/settings/oidc.go`, modelled on the audit section. The client secret is a
 `secret` key in `keyDefs`: sealed with secretbox at rest, masked as `******` in API
-responses, kept when the mask is sent back.
+responses, kept when the mask is sent back, except when the issuer changes: then
+the secret must be sent again (`ErrSecretReentry`, 400), so a stored secret never
+reaches a new issuer. The audit webhook follows the same rule for its signing
+secret when the webhook host changes.
 
 | Key | Default | Notes |
 | :--- | :--- | :--- |
@@ -62,9 +71,9 @@ responses, kept when the mask is sent back.
 | `scopes` | `openid email profile` | `openid` is always added |
 | `redirect_url` | required | Never derived from `Host`. The dashboard pre-fills `location.origin + "/auth/oidc/callback"`; the path must be exactly `/auth/oidc/callback` |
 | `username_claim` | `preferred_username` | Falls back to `email`, then `sub`, then cleaned to the username characters |
-| `groups_claim` | `groups` | A dot path (Keycloak `realm_access.roles`); the value is a string or a list of strings |
+| `groups_claim` | `groups` | A claim name, tried first as an exact top-level name (Auth0 `https://app.example.com/groups`), else a dot path (Keycloak `realm_access.roles`); the value is a string or a list of strings |
 | `role_mappings` | `[]` | `{group, role}`, matched exactly, highest role wins, at most 100 |
-| `default_role` | `""` (deny) | `viewer` or `operator` only. **admin is refused**: admin only comes from a group mapping |
+| `default_role` | `""` (deny) | `viewer` or `operator` only. **admin is refused**: admin only comes from a group mapping. Without mappings it applies to new users only |
 | `allowed_email_domains` | `[]` (any) | Exact lower-case domain after the last `@`; requires `email_verified` to be the JSON boolean `true` |
 | `auto_create_users` | `true` | When off, unknown subjects are denied (`no_role`) and audited. There is no approval queue |
 | `local_login` | `all` | `all` or `admins_only` (break-glass: only local admins may use the password form) |
@@ -72,7 +81,7 @@ responses, kept when the mask is sent back.
 
 Checks the settings package cannot make itself run through a `settings.OIDCGuard`
 that `internal/app` wires: turning `enabled` on, or `local_login` to `admins_only`,
-needs at least one local administrator (`auth.Service.CheckOIDCChange`); turning
+needs at least one local administrator (`auth.Service.CheckOIDCChange`, checked again in the transaction that saves the settings, `settings.PreconditionLocalAdmin`; removing a local admin reads the stored `oidc.enabled` in its own transaction, so the two cannot race); turning
 single sign-on on, or changing the issuer while it is on, fetches discovery and the
 JWKS; switching `admins_only` on ends the sessions of local non-admins
 (`auth.Service.ApplyOIDCChange`). The desktop app refuses to turn it on.
@@ -125,8 +134,11 @@ CREATE UNIQUE INDEX users_by_subject ON users (subject) WHERE subject IS NOT NUL
 - **`GET /auth/oidc/callback?code&state`**
   1. Opens and clears the cookie. Refuses a missing cookie, one older than 10
      minutes, one for another issuer, a state mismatch (constant-time compare) and a
-     state already in the in-memory used-state set. A provider `error` maps to
-     `idp_error`; it is logged truncated through `logsafe` and never shown.
+     state already in the in-memory used-state set. The set remembers states for
+     the lifetime of their flow (by the flow's start) and holds at most 100,000:
+     when full, the oldest flow's state is evicted, so flooding it can never make a
+     valid fresh state be refused. A provider `error` maps to `idp_error`; it is
+     logged truncated through `logsafe` and never shown.
   2. Exchanges the code with the verifier (10 s timeout). The response must carry an
      `id_token`; access and refresh tokens are dropped.
   3. Verifies with go-oidc (signature, `iss`, `aud`) and additionally: `azp ==
@@ -134,7 +146,7 @@ CREATE UNIQUE INDEX users_by_subject ON users (subject) WHERE subject IS NOT NUL
      at most 10 minutes old and not in the future; `nbf`; 60 s of leeway on `exp`,
      `nbf` and `iat`, against the auth service's clock; a non-empty `sub`.
   4. `LoginOIDC` applies the domain filter, then the mapping, and denies when the
-     role is empty (`no_role`).
+     role is empty (`no_role`); without mappings only a new user needs a role.
   5. In one transaction, `SignInExternalUser` finds or creates the user by subject
      (respecting `auto_create_users`) and updates the role, `updated_at` and
      `last_login_at`.
@@ -151,9 +163,16 @@ CREATE UNIQUE INDEX users_by_subject ON users (subject) WHERE subject IS NOT NUL
 
 ## Roles, last admin, break-glass
 
-- **Role recompute:** the role is recomputed at every OIDC sign-in. A change follows
-  `UpdateUserRole` (sessions revoked, last-admin check) inside `SignInExternalUser`,
-  and the audit log records `role_from`/`role_to`.
+- **Role recompute (with mappings):** while `role_mappings` is not empty, the role
+  is recomputed at every OIDC sign-in. A change follows `UpdateUserRole` (sessions
+  revoked, last-admin check) inside `SignInExternalUser`, and the audit log records
+  `role_from`/`role_to`.
+- **Default role at creation only (without mappings):** with no mappings (the
+  Google recipe: domain filter plus default role), `default_role` is only the role
+  of a new user (`ExternalSignIn.RoleOnCreate`). Existing users keep their stored
+  role at later sign-ins, so a role an administrator set by hand stays, and the role
+  select stays enabled. An empty `default_role` then refuses new identities
+  (`no_role`) but lets existing users in with their role.
 - **Last local admin:** while single sign-on is enabled, `DeleteUser` and
   `SetUserRole` refuse to remove the last local admin (`ErrLastLocalAdmin`, 409), in
   the same transaction as the change.

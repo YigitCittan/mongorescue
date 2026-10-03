@@ -28,6 +28,11 @@ var (
 	// ErrMaskedSecret is returned when a masked secret is sent back but nothing is
 	// stored under it.
 	ErrMaskedSecret = errors.New("settings: secret is masked but none is stored; supply the value")
+	// ErrSecretReentry is returned when a secret would be kept for a new
+	// destination (another OIDC issuer, another audit webhook host): the secret must
+	// be sent again, never the mask, so a stored secret never reaches a host it was
+	// not entered for.
+	ErrSecretReentry = errors.New("settings: the destination changed; enter the secret again")
 )
 
 // SecretMask replaces stored secrets in API responses; sending it back unchanged

@@ -2,6 +2,7 @@ package oidc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -265,7 +266,7 @@ func TestExchangeRefusals(t *testing.T) {
 	r.p.SetTokenError("invalid_grant")
 	req, code = r.start(t)
 	_, err := r.c.Exchange(ctx, r.cfg, code, req)
-	if !errors.Is(err, oidc.ErrExchange) || strings.Contains(err.Error(), "refused by the fake provider") {
+	if !errors.Is(err, oidc.ErrExchange) || strings.Contains(err.Error(), "refused by the fake provider") || strings.Contains(err.Error(), "invalid_grant") || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Errorf("token error = %v", err)
 	}
 }
@@ -292,7 +293,7 @@ func TestDiscoveryChecks(t *testing.T) {
 	}))
 	t.Cleanup(huge.Close)
 	if _, err = r.c.Discover(context.Background(), huge.URL); !errors.Is(err, oidc.ErrDiscovery) ||
-		!strings.Contains(err.Error(), "too large") {
+		!strings.Contains(err.Error(), "more than 1 MiB") {
 		t.Errorf("huge discovery = %v", err)
 	}
 }
@@ -303,5 +304,93 @@ func TestEndSessionURL(t *testing.T) {
 	if err != nil || !strings.HasPrefix(u, r.p.Issuer+"/logout?") || !strings.Contains(u, "client_id=mongorescue") ||
 		!strings.Contains(u, "post_logout_redirect_uri=https%3A%2F%2Fbackup.example.com%2F") || strings.Contains(u, "id_token_hint") {
 		t.Fatalf("EndSessionURL = %q, %v", u, err)
+	}
+}
+
+// TestProviderErrorsNeverEchoBodies: discovery and key errors name the endpoint's
+// host and status only, never what the provider sent.
+func TestProviderErrorsNeverEchoBodies(t *testing.T) {
+	const body = "SECRET-BODY-TEXT <html>internal stack trace</html>"
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(failing.Close)
+	c := oidc.NewClient(&http.Client{Timeout: 5 * time.Second})
+	_, err := c.Discover(context.Background(), failing.URL)
+	host := strings.TrimPrefix(failing.URL, "http://")
+	if !errors.Is(err, oidc.ErrDiscovery) || strings.Contains(err.Error(), "SECRET-BODY") || strings.Contains(err.Error(), "html") ||
+		!strings.Contains(err.Error(), "HTTP 500") || !strings.Contains(err.Error(), host) {
+		t.Fatalf("discovery error = %v", err)
+	}
+	// A JWKS that fails answers with its host and status only.
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer": "http://" + r.Host, "authorization_endpoint": "http://" + r.Host + "/a", "token_endpoint": "http://" + r.Host + "/t",
+				"jwks_uri": "http://" + r.Host + "/jwks", "id_token_signing_alg_values_supported": []string{"RS256"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(keys.Close)
+	if _, err = c.Discover(context.Background(), keys.URL); err == nil || strings.Contains(err.Error(), "SECRET-BODY") || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("jwks error = %v", err)
+	}
+}
+
+// TestEveryDiscoveredEndpointMustUseHTTPS: on every discovery (not only the
+// settings test), the jwks_uri and end_session_endpoint must use https; http is
+// accepted only for loopback endpoints of a loopback issuer.
+func TestEveryDiscoveredEndpointMustUseHTTPS(t *testing.T) {
+	for name, override := range map[string]map[string]string{
+		"jwks_uri":             {"jwks_uri": "http://keys.example.com/jwks"},
+		"end_session_endpoint": {"end_session_endpoint": "http://logout.example.com/end"},
+		"token_endpoint":       {"token_endpoint": "http://token.example.com/token"},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			doc := map[string]any{
+				"issuer": "http://" + r.Host, "authorization_endpoint": "http://" + r.Host + "/a", "token_endpoint": "http://" + r.Host + "/t",
+				"jwks_uri": "http://" + r.Host + "/jwks", "id_token_signing_alg_values_supported": []string{"RS256"},
+			}
+			for k, v := range override {
+				doc[k] = v
+			}
+			_ = json.NewEncoder(w).Encode(doc)
+		}))
+		c := oidc.NewClient(&http.Client{Timeout: 5 * time.Second})
+		req, _ := oidc.NewAuthRequest()
+		// AuthCodeURL discovers through the provider cache, like a sign-in does.
+		_, err := c.AuthCodeURL(context.Background(), oidc.Config{Issuer: srv.URL, ClientID: "c", RedirectURL: redirectURL}, req)
+		if !errors.Is(err, oidc.ErrDiscovery) || !strings.Contains(err.Error(), "https") {
+			t.Errorf("%s over http: %v; want refused", name, err)
+		}
+		srv.Close()
+	}
+}
+
+func TestNamespacedGroupsClaim(t *testing.T) {
+	r := newRP(t, "s3cret")
+	r.cfg.GroupsClaim = "https://app.example.com/groups"
+	r.p.SetClaims(map[string]any{"https://app.example.com/groups": []any{"backup-admins"}})
+	if id, err := r.login(t); err != nil || !slices.Equal(id.Groups, []string{"backup-admins"}) {
+		t.Fatalf("Auth0 namespaced claim: %+v, %v", id, err)
+	}
+	// A dot path still works when no top-level claim has the whole name.
+	r.cfg.GroupsClaim = "realm_access.roles"
+	r.p.SetClaims(map[string]any{"realm_access": map[string]any{"roles": []any{"ops"}}})
+	if id, err := r.login(t); err != nil || !slices.Equal(id.Groups, []string{"ops"}) {
+		t.Fatalf("Keycloak dot path: %+v, %v", id, err)
+	}
+	// The exact top-level name wins over the path.
+	r.p.SetClaims(map[string]any{"realm_access.roles": "flat", "realm_access": map[string]any{"roles": []any{"nested"}}})
+	if id, err := r.login(t); err != nil || !slices.Equal(id.Groups, []string{"flat"}) {
+		t.Fatalf("exact name first: %+v, %v", id, err)
 	}
 }

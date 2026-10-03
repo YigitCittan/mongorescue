@@ -245,8 +245,13 @@ type ExternalSignIn struct {
 	Username string
 	// Role is the role the identity has now. A change follows the rules of
 	// UpdateUserRole: the user's sessions end, and the last admin is never demoted
-	// (the stored role is kept instead, see ExternalSignInResult.RoleKept).
+	// (the stored role is kept instead, see ExternalSignInResult.RoleKept). With
+	// RoleOnCreate it is only the role of a new user and may be "" (no new users).
 	Role Role
+	// RoleOnCreate applies Role only when the user is created: an existing user
+	// keeps the stored role, such as one an administrator set by hand. A new user
+	// without a Role is refused with ErrNoRole.
+	RoleOnCreate bool
 	// AutoCreate creates the user when no user has Subject.
 	AutoCreate bool
 	// At is the time of the sign-in (created, updated and last login).
@@ -283,8 +288,10 @@ type OIDCLogin struct {
 // email domain filter must let the identity through (ErrDomainNotAllowed), and a
 // group mapping or the default role must give it a role (ErrNoRole). The user is
 // then found by subject only, never by name or email, or created when
-// auto_create_users is on (ErrUnknownExternalUser, ErrAccountConflict), and its role
-// is recomputed on every sign-in.
+// auto_create_users is on (ErrUnknownExternalUser, ErrAccountConflict). With group
+// mappings the role is recomputed on every sign-in; without any, the default role
+// is only the role of a new user, and existing users keep theirs (a role an
+// administrator set by hand stays).
 func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLogin, error) {
 	policy := s.OIDC()
 	if !policy.Enabled {
@@ -297,7 +304,10 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 		return nil, ErrDomainNotAllowed
 	}
 	role := policy.MapRole(id.Groups)
-	if role == "" {
+	// Without mappings the role is the default role of new users only; whether the
+	// identity has a user (and so may sign in without one) is decided by the store.
+	onCreate := len(policy.RoleMappings) == 0
+	if role == "" && !onCreate {
 		return nil, ErrNoRole
 	}
 	username := strings.TrimSpace(id.Username)
@@ -311,7 +321,7 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 	now := s.now().UTC()
 	res, err := s.repo.SignInExternalUser(ctx, &ExternalSignIn{
 		Subject: ExternalSubject(id.Issuer, id.Subject), NewUserID: userID, Username: username,
-		Role: role, AutoCreate: policy.AutoCreateUsers, At: now,
+		Role: role, RoleOnCreate: onCreate, AutoCreate: policy.AutoCreateUsers, At: now,
 	})
 	if err != nil {
 		return nil, err
@@ -362,10 +372,10 @@ func (s *Service) CountLocalAdmins(ctx context.Context) (int, error) {
 // CheckOIDCChange enforces the break-glass rule for a change of the single sign-on
 // settings: turning single sign-on on, or limiting the password form to local
 // administrators, needs at least one local administrator (ErrLastLocalAdmin).
+// The caller must check it again in the transaction that stores the change
+// (OIDCChangeNeedsLocalAdmin says when).
 func (s *Service) CheckOIDCChange(ctx context.Context, prev, next OIDCPolicy) error {
-	enabling := next.Enabled && !prev.Enabled
-	limiting := next.LocalLogin == LocalLoginAdminsOnly && prev.LocalLogin != LocalLoginAdminsOnly
-	if !enabling && !limiting {
+	if !OIDCChangeNeedsLocalAdmin(prev, next) {
 		return nil
 	}
 	n, err := s.repo.CountLocalAdmins(ctx)
@@ -376,6 +386,15 @@ func (s *Service) CheckOIDCChange(ctx context.Context, prev, next OIDCPolicy) er
 		return fmt.Errorf("%w: create a local administrator first", ErrLastLocalAdmin)
 	}
 	return nil
+}
+
+// OIDCChangeNeedsLocalAdmin reports whether a change of the single sign-on policy
+// needs a local administrator: it turns single sign-on on, or limits the password
+// form to local administrators.
+func OIDCChangeNeedsLocalAdmin(prev, next OIDCPolicy) bool {
+	enabling := next.Enabled && !prev.Enabled
+	limiting := next.LocalLogin == LocalLoginAdminsOnly && prev.LocalLogin != LocalLoginAdminsOnly
+	return enabling || limiting
 }
 
 // ApplyOIDCChange runs the effects of a stored change of the single sign-on

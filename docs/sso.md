@@ -17,6 +17,10 @@ listed in [configuration.md](configuration.md#single-sign-on).
 - Keep at least one **local administrator** with a strong password. MongoRescue
   refuses to turn single sign-on on without one, and refuses to delete or demote
   the last one while single sign-on is on.
+- Serve MongoRescue on **its own host name** (`backup.example.com`), not on a
+  parent domain shared with subdomains you do not fully control: a sibling
+  subdomain can set cookies for the parent domain ("cookie tossing") and interfere
+  with the sign-in flow cookie.
 - The **callback URL** is `https://<your MongoRescue host>/auth/oidc/callback`.
   Settings → Single sign-on pre-fills it from the address you use; copy it into the
   provider exactly as shown. MongoRescue never derives it from the request.
@@ -27,7 +31,8 @@ listed in [configuration.md](configuration.md#single-sign-on).
    redirect URI and the authorization code flow. A confidential client (with a
    secret) is the usual choice; a public client works too, protected by PKCE.
 2. In MongoRescue, open **Settings → Single sign-on** and fill in the issuer URL,
-   the client ID and secret. Click **Test provider**: it fetches the discovery
+   the client ID and secret. Changing the issuer later needs the client secret
+   again: a stored secret is never sent to another issuer. Click **Test provider**: it fetches the discovery
    document and keys and shows the endpoints and signature algorithms
    (RS256 or ES256 are required).
 3. Add **group mappings**: each maps a value of the groups claim to `viewer`,
@@ -46,8 +51,17 @@ The first sign-in creates a user named after the `preferred_username` claim (or 
 email, or the subject). People are recognised by the provider's issuer and subject
 only: an existing local user with the same name is **never** taken over. Such a
 sign-in fails with *A user with your name already exists*; rename one of the two
-users. Roles are recomputed at every sign-in, and a role change ends the user's
-sessions.
+users.
+
+How roles follow the provider depends on the mappings:
+
+- **With group mappings**, the role is recomputed from the groups at every sign-in
+  (a change ends the user's sessions), and Settings → Users shows it as *managed by
+  your identity provider*: it cannot be changed by hand.
+- **Without group mappings**, the role without a matching group is only given to
+  new users. Existing users keep their role at later sign-ins, so a role an
+  administrator sets by hand stays. With *None* as that role, new identities are
+  refused while existing users still sign in.
 
 ## Provider recipes
 
@@ -83,9 +97,9 @@ a default role:
 2. **Issuer**: `https://accounts.google.com`. Client ID and secret from the
    credential.
 3. **Allowed email domains**: your Workspace domain, such as `example.com`.
-4. **Role without a matching group**: `viewer` or `operator`. Every Google user
-   gets this role at every sign-in (a role set by hand is replaced at the next
-   sign-in), so keep administration to local accounts.
+4. **Role without a matching group**: `viewer` or `operator`. Without group
+   mappings it is only the role of a *new* user: promote people by hand in Settings
+   → Users afterwards, and the role you set stays at later sign-ins.
 5. Username claim: `email` (Google sends no `preferred_username`).
 
 ### Okta

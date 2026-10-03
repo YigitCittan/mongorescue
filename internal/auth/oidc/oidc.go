@@ -26,7 +26,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +119,7 @@ type cachedProvider struct {
 
 // providerMetadata holds the discovery fields go-oidc does not expose.
 type providerMetadata struct {
+	JWKSURI            string   `json:"jwks_uri"`
 	EndSessionEndpoint string   `json:"end_session_endpoint"`
 	CodeChallenge      []string `json:"code_challenge_methods_supported"`
 	TokenAuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
@@ -236,23 +239,27 @@ func (c *Client) discover(ctx context.Context, issuer string) (*cachedProvider, 
 		if errors.As(err, &mismatch) {
 			return nil, fmt.Errorf("%w: the provider reports another issuer; use exactly the issuer of its discovery document", ErrDiscovery)
 		}
-		return nil, fmt.Errorf("%w: %s", ErrDiscovery, safeError(err))
+		return nil, fmt.Errorf("%w: %s", ErrDiscovery, safeError(err, "the discovery document", iu.Host))
 	}
 	var meta providerMetadata
 	if err = p.Claims(&meta); err != nil {
 		return nil, fmt.Errorf("%w: unreadable discovery document", ErrDiscovery)
 	}
+	// Every endpoint, on every (re-)discovery, must use https (http only for a
+	// loopback issuer and loopback endpoints).
 	lb := iu.Scheme == "http" && loopback(iu.Hostname())
 	ep := p.Endpoint()
 	for _, e := range []struct{ name, url string }{
-		{"authorization endpoint", ep.AuthURL}, {"token endpoint", ep.TokenURL},
+		{"authorization endpoint", ep.AuthURL}, {"token endpoint", ep.TokenURL}, {"jwks_uri", meta.JWKSURI},
 	} {
 		if err = checkEndpoint(e.name, e.url, lb); err != nil {
 			return nil, err
 		}
 	}
-	if meta.EndSessionEndpoint != "" && checkEndpoint("end session endpoint", meta.EndSessionEndpoint, lb) != nil {
-		meta.EndSessionEndpoint = ""
+	if meta.EndSessionEndpoint != "" {
+		if err = checkEndpoint("end session endpoint", meta.EndSessionEndpoint, lb); err != nil {
+			return nil, err
+		}
 	}
 	return &cachedProvider{p: p, meta: meta, fetchedAt: c.now()}, nil
 }
@@ -363,9 +370,10 @@ func (c *Client) Exchange(ctx context.Context, cfg Config, code string, req Auth
 	if err != nil {
 		return nil, err
 	}
-	tok, err := oauth2Config(cp, cfg).Exchange(ctx, code, oauth2.VerifierOption(req.Verifier))
+	oc := oauth2Config(cp, cfg)
+	tok, err := oc.Exchange(ctx, code, oauth2.VerifierOption(req.Verifier))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrExchange, safeError(err))
+		return nil, fmt.Errorf("%w: %s", ErrExchange, safeError(err, "the token endpoint", hostOf(oc.Endpoint.TokenURL)))
 	}
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
@@ -441,28 +449,43 @@ func verifyProblem(err error) string {
 	return "verification failed"
 }
 
-// safeError renders a provider or transport error without response bodies: the
-// OAuth error code for a refused exchange, otherwise the error text, truncated.
-func safeError(err error) string {
+// hostOf returns the host (and port) of raw, or "the provider" when it has none.
+func hostOf(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "the provider"
+}
+
+// statusPrefix matches the HTTP status go-oidc puts first in its errors ("404 Not
+// Found: <body>").
+var statusPrefix = regexp.MustCompile(`^([1-5][0-9]{2}) `)
+
+// safeError describes a provider or transport error of what (such as "the token
+// endpoint") at host from a fixed set of messages, with at most the HTTP status
+// code: never response bodies, provider error codes or descriptions, or URLs.
+func safeError(err error, what, host string) string {
+	where := what + " at " + host
 	var re *oauth2.RetrieveError
-	if errors.As(err, &re) {
-		if re.ErrorCode != "" {
-			return "the provider answered " + truncate(re.ErrorCode, 64)
-		}
-		if re.Response != nil {
-			return "the provider answered HTTP " + re.Response.Status
-		}
-		return "the provider refused the request"
+	switch {
+	// go-oidc wraps read errors with %v, so the cap is also recognised by its text.
+	case errors.Is(err, ErrResponseTooLarge), strings.Contains(err.Error(), ErrResponseTooLarge.Error()):
+		return where + " answered more than 1 MiB"
+	case errors.As(err, &re) && re.Response != nil:
+		return where + " answered HTTP " + strconv.Itoa(re.Response.StatusCode)
+	case errors.As(err, &re):
+		return where + " refused the request"
+	case errors.Is(err, context.DeadlineExceeded):
+		return where + " did not answer in time"
 	}
-	if errors.Is(err, ErrResponseTooLarge) {
-		return ErrResponseTooLarge.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return "could not connect to " + where
 	}
-	msg := err.Error()
-	// go-oidc puts response bodies after the status; keep only the first line.
-	if i := strings.IndexAny(msg, "\n{"); i >= 0 {
-		msg = msg[:i]
+	if m := statusPrefix.FindStringSubmatch(err.Error()); m != nil {
+		return where + " answered HTTP " + m[1]
 	}
-	return truncate(msg, 200)
+	return where + " answered with an unusable response"
 }
 
 // truncate shortens s to n bytes on a rune boundary.
@@ -503,20 +526,25 @@ func identityFrom(issuer, subject string, claims map[string]any, cfg Config) *au
 	return id
 }
 
-// groupsAt reads the groups at a dot path of claims: a string or a list of strings
-// (other values are ignored), at most maxGroups.
-func groupsAt(claims map[string]any, path string) []string {
-	if path == "" {
+// groupsAt reads the groups of claims at name: a top-level claim of exactly that
+// name first (namespaced claims such as Auth0's "https://app.example.com/groups"
+// contain dots), else the dot path ("realm_access.roles"). The value is a string or
+// a list of strings (other values are ignored), at most maxGroups.
+func groupsAt(claims map[string]any, name string) []string {
+	if name == "" {
 		return nil
 	}
-	var cur any = claims
-	for _, seg := range strings.Split(path, ".") {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return nil
-		}
-		if cur, ok = m[seg]; !ok {
-			return nil
+	cur, ok := claims[name]
+	if !ok {
+		cur = claims
+		for _, seg := range strings.Split(name, ".") {
+			m, isMap := cur.(map[string]any)
+			if !isMap {
+				return nil
+			}
+			if cur, ok = m[seg]; !ok {
+				return nil
+			}
 		}
 	}
 	switch v := cur.(type) {
@@ -620,10 +648,7 @@ func (c *Client) Discover(ctx context.Context, issuer string) (*Discovery, error
 	if len(d.PKCEMethods) > 0 && !slices.Contains(d.PKCEMethods, "S256") {
 		return nil, fmt.Errorf("%w: the provider does not offer S256 PKCE", ErrDiscovery)
 	}
-	iu, _ := url.Parse(issuer)
-	if err = checkEndpoint("jwks_uri", doc.JWKSURI, iu != nil && iu.Scheme == "http" && loopback(iu.Hostname())); err != nil {
-		return nil, err
-	}
+	// discover checked that the jwks_uri uses https.
 	if d.Keys, d.KeyTypes, err = c.fetchKeys(ctx, doc.JWKSURI); err != nil {
 		return nil, err
 	}
@@ -640,13 +665,14 @@ func (c *Client) fetchKeys(ctx context.Context, jwksURL string) (int, []string, 
 	if err != nil {
 		return 0, nil, fmt.Errorf("%w: the jwks_uri is not a URL", ErrDiscovery)
 	}
+	host := hostOf(jwksURL)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%w: fetch the keys: %s", ErrDiscovery, safeError(err))
+		return 0, nil, fmt.Errorf("%w: %s", ErrDiscovery, safeError(err, "the jwks_uri", host))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("%w: the keys answered HTTP %s", ErrDiscovery, resp.Status)
+		return 0, nil, fmt.Errorf("%w: the jwks_uri at %s answered HTTP %d", ErrDiscovery, host, resp.StatusCode)
 	}
 	var set struct {
 		Keys []struct {
@@ -654,7 +680,7 @@ func (c *Client) fetchKeys(ctx context.Context, jwksURL string) (int, []string, 
 		} `json:"keys"`
 	}
 	if err = json.NewDecoder(resp.Body).Decode(&set); err != nil {
-		return 0, nil, fmt.Errorf("%w: unreadable keys: %s", ErrDiscovery, safeError(err))
+		return 0, nil, fmt.Errorf("%w: %s", ErrDiscovery, safeError(err, "the jwks_uri", host))
 	}
 	if len(set.Keys) == 0 {
 		return 0, nil, fmt.Errorf("%w: the provider publishes no keys", ErrDiscovery)

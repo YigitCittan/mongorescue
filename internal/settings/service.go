@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -157,12 +158,13 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 		return Settings{}, nil, err
 	}
 	oidcChanged := !cur.OIDC.Equal(next.OIDC)
+	var pre []Precondition
 	if oidcChanged && s.oidcGuard != nil {
-		if err = s.oidcGuard.CheckOIDC(ctx, cur.OIDC, next.OIDC); err != nil {
+		if pre, err = s.oidcGuard.CheckOIDC(ctx, cur.OIDC, next.OIDC); err != nil {
 			return Settings{}, nil, err
 		}
 	}
-	changed, err := s.commit(ctx, cur, next)
+	changed, err := s.commit(ctx, cur, next, pre...)
 	if err != nil {
 		return Settings{}, nil, err
 	}
@@ -180,9 +182,9 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 	return next.Masked(), changed, nil
 }
 
-// commit persists the keys that differ between cur and next and swaps the snapshot.
-// Caller holds writeMu.
-func (s *Service) commit(ctx context.Context, cur, next Settings) ([]string, error) {
+// commit persists the keys that differ between cur and next and swaps the snapshot,
+// checking pre in the saving transaction. Caller holds writeMu.
+func (s *Service) commit(ctx context.Context, cur, next Settings, pre ...Precondition) ([]string, error) {
 	before, err := encode(cur)
 	if err != nil {
 		return nil, err
@@ -204,8 +206,8 @@ func (s *Service) commit(ctx context.Context, cur, next Settings) ([]string, err
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	if err := s.repo.SaveSettings(ctx, changes); err != nil {
-		return nil, fmt.Errorf("settings: save: %w", err)
+	if err := s.save(ctx, changes, pre); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	s.cur, s.enc, s.dec = next, enc, dec
@@ -219,6 +221,28 @@ func (s *Service) commit(ctx context.Context, cur, next Settings) ([]string, err
 	}
 	slices.Sort(keys)
 	return keys, nil
+}
+
+// save stores changes, checking pre inside the saving transaction. A failed
+// precondition is ErrInvalid; preconditions need a PreconditionRepository.
+func (s *Service) save(ctx context.Context, changes map[string]string, pre []Precondition) error {
+	if len(pre) == 0 {
+		if err := s.repo.SaveSettings(ctx, changes); err != nil {
+			return fmt.Errorf("settings: save: %w", err)
+		}
+		return nil
+	}
+	pr, ok := s.repo.(PreconditionRepository)
+	if !ok {
+		return fmt.Errorf("settings: save: the repository cannot check %v", pre)
+	}
+	if err := pr.SaveSettingsWith(ctx, changes, pre); err != nil {
+		if errors.Is(err, ErrPreconditionFailed) {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		return fmt.Errorf("settings: save: %w", err)
+	}
+	return nil
 }
 
 // Import is one value from a deprecated environment variable or legacy configuration

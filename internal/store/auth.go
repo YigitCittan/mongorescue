@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
 // Compile-time check that SQLiteStore serves the auth port.
@@ -185,10 +186,8 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, actorID, id string, keepLo
 			if err = refuseLastAdmin(ctx, tx); err != nil {
 				return err
 			}
-			if keepLocalAdmin {
-				if err = refuseLastLocalAdmin(ctx, tx, id); err != nil {
-					return err
-				}
+			if err = guardLocalAdmin(ctx, tx, id, keepLocalAdmin); err != nil {
+				return err
 			}
 		}
 		// Sessions go with the user (ON DELETE CASCADE); delete explicitly as well so
@@ -231,10 +230,8 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string
 			if err = refuseLastAdmin(ctx, tx); err != nil {
 				return err
 			}
-			if keepLocalAdmin {
-				if err = refuseLastLocalAdmin(ctx, tx, userID); err != nil {
-					return err
-				}
+			if err = guardLocalAdmin(ctx, tx, userID, keepLocalAdmin); err != nil {
+				return err
 			}
 		}
 		return setRole(ctx, tx, userID, role, updatedAt)
@@ -256,6 +253,39 @@ func setRole(ctx context.Context, tx *sql.Tx, userID string, role auth.Role, upd
 		return fmt.Errorf("store: revoke sessions: %w", err)
 	}
 	return nil
+}
+
+// guardLocalAdmin refuses to remove the last local admin id when keep is set or
+// single sign-on is enabled in the stored settings. Reading the setting in the
+// transaction closes the window between a settings change and the in-memory
+// snapshot the caller passed keep from: write transactions are serialized, so
+// enabling single sign-on (which checks for a local admin in its own transaction)
+// and removing the last local admin cannot both succeed.
+func guardLocalAdmin(ctx context.Context, tx *sql.Tx, id string, keep bool) error {
+	if !keep {
+		on, err := storedOIDCEnabled(ctx, tx)
+		if err != nil {
+			return err
+		}
+		keep = on
+	}
+	if !keep {
+		return nil
+	}
+	return refuseLastLocalAdmin(ctx, tx, id)
+}
+
+// storedOIDCEnabled reports whether the stored oidc.enabled setting is true.
+func storedOIDCEnabled(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var v string
+	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", settings.KeyOIDCEnabled).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: read single sign-on setting: %w", err)
+	}
+	return strings.TrimSpace(v) == "true", nil
 }
 
 // refuseLastLocalAdmin returns auth.ErrLastLocalAdmin when id is a local admin and
@@ -324,10 +354,14 @@ func (s *SQLiteStore) DeleteLocalNonAdminSessions(ctx context.Context) (int, err
 // SignInExternalUser finds the user with in.Subject or creates one (in.AutoCreate),
 // applies in.Role with the rules of UpdateUserRole and records the sign-in, in one
 // transaction. A demotion that would leave no admin keeps the stored role and
-// reports RoleKept. The user is looked up by subject only: an existing user with the
+// reports RoleKept. With in.RoleOnCreate the role applies to a new user only (none:
+// auth.ErrNoRole) and an existing user keeps theirs. The user is looked up by
+// subject only: an existing user with the
 // same name is a conflict (auth.ErrAccountConflict), never a link.
 func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalSignIn) (*auth.ExternalSignInResult, error) {
-	if in == nil || in.Subject == "" || !in.Role.Valid() {
+	// An empty role is only valid for RoleOnCreate (an existing user keeps theirs).
+	roleOK := in != nil && (in.Role.Valid() || (in.RoleOnCreate && in.Role == ""))
+	if in == nil || in.Subject == "" || !roleOK {
 		return nil, fmt.Errorf("store: external sign-in: %w", auth.ErrInvalidIdentity)
 	}
 	var out *auth.ExternalSignInResult
@@ -336,6 +370,9 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 		if errors.Is(err, auth.ErrUserNotFound) {
 			if !in.AutoCreate {
 				return auth.ErrUnknownExternalUser
+			}
+			if in.Role == "" {
+				return auth.ErrNoRole
 			}
 			at := in.At
 			u = &auth.User{ID: in.NewUserID, Username: in.Username, Role: in.Role, AuthProvider: auth.ProviderOIDC,
@@ -356,7 +393,8 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 			return fmt.Errorf("store: external sign-in: %w", errInconsistentIdentity)
 		}
 		out = &auth.ExternalSignInResult{User: u, RoleFrom: u.Role}
-		if u.Role != in.Role {
+		// With RoleOnCreate an existing user keeps the stored role.
+		if !in.RoleOnCreate && u.Role != in.Role {
 			kept := false
 			if u.Role == auth.RoleAdmin {
 				switch err = refuseLastAdmin(ctx, tx); {
