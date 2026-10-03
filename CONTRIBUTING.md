@@ -83,7 +83,7 @@ cd e2e && npm run typecheck && npx playwright show-report               # type-c
 
 When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths).
 
-The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only from `_test.go` files**; CI fails if it reaches the binary. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
+The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only by `internal/mongoconn` and `_test.go` files**, plus its `bson` codec (and nothing else from the driver) by `internal/oplog`; CI fails on any other import. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
 
 ### What CI checks
 
