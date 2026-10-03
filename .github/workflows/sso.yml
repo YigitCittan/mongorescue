@@ -52,5 +52,7 @@ jobs:
         env:
           MONGO_IMAGE: mongo:7.0
           IT_PROVIDERS: keycloak
+          # Pinned by digest (Dependabot bumps it); the same default as the script.
+          KEYCLOAK_IMAGE: quay.io/keycloak/keycloak:26.3@sha256:357829ec7c4693397533035092ad13b0644bcc95ded311f33a3738c4d9e9bdba
           GOTESTFLAGS: -v -run TestKeycloakSingleSignOn
         run: ./scripts/test-integration-docker.sh
