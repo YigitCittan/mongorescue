@@ -100,8 +100,6 @@ func TestFilterDrops(t *testing.T) {
 		"no-op":              {{Key: "op", Value: "n"}, {Key: "ns", Value: ""}, {Key: "o", Value: bson.D{{Key: "msg", Value: "periodic noop"}}}},
 		"pre-image no-op":    {{Key: "op", Value: "n"}, {Key: "ns", Value: "shop.orders"}, {Key: "o", Value: bson.D{{Key: "_id", Value: 1}}}},
 		"record id":          {{Key: "op", Value: "km"}, {Key: "ns", Value: "shop.orders"}},
-		"fromMigrate":        append(insert("shop.orders", 1), bson.E{Key: "fromMigrate", Value: true}),
-		"fromMigrate drop":   append(command("shop", bson.D{{Key: "drop", Value: "orders"}}), bson.E{Key: "fromMigrate", Value: true}),
 		"dbCheck":            command("shop", bson.D{{Key: "dbCheck", Value: "orders"}}),
 		"startIndexBuild":    command("shop", bson.D{{Key: "startIndexBuild", Value: "orders"}}),
 		"abortIndexBuild":    command("shop", bson.D{{Key: "abortIndexBuild", Value: "orders"}}),
@@ -124,21 +122,71 @@ func TestFilterDrops(t *testing.T) {
 	}
 }
 
-func TestFilterKeepsRenameCopy(t *testing.T) {
-	// MongoDB 5.0 copies a collection renamed across databases with fromMigrate
-	// inserts into a temporary collection of the target.
-	in := append(insert("shop.tmpAb3Xy.renameCollection", 1), bson.E{Key: "fromMigrate", Value: true})
-	out := mustRun(t, shopFilter(), entryAt(t, ts(1, 1), in))
-	if len(out) != 1 || str(out[0], "ns") != "shop_rescue.tmpAb3Xy.renameCollection" {
-		t.Fatalf("out = %v", out)
+func TestFilterKeepsFromMigrate(t *testing.T) {
+	// On a replica set fromMigrate marks internal copies: convertToCapped into
+	// tmpXXXXX.convertToCapped.<coll>, cloneCollectionAsCapped into its target and,
+	// on 5.0, a rename across databases into tmpXXXXX.renameCollection.
+	for _, ns := range []string{"shop.tmpAb3Xy.convertToCapped.orders", "shop.orders_capped", "shop.tmpAb3Xy.renameCollection"} {
+		in := append(insert(ns, 1), bson.E{Key: "fromMigrate", Value: true})
+		out := mustRun(t, shopFilter(), entryAt(t, ts(1, 1), in))
+		if len(out) != 1 || str(out[0], "ns") != renameNS(ns, "shop", "shop_rescue") {
+			t.Fatalf("%s: out = %v", ns, out)
+		}
+		if _, err := out[0].LookupErr("fromMigrate"); err == nil {
+			t.Errorf("%s: fromMigrate kept", ns)
+		}
 	}
-	if _, err := out[0].LookupErr("fromMigrate"); err == nil {
-		t.Error("fromMigrate kept")
+}
+
+func TestFilterNeedsTarget(t *testing.T) {
+	in := entryAt(t, ts(1, 1), insert("shop.orders", 1))
+	for name, f := range map[string]*Filter{
+		"zero":   {},
+		"select": {Select: map[string]bool{"shop": true}},
+		"both":   {Rename: rescue, InPlace: true},
+	} {
+		if _, err := run(t, f, in); !errors.Is(err, ErrNoTarget) {
+			t.Errorf("%s: err = %v, want ErrNoTarget", name, err)
+		}
+	}
+	if _, err := run(t, &Filter{Rename: func(db string) string { return db }}, in); !errors.Is(err, ErrBadRename) {
+		t.Errorf("identity rename: err = %v, want ErrBadRename", err)
+	}
+	out := mustRun(t, &Filter{InPlace: true}, in)
+	if len(out) != 1 || str(out[0], "ns") != "shop.orders" {
+		t.Errorf("in place: %v", out)
+	}
+}
+
+func TestFilterRenameDropTarget(t *testing.T) {
+	rename := func(dropTarget any) bson.Raw {
+		o := bson.D{{Key: "renameCollection", Value: "shop.tmp.agg_out.1"}, {Key: "to", Value: "shop.report"}, {Key: "stayTemp", Value: false}}
+		if dropTarget != nil {
+			o = append(o, bson.E{Key: "dropTarget", Value: dropTarget})
+		}
+		return entryAt(t, ts(3, 1), append(command("shop", o), bson.E{Key: "o2", Value: bson.D{{Key: "numRecords", Value: 1}}}))
+	}
+	for name, dt := range map[string]any{"UUID": uuid, "true": true} {
+		out := mustRun(t, shopFilter(), rename(dt))
+		if len(out) != 2 || str(out[0], "o", "drop") != "report" || str(out[0], "ns") != "shop_rescue.$cmd" {
+			t.Fatalf("%s: out = %v", name, out)
+		}
+		if v := out[1].Lookup("o", "dropTarget"); v.Type != bson.TypeBoolean || v.Boolean() {
+			t.Errorf("%s: dropTarget = %v, want false", name, v)
+		}
+		if str(out[1], "o", "to") != "shop_rescue.report" {
+			t.Errorf("%s: rename = %s", name, out[1])
+		}
+	}
+	for name, dt := range map[string]any{"false": false, "absent": nil} {
+		if out := mustRun(t, shopFilter(), rename(dt)); len(out) != 1 || commandName(out[0]) != "renameCollection" {
+			t.Errorf("%s: out = %v", name, out)
+		}
 	}
 }
 
 func TestFilterAllDatabases(t *testing.T) {
-	f := &Filter{}
+	f := &Filter{InPlace: true}
 	out := mustRun(t, f,
 		entryAt(t, ts(1, 1), insert("shop.orders", 1)),
 		entryAt(t, ts(1, 2), insert("crm.users", 1)),
@@ -390,7 +438,7 @@ func TestFilterRefuses(t *testing.T) {
 }
 
 func TestFilterBadRename(t *testing.T) {
-	for _, to := range []string{"", "a.b", "admin", "has space", strings.Repeat("x", 64), "a$b"} {
+	for _, to := range []string{"", "a.b", "admin", "has space", strings.Repeat("x", 64), "a$b", "shop"} {
 		f := &Filter{Rename: func(string) string { return to }}
 		for _, d := range []bson.D{
 			insert("shop.orders", 1),
@@ -481,7 +529,7 @@ func TestFilterIndexMoves(t *testing.T) {
 	f := shopFilter()
 	out := mustRun(t, f, createIndex("a", skuIdx), commit("a", stIdx), createIndex("b", skuIdx), rename("a", "b"))
 	want := "createIndexes a sku_1; createIndexes a st_1; createIndexes b sku_1; " +
-		"renameCollection shop_rescue.a; dropIndexes b *; createIndexes b sku_1; createIndexes b st_1; dropIndexes a *"
+		"drop b; renameCollection shop_rescue.a; createIndexes b sku_1; createIndexes b st_1; dropIndexes a *"
 	if got := summary(out); got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
@@ -494,7 +542,7 @@ func TestFilterIndexMoves(t *testing.T) {
 		t.Errorf("ops = %d, want %d", f.Ops(), len(out))
 	}
 	// The indexes now belong to b: renaming b moves them again.
-	if got := summary(mustRun(t, f, rename("b", "c"))); got != "renameCollection shop_rescue.b; createIndexes c sku_1; createIndexes c st_1; dropIndexes b *" {
+	if got := summary(mustRun(t, f, rename("b", "c"))); got != "drop c; renameCollection shop_rescue.b; createIndexes c sku_1; createIndexes c st_1; dropIndexes b *" {
 		t.Errorf("second rename: %s", got)
 	}
 
@@ -514,7 +562,7 @@ func TestFilterIndexMoves(t *testing.T) {
 	}
 	// Another collection's indexes stay.
 	out = mustRun(t, shopFilter(), createIndex("x", skuIdx), entryAt(t, ts(1, 3), command("shop", bson.D{{Key: "dropIndexes", Value: "x"}, {Key: "index", Value: "other"}})), rename("x", "y"))
-	if got := summary(out[2:]); got != "renameCollection shop_rescue.x; createIndexes y sku_1; dropIndexes x *" {
+	if got := summary(out[2:]); got != "drop y; renameCollection shop_rescue.x; createIndexes y sku_1; dropIndexes x *" {
 		t.Errorf("unrelated dropIndexes: %s", got)
 	}
 }
@@ -669,7 +717,7 @@ func TestFilterLimit(t *testing.T) {
 	for i := uint32(1); i <= 5; i++ {
 		src.Write(entryAt(t, ts(100, i), insert("shop.a", int(i))))
 	}
-	f := &Filter{Limit: ts(100, 4)}
+	f := &Filter{InPlace: true, Limit: ts(100, 4)}
 	var dst collect
 	// Nothing after the entry at the limit may be read.
 	if err := f.Copy(context.Background(), &dst, io.MultiReader(bytes.NewReader(src.Bytes()[:src.Len()/5*4]), failReader{})); err != nil {
@@ -682,7 +730,7 @@ func TestFilterLimit(t *testing.T) {
 		t.Errorf("apply after the limit: stop %v err %v", stop, err)
 	}
 
-	f = &Filter{Limit: ts(101, 0)}
+	f = &Filter{InPlace: true, Limit: ts(101, 0)}
 	dst = collect{}
 	if err := f.Copy(context.Background(), &dst, bytes.NewReader(src.Bytes())); err != nil {
 		t.Fatal(err)
@@ -694,7 +742,7 @@ func TestFilterLimit(t *testing.T) {
 
 func TestFilterCopyErrors(t *testing.T) {
 	good := entryAt(t, ts(1, 1), insert("shop.a", 1))
-	f := &Filter{}
+	f := &Filter{InPlace: true}
 	if err := f.Copy(context.Background(), &collect{}, bytes.NewReader(good[:len(good)-1])); !errors.Is(err, ErrTruncated) {
 		t.Errorf("truncated: %v", err)
 	}
@@ -838,13 +886,50 @@ func TestFilterFixtureDetails(t *testing.T) {
 			// commit.
 			f := &Filter{Select: map[string]bool{"fx_txn2": true}, Rename: rescue}
 			out = mustRun(t, f, splitEntries(t, readFixture(t, v, "txn"))...)
-			last := out[len(out)-1]
-			if commandName(last) != "applyOps" || len(nestedOps(t, last)) != 0 || last.Lookup("o", "count").Int64() != 1 {
-				t.Errorf("txn: commit entry %s", last)
+			var commits []bson.Raw
+			for _, e := range out {
+				if _, err := e.LookupErr("o", "count"); err == nil {
+					commits = append(commits, e)
+				}
 			}
-			// create c, insert seed into c, and the cross-database insert at commit.
-			if f.Ops() != 3 {
-				t.Errorf("txn: ops = %d, want 3", f.Ops())
+			if len(commits) != 2 || len(nestedOps(t, commits[0])) != 0 || commits[0].Lookup("o", "count").Int64() != 1 ||
+				len(nestedOps(t, commits[1])) != 0 || commits[1].Lookup("o", "count").Int64() != 2 {
+				t.Errorf("txn: commit entries %v", commits)
+			}
+			// create c, insert seed into c, the cross-database insert and o1, o2.
+			if f.Ops() != 5 {
+				t.Errorf("txn: ops = %d, want 5", f.Ops())
+			}
+			// Selecting fx_txn drops the first entry of the last transaction: its commit
+			// is written with a prevOpTime that points to no written entry.
+			out = filterFixture(t, v, "txn", map[string]bool{"fx_txn": true})
+			if last := out[len(out)-1]; len(nestedOps(t, last)) != 2 || str(nestedOps(t, last)[0], "o", "_id") != "late1" {
+				t.Errorf("txn: last entry %s", last)
+			}
+
+			// The copies of convertToCapped and cloneCollectionAsCapped (fromMigrate) are
+			// kept, and renames over a collection drop it first.
+			out = filterFixture(t, v, "replace", map[string]bool{"fx_rep": true})
+			if n := count(out, func(e bson.Raw) bool {
+				return str(e, "op") == "i" && strings.Contains(str(e, "ns"), ".convertToCapped.logs")
+			}); n != 3 {
+				t.Errorf("replace: %d convertToCapped copies, want 3", n)
+			}
+			if n := count(out, func(e bson.Raw) bool { return str(e, "op") == "i" && str(e, "ns") == "fx_rep_rescue.src_capped" }); n != 3 {
+				t.Errorf("replace: %d cloneCollectionAsCapped copies, want 3", n)
+			}
+			for i, e := range out {
+				if commandName(e) != "renameCollection" {
+					continue
+				}
+				_, to, _ := strings.Cut(str(e, "o", "to"), ".")
+				if v := e.Lookup("o", "dropTarget"); v.Type == bson.TypeBoolean && !v.Boolean() && to != "" {
+					if i == 0 || str(out[i-1], "o", "drop") != to {
+						t.Errorf("replace: rename to %s not preceded by its drop", to)
+					}
+				} else {
+					t.Errorf("replace: rename keeps dropTarget %v", v)
+				}
 			}
 
 			// A time-series collection is created as one, without its view.
