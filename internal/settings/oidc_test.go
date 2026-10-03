@@ -172,22 +172,29 @@ func TestSecretsAreNeverKeptForANewDestination(t *testing.T) {
 	if _, err := svc.Update(ctx, Patch{Audit: &AuditPatch{WebhookURL: ptr("https://siem.example.com/in"), WebhookSecret: ptr("hmac")}}); err != nil {
 		t.Fatal(err)
 	}
-	for name, patch := range map[string]*AuditPatch{
-		"masked":  {WebhookURL: ptr("https://attacker.example.com/in"), WebhookSecret: ptr(SecretMask)},
-		"omitted": {WebhookURL: ptr("https://attacker.example.com/in")},
-		"port":    {WebhookURL: ptr("https://siem.example.com:8443/in")},
+	// The cases change the stored URL, so they run in this order (a slice, not a
+	// map, whose order is random).
+	for _, tc := range []struct {
+		name    string
+		patch   *AuditPatch
+		refused bool
+		url     string // the stored URL afterwards
+	}{
+		{"masked secret, new host", &AuditPatch{WebhookURL: ptr("https://attacker.example.com/in"), WebhookSecret: ptr(SecretMask)}, true, "https://siem.example.com/in"},
+		{"omitted secret, new host", &AuditPatch{WebhookURL: ptr("https://attacker.example.com/in")}, true, "https://siem.example.com/in"},
+		{"another port", &AuditPatch{WebhookURL: ptr("https://siem.example.com:8443/in")}, true, "https://siem.example.com/in"},
+		{"same host in capitals, new path", &AuditPatch{WebhookURL: ptr("https://SIEM.example.com/other"), WebhookSecret: ptr(SecretMask)}, false, "https://SIEM.example.com/other"},
+		{"same host with the default port and a trailing dot", &AuditPatch{WebhookURL: ptr("https://siem.example.com.:443/x")}, false, "https://siem.example.com.:443/x"},
+		{"new host with the secret", &AuditPatch{WebhookURL: ptr("https://new.example.com/in"), WebhookSecret: ptr("hmac-2")}, false, "https://new.example.com/in"},
+		{"back to the old host without the secret", &AuditPatch{WebhookURL: ptr("https://siem.example.com/in")}, true, "https://new.example.com/in"},
+		{"forwarding off", &AuditPatch{WebhookURL: ptr("")}, false, ""},
 	} {
-		if _, err := svc.Update(ctx, Patch{Audit: patch}); !errors.Is(err, ErrSecretReentry) {
-			t.Errorf("%s secret with a new webhook host = %v; want ErrSecretReentry", name, err)
+		_, err := svc.Update(ctx, Patch{Audit: tc.patch})
+		if tc.refused != errors.Is(err, ErrSecretReentry) || (!tc.refused && err != nil) {
+			t.Errorf("%s: %v; refused %v", tc.name, err, tc.refused)
 		}
-	}
-	for name, patch := range map[string]*AuditPatch{
-		"same host, new path": {WebhookURL: ptr("https://SIEM.example.com/other"), WebhookSecret: ptr(SecretMask)},
-		"new host and secret": {WebhookURL: ptr("https://new.example.com/in"), WebhookSecret: ptr("hmac-2")},
-		"forwarding off":      {WebhookURL: ptr("")},
-	} {
-		if _, err := svc.Update(ctx, Patch{Audit: patch}); err != nil {
-			t.Errorf("%s: %v", name, err)
+		if got := svc.Current().Audit.WebhookURL; got != tc.url {
+			t.Errorf("%s: stored URL %q; want %q", tc.name, got, tc.url)
 		}
 	}
 }

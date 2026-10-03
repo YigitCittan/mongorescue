@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
@@ -78,6 +79,7 @@ func TestJobUsersAndRolesRoundTrip(t *testing.T) {
 // record their arguments.
 type usersRolesFixture struct {
 	mux         http.Handler
+	srv         *Server
 	mu          sync.Mutex
 	dumpArgs    []string
 	restoreArgs []string
@@ -104,9 +106,24 @@ func newUsersRolesFixture(t *testing.T) *usersRolesFixture {
 	bEngine := backup.NewEngine(mockStorage, "mongodb://localhost:27017", backup.WithRunner(bRunner))
 	rEngine := restore.NewEngine(mockStorage, "mongodb://localhost:27017", restore.WithRunner(rRunner))
 	sched := scheduler.NewScheduler(metaStore, bEngine, mockStorage, nil)
-	f.mux = asPrincipal(NewServer(bootConfig(), metaStore, bEngine, rEngine, mockStorage, sched, nil, nil,
-		withTestConnection(t, metaStore, nil)).buildRoutes(), auth.SystemPrincipal())
+	f.srv = NewServer(bootConfig(), metaStore, bEngine, rEngine, mockStorage, sched, nil, nil,
+		withTestConnection(t, metaStore, nil))
+	f.mux = asPrincipal(f.srv.buildRoutes(), auth.SystemPrincipal())
 	return f
+}
+
+// idle waits until no run is active. A run's record completes before the run
+// releases its database lock, so the next backup or restore of the same database
+// would otherwise race it and be refused with 409.
+func (f *usersRolesFixture) idle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.srv.runs.Active()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("runs still active: %v", f.srv.runs.Active())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // args returns the last mongodump and mongorestore arguments.
@@ -122,6 +139,7 @@ func (f *usersRolesFixture) backup(t *testing.T, extra string) models.BackupReco
 	f.mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/v1/backups", strings.NewReader(`{"connection_id":"conn_test","database":"shop"`+extra+`}`)))
 	id := acceptedID(t, rec)
 	raw, _ := json.Marshal(awaitRecord(t, f.mux, "/api/v1/backups", id))
+	f.idle(t)
 	var done models.BackupRecord
 	if err := json.Unmarshal(raw, &done); err != nil {
 		t.Fatal(err)
@@ -142,6 +160,7 @@ func (f *usersRolesFixture) restore(t *testing.T, backupID, extra string) (int, 
 		return rec.Code, res.Error, res.Data
 	}
 	raw, _ := json.Marshal(awaitRecord(t, f.mux, "/api/v1/restores", res.Data.ID))
+	f.idle(t)
 	var done models.RestoreRecord
 	_ = json.Unmarshal(raw, &done)
 	return rec.Code, done.ErrorMessage, done

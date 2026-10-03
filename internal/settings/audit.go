@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -106,12 +107,34 @@ func (p *AuditPatch) apply(a *Audit) error {
 	return nil
 }
 
-// sameHost reports whether two URLs have the same host and port (case-insensitive);
-// unparsable URLs never match.
+// sameHost reports whether two URLs name the same host and port, after
+// normalisation (see hostKey); unparsable URLs or URLs without a host never match.
 func sameHost(a, b string) bool {
-	ua, errA := url.Parse(a)
-	ub, errB := url.Parse(b)
-	return errA == nil && errB == nil && ua.Host != "" && strings.EqualFold(ua.Host, ub.Host)
+	ka, kb := hostKey(a), hostKey(b)
+	return ka != "" && ka == kb
+}
+
+// hostKey returns "host:port" of raw: the host lower-cased without a trailing
+// dot, the port explicit (443 for https, 80 for http when omitted), or "".
+func hostKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // validateAudit checks a. The webhook host is checked again on every connection
