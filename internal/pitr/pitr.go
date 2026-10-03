@@ -47,6 +47,11 @@ var (
 	// the member that answered has not replicated up to it yet. Nothing read may be
 	// stored; read the range again.
 	ErrOplogBehind = errors.New("pitr: the member's oplog does not reach the end of the range yet")
+	// ErrOplogGap is returned by a range read whose start entry is missing on the
+	// member that served it (truncated: the window was overrun) or has another term
+	// (rolled back or diverged). Nothing read may be stored; the collector re-checks
+	// the window and ends the chain as a gap or a divergence.
+	ErrOplogGap = errors.New("pitr: the oplog no longer holds the start of the range")
 )
 
 // Timestamp is a BSON timestamp, the position of an oplog entry: T is the seconds
@@ -97,6 +102,27 @@ type OplogWindow struct {
 	// re-initiated under the same name. It is empty when the user may not read the
 	// configuration.
 	ReplicaSetID string
+}
+
+// OplogRange is one range read of the oplog: the entries in (From, To], or
+// [From, To] with StartInclusive. Every read proves its own continuity on the member
+// that serves it: the entry at From must still be there (and have FromTerm when
+// CheckTerm is set), otherwise the read fails with ErrOplogGap. To must be the
+// timestamp of an existing entry, such as OplogWindow's MajorityOpTime.TS.
+type OplogRange struct {
+	// From is the position the range continues from: the end of the previous
+	// chunk, or a chain's start.
+	From Timestamp
+	// To is the last position of the range (inclusive).
+	To Timestamp
+	// CheckTerm makes the read also require the entry at From to have FromTerm.
+	CheckTerm bool
+	// FromTerm is the stored term of the entry at From (see CheckTerm).
+	FromTerm int64
+	// StartInclusive also writes the entry at From. It is meant for the first
+	// chunk of a new chain, which starts at an entry the collector has just seen
+	// (such as the oldest entry of the window) rather than at a stored position.
+	StartInclusive bool
 }
 
 // OplogStats summarises one range read of the oplog.

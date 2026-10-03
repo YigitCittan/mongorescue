@@ -1,12 +1,15 @@
 package mongoconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
@@ -74,10 +77,93 @@ func TestOplogSessionOptions(t *testing.T) {
 	if got := s.rp.Mode().String(); got != DefaultOplogReadPreference {
 		t.Errorf("default read preference = %s; want %s", got, DefaultOplogReadPreference)
 	}
-	// An empty range never reaches the server.
-	stats, err := s.ReadOplog(ctx, pitr.Timestamp{T: 5}, pitr.Timestamp{T: 5}, io.Discard)
-	if err != nil || stats.Entries != 0 {
-		t.Errorf("empty range = %+v, %v", stats, err)
+	// A range that ends before it starts never reaches the server.
+	if _, err = s.ReadOplog(ctx, pitr.OplogRange{From: pitr.Timestamp{T: 5}, To: pitr.Timestamp{T: 4}}, io.Discard); !errors.Is(err, ErrInvalidRange) {
+		t.Errorf("backwards range = %v; want ErrInvalidRange", err)
+	}
+}
+
+// fakeCursor serves documents to copyOplog without a server.
+type fakeCursor struct {
+	docs []bson.Raw
+	pos  int
+	err  error
+}
+
+func (c *fakeCursor) Next(context.Context) bool {
+	if c.pos >= len(c.docs) {
+		return false
+	}
+	c.pos++
+	return true
+}
+func (c *fakeCursor) Doc() bson.Raw { return c.docs[c.pos-1] }
+func (c *fakeCursor) Err() error    { return c.err }
+
+// entry returns a raw oplog entry at (sec, ord) in term.
+func entry(t *testing.T, sec, ord uint32, term int64) bson.Raw {
+	t.Helper()
+	raw, err := bson.Marshal(bson.D{
+		{Key: "op", Value: "n"}, {Key: "ns", Value: ""},
+		{Key: "ts", Value: bson.Timestamp{T: sec, I: ord}}, {Key: "t", Value: term},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestCopyOplogContinuity checks that every range read proves its start on the
+// member that served it and writes only (From, To], or [From, To] with
+// StartInclusive.
+func TestCopyOplogContinuity(t *testing.T) {
+	at := func(sec, ord uint32) pitr.Timestamp { return pitr.Timestamp{T: sec, I: ord} }
+	e10, e11, e12, e20 := entry(t, 10, 1, 2), entry(t, 11, 1, 2), entry(t, 12, 1, 2), entry(t, 20, 1, 3)
+	for _, tc := range []struct {
+		name    string
+		docs    []bson.Raw
+		cursErr error
+		r       pitr.OplogRange
+		want    []bson.Raw
+		wantErr error
+	}{
+		{"start stripped", []bson.Raw{e10, e11, e12}, nil, pitr.OplogRange{From: at(10, 1), To: at(12, 1)}, []bson.Raw{e11, e12}, nil},
+		{"term matches", []bson.Raw{e10, e11}, nil, pitr.OplogRange{From: at(10, 1), To: at(11, 1), CheckTerm: true, FromTerm: 2}, []bson.Raw{e11}, nil},
+		{"start inclusive", []bson.Raw{e10, e11}, nil, pitr.OplogRange{From: at(10, 1), To: at(11, 1), StartInclusive: true}, []bson.Raw{e10, e11}, nil},
+		{"empty range", []bson.Raw{e12}, nil, pitr.OplogRange{From: at(12, 1), To: at(12, 1)}, nil, nil},
+		{"start truncated", []bson.Raw{e11, e12}, nil, pitr.OplogRange{From: at(10, 1), To: at(12, 1)}, nil, pitr.ErrOplogGap},
+		{"start truncated, inclusive", []bson.Raw{e11, e12}, nil, pitr.OplogRange{From: at(10, 1), To: at(12, 1), StartInclusive: true}, nil, pitr.ErrOplogGap},
+		{"nothing left", nil, nil, pitr.OplogRange{From: at(10, 1), To: at(12, 1)}, nil, pitr.ErrOplogGap},
+		{"start has another term", []bson.Raw{e10, e11}, nil, pitr.OplogRange{From: at(10, 1), To: at(11, 1), CheckTerm: true, FromTerm: 1}, nil, pitr.ErrOplogGap},
+		{"member behind", []bson.Raw{e10, e11}, nil, pitr.OplogRange{From: at(10, 1), To: at(20, 1)}, []bson.Raw{e11}, pitr.ErrOplogBehind},
+		{"out of order", []bson.Raw{e10, e20, e12}, nil, pitr.OplogRange{From: at(10, 1), To: at(20, 1)}, []bson.Raw{e20}, nil},
+		{"cursor error", []bson.Raw{e10, e11}, errors.New("cursor killed"), pitr.OplogRange{From: at(10, 1), To: at(11, 1)}, []bson.Raw{e11}, nil},
+	} {
+		var buf bytes.Buffer
+		stats, err := copyOplog(context.Background(), &fakeCursor{docs: tc.docs, err: tc.cursErr}, tc.r, &buf)
+		switch {
+		case tc.wantErr != nil:
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("%s: err = %v; want %v", tc.name, err, tc.wantErr)
+			}
+		case tc.name == "out of order" || tc.name == "cursor error":
+			if err == nil || errors.Is(err, pitr.ErrOplogGap) || errors.Is(err, pitr.ErrOplogBehind) {
+				t.Errorf("%s: err = %v; want a read error", tc.name, err)
+			}
+		case err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		}
+		var want []byte
+		for _, d := range tc.want {
+			want = append(want, d...)
+		}
+		if !bytes.Equal(buf.Bytes(), want) {
+			t.Errorf("%s: wrote %d bytes; want the %d entries of the range (%d bytes)", tc.name, buf.Len(), len(tc.want), len(want))
+		}
+		if err == nil && (stats.Entries != len(tc.want) ||
+			(len(tc.want) > 0 && stats.Last.TS != tc.r.To)) {
+			t.Errorf("%s: stats = %+v", tc.name, stats)
+		}
 	}
 }
 
@@ -91,7 +177,7 @@ func TestOplogUnreachableIsRedacted(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"OplogWindow": func() error { _, err := p.OplogWindow(ctx, uri); return err },
 		"ReadOplog": func() error {
-			_, err := p.ReadOplog(ctx, uri, pitr.Timestamp{T: 1}, pitr.Timestamp{T: 2}, io.Discard)
+			_, err := p.ReadOplog(ctx, uri, pitr.OplogRange{From: pitr.Timestamp{T: 1}, To: pitr.Timestamp{T: 2}}, io.Discard)
 			return err
 		},
 		"EntryAt":      func() error { _, _, err := p.EntryAt(ctx, uri, pitr.Timestamp{T: 1}); return err },

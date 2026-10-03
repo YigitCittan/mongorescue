@@ -80,12 +80,12 @@ func (p *Prober) OplogWindow(ctx context.Context, uri string) (pitr.OplogWindow,
 	return w, err
 }
 
-// ReadOplog opens a short-lived session for uri and copies the oplog range
-// (from, to] to w (see OplogSession.ReadOplog).
-func (p *Prober) ReadOplog(ctx context.Context, uri string, from, to pitr.Timestamp, w io.Writer) (pitr.OplogStats, error) {
+// ReadOplog opens a short-lived session for uri and copies the oplog range r to w
+// (see OplogSession.ReadOplog).
+func (p *Prober) ReadOplog(ctx context.Context, uri string, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
 	var stats pitr.OplogStats
 	err := p.withOplogSession(ctx, uri, func(s *OplogSession) (err error) {
-		stats, err = s.ReadOplog(ctx, from, to, w)
+		stats, err = s.ReadOplog(ctx, r, w)
 		return err
 	})
 	return stats, err
@@ -225,41 +225,82 @@ func unauthorized(err error) bool {
 	return errors.As(err, &se) && se.HasErrorCode(unauthorizedCode)
 }
 
-// ReadOplog copies the oplog entries in the range (from, to] to w in $natural
-// order, each as its raw BSON document exactly as the server sent it, so memory use
-// is bounded by one cursor batch. to must be the timestamp of an existing entry,
-// such as OplogWindow's MajorityOpTime.TS: when the member that answered has no
-// entry at to yet, ReadOplog returns pitr.ErrOplogBehind after writing what it
-// read, and nothing written may be kept. An empty range (to not after from) writes
-// nothing. Errors are redacted.
-func (s *OplogSession) ReadOplog(ctx context.Context, from, to pitr.Timestamp, w io.Writer) (pitr.OplogStats, error) {
-	var stats pitr.OplogStats
-	if to.Compare(from) <= 0 {
-		return stats, nil
+// ErrInvalidRange is returned by ReadOplog for a range that ends before it starts.
+var ErrInvalidRange = errors.New("mongoconn: invalid oplog range")
+
+// ReadOplog copies the oplog entries of r to w in $natural order, each as its raw
+// BSON document exactly as the server sent it, so memory use is bounded by one
+// cursor batch. It queries [r.From, r.To] and proves the range's continuity on the
+// member that served it: the first entry must be the one at r.From (with
+// r.FromTerm when r.CheckTerm is set), or it returns pitr.ErrOplogGap. That entry
+// is written only with r.StartInclusive, so w otherwise receives exactly
+// (r.From, r.To]. When the member has no entry at r.To yet, it returns
+// pitr.ErrOplogBehind. After an error nothing written may be kept. Errors are
+// redacted.
+func (s *OplogSession) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
+	if r.To.Compare(r.From) < 0 {
+		return pitr.OplogStats{}, fmt.Errorf("%w: it ends at %s before its start %s", ErrInvalidRange, r.To, r.From)
 	}
 	filter := bson.D{{Key: "ts", Value: bson.D{
-		{Key: "$gt", Value: bson.Timestamp{T: from.T, I: from.I}},
-		{Key: "$lte", Value: bson.Timestamp{T: to.T, I: to.I}},
+		{Key: "$gte", Value: bson.Timestamp{T: r.From.T, I: r.From.I}},
+		{Key: "$lte", Value: bson.Timestamp{T: r.To.T, I: r.To.I}},
 	}}}
 	cur, err := s.client.Database(oplogDB).Collection(oplogColl).Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
-		return stats, redactErr(fmt.Errorf("find oplog entries: %w", err))
+		return pitr.OplogStats{}, redactErr(fmt.Errorf("find oplog entries: %w", err))
 	}
 	defer func() { _ = cur.Close(context.WithoutCancel(ctx)) }()
-	prev := from
+	stats, err := copyOplog(ctx, driverCursor{cur}, r, w)
+	return stats, redactErr(err)
+}
+
+// oplogCursor is the part of a driver cursor copyOplog uses, so tests can feed it
+// documents without a server.
+type oplogCursor interface {
+	Next(ctx context.Context) bool
+	Doc() bson.Raw
+	Err() error
+}
+
+// driverCursor adapts *mongo.Cursor to oplogCursor.
+type driverCursor struct{ *mongo.Cursor }
+
+// Doc returns the current document.
+func (c driverCursor) Doc() bson.Raw { return c.Current }
+
+// copyOplog verifies and copies the result of the query
+// {ts: {$gte: r.From, $lte: r.To}} in $natural order (see ReadOplog).
+func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
+	var (
+		stats   pitr.OplogStats
+		prev    pitr.Timestamp // the last entry seen, the start entry included
+		started bool
+	)
 	for cur.Next(ctx) {
-		doc := cur.Current
+		doc := cur.Doc()
 		t, i, ok := doc.Lookup("ts").TimestampOK()
 		if !ok {
-			return stats, fmt.Errorf("oplog entry %d has no ts timestamp", stats.Entries+1)
+			return stats, errors.New("an oplog entry has no ts timestamp")
 		}
 		op := pitr.OpTime{TS: pitr.Timestamp{T: t, I: i}}
-		if op.TS.Compare(prev) <= 0 {
+		op.Term, _ = doc.Lookup("t").AsInt64OK()
+		switch {
+		case !started:
+			if op.TS != r.From {
+				return stats, fmt.Errorf("%w: the first entry is at %s, not at %s", pitr.ErrOplogGap, op.TS, r.From)
+			}
+			if r.CheckTerm && op.Term != r.FromTerm {
+				return stats, fmt.Errorf("%w: the entry at %s has term %d, not %d", pitr.ErrOplogGap, op.TS, op.Term, r.FromTerm)
+			}
+			started, prev = true, op.TS
+			if !r.StartInclusive {
+				continue
+			}
+		case op.TS.Compare(prev) <= 0:
 			return stats, fmt.Errorf("oplog entry %s is not after %s", op.TS, prev)
 		}
-		op.Term, _ = doc.Lookup("t").AsInt64OK()
-		if _, err = w.Write(doc); err != nil {
+		if _, err := w.Write(doc); err != nil {
 			return stats, fmt.Errorf("write oplog entry: %w", err)
 		}
 		if stats.Entries == 0 {
@@ -269,11 +310,14 @@ func (s *OplogSession) ReadOplog(ctx context.Context, from, to pitr.Timestamp, w
 		stats.Entries++
 		prev = op.TS
 	}
-	if err = cur.Err(); err != nil {
-		return stats, redactErr(fmt.Errorf("read oplog entries: %w", err))
+	if err := cur.Err(); err != nil {
+		return stats, fmt.Errorf("read oplog entries: %w", err)
 	}
-	if stats.Last.TS != to {
-		return stats, fmt.Errorf("%w: read up to %s of %s", pitr.ErrOplogBehind, stats.Last.TS, to)
+	if !started {
+		return stats, fmt.Errorf("%w: no entry at %s", pitr.ErrOplogGap, r.From)
+	}
+	if prev != r.To {
+		return stats, fmt.Errorf("%w: read up to %s of %s", pitr.ErrOplogBehind, prev, r.To)
 	}
 	return stats, nil
 }
