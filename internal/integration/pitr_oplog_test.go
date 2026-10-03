@@ -92,14 +92,15 @@ func majorityWindow(ctx context.Context, t *testing.T, s *mongoconn.OplogSession
 	}
 }
 
-// readRange reads (from, to] and returns the parsed entries and the stats.
-func readRange(ctx context.Context, t *testing.T, s *mongoconn.OplogSession, from, to pitr.Timestamp) ([]oplogEntry, pitr.OplogStats) {
+// readRange reads r and returns the parsed entries and the stats.
+func readRange(ctx context.Context, t *testing.T, s *mongoconn.OplogSession, r pitr.OplogRange) ([]oplogEntry, pitr.OplogStats) {
 	t.Helper()
 	var buf bytes.Buffer
-	stats, err := s.ReadOplog(ctx, from, to, &buf)
+	stats, err := s.ReadOplog(ctx, r, &buf)
 	if err != nil {
-		t.Fatalf("ReadOplog(%s, %s): %v", from, to, err)
+		t.Fatalf("ReadOplog(%+v): %v", r, err)
 	}
+	to := r.To
 	entries := splitOplog(t, buf.Bytes())
 	if len(entries) != stats.Entries {
 		t.Fatalf("ReadOplog reported %d entries and wrote %d", stats.Entries, len(entries))
@@ -155,9 +156,13 @@ func TestOplogWindowAndRangeReads(t *testing.T) {
 	w2 := majorityWindow(ctx, t, s)
 
 	A, B1, B2 := w0.MajorityOpTime.TS, w1.MajorityOpTime.TS, w2.MajorityOpTime.TS
-	first, _ := readRange(ctx, t, s, A, B1)
-	second, _ := readRange(ctx, t, s, B1, B2)
-	whole, _ := readRange(ctx, t, s, A, B2)
+	// Each read proves its start (and the stored term there) on the member it reads.
+	first, _ := readRange(ctx, t, s, pitr.OplogRange{From: A, To: B1, CheckTerm: true, FromTerm: w0.MajorityOpTime.Term})
+	second, _ := readRange(ctx, t, s, pitr.OplogRange{From: B1, To: B2, CheckTerm: true, FromTerm: w1.MajorityOpTime.Term})
+	whole, _ := readRange(ctx, t, s, pitr.OplogRange{From: A, To: B2})
+	if len(first) == 0 || first[0].TS.Compare(A) <= 0 {
+		t.Fatalf("the first range does not start after %s", A)
+	}
 
 	joined := append(append([]oplogEntry{}, first...), second...)
 	if len(joined) != len(whole) {
@@ -197,14 +202,33 @@ func TestOplogWindowAndRangeReads(t *testing.T) {
 		}
 	}
 
-	// An empty range writes nothing.
-	if empty, _ := readRange(ctx, t, s, B2, B2); len(empty) != 0 {
+	// The first chunk of a new chain also holds its start entry.
+	if incl, _ := readRange(ctx, t, s, pitr.OplogRange{From: A, To: B2, StartInclusive: true}); len(incl) != len(whole)+1 || incl[0].TS != A {
+		t.Errorf("inclusive read returned %d entries; want %d starting at %s", len(incl), len(whole)+1, A)
+	}
+	// An empty range writes nothing but still proves its start.
+	if empty, _ := readRange(ctx, t, s, pitr.OplogRange{From: B2, To: B2}); len(empty) != 0 {
 		t.Errorf("empty range returned %d entries", len(empty))
 	}
-	// A bound past the member's newest entry is reported, never silently cut short.
+	gone := pitr.Timestamp{T: A.T - 1, I: 1 << 30} // no entry has this position
 	var sink bytes.Buffer
-	if _, err = s.ReadOplog(ctx, B2, pitr.Timestamp{T: w2.Newest.T + 3600}, &sink); !errors.Is(err, pitr.ErrOplogBehind) {
-		t.Errorf("read past the newest entry = %v; want ErrOplogBehind", err)
+	for _, tc := range []struct {
+		name string
+		r    pitr.OplogRange
+		want error
+	}{
+		// A start that is gone on the member read (truncated past it) is a gap,
+		// never a range that silently starts later.
+		{"truncated start", pitr.OplogRange{From: gone, To: B2}, pitr.ErrOplogGap},
+		{"truncated start, inclusive", pitr.OplogRange{From: gone, To: B2, StartInclusive: true}, pitr.ErrOplogGap},
+		{"start in another term", pitr.OplogRange{From: B1, To: B2, CheckTerm: true, FromTerm: w1.MajorityOpTime.Term + 1}, pitr.ErrOplogGap},
+		// A bound past the member's newest entry is reported, never silently cut short.
+		{"past the newest entry", pitr.OplogRange{From: B2, To: pitr.Timestamp{T: w2.Newest.T + 3600}}, pitr.ErrOplogBehind},
+	} {
+		sink.Reset()
+		if _, err = s.ReadOplog(ctx, tc.r, &sink); !errors.Is(err, tc.want) {
+			t.Errorf("%s: ReadOplog = %v; want %v", tc.name, err, tc.want)
+		}
 	}
 
 	// Divergence check: the entry at the stored position and its term.
@@ -279,8 +303,8 @@ func TestCanReadOplog(t *testing.T) {
 				t.Fatalf("OplogWindow as %s: %v", tc.user, err)
 			}
 			var buf bytes.Buffer
-			from := pitr.Timestamp{T: w.MajorityOpTime.TS.T - 60}
-			if _, err = p.ReadOplog(ctx, uri, from, w.MajorityOpTime.TS, &buf); err != nil {
+			r := pitr.OplogRange{From: w.Newest, To: w.Newest, StartInclusive: true}
+			if _, err = p.ReadOplog(ctx, uri, r, &buf); err != nil {
 				t.Errorf("ReadOplog as %s: %v", tc.user, err)
 			}
 		} else if err == nil {

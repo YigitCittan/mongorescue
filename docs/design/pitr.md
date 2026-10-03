@@ -36,6 +36,7 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
 
 - **Reading.**
   - Bounded range reads go through the driver in `internal/mongoconn`. At each tick, `B = hello.lastWrite.majorityOpTime` and the collector reads `find local.oplog.rs {ts: {$gt: A, $lte: B}}` in `$natural` order as raw BSON into an `io.Writer`: `mongoconn.ReadOplog(ctx, uri, A, B, w)`.
+  - Each read proves its continuity on the member that serves it: it queries `{$gte: A, $lte: B}`, the first entry must be the one at `A` (with the stored term `t`) and is dropped from the output, or the read fails with `ErrOplogGap`, which the collector treats as a gap or a divergence after re-checking. The first chunk of a new chain starts at an entry it has just read and keeps it (`StartInclusive`).
   - Memory use is bounded by one cursor batch.
   - Only majority-committed entries are stored, so writes that are rolled back after a failover are never kept.
   - Read preference is `secondaryPreferred` by default.
