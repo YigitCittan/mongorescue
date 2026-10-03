@@ -303,7 +303,8 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown client or redirect_uri", http.StatusBadRequest)
 		return
 	}
-	back, err := url.Parse(redirect)
+	// Redirect to the registered URL, never to the request's copy of it.
+	back, err := url.Parse(client.RedirectURL)
 	if err != nil {
 		http.Error(w, "bad redirect_uri", http.StatusBadRequest)
 		return
@@ -323,7 +324,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		out.Set("code", code)
 	}
 	back.RawQuery = out.Encode()
-	http.Redirect(w, r, back.String(), http.StatusFound) //nolint:gosec // G710: only the registered redirect_uri, checked above.
+	http.Redirect(w, r, back.String(), http.StatusFound)
 }
 
 func randomString() string {
