@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
@@ -43,9 +44,33 @@ func (s *SQLiteStore) LoadSettings(ctx context.Context) (map[string]string, erro
 	return out, nil
 }
 
+// Compile-time check that SQLiteStore checks preconditions of settings changes.
+var _ settings.PreconditionRepository = (*SQLiteStore)(nil)
+
 // SaveSettings upserts values in one transaction, sealing secret values.
 func (s *SQLiteStore) SaveSettings(ctx context.Context, values map[string]string) error {
+	return s.SaveSettingsWith(ctx, values, nil)
+}
+
+// SaveSettingsWith checks pre and upserts values in one transaction, sealing
+// secret values. A precondition that does not hold returns an error wrapping
+// settings.ErrPreconditionFailed and saves nothing.
+func (s *SQLiteStore) SaveSettingsWith(ctx context.Context, values map[string]string, pre []settings.Precondition) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, p := range pre {
+			switch p {
+			case settings.PreconditionLocalAdmin:
+				n, err := countLocalAdmins(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return fmt.Errorf("%w: %w: create a local administrator first", settings.ErrPreconditionFailed, auth.ErrLastLocalAdmin)
+				}
+			default:
+				return fmt.Errorf("%w: unknown precondition %q", settings.ErrPreconditionFailed, p)
+			}
+		}
 		for key, value := range values {
 			if !settings.IsKnown(key) {
 				return fmt.Errorf("%w: unknown setting %q", ErrInvalidRecord, key)

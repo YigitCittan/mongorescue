@@ -106,7 +106,7 @@ Retention and forwarding of the hash-chained audit log of every action (Settings
 | :--- | :--- | :--- |
 | `retention_days` | `365` | Keep entries this many days (30 to 36500); older ones are removed hourly, and the last removed hash is kept as the chain anchor |
 | `webhook_url` | empty | `http` or `https` URL every new entry is POSTed to as JSON, in the background (empty = off). Secret: stored encrypted, shown only up to its host |
-| `webhook_secret` | empty | Signs the forwarded requests (`X-MongoRescue-Signature: sha256=<HMAC-SHA256 of the body>`). Secret |
+| `webhook_secret` | empty | Signs the forwarded requests (`X-MongoRescue-Signature: sha256=<HMAC-SHA256 of the body>`). Secret. Changing the webhook host needs it again: the stored secret is never kept for another host |
 
 ### Single sign-on
 
@@ -122,9 +122,9 @@ Sign-in through an OpenID Connect provider (Settings → Single sign-on, admins 
 | `scopes` | `openid email profile` | Requested scopes; `openid` is always added |
 | `redirect_url` | empty | The callback URL registered at the provider, never derived from the request. Its path must be exactly `/auth/oidc/callback`. The dashboard pre-fills `<origin>/auth/oidc/callback` |
 | `username_claim` | `preferred_username` | Names new users; falls back to `email`, then `sub`, cleaned to the username characters |
-| `groups_claim` | `groups` | Claim or dot path (`realm_access.roles`) holding a string or a list of strings |
+| `groups_claim` | `groups` | Claim holding a string or a list of strings: an exact top-level claim name first (namespaced claims such as `https://app.example.com/groups`), else a dot path (`realm_access.roles`) |
 | `role_mappings` | empty | `{group, role}` pairs, matched exactly; the highest role wins; at most 100 |
-| `default_role` | empty | Role when no mapping matches: empty refuses the sign-in, or `viewer` or `operator`. `admin` is refused here: it only comes from a mapping |
+| `default_role` | empty | Role when no mapping matches: empty refuses the sign-in, or `viewer` or `operator`. `admin` is refused here: it only comes from a mapping. Without any mappings it is only the role of new users; existing users keep theirs |
 | `allowed_email_domains` | empty | Only verified emails (`email_verified` the JSON boolean `true`) of these exact domains may sign in; empty allows any |
 | `auto_create_users` | `true` | Create a user at an identity's first sign-in; when off, unknown identities are refused |
 | `local_login` | `all` | `admins_only` limits the password form to local administrators (break-glass) while single sign-on is on, and ends the sessions of the other local users when switched on |

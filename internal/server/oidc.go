@@ -1,6 +1,7 @@
 package server
 
 import (
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -328,7 +329,7 @@ func (s *Server) completeOIDC(r *http.Request, o settings.OIDC, a *oidcAttempt) 
 		return refuse(auth.OIDCStateMismatch)
 	}
 	got := q.Get("state")
-	if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(flow.State)) != 1 || !s.usedStates.consume(flow.State, s.auth.Now()) {
+	if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(flow.State)) != 1 || !s.usedStates.consume(flow.State, time.Unix(flow.IssuedAt, 0), s.auth.Now()) {
 		return refuse(auth.OIDCStateMismatch)
 	}
 	if idpErr := q.Get("error"); idpErr != "" {
@@ -470,35 +471,80 @@ func (s *Server) handleTestOIDC(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-// stateSet remembers consumed states until their flow could no longer be valid,
-// so a state (and its cookie) is accepted once.
+// stateSet remembers consumed states while their flow cookie could still be valid
+// (oidcFlowLifetime plus the leeway after the flow's start), so a state is accepted
+// once. It is bounded: when full, the state of the oldest flow is forgotten, so an
+// attacker filling it can never make a valid fresh state be refused. A forgotten
+// state is at worst replayable with its stolen cookie, and its code is single-use
+// at the provider anyway.
 type stateSet struct {
 	mu   sync.Mutex
-	seen map[string]time.Time
+	max  int
+	seen map[string]bool
+	// byStart orders the remembered states by the start of their flow.
+	byStart stateHeap
 }
 
-// maxUsedStates bounds the remembered states; beyond it new flows are refused
-// until old ones expire (fail closed).
+// maxUsedStates bounds the remembered states.
 const maxUsedStates = 100000
 
-func newStateSet() *stateSet { return &stateSet{seen: map[string]time.Time{}} }
+func newStateSet() *stateSet { return newStateSetOf(maxUsedStates) }
 
-// consume marks state as used at now and reports whether it was unused.
-func (u *stateSet) consume(state string, now time.Time) bool {
+func newStateSetOf(maxStates int) *stateSet {
+	return &stateSet{max: maxStates, seen: map[string]bool{}}
+}
+
+// consume records the state of a flow started at issuedAt, at now, and reports
+// whether it was not used before. States whose flows expired are forgotten first,
+// then the oldest flow's when the set is full.
+func (u *stateSet) consume(state string, issuedAt, now time.Time) bool {
 	sum := sha256.Sum256([]byte(state))
 	k := hex.EncodeToString(sum[:])
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if len(u.seen) >= 1000 {
-		for key, at := range u.seen {
-			if now.Sub(at) > oidcFlowLifetime+oidc.Leeway {
-				delete(u.seen, key)
-			}
-		}
+	cutoff := now.Add(-(oidcFlowLifetime + oidc.Leeway))
+	for u.byStart.Len() > 0 && u.byStart[0].start.Before(cutoff) {
+		delete(u.seen, heap.Pop(&u.byStart).(usedState).key)
 	}
-	if _, used := u.seen[k]; used || len(u.seen) >= maxUsedStates {
+	if u.seen[k] {
 		return false
 	}
-	u.seen[k] = now
+	for u.byStart.Len() >= u.max {
+		delete(u.seen, heap.Pop(&u.byStart).(usedState).key)
+	}
+	u.seen[k] = true
+	heap.Push(&u.byStart, usedState{key: k, start: issuedAt})
 	return true
+}
+
+// size returns how many states are remembered.
+func (u *stateSet) size() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.seen)
+}
+
+// usedState is a remembered state and the start of its flow.
+type usedState struct {
+	key   string
+	start time.Time
+}
+
+// stateHeap is a min-heap of used states by flow start (container/heap).
+type stateHeap []usedState
+
+func (h stateHeap) Len() int           { return len(h) }
+func (h stateHeap) Less(i, j int) bool { return h[i].start.Before(h[j].start) }
+func (h stateHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+// Push implements heap.Interface.
+func (h *stateHeap) Push(x any) { *h = append(*h, x.(usedState)) }
+
+// Pop implements heap.Interface.
+func (h *stateHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }

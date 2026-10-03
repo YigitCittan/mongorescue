@@ -87,6 +87,12 @@ func (p *AuditPatch) apply(a *Audit) error {
 		case in == SecretMask, a.WebhookURL != "" && in == maskEndpoint(a.WebhookURL):
 			// keep the stored URL
 		default:
+			// The signing secret is never kept for another host: it must be sent
+			// again with the new URL.
+			if a.WebhookSecret != "" && in != "" && !sameHost(in, a.WebhookURL) &&
+				(p.WebhookSecret == nil || *p.WebhookSecret == SecretMask) {
+				return fmt.Errorf("%w: audit.webhook_secret: the webhook host changed; enter the signing secret again", ErrSecretReentry)
+			}
 			a.WebhookURL = in
 		}
 	}
@@ -98,6 +104,14 @@ func (p *AuditPatch) apply(a *Audit) error {
 		a.WebhookSecret = v
 	}
 	return nil
+}
+
+// sameHost reports whether two URLs have the same host and port (case-insensitive);
+// unparsable URLs never match.
+func sameHost(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	return errA == nil && errB == nil && ua.Host != "" && strings.EqualFold(ua.Host, ub.Host)
 }
 
 // validateAudit checks a. The webhook host is checked again on every connection

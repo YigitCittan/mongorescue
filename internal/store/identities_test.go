@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
@@ -168,6 +169,41 @@ func TestSignInExternalUserRecomputesTheRole(t *testing.T) {
 	}
 }
 
+func TestSignInExternalUserRoleOnCreate(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	in := ssoSignIn("https://idp#1", "jane", auth.RoleViewer)
+	in.RoleOnCreate = true
+	created, err := st.SignInExternalUser(ctx, in)
+	if err != nil || !created.Created || created.User.Role != auth.RoleViewer {
+		t.Fatalf("create = %+v, %v", created, err)
+	}
+	if _, err = st.UpdateUserRole(ctx, "", created.User.ID, auth.RoleOperator, identityT0, false); err != nil {
+		t.Fatal(err)
+	}
+	sessionFor(t, st, created.User.ID, "s1")
+	// The existing user keeps the stored role, and with it the session.
+	res, err := st.SignInExternalUser(ctx, in)
+	if err != nil || res.Created || res.User.Role != auth.RoleOperator || res.RoleFrom != auth.RoleOperator || !hasSession(t, st, "s1") {
+		t.Fatalf("second sign-in = %+v, %v", res, err)
+	}
+	// Without a role an existing user still signs in; a new one is refused.
+	in.Role = ""
+	if res, err = st.SignInExternalUser(ctx, in); err != nil || res.User.Role != auth.RoleOperator {
+		t.Fatalf("existing user without a role = %+v, %v", res, err)
+	}
+	other := ssoSignIn("https://idp#2", "joe", "")
+	other.RoleOnCreate = true
+	if _, err = st.SignInExternalUser(ctx, other); !errors.Is(err, auth.ErrNoRole) {
+		t.Fatalf("new user without a role = %v; want ErrNoRole", err)
+	}
+	// An empty role is only accepted together with RoleOnCreate.
+	other.RoleOnCreate = false
+	if _, err = st.SignInExternalUser(ctx, other); !errors.Is(err, auth.ErrInvalidIdentity) {
+		t.Fatalf("empty role without RoleOnCreate = %v; want ErrInvalidIdentity", err)
+	}
+}
+
 func TestLastLocalAdminIsKeptWhileSSOIsOn(t *testing.T) {
 	st := storetest.New(t)
 	ctx := context.Background()
@@ -196,6 +232,49 @@ func TestLastLocalAdminIsKeptWhileSSOIsOn(t *testing.T) {
 	}
 	if _, err = st.UpdateUserRole(ctx, sso.User.ID, "usr_local", auth.RoleViewer, identityT0, false); err != nil {
 		t.Errorf("demoting the local admin with sso off: %v", err)
+	}
+}
+
+// TestLocalAdminChecksShareTheTransaction proves the two sides of the break-glass
+// rule are checked inside the store's transactions: enabling single sign-on needs
+// a local admin when it is saved, and removing the last local admin is refused as
+// soon as the stored setting says single sign-on is on, whatever the caller's
+// snapshot says.
+func TestLocalAdminChecksShareTheTransaction(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	enable := map[string]string{settings.KeyOIDCEnabled: "true"}
+	pre := []settings.Precondition{settings.PreconditionLocalAdmin}
+
+	// No local admin: the precondition fails and nothing is saved.
+	sso, err := st.SignInExternalUser(ctx, ssoSignIn("https://idp#1", "jane", auth.RoleAdmin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.SaveSettingsWith(ctx, enable, pre); !errors.Is(err, settings.ErrPreconditionFailed) || !errors.Is(err, auth.ErrLastLocalAdmin) {
+		t.Fatalf("enable without a local admin = %v; want ErrPreconditionFailed", err)
+	}
+	if values, loadErr := st.LoadSettings(ctx); loadErr != nil || values[settings.KeyOIDCEnabled] != "" {
+		t.Fatalf("stored settings = %v, %v; want nothing saved", values, loadErr)
+	}
+
+	// With a local admin it saves, and from then on the store keeps that admin
+	// even when the caller passes keepLocalAdmin=false (a stale snapshot).
+	mustCreate(t, st, localUser("usr_local", "breakglass", auth.RoleAdmin))
+	if err = st.SaveSettingsWith(ctx, enable, pre); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.DeleteUser(ctx, sso.User.ID, "usr_local", false); !errors.Is(err, auth.ErrLastLocalAdmin) {
+		t.Errorf("delete with a stale snapshot = %v; want ErrLastLocalAdmin", err)
+	}
+	if _, err = st.UpdateUserRole(ctx, sso.User.ID, "usr_local", auth.RoleViewer, identityT0, false); !errors.Is(err, auth.ErrLastLocalAdmin) {
+		t.Errorf("demote with a stale snapshot = %v; want ErrLastLocalAdmin", err)
+	}
+	if err = st.SaveSettings(ctx, map[string]string{settings.KeyOIDCEnabled: "false"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.UpdateUserRole(ctx, sso.User.ID, "usr_local", auth.RoleViewer, identityT0, false); err != nil {
+		t.Errorf("demote with single sign-on off: %v", err)
 	}
 }
 

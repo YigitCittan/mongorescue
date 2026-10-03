@@ -69,6 +69,65 @@ func TestLoginOIDCCreatesFindsAndRecomputes(t *testing.T) {
 	}
 }
 
+// TestDefaultRoleAppliesOnlyToNewUsersWithoutMappings pins the two role policies:
+// with group mappings the role follows the groups at every sign-in; without any,
+// the default role is only the role of a new user and a role set by hand stays.
+func TestDefaultRoleAppliesOnlyToNewUsersWithoutMappings(t *testing.T) {
+	f := newSSOFixture(t)
+	ctx := context.Background()
+	admin := f.session(t, f.admin.Token)
+
+	// Without mappings (Google style): the default role at creation only.
+	f.policy.RoleMappings = nil
+	f.policy.DefaultRole = auth.RoleViewer
+	first, err := f.svc.LoginOIDC(ctx, identity("g1"))
+	if err != nil || !first.Created || first.RoleTo != auth.RoleViewer {
+		t.Fatalf("first sign-in = %+v, %v; want a new viewer", first, err)
+	}
+	// The role select stays usable: an administrator promotes the user by hand.
+	if _, err = f.svc.SetUserRole(ctx, admin, first.User.ID, auth.RoleOperator); err != nil {
+		t.Fatalf("manual role change without mappings: %v", err)
+	}
+	again, err := f.svc.LoginOIDC(ctx, identity("g1"))
+	if err != nil || again.Created || again.RoleFrom != auth.RoleOperator || again.RoleTo != auth.RoleOperator {
+		t.Fatalf("second sign-in = %+v, %v; want the hand-set operator role kept", again, err)
+	}
+	if session := f.session(t, again.Token); session.Role != auth.RoleOperator {
+		t.Fatalf("session role = %s; want operator", session.Role)
+	}
+	// No role change, so signing in again ends no session.
+	third, err := f.svc.LoginOIDC(ctx, identity("g1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.session(t, again.Token)
+	f.session(t, third.Token)
+	// A deny default still lets existing users in with their stored role, and
+	// refuses new ones.
+	f.policy.DefaultRole = ""
+	if res, loginErr := f.svc.LoginOIDC(ctx, identity("g1")); loginErr != nil || res.RoleTo != auth.RoleOperator {
+		t.Fatalf("existing user with a deny default = %+v, %v", res, loginErr)
+	}
+	if _, err = f.svc.LoginOIDC(ctx, identity("g2")); !errors.Is(err, auth.ErrNoRole) || auth.OIDCErrorCode(err) != auth.OIDCNoRole {
+		t.Fatalf("new user with a deny default = %v; want ErrNoRole", err)
+	}
+
+	// With mappings the role is recomputed at every sign-in and replaces the
+	// hand-set one (and manual changes are refused).
+	f.policy.RoleMappings = []auth.RoleMapping{{Group: "ops", Role: auth.RoleOperator}}
+	f.policy.DefaultRole = auth.RoleViewer
+	res, err := f.svc.LoginOIDC(ctx, identity("g1"))
+	if err != nil || res.RoleFrom != auth.RoleOperator || res.RoleTo != auth.RoleViewer {
+		t.Fatalf("sign-in with mappings = %+v, %v; want the default viewer role applied", res, err)
+	}
+	if _, err = f.svc.SetUserRole(ctx, admin, first.User.ID, auth.RoleOperator); !errors.Is(err, auth.ErrRoleManagedByProvider) {
+		t.Fatalf("manual role change with mappings = %v; want ErrRoleManagedByProvider", err)
+	}
+	if res, err = f.svc.LoginOIDC(ctx, identity("g1", "ops")); err != nil || res.RoleTo != auth.RoleOperator {
+		t.Fatalf("sign-in in a mapped group = %+v, %v", res, err)
+	}
+}
+
 func TestLoginOIDCRefusals(t *testing.T) {
 	f := newSSOFixture(t)
 	ctx := context.Background()

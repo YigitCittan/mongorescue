@@ -36,20 +36,26 @@ type oidcGuard struct {
 	desktop bool
 }
 
-// CheckOIDC implements settings.OIDCGuard.
-func (g *oidcGuard) CheckOIDC(ctx context.Context, prev, next settings.OIDC) error {
+// CheckOIDC implements settings.OIDCGuard. The local administrator is checked here
+// for a clear early answer and again, as a precondition, in the transaction that
+// stores the change.
+func (g *oidcGuard) CheckOIDC(ctx context.Context, prev, next settings.OIDC) ([]settings.Precondition, error) {
 	if g.desktop && next.Enabled && !prev.Enabled {
-		return fmt.Errorf("%w: single sign-on is not available in the desktop app", settings.ErrInvalid)
+		return nil, fmt.Errorf("%w: single sign-on is not available in the desktop app", settings.ErrInvalid)
 	}
-	if err := g.auth.CheckOIDCChange(ctx, oidcPolicy(prev, false), oidcPolicy(next, false)); err != nil {
-		return fmt.Errorf("%w: %w", settings.ErrInvalid, err)
+	pp, np := oidcPolicy(prev, false), oidcPolicy(next, false)
+	if err := g.auth.CheckOIDCChange(ctx, pp, np); err != nil {
+		return nil, fmt.Errorf("%w: %w", settings.ErrInvalid, err)
 	}
 	if next.Enabled && (!prev.Enabled || prev.Issuer != next.Issuer) && g.client != nil {
 		if _, err := g.client.Discover(ctx, next.Issuer); err != nil {
-			return fmt.Errorf("%w: oidc.issuer: %w", settings.ErrInvalid, err)
+			return nil, fmt.Errorf("%w: oidc.issuer: %w", settings.ErrInvalid, err)
 		}
 	}
-	return nil
+	if auth.OIDCChangeNeedsLocalAdmin(pp, np) {
+		return []settings.Precondition{settings.PreconditionLocalAdmin}, nil
+	}
+	return nil, nil
 }
 
 // OIDCChanged implements settings.OIDCGuard.
