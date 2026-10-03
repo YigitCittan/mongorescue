@@ -53,12 +53,15 @@ jobs:
 
       - name: Verify the MongoDB driver is confined to internal/mongoconn
         run: |
-          # Production code may import the driver only through the mongoconn adapter.
-          offenders=$(go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./... \
-            | grep 'go.mongodb.org/mongo-driver' \
-            | grep -v '^github.com/yigitcittan/mongorescue/internal/mongoconn:' || true)
+          # Production code may import the driver only through the mongoconn adapter;
+          # internal/oplog may import the bson codec and nothing else from the driver.
+          # One "<package> <import>" line per import, so each import is judged alone.
+          offenders=$(go list -f '{{$p := .ImportPath}}{{range .Imports}}{{$p}} {{.}}{{"\n"}}{{end}}' ./... \
+            | grep ' go\.mongodb\.org/mongo-driver' \
+            | grep -v '^github\.com/yigitcittan/mongorescue/internal/mongoconn ' \
+            | grep -vx 'github\.com/yigitcittan/mongorescue/internal/oplog go\.mongodb\.org/mongo-driver/v2/bson' || true)
           if [ -n "$offenders" ]; then
-            echo "mongo-driver imported outside internal/mongoconn:"
+            echo "mongo-driver imported outside internal/mongoconn (internal/oplog: bson only):"
             echo "$offenders"
             exit 1
           fi
