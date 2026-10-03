@@ -33,7 +33,7 @@ The goal: after a disaster, nothing MongoRescue needs to restore is missing, and
 | 1.8 | **Browser tests in CI** | M | A Playwright suite against a real server: sign in, create a connection, back up, restore, bulk delete with dry run, update banner. The ad-hoc headless checks we run today become this suite. Shipped in v0.15.0. |
 | 1.9 | **Migration checksums** | S | Record each applied migration's checksum and refuse to start if an applied migration was changed. Shipped in v0.14.0. |
 
-## Phase 2: who may do what (v0.17, v0.18)
+## Phase 2: who may do what (v0.17, v0.18, done)
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
