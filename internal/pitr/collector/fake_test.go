@@ -97,12 +97,33 @@ func (f *fakeOplog) newest() pitr.Timestamp {
 	return f.entries[len(f.entries)-1].op.TS
 }
 
-// session is a fake Session over the oplog.
-type session struct{ f *fakeOplog }
+// member is a fake Member over one member's oplog.
+type member struct{ f *fakeOplog }
 
-func (s session) Close() {}
+// fakeSession is a fake Session over a replica set: members[0] is the primary,
+// and Pin selects members[prefer] unless it is behind notBefore.
+type fakeSession struct {
+	members []*fakeOplog
+	prefer  int
+	pins    *int
+}
 
-func (s session) OplogWindow(context.Context) (pitr.OplogWindow, error) {
+func (s fakeSession) Close() {}
+
+func (s fakeSession) Pin(_ context.Context, notBefore pitr.Timestamp) (Member, error) {
+	if s.pins != nil {
+		*s.pins++
+	}
+	m := s.members[s.prefer]
+	if s.prefer != 0 && !notBefore.IsZero() && m.newest().Compare(notBefore) < 0 {
+		m = s.members[0]
+	}
+	return member{m}, nil
+}
+
+func (s fakeSession) Primary() Member { return member{s.members[0]} }
+
+func (s member) OplogWindow(context.Context) (pitr.OplogWindow, error) {
 	f := s.f
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,7 +139,7 @@ func (s session) OplogWindow(context.Context) (pitr.OplogWindow, error) {
 	return w, nil
 }
 
-func (s session) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
+func (s member) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
 	f := s.f
 	f.mu.Lock()
 	var sel []fakeEntry
@@ -167,7 +188,7 @@ func (s session) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) 
 	return stats, nil
 }
 
-func (s session) EntryAt(_ context.Context, ts pitr.Timestamp) (int64, bool, error) {
+func (s member) EntryAt(_ context.Context, ts pitr.Timestamp) (int64, bool, error) {
 	s.f.mu.Lock()
 	defer s.f.mu.Unlock()
 	for _, e := range s.f.entries {
@@ -178,7 +199,7 @@ func (s session) EntryAt(_ context.Context, ts pitr.Timestamp) (int64, bool, err
 	return 0, false, nil
 }
 
-func (s session) EntryAtOrAfter(_ context.Context, ts pitr.Timestamp) (pitr.OpTime, bool, error) {
+func (s member) EntryAtOrAfter(_ context.Context, ts pitr.Timestamp) (pitr.OpTime, bool, error) {
 	s.f.mu.Lock()
 	defer s.f.mu.Unlock()
 	for _, e := range s.f.entries {
@@ -247,7 +268,9 @@ type fixture struct {
 	dec     *encryption.Decryptor
 	bases   []string
 	openErr error
-	mu      sync.Mutex
+	// secondary, when set, is the member Pin prefers.
+	secondary *fakeOplog
+	mu        sync.Mutex
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -280,7 +303,11 @@ func newFixture(t *testing.T) *fixture {
 			if fx.openErr != nil {
 				return nil, fx.openErr
 			}
-			return session{fx.f}, nil
+			members, prefer := []*fakeOplog{fx.f}, 0
+			if fx.secondary != nil {
+				members, prefer = append(members, fx.secondary), 1
+			}
+			return fakeSession{members: members, prefer: prefer}, nil
 		},
 		Storage:   func(context.Context, string) (storage.Storage, error) { return fx.storage, nil },
 		Encryptor: func() *encryption.Encryptor { return enc },

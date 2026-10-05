@@ -69,6 +69,8 @@ type worker struct {
 	svc    *Service
 	stream *pitr.Stream
 	sess   Session
+	// m is the member the current tick is pinned to.
+	m Member
 
 	// interval is the chunk interval in force.
 	interval time.Duration
@@ -199,6 +201,13 @@ func (w *worker) event(t events.EventType, status, errMsg, detail string) events
 
 // step reads and stores the next chunk, or handles a gap or a divergence. It
 // returns the wait before the next step: 0 while catching up.
+//
+// Every tick is pinned to one member (Session.Pin), so its window, range read and
+// lookups see one oplog; a secondary older than the stored position is never
+// pinned. A pinned member's view alone never ends a chain: a gap, a replica set
+// change or a divergence is acted on only once the primary confirms it (see
+// confirm), since a lagging or freshly synced secondary can lack entries the
+// replica set still holds.
 func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	if w.sess == nil {
 		sess, err := w.svc.cfg.Open(ctx, w.stream)
@@ -207,7 +216,20 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		}
 		w.sess = sess
 	}
-	win, err := w.sess.OplogWindow(ctx)
+	st, err := w.svc.cfg.Repo.LoadState(ctx, w.stream.ID)
+	if err != nil && !errors.Is(err, pitr.ErrNotFound) {
+		return 0, fmt.Errorf("load the collector state: %w", err)
+	}
+	var notBefore pitr.Timestamp
+	if st != nil {
+		notBefore = st.Last.TS
+	}
+	m, err := w.sess.Pin(ctx, notBefore)
+	if err != nil {
+		return 0, fmt.Errorf("select a replica set member: %w", err)
+	}
+	w.m = m
+	win, err := w.m.OplogWindow(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("read the oplog window: %w", err)
 	}
@@ -216,17 +238,13 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	w.live.LastTick, w.live.Oldest, w.live.Newest, w.live.Interval = now, win.Oldest, win.Newest, w.interval
 	w.mu.Unlock()
 
-	st, err := w.svc.cfg.Repo.LoadState(ctx, w.stream.ID)
-	if errors.Is(err, pitr.ErrNotFound) {
+	if st == nil {
 		// A new stream starts at the newest majority-committed entry.
 		if startErr := w.startChain(ctx, win.MajorityOpTime); startErr != nil {
 			return 0, startErr
 		}
 		w.adoptReplicaSetID(ctx, win.ReplicaSetID)
 		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("load the collector state: %w", err)
 	}
 	if !w.checked {
 		// The alerts already raised and the replica set first seen survive a
@@ -237,25 +255,34 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		w.rsID = st.ReplicaSetID
 	}
 
-	// A changed replica set ends the chain: its oplog is another history. The ID
-	// is compared with the one stored at first contact, so a set re-initiated
-	// under the same name while the collector was stopped is a gap too.
-	if win.ReplicaSet != w.stream.ReplicaSet || (w.rsID != "" && win.ReplicaSetID != "" && win.ReplicaSetID != w.rsID) {
-		detail := fmt.Sprintf("the replica set changed from %s (%s) to %s (%s)", w.stream.ReplicaSet, w.rsID, win.ReplicaSet, win.ReplicaSetID)
-		return 0, w.breakChain(ctx, st, win, pitr.EndReplicaSetChanged, detail)
+	// A changed replica set (name, or the ID stored at first contact), an overrun
+	// window or a missing or changed entry at the position ends the chain, once
+	// the primary confirms it.
+	if w.rsChanged(win) || win.Oldest.Compare(st.Last.TS) > 0 {
+		var handled bool
+		var delay time.Duration
+		if win, handled, delay, err = w.confirm(ctx, st); handled || err != nil {
+			return delay, err
+		}
 	}
 	if w.rsID == "" {
 		w.adoptReplicaSetID(ctx, win.ReplicaSetID)
 	}
 	if !w.checked {
-		if done, startErr := w.checkStart(ctx, st, win); startErr != nil || done {
+		term, found, entryErr := w.m.EntryAt(ctx, st.Last.TS)
+		if entryErr != nil {
+			return 0, fmt.Errorf("check the stored position: %w", entryErr)
+		}
+		if !found || term != st.Last.Term {
+			var handled bool
+			var delay time.Duration
+			if win, handled, delay, err = w.confirm(ctx, st); handled || err != nil {
+				return delay, err
+			}
+		}
+		if startErr := w.startChecked(ctx, st); startErr != nil {
 			return 0, startErr
 		}
-	}
-	// The window was overrun: entries after the position are lost.
-	if win.Oldest.Compare(st.Last.TS) > 0 {
-		detail := fmt.Sprintf("the oplog window was overrun: the collector was at %s, the oldest entry is %s", st.Last.TS, win.Oldest)
-		return 0, w.breakChain(ctx, st, win, pitr.EndGap, detail)
 	}
 
 	a, b := st.Last, win.MajorityOpTime.TS
@@ -267,7 +294,7 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	to, catchUp := b, false
 	if span := time.Duration(b.T-a.TS.T) * time.Second; span > w.interval {
 		capAt := pitr.Timestamp{T: a.TS.T + uint32(w.interval/time.Second)} //nolint:gosec // the interval is at most 900 s
-		op, found, capErr := w.sess.EntryAtOrAfter(ctx, capAt)
+		op, found, capErr := w.m.EntryAtOrAfter(ctx, capAt)
 		if capErr != nil {
 			return 0, fmt.Errorf("find the end of a catch-up chunk: %w", capErr)
 		}
@@ -305,7 +332,11 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		w.behind = 0
 		return 0, err
 	case errors.Is(err, pitr.ErrOplogGap):
-		return 0, w.recheck(ctx, st, err)
+		if _, handled, delay, confirmErr := w.confirm(ctx, st); handled || confirmErr != nil {
+			return delay, confirmErr
+		}
+		// The primary still holds the position: read the range again shortly.
+		return behindDelay, nil
 	case err != nil:
 		w.svc.observe(func(o Observer) { o.ObservePITRChunk(w.stream.ID, false, 0, time.Time{}) })
 		return 0, err
@@ -321,6 +352,58 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		return 0, nil
 	}
 	return w.interval, nil
+}
+
+// rsChanged reports whether win belongs to another replica set than the stream's:
+// another name, or another ID than the one recorded at first contact.
+func (w *worker) rsChanged(win pitr.OplogWindow) bool {
+	return win.ReplicaSet != w.stream.ReplicaSet || (w.rsID != "" && win.ReplicaSetID != "" && win.ReplicaSetID != w.rsID)
+}
+
+// confirm asks the primary (read concern majority) whether the chain really
+// broke: a changed replica set or an overrun window is a gap, a missing or
+// changed entry at the position a divergence. handled reports that the chain
+// ended (delay is the wait before the next step). Otherwise the pinned member
+// was only behind or freshly synced: the tick goes on with the primary, whose
+// window is returned.
+func (w *worker) confirm(ctx context.Context, st *pitr.State) (win pitr.OplogWindow, handled bool, delay time.Duration, err error) {
+	w.m = w.sess.Primary()
+	win, err = w.m.OplogWindow(ctx)
+	if err != nil {
+		return win, false, 0, fmt.Errorf("confirm on the primary: %w", err)
+	}
+	if w.rsChanged(win) {
+		detail := fmt.Sprintf("the replica set changed from %s (%s) to %s (%s)", w.stream.ReplicaSet, w.rsID, win.ReplicaSet, win.ReplicaSetID)
+		return win, true, w.afterBreak(), w.breakChain(ctx, st, win, pitr.EndReplicaSetChanged, detail)
+	}
+	term, found, err := w.m.EntryAt(ctx, st.Last.TS)
+	if err != nil {
+		return win, false, 0, fmt.Errorf("confirm the position on the primary: %w", err)
+	}
+	switch {
+	case !found && win.Oldest.Compare(st.Last.TS) > 0:
+		detail := fmt.Sprintf("the oplog window was overrun: the collector was at %s, the oldest entry is %s", st.Last.TS, win.Oldest)
+		return win, true, w.afterBreak(), w.breakChain(ctx, st, win, pitr.EndGap, detail)
+	case !found || term != st.Last.Term:
+		return win, true, w.afterBreak(), w.diverge(ctx, st, win)
+	}
+	w.svc.logger.Debug("the pinned member disagrees with the primary; the tick reads the primary", logsafe.Attr("stream_id", w.stream.ID))
+	return win, false, 0, nil
+}
+
+// afterBreak returns the wait after a chain ended.
+func (w *worker) afterBreak() time.Duration { return 0 }
+
+// startChecked finishes the check of the stored position at start: it decides
+// whether the next chunk is the first of its chain.
+func (w *worker) startChecked(ctx context.Context, st *pitr.State) error {
+	chunks, err := w.svc.cfg.Repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: w.stream.ID, ChainID: st.ChainID, After: prev(st.Last.TS)})
+	if err != nil {
+		return fmt.Errorf("list the chain's last chunk: %w", err)
+	}
+	w.inclusive = len(chunks) == 0 && w.chainStartsAt(ctx, st)
+	w.checked = true
+	return nil
 }
 
 // adjustInterval halves the interval after a chunk above MaxChunkBytes and
@@ -364,31 +447,6 @@ func prev(ts pitr.Timestamp) pitr.Timestamp {
 	}
 }
 
-// checkStart checks the stored position once at start: the entry there must
-// still exist with the stored term, or the chain ended in a gap or a divergence.
-// It also decides whether the next chunk is the first of its chain. done reports
-// that the chain was ended and a new one started.
-func (w *worker) checkStart(ctx context.Context, st *pitr.State, win pitr.OplogWindow) (done bool, err error) {
-	term, found, err := w.sess.EntryAt(ctx, st.Last.TS)
-	if err != nil {
-		return false, fmt.Errorf("check the stored position: %w", err)
-	}
-	switch {
-	case !found && win.Oldest.Compare(st.Last.TS) > 0:
-		detail := fmt.Sprintf("the oplog window was overrun while the collector was stopped: it was at %s, the oldest entry is %s", st.Last.TS, win.Oldest)
-		return true, w.breakChain(ctx, st, win, pitr.EndGap, detail)
-	case !found || term != st.Last.Term:
-		return true, w.diverge(ctx, st, win)
-	}
-	chunks, err := w.svc.cfg.Repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: w.stream.ID, ChainID: st.ChainID, After: prev(st.Last.TS)})
-	if err != nil {
-		return false, fmt.Errorf("list the chain's last chunk: %w", err)
-	}
-	w.inclusive = len(chunks) == 0 && w.chainStartsAt(ctx, st)
-	w.checked = true
-	return false, nil
-}
-
 // chainStartsAt reports whether the state's chain starts at the stored position
 // (no chunk was committed to it yet).
 func (w *worker) chainStartsAt(ctx context.Context, st *pitr.State) bool {
@@ -402,29 +460,6 @@ func (w *worker) chainStartsAt(ctx context.Context, st *pitr.State) bool {
 		}
 	}
 	return false
-}
-
-// recheck decides after a range read failed with pitr.ErrOplogGap whether the
-// window was overrun or the history diverged; when the start entry is there again
-// the failure was transient.
-func (w *worker) recheck(ctx context.Context, st *pitr.State, readErr error) error {
-	term, found, err := w.sess.EntryAt(ctx, st.Last.TS)
-	if err != nil {
-		return fmt.Errorf("re-check the position after %w: %w", readErr, err)
-	}
-	win, err := w.sess.OplogWindow(ctx)
-	if err != nil {
-		return fmt.Errorf("re-check the window after %w: %w", readErr, err)
-	}
-	switch {
-	case !found && win.Oldest.Compare(st.Last.TS) > 0:
-		detail := fmt.Sprintf("the oplog window was overrun: the collector was at %s, the oldest entry is %s", st.Last.TS, win.Oldest)
-		return w.breakChain(ctx, st, win, pitr.EndGap, detail)
-	case !found || term != st.Last.Term:
-		return w.diverge(ctx, st, win)
-	default:
-		return readErr
-	}
 }
 
 // startChain starts a new chain at start; its first chunk keeps the entry there.
@@ -446,7 +481,7 @@ func newChainID(at time.Time) string {
 
 // startAtOldest starts a new chain at the oldest entry of the window.
 func (w *worker) startAtOldest(ctx context.Context, win pitr.OplogWindow) error {
-	term, found, err := w.sess.EntryAt(ctx, win.Oldest)
+	term, found, err := w.m.EntryAt(ctx, win.Oldest)
 	if err != nil {
 		return fmt.Errorf("read the oldest oplog entry: %w", err)
 	}
@@ -505,7 +540,7 @@ func (w *worker) diverge(ctx context.Context, st *pitr.State, win pitr.OplogWind
 	w.svc.observe(func(o Observer) { o.IncPITRChainBreak(w.stream.ID, string(pitr.EndDiverged)) })
 	w.svc.publish(ctx, w.event(events.PITRDiverged, string(pitr.EndDiverged), "", detail))
 	w.adoptReplicaSetID(ctx, win.ReplicaSetID)
-	term, found, err := w.sess.EntryAt(ctx, point)
+	term, found, err := w.m.EntryAt(ctx, point)
 	switch {
 	case err != nil:
 		return fmt.Errorf("read the divergence point: %w", err)
@@ -534,7 +569,7 @@ func (w *worker) divergencePoint(ctx context.Context, st *pitr.State, win pitr.O
 		if c.To.Compare(win.Oldest) < 0 {
 			return c.To, nil
 		}
-		term, found, entryErr := w.sess.EntryAt(ctx, c.To)
+		term, found, entryErr := w.m.EntryAt(ctx, c.To)
 		if entryErr != nil {
 			return pitr.Timestamp{}, fmt.Errorf("check chunk %s: %w", c.ID, entryErr)
 		}

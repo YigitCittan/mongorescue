@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
@@ -59,4 +61,28 @@ func streamInfo(st *collector.StreamStatus) readiness.StreamInfo {
 		info.WindowStart, info.WindowEnd = &start, &end
 	}
 	return info
+}
+
+// oplogSession adapts *mongoconn.OplogSession to collector.Session.
+type oplogSession struct{ *mongoconn.OplogSession }
+
+// Pin selects the member a collector tick reads (see mongoconn.OplogSession.Pin).
+func (s oplogSession) Pin(ctx context.Context, notBefore pitr.Timestamp) (collector.Member, error) {
+	m, err := s.OplogSession.Pin(ctx, notBefore)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Primary returns the primary's majority reader.
+func (s oplogSession) Primary() collector.Member { return s.OplogSession.Primary() }
+
+// openOplogSession opens the collector session of a stream on uri.
+func openOplogSession(ctx context.Context, prober *mongoconn.Prober, uri, readPreference string) (collector.Session, error) {
+	s, err := prober.OpenOplogSession(ctx, uri, readPreference)
+	if err != nil {
+		return nil, err
+	}
+	return oplogSession{s}, nil
 }

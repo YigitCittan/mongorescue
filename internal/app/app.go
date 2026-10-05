@@ -569,7 +569,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if err != nil {
 				return nil, err
 			}
-			return prober.OpenOplogSession(ctx, conn.URI, st.ReadPreference)
+			return openOplogSession(ctx, prober, conn.URI, st.ReadPreference)
 		},
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,

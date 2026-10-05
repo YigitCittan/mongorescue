@@ -55,9 +55,9 @@ var (
 	ErrUnavailable = errors.New("collector: the PITR collector is not running")
 )
 
-// Session is one long-lived connection to a stream's replica set (implemented by
-// *mongoconn.OplogSession). Errors must never include credentials.
-type Session interface {
+// Member reads the oplog of one replica set member (implemented by
+// *mongoconn.OplogMember). Errors must never include credentials.
+type Member interface {
 	// OplogWindow returns the oplog window and the majority-committed optime.
 	OplogWindow(ctx context.Context) (pitr.OplogWindow, error)
 	// ReadOplog copies the oplog range r to w, proving its continuity
@@ -67,6 +67,18 @@ type Session interface {
 	EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error)
 	// EntryAtOrAfter returns the first entry at or after ts, or found false.
 	EntryAtOrAfter(ctx context.Context, ts pitr.Timestamp) (op pitr.OpTime, found bool, err error)
+}
+
+// Session is one long-lived connection to a stream's replica set (implemented in
+// internal/app over *mongoconn.OplogSession).
+type Session interface {
+	// Pin selects one member through the stream's read preference for a tick; a
+	// member whose newest write is older than notBefore is not selected (the
+	// primary is used instead).
+	Pin(ctx context.Context, notBefore pitr.Timestamp) (Member, error)
+	// Primary returns the primary's reader, which reads with read concern
+	// majority: the authority that confirms a gap or a divergence.
+	Primary() Member
 	// Close disconnects the session.
 	Close()
 }

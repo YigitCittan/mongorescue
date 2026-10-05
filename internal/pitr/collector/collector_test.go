@@ -290,7 +290,7 @@ func TestLagAlertsArePersisted(t *testing.T) {
 
 func mustWindow(t *testing.T, fx *fixture) pitr.OplogWindow {
 	t.Helper()
-	w, err := session{fx.f}.OplogWindow(context.Background())
+	w, err := member{fx.f}.OplogWindow(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

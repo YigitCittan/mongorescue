@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
 	"github.com/yigitcittan/mongorescue/internal/pitr"
@@ -32,11 +34,41 @@ const (
 var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 
 // OplogSession is one long-lived client to a replica set, opened once per PITR
-// stream so the collector does not reconnect at every tick. Every read uses the
-// session's read preference. It is safe for concurrent use; Close disconnects it.
+// stream so the collector does not reconnect at every tick. Its own reads (the
+// promoted OplogMember methods) use the session's read preference, so each one
+// may be served by another member; Pin returns a reader bound to one member, and
+// Primary one bound to the primary. It is safe for concurrent use; Close
+// disconnects it and the clients of the pinned members.
 type OplogSession struct {
+	OplogMember
+	uri string
+
+	mu      sync.Mutex
+	members map[string]*mongo.Client
+}
+
+// OplogMember reads the oplog of one replica set member, or of the members its
+// read preference selects (an OplogSession's own reads). Errors are redacted.
+type OplogMember struct {
 	client *mongo.Client
 	rp     *readpref.ReadPref
+	// majority reads the oplog with read concern majority (the primary's reader).
+	majority bool
+	// host is the member's address; empty when the read preference selects it.
+	host string
+}
+
+// Host returns the address of the member the reader is bound to, or "" when its
+// read preference selects a member for each read.
+func (s *OplogMember) Host() string { return s.host }
+
+// oplog returns the oplog collection with the reader's read concern.
+func (s *OplogMember) oplog() *mongo.Collection {
+	opts := options.Database()
+	if s.majority {
+		opts.SetReadConcern(readconcern.Majority())
+	}
+	return s.client.Database(oplogDB, opts).Collection(oplogColl)
 }
 
 // OpenOplogSession returns a session for uri reading with readPreference (empty
@@ -59,14 +91,107 @@ func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference strin
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return nil, errors.New("invalid connection string")
 	}
-	return &OplogSession{client: client, rp: rp}, nil
+	return &OplogSession{OplogMember: OplogMember{client: client, rp: rp}, uri: uri, members: map[string]*mongo.Client{}}, nil
 }
 
-// Close disconnects the session's client.
+// Close disconnects the session's client and the clients of pinned members.
 func (s *OplogSession) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	s.mu.Lock()
+	members := s.members
+	s.members = map[string]*mongo.Client{}
+	s.mu.Unlock()
+	for _, c := range members {
+		_ = c.Disconnect(ctx)
+	}
 	_ = s.client.Disconnect(ctx)
+}
+
+// Primary returns a reader bound to the primary that reads the oplog with read
+// concern majority: the authority the collector asks before it ends a chain,
+// since one secondary's view alone never proves a gap or a divergence.
+func (s *OplogSession) Primary() *OplogMember {
+	return &OplogMember{client: s.client, rp: readpref.Primary(), majority: true}
+}
+
+// Pin selects one member through the session's read preference and returns a
+// reader bound to it, so a whole collector tick (window, range read and lookups)
+// sees one oplog. A member that is not the primary and whose newest write is
+// older than notBefore (the collector's position) is stale: the primary is used
+// instead. When a direct connection to the member cannot be made the primary is
+// used too. Errors are redacted.
+func (s *OplogSession) Pin(ctx context.Context, notBefore pitr.Timestamp) (*OplogMember, error) {
+	h, err := s.hello(ctx, s.rp)
+	if err != nil {
+		return nil, err
+	}
+	stale := !notBefore.IsZero() && pitr.Timestamp{T: h.LastWrite.OpTime.TS.T, I: h.LastWrite.OpTime.TS.I}.Compare(notBefore) < 0
+	if h.IsWritablePrimary || stale || h.Me == "" {
+		return s.primaryMember(ctx)
+	}
+	client, err := s.memberClient(ctx, h.Me)
+	if err != nil {
+		return s.primaryMember(ctx)
+	}
+	return &OplogMember{client: client, rp: readpref.Nearest(), host: h.Me}, nil
+}
+
+// primaryMember returns a reader bound to the primary (read concern local, like
+// the members' readers).
+func (s *OplogSession) primaryMember(ctx context.Context) (*OplogMember, error) {
+	h, err := s.hello(ctx, readpref.Primary())
+	if err != nil {
+		return nil, err
+	}
+	return &OplogMember{client: s.client, rp: readpref.Primary(), host: h.Me}, nil
+}
+
+// helloReply is the part of hello the session uses.
+type helloReply struct {
+	SetName           string `bson:"setName"`
+	Me                string `bson:"me"`
+	IsWritablePrimary bool   `bson:"isWritablePrimary"`
+	LastWrite         struct {
+		OpTime struct {
+			TS bson.Timestamp `bson:"ts"`
+			T  int64          `bson:"t"`
+		} `bson:"opTime"`
+		MajorityOpTime struct {
+			TS bson.Timestamp `bson:"ts"`
+			T  int64          `bson:"t"`
+		} `bson:"majorityOpTime"`
+	} `bson:"lastWrite"`
+}
+
+// hello runs hello on the member rp selects.
+func (s *OplogSession) hello(ctx context.Context, rp *readpref.ReadPref) (helloReply, error) {
+	var h helloReply
+	if err := s.client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}},
+		options.RunCmd().SetReadPreference(rp)).Decode(&h); err != nil {
+		return h, redactErr(fmt.Errorf("hello: %w", err))
+	}
+	if h.SetName == "" {
+		return h, pitr.ErrNotReplicaSet
+	}
+	return h, nil
+}
+
+// memberClient returns the cached direct client of host, connecting it once.
+func (s *OplogSession) memberClient(ctx context.Context, host string) (*mongo.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.members[host]; ok {
+		return c, nil
+	}
+	opts := clientOptions(ctx, s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest())
+	opts.SRVMaxHosts, opts.SRVServiceName = nil, nil
+	c, err := mongo.Connect(opts)
+	if err != nil {
+		return nil, errors.New("connect to the replica set member")
+	}
+	s.members[host] = c
+	return c, nil
 }
 
 // OplogWindow opens a short-lived session for uri and returns its oplog window
@@ -127,7 +252,7 @@ func (p *Prober) withOplogSession(ctx context.Context, uri string, fn func(*Oplo
 // preference selects, the majority-committed optime (hello.lastWrite.majorityOpTime)
 // and the replica set name and ID. It returns pitr.ErrNotReplicaSet for a server
 // that is not a replica set member. Errors are redacted.
-func (s *OplogSession) OplogWindow(ctx context.Context) (pitr.OplogWindow, error) {
+func (s *OplogMember) OplogWindow(ctx context.Context) (pitr.OplogWindow, error) {
 	var w pitr.OplogWindow
 	var hello struct {
 		SetName   string `bson:"setName"`
@@ -149,7 +274,7 @@ func (s *OplogSession) OplogWindow(ctx context.Context) (pitr.OplogWindow, error
 	mt := hello.LastWrite.MajorityOpTime
 	w.MajorityOpTime = pitr.OpTime{TS: pitr.Timestamp{T: mt.TS.T, I: mt.TS.I}, Term: mt.T}
 
-	oplog := s.client.Database(oplogDB).Collection(oplogColl)
+	oplog := s.oplog()
 	for _, end := range []struct {
 		dir int
 		dst *pitr.Timestamp
@@ -178,7 +303,7 @@ func (s *OplogSession) OplogWindow(ctx context.Context) (pitr.OplogWindow, error
 // replicaSetID returns the hex settings.replicaSetId of the replica set
 // configuration, through replSetGetConfig or else local.system.replset. It is
 // empty when the user may read neither.
-func (s *OplogSession) replicaSetID(ctx context.Context) (string, error) {
+func (s *OplogMember) replicaSetID(ctx context.Context) (string, error) {
 	var cfg struct {
 		Config struct {
 			Settings struct {
@@ -237,7 +362,7 @@ var ErrInvalidRange = errors.New("mongoconn: invalid oplog range")
 // (r.From, r.To]. When the member has no entry at r.To yet, it returns
 // pitr.ErrOplogBehind. After an error nothing written may be kept. Errors are
 // redacted.
-func (s *OplogSession) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
+func (s *OplogMember) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Writer) (pitr.OplogStats, error) {
 	if r.To.Compare(r.From) < 0 {
 		return pitr.OplogStats{}, fmt.Errorf("%w: it ends at %s before its start %s", ErrInvalidRange, r.To, r.From)
 	}
@@ -245,7 +370,7 @@ func (s *OplogSession) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Wr
 		{Key: "$gte", Value: bson.Timestamp{T: r.From.T, I: r.From.I}},
 		{Key: "$lte", Value: bson.Timestamp{T: r.To.T, I: r.To.I}},
 	}}}
-	cur, err := s.client.Database(oplogDB).Collection(oplogColl).Find(ctx, filter,
+	cur, err := s.oplog().Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
 		return pitr.OplogStats{}, redactErr(fmt.Errorf("find oplog entries: %w", err))
@@ -325,8 +450,8 @@ func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Wri
 // EntryAt looks up the oplog entry at ts and returns its term; found is false when
 // the member that answered has no entry there (it was truncated, rolled back or
 // never replicated). Errors are redacted.
-func (s *OplogSession) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error) {
-	raw, err := s.client.Database(oplogDB).Collection(oplogColl).FindOne(ctx,
+func (s *OplogMember) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error) {
+	raw, err := s.oplog().FindOne(ctx,
 		bson.D{{Key: "ts", Value: bson.Timestamp{T: ts.T, I: ts.I}}},
 		options.FindOne().SetProjection(bson.D{{Key: "t", Value: 1}, {Key: "_id", Value: 0}})).Raw()
 	if errors.Is(err, mongo.ErrNoDocuments) {

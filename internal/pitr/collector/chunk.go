@@ -57,7 +57,7 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 			gz := gzip.NewWriter(ew)
 			counted := &countWriter{w: gz}
 			scanner = oplog.NewScanner(counted)
-			stats, err = w.sess.ReadOplog(readCtx, rng, scanner)
+			stats, err = w.m.ReadOplog(readCtx, rng, scanner)
 			if err != nil {
 				return err
 			}

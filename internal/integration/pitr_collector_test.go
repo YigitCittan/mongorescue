@@ -63,7 +63,11 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 		return collector.New(collector.Config{
 			Repo: repo,
 			Open: func(ctx context.Context, s *pitr.Stream) (collector.Session, error) {
-				return prober.OpenOplogSession(ctx, env.URI, s.ReadPreference)
+				sess, openErr := prober.OpenOplogSession(ctx, env.URI, s.ReadPreference)
+				if openErr != nil {
+					return nil, openErr
+				}
+				return itSession{sess}, nil
 			},
 			Storage:           func(context.Context, string) (storage.Storage, error) { return st, nil },
 			Encryptor:         func() *encryption.Encryptor { return enc },
@@ -205,5 +209,55 @@ func readChunk(ctx context.Context, t *testing.T, st storage.Storage, dec *encry
 			t.Fatal(err)
 		}
 		out = append(out, append(bson.Raw(nil), doc...))
+	}
+}
+
+// itSession adapts *mongoconn.OplogSession to collector.Session, as internal/app
+// does.
+type itSession struct{ *mongoconn.OplogSession }
+
+func (s itSession) Pin(ctx context.Context, notBefore pitr.Timestamp) (collector.Member, error) {
+	m, err := s.OplogSession.Pin(ctx, notBefore)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s itSession) Primary() collector.Member { return s.OplogSession.Primary() }
+
+// TestOplogSessionPinsOneMember checks the member readers the collector uses: a
+// pinned member and the primary's majority reader agree on the window and on the
+// entry at its newest position.
+func TestOplogSessionPinsOneMember(t *testing.T) {
+	env := requireMongo(t)
+	requireReplicaSet(t, env)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	s, err := mongoconn.New().OpenOplogSession(ctx, env.URI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	win := majorityWindow(ctx, t, s)
+	m, err := s.Pin(ctx, win.MajorityOpTime.TS)
+	if err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if m.Host() == "" {
+		t.Fatal("the pinned reader names no member")
+	}
+	for name, r := range map[string]collector.Member{"pinned": m, "primary": s.Primary()} {
+		w, err := r.OplogWindow(ctx)
+		if err != nil {
+			t.Fatalf("%s window: %v", name, err)
+		}
+		if w.ReplicaSet != win.ReplicaSet || w.Oldest.Compare(win.MajorityOpTime.TS) > 0 {
+			t.Fatalf("%s window %+v, session window %+v", name, w, win)
+		}
+		term, found, err := r.EntryAt(ctx, win.MajorityOpTime.TS)
+		if err != nil || !found || term != win.MajorityOpTime.Term {
+			t.Fatalf("%s EntryAt(%s) = %d, %v, %v", name, win.MajorityOpTime.TS, term, found, err)
+		}
 	}
 }
