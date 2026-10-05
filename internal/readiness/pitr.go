@@ -19,6 +19,10 @@ const (
 	ReasonPITRLagHigh = "pitr_lag_high"
 	// ReasonPITRWindowLow: the oplog headroom is below max(6h, 3 x lag).
 	ReasonPITRWindowLow = "pitr_window_low"
+	// ReasonPITRNoWindow: the enabled stream has no eligible base for its current
+	// chain yet (a new stream, failing base backups, or oplog_max_days removed the
+	// chunks a base needs), so nothing can be restored from it.
+	ReasonPITRNoWindow = "pitr_no_window"
 )
 
 // RPO sources of a row.
@@ -79,8 +83,11 @@ func streamReasons(st StreamInfo) (fail, warn []string) {
 	if !st.Running || st.Failing {
 		fail = append(fail, ReasonPITRCollectorDown)
 	}
-	if st.Broken && !st.WindowOpen {
+	switch {
+	case st.Broken && !st.WindowOpen:
 		fail = append(fail, ReasonPITRChainBroken)
+	case !st.WindowOpen:
+		warn = append(warn, ReasonPITRNoWindow)
 	}
 	if st.LagHigh {
 		warn = append(warn, ReasonPITRLagHigh)

@@ -50,7 +50,7 @@ In the dashboard, open **Connections**: the **Point-in-time recovery** panel lis
 
 - **Events** (selectable by notification rules): `pitr.chain_broken` and `pitr.diverged` (critical), `pitr.collector_failed` / `pitr.collector_recovered`, `pitr.lag_high` / `pitr.lag_recovered` (the lag exceeds max(5 min, 5 × the interval); raised once per episode, also across restarts) and `pitr.window_low` (the oplog headroom, how long the collector may stop before entries are lost, is below max(6 h, 3 × lag)).
 - **Metrics** `mongorescue_pitr_*` with the label `stream`: see [metrics.md](metrics.md).
-- **Readiness.** The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` and `pitr_collector_down` (fail), `pitr_lag_high` and `pitr_window_low` (warn).
+- **Readiness.** The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` (a gap, a divergence or a chunk that failed verification and no newer base) and `pitr_collector_down` (fail), `pitr_lag_high`, `pitr_window_low` and `pitr_no_window` (no eligible base for the current chain yet) (warn).
 
 ## Not there yet
 

@@ -73,7 +73,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "PITR chain broken",
       reason_pitr_collector_down: "PITR collector down",
       reason_pitr_lag_high: "PITR lag high",
-      reason_pitr_window_low: "PITR headroom low"
+      reason_pitr_window_low: "PITR headroom low",
+      reason_pitr_no_window: "No PITR window yet"
     }
   },
   tr: {
@@ -131,7 +132,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "PITR zinciri koptu",
       reason_pitr_collector_down: "PITR toplayıcısı çalışmıyor",
       reason_pitr_lag_high: "PITR gecikmesi yüksek",
-      reason_pitr_window_low: "PITR payı düşük"
+      reason_pitr_window_low: "PITR payı düşük",
+      reason_pitr_no_window: "Henüz PITR penceresi yok"
     }
   },
   de: {
@@ -189,7 +191,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "PITR-Kette gebrochen",
       reason_pitr_collector_down: "PITR-Collector ausgefallen",
       reason_pitr_lag_high: "PITR-Verzögerung hoch",
-      reason_pitr_window_low: "PITR-Reserve gering"
+      reason_pitr_window_low: "PITR-Reserve gering",
+      reason_pitr_no_window: "Noch kein PITR-Fenster"
     }
   },
   es: {
@@ -247,7 +250,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "Cadena PITR rota",
       reason_pitr_collector_down: "Recolector PITR caído",
       reason_pitr_lag_high: "Retraso PITR alto",
-      reason_pitr_window_low: "Margen PITR bajo"
+      reason_pitr_window_low: "Margen PITR bajo",
+      reason_pitr_no_window: "Aún sin ventana PITR"
     }
   },
   fr: {
@@ -305,7 +309,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "Chaîne PITR rompue",
       reason_pitr_collector_down: "Collecteur PITR arrêté",
       reason_pitr_lag_high: "Retard PITR élevé",
-      reason_pitr_window_low: "Marge PITR faible"
+      reason_pitr_window_low: "Marge PITR faible",
+      reason_pitr_no_window: "Pas encore de fenêtre PITR"
     }
   },
   zh: {
@@ -363,7 +368,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "PITR 链中断",
       reason_pitr_collector_down: "PITR 收集器停止",
       reason_pitr_lag_high: "PITR 延迟过高",
-      reason_pitr_window_low: "PITR 余量不足"
+      reason_pitr_window_low: "PITR 余量不足",
+      reason_pitr_no_window: "尚无 PITR 窗口"
     }
   },
   ja: {
@@ -421,7 +427,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "PITR チェーン切断",
       reason_pitr_collector_down: "PITR コレクター停止",
       reason_pitr_lag_high: "PITR 遅延大",
-      reason_pitr_window_low: "PITR 余裕不足"
+      reason_pitr_window_low: "PITR 余裕不足",
+      reason_pitr_no_window: "PITR ウィンドウがまだありません"
     }
   },
   ru: {
@@ -479,7 +486,8 @@ const PITR_TRANSLATIONS = {
       reason_pitr_chain_broken: "Цепочка PITR разорвана",
       reason_pitr_collector_down: "Сборщик PITR не работает",
       reason_pitr_lag_high: "Большое отставание PITR",
-      reason_pitr_window_low: "Мало запаса PITR"
+      reason_pitr_window_low: "Мало запаса PITR",
+      reason_pitr_no_window: "Окна PITR пока нет"
     }
   }
 };
