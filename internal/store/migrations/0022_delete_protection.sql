@@ -26,6 +26,10 @@
 -- Existing users get their updated_at, which is never earlier than their last role
 -- change.
 --
+-- users.must_change_password (0 or 1) is set when another user resets the
+-- password: until the user chooses a new one, their sessions may only change it,
+-- sign out and read /api/v1/auth/me.
+--
 -- Releases before this one refuse a database at this version.
 
 CREATE TABLE pending_changes (
@@ -50,3 +54,5 @@ CREATE INDEX approvals_by_created ON approvals (created_at DESC, id DESC);
 
 ALTER TABLE users ADD COLUMN role_changed_at INTEGER NOT NULL DEFAULT 0;
 UPDATE users SET role_changed_at = updated_at;
+
+ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1));

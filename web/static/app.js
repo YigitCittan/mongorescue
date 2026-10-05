@@ -4005,6 +4005,13 @@ function showLogin(notice) {
 function enterApp() {
   sessionExpiredShown = false;
   showScreen("app");
+  // A password another user reset must be replaced first: until then the server
+  // only lets this session change it, sign out and read /auth/me.
+  if (auth.user && auth.user.must_change_password) {
+    openPasswordModal("");
+    showFormError("password-error", t("protection.must_change_password"));
+    return;
+  }
   refreshAll();
   startPolling();
 }
@@ -6144,6 +6151,7 @@ async function savePassword(e) {
   }
   const body = { new_password: next };
   if (self) body.current_password = current;
+  const forced = !!(self && auth.user && auth.user.must_change_password);
   try {
     const json = await apiJSON(`/api/v1/users/${encodeURIComponent(id)}/password`, {
       method: "PUT",
@@ -6164,7 +6172,12 @@ async function savePassword(e) {
       showLogin(t("auth.password_changed_relogin"));
       return;
     }
-    showToast(t("auth.password_changed"), "success");
+    if (forced) {
+      showToast(t("auth.password_changed"), "success");
+      enterApp();
+      return;
+    }
+    showToast(self ? t("auth.password_changed") : t("protection.password_reset_forced"), "success");
     loadUsers();
   } catch (err) {
     if (auth.user) showFormError("password-error", err.message);

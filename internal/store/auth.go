@@ -15,7 +15,7 @@ import (
 // Compile-time check that SQLiteStore serves the auth port.
 var _ auth.Repository = (*SQLiteStore)(nil)
 
-const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject, role_changed_at"
+const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject, role_changed_at, must_change_password"
 
 // errInconsistentIdentity is returned when a user's provider, subject and password
 // hash disagree: an OIDC user has a subject and an empty hash, a local user neither
@@ -85,9 +85,9 @@ func insertUser(ctx context.Context, e execer, u *auth.User) error {
 	if u.RoleChangedAt.IsZero() {
 		u.RoleChangedAt = u.CreatedAt
 	}
-	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role),
-		string(u.AuthProvider), subject, timeKey(u.RoleChangedAt))
+		string(u.AuthProvider), subject, timeKey(u.RoleChangedAt), boolInt(u.MustChangePassword))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return auth.ErrUserExists
@@ -149,7 +149,7 @@ func (s *SQLiteStore) UpdatePassword(ctx context.Context, userID, hash string, u
 		if provider != auth.ProviderLocal {
 			return auth.ErrNoPassword
 		}
-		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ?, must_change_password = 0 WHERE id = ?",
 			hash, timeKey(updatedAt), userID); err != nil {
 			return err
 		}
@@ -175,7 +175,7 @@ func (s *SQLiteStore) ResetPassword(ctx context.Context, userID, hash string, at
 		if provider != auth.ProviderLocal {
 			return auth.ErrNoPassword
 		}
-		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ?, role_changed_at = ? WHERE id = ?",
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ?, role_changed_at = ?, must_change_password = 1 WHERE id = ?",
 			hash, timeKey(at), timeKey(at), userID); err != nil {
 			return err
 		}
@@ -686,13 +686,14 @@ func scanUser(r rowScanner) (*auth.User, error) {
 // scanUserInto scans a users row into u. It returns sql.ErrNoRows unwrapped, and an
 // error wrapping ErrCorruptRecord when a column does not convert.
 func scanUserInto(r rowScanner, u *auth.User) error {
-	var created, updated, roleChanged int64
+	var created, updated, roleChanged, mustChange int64
 	var lastLogin sql.NullInt64
 	var role, provider string
 	var subject sql.NullString
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject, &roleChanged); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject, &roleChanged, &mustChange); err != nil {
 		return scanRowError("user", err)
 	}
+	u.MustChangePassword = mustChange != 0
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.Role = fromKey(created), fromKey(updated), nullableKey(lastLogin), auth.Role(role)
 	u.RoleChangedAt = fromKey(roleChanged)
 	u.AuthProvider, u.Subject = auth.Provider(provider), subject.String

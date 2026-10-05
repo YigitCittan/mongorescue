@@ -642,6 +642,9 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 		return ErrUnauthenticated
 	}
 	self := actor.UserID() != "" && actor.UserID() == userID
+	if !self && actor.PasswordChangeRequired() {
+		return ErrPasswordChangeRequired
+	}
 	// With the two-person rule, resetting another user's password needs a session and
 	// waits for a second administrator: whoever chooses it could sign in as them.
 	gate := s.holdsAdminGrant(ctx)

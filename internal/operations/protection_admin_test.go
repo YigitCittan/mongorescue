@@ -233,6 +233,20 @@ func TestAPasswordResetCannotRecruitAnApprover(t *testing.T) {
 	if env.status(t, "b1") != models.StatusCompleted {
 		t.Fatal("the backup was deleted")
 	}
+	// Until bob chooses a password of his own, his session can only change it.
+	bobCtx := auth.WithPrincipal(context.Background(), asBob)
+	if !asBob.PasswordChangeRequired() {
+		t.Fatal("bob's session after the reset does not require a password change")
+	}
+	if err = env.auth.ChangePassword(bobCtx, asBob, env.alice.ID, "", "bob chooses alice's password"); !errors.Is(err, auth.ErrPasswordChangeRequired) {
+		t.Fatalf("bob resets alice's password = %v; want ErrPasswordChangeRequired", err)
+	}
+	if err = env.auth.ChangePassword(bobCtx, asBob, env.bob.ID, newPassword, "bob's own new password 7"); err != nil {
+		t.Fatal(err)
+	}
+	if again, aErr := env.auth.AuthenticateSession(context.Background(), res.Token); aErr != nil || again.PasswordChangeRequired() {
+		t.Fatalf("bob's session after his own change = %+v, %v; want it unrestricted", again, aErr)
+	}
 }
 
 // TestDisablingTheRuleWithoutApproversWaitsForTheGracePeriod proves that a lockout

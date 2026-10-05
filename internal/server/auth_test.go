@@ -327,6 +327,46 @@ func TestLogoutRevokesSessionOverHTTP(t *testing.T) {
 	}
 }
 
+// TestAResetPasswordMustBeChanged proves that after an administrator reset bob's
+// password, bob's session can only change his own password, sign out and read
+// itself until he chose a new one.
+func TestAResetPasswordMustBeChanged(t *testing.T) {
+	f := newAuthFixture(t, nil)
+	admin := f.browser(t)
+	me := admin.setup(f)
+	rec := admin.do("POST", "/api/v1/users", map[string]string{"username": "bob", "password": testPassword, "role": "operator"}, nil)
+	var bob auth.User
+	decodeData(t, rec, &bob)
+	const reset = "reset by the admin!"
+	if rec = admin.do("PUT", "/api/v1/users/"+bob.ID+"/password", map[string]string{"new_password": reset}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("admin reset: %d %s", rec.Code, rec.Body.String())
+	}
+	b := f.browser(t)
+	if login := b.session(b.login("bob", reset)); login.User == nil || !login.User.MustChangePassword {
+		t.Fatalf("login after the reset = %+v; want must_change_password", login)
+	}
+	if rec = b.do("GET", "/api/v1/jobs", nil, nil); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "choose a new password") {
+		t.Fatalf("jobs before the change: %d %s; want 403", rec.Code, rec.Body.String())
+	}
+	if rec = b.do("PUT", "/api/v1/users/"+me.User.ID+"/password", map[string]string{"new_password": "bob picks admin's!"}, nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("another user's password before the change: %d; want 403", rec.Code)
+	}
+	var who meResponse
+	decodeData(t, b.do("GET", "/api/v1/auth/me", nil, nil), &who)
+	if who.User == nil || !who.User.MustChangePassword {
+		t.Fatalf("me = %+v; want must_change_password", who)
+	}
+	if rec = b.do("PUT", "/api/v1/users/"+bob.ID+"/password", map[string]string{"current_password": reset, "new_password": "bob's own password 1"}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("own change: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = b.do("GET", "/api/v1/jobs", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("jobs after the change: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = b.do("POST", "/api/v1/auth/logout", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("logout: %d", rec.Code)
+	}
+}
+
 func TestUsersAPI(t *testing.T) {
 	f := newAuthFixture(t, nil)
 	admin := f.browser(t)
