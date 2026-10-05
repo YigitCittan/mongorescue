@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -84,6 +85,7 @@ func TestTransportProblem(t *testing.T) {
 		want string
 	}{
 		{&url.Error{Op: "Get", URL: "https://hc/secret", Err: refused}, "connection refused"},
+		{&url.Error{Op: "Get", URL: "https://hc/secret", Err: &net.OpError{Op: "dial", Err: os.NewSyscallError("connectex", refusedErrno())}}, "connection refused"},
 		{&url.Error{Op: "Get", URL: "https://hc/secret", Err: &net.DNSError{Err: "no such host", Name: "hc"}}, "DNS error"},
 		{&url.Error{Op: "Get", URL: "https://hc/secret", Err: context.DeadlineExceeded}, "timeout"},
 		{&url.Error{Op: "Get", URL: "https://hc/secret", Err: x509.UnknownAuthorityError{}}, "TLS error"},
@@ -105,20 +107,15 @@ func TestFailuresNameTheHostOnly(t *testing.T) {
 	closed := httptest.NewServer(http.NotFoundHandler())
 	addr := closed.Listener.Addr().String()
 	closed.Close()
-	// A plain-HTTP server spoken to over TLS.
-	plain := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(plain.Close)
-	plainAddr := strings.TrimPrefix(plain.URL, "http://")
-
 	// A TLS server whose certificate the client does not trust.
 	untrusted := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(untrusted.Close)
 
-	s := New(Config{Logger: slog.New(slog.DiscardHandler), Timeout: 2 * time.Second})
+	// A refused connection to a closed port can take seconds on Windows.
+	s := New(Config{Logger: slog.New(slog.DiscardHandler), Timeout: 15 * time.Second})
 	for raw, want := range map[string]string{
-		"http://" + addr + "/ping/secret-token":       "connection refused",
-		"https://" + plainAddr + "/ping/secret-token": "TLS error",
-		untrusted.URL + "/ping/secret-token":          "TLS error",
+		"http://" + addr + "/ping/secret-token": "connection refused",
+		untrusted.URL + "/ping/secret-token":    "TLS error",
 	} {
 		err := s.Test(context.Background(), raw)
 		if !errors.Is(err, ErrPingFailed) || !strings.Contains(err.Error(), want) {

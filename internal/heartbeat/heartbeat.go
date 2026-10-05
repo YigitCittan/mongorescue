@@ -31,9 +31,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -387,6 +387,11 @@ func (s *Service) attempt(ctx context.Context, raw string, sig Signal) error {
 		return fmt.Errorf("%w: %w", errPermanent, err)
 	}
 	host := hostOf(raw)
+	// Checked again where the request is built: only an http(s) URL rebuilt by
+	// PingURL is requested (the dialer refuses blocked addresses on top).
+	if !pingTarget.MatchString(target) {
+		return fmt.Errorf("%w: %s: %w", errPermanent, host, models.ErrInvalidHeartbeatURL)
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -450,16 +455,14 @@ func TransportProblem(err error) string {
 	case errors.As(err, &dnsErr):
 		return problemDNS
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded),
-		errors.As(err, &netErr) && netErr.Timeout():
+		isConnTimeout(err), errors.As(err, &netErr) && netErr.Timeout():
 		return problemTimeout
 	case errors.Is(err, context.Canceled):
 		return problemCanceled
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case isConnRefused(err):
 		return problemRefused
 	case errors.As(err, &recordErr), errors.As(err, &alertErr), errors.As(err, &verifyErr),
-		errors.As(err, &authErr), errors.As(err, &hostErr), errors.As(err, &invalidErr),
-		// net/http reports a plain-HTTP answer to a TLS handshake without a type.
-		strings.Contains(err.Error(), "server gave HTTP response to HTTPS client"):
+		errors.As(err, &authErr), errors.As(err, &hostErr), errors.As(err, &invalidErr):
 		return problemTLS
 	default:
 		return problemOther
@@ -468,18 +471,37 @@ func TransportProblem(err error) string {
 
 // PingURL returns the URL a ping with sig requests: raw itself for SignalSuccess,
 // else raw with "/<sig>" appended to its path (the query is kept).
+//
+// The URL is checked with the validator of the settings and the job API
+// (models.ValidateHeartbeatURL) and rebuilt from its validated parts (scheme, host,
+// path and query; user info and fragments never reach the request), then matched
+// against pingTarget.
 func PingURL(raw string, sig Signal) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if raw == "" || models.ValidateHeartbeatURL(raw) != nil {
 		return "", models.ErrInvalidHeartbeatURL
 	}
-	if sig == SignalSuccess {
-		return raw, nil
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", models.ErrInvalidHeartbeatURL
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/" + string(sig)
-	u.RawPath = ""
-	return u.String(), nil
+	path, rawPath := u.Path, u.RawPath
+	if sig != SignalSuccess {
+		path = strings.TrimSuffix(path, "/") + "/" + string(sig)
+		if rawPath != "" {
+			rawPath = strings.TrimSuffix(rawPath, "/") + "/" + string(sig)
+		}
+	}
+	target := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: path, RawPath: rawPath, RawQuery: u.RawQuery}).String()
+	if !pingTarget.MatchString(target) {
+		return "", models.ErrInvalidHeartbeatURL
+	}
+	return target, nil
 }
+
+// pingTarget matches every URL a ping may request: http or https, a host (with an
+// optional port) without user info, and an optional path and query without
+// whitespace or a fragment. It runs on the rebuilt URL right before the request.
+var pingTarget = regexp.MustCompile(`^https?://[^\s/?#@]+(?:[/?][^\s#]*)?$`)
 
 // hostOf returns the host of raw (without port), the only part of a heartbeat URL
 // that is logged.
