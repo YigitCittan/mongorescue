@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scheduler liveness: the scheduler records a tick every 30 seconds; `GET /api/v1/health` adds `scheduler` (`ok`, `stale`, `not_started`) and `scheduler_last_tick`, and answers `503` (with `scheduler: "stale"`; `status` keeps its value) when the last tick is older than 90 seconds, so the Docker `HEALTHCHECK` catches a hung scheduler. New gauges `mongorescue_scheduler_last_tick_timestamp_seconds` and `mongorescue_settings_warnings`; `mongorescue_backups_total` and `mongorescue_job_runs_total` now exist at `0` for every enabled job, so `increase()` sees a job's first failure.
 - `deploy/prometheus/alerts.yml`, written for a default scrape configuration (no `honor_labels`, no job name): alert rules for an instance that is down, a stale scheduler, backup failures, missed RPOs, failed archive verifications, missing archives, failed restore tests, failed metadata backups and active settings warnings, unit-tested with `promtool test rules` (`deploy/prometheus/alerts_test.yml`, `make test-prometheus-rules`, the **Prometheus rules** CI job).
 
+## [0.19.1] - 2026-10-05
+
 ### Fixed
 - Dashboard database selector (*Back up now* and the job form): in **All** a checked database is excluded, so the list starts with nothing checked and never takes over what **Selected** checked (each mode keeps its own checks), the count and size cover the databases that will be backed up, and the dialog is only blocked when every database is excluded, with its own message ("All databases are excluded") instead of "Check at least one database".
 
