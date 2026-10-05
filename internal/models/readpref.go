@@ -37,6 +37,10 @@ const (
 // invalid tag set.
 var ErrInvalidReadPreference = errors.New("invalid read preference")
 
+// ErrTagsWithoutMode is returned when read_preference_tags are sent without a
+// read_preference: tags need a mode other than primary to select a member.
+var ErrTagsWithoutMode = fmt.Errorf("%w: read_preference_tags need a read_preference other than primary; send read_preference with them", ErrInvalidReadPreference)
+
 // ReadPreference selects the replica set member a backup reads from: Mode is one of
 // ReadPreferenceModes ("" keeps the connection string's own), Tags an ordered list of
 // tag sets (the first set that matches an eligible member wins; an empty set matches
@@ -106,7 +110,9 @@ func (r ReadPreference) Validate() error {
 		return nil
 	}
 	switch {
-	case r.Mode == "" || r.Mode == ReadPrimary:
+	case r.Mode == "":
+		return ErrTagsWithoutMode
+	case r.Mode == ReadPrimary:
 		return fmt.Errorf("%w: read_preference_tags need a read_preference other than primary", ErrInvalidReadPreference)
 	case len(r.Tags) > MaxReadPreferenceTagSets:
 		return fmt.Errorf("%w: at most %d read_preference_tags sets", ErrInvalidReadPreference, MaxReadPreferenceTagSets)

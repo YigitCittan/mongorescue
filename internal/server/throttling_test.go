@@ -15,6 +15,13 @@ func TestJobThrottlingAndWindowFields(t *testing.T) {
 	ctx := context.Background()
 	base := `"name":"w","database":"shop","cron_expression":"0 * * * *","connection_id":"` + testConnID + `"`
 
+	// Tags without a read preference are refused, not ignored.
+	for _, body := range []string{`{` + base + `,"read_preference_tags":[{"dc":"east"}]}`, `{` + base + `,"read_preference":"","read_preference_tags":[{"dc":"east"}]}`} {
+		rec := serve(h, "POST", "/api/v1/jobs", []byte(body), nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "need a read_preference other than primary") {
+			t.Errorf("POST %s = %d %s; want 400 about the missing mode", body, rec.Code, rec.Body.String())
+		}
+	}
 	for field, bad := range map[string]string{
 		"read_preference":          `"read_preference":"secondary_preferred"`,
 		"read_preference_tags":     `"read_preference":"primary","read_preference_tags":[{"dc":"east"}]`,
@@ -66,13 +73,17 @@ func TestJobThrottlingAndWindowFields(t *testing.T) {
 	if stored.BackupWindow != nil || stored.ReadPreference != "" || stored.ReadPreferenceTags != nil || stored.MaxUploadMbps != 0 || stored.NumParallelCollections != 0 {
 		t.Fatalf("after the reset: %+v", stored)
 	}
+	rec := serve(h, "PUT", "/api/v1/jobs/"+created.ID, []byte(`{`+base+`,"read_preference_tags":[{"dc":"east"}]}`), nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "need a read_preference other than primary") {
+		t.Fatalf("PUT tags without read_preference = %d %s; want 400", rec.Code, rec.Body.String())
+	}
 }
 
 func TestConnectionReadPreferenceAndLimit(t *testing.T) {
 	srv, metaStore, _ := setupTestServer(t)
 	h := srv.buildRoutes()
 	ctx := context.Background()
-	for _, bad := range []string{`"read_preference":"fastest"`, `"max_concurrent_backups":-1`, `"max_concurrent_backups":65`} {
+	for _, bad := range []string{`"read_preference":"fastest"`, `"max_concurrent_backups":-1`, `"max_concurrent_backups":65`, `"read_preference_tags":[{"dc":"east"}]`} {
 		rec := serve(h, "POST", "/api/v1/connections", []byte(`{"name":"bad","uri":"mongodb://db1:27017",`+bad+`}`), nil)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("POST %s = %d %s; want 400", bad, rec.Code, rec.Body.String())
