@@ -1,9 +1,12 @@
 # Prometheus alerting rules for MongoRescue (see docs/monitoring.md).
 #
-# Load this file with `rule_files:` in prometheus.yml. The rules assume the scrape
-# job is called "mongorescue" and scrapes with `honor_labels: true`, so the `job`
-# label of per-job series is the MongoRescue job ID (`up` keeps the scrape job).
-# Adjust `up{job="mongorescue"}` if your scrape job has another name.
+# Load this file with `rule_files:` in prometheus.yml. The rules work with a default
+# scrape configuration, whatever the scrape job is called: no job name is
+# selected anywhere, and `honor_labels` is not needed. With the default
+# `honor_labels: false`, Prometheus renames the `job` label of per-job series (the
+# MongoRescue job ID) to `exported_job` and sets `job` to the scrape job; with
+# `honor_labels: true` the job ID stays in `job`. The rules group by both and name
+# the job with `{{ or $labels.exported_job $labels.job }}`, so either works.
 #
 # Check and test them with:
 #   promtool check rules deploy/prometheus/alerts.yml
@@ -12,9 +15,15 @@ groups:
   - name: mongorescue
     rules:
       # The process is down or unreachable: no backups run, and MongoRescue cannot
-      # alert about it itself. Pair this with the external heartbeat.
+      # alert about it itself. Pair this with the external heartbeat. A target counts
+      # as MongoRescue when it exposed mongorescue_build_info in the last 7 days, so
+      # no scrape job name is needed; an instance down for longer than that stops
+      # alerting here (the external heartbeat still does).
       - alert: MongoRescueDown
-        expr: up{job="mongorescue"} == 0
+        expr: |
+          up == 0
+          and on (job, instance)
+          last_over_time(mongorescue_build_info[7d])
         for: 5m
         labels:
           severity: critical
@@ -23,9 +32,12 @@ groups:
           description: "Prometheus has not been able to scrape MongoRescue on {{ $labels.instance }} for 5 minutes. No backups run while it is down."
 
       # The scheduler ticks every 30s; three missed ticks mean it is hung,
-      # deadlocked or stopped (GET /api/v1/health answers 503 then).
+      # deadlocked or stopped (GET /api/v1/health answers 503 then). 0 means it has
+      # not started yet (the instance is starting up), which is not a stale tick.
       - alert: MongoRescueSchedulerStale
-        expr: time() - mongorescue_scheduler_last_tick_timestamp_seconds > 90
+        expr: |
+          time() - mongorescue_scheduler_last_tick_timestamp_seconds > 90
+          and mongorescue_scheduler_last_tick_timestamp_seconds > 0
         for: 2m
         labels:
           severity: critical
@@ -35,17 +47,17 @@ groups:
 
       # A backup of the job failed in the last hour, or a run failed before any
       # backup started (its databases could not be listed, its connection is gone).
-      # job="manual" covers on-demand backups outside jobs.
+      # The job "manual" covers on-demand backups outside jobs.
       - alert: MongoRescueBackupFailed
         expr: |
-          sum by (instance, job) (increase(mongorescue_backups_total{status="failed"}[1h])) > 0
+          sum by (instance, job, exported_job) (increase(mongorescue_backups_total{status="failed"}[1h])) > 0
           or
-          sum by (instance, job) (increase(mongorescue_job_runs_total{status="failed"}[1h])) > 0
+          sum by (instance, job, exported_job) (increase(mongorescue_job_runs_total{status="failed"}[1h])) > 0
         labels:
           severity: warning
         annotations:
-          summary: "A backup of MongoRescue job {{ $labels.job }} failed"
-          description: "Job {{ $labels.job }} on {{ $labels.instance }} had a failed backup or run in the last hour. See its run log in the dashboard."
+          summary: "A backup of MongoRescue job {{ or $labels.exported_job $labels.job }} failed"
+          description: "Job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }} had a failed backup or run in the last hour. See its run log in the dashboard."
 
       # The newest successful backup of a database is older than the job's
       # recovery point objective (rpo_minutes, or the default from its schedule).
@@ -55,13 +67,13 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Job {{ $labels.job }}: {{ $labels.database }} is past its recovery point objective"
-          description: "The newest successful backup of {{ $labels.database }} (job {{ $labels.job }} on {{ $labels.instance }}) is older than the job's recovery point objective."
+          summary: "Job {{ or $labels.exported_job $labels.job }}: {{ $labels.database }} is past its recovery point objective"
+          description: "The newest successful backup of {{ $labels.database }} (job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }}) is older than the job's recovery point objective."
 
       # A stored archive no longer matches its checksum or could not be read
       # (after upload, in the integrity sweep or on demand).
       - alert: MongoRescueVerificationFailed
-        expr: sum by (instance, source, result) (increase(mongorescue_verifications_total{result=~"mismatch|error"}[1h])) > 0
+        expr: sum by (instance, job, source, result) (increase(mongorescue_verifications_total{result=~"mismatch|error"}[1h])) > 0
         labels:
           severity: critical
         annotations:
@@ -81,17 +93,17 @@ groups:
       # catches the first result of a job, whose series starts at 1.
       - alert: MongoRescueRestoreTestFailed
         expr: |
-          sum by (instance, job, result) (increase(mongorescue_restore_tests_total{result=~"mismatch|error"}[24h])) > 0
+          sum by (instance, job, exported_job, result) (increase(mongorescue_restore_tests_total{result=~"mismatch|error"}[24h])) > 0
           or
-          sum by (instance, job, result) (
+          sum by (instance, job, exported_job, result) (
             mongorescue_restore_tests_total{result=~"mismatch|error"}
             unless mongorescue_restore_tests_total{result=~"mismatch|error"} offset 24h
           ) > 0
         labels:
           severity: warning
         annotations:
-          summary: "A restore test of MongoRescue job {{ $labels.job }} failed ({{ $labels.result }})"
-          description: "An automated restore test of job {{ $labels.job }} on {{ $labels.instance }} ended with {{ $labels.result }} in the last 24 hours."
+          summary: "A restore test of MongoRescue job {{ or $labels.exported_job $labels.job }} failed ({{ $labels.result }})"
+          description: "An automated restore test of job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }} ended with {{ $labels.result }} in the last 24 hours."
 
       # A snapshot of MongoRescue's own metadata database could not be stored.
       - alert: MongoRescueMetadataBackupFailed

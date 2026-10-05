@@ -45,18 +45,16 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_rpo_met` | gauge | `job`, `database` | 1 while that age is within the job's recovery point objective, 0 when it is missed |
 | `mongorescue_job_rpo_target_seconds` | gauge | `job`, `database` | The job's recovery point objective (`rpo_minutes`, or the default from its schedule) |
 | `mongorescue_scheduler_last_tick_timestamp_seconds` | gauge | | Unix time of the scheduler's last liveness tick (every 30s while it runs; `0` before it starts). Older than 90 seconds means the scheduler is hung; see [health](api.md#health) |
+| `mongorescue_heartbeat_dropped_total` | counter | | Job heartbeat pings dropped because 32 were already queued or in flight (see [monitoring.md](monitoring.md#how-pings-are-sent)) |
 | `mongorescue_settings_warnings` | gauge | | Active settings warnings shown in the dashboard banner (encryption off, metadata backups unencrypted, recovery kit missing or outdated, a kept administrator role) |
 
-The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. `mongorescue_backups_total` and `mongorescue_job_runs_total` exist at `0` for every enabled job (and `job="manual"`) from the first RPO check after the start, so `increase()` also sees a job's first failure. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
+The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. With a default scrape configuration Prometheus keeps its own `job` label (the scrape job) and renames MongoRescue's to `exported_job`; with `honor_labels: true` the job ID stays in `job`. The [shipped alert rules](monitoring.md#prometheus-alert-rules) work either way. `mongorescue_backups_total` and `mongorescue_job_runs_total` exist at `0` for every enabled job (and `job="manual"`) from the first RPO check after the start, so `increase()` also sees a job's first failure. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
 
 ## Scrape configuration
 
 ```yaml
 scrape_configs:
   - job_name: mongorescue
-    # Keep the job label of per-job series (the MongoRescue job ID) instead of
-    # renaming it to exported_job; `up` keeps job="mongorescue".
-    honor_labels: true
     scheme: https
     metrics_path: /metrics
     authorization:

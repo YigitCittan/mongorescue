@@ -1687,7 +1687,7 @@
           <div class="form-group">
             <label class="form-label" for="job-heartbeat-url" data-i18n="monitoring.job_url">Heartbeat URL</label>
             <input type="url" id="job-heartbeat-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://hc-ping.com/your-check-uuid" aria-describedby="job-heartbeat-url-hint">
-            <span class="form-hint" id="job-heartbeat-url-hint" data-i18n="monitoring.job_url_hint">Optional. Pinged at &lt;url&gt;/start when a run starts, &lt;url&gt; when it succeeds and &lt;url&gt;/fail when it fails, is partial or is cancelled. Stored encrypted.</span>
+            <span class="form-hint" id="job-heartbeat-url-hint" data-i18n="monitoring.job_url_hint">Optional. Pinged at &lt;url&gt;/start when a run starts, &lt;url&gt; when it succeeds and &lt;url&gt;/fail when it fails or is partial; a cancelled run sends nothing more. Stored encrypted.</span>
           </div>
           <div class="form-row">
             <div class="form-group">

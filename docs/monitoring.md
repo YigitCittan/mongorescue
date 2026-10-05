@@ -15,7 +15,7 @@ A dead-man's switch alerts when an expected ping does *not* arrive. Set **Settin
 
 Configure the check at the external service with the same period and a grace time of a few minutes (for example period 5 minutes, grace 5 minutes). When the process is killed or the host goes down, the monitor alerts within one interval plus the grace time.
 
-**Send test ping** sends one ping to the URL in the field (or, when the field shows the stored, masked URL, to the stored one) and reports whether the monitor answered with a `2xx` status. The same is `POST /api/v1/settings/monitoring/test` ([API](api.md#endpoints)).
+**Send test ping** (at most 5 per minute) sends one ping to the URL in the field (or, when the field shows the stored, masked URL, to the stored one) and reports whether the monitor answered with a `2xx` status. The same is `POST /api/v1/settings/monitoring/test` ([API](api.md#endpoints)).
 
 ## Job heartbeats
 
@@ -25,20 +25,23 @@ Every job can have a heartbeat URL of its own (the **Heartbeat URL** field of th
 | :--- | :--- |
 | A run starts (scheduled or on demand, all its databases) | `<url>/start` |
 | The run succeeded (`ok`) | `<url>` |
-| The run failed, was `partial` or was cancelled (also a run that could not start) | `<url>/fail` |
+| The run failed or was `partial` (also a run that could not start) | `<url>/fail` |
+| The run was cancelled by a user, or interrupted by a shutdown | nothing |
+
+A cancellation is a deliberate action, so it pages nobody: the check stays "started" and the monitor reports it as late when no successful run follows within its period and grace time, which is the right signal for a backup that did not happen.
 
 The suffix is appended to the URL's path; a query string is kept (`https://push.example.com/api/push/abc?status=up` becomes `.../abc/fail?status=up`). With a `/start` ping the service also measures how long each run takes and alerts when a run does not finish. Give the check the job's schedule (healthchecks.io accepts cron expressions) and a grace time longer than a run takes.
 
 ## How pings are sent
 
-- Pings never block or fail a backup: they are sent in the background, every attempt has a 10 second timeout, and a network error, `408`, `429` or `5xx` is retried twice (after 2 and 4 seconds). Other `4xx` answers are not retried. The pings of one job are sent in order, so a `/start` never arrives after the outcome.
+- Pings never block or fail a backup: they are sent in the background, at most 32 at a time (queued or in flight; further ones are dropped, logged and counted in `mongorescue_heartbeat_dropped_total`), every attempt has a 10 second timeout, and a network error, `408`, `429` or `5xx` is retried twice (after 2 and 4 seconds). Other `4xx` answers are not retried. The pings of one job are sent in order, so a `/start` never arrives after the outcome.
 - Requests go through the same HTTP client as notifications: redirects are not followed, link-local and cloud metadata addresses are refused (also after DNS resolution), and `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` apply.
-- Heartbeat URLs carry the check's token, so they are secrets: they are stored encrypted (`secret.key`), shown only up to their host (`https://hc-ping.com/******`) by the dashboard, the API and MCP, and never logged; failures are logged with the host only. Sending the masked value back keeps the stored URL; a masked value for another host is refused, so a URL is never kept for a host it was not entered for.
-- At shutdown, the pings of runs the shutdown cancelled (`/fail`) are still sent, for up to 15 seconds.
+- Heartbeat URLs carry the check's token, so they are secrets: they are stored encrypted (`secret.key`), shown only up to their host (`https://hc-ping.com/******`) by the dashboard, the API and MCP, and never logged; failures are logged with the host and a fixed reason only (`connection refused`, `timeout`, `TLS error`, `DNS error`), never the resolved address. A stored URL that can no longer be decrypted is dropped: the job keeps running without its heartbeat and the URL is reported among the unreadable records until it is entered again. Sending the masked value back keeps the stored URL; a masked value for another host is refused, so a URL is never kept for a host it was not entered for.
+- At shutdown, pings already queued are still sent, for up to 15 seconds; runs the shutdown interrupts send nothing after their `/start`.
 
 ## Health check
 
-`GET /api/v1/health` (no authentication) answers `503` with `"scheduler": "stale"` when the scheduler's last liveness tick is older than 90 seconds (three ticks), and `200` with `"scheduler": "ok"` and `scheduler_last_tick` otherwise; see [api.md](api.md#health). The Docker image's `HEALTHCHECK` uses it, so a container with a hung scheduler is reported unhealthy; point load balancer and uptime checks at it too.
+`GET /api/v1/health` (no authentication) answers `503` with `"scheduler": "stale"` when the scheduler's last liveness tick is older than 90 seconds (three ticks), and `200` with `"scheduler": "ok"` and `scheduler_last_tick` otherwise; `status` keeps its value, so checks must read the HTTP status or `scheduler` (see [api.md](api.md#health)). The Docker image's `HEALTHCHECK` uses it, so a container with a hung scheduler is reported unhealthy; point load balancer and uptime checks at it too.
 
 ## Prometheus alert rules
 
@@ -46,7 +49,7 @@ The suffix is appended to the URL's path; a query string is kept (`https://push.
 
 | Alert | Severity | Fires when |
 | :--- | :--- | :--- |
-| `MongoRescueDown` | critical | `up{job="mongorescue"} == 0` for 5 minutes |
+| `MongoRescueDown` | critical | `up == 0` for 5 minutes on a target that exposed `mongorescue_build_info` in the last 7 days |
 | `MongoRescueSchedulerStale` | critical | The last scheduler tick is older than 90 seconds, for 2 minutes |
 | `MongoRescueBackupFailed` | warning | A backup of a job (or a manual backup, `job="manual"`) failed in the last hour, or a run failed before any backup started |
 | `MongoRescueRPOMissed` | critical | `mongorescue_job_rpo_met == 0` for 5 minutes: a database is past its job's [recovery point objective](api.md#recovery-point-objectives) |
@@ -56,14 +59,14 @@ The suffix is appended to the URL's path; a query string is kept (`https://push.
 | `MongoRescueMetadataBackupFailed` | warning | A [metadata snapshot](production.md#metadata-backups) failed in the last 24 hours |
 | `MongoRescueSettingsWarning` | warning | A settings warning (encryption off, recovery kit missing or outdated, ...) has been active for an hour |
 
-Load the file in `prometheus.yml` and scrape MongoRescue as the job `mongorescue` with `honor_labels: true`, so the `job` label of per-job series stays the MongoRescue job ID ([scrape configuration](metrics.md#scrape-configuration)):
+Load the file in `prometheus.yml`. The rules work with a default [scrape configuration](metrics.md#scrape-configuration) under any scrape job name: they select no job and do not need `honor_labels`. By default Prometheus renames the `job` label of per-job series (the MongoRescue job ID) to `exported_job`; the rules group by `job` and `exported_job` and name the job from whichever holds it, so `honor_labels: true` works too.
 
 ```yaml
 rule_files:
   - /etc/prometheus/rules/mongorescue-alerts.yml
 ```
 
-With another scrape job name, change the `up{job="mongorescue"}` selector of `MongoRescueDown`. Prometheus only notices that MongoRescue is down while Prometheus itself runs; the external heartbeat covers the case where both are on the same failed host.
+`MongoRescueDown` recognises MongoRescue targets by `mongorescue_build_info` instead of a job name, so it needs nothing to edit; an instance that has been down for more than 7 days drops out of it (the external heartbeat keeps alerting), and a target that was never scraped successfully is not covered. Prometheus only notices that MongoRescue is down while Prometheus itself runs; the external heartbeat covers the case where both are on the same failed host.
 
 ## Recommended external services
 

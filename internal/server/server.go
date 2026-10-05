@@ -115,6 +115,9 @@ type Server struct {
 	// livenessSource overrides the scheduler as the health check's liveness source
 	// (tests).
 	livenessSource schedulerLiveness
+	// heartbeatThrottle limits the test pings of each caller (see
+	// handleTestHeartbeat).
+	heartbeatThrottle *auth.Throttle
 
 	// version is reported by the health endpoint.
 	version string
@@ -228,6 +231,8 @@ func NewServer(
 		scheduler:     sched,
 		logger:        logger,
 		staticFS:      staticFS,
+
+		heartbeatThrottle: auth.NewThrottle(nil),
 	}
 	for _, opt := range opts {
 		opt(s)

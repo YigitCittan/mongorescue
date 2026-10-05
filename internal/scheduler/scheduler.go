@@ -97,9 +97,10 @@ type Scheduler struct {
 	// taken without the lock can tell whether it is still current.
 	changes uint64
 
-	// lastTick is the Unix time in nanoseconds of the latest liveness tick (0 before
-	// Start); see LastTick.
-	lastTick atomic.Int64
+	// lastTick is the latest liveness tick (nil before Start), with its monotonic
+	// clock reading, so a wall clock step (NTP, a resumed VM) never makes a fresh
+	// tick look stale; see LastTick and Stale.
+	lastTick atomic.Pointer[time.Time]
 	// observer is told when job runs start and finish (see RunObserver).
 	observer RunObserver
 }
@@ -123,8 +124,11 @@ const tickSchedule = "@every 30s"
 type RunObserver interface {
 	// JobRunStarted is called when the backups of a run start.
 	JobRunStarted(job *models.Job, run *models.JobRun)
-	// JobRunFinished is called once the run's outcome is recorded.
-	JobRunFinished(job *models.Job, run *models.JobRun)
+	// JobRunFinished is called once the run's outcome is recorded. interrupted
+	// reports that the run's context ended before it finished (a shutdown, or the
+	// caller of an on-demand run cancelling it); a run cancelled by a user has the
+	// status cancelled.
+	JobRunFinished(job *models.Job, run *models.JobRun, interrupted bool)
 }
 
 // WithRunObserver tells o about every job run, scheduled or on demand.
@@ -139,28 +143,37 @@ func (s *Scheduler) runStarted(job *models.Job, run *models.JobRun) {
 	}
 }
 
-// runFinished tells the observer that run of job finished.
-func (s *Scheduler) runFinished(job *models.Job, run *models.JobRun) {
+// runFinished tells the observer that run of job finished on ctx, the run's
+// context (ended when a shutdown or its caller interrupted it).
+func (s *Scheduler) runFinished(ctx context.Context, job *models.Job, run *models.JobRun) {
 	if s.observer != nil && job != nil && run != nil {
-		s.observer.JobRunFinished(job, run)
+		s.observer.JobRunFinished(job, run, ctx.Err() != nil)
 	}
 }
 
 // LastTick returns when the scheduler last recorded a liveness tick, or the zero
 // time before Start. A running scheduler ticks every TickInterval.
+// The returned time keeps its monotonic clock reading.
 func (s *Scheduler) LastTick() time.Time {
-	ns := s.lastTick.Load()
-	if ns == 0 {
-		return time.Time{}
+	if t := s.lastTick.Load(); t != nil {
+		return *t
 	}
-	return time.Unix(0, ns)
+	return time.Time{}
 }
 
 // Stale reports whether the scheduler was started and its last tick is older than
-// StaleAfter at now: its cron runner is hung, it is deadlocked or it was stopped.
-func (s *Scheduler) Stale(now time.Time) bool {
+// StaleAfter: its cron runner is hung, it is deadlocked or it was stopped. The age
+// is measured with the monotonic clock (time.Since), so changes of the wall clock
+// do not count.
+func (s *Scheduler) Stale() bool {
 	last := s.LastTick()
-	return !last.IsZero() && now.Sub(last) > StaleAfter
+	return !last.IsZero() && time.Since(last) > StaleAfter
+}
+
+// recordTick stores the current time as the last liveness tick.
+func (s *Scheduler) recordTick() {
+	now := time.Now()
+	s.lastTick.Store(&now)
 }
 
 // tick records a liveness tick. It takes s.mu, so a scheduler whose lock is held
@@ -170,7 +183,7 @@ func (s *Scheduler) tick() {
 	stopped := s.stopped
 	s.mu.Unlock()
 	if !stopped {
-		s.lastTick.Store(time.Now().UnixNano())
+		s.recordTick()
 	}
 }
 
@@ -314,7 +327,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.logger.Error("failed to schedule the resumption of paused jobs", slog.Any("error", err))
 	}
 	// The liveness tick read by the health check and the heartbeat.
-	s.lastTick.Store(time.Now().UnixNano())
+	s.recordTick()
 	if _, err := s.cron.AddFunc(tickSchedule, s.tick); err != nil {
 		s.logger.Error("failed to schedule the scheduler liveness tick", slog.Any("error", err))
 	}
@@ -812,7 +825,7 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 		}
 		run.Finish(time.Now())
 		s.saveRun(persistCtx, run)
-		s.runFinished(job, run)
+		s.runFinished(ctx, job, run)
 	}
 
 	// Persist the backup record last: once a client sees the final status, the

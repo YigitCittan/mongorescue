@@ -1,4 +1,9 @@
 # Unit tests of alerts.yml: promtool test rules deploy/prometheus/alerts_test.yml
+#
+# The series look like a default scrape configuration (honor_labels: false) with a
+# scrape job called "backup": per-job series carry the MongoRescue job ID in
+# exported_job. A few series on the instance "honor:8080" look like a scrape with
+# honor_labels: true, where the job ID stays in job.
 rule_files:
   - alerts.yml
 
@@ -8,8 +13,14 @@ tests:
   - name: instance down
     interval: 1m
     input_series:
-      - series: 'up{job="mongorescue", instance="mr:8080"}'
+      - series: 'up{job="backup", instance="mr:8080"}'
         values: "1 1 0x10"
+      # The last scrape exposed MongoRescue metrics; the failed ones expose none.
+      - series: 'mongorescue_build_info{job="backup", instance="mr:8080", version="v1.0.0", commit="abc", go_version="go1.26"}'
+        values: "1 1"
+      # Another target that is down but is not MongoRescue.
+      - series: 'up{job="node", instance="other:9100"}'
+        values: "0x12"
     alert_rule_test:
       - eval_time: 5m
         alertname: MongoRescueDown
@@ -19,7 +30,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              job: mongorescue
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "MongoRescue on mr:8080 is down"
@@ -29,8 +40,11 @@ tests:
     interval: 1m
     input_series:
       # Ticks until 5m, then the scheduler hangs.
-      - series: 'mongorescue_scheduler_last_tick_timestamp_seconds{job="mongorescue", instance="mr:8080"}'
-        values: "0+60x5 300x10"
+      - series: 'mongorescue_scheduler_last_tick_timestamp_seconds{job="backup", instance="mr:8080"}'
+        values: "60+60x4 300x10"
+      # A scheduler that has not started reports 0: never stale.
+      - series: 'mongorescue_scheduler_last_tick_timestamp_seconds{job="backup", instance="starting:8080"}'
+        values: "0x15"
     alert_rule_test:
       - eval_time: 5m
         alertname: MongoRescueSchedulerStale
@@ -40,7 +54,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              job: mongorescue
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "The MongoRescue scheduler on mr:8080 is stale"
@@ -49,16 +63,16 @@ tests:
   - name: backup failures
     interval: 1m
     input_series:
-      - series: 'mongorescue_backups_total{job="nightly", status="failed", instance="mr:8080"}'
+      - series: 'mongorescue_backups_total{job="backup", exported_job="nightly", status="failed", instance="mr:8080"}'
         values: "0 0 1 1 1"
-      - series: 'mongorescue_backups_total{job="nightly", status="succeeded", instance="mr:8080"}'
+      - series: 'mongorescue_backups_total{job="backup", exported_job="nightly", status="succeeded", instance="mr:8080"}'
         values: "0 1 2 3 4"
-      - series: 'mongorescue_backups_total{job="healthy", status="failed", instance="mr:8080"}'
+      - series: 'mongorescue_backups_total{job="backup", exported_job="healthy", status="failed", instance="mr:8080"}'
         values: "0 0 0 0 0"
-      # A multi-database run whose databases could not be listed.
-      - series: 'mongorescue_job_runs_total{job="multi", status="failed", instance="mr:8080"}'
+      # A multi-database run whose databases could not be listed (honor_labels: true).
+      - series: 'mongorescue_job_runs_total{job="multi", status="failed", instance="honor:8080"}'
         values: "0 0 0 1 1"
-      - series: 'mongorescue_job_runs_total{job="multi", status="ok", instance="mr:8080"}'
+      - series: 'mongorescue_job_runs_total{job="multi", status="ok", instance="honor:8080"}'
         values: "0 1 1 1 1"
     alert_rule_test:
       - eval_time: 1m
@@ -69,7 +83,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: nightly
+              job: backup
+              exported_job: nightly
               instance: mr:8080
             exp_annotations:
               summary: "A backup of MongoRescue job nightly failed"
@@ -77,17 +92,17 @@ tests:
           - exp_labels:
               severity: warning
               job: multi
-              instance: mr:8080
+              instance: honor:8080
             exp_annotations:
               summary: "A backup of MongoRescue job multi failed"
-              description: "Job multi on mr:8080 had a failed backup or run in the last hour. See its run log in the dashboard."
+              description: "Job multi on honor:8080 had a failed backup or run in the last hour. See its run log in the dashboard."
 
   - name: rpo missed
     interval: 1m
     input_series:
-      - series: 'mongorescue_job_rpo_met{job="nightly", database="shop", instance="mr:8080"}'
+      - series: 'mongorescue_job_rpo_met{job="backup", exported_job="nightly", database="shop", instance="mr:8080"}'
         values: "1 1 0x10"
-      - series: 'mongorescue_job_rpo_met{job="nightly", database="crm", instance="mr:8080"}'
+      - series: 'mongorescue_job_rpo_met{job="backup", exported_job="nightly", database="crm", instance="mr:8080"}'
         values: "1x12"
     alert_rule_test:
       - eval_time: 4m
@@ -98,7 +113,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              job: nightly
+              job: backup
+              exported_job: nightly
               database: shop
               instance: mr:8080
             exp_annotations:
@@ -108,11 +124,11 @@ tests:
   - name: integrity sweep failures
     interval: 1m
     input_series:
-      - series: 'mongorescue_verifications_total{source="sweep", result="mismatch", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_verifications_total{source="sweep", result="mismatch", job="backup", instance="mr:8080"}'
         values: "0 0 1 1"
-      - series: 'mongorescue_verifications_total{source="sweep", result="ok", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_verifications_total{source="sweep", result="ok", job="backup", instance="mr:8080"}'
         values: "0 5 10 15"
-      - series: 'mongorescue_verifications_total{source="after_upload", result="error", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_verifications_total{source="after_upload", result="error", job="backup", instance="mr:8080"}'
         values: "0 0 0 0"
     alert_rule_test:
       - eval_time: 3m
@@ -122,6 +138,7 @@ tests:
               severity: critical
               source: sweep
               result: mismatch
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "A MongoRescue archive verification failed (sweep: mismatch)"
@@ -130,9 +147,9 @@ tests:
   - name: missing archives
     interval: 1m
     input_series:
-      - series: 'mongorescue_storage_missing_archives{target="s3-prod", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_storage_missing_archives{target="s3-prod", job="backup", instance="mr:8080"}'
         values: "0 0 2"
-      - series: 'mongorescue_storage_missing_archives{target="local", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_storage_missing_archives{target="local", job="backup", instance="mr:8080"}'
         values: "0 0 0"
     alert_rule_test:
       - eval_time: 1m
@@ -144,7 +161,7 @@ tests:
           - exp_labels:
               severity: critical
               target: s3-prod
-              job: mongorescue
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "2 backup archives are missing from storage target s3-prod"
@@ -154,12 +171,12 @@ tests:
     interval: 1m
     input_series:
       # The first restore test of a job fails: the series starts at 1.
-      - series: 'mongorescue_restore_tests_total{job="nightly", result="error", instance="mr:8080"}'
+      - series: 'mongorescue_restore_tests_total{job="backup", exported_job="nightly", result="error", instance="mr:8080"}'
         values: "_ _ 1 1"
       # A later restore test of another job finds differences.
-      - series: 'mongorescue_restore_tests_total{job="weekly", result="mismatch", instance="mr:8080"}'
+      - series: 'mongorescue_restore_tests_total{job="backup", exported_job="weekly", result="mismatch", instance="mr:8080"}'
         values: "0 0 1 1"
-      - series: 'mongorescue_restore_tests_total{job="weekly", result="ok", instance="mr:8080"}'
+      - series: 'mongorescue_restore_tests_total{job="backup", exported_job="weekly", result="ok", instance="mr:8080"}'
         values: "1 1 1 1"
     alert_rule_test:
       - eval_time: 1m
@@ -170,7 +187,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: nightly
+              job: backup
+              exported_job: nightly
               result: error
               instance: mr:8080
             exp_annotations:
@@ -178,7 +196,8 @@ tests:
               description: "An automated restore test of job nightly on mr:8080 ended with error in the last 24 hours."
           - exp_labels:
               severity: warning
-              job: weekly
+              job: backup
+              exported_job: weekly
               result: mismatch
               instance: mr:8080
             exp_annotations:
@@ -188,9 +207,9 @@ tests:
   - name: metadata backup failures
     interval: 1m
     input_series:
-      - series: 'mongorescue_metadata_backups_total{result="error", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_metadata_backups_total{result="error", job="backup", instance="mr:8080"}'
         values: "0 0 1"
-      - series: 'mongorescue_metadata_backups_total{result="ok", job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_metadata_backups_total{result="ok", job="backup", instance="mr:8080"}'
         values: "0 1 1"
     alert_rule_test:
       - eval_time: 1m
@@ -202,7 +221,7 @@ tests:
           - exp_labels:
               severity: warning
               result: error
-              job: mongorescue
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "A MongoRescue metadata backup failed on mr:8080"
@@ -211,7 +230,7 @@ tests:
   - name: settings warnings
     interval: 1m
     input_series:
-      - series: 'mongorescue_settings_warnings{job="mongorescue", instance="mr:8080"}'
+      - series: 'mongorescue_settings_warnings{job="backup", instance="mr:8080"}'
         values: "0 1x90"
     alert_rule_test:
       - eval_time: 30m
@@ -222,7 +241,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: mongorescue
+              job: backup
               instance: mr:8080
             exp_annotations:
               summary: "MongoRescue on mr:8080 has 1 active settings warnings"

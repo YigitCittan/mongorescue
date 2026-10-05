@@ -106,7 +106,8 @@ type Job struct {
 
 	// HeartbeatURL is an optional dead-man's-switch URL (healthchecks.io
 	// compatible) pinged at "<url>/start" when a run starts, "<url>" when it
-	// succeeds and "<url>/fail" when it fails, is partial or is cancelled. Secret:
+	// succeeds and "<url>/fail" when it fails or is partial; a cancelled or
+	// interrupted run sends nothing after its start. Secret:
 	// the store seals it and API responses show only its origin (see Redacted).
 	HeartbeatURL string `json:"heartbeat_url,omitempty"`
 }

@@ -9,10 +9,14 @@ import (
 func TestLivenessSeries(t *testing.T) {
 	m := New(BuildInfo{Version: "test"})
 	out := scrape(t, m)
-	for _, w := range []string{"mongorescue_scheduler_last_tick_timestamp_seconds 0", "mongorescue_settings_warnings 0"} {
+	for _, w := range []string{"mongorescue_scheduler_last_tick_timestamp_seconds 0", "mongorescue_settings_warnings 0", "mongorescue_heartbeat_dropped_total 0"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("scrape without sources lacks %s", w)
 		}
+	}
+	m.IncHeartbeatDropped()
+	if out = scrape(t, m); !strings.Contains(out, "mongorescue_heartbeat_dropped_total 1") {
+		t.Error("a dropped heartbeat ping is not counted")
 	}
 	m.SetSchedulerTickSource(func() time.Time { return time.Unix(1_700_000_000, 0) })
 	m.SetSettingsWarningsSource(func() int { return 2 })

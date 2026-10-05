@@ -8,7 +8,10 @@
 // is pinged every monitoring.heartbeat_interval while the scheduler is healthy. A
 // job's own heartbeat (models.Job.HeartbeatURL) follows the healthchecks.io
 // protocol: "<url>/start" when a run starts, "<url>" when it succeeds and
-// "<url>/fail" when it fails, is partial or is cancelled.
+// "<url>/fail" when it fails or is partial. A run cancelled by a user or
+// interrupted by a shutdown sends nothing after its start: a deliberate action
+// must not page anyone, and the monitor reports the check as late when no
+// successful run follows.
 //
 // Pings are fire-and-forget: they never block or fail a run, every attempt has a
 // timeout, retryable failures are retried, and the pings of one job are sent in
@@ -18,14 +21,19 @@ package heartbeat
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -50,7 +58,7 @@ const (
 	SignalSuccess Signal = ""
 	// SignalStart pings "<url>/start": a run started.
 	SignalStart Signal = "start"
-	// SignalFail pings "<url>/fail": a run failed, was partial or was cancelled.
+	// SignalFail pings "<url>/fail": a run failed or was partial.
 	SignalFail Signal = "fail"
 )
 
@@ -67,8 +75,12 @@ const (
 	// due (the interval itself is a setting, at least a minute).
 	DefaultCheckEvery = 15 * time.Second
 	// DefaultDrainTimeout is how long Run waits for pings still in flight after its
-	// context ended (the /fail pings of runs cancelled by a shutdown).
+	// context ended.
 	DefaultDrainTimeout = 15 * time.Second
+	// DefaultMaxPending caps the job pings queued or in flight at once; further
+	// pings are dropped (see Config.OnDrop), so a slow monitor never piles up
+	// goroutines and dispatch never blocks.
+	DefaultMaxPending = 32
 )
 
 // userAgent identifies the pings.
@@ -87,13 +99,17 @@ type Config struct {
 	Healthy func() bool
 	// Logger receives failures (host only, never the URL); nil means slog.Default.
 	Logger *slog.Logger
-	// Attempts, RetryDelay, Timeout, CheckEvery and DrainTimeout override the
-	// defaults above when positive.
+	// OnDrop is called (without blocking) for every job ping dropped because
+	// MaxPending pings are already queued or in flight; nil means none.
+	OnDrop func()
+	// Attempts, RetryDelay, Timeout, CheckEvery, DrainTimeout and MaxPending
+	// override the defaults above when positive.
 	Attempts     int
 	RetryDelay   time.Duration
 	Timeout      time.Duration
 	CheckEvery   time.Duration
 	DrainTimeout time.Duration
+	MaxPending   int
 	// Now overrides the clock (tests).
 	Now func() time.Time
 }
@@ -111,10 +127,12 @@ type Service struct {
 	// wg tracks the job pings in flight.
 	wg sync.WaitGroup
 
-	// mu guards accepting, ran and queue.
+	// mu guards accepting, ran, pending and queue.
 	mu        sync.Mutex
 	accepting bool
 	ran       bool
+	// pending counts the job pings queued or in flight (at most cfg.MaxPending).
+	pending int
 	// queue maps a job ID to the completion of its last queued ping, so the pings of
 	// one job are sent in order (a /start never overtakes the outcome).
 	queue map[string]chan struct{}
@@ -136,6 +154,9 @@ func New(cfg Config) *Service {
 	}
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = DefaultDrainTimeout
+	}
+	if cfg.MaxPending <= 0 {
+		cfg.MaxPending = DefaultMaxPending
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -244,26 +265,37 @@ func (s *Service) JobRunStarted(job *models.Job, _ *models.JobRun) {
 }
 
 // JobRunFinished pings the job's heartbeat with the run's outcome: "<url>" for ok,
-// "<url>/fail" for failed, partial and cancelled runs (see scheduler.RunObserver).
-// It returns at once.
-func (s *Service) JobRunFinished(job *models.Job, run *models.JobRun) {
+// "<url>/fail" for failed and partial runs, nothing for a run that was cancelled
+// or interrupted (see scheduler.RunObserver). It returns at once.
+func (s *Service) JobRunFinished(job *models.Job, run *models.JobRun, interrupted bool) {
 	if job == nil || run == nil || job.HeartbeatURL == "" {
 		return
 	}
-	s.dispatch(job.ID, job.HeartbeatURL, SignalOf(run.Status))
+	sig, ok := SignalOf(run.Status, interrupted)
+	if !ok {
+		s.logger.Debug("no heartbeat ping: the run was cancelled or interrupted", logsafe.Attr("job_id", job.ID))
+		return
+	}
+	s.dispatch(job.ID, job.HeartbeatURL, sig)
 }
 
-// SignalOf returns the ping signal of a finished run's status: SignalSuccess for
-// ok, SignalFail for anything else.
-func SignalOf(status models.JobRunStatus) Signal {
-	if status == models.JobRunOK {
-		return SignalSuccess
+// SignalOf returns the ping signal of a finished run: SignalSuccess for ok,
+// SignalFail for failed and partial runs. ok is false for a cancelled run and for
+// one interrupted by a shutdown or its caller, which send no ping.
+func SignalOf(status models.JobRunStatus, interrupted bool) (sig Signal, ok bool) {
+	switch {
+	case status == models.JobRunCancelled, interrupted:
+		return "", false
+	case status == models.JobRunOK:
+		return SignalSuccess, true
+	default:
+		return SignalFail, true
 	}
-	return SignalFail
 }
 
 // dispatch sends a ping of job jobID in the background, after the job's previous
-// ping. Pings outside Run are dropped.
+// ping. It never blocks: pings outside Run are dropped, and so is a ping that would
+// exceed MaxPending queued or in-flight pings (counted through OnDrop).
 func (s *Service) dispatch(jobID, raw string, sig Signal) {
 	s.mu.Lock()
 	if !s.accepting {
@@ -271,6 +303,16 @@ func (s *Service) dispatch(jobID, raw string, sig Signal) {
 		s.logger.Debug("heartbeat ping dropped: the heartbeat service is not running", logsafe.Attr("job_id", jobID))
 		return
 	}
+	if s.pending >= s.cfg.MaxPending {
+		s.mu.Unlock()
+		if s.cfg.OnDrop != nil {
+			s.cfg.OnDrop()
+		}
+		s.logger.Warn("heartbeat ping dropped: too many pings are pending", logsafe.Attr("job_id", jobID),
+			slog.String("signal", signalName(sig)), slog.Int("max_pending", s.cfg.MaxPending))
+		return
+	}
+	s.pending++
 	prev := s.queue[jobID]
 	done := make(chan struct{})
 	s.queue[jobID] = done
@@ -281,6 +323,7 @@ func (s *Service) dispatch(jobID, raw string, sig Signal) {
 		defer s.wg.Done()
 		defer func() {
 			s.mu.Lock()
+			s.pending--
 			if s.queue[jobID] == done {
 				delete(s.queue, jobID)
 			}
@@ -353,15 +396,13 @@ func (s *Service) attempt(ctx context.Context, raw string, sig Signal) error {
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		cause := err
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			cause = ue.Err
+		// The cause is described by a fixed message: transport errors quote the
+		// resolved address (IP:port) and, through *url.Error, the URL itself.
+		msg := TransportProblem(err)
+		if errors.Is(err, notify.ErrBlockedDestination) {
+			return fmt.Errorf("%w: %s: %s", errPermanent, host, msg)
 		}
-		if errors.Is(cause, notify.ErrBlockedDestination) {
-			return fmt.Errorf("%w: %s: %w", errPermanent, host, cause)
-		}
-		return fmt.Errorf("%s: %w", host, cause)
+		return fmt.Errorf("%s: %s", host, msg)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
@@ -374,6 +415,54 @@ func (s *Service) attempt(ctx context.Context, raw string, sig Signal) error {
 		return fmt.Errorf("%s: http status %d", host, code)
 	default:
 		return fmt.Errorf("%w: %s: http status %d", errPermanent, host, code)
+	}
+}
+
+// Fixed descriptions of transport failures (see TransportProblem).
+const (
+	problemRefused  = "connection refused"
+	problemTimeout  = "timeout"
+	problemTLS      = "TLS error"
+	problemDNS      = "DNS error"
+	problemBlocked  = "destination not allowed"
+	problemCanceled = "cancelled"
+	problemOther    = "connection failed"
+)
+
+// TransportProblem maps an HTTP transport error to a fixed description ("connection
+// refused", "timeout", "TLS error", "DNS error", "destination not allowed",
+// "cancelled" or "connection failed"). The error's own text is never used: it
+// names the resolved IP address and port, and *url.Error the URL with its token.
+func TransportProblem(err error) string {
+	var (
+		dnsErr     *net.DNSError
+		netErr     net.Error
+		recordErr  tls.RecordHeaderError
+		alertErr   tls.AlertError
+		verifyErr  *tls.CertificateVerificationError
+		authErr    x509.UnknownAuthorityError
+		hostErr    x509.HostnameError
+		invalidErr x509.CertificateInvalidError
+	)
+	switch {
+	case errors.Is(err, notify.ErrBlockedDestination):
+		return problemBlocked
+	case errors.As(err, &dnsErr):
+		return problemDNS
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded),
+		errors.As(err, &netErr) && netErr.Timeout():
+		return problemTimeout
+	case errors.Is(err, context.Canceled):
+		return problemCanceled
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return problemRefused
+	case errors.As(err, &recordErr), errors.As(err, &alertErr), errors.As(err, &verifyErr),
+		errors.As(err, &authErr), errors.As(err, &hostErr), errors.As(err, &invalidErr),
+		// net/http reports a plain-HTTP answer to a TLS handshake without a type.
+		strings.Contains(err.Error(), "server gave HTTP response to HTTPS client"):
+		return problemTLS
+	default:
+		return problemOther
 	}
 }
 

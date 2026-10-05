@@ -15,7 +15,8 @@ import (
 
 // Health is the answer of GET /api/v1/health.
 type Health struct {
-	// Status is "healthy" when the server is up.
+	// Status is "healthy" when the server is up (also when the scheduler is stale;
+	// see Scheduler).
 	Status string `json:"status"`
 	// Version is the server's version.
 	Version string `json:"version"`

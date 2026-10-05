@@ -68,6 +68,25 @@ func (s *SQLiteStore) reportCorrupt(table, id string, err error) {
 	}
 }
 
+// reportCorruptField records that an encrypted field of row id cannot be opened
+// although the row itself is still used without it (table names the field, such as
+// tableJobHeartbeats), and logs it once (and again when the reason changes).
+func (s *SQLiteStore) reportCorruptField(table, id string, err error) {
+	rec := CorruptRecord{Table: table, ID: id, Error: corruptSummary(err)}
+	key := corruptKey{table, id}
+	s.corrupt.mu.Lock()
+	if s.corrupt.rows == nil {
+		s.corrupt.rows = make(map[corruptKey]CorruptRecord)
+	}
+	prev, seen := s.corrupt.rows[key]
+	s.corrupt.rows[key] = rec
+	s.corrupt.mu.Unlock()
+	if !seen || prev.Error != rec.Error {
+		s.logger.Warn("an encrypted field of a stored record cannot be opened; the record is used without it and left unchanged in the database",
+			slog.String("field", table), slog.String("id", id), slog.String("reason", rec.Error))
+	}
+}
+
 // clearCorrupt forgets row id of table after it was read successfully.
 func (s *SQLiteStore) clearCorrupt(table, id string) {
 	s.corrupt.mu.Lock()
@@ -164,6 +183,10 @@ type recordChecker func(ctx context.Context, s *SQLiteStore, id string) error
 var recordCheckers = map[string]recordChecker{
 	tableJobs: checkJSON(tableJobs, func(s *SQLiteStore, j *models.Job) error {
 		return s.openJob(j)
+	}),
+	// The job itself stays readable; this is its heartbeat URL alone.
+	tableJobHeartbeats: checkJSON(tableJobs, func(s *SQLiteStore, j *models.Job) error {
+		return s.openJobHeartbeat(j)
 	}),
 	tableBackups:  checkJSON[models.BackupRecord](tableBackups, nil),
 	tableRestores: checkJSON[models.RestoreRecord](tableRestores, nil),
