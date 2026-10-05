@@ -157,6 +157,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if err := normalizeSelection(job); err != nil {
 		return err
 	}
+	if err := s.checkCollectionFilters(job); err != nil {
+		return err
+	}
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)
 	}
@@ -206,6 +209,34 @@ func ValidateRPO(minutes int) error {
 // one (a client that predates selections) becomes a single selection of Database; a
 // single selection names Database (its one database wins over Database), and a
 // multi-database selection clears Database and refuses collection filters.
+// CollectionFilterChecker is implemented by backup engines that can tell up front
+// whether a collection filter can be applied (*backup.Engine: wildcard patterns
+// need its collection lister). A BackupEngine that implements it lets ValidateJob
+// refuse such a job instead of letting every run fail.
+type CollectionFilterChecker interface {
+	// CheckCollectionFilter fails (wrapping backup.ErrCollectionFilter) for a filter
+	// the engine cannot apply.
+	CheckCollectionFilter(include, exclude []string) error
+}
+
+// checkCollectionFilters checks the job's collection filters and its per-database
+// ones with the backup engine (see CollectionFilterChecker), as ErrInvalid errors.
+func (s *Service) checkCollectionFilters(job *models.Job) error {
+	checker, ok := s.cfg.Backup.(CollectionFilterChecker)
+	if !ok {
+		return nil
+	}
+	if err := checker.CheckCollectionFilter(job.Collections, job.ExcludeCollections); err != nil {
+		return invalid(err)
+	}
+	for _, f := range job.DatabaseSelection.CollectionFilters {
+		if err := checker.CheckCollectionFilter(f.Collections, f.ExcludeCollections); err != nil {
+			return invalid(fmt.Errorf("%s: %w", f.Name, err))
+		}
+	}
+	return nil
+}
+
 func normalizeSelection(job *models.Job) error {
 	sel := job.DatabaseSelection.Clone()
 	if sel.Mode == "" {

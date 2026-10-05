@@ -39,9 +39,11 @@ var (
 	// (see WithStallTimeout), e.g. while hanging on an unreachable server, and was aborted.
 	ErrStalled = errors.New("backup: mongodump stalled without producing output")
 
-	// ErrCollectionFilter indicates that a filter naming several collections could not
-	// be applied: mongodump dumps one collection or a whole database, so the engine
-	// lists the database (see WithCollectionLister) and excludes the other collections.
+	// ErrCollectionFilter indicates that a collection filter could not be applied:
+	// mongodump dumps one collection or a whole database, so the engine lists the
+	// database (see WithCollectionLister) to exclude the other collections of a filter
+	// naming several, and to expand wildcard patterns ("*", "?") into the collections
+	// they match. A pattern is never passed to mongodump as a literal name.
 	ErrCollectionFilter = errors.New("backup: collection filter cannot be applied")
 )
 
@@ -50,9 +52,11 @@ var (
 type CollectionLister func(ctx context.Context, uri, database string) ([]string, error)
 
 // WithCollectionLister lets backups include several collections (BackupOptions
-// Collections with more than one entry): the database is listed with fn and every
-// other collection is excluded. Without a lister such backups fail with
-// ErrCollectionFilter instead of silently dumping only one collection.
+// Collections with more than one entry) and use wildcard patterns in their filters:
+// the database is listed with fn, patterns are expanded and every other collection
+// of an include filter is excluded. Without a lister such backups fail with
+// ErrCollectionFilter instead of silently dumping only one collection or treating a
+// pattern as a collection name.
 func WithCollectionLister(fn CollectionLister) Option {
 	return func(e *Engine) {
 		e.listCollections = fn
@@ -241,6 +245,9 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 	if strings.TrimSpace(opts.Database) == "" {
 		return nil, errors.New("backup: target database name is required")
 	}
+	if err := e.CheckCollectionFilter(opts.Collections, opts.ExcludeCollections); err != nil {
+		return nil, err
+	}
 	if e.resolveURI(opts) == "" {
 		return nil, errors.New("backup: mongo connection uri is required")
 	}
@@ -283,8 +290,10 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 		StorageKey:     targetKey,
 		Collections:    opts.Collections,
 		UsersAndRoles:  opts.UsersAndRolesApply(),
-		StartedAt:      startTime,
-		Phases:         models.RunPhases{Queued: models.Stamp(startTime)},
+
+		ExcludedCollections: trimmedNames(opts.ExcludeCollections),
+		StartedAt:           startTime,
+		Phases:              models.RunPhases{Queued: models.Stamp(startTime)},
 
 		StorageTargetID:   opts.StorageTargetID,
 		StorageTargetName: opts.StorageTargetName,
@@ -386,9 +395,15 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	defer cleanupConfig()
 
-	dumpOpts, err := e.expandCollections(runCtx, mongoURI, opts)
+	dumpOpts, applied, err := e.expandCollections(runCtx, mongoURI, opts)
 	if err != nil {
 		return e.fail(runCtx, record, err)
+	}
+	// The record names what the filter resolved to, patterns expanded, so the
+	// manifest and every later check describe the same collections.
+	record.Collections, record.ExcludedCollections = applied.include, applied.exclude
+	if applied.expanded {
+		tracker.Printf("collection filter resolved: include %q, exclude %q", applied.include, applied.exclude)
 	}
 	// Document counts and indexes before the dump (see finishManifest).
 	manifest := e.captureManifest(runCtx, mongoURI, dumpOpts)
@@ -708,48 +723,140 @@ func trimmedNames(names []string) []string {
 	return out
 }
 
-// expandCollections checks an include filter against the database and rewrites a
-// filter that includes several collections into the equivalent exclusion list, since
-// mongodump honours only the last --collection flag.
+// appliedFilter is the collection filter a backup ran with: concrete names, the
+// wildcard patterns of the request replaced by the collections they matched.
+type appliedFilter struct {
+	include, exclude []string
+	// expanded reports that patterns were expanded.
+	expanded bool
+}
+
+// HasCollectionPattern reports whether any entry of names is a wildcard pattern (see
+// models.IsCollectionPattern).
+func HasCollectionPattern(names []string) bool {
+	return slices.ContainsFunc(trimmedNames(names), models.IsCollectionPattern)
+}
+
+// ListsCollections reports whether the engine can list a database's collections
+// (WithCollectionLister), which wildcard patterns and include filters of several
+// collections need.
+func (e *Engine) ListsCollections() bool {
+	return e.listCollections != nil
+}
+
+// CheckCollectionFilter fails with ErrCollectionFilter when a filter of include and
+// exclude names wildcard patterns and the engine cannot list collections, so such a
+// backup is refused before it starts instead of failing at run time.
+func (e *Engine) CheckCollectionFilter(include, exclude []string) error {
+	if e.listCollections == nil && (HasCollectionPattern(include) || HasCollectionPattern(exclude)) {
+		return fmt.Errorf("%w: wildcard patterns (* or ?) need a collection lister to be expanded, and none is configured", ErrCollectionFilter)
+	}
+	return nil
+}
+
+// expandPatterns replaces the wildcard patterns of filter by the collections of names
+// they match (never system collections), keeping literal names as they are, in
+// order and without duplicates. With mustMatch, a pattern that matches nothing fails
+// with ErrCollectionFilter.
+func expandPatterns(filter, names []string, database string, mustMatch bool) ([]string, error) {
+	out := make([]string, 0, len(filter))
+	add := func(n string) {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	for _, entry := range filter {
+		if !models.IsCollectionPattern(entry) {
+			add(entry)
+			continue
+		}
+		matched := 0
+		for _, n := range names {
+			if models.MatchCollectionPattern(entry, n) {
+				add(n)
+				matched++
+			}
+		}
+		if matched == 0 && mustMatch {
+			return nil, fmt.Errorf("%w: pattern %s matches no collection in database %s", ErrCollectionFilter, entry, database)
+		}
+	}
+	return out, nil
+}
+
+// expandCollections resolves the collection filter of opts against the database and
+// returns the options mongodump runs with and the filter applied (for the record).
 //
-// It fails closed: a requested collection that does not exist fails the backup
-// (mongodump would silently dump nothing for it). Every collection that was not
-// requested is excluded, system collections such as system.js included, except
-// system.views and the buckets of requested time-series collections, which mongodump
-// dumps together with the views and collections they belong to.
+// Wildcard patterns ("*" any run of characters, "?" one character) in Collections
+// and ExcludeCollections are expanded into the collections they match, system
+// collections never included; an include pattern that matches nothing fails the
+// backup, an exclude pattern that matches nothing excludes nothing. Patterns need
+// the lister: without one the backup fails with ErrCollectionFilter, so a pattern is
+// never taken for a collection name.
+//
+// An include filter is checked against the database and a filter that includes
+// several collections is rewritten into the equivalent exclusion list, since
+// mongodump honours only the last --collection flag. It fails closed: a requested
+// collection that does not exist fails the backup (mongodump would silently dump
+// nothing for it). Every collection that was not requested is excluded, system
+// collections such as system.js included, except system.views and the buckets of
+// requested time-series collections, which mongodump dumps together with the views
+// and collections they belong to.
 //
 // A collection created between the listing and the dump is not excluded and ends up
 // in the backup as well; that race is accepted, since it can only add data and never
 // drop a requested collection. Without a lister, a single collection is passed to
 // mongodump unchecked and several collections fail with ErrCollectionFilter. A dump
-// with users and roles (BackupOptions.UsersAndRolesApply) rewrites a single
-// collection into exclusions as well, since mongodump refuses --collection with
-// --dumpDbUsersAndRoles; without a lister it fails with ErrCollectionFilter.
-func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.BackupOptions) (models.BackupOptions, error) {
+// with users and roles (BackupOptions.UsersAndRolesApply), or one that also excludes
+// collections, rewrites a single collection into exclusions as well, since mongodump
+// refuses --collection with --dumpDbUsersAndRoles and with --excludeCollection;
+// without a lister it fails with ErrCollectionFilter.
+func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.BackupOptions) (models.BackupOptions, appliedFilter, error) {
 	include := trimmedNames(opts.Collections)
-	if len(include) == 0 {
-		return opts, nil
+	exclude := trimmedNames(opts.ExcludeCollections)
+	patterns := slices.ContainsFunc(include, models.IsCollectionPattern) || slices.ContainsFunc(exclude, models.IsCollectionPattern)
+	applied := appliedFilter{include: nilIfEmpty(include), exclude: nilIfEmpty(exclude)}
+	if len(include) == 0 && !patterns {
+		return opts, applied, nil
 	}
-	// mongodump refuses --collection together with --dumpDbUsersAndRoles, so a dump
-	// with users and roles expresses even a single collection as exclusions.
-	single := len(include) == 1 && !opts.UsersAndRolesApply()
+	// mongodump refuses --collection together with --dumpDbUsersAndRoles or
+	// --excludeCollection, so such dumps express even a single collection as
+	// exclusions.
+	single := len(include) == 1 && !patterns && len(exclude) == 0 && !opts.UsersAndRolesApply()
 	if e.listCollections == nil {
 		if single {
-			return opts, nil
+			return opts, applied, nil
 		}
-		return opts, fmt.Errorf("%w: %d collections requested but no collection lister is configured", ErrCollectionFilter, len(include))
+		if err := e.CheckCollectionFilter(include, exclude); err != nil {
+			return opts, applied, err
+		}
+		return opts, applied, fmt.Errorf("%w: %d collections requested but no collection lister is configured", ErrCollectionFilter, len(include))
 	}
 	names, err := e.listCollections(ctx, uri, opts.Database)
 	if err != nil {
-		return opts, fmt.Errorf("%w: list collections of %s: %w", ErrCollectionFilter, opts.Database, err)
+		return opts, applied, fmt.Errorf("%w: list collections of %s: %w", ErrCollectionFilter, opts.Database, err)
+	}
+	if patterns {
+		if include, err = expandPatterns(include, names, opts.Database, true); err != nil {
+			return opts, applied, err
+		}
+		if exclude, err = expandPatterns(exclude, names, opts.Database, false); err != nil {
+			return opts, applied, err
+		}
+		applied = appliedFilter{include: nilIfEmpty(include), exclude: nilIfEmpty(exclude), expanded: true}
+		opts.Collections, opts.ExcludeCollections = nilIfEmpty(include), nilIfEmpty(exclude)
+		if len(include) == 0 {
+			return opts, applied, nil
+		}
+		single = len(include) == 1 && len(exclude) == 0 && !opts.UsersAndRolesApply()
 	}
 	for _, want := range include {
 		if !slices.Contains(names, want) {
-			return opts, fmt.Errorf("%w: collection %s not found in database %s", ErrCollectionFilter, want, opts.Database)
+			return opts, applied, fmt.Errorf("%w: collection %s not found in database %s", ErrCollectionFilter, want, opts.Database)
 		}
 	}
 	if single {
-		return opts, nil
+		return opts, applied, nil
 	}
 	keep := func(name string) bool {
 		if slices.Contains(include, name) || name == "system.views" {
@@ -758,19 +865,23 @@ func (e *Engine) expandCollections(ctx context.Context, uri string, opts models.
 		ts, ok := strings.CutPrefix(name, "system.buckets.")
 		return ok && slices.Contains(include, ts)
 	}
-	exclude := trimmedNames(opts.ExcludeCollections)
+	all := slices.Clone(exclude)
 	for _, name := range names {
-		if !keep(name) && !slices.Contains(exclude, name) {
-			exclude = append(exclude, name)
+		if !keep(name) && !slices.Contains(all, name) {
+			all = append(all, name)
 		}
 	}
 	opts.Collections = nil
-	opts.ExcludeCollections = exclude
-	if len(exclude) == 0 {
-		// Every collection is included: dump the whole database.
-		opts.ExcludeCollections = nil
+	opts.ExcludeCollections = nilIfEmpty(all)
+	return opts, applied, nil
+}
+
+// nilIfEmpty returns nil for an empty list, else list.
+func nilIfEmpty(list []string) []string {
+	if len(list) == 0 {
+		return nil
 	}
-	return opts, nil
+	return list
 }
 
 // buildDumpArgs constructs safe CLI arguments for mongodump. configArg is the
