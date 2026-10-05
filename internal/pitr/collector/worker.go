@@ -31,6 +31,12 @@ const (
 	behindDelay = time.Second
 	// maxFailureDelay caps the wait after a failed tick.
 	maxFailureDelay = time.Minute
+	// maxGapBackoff caps the wait after a chain ended: the first wait is one
+	// interval and doubles with every break in a row.
+	maxGapBackoff = 10 * time.Minute
+	// brokenEventEvery is the least time between two pitr.chain_broken events of
+	// one stream; breaks in between are logged and counted, not alerted.
+	brokenEventEvery = 10 * time.Minute
 )
 
 // LagThreshold returns the lag above which a stream with chunk interval interval
@@ -89,6 +95,10 @@ type worker struct {
 	behind int
 	// emptyAt is the position an empty chunk was last written at.
 	emptyAt pitr.Timestamp
+	// gapBackoff is the wait after the last chain break (0 after a tick that caught
+	// up), and brokenEventAt when pitr.chain_broken was last raised.
+	gapBackoff    time.Duration
+	brokenEventAt time.Time
 
 	mu   sync.Mutex
 	live Live
@@ -351,6 +361,7 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	if catchUp {
 		return 0, nil
 	}
+	w.gapBackoff = 0
 	return w.interval, nil
 }
 
@@ -391,8 +402,19 @@ func (w *worker) confirm(ctx context.Context, st *pitr.State) (win pitr.OplogWin
 	return win, false, 0, nil
 }
 
-// afterBreak returns the wait after a chain ended.
-func (w *worker) afterBreak() time.Duration { return 0 }
+// afterBreak returns the wait after a chain ended: at least one interval,
+// doubling with every break in a row up to maxGapBackoff, so an oplog that keeps
+// being overrun is not checked (and alerted) in a tight loop.
+func (w *worker) afterBreak() time.Duration {
+	switch {
+	case w.gapBackoff == 0:
+		w.gapBackoff = w.interval
+	default:
+		w.gapBackoff = min(2*w.gapBackoff, maxGapBackoff)
+	}
+	w.gapBackoff = max(w.gapBackoff, w.interval)
+	return w.gapBackoff
+}
 
 // startChecked finishes the check of the stored position at start: it decides
 // whether the next chunk is the first of its chain.
@@ -510,7 +532,12 @@ func (w *worker) breakChain(ctx context.Context, st *pitr.State, win pitr.OplogW
 		}
 		w.stream.ReplicaSet, w.stream.UpdatedAt = updated.ReplicaSet, updated.UpdatedAt
 	}
-	w.svc.publish(ctx, w.event(events.PITRChainBroken, string(reason), "", detail))
+	if now := w.svc.now(); w.brokenEventAt.IsZero() || now.Sub(w.brokenEventAt) >= brokenEventEvery {
+		w.brokenEventAt = now
+		w.svc.publish(ctx, w.event(events.PITRChainBroken, string(reason), "", detail))
+	} else {
+		w.svc.logger.Info("pitr.chain_broken not raised again within 10 minutes", logsafe.Attr("stream_id", w.stream.ID))
+	}
 	if err := w.startAtOldest(ctx, win); err != nil {
 		return err
 	}
