@@ -284,7 +284,10 @@ func (s *Service) supervise(ctx context.Context) {
 }
 
 // reconcile starts a collector for every enabled stream (restarting it when the
-// stream changed) and stops the others.
+// stream changed) and stops the others. Collectors are signalled to stop under
+// s.mu but awaited without it, so Running and Status never wait for a chunk
+// upload to be abandoned; a stream's new collector starts only once its old one
+// has stopped. Only the supervisor goroutine calls it.
 func (s *Service) reconcile(ctx context.Context) {
 	streams, err := s.cfg.Repo.ListStreams(ctx)
 	if err != nil {
@@ -300,17 +303,24 @@ func (s *Service) reconcile(ctx context.Context) {
 		}
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var stopping []*runningWorker
 	for id, rw := range s.workers {
 		if st, ok := want[id]; !ok || !st.UpdatedAt.Equal(rw.updatedAt) {
 			rw.cancel()
-			<-rw.done
+			stopping = append(stopping, rw)
 			delete(s.workers, id)
 			if !ok {
 				s.observe(func(o Observer) { o.SetPITRCollectorUp(id, false) })
 			}
 		}
 	}
+	s.mu.Unlock()
+	for _, rw := range stopping {
+		<-rw.done
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for id, st := range want {
 		if _, ok := s.workers[id]; ok {
 			continue
@@ -328,14 +338,19 @@ func (s *Service) reconcile(ctx context.Context) {
 	}
 }
 
-// stopAll stops every collector.
+// stopAll stops every collector: it signals them under s.mu and awaits them
+// without it.
 func (s *Service) stopAll() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	stopping := make([]*runningWorker, 0, len(s.workers))
 	for id, rw := range s.workers {
 		rw.cancel()
-		<-rw.done
+		stopping = append(stopping, rw)
 		delete(s.workers, id)
+	}
+	s.mu.Unlock()
+	for _, rw := range stopping {
+		<-rw.done
 	}
 }
 
