@@ -27,6 +27,7 @@ var operatorRoutes = []string{
 	"POST /api/v1/backups/{id}/verify",
 	"POST /api/v1/backups/{id}/pin",
 	"POST /api/v1/jobs/{id}/restore-test",
+	"POST /api/v1/pitr/streams/{id}/base",
 
 	// Bulk routes: each action then needs the scope of its single-item route.
 	"POST /api/v1/backups/bulk",

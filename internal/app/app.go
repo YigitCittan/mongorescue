@@ -572,6 +572,25 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			}
 			return next[0], true
 		},
+		Inspect: func(ctx context.Context, connectionID string) (collector.Inspection, error) {
+			conn, err := connSvc.Resolve(ctx, connectionID)
+			if err != nil {
+				return collector.Inspection{}, err
+			}
+			// The oplog's ends are read only once the user may read it.
+			if ok, accessErr := prober.CanReadOplog(ctx, conn.URI); accessErr != nil || !ok {
+				return collector.Inspection{}, accessErr
+			}
+			win, err := prober.OplogWindow(ctx, conn.URI)
+			return collector.Inspection{Window: win, CanReadOplog: err == nil}, err
+		},
+		ResolveTarget: func(ctx context.Context, id string) (string, error) {
+			t, err := targetSvc.Resolve(ctx, id)
+			if err != nil {
+				return "", err
+			}
+			return t.ID, nil
+		},
 		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
 		Publisher:   bus,
 		Observer:    metricSet,
@@ -610,6 +629,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithMetadataBackup(metaBackupSvc),
 		server.WithRecoveryKit(kitSvc),
 		server.WithReadiness(readinessSvc),
+		server.WithPITR(pitrSvc),
 		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.desktop {

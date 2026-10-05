@@ -146,6 +146,12 @@ type Config struct {
 	// DeleteGrace returns the delete grace period of retention; nil means
 	// models.DefaultDeleteGraceDays.
 	DeleteGrace func() time.Duration
+	// Inspect inspects the replica set of a connection when a stream is created
+	// or enabled; nil refuses them.
+	Inspect Inspector
+	// ResolveTarget resolves the storage target of a stream; nil keeps the given
+	// ID.
+	ResolveTarget TargetResolver
 	// NextRun returns the first activation of a cron expression after from
 	// (implemented with scheduler.NextRuns); nil disables the base schedule.
 	NextRun func(expr string, from time.Time) (time.Time, bool)

@@ -127,6 +127,16 @@ var routeScopes = map[string]auth.Scope{
 	// Metadata backups: the status is read; taking a snapshot is admin. The recovery
 	// kit carries every secret: admin, and the handler also requires a signed-in
 	// user who confirms their password (API keys are refused by the auth service).
+	// PITR streams (experimental): reading them is read, configuring them admin;
+	// taking a base backup now is operator, like starting a backup.
+	pitrStreamsRoute:      auth.ScopeRead,
+	pitrStreamRoute:       auth.ScopeRead,
+	pitrChunksRoute:       auth.ScopeRead,
+	pitrCreateStreamRoute: auth.ScopeAdmin,
+	pitrUpdateStreamRoute: auth.ScopeAdmin,
+	pitrDeleteStreamRoute: auth.ScopeAdmin,
+	pitrBaseRoute:         auth.ScopeOperator,
+
 	"GET /api/v1/metadata-backup":      auth.ScopeRead,
 	"POST /api/v1/metadata-backup/run": auth.ScopeAdmin,
 	"GET /api/v1/recovery-kit":         auth.ScopeRead,

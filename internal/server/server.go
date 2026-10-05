@@ -32,6 +32,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -109,6 +110,9 @@ type Server struct {
 
 	// readiness reports the RPO, RTO and evidence of every database a job backs up.
 	readiness *readiness.Service
+
+	// pitr runs the PITR oplog collectors and serves the stream API.
+	pitr *collector.Service
 
 	// heartbeat sends the test pings of POST /api/v1/settings/monitoring/test.
 	heartbeat *heartbeat.Service
@@ -357,6 +361,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Recovery readiness: RPO, RTO and evidence per database
 	s.registerReadinessRoutes(mux)
+	s.registerPITRRoutes(mux)
 
 	// Bulk actions on backups, restores and jobs
 	s.registerBulkRoutes(mux)
