@@ -82,7 +82,8 @@ test("restores to a point in time through the wizard", async ({ page }) => {
   await expect(submit).toBeEnabled();
   await submit.click();
   const confirm = page.getByRole("alertdialog", { name: "Start the point-in-time restore?" });
-  await expect(confirm).toContainText("_rescue_20261005_120500");
+  await expect(confirm).toContainText("_rescue_<YYYYMMDD_HHMMSS>_<id>");
+  await expect(confirm).not.toContainText("_rescue_20261005_120500");
   await confirm.getByRole("button", { name: "Restore" }).click();
   await expect(page.getByText("Point-in-time restore rst_pitr_e2e started.")).toBeVisible();
   expect(sent.restore).toEqual(sent.preflight);

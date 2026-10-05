@@ -958,6 +958,10 @@ async function pitrAction(btn) {
 
 const pitrRestore = { stream: null, windows: [], body: null, plan: null };
 
+// PITR_CLONE_PATTERN is how the clone names of a restore are shown before it
+// starts: the restore picks its own timestamp and random ID when it starts.
+const PITR_CLONE_PATTERN = "_rescue_<YYYYMMDD_HHMMSS>_<id>";
+
 // pitrUTCInput renders a date as the value of a datetime-local input read as UTC.
 function pitrUTCInput(d) {
   return d.toISOString().slice(0, 19);
@@ -1073,7 +1077,7 @@ function pitrPlanHTML(res) {
     rows.push([t("pitr.restore_plan_base"), `${p.base_id} (${consistent ? pitrUTC(consistent) : ""})`]);
     rows.push([t("pitr.restore_plan_chunks"), tf("pitr.restore_plan_chunks_value", { n: p.chunks, size: formatBytes(p.oplog_bytes) })]);
     rows.push([t("pitr.restore_plan_size"), formatBytes(p.base_bytes)]);
-    rows.push([t("pitr.restore_plan_clones"), `<db>${p.clone_suffix}`]);
+    rows.push([t("pitr.restore_plan_clones"), `<db>${PITR_CLONE_PATTERN}`]);
     const note = p.estimate_from === "chain_test" ? t("pitr.restore_rto_chain_test") : t("pitr.restore_rto_default");
     rows.push([t("pitr.restore_plan_rto"), `${formatDuration(p.estimated_seconds)} (${note})`]);
   }
@@ -1127,7 +1131,7 @@ async function pitrRestoreSubmit(e) {
   const ok = typeof confirmDialog === "function"
     ? await confirmDialog({
       title: t("pitr.restore_confirm_title"),
-      body: tf("pitr.restore_confirm_body", { at: body.pitr.at, suffix: p.clone_suffix || "_rescue_…", duration: formatDuration(p.estimated_seconds || 0) }),
+      body: tf("pitr.restore_confirm_body", { at: body.pitr.at, suffix: PITR_CLONE_PATTERN, duration: formatDuration(p.estimated_seconds || 0) }),
       confirmLabel: t("pitr.restore_start")
     })
     : false;
