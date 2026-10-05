@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
@@ -476,4 +477,12 @@ func (s *SQLiteStore) SetCollectorStatus(ctx context.Context, streamID string, s
 		return pitr.ErrNotFound
 	}
 	return nil
+}
+
+// ListBaseBackups returns the PITR base backups (instance scope) of stream
+// streamID, newest first.
+func (s *SQLiteStore) ListBaseBackups(ctx context.Context, streamID string) ([]*models.BackupRecord, error) {
+	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		`SELECT id, data FROM backups WHERE database_name = '' AND json_extract(data, '$.scope') = 'instance'
+			AND json_extract(data, '$.pitr_stream_id') = ? ORDER BY started_at DESC, id DESC`, streamID)
 }

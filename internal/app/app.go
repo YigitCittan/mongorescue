@@ -39,6 +39,8 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -100,6 +102,7 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	pitr          *collector.Service
 	readiness     *readiness.Service
 	auditLog      *auditlog.Service
 	auditForward  *auditlog.Forwarder
@@ -547,6 +550,34 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// The PITR oplog collector: one goroutine and session per enabled stream, off
+	// while no stream is enabled. Base backups go through the operations service.
+	pitrSvc := collector.New(collector.Config{
+		Repo: metaStore,
+		Open: func(ctx context.Context, st *pitr.Stream) (collector.Session, error) {
+			conn, err := connSvc.Resolve(ctx, st.ConnectionID)
+			if err != nil {
+				return nil, err
+			}
+			return prober.OpenOplogSession(ctx, conn.URI, st.ReadPreference)
+		},
+		Storage:   targetSvc.Storage,
+		Encryptor: settingsSvc.Encryptor,
+		StartBase: ops.StartBaseBackup,
+		Bases:     metaStore.ListBaseBackups,
+		NextRun: func(expr string, from time.Time) (time.Time, bool) {
+			next := scheduler.NextRuns(expr, from, 1)
+			if len(next) == 0 {
+				return time.Time{}, false
+			}
+			return next[0], true
+		},
+		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
+		Publisher:   bus,
+		Observer:    metricSet,
+		Logger:      logger,
+	})
+
 	// With the two-person rule, admin users, promotions and admin API keys wait for a
 	// second administrator too.
 	authSvc.SetAdminGrantGate(ops)
@@ -605,6 +636,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		pitr:          pitrSvc,
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
@@ -930,6 +962,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.metaBackup != nil {
 		a.metaBackup.Start(context.WithoutCancel(ctx))
 	}
+	// The PITR oplog collector; stopped by shutdownRuns.
+	if a.pitr != nil {
+		a.pitr.Start(context.WithoutCancel(ctx))
+	}
 	// The RPO checker; stopped by shutdownRuns.
 	if a.readiness != nil {
 		a.readiness.Start(context.WithoutCancel(ctx))
@@ -1040,7 +1076,7 @@ func (a *App) shutdownRuns() {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(5)
+		wg.Add(6)
 		go func() {
 			defer wg.Done()
 			if err := a.runs.Shutdown(context.Background()); err != nil {
@@ -1061,6 +1097,12 @@ func (a *App) shutdownRuns() {
 			defer wg.Done()
 			if a.metaBackup != nil {
 				a.metaBackup.Stop()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if a.pitr != nil {
+				a.pitr.Stop()
 			}
 		}()
 		go func() {
