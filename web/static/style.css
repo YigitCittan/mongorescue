@@ -3558,3 +3558,26 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
   border-color: var(--warn);
   color: var(--warn);
 }
+
+/* Read preference, throttling and backup window of the job form (throttle.js) */
+.form-details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.form-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+.check-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 4px 0;
+}
+
+.throttle-warning {
+  color: var(--warn);
+}

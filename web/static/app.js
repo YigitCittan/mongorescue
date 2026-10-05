@@ -2408,6 +2408,7 @@ function setupForms() {
       include_users_and_roles: document.getElementById("job-users-roles").checked,
       ...(typeof readinessJobPayload === "function" ? readinessJobPayload() : {}),
       ...(typeof monitoringJobPayload === "function" ? monitoringJobPayload() : {}),
+      ...(typeof throttleJobPayload === "function" ? throttleJobPayload() : {}),
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2603,6 +2604,8 @@ function openJobModal(jobID) {
   if (typeof readinessFillJobForm === "function") readinessFillJobForm(job);
   // The job's heartbeat URL (monitoring.js).
   if (typeof monitoringFillJobForm === "function") monitoringFillJobForm(job);
+  // Read preference, throttling and the backup window (throttle.js).
+  if (typeof throttleFillJobForm === "function") throttleFillJobForm(job);
   // Single / Selected / All / Pattern database selection (jobdbs.js).
   if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
@@ -3374,6 +3377,8 @@ function setupRestoreCollections() {
 }
 
 async function triggerJob(jobID, btn) {
+  // A manual run ignores the job's backup window: say so first (throttle.js).
+  if (typeof throttleConfirmManualRun === "function" && !(await throttleConfirmManualRun(jobID))) return;
   if (btn) btn.disabled = true;
   try {
     const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(jobID)}/run`, { method: "POST" });
@@ -4364,6 +4369,7 @@ function openConnectionModal(id) {
   setValue("connection-name", c ? c.name : "");
   setValue("connection-uri", c ? c.uri : "");
   setValue("connection-description", c ? c.description : "");
+  if (typeof throttleFillConnectionForm === "function") throttleFillConnectionForm(c);
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
   // Paste URI or Build, as last used (forms.js).
@@ -4389,7 +4395,8 @@ function showConnectionTestResult(kind, text) {
 
 function describeTest(data) {
   if (data && data.ok) {
-    return tf("conn.test_ok", { version: data.server_version || "?", ms: Math.round(Number(data.latency_ms) || 0) });
+    const ok = tf("conn.test_ok", { version: data.server_version || "?", ms: Math.round(Number(data.latency_ms) || 0) });
+    return typeof throttleDescribeMember === "function" ? ok + throttleDescribeMember(data) : ok;
   }
   return tf("conn.test_failed", { error: truncate(errorSummary(data && data.error ? data.error : ""), 160) });
 }
@@ -4415,7 +4422,7 @@ async function testConnectionForm() {
       : await apiJSON("/api/v1/connections/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri })
+        body: JSON.stringify({ uri, ...(typeof throttleConnectionReadPref === "function" ? throttleConnectionReadPref() : {}) })
       });
     data = json.success ? (json.data || {}) : { ok: false, error: json.error || "" };
   } catch (err) {
@@ -4437,7 +4444,8 @@ async function saveConnection(e) {
   const payload = {
     name: getValue("connection-name"),
     uri,
-    description: getValue("connection-description")
+    description: getValue("connection-description"),
+    ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {})
   };
 
   // Test before saving; a failing test must be overridden explicitly.
@@ -4945,6 +4953,7 @@ function fillGeneral(g) {
   setValue("set-restore-timeout", g.restore_timeout || "");
   setValue("set-verify-policy", ["always", "auto", "never"].includes(g.restore_verify_policy) ? g.restore_verify_policy : "auto");
   setValue("set-log-retention-days", g.log_retention_days ?? 30);
+  setValue("set-max-upload-mbps", g.max_upload_mbps || 0);
   updateDurationPreviews("form-general");
 }
 
@@ -5115,7 +5124,8 @@ function collectGeneral() {
     backup_stall_timeout: durationSetting("set-backup-stall-timeout").raw,
     restore_timeout: durationSetting("set-restore-timeout").raw,
     restore_verify_policy: getValue("set-verify-policy"),
-    log_retention_days: intSetting("set-log-retention-days")
+    log_retention_days: intSetting("set-log-retention-days"),
+    max_upload_mbps: Math.max(parseFloat(String(getValue("set-max-upload-mbps")).replace(",", ".")) || 0, 0)
   };
 }
 

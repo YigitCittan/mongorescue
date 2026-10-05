@@ -788,6 +788,16 @@
               </div>
             </div>
           </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="throttle.settings_title">Throttling</legend>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="set-max-upload-mbps" data-i18n="throttle.max_upload">Upload cap (Mbit/s)</label>
+                <input type="number" id="set-max-upload-mbps" class="form-input" min="0" max="100000" step="any" inputmode="decimal" aria-describedby="set-max-upload-mbps-hint">
+                <span class="form-hint" id="set-max-upload-mbps-hint" data-i18n="throttle.max_upload_settings_hint">Caps the upload of every backup whose job sets no cap. 0 is unlimited.</span>
+              </div>
+            </div>
+          </fieldset>
           <p class="form-error" id="general-error" role="alert" hidden></p>
           <div class="settings-footer">
             <span class="save-status" id="general-status" role="status" aria-live="polite"></span>
@@ -1713,6 +1723,65 @@
             <input type="url" id="job-heartbeat-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://hc-ping.com/your-check-uuid" aria-describedby="job-heartbeat-url-hint">
             <span class="form-hint" id="job-heartbeat-url-hint" data-i18n="monitoring.job_url_hint">Optional. Pinged at &lt;url&gt;/start when a run starts, &lt;url&gt; when it succeeds and &lt;url&gt;/fail when it fails or is partial; a cancelled run sends nothing more. Stored encrypted.</span>
           </div>
+          <!-- Read preference, throttling and the backup window (throttle.js) -->
+          <details class="form-group form-details" id="job-throttle">
+            <summary data-i18n="throttle.job_section">Read preference, throttling and backup window</summary>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="job-read-pref" data-i18n="throttle.read_pref">Read preference</label>
+                <select id="job-read-pref" class="form-input" aria-describedby="job-read-pref-hint">
+                  <option value="" data-i18n="throttle.read_pref_connection">Connection's setting</option>
+                  <option value="primary">primary</option>
+                  <option value="primaryPreferred">primaryPreferred</option>
+                  <option value="secondary">secondary</option>
+                  <option value="secondaryPreferred">secondaryPreferred</option>
+                  <option value="nearest">nearest</option>
+                </select>
+                <span class="form-hint" id="job-read-pref-hint" data-i18n="throttle.read_pref_job_hint">The member mongodump reads from. secondary fails when no secondary is available; secondaryPreferred falls back to the primary.</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="job-read-pref-tags" data-i18n="throttle.tags">Tag sets</label>
+                <input type="text" id="job-read-pref-tags" class="form-input mono" maxlength="2000" autocomplete="off" spellcheck="false" placeholder="dc=east,use=backup; dc=west" aria-describedby="job-read-pref-tags-hint">
+                <span class="form-hint" id="job-read-pref-tags-hint" data-i18n="throttle.tags_hint">Optional. name=value pairs separated by commas; separate tag sets with semicolons, tried in order. Not with primary.</span>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="job-max-upload" data-i18n="throttle.max_upload">Upload cap (Mbit/s)</label>
+                <input type="number" id="job-max-upload" class="form-input" min="0" max="100000" step="any" inputmode="decimal" aria-describedby="job-max-upload-hint">
+                <span class="form-hint" id="job-max-upload-hint" data-i18n="throttle.max_upload_job_hint">Empty or 0 uses the general setting.</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="job-num-parallel" data-i18n="throttle.num_parallel">Collections dumped in parallel</label>
+                <input type="number" id="job-num-parallel" class="form-input" min="0" max="16" step="1" aria-describedby="job-num-parallel-hint">
+                <span class="form-hint" id="job-num-parallel-hint" data-i18n="throttle.num_parallel_hint">mongodump --numParallelCollections, 1 to 16. Empty keeps mongodump's default of 4; 1 is the gentlest.</span>
+              </div>
+            </div>
+            <fieldset class="form-group">
+              <legend class="form-label"><label class="check-inline"><input type="checkbox" id="job-window-enabled"> <span data-i18n="throttle.window_enable">Start scheduled runs only within a backup window</span></label></legend>
+              <div id="job-window-fields" hidden>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label" for="job-window-start" data-i18n="throttle.window_start">Opens at</label>
+                    <input type="time" id="job-window-start" class="form-input" step="60">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="job-window-end" data-i18n="throttle.window_end">Closes at</label>
+                    <input type="time" id="job-window-end" class="form-input" step="60" aria-describedby="job-window-end-hint">
+                    <span class="form-hint" id="job-window-end-hint" data-i18n="throttle.window_end_hint">A time before the opening time closes the window the next day.</span>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="job-window-tz" data-i18n="throttle.window_tz">Time zone</label>
+                    <input type="text" id="job-window-tz" class="form-input mono" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Europe/Istanbul">
+                  </div>
+                </div>
+                <div class="check-group" id="job-window-days" role="group" aria-label="Days"></div>
+                <span class="form-hint" data-i18n="throttle.window_days_hint">The days the window opens on; none checked means every day.</span>
+                <label class="check-inline"><input type="checkbox" id="job-window-cancel"> <span data-i18n="throttle.window_cancel">Cancel a run still going when the window closes</span></label>
+                <p class="form-hint" id="job-window-note" data-i18n="throttle.window_note">Runs outside the window are recorded as skipped, not failed. Manual runs ignore the window. The default RPO counts only the runs the window allows.</p>
+              </div>
+            </fieldset>
+          </details>
           <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="job-retention-days" data-i18n="modal_job.days_label">Keep for (days)</label>
@@ -2258,6 +2327,31 @@
             <label class="form-label" for="connection-description" data-i18n="conn.desc_label">Description</label>
             <input type="text" id="connection-description" class="form-input" maxlength="256" data-i18n-placeholder="conn.desc_placeholder" placeholder="Optional">
           </div>
+          <!-- Read preference and the backup limit of the connection (throttle.js) -->
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="connection-read-pref" data-i18n="throttle.read_pref">Read preference</label>
+              <select id="connection-read-pref" class="form-input" aria-describedby="connection-read-pref-hint">
+                <option value="" data-i18n="throttle.read_pref_uri">As in the connection string</option>
+                <option value="primary">primary</option>
+                <option value="primaryPreferred">primaryPreferred</option>
+                <option value="secondary">secondary</option>
+                <option value="secondaryPreferred">secondaryPreferred</option>
+                <option value="nearest">nearest</option>
+              </select>
+              <span class="form-hint" id="connection-read-pref-hint" data-i18n="throttle.read_pref_conn_hint">Which member backups read from; a job may override it. Use secondary or secondaryPreferred to keep dumps off a busy primary.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="connection-read-pref-tags" data-i18n="throttle.tags">Tag sets</label>
+              <input type="text" id="connection-read-pref-tags" class="form-input mono" maxlength="2000" autocomplete="off" spellcheck="false" placeholder="dc=east,use=backup; dc=west" aria-describedby="connection-read-pref-tags-hint">
+              <span class="form-hint" id="connection-read-pref-tags-hint" data-i18n="throttle.tags_hint">Optional. name=value pairs separated by commas; separate tag sets with semicolons, tried in order. Not with primary.</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="connection-max-concurrent" data-i18n="throttle.max_concurrent">Concurrent backups</label>
+            <input type="number" id="connection-max-concurrent" class="form-input" min="0" max="64" step="1" aria-describedby="connection-max-concurrent-hint">
+            <span class="form-hint" id="connection-max-concurrent-hint" data-i18n="throttle.max_concurrent_hint">At most this many backups read from this connection at once; others wait (shown as waiting). Empty or 0 is unlimited.</span>
+          </div>
           <div class="test-row">
             <button type="button" class="btn btn-secondary" id="connection-test-btn" data-action="test-connection-form" data-i18n="conn.test">Test connection</button>
             <span class="test-result" id="connection-test-result" role="status" aria-live="polite"></span>
@@ -2798,6 +2892,7 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.failed"><span data-i18n="notify.events.restore_failed">Restore failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.succeeded"><span data-i18n="notify.events.restore_succeeded">Restore succeeded</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.cancelled"><span data-i18n="notify.events.backup_cancelled">Backup cancelled</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.skipped"><span data-i18n="notify.events.backup_skipped">Backup skipped (outside window)</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.cancelled"><span data-i18n="notify.events.restore_cancelled">Restore cancelled</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="verification.failed"><span data-i18n="notify.events.verification_failed">Backup verification failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore_test.failed"><span data-i18n="notify.events.restore_test_failed">Restore test failed</span></label>
@@ -2888,6 +2983,7 @@
   <script src="/sso.js"></script>
   <script src="/monitoring.js"></script>
   <script src="/protection.js"></script>
+  <script src="/throttle.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>
