@@ -294,17 +294,23 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// 3. Engines read their settings and storage target for every run, so changes in
 	// the dashboard apply without a restart.
 	logToolPaths(logger, cfg.ToolsDir)
+	// Background operations started through the API live under the application
+	// lifecycle, and share per-database concurrency keys with scheduled runs; its
+	// slots hold every connection's max_concurrent_backups.
+	runManager := runs.NewManager(logger)
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
 		backup.WithToolsDir(cfg.ToolsDir),
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithManifestCapturer(prober.Manifest),
+		backup.WithMemberProbe(prober.ServingMember),
+		backup.WithConnectionSlots(runManager),
 		backup.WithRunConfig(func() backup.RunConfig {
 			cur := settingsSvc.Current()
 			g := cur.General
 			cfg := backup.RunConfig{Encryptor: settingsSvc.Encryptor(), Timeout: g.BackupTimeout.Std(), StallTimeout: g.BackupStallTimeout.Std(),
-				Verify: cur.Integrity.VerifyAfterBackup}
+				Verify: cur.Integrity.VerifyAfterBackup, MaxUploadMbps: g.MaxUploadMbps}
 			if cur.Integrity.VerifyDecrypt {
 				cfg.VerifyDecryptor = settingsSvc.Decryptor()
 			}
@@ -323,9 +329,6 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 	)
 
-	// Background operations started through the API live under the application
-	// lifecycle, and share per-database concurrency keys with scheduled runs.
-	runManager := runs.NewManager(logger)
 	// Every run (API, MCP or cron) is tracked for cancellation, live progress and its
 	// log file under <datadir>/logs.
 	registry := runs.NewRegistry(

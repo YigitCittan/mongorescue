@@ -24,6 +24,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/throttle"
 )
 
 // Sentinel errors returned by the backup engine.
@@ -86,6 +87,13 @@ type Engine struct {
 	verifyUpload    bool
 	verifyDecryptor *encryption.Decryptor
 
+	// slots limits concurrent backups per connection, member reports the member
+	// a backup reads from and maxUploadMbps caps uploads without a job's own cap
+	// (see throttling.go).
+	slots         Slots
+	member        MemberFunc
+	maxUploadMbps float64
+
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
 	config     func() RunConfig
@@ -107,6 +115,9 @@ type RunConfig struct {
 	// VerifyDecryptor, when set, also decrypts encrypted archives to their end
 	// during that verification; nil compares the checksum only.
 	VerifyDecryptor *encryption.Decryptor
+	// MaxUploadMbps caps the upload of a backup whose job sets no cap, in megabits
+	// per second (0 = unlimited).
+	MaxUploadMbps float64
 }
 
 // StorageFunc returns the storage driver of a storage target (the default target for
@@ -136,7 +147,7 @@ func (e *Engine) runConfig() RunConfig {
 		return e.config()
 	}
 	return RunConfig{Encryptor: e.encryptor, Timeout: e.timeout, StallTimeout: e.stallTimeout,
-		Verify: e.verifyUpload, VerifyDecryptor: e.verifyDecryptor}
+		Verify: e.verifyUpload, VerifyDecryptor: e.verifyDecryptor, MaxUploadMbps: e.maxUploadMbps}
 }
 
 // forRun returns a copy of the engine bound to the current settings and the storage
@@ -146,6 +157,7 @@ func (e *Engine) forRun(ctx context.Context, targetID string) (*Engine, error) {
 	cfg := e.runConfig()
 	run.encryptor, run.timeout, run.stallTimeout = cfg.Encryptor, cfg.Timeout, cfg.StallTimeout
 	run.verifyUpload, run.verifyDecryptor = cfg.Verify, cfg.VerifyDecryptor
+	run.maxUploadMbps = cfg.MaxUploadMbps
 	if e.storageFor != nil {
 		driver, err := e.storageFor(ctx, targetID)
 		if err != nil {
@@ -321,12 +333,18 @@ func (e *Engine) alignEncryption(record *models.BackupRecord) {
 	}
 }
 
-// resolveURI returns the connection string for opts (falling back to the default).
+// resolveURI returns the connection string for opts (falling back to the default),
+// with opts' read preference (see mongotools.WithReadPreference): mongodump, the
+// collection listing and the manifest capture all read from the member it selects.
 func (e *Engine) resolveURI(opts models.BackupOptions) string {
-	if opts.MongoURI != "" {
-		return opts.MongoURI
+	uri := opts.MongoURI
+	if uri == "" {
+		uri = e.defaultURI
 	}
-	return e.defaultURI
+	if uri == "" {
+		return ""
+	}
+	return mongotools.WithReadPreference(uri, opts.ReadPreference.Mode, opts.ReadPreference.Tags)
 }
 
 // Execute runs the backup described by record (as returned by Prepare for the same
@@ -360,6 +378,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		// Cancelled while queued: mongodump is never started.
 		return e.fail(ctx, record, fmt.Errorf("backup %w before mongodump started", runs.CancellationOf(ctx)))
 	}
+	// A connection's max_concurrent_backups queues the backup (shown as waiting)
+	// before it starts; the wait does not count against the backup timeout.
+	releaseSlot, err := e.waitForSlot(ctx, opts, record)
+	if err != nil {
+		return e.fail(ctx, record, err)
+	}
+	defer releaseSlot()
 	record.Phases.Started = models.Stamp(time.Now())
 	if record.Phases.Queued == nil {
 		record.Phases.Queued = models.Stamp(startTime)
@@ -396,6 +421,9 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	defer cleanupConfig()
 
+	if err = e.probeMember(runCtx, mongoURI, opts, record); err != nil {
+		return e.fail(runCtx, record, err)
+	}
 	dumpOpts, applied, err := e.expandCollections(runCtx, mongoURI, opts)
 	if err != nil {
 		return e.fail(runCtx, record, err)
@@ -474,8 +502,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		total:  &byteCount,
 	}
 
-	// Stream directly to storage (Local or S3)
-	savedObj, saveErr := e.storage.Save(runCtx, targetKey, countedReader)
+	// Stream directly to storage (Local or S3), at most at the upload cap.
+	var upload io.Reader = countedReader
+	if mbps := e.uploadMbps(opts); mbps > 0 {
+		upload = throttle.NewReader(runCtx, countedReader, models.UploadBytesPerSecond(mbps))
+		tracker.Printf("upload capped at %g Mbit/s", mbps)
+	}
+	savedObj, saveErr := e.storage.Save(runCtx, targetKey, upload)
 	if saveErr != nil {
 		proc.abort()
 	} else {
@@ -908,6 +941,10 @@ func (e *Engine) buildDumpArgs(configArg string, opts models.BackupOptions) []st
 	// (expandCollections turns a collection filter into exclusions for such dumps).
 	if opts.UsersAndRolesApply() {
 		args = append(args, "--dumpDbUsersAndRoles")
+	}
+
+	if opts.NumParallelCollections > 0 {
+		args = append(args, fmt.Sprintf("--numParallelCollections=%d", min(opts.NumParallelCollections, models.MaxNumParallelCollections)))
 	}
 
 	for _, coll := range opts.Collections {
