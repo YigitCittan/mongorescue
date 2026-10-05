@@ -76,12 +76,18 @@ type JobRun struct {
 	Error string `json:"error,omitempty"`
 	// SkipReason explains a JobRunSkipped run (SkipOutsideWindow).
 	SkipReason string `json:"skip_reason,omitempty"`
+	// SkippedRuns counts the scheduled activations a JobRunSkipped run stands for:
+	// consecutive skips with no run in between share one record, from StartedAt
+	// (the first) to CompletedAt (the last).
+	SkippedRuns int `json:"skipped_runs,omitempty"`
 }
 
-// Skip marks r as a run that did not start for reason, finished at at.
+// Skip marks r as a run that did not start for reason, finished at at, standing
+// for one more skipped activation.
 func (r *JobRun) Skip(reason string, at time.Time) {
 	done := at.UTC()
 	r.Status, r.SkipReason, r.CompletedAt = JobRunSkipped, reason, &done
+	r.SkippedRuns = max(r.SkippedRuns, 0) + 1
 }
 
 // Counts returns how many of the run's databases succeeded, failed, were cancelled

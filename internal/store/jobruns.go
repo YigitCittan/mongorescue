@@ -50,6 +50,17 @@ func (s *SQLiteStore) ListJobRuns(ctx context.Context, jobID string, limit int) 
 		"SELECT id, data FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, id DESC LIMIT ?", jobID, limit)
 }
 
+// ListExecutedJobRuns is ListJobRuns without the skipped runs
+// (models.JobRunSkipped): the limit counts only runs that started.
+func (s *SQLiteStore) ListExecutedJobRuns(ctx context.Context, jobID string, limit int) ([]*models.JobRun, error) {
+	if limit <= 0 || limit > MaxJobRunList {
+		limit = MaxJobRunList
+	}
+	return listRecords[models.JobRun](ctx, s, tableJobRuns, nil,
+		"SELECT id, data FROM job_runs WHERE job_id = ? AND status != ? ORDER BY started_at DESC, id DESC LIMIT ?",
+		jobID, string(models.JobRunSkipped), limit)
+}
+
 // latestJobRunsChunk bounds the job IDs of one LatestJobRuns query (SQL variables).
 const latestJobRunsChunk = 500
 

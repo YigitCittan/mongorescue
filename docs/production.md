@@ -148,7 +148,7 @@ Before `mongodump` starts, MongoRescue asks the member the preference selects (`
 
 A job's **backup window** (`backup_window`: a time zone, the days it opens on and a start and end time) lets its scheduled runs start only within those hours; an end before the start closes the window the next day, so `22:00` to `02:00` on `sat` covers Saturday night into Sunday. Times follow the zone's daylight saving changes: a window opening at a time that the clock skips opens when the clock jumps.
 
-- A scheduled run outside the window does not start. It is recorded as a *skipped* job run (`status: "skipped"`, `skip_reason: "outside window"`), emits `backup.skipped`, and is neither a success nor a failure: it does not count in the failure counters, the heartbeat or the job's last status.
+- A scheduled run outside the window does not start. Consecutive skips share one *skipped* job run (`status: "skipped"`, `skip_reason: "outside window"`, `skipped_runs`), shown as "N scheduled runs skipped outside the window"; the first skip of each gap emits `backup.skipped`, which only rules that name it receive. A skip is neither a success nor a failure: it does not count in the failure counters, the heartbeat, the history or the job's last status.
 - With `cancel_at_window_end` a scheduled run still going when the window closes is cancelled (recorded as cancelled by `system`, "the backup window ended"). Without it, the run finishes.
 - Manual and on-demand runs ignore the window; the dashboard warns before starting one.
 - The default RPO counts only the runs the window allows: an hourly job with a window of 01:00 to 05:00 runs at 01, 02, 03 and 04 o'clock, so its longest gap is 21 hours and its default RPO 43 hours.

@@ -60,7 +60,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " No member matches the read preference: {error}",
     },
     run: { phase_waiting: "Waiting for a slot" },
-    jobdb: { run_status_skipped: "Skipped", run_skipped_line: "Run of {time} — skipped ({reason})" },
+    jobdb: { run_status_skipped: "Skipped", run_skipped_line: "{n} scheduled runs skipped outside the window since {time}" },
     notify: { events: { backup_skipped: "Backup skipped (outside window)" } },
   },
   tr: {
@@ -102,7 +102,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " Okuma tercihine uyan üye yok: {error}",
     },
     run: { phase_waiting: "Sıra bekliyor" },
-    jobdb: { run_status_skipped: "Atlandı", run_skipped_line: "{time} çalıştırması — atlandı ({reason})" },
+    jobdb: { run_status_skipped: "Atlandı", run_skipped_line: "{time} itibarıyla pencere dışında kalan {n} zamanlanmış çalıştırma atlandı" },
     notify: { events: { backup_skipped: "Yedek atlandı (pencere dışında)" } },
   },
   de: {
@@ -144,7 +144,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " Kein Mitglied entspricht der Lesepräferenz: {error}",
     },
     run: { phase_waiting: "Wartet auf einen Platz" },
-    jobdb: { run_status_skipped: "Übersprungen", run_skipped_line: "Lauf von {time} — übersprungen ({reason})" },
+    jobdb: { run_status_skipped: "Übersprungen", run_skipped_line: "{n} geplante Läufe außerhalb des Fensters übersprungen seit {time}" },
     notify: { events: { backup_skipped: "Sicherung übersprungen (außerhalb des Fensters)" } },
   },
   es: {
@@ -186,7 +186,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " Ningún miembro cumple la preferencia de lectura: {error}",
     },
     run: { phase_waiting: "Esperando turno" },
-    jobdb: { run_status_skipped: "Omitida", run_skipped_line: "Ejecución de {time} — omitida ({reason})" },
+    jobdb: { run_status_skipped: "Omitida", run_skipped_line: "{n} ejecuciones programadas omitidas fuera de la ventana desde {time}" },
     notify: { events: { backup_skipped: "Copia omitida (fuera de la ventana)" } },
   },
   fr: {
@@ -228,7 +228,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " Aucun membre ne correspond à la préférence de lecture : {error}",
     },
     run: { phase_waiting: "En attente d'une place" },
-    jobdb: { run_status_skipped: "Ignorée", run_skipped_line: "Exécution de {time} — ignorée ({reason})" },
+    jobdb: { run_status_skipped: "Ignorée", run_skipped_line: "{n} exécutions planifiées ignorées hors fenêtre depuis {time}" },
     notify: { events: { backup_skipped: "Sauvegarde ignorée (hors fenêtre)" } },
   },
   zh: {
@@ -270,7 +270,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " 没有成员符合读取偏好：{error}",
     },
     run: { phase_waiting: "等待空位" },
-    jobdb: { run_status_skipped: "已跳过", run_skipped_line: "{time} 的运行 — 已跳过（{reason}）" },
+    jobdb: { run_status_skipped: "已跳过", run_skipped_line: "自 {time} 起有 {n} 次计划运行因在窗口外而跳过" },
     notify: { events: { backup_skipped: "备份已跳过（窗口外）" } },
   },
   ja: {
@@ -312,7 +312,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " 読み取り設定に合うメンバーがありません: {error}",
     },
     run: { phase_waiting: "空き待ち" },
-    jobdb: { run_status_skipped: "スキップ", run_skipped_line: "{time} の実行 — スキップ（{reason}）" },
+    jobdb: { run_status_skipped: "スキップ", run_skipped_line: "{time} 以降、ウィンドウ外の {n} 件のスケジュール実行をスキップ" },
     notify: { events: { backup_skipped: "バックアップをスキップ（ウィンドウ外）" } },
   },
   ru: {
@@ -354,7 +354,7 @@ const THROTTLE_TRANSLATIONS = {
       member_failed: " Нет узла, подходящего под предпочтение чтения: {error}",
     },
     run: { phase_waiting: "Ожидает слота" },
-    jobdb: { run_status_skipped: "Пропущен", run_skipped_line: "Запуск {time} — пропущен ({reason})" },
+    jobdb: { run_status_skipped: "Пропущен", run_skipped_line: "Пропущено плановых запусков вне окна: {n}, начиная с {time}" },
     notify: { events: { backup_skipped: "Резервная копия пропущена (вне окна)" } },
   },
 };

@@ -781,7 +781,7 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
-	run := newRun(job, models.TriggerScheduled)
+	run := s.newScheduledRun(job)
 	if job.MultiDatabase() {
 		if current := s.ActiveJobRun(job.ID); current != "" {
 			s.logger.Warn("skipping scheduled backup: the previous run of this job is still running",
