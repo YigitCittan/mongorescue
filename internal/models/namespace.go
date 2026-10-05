@@ -109,6 +109,24 @@ func RescueDatabaseName(source string, t time.Time) string {
 	return withSuffix(source, rescueInfix+t.UTC().Format(rescueTimeLayout))
 }
 
+// RescueCloneSuffix returns the suffix a point-in-time restore started at t appends
+// to the name of every database it restores: "_rescue_<YYYYMMDD_HHMMSS>" in UTC.
+// Unlike RescueDatabaseName it never shortens the source name, since mongorestore
+// renames a whole instance with one pattern.
+func RescueCloneSuffix(t time.Time) string {
+	return rescueInfix + t.UTC().Format(rescueTimeLayout)
+}
+
+// RescueVerifyCloneSuffix returns the suffix of the databases of a PITR chain test
+// started at t: "_rescue_verify_<YYYYMMDD_HHMMSS>_<suffix>", where suffix is
+// RescueVerifySuffixLength lowercase hex characters (ErrInvalidVerifySuffix).
+func RescueVerifyCloneSuffix(t time.Time, suffix string) (string, error) {
+	if !isLowerHex(suffix, RescueVerifySuffixLength) {
+		return "", ErrInvalidVerifySuffix
+	}
+	return rescueVerifyInfix + t.UTC().Format(rescueTimeLayout) + "_" + suffix, nil
+}
+
 // rescueVerifyInfix marks the temporary databases of automated restore tests.
 const rescueVerifyInfix = "_rescue_verify_"
 
