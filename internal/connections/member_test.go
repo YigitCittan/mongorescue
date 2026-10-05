@@ -65,3 +65,21 @@ func TestConnectionTestReportsTheReadMember(t *testing.T) {
 		t.Fatalf("invalid read preference: %v", err)
 	}
 }
+
+func TestPrimaryRefusesMaxStaleness(t *testing.T) {
+	svc := connections.NewService(storetest.New(t), &prober{})
+	ctx := context.Background()
+	primary, secondary := models.ReadPrimary, models.ReadSecondary
+	const uri = "mongodb://db1,db2/?replicaSet=rs0&maxStalenessSeconds=120"
+	_, err := svc.Create(ctx, connections.Input{Name: "rs", URI: uri, ReadPreference: &primary})
+	if !errors.Is(err, connections.ErrInvalid) || !strings.Contains(err.Error(), "maxStalenessSeconds") {
+		t.Fatalf("primary with maxStalenessSeconds: %v", err)
+	}
+	c, err := svc.Create(ctx, connections.Input{Name: "rs", URI: uri, ReadPreference: &secondary})
+	if err != nil {
+		t.Fatalf("secondary with maxStalenessSeconds: %v", err)
+	}
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "rs", URI: c.URI, ReadPreference: &primary}); !errors.Is(err, connections.ErrInvalid) {
+		t.Fatalf("update to primary with maxStalenessSeconds: %v", err)
+	}
+}

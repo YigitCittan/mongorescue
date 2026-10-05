@@ -31,6 +31,11 @@ func TestWithReadPreference(t *testing.T) {
 		{"escapes tag values", "mongodb://h1/", "nearest", []map[string]string{{"rack": "a&b=c d"}},
 			"mongodb://h1/?readPreference=nearest&readPreferenceTags=rack:a%26b%3Dc+d"},
 		{"not a uri", "h1:27017", "secondary", nil, "h1:27017"},
+		{"primary drops maxStalenessSeconds", "mongodb://h1/?readPreference=secondary&maxStalenessSeconds=120&w=1", "primary", nil,
+			"mongodb://h1/?w=1&readPreference=primary"},
+		{"primary drops it in any case", "mongodb://h1/?MAXSTALENESSSECONDS=120", "primary", nil, "mongodb://h1/?readPreference=primary"},
+		{"other modes keep maxStalenessSeconds", "mongodb://h1/?maxStalenessSeconds=120", "secondary", nil,
+			"mongodb://h1/?maxStalenessSeconds=120&readPreference=secondary"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,6 +47,31 @@ func TestWithReadPreference(t *testing.T) {
 }
 
 func east1() []map[string]string { return []map[string]string{{"dc": "east"}} }
+
+func TestHasOption(t *testing.T) {
+	for uri, want := range map[string]bool{
+		"mongodb://h1/?maxStalenessSeconds=90":      true,
+		"mongodb://h1/?w=1&maxstalenessseconds=90":  true,
+		"mongodb://h1/?max%53talenessSeconds=90":    true,
+		"mongodb://h1/?w=1":                         false,
+		"mongodb://h1/maxStalenessSeconds":          false,
+		"mongodb://u:maxStalenessSeconds=1@h1/?w=1": false,
+	} {
+		if got := HasOption(uri, "maxStalenessSeconds"); got != want {
+			t.Errorf("HasOption(%q) = %v, want %v", uri, got, want)
+		}
+	}
+}
+
+// A job that switches a connection with maxStalenessSeconds to the primary gets a
+// connection string the driver accepts.
+func TestPrimaryWithoutMaxStalenessParses(t *testing.T) {
+	uri := WithReadPreference("mongodb://h1,h2/?replicaSet=rs0&readPreference=secondary&maxStalenessSeconds=120", "primary", nil)
+	cs, err := connstring.ParseAndValidate(uri)
+	if err != nil || cs.ReadPreference != "primary" || cs.MaxStalenessSet {
+		t.Fatalf("parsed %q: %+v, %v", uri, cs, err)
+	}
+}
 
 // The driver (and the Database Tools, which use its parser) read back exactly the
 // read preference and tag sets that were set.

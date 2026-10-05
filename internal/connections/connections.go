@@ -524,6 +524,10 @@ func validateInput(in *Input) error {
 			return fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		in.ReadPreference = &rp.Mode
+		if rp.Mode == models.ReadPrimary && mongotools.HasOption(in.URI, "maxStalenessSeconds") {
+			return fmt.Errorf("%w: %w: maxStalenessSeconds in the uri does not apply to read_preference primary; remove it or choose another read preference",
+				ErrInvalid, models.ErrInvalidReadPreference)
+		}
 	}
 	return nil
 }
