@@ -8,6 +8,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
+	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
 // pitrStreams returns the PITR streams for the readiness report, from the
@@ -90,4 +91,20 @@ func openOplogSession(ctx context.Context, prober *mongoconn.Prober, uri, readPr
 		return nil, err
 	}
 	return oplogSession{s}, nil
+}
+
+// databaseNames lists the database names on a server, for whole-instance
+// point-in-time restores (their clone checks and clean-up).
+func databaseNames(prober *mongoconn.Prober) restore.DatabaseLister {
+	return func(ctx context.Context, uri string) ([]string, error) {
+		dbs, err := prober.ListDatabases(ctx, uri)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(dbs))
+		for _, d := range dbs {
+			out = append(out, d.Name)
+		}
+		return out, nil
+	}
 }

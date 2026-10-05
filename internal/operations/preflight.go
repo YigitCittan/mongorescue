@@ -82,7 +82,17 @@ var usersAndRolesActions = []string{"createRole", "createUser", "dropRole", "dro
 // Users-and-roles and decryption problems are reported as failed checks. Expected
 // failures: ErrInvalid, ErrNotFound, ErrConnectionRequired, ErrUnknownConnection and
 // auth.ErrForbidden.
+//
+// A point-in-time request (req.PITR) is checked like StartRestore checks it (admin
+// only, safe clones only); a target no plan reaches fails the pitr_chain check, and
+// the result carries the plan (PreflightResult.PITR) with an RTO estimate.
 func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreRequest) (*models.PreflightResult, error) {
+	if req.PITR != nil || len(req.Databases) > 0 {
+		if req.PITR == nil {
+			return nil, invalid(req.ValidatePITR())
+		}
+		return s.preflightPITREndpoint(ctx, req)
+	}
 	if !req.IsSafeClone() {
 		// Asking what would happen is no consent; StartRestore still needs it.
 		req.ConfirmInPlace = true
@@ -141,6 +151,10 @@ type preflightRun struct {
 	target    connections.RestoreTarget
 	reachable bool
 	version   string
+
+	// extraBytes is written on top of the archive: the oplog a point-in-time
+	// restore replays.
+	extraBytes int64
 }
 
 // inspector returns the inspector, or nil.
@@ -339,7 +353,7 @@ func (p *preflightRun) diskSpace() {
 	if p.skipServer(id) {
 		return
 	}
-	size := p.source.SizeBytes
+	size := p.source.SizeBytes + p.extraBytes
 	space, err := p.target.FreeSpace(p.ctx, p.targetDB)
 	free := space.Free
 	switch {
@@ -367,7 +381,7 @@ func (p *preflightRun) diskSpace() {
 	case free < size:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("the target seems to have %s free, less than the %s archive (%s)",
 			formatBytes(free), formatBytes(size), diskSpaceCaveat(space.Source)))
-	case free/headroom < size:
+	case (free-p.extraBytes)/headroom < p.source.SizeBytes:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the target has %s free for a %s archive; restored data and indexes usually take more room than the archive", formatBytes(free), formatBytes(size)))
 	default:

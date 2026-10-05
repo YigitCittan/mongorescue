@@ -45,7 +45,40 @@ const (
 	PreflightCheckCollections = "collections"
 	// PreflightCheckUsersAndRoles checks the users-and-roles option against the backup.
 	PreflightCheckUsersAndRoles = "users_and_roles"
+	// PreflightCheckPITRChain checks that a point-in-time target has a base and an
+	// unbroken, verified chain of oplog chunks up to it, with keys for their
+	// encryption.
+	PreflightCheckPITRChain = "pitr_chain"
+	// PreflightCheckToolsVersion checks that mongorestore is recent enough for
+	// point-in-time restores (mongotools.MinPITRToolsVersion).
+	PreflightCheckToolsVersion = "tools_version"
 )
+
+// PITRPreflight summarises the plan of a point-in-time restore for its preflight.
+type PITRPreflight struct {
+	// BaseID is the base backup the plan chose, BaseStartedAt when it was taken and
+	// BaseConsistentAt the wall-clock time of its consistent point (T_after).
+	BaseID           string    `json:"base_id"`
+	BaseStartedAt    time.Time `json:"base_started_at"`
+	BaseConsistentAt time.Time `json:"base_consistent_at"`
+	// BaseBytes and OplogBytes are the stored sizes of the base and of the chunks.
+	BaseBytes  int64 `json:"base_bytes"`
+	OplogBytes int64 `json:"oplog_bytes"`
+	// Chunks counts the chunks replayed and UnverifiedChunks those never verified.
+	Chunks           int `json:"chunks"`
+	UnverifiedChunks int `json:"unverified_chunks"`
+	// TargetTime is the moment restored to and Limit the --oplogLimit position, as
+	// "<t>:<i>".
+	TargetTime time.Time `json:"target_time"`
+	Limit      string    `json:"limit"`
+	// CloneSuffix is appended to every restored database's name.
+	CloneSuffix string `json:"clone_suffix"`
+	// EstimatedSeconds is the estimated duration of the restore (RTO); EstimateFrom
+	// says whether it comes from the last chain test ("chain_test") or default rates
+	// ("default").
+	EstimatedSeconds float64 `json:"estimated_seconds"`
+	EstimateFrom     string  `json:"estimate_from"`
+}
 
 // PreflightCheck is the result of one restore preflight check.
 type PreflightCheck struct {
@@ -64,6 +97,9 @@ type PreflightResult struct {
 	OK bool `json:"ok"`
 	// Checks lists every check in a stable order.
 	Checks []PreflightCheck `json:"checks"`
+	// PITR summarises the plan of a point-in-time restore; nil for the restore of a
+	// backup or when no plan was found (see the pitr_chain check).
+	PITR *PITRPreflight `json:"pitr,omitempty"`
 }
 
 // Add appends a check and keeps OK in step with it.

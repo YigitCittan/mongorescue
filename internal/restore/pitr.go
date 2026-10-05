@@ -62,6 +62,12 @@ func WithDatabaseLister(fn DatabaseLister) Option {
 	}
 }
 
+// CanDecryptMode reports whether a decryption key of encryption mode ("x25519" or
+// "scrypt") is configured.
+func (e *Engine) CanDecryptMode(mode string) bool {
+	return e.runConfig().Decryptor.HasMode(encryption.Mode(mode))
+}
+
 // pitrIDPrefix starts the ID of a point-in-time restore.
 const pitrIDPrefix = "rst_pitr_"
 

@@ -262,9 +262,11 @@ type PITRRestore struct {
 	// replay (--oplogLimit).
 	TargetTime time.Time      `json:"target_time"`
 	Limit      pitr.Timestamp `json:"limit"`
-	// Chunks and OplogBytes count the oplog chunks replayed and their stored size.
+	// Chunks and OplogBytes count the oplog chunks replayed and their stored size;
+	// BaseBytes is the stored size of the base.
 	Chunks     int   `json:"chunks"`
 	OplogBytes int64 `json:"oplog_bytes"`
+	BaseBytes  int64 `json:"base_bytes"`
 	// Databases is the database selection; empty means the whole instance (every
 	// database but admin, config and local).
 	Databases []string `json:"databases,omitempty"`

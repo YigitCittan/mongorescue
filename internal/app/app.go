@@ -327,6 +327,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
+		restore.WithDatabaseLister(databaseNames(prober)),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
 			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std()}
@@ -552,8 +553,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Inspector:           prober,
 		Audit:               auditSvc,
 		PITR:                metaStore,
-		Logger:              logger,
-		Version:             o.version,
+		PITRRestore:         restoreEngine,
+		PITRBases:           metaStore.ListBaseBackups,
+		ToolsVersion: func(ctx context.Context) (string, error) {
+			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
+		},
+		Logger:  logger,
+		Version: o.version,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {
