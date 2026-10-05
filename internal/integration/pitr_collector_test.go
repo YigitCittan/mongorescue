@@ -56,7 +56,7 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 	}
 	stream := &pitr.Stream{ID: "str_it", ConnectionID: "conn_it", ReplicaSet: win.ReplicaSet, TargetID: "tgt_it", Enabled: true,
 		BaseCron: "@daily", BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 1}
-	if err := repo.CreateStream(ctx, stream); err != nil {
+	if err = repo.CreateStream(ctx, stream); err != nil {
 		t.Fatal(err)
 	}
 	newService := func() *collector.Service {
@@ -75,8 +75,8 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 	inserted := 0
 	insert := func(n int) {
 		for range n {
-			if _, err := coll.InsertOne(ctx, bson.D{{Key: "n", Value: int32(inserted)}}); err != nil { //nolint:gosec // a few dozen inserts
-				t.Fatal(err)
+			if _, insertErr := coll.InsertOne(ctx, bson.D{{Key: "n", Value: int32(inserted)}}); err != nil { //nolint:gosec // a few dozen inserts
+				t.Fatal(insertErr)
 			}
 			inserted++
 		}
@@ -86,7 +86,7 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 		target := mustNewest(ctx, t, prober, env.URI)
 		deadline := time.Now().Add(time.Minute)
 		for {
-			if s, err := repo.LoadState(ctx, stream.ID); err == nil && s.Last.TS.Compare(target) >= 0 {
+			if s, loadErr := repo.LoadState(ctx, stream.ID); loadErr == nil && s.Last.TS.Compare(target) >= 0 {
 				return
 			}
 			if time.Now().After(deadline) {
@@ -100,7 +100,7 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 	first.Start(ctx)
 	deadline := time.Now().Add(time.Minute)
 	for {
-		if _, err := repo.LoadState(ctx, stream.ID); err == nil {
+		if _, loadErr := repo.LoadState(ctx, stream.ID); loadErr == nil {
 			break
 		}
 		if time.Now().After(deadline) {

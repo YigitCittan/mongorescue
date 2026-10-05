@@ -86,7 +86,9 @@ func walkChunk(decrypt func(io.Reader) (io.Reader, error), r io.Reader, sc *oplo
 	if err != nil {
 		return fmt.Errorf("gunzip: %w", err)
 	}
-	if _, err := io.Copy(sc, gz); err != nil {
+	// Each entry is bounded by oplog.MaxEntrySize and the Scanner holds one at a
+	// time, so a decompression bomb cannot exhaust memory.
+	if _, err := io.Copy(sc, gz); err != nil { //nolint:gosec // G110: bounded by the Scanner (see above)
 		return fmt.Errorf("walk the entries: %w", err)
 	}
 	if err := gz.Close(); err != nil {
@@ -141,14 +143,14 @@ func (s *Service) VerifyChunks(ctx context.Context) (ChunkSweep, error) {
 	}
 	now := s.now()
 	for _, st := range streams {
-		chains, err := s.cfg.Repo.ListChains(ctx, st.ID)
-		if err != nil {
-			return out, err
+		chains, listErr := s.cfg.Repo.ListChains(ctx, st.ID)
+		if listErr != nil {
+			return out, listErr
 		}
 		for _, c := range chains {
-			chunks, err := s.cfg.Repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: st.ID, ChainID: c.ChainID, Status: pitr.ChunkCommitted, Live: true})
-			if err != nil {
-				return out, err
+			chunks, chunkErr := s.cfg.Repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: st.ID, ChainID: c.ChainID, Status: pitr.ChunkCommitted, Live: true})
+			if chunkErr != nil {
+				return out, chunkErr
 			}
 			for i := 1; i < len(chunks); i++ {
 				if chunks[i].From != chunks[i-1].To {

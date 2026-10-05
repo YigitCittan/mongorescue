@@ -115,7 +115,7 @@ func TestPITRStreamAPI(t *testing.T) {
 		t.Fatalf("create: %d %s", code, body)
 	}
 	id := between(body, `"id":"`, `"`)
-	if code, _ := f.do(auth.ScopeAdmin, "POST", "/api/v1/pitr/streams", `{"connection_id":"conn_a"}`); code != http.StatusConflict {
+	if code, _ = f.do(auth.ScopeAdmin, "POST", "/api/v1/pitr/streams", `{"connection_id":"conn_a"}`); code != http.StatusConflict {
 		t.Fatalf("second stream of a connection: %d", code)
 	}
 	if code, body = f.do(auth.ScopeRead, "GET", "/api/v1/pitr/streams/"+id, ""); code != http.StatusOK || !strings.Contains(body, `"experimental":true`) {

@@ -162,7 +162,7 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 		return err
 	}
 	now := s.now()
-	if err := s.purgeChunks(ctx, st, now); err != nil {
+	if err = s.purgeChunks(ctx, st, now); err != nil {
 		return err
 	}
 	if s.cfg.Bases == nil {

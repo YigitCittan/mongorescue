@@ -61,10 +61,10 @@ func TestStartBaseBackupDumpsTheInstanceUnderItsOwnKey(t *testing.T) {
 		PITR:        st,
 	})
 
-	if _, err := svc.StartBaseBackup(ctx, "missing", models.TriggerManual); !errors.Is(err, operations.ErrNotFound) {
+	if _, err = svc.StartBaseBackup(ctx, "missing", models.TriggerManual); !errors.Is(err, operations.ErrNotFound) {
 		t.Fatalf("unknown stream: %v", err)
 	}
-	if err := st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: "conn_a", ReplicaSet: "rs0", BaseCron: "@daily",
+	if err = st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: "conn_a", ReplicaSet: "rs0", BaseCron: "@daily",
 		BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestStartBaseBackupDumpsTheInstanceUnderItsOwnKey(t *testing.T) {
 	if !manager.Running(runs.PITRBaseKey("conn_a")) || manager.Running(runs.BackupKey("conn_a", "")) {
 		t.Fatal("the base does not hold its own run key")
 	}
-	if _, err := svc.StartBaseBackup(ctx, "str_a", models.TriggerManual); !errors.Is(err, operations.ErrBusy) {
+	if _, err = svc.StartBaseBackup(ctx, "str_a", models.TriggerManual); !errors.Is(err, operations.ErrBusy) {
 		t.Fatalf("second base while one runs: %v", err)
 	}
 	close(release)

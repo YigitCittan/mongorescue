@@ -44,10 +44,10 @@ func TestOplogChunkRetentionAndVerification(t *testing.T) {
 	if err != nil || len(toVerify) != 3 {
 		t.Fatalf("to verify = %d, %v", len(toVerify), err)
 	}
-	if err := s.MarkChunkVerified(ctx, "c1", at.Add(time.Hour), ""); err != nil {
+	if err = s.MarkChunkVerified(ctx, "c1", at.Add(time.Hour), ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkChunkVerified(ctx, "c_missing", at, ""); !errors.Is(err, pitr.ErrNotFound) {
+	if err = s.MarkChunkVerified(ctx, "c_missing", at, ""); !errors.Is(err, pitr.ErrNotFound) {
 		t.Fatalf("verify unknown chunk: %v", err)
 	}
 	if toVerify, _ = s.ListChunksToVerify(ctx, at.Add(time.Hour), 10); len(toVerify) != 2 || toVerify[0].ID != "c2" {
@@ -55,8 +55,8 @@ func TestOplogChunkRetentionAndVerification(t *testing.T) {
 	}
 
 	purgeAfter := at.Add(7 * 24 * time.Hour)
-	if n, err := s.DeleteChunks(ctx, []string{"c1", "c2", "c1"}, at, purgeAfter); err != nil || n != 2 {
-		t.Fatalf("DeleteChunks = %d, %v", n, err)
+	if n, delErr := s.DeleteChunks(ctx, []string{"c1", "c2", "c1"}, at, purgeAfter); delErr != nil || n != 2 {
+		t.Fatalf("DeleteChunks = %d, %v", n, delErr)
 	}
 	if spans, _ = s.ChainSpans(ctx, "pst_a"); spans[0].From != pos(220, 1) || spans[0].Chunks != 1 {
 		t.Fatalf("spans after the delete = %+v", spans)

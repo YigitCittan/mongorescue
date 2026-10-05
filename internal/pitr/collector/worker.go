@@ -197,10 +197,6 @@ func (w *worker) event(t events.EventType, status, errMsg, detail string) events
 		Stream: w.stream.ID, ConnectionID: w.stream.ConnectionID}
 }
 
-// errRetry asks for the step to be repeated after a short wait without counting
-// as a failure.
-var errRetry = errors.New("collector: retry")
-
 // step reads and stores the next chunk, or handles a gap or a divergence. It
 // returns the wait before the next step: 0 while catching up.
 func (w *worker) step(ctx context.Context) (time.Duration, error) {
@@ -232,8 +228,8 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	if !w.checked {
 		w.lagSince = st.LagSince
 		w.failing = w.failing || st.Status == pitr.CollectorFailed
-		if done, err := w.checkStart(ctx, st, win); err != nil || done {
-			return 0, err
+		if done, startErr := w.checkStart(ctx, st, win); startErr != nil || done {
+			return 0, startErr
 		}
 	}
 
@@ -260,9 +256,9 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	to, catchUp := b, false
 	if span := time.Duration(b.T-a.TS.T) * time.Second; span > w.interval {
 		capAt := pitr.Timestamp{T: a.TS.T + uint32(w.interval/time.Second)} //nolint:gosec // the interval is at most 900 s
-		op, found, err := w.sess.EntryAtOrAfter(ctx, capAt)
-		if err != nil {
-			return 0, fmt.Errorf("find the end of a catch-up chunk: %w", err)
+		op, found, capErr := w.sess.EntryAtOrAfter(ctx, capAt)
+		if capErr != nil {
+			return 0, fmt.Errorf("find the end of a catch-up chunk: %w", capErr)
 		}
 		if found && op.TS.Compare(b) < 0 && op.TS.Compare(a.TS) > 0 {
 			to, catchUp = op.TS, true
@@ -277,9 +273,9 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		if w.emptyAt == a.TS {
 			return w.interval, nil
 		}
-		exists, err := w.emptyChunkExists(ctx, st)
-		if err != nil {
-			return 0, err
+		exists, existsErr := w.emptyChunkExists(ctx, st)
+		if existsErr != nil {
+			return 0, existsErr
 		}
 		if exists {
 			w.emptyAt = a.TS
@@ -490,7 +486,7 @@ func (w *worker) diverge(ctx context.Context, st *pitr.State, win pitr.OplogWind
 	if err != nil {
 		return fmt.Errorf("supersede the chunks after the divergence: %w", err)
 	}
-	if err := w.svc.cfg.Repo.EndChain(ctx, w.stream.ID, st.ChainID, point, pitr.EndDiverged, w.svc.now()); err != nil && !errors.Is(err, pitr.ErrChainEnded) {
+	if err = w.svc.cfg.Repo.EndChain(ctx, w.stream.ID, st.ChainID, point, pitr.EndDiverged, w.svc.now()); err != nil && !errors.Is(err, pitr.ErrChainEnded) {
 		return fmt.Errorf("end the diverged chain: %w", err)
 	}
 	detail := fmt.Sprintf("the oplog entry at %s (term %d) vanished or changed term; the chain ends at %s and %d later chunk(s) are superseded",
@@ -528,9 +524,9 @@ func (w *worker) divergencePoint(ctx context.Context, st *pitr.State, win pitr.O
 		if c.To.Compare(win.Oldest) < 0 {
 			return c.To, nil
 		}
-		term, found, err := w.sess.EntryAt(ctx, c.To)
-		if err != nil {
-			return pitr.Timestamp{}, fmt.Errorf("check chunk %s: %w", c.ID, err)
+		term, found, entryErr := w.sess.EntryAt(ctx, c.To)
+		if entryErr != nil {
+			return pitr.Timestamp{}, fmt.Errorf("check chunk %s: %w", c.ID, entryErr)
 		}
 		if found && term == c.LastTerm {
 			return c.To, nil

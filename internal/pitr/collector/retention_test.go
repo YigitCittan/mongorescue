@@ -151,10 +151,10 @@ func TestVerifyChunks(t *testing.T) {
 		t.Fatalf("verified again at once: %+v", again)
 	}
 	cs := fx.chunks(fx.state().ChainID)
-	if _, err := fx.storage.Save(ctx, cs[1].StorageKey, bytes.NewReader([]byte("tampered"))); err != nil {
+	if _, err = fx.storage.Save(ctx, cs[1].StorageKey, bytes.NewReader([]byte("tampered"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := fx.svc.VerifyChunk(ctx, cs[1]); !errors.Is(err, ErrChunkMismatch) {
+	if err = fx.svc.VerifyChunk(ctx, cs[1]); !errors.Is(err, ErrChunkMismatch) {
 		t.Fatalf("tampered chunk: %v", err)
 	}
 	fx.clock.advance(ReverifyAfter + time.Hour)

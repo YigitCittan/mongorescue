@@ -389,8 +389,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if pitrSvc == nil {
 				return integrity.ChunkSweep{}, nil
 			}
-			r, err := pitrSvc.VerifyChunks(ctx)
-			return integrity.ChunkSweep{Verified: r.Verified, Failed: r.Failed, Breaks: r.Breaks}, err
+			r, verifyErr := pitrSvc.VerifyChunks(ctx)
+			return integrity.ChunkSweep{Verified: r.Verified, Failed: r.Failed, Breaks: r.Breaks}, verifyErr
 		},
 		Store:       metaStore,
 		Targets:     targetSvc,
