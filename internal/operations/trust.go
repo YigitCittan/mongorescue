@@ -52,6 +52,10 @@ type retentionLogReader interface {
 // (not found, not verifiable, busy) are returned unchanged; without one it returns
 // ErrUnavailable.
 func (s *Service) VerifyBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
+	// A caller limited to some connections learns nothing about another one's backup.
+	if _, err := s.store.GetBackupRecord(ctx, id); err != nil && auth.ConnectionFilter(ctx).Limited() {
+		return nil, notFound(err, "backup not found")
+	}
 	if s.cfg.Verifier == nil {
 		return nil, public("archive verification is not available", ErrUnavailable)
 	}
@@ -119,7 +123,13 @@ func (s *Service) updateBackup(ctx context.Context, id string, fn func(*models.B
 	if !ok {
 		return nil, public("updating backups is not available", ErrUnavailable)
 	}
-	rec, err := u.UpdateBackupRecord(ctx, id, fn)
+	rec, err := u.UpdateBackupRecord(ctx, id, func(r *models.BackupRecord) error {
+		// The updater reads the raw store: apply the caller's connection access here.
+		if !backupVisible(ctx, r) {
+			return hidden("backup", id)
+		}
+		return fn(r)
+	})
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}

@@ -151,6 +151,19 @@ func (p *Principal) AllowsConnection(id string) bool {
 	return p != nil && p.Connections.Allows(id)
 }
 
+// RequireKeyCreator returns nil when the principal may create API keys: a signed-in
+// user of any role, an admin-scope key or the system. A nil principal gets
+// ErrUnauthenticated, any other caller a *ScopeError.
+func (p *Principal) RequireKeyCreator() error {
+	if p == nil {
+		return ErrUnauthenticated
+	}
+	if p.Method == MethodSession {
+		return nil
+	}
+	return p.Require(ScopeAdmin)
+}
+
 // RequireAllConnections refuses (ErrConnectionsLimited) a principal limited to some
 // connections, for requests whose answer covers every connection, such as the
 // Prometheus metrics. A nil principal is refused with a *ScopeError.

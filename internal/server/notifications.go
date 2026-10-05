@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
@@ -163,7 +165,40 @@ func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
 		s.writeNotifyError(w, err)
 		return
 	}
+	if list, err = s.visibleRules(r, list); err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// visibleRules keeps, for a caller limited to some connections, the rules about
+// every job and the rules about some of its own jobs, naming only those jobs.
+func (s *Server) visibleRules(r *http.Request, list []*notify.Rule) ([]*notify.Rule, error) {
+	if !auth.ConnectionFilter(r.Context()).Limited() {
+		return list, nil
+	}
+	jobs, err := s.ops.ListJobs(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	visible := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		visible[j.ID] = true
+	}
+	out := make([]*notify.Rule, 0, len(list))
+	for _, rule := range list {
+		if len(rule.JobIDs) == 0 {
+			out = append(out, rule)
+			continue
+		}
+		c := rule.Clone()
+		c.JobIDs = slices.DeleteFunc(c.JobIDs, func(id string) bool { return !visible[id] })
+		if len(c.JobIDs) > 0 {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {

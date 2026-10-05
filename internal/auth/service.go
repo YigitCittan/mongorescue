@@ -872,13 +872,8 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 // a limit is limited to the caller's connections all the same, because the
 // creator's connections cap the key on every request.
 func (s *Service) CreateAPIKeyWithConnections(ctx context.Context, actor *Principal, name string, scope Scope, connectionIDs []string) (*APIKey, string, error) {
-	if actor == nil {
-		return nil, "", ErrUnauthenticated
-	}
-	if actor.Method != MethodSession {
-		if err := actor.Require(ScopeAdmin); err != nil {
-			return nil, "", err
-		}
+	if err := actor.RequireKeyCreator(); err != nil {
+		return nil, "", err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxKeyNameLength || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {

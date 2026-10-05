@@ -680,7 +680,8 @@ const (
 
 // checkConnectionIDs answers 400 and returns false unless every ID names a connection
 // the caller may touch: a connection outside the caller's access is as unknown as
-// one that does not exist.
+// one that does not exist. A caller limited to some connections gets 404 for both,
+// like every route that names a connection.
 func (s *Server) checkConnectionIDs(w http.ResponseWriter, r *http.Request, ids []string) bool {
 	if len(ids) == 0 || s.connections == nil {
 		return true
@@ -691,7 +692,11 @@ func (s *Server) checkConnectionIDs(w http.ResponseWriter, r *http.Request, ids 
 	}
 	for _, id := range ids {
 		if _, err := s.connections.Get(r.Context(), strings.TrimSpace(id)); err != nil {
-			if errors.Is(err, connections.ErrNotFound) {
+			switch {
+			case errors.Is(err, connections.ErrNotFound) && auth.ConnectionFilter(r.Context()).Limited():
+				writeError(w, http.StatusNotFound, "connection not found")
+				return false
+			case errors.Is(err, connections.ErrNotFound):
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown connection_id %q", id))
 				return false
 			}
@@ -889,7 +894,15 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		// omitted or empty means every connection its creator may touch.
 		ConnectionIDs []string `json:"connection_ids"`
 	}
-	if !decodeBody(w, r, &req) || !s.checkConnectionIDs(w, r, req.ConnectionIDs) {
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	// Who may create keys at all is checked before the connections are looked up.
+	if err := p.RequireKeyCreator(); err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	if !s.checkConnectionIDs(w, r, req.ConnectionIDs) {
 		return
 	}
 	k, plain, err := svc.CreateAPIKeyWithConnections(r.Context(), p, req.Name, req.Scope, req.ConnectionIDs)

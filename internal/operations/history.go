@@ -248,7 +248,15 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 			Bytes: d.CompletedBytes, StoredBytes: stored,
 		})
 	}
+	// JobRuns and LastSuccess cover every job: keep the jobs the caller may see.
+	visible := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		visible[j.ID] = true
+	}
 	for jobID, runs := range agg.JobRuns {
+		if !visible[jobID] {
+			continue
+		}
 		hj := HistoryJob{Runs: make([]HistoryRun, 0, len(runs))}
 		for _, r := range runs {
 			hj.Runs = append(hj.Runs, HistoryRun{ID: r.ID, Status: r.Status, StartedAt: r.StartedAt, DurationSeconds: r.DurationSeconds})
@@ -256,6 +264,9 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 		h.Jobs[jobID] = hj
 	}
 	for jobID, at := range agg.LastSuccess {
+		if !visible[jobID] {
+			continue
+		}
 		hj := h.Jobs[jobID]
 		if hj.Runs == nil {
 			hj.Runs = []HistoryRun{}

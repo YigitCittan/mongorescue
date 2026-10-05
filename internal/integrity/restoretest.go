@@ -55,6 +55,12 @@ func (s *Service) latestBackup(ctx context.Context, job *models.Job) (*models.Ba
 // It returns the backup that is tested. Expected failures: ErrNotFound, ErrNoBackup,
 // ErrUnavailable, ErrBusy and runs.ErrShuttingDown.
 func (s *Service) StartRestoreTest(ctx context.Context, jobID string) (*models.BackupRecord, error) {
+	// A caller limited to some connections learns nothing about another one's job.
+	if auth.ConnectionFilter(ctx).Limited() {
+		if _, err := s.visibleJob(ctx, jobID); err != nil {
+			return nil, err
+		}
+	}
 	if !s.restoreTestsAvailable() {
 		return nil, fmt.Errorf("%w: restore tests need the restore engine and a MongoDB connection", ErrUnavailable)
 	}
