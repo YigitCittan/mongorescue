@@ -1628,15 +1628,17 @@
             </div>
             <div class="jobdb-panel" id="job-db-panel-list" hidden>
               <input type="search" id="job-dbs-search" class="form-input" data-i18n-placeholder="jobdb.search_placeholder" placeholder="Search databases" data-i18n-aria-label="jobdb.search_placeholder" aria-label="Search databases" autocomplete="off" spellcheck="false">
-              <div class="db-check-list" id="job-dbs-list" role="group" aria-labelledby="job-db-legend"></div>
+              <div class="db-check-list db-tree" id="job-dbs-list" role="tree" aria-labelledby="job-db-legend"></div>
               <p class="form-hint" id="job-dbs-list-empty" hidden></p>
               <span class="form-hint" data-i18n="jobdb.list_hint">Backs up the checked databases, each into its own backup.</span>
+              <span class="form-hint" data-i18n="jobdb.tree_hint_list">Expand a database to back up only some of its collections: checked collections are backed up.</span>
             </div>
             <div class="jobdb-panel" id="job-db-panel-all" hidden>
               <span class="form-hint" data-i18n="jobdb.all_hint">Backs up every database of the connection except admin, config and local and the ones checked here.</span>
               <span class="form-label form-label-sm" id="job-dbs-exclude-label" data-i18n="jobdb.exclude_label">Exclude</span>
-              <div class="db-check-list" id="job-dbs-exclude-list" role="group" aria-labelledby="job-dbs-exclude-label"></div>
+              <div class="db-check-list db-tree" id="job-dbs-exclude-list" role="tree" aria-labelledby="job-dbs-exclude-label"></div>
               <p class="form-hint" id="job-dbs-exclude-empty" hidden></p>
+              <span class="form-hint" data-i18n="jobdb.tree_hint_all">Expand a database to skip some of its collections: checked collections are excluded. Databases found later are backed up whole.</span>
             </div>
             <div class="jobdb-panel" id="job-db-panel-pattern" hidden>
               <div class="form-row">
@@ -1674,7 +1676,6 @@
           </fieldset>
           <fieldset class="form-group fieldset" id="job-collections-fieldset">
             <legend class="form-label" data-i18n="picker.collections">Collections</legend>
-            <p class="form-hint" id="job-colls-note" data-i18n="jobdb.colls_single_only" hidden>Collection filters only apply to a single database.</p>
             <div class="radio-group" role="radiogroup">
               <label class="check-inline"><input type="radio" name="job-coll-mode" value="all" checked><span data-i18n="picker.coll_all">All collections</span></label>
               <label class="check-inline"><input type="radio" name="job-coll-mode" value="include"><span data-i18n="picker.coll_include">Only selected</span></label>
@@ -1828,15 +1829,17 @@
             </div>
             <div class="jobdb-panel" id="instant-db-panel-list" hidden>
               <input type="search" id="instant-dbs-search" class="form-input" data-i18n-placeholder="jobdb.search_placeholder" placeholder="Search databases" data-i18n-aria-label="jobdb.search_placeholder" aria-label="Search databases" autocomplete="off" spellcheck="false">
-              <div class="db-check-list" id="instant-dbs-list" role="group" aria-labelledby="instant-db-legend"></div>
+              <div class="db-check-list db-tree" id="instant-dbs-list" role="tree" aria-labelledby="instant-db-legend"></div>
               <p class="form-hint" id="instant-dbs-list-empty" hidden></p>
               <span class="form-hint" data-i18n="instantdb.list_hint">Backs up each checked database into its own backup, all in one run.</span>
+              <span class="form-hint" data-i18n="jobdb.tree_hint_list">Expand a database to back up only some of its collections: checked collections are backed up.</span>
             </div>
             <div class="jobdb-panel" id="instant-db-panel-all" hidden>
               <span class="form-hint" data-i18n="instantdb.all_hint">Backs up every database the connection lists except admin, config and local and the ones checked here.</span>
               <span class="form-label form-label-sm" id="instant-dbs-exclude-label" data-i18n="jobdb.exclude_label">Exclude</span>
-              <div class="db-check-list" id="instant-dbs-exclude-list" role="group" aria-labelledby="instant-dbs-exclude-label"></div>
+              <div class="db-check-list db-tree" id="instant-dbs-exclude-list" role="tree" aria-labelledby="instant-dbs-exclude-label"></div>
               <p class="form-hint" id="instant-dbs-exclude-empty" hidden></p>
+              <span class="form-hint" data-i18n="jobdb.tree_hint_all">Expand a database to skip some of its collections: checked collections are excluded. Databases found later are backed up whole.</span>
             </div>
             <div class="form-group jobdb-parallel" id="instant-db-parallel-group" hidden>
               <label class="form-label form-label-sm" for="instant-db-parallelism" data-i18n="jobdb.parallelism_label">Databases at a time</label>
@@ -1852,7 +1855,6 @@
           </fieldset>
           <fieldset class="form-group fieldset" id="instant-collections-fieldset">
             <legend class="form-label" data-i18n="picker.collections">Collections</legend>
-            <p class="form-hint" id="instant-colls-note" data-i18n="jobdb.colls_single_only" hidden>Collection filters only apply to a single database. Choose Single to back up only some collections.</p>
             <div class="radio-group" role="radiogroup">
               <label class="check-inline"><input type="radio" name="instant-coll-mode" value="all" checked><span data-i18n="picker.coll_all">All collections</span></label>
               <label class="check-inline"><input type="radio" name="instant-coll-mode" value="include"><span data-i18n="picker.coll_include">Only selected</span></label>

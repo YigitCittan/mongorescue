@@ -29,7 +29,24 @@ func TestStartBackupOfSeveralDatabases(t *testing.T) {
 		}
 	}
 
+	// An entry may be an object with a collection filter of its own.
+	var filtered backupStarted
+	structured(t, ToolStartBackup, call(t, cs, ToolStartBackup, map[string]any{
+		"connection_id": testConnID,
+		"databases":     []any{"crm", map[string]any{"name": "shop", "collections": []string{"orders"}}},
+	}), &filtered)
+	if len(filtered.Backups) != 2 || filtered.Backups[1].Database != "shop" ||
+		len(filtered.Backups[1].Collections) != 1 || filtered.Backups[1].Collections[0] != "orders" || len(filtered.Backups[0].Collections) != 0 {
+		t.Fatalf("start_backup with a filtered entry = %+v", filtered)
+	}
+	for _, b := range filtered.Backups {
+		awaitBackup(t, cs, b.ID)
+	}
+
 	for name, args := range map[string]map[string]any{
+		"entry without name":       {"connection_id": testConnID, "databases": []any{"crm", map[string]any{"collections": []string{"x"}}}},
+		"entry with unknown field": {"connection_id": testConnID, "databases": []any{"crm", map[string]any{"name": "shop", "drop": true}}},
+		"entry of another type":    {"connection_id": testConnID, "databases": []any{"crm", 3}},
 		"database and databases":   {"connection_id": testConnID, "database": "shop", "databases": []string{"crm"}},
 		"collections with several": {"connection_id": testConnID, "databases": []string{"shop", "crm"}, "collections": []string{"orders"}},
 		"duplicate":                {"connection_id": testConnID, "databases": []string{"shop", "shop"}},

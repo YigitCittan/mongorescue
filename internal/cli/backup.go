@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -15,11 +16,16 @@ import (
 const backupUsage = `Usage: mongorescue backup --job ID [flags]
        mongorescue backup --connection ID --database NAME [--database NAME...] [flags]
        mongorescue backup --connection ID --databases NAME,NAME [flags]
+       mongorescue backup --connection ID --databases-file FILE [flags]
 
 Starts a backup on the server: the run of a scheduled job (--job), or an on-demand
 backup of databases of a managed connection. Several databases (--database
-repeated, or --databases) are backed up in one run, each into its own backup; a
-database another backup is running is skipped. Without --wait it prints the new
+repeated, --databases or --databases-file) are backed up in one run, each into its
+own backup; a database another backup is running is skipped. A --database value
+may carry a collection filter of its own: NAME:collections=A,B backs up only
+those collections of NAME, NAME:exclude=A,B every collection but those.
+--databases-file reads a JSON array in the API's form, such as
+["a", {"name": "b", "exclude_collections": ["logs"]}]. Without --wait it prints the new
 backup (or run) and returns at once; with --wait it polls until it finishes and
 exits 1 when it failed (for a run: unless every database succeeded, with a summary
 per database). Needs an operator or admin API key.
@@ -54,6 +60,7 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 	var databases stringsFlag
 	fs.Var(&databases, "database", "Database to back up (with --connection); repeat it to back up several in one run")
 	databaseList := fs.String("databases", "", "Databases to back up in one run, comma-separated (with --connection)")
+	databasesFile := fs.String("databases-file", "", "JSON file with the databases to back up in one run: names or {name, collections or exclude_collections}")
 	parallelism := fs.Int("parallelism", 0, "With several databases: how many are backed up at once (1 to 4; default 1)")
 	collections := fs.String("collections", "", "Only these collections, comma-separated")
 	exclude := fs.String("exclude-collections", "", "Every collection except these, comma-separated")
@@ -69,23 +76,26 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 		return usageErrorf("backup takes no arguments, got %s (use --job or --connection and --database)", strings.Join(pos, " "))
 	}
 	*job, *conn = strings.TrimSpace(*job), strings.TrimSpace(*conn)
-	names := append(slicesWithout(databases, ""), csv(*databaseList)...)
-	// --databases always starts a run, even of one database.
-	multi := len(names) > 1 || s.set["databases"]
+	names, err := backupDatabases(slicesWithout(databases, ""), csv(*databaseList), *databasesFile)
+	if err != nil {
+		return err
+	}
+	// --databases and --databases-file always start a run, even of one database.
+	multi := len(names) > 1 || s.set["databases"] || s.set["databases-file"]
 	if *job != "" {
-		for _, name := range []string{"connection", "database", "databases", "parallelism", "collections", "exclude-collections", "storage-target", "gzip", "users-and-roles"} {
+		for _, name := range []string{"connection", "database", "databases", "databases-file", "parallelism", "collections", "exclude-collections", "storage-target", "gzip", "users-and-roles"} {
 			if s.set[name] {
 				return usageErrorf("--%s cannot be combined with --job: the job's settings apply", name)
 			}
 		}
 	} else if *conn == "" || len(names) == 0 {
-		return usageErrorf("give --job, or --connection and --database (or --databases)")
+		return usageErrorf("give --job, or --connection and --database (or --databases or --databases-file)")
 	}
 	if *collections != "" && *exclude != "" {
 		return usageErrorf("--collections and --exclude-collections cannot be combined")
 	}
-	if len(names) > 1 && (*collections != "" || *exclude != "") {
-		return usageErrorf("--collections and --exclude-collections apply to a backup of one database")
+	if multi && (*collections != "" || *exclude != "") {
+		return usageErrorf("--collections and --exclude-collections apply to a backup of one database; give each database its own filter (--database NAME:exclude=A,B)")
 	}
 	if s.set["parallelism"] && !multi {
 		return usageErrorf("--parallelism needs several databases")
@@ -112,12 +122,79 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 		}
 		return s.finishBackupRun(ctx, client, run)
 	}
-	req.Database = names[0]
+	req.Database = names[0].Name
+	if names[0].Filtered() {
+		if *collections != "" || *exclude != "" {
+			return usageErrorf("give the collection filter of %s either after its name or with --collections/--exclude-collections, not both", req.Database)
+		}
+		req.Collections, req.ExcludeCollections = names[0].Collections, names[0].ExcludeCollections
+	}
 	res, err := client.StartBackup(ctx, req)
 	if err != nil {
 		return startError(err, "backups")
 	}
 	return s.finishBackup(ctx, client, res)
+}
+
+// Collection filter suffixes of a --database value.
+const (
+	dbCollectionsSuffix = ":collections="
+	dbExcludeSuffix     = ":exclude="
+)
+
+// parseDatabaseFlag reads a --database value: NAME, NAME:collections=A,B or
+// NAME:exclude=A,B.
+func parseDatabaseFlag(v string) (models.DatabaseFilter, error) {
+	for _, suffix := range []string{dbCollectionsSuffix, dbExcludeSuffix} {
+		name, list, ok := strings.Cut(v, suffix)
+		if !ok {
+			continue
+		}
+		f := models.DatabaseFilter{Name: strings.TrimSpace(name)}
+		if strings.Contains(list, dbCollectionsSuffix) || strings.Contains(list, dbExcludeSuffix) {
+			return f, usageErrorf("--database %s: give either :collections= or :exclude=, once", f.Name)
+		}
+		names := csv(list)
+		if f.Name == "" || len(names) == 0 {
+			return f, usageErrorf("--database %q: want NAME%sA,B or NAME%sA,B", v, dbCollectionsSuffix, dbExcludeSuffix)
+		}
+		if suffix == dbCollectionsSuffix {
+			f.Collections = names
+		} else {
+			f.ExcludeCollections = names
+		}
+		return f, nil
+	}
+	return models.DatabaseFilter{Name: strings.TrimSpace(v)}, nil
+}
+
+// backupDatabases returns the databases of --database (with their filters),
+// --databases and --databases-file, in that order.
+func backupDatabases(flags, list []string, file string) ([]models.DatabaseFilter, error) {
+	out := make([]models.DatabaseFilter, 0, len(flags)+len(list))
+	for _, v := range flags {
+		f, err := parseDatabaseFlag(v)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	out = append(out, models.DatabaseNames(list...)...)
+	if file = strings.TrimSpace(file); file != "" {
+		raw, err := os.ReadFile(file) //nolint:gosec // G304: the file the user named.
+		if err != nil {
+			return nil, usageErrorf("--databases-file: %v", err)
+		}
+		var entries []models.DatabaseFilter
+		if err = json.Unmarshal(raw, &entries); err != nil {
+			return nil, usageErrorf("--databases-file %s: want a JSON array of names or {\"name\", \"collections\" or \"exclude_collections\"} objects: %v", file, err)
+		}
+		if len(entries) == 0 {
+			return nil, usageErrorf("--databases-file %s names no database", file)
+		}
+		out = append(out, entries...)
+	}
+	return out, nil
 }
 
 // slicesWithout returns the values of list other than drop.

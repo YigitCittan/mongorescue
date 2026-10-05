@@ -230,14 +230,14 @@ type backupIDInput struct {
 }
 
 type startBackupInput struct {
-	ConnectionID       string   `json:"connection_id" jsonschema:"ID of the connection to back up from (see list_connections)"`
-	Database           string   `json:"database,omitempty" jsonschema:"database to back up (see list_databases); give database or databases"`
-	Databases          []string `json:"databases,omitempty" jsonschema:"several databases to back up in one run, each into its own backup (instead of database)"`
-	Parallelism        int      `json:"parallelism,omitempty" jsonschema:"with databases: how many are backed up at once (0 or omitted: 1)"`
-	StorageTargetID    string   `json:"storage_target_id,omitempty" jsonschema:"storage target to write to (default: the default target)"`
-	Collections        []string `json:"collections,omitempty" jsonschema:"only these collections (one database only)"`
-	ExcludeCollections []string `json:"exclude_collections,omitempty" jsonschema:"skip these collections (one database only)"`
-	Gzip               *bool    `json:"gzip,omitempty" jsonschema:"compress the archive (default: the server setting)"`
+	ConnectionID       string                  `json:"connection_id" jsonschema:"ID of the connection to back up from (see list_connections)"`
+	Database           string                  `json:"database,omitempty" jsonschema:"database to back up (see list_databases); give database or databases"`
+	Databases          []models.DatabaseFilter `json:"databases,omitempty" jsonschema:"several databases to back up in one run, each into its own backup (instead of database): a name, or an object {name, collections or exclude_collections} for a database that keeps only some collections"`
+	Parallelism        int                     `json:"parallelism,omitempty" jsonschema:"with databases: how many are backed up at once (0 or omitted: 1)"`
+	StorageTargetID    string                  `json:"storage_target_id,omitempty" jsonschema:"storage target to write to (default: the default target)"`
+	Collections        []string                `json:"collections,omitempty" jsonschema:"only these collections (one database only)"`
+	ExcludeCollections []string                `json:"exclude_collections,omitempty" jsonschema:"skip these collections (one database only)"`
+	Gzip               *bool                   `json:"gzip,omitempty" jsonschema:"compress the archive (default: the server setting)"`
 }
 
 type cancelRunInput struct {
@@ -373,6 +373,31 @@ func narrowTypes(s *jsonschema.Schema) {
 	}
 }
 
+// databaseEntrySchema is the schema of an entry of start_backup's databases: a
+// database name, or an object with the name and a collection filter of its own.
+func databaseEntrySchema() *jsonschema.Schema {
+	name := func() *jsonschema.Schema {
+		return &jsonschema.Schema{Type: "string", MinLength: ptr(1), MaxLength: ptr(maxNameLength)}
+	}
+	names := func(desc string) *jsonschema.Schema {
+		return &jsonschema.Schema{Type: "array", Description: desc, MaxItems: ptr(maxCollections),
+			Items: &jsonschema.Schema{Type: "string", MinLength: ptr(1), MaxLength: ptr(maxNameLength)}}
+	}
+	return &jsonschema.Schema{AnyOf: []*jsonschema.Schema{
+		name(),
+		{
+			Type:     "object",
+			Required: []string{"name"},
+			Properties: map[string]*jsonschema.Schema{
+				"name":                name(),
+				"collections":         names("only these collections of the database"),
+				"exclude_collections": names("every collection of the database except these (names match literally)"),
+			},
+			AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
+		},
+	}}
+}
+
 // limitIDs bounds the ID-like string properties named.
 func limitIDs(props map[string]*jsonschema.Schema, names ...string) {
 	for _, n := range names {
@@ -503,9 +528,7 @@ func (s *Server) registerTools() {
 			p["database"].MinLength, p["database"].MaxLength = ptr(1), ptr(maxNameLength)
 			if d := p["databases"]; d != nil {
 				d.MinItems, d.MaxItems = ptr(1), ptr(operations.MaxBackupDatabases)
-				if d.Items != nil {
-					d.Items.MinLength, d.Items.MaxLength = ptr(1), ptr(maxNameLength)
-				}
+				d.Items = databaseEntrySchema()
 			}
 			p["parallelism"].Minimum, p["parallelism"].Maximum = ptr(0.0), ptr(float64(models.MaxJobParallelism))
 			collectionProps(p, "collections", "exclude_collections")

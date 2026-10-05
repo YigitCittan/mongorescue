@@ -221,7 +221,7 @@ func (s *Scheduler) planRun(ctx context.Context, job *models.Job, run *models.Jo
 			run.NewDatabases = res.New
 		}
 	}
-	if err := s.prepareDatabases(plan, opts, databases, plan.multi); err != nil {
+	if err := s.prepareDatabases(plan, opts, databases, plan.multi, job.Selection().FilterFor); err != nil {
 		return plan, err
 	}
 	if plan.Resolution != nil {
@@ -237,12 +237,16 @@ func (s *Scheduler) planRun(ctx context.Context, job *models.Job, run *models.Jo
 
 // prepareDatabases adds to plan the in-progress record and the options of every one
 // of databases, backed up with opts; perDatabase sets each database's name in the
-// options and clears the collection filters, which only a single database has.
-func (s *Scheduler) prepareDatabases(plan *JobRunPlan, opts models.BackupOptions, databases []string, perDatabase bool) error {
+// options and replaces opts' collection filters, which only a single database has,
+// by the database's own filter from filterFor (none: the whole database).
+func (s *Scheduler) prepareDatabases(plan *JobRunPlan, opts models.BackupOptions, databases []string, perDatabase bool, filterFor func(string) (models.DatabaseFilter, bool)) error {
 	for _, db := range databases {
 		o := opts
 		if perDatabase {
 			o.Database, o.Collections, o.ExcludeCollections = db, nil, nil
+			if f, ok := filterFor(db); ok {
+				o.Collections, o.ExcludeCollections = f.Collections, f.ExcludeCollections
+			}
 		}
 		rec, err := s.backupEngine.Prepare(o)
 		if err != nil {
@@ -265,10 +269,14 @@ func (s *Scheduler) prepareDatabases(plan *JobRunPlan, opts models.BackupOptions
 type AdHocRun struct {
 	// Options are the backup options every database shares: connection and URI,
 	// storage target, compression, trigger and users and roles. Database is set per
-	// database; the collection filters are kept only for a run of one database.
+	// database; the collection filters are kept only for a run of one database
+	// without an entry in Filters.
 	Options models.BackupOptions
 	// Databases are backed up in this order (at least one).
 	Databases []string
+	// Filters are the collection filters of some of Databases, at most one per
+	// database (see models.DatabaseFilter); the others are backed up whole.
+	Filters []models.DatabaseFilter
 	// Locks are, by database, the releases of the run locks the caller took (a nil
 	// slice or entry: the run takes the lock when the database's turn comes,
 	// waiting for it as a job run does). Once PrepareAdHocRun succeeds the plan owns
@@ -301,13 +309,23 @@ func (s *Scheduler) PrepareAdHocRun(req AdHocRun) (*JobRunPlan, error) {
 	if req.Locks != nil && len(req.Locks) != len(req.Databases) {
 		return nil, fmt.Errorf("%w: %d locks for %d databases", ErrInvalidAdHocRun, len(req.Locks), len(req.Databases))
 	}
+	filterFor := func(db string) (models.DatabaseFilter, bool) {
+		i := slices.IndexFunc(req.Filters, func(f models.DatabaseFilter) bool { return f.Name == db && f.Filtered() })
+		if i < 0 {
+			return models.DatabaseFilter{}, false
+		}
+		return req.Filters[i].Clone(), true
+	}
 	opts := req.Options
 	opts.JobID = ""
 	if len(req.Databases) == 1 {
 		opts.Database = req.Databases[0]
+		if f, ok := filterFor(opts.Database); ok {
+			opts.Collections, opts.ExcludeCollections = f.Collections, f.ExcludeCollections
+		}
 	}
 	plan := &JobRunPlan{Run: newRunOf("", opts.Trigger), multi: true, adhoc: true, parallelism: req.Parallelism}
-	if err := s.prepareDatabases(plan, opts, req.Databases, len(req.Databases) > 1); err != nil {
+	if err := s.prepareDatabases(plan, opts, req.Databases, len(req.Databases) > 1, filterFor); err != nil {
 		return nil, err
 	}
 	for _, db := range req.Busy {

@@ -54,7 +54,7 @@ func TestBackupNowOfThreeDatabases(t *testing.T) {
 	two := 2
 	run, err := svc.StartBackups(ctx, operations.BackupRequest{
 		BackupOptions: models.BackupOptions{ConnectionID: conn.ID, IncludeUsersAndRoles: true},
-		Databases:     dbs, Parallelism: &two,
+		Databases:     models.DatabaseNames(dbs...), Parallelism: &two,
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)

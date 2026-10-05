@@ -3214,6 +3214,83 @@ a.btn-block {
   white-space: nowrap;
 }
 
+/* Databases as a tree: a row per database, its collections when open. */
+.db-tree-item {
+  min-width: 0;
+}
+
+.db-tree-item[aria-expanded="true"] {
+  grid-column: 1 / -1;
+}
+
+.db-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.db-tree-row .db-check {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.db-tree-caret {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-subtle);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.db-tree-caret::before {
+  content: "\25B8";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.db-tree-caret[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.db-tree-caret:hover,
+.db-tree-caret:focus-visible {
+  background: var(--panel-header);
+  color: var(--text);
+}
+
+.db-tree-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-tree-colls {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 2px 12px;
+  margin: 4px 0 6px 24px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.db-tree-colls > .form-hint,
+.db-tree-colls > .form-input {
+  grid-column: 1 / -1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-tree-caret::before {
+    transition: none;
+  }
+}
+
 .jobdb-parallel {
   max-width: 280px;
 }

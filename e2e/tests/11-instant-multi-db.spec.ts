@@ -86,7 +86,7 @@ test("backs up all databases from Back up now without touching the list", async 
   for (const db of databases) await dialog.getByRole("checkbox", { name: new RegExp(`^${db}\\b`) }).check();
   await dialog.getByRole("button", { name: "All", exact: true }).click();
 
-  const excludes = dialog.getByRole("group", { name: "Exclude" }).getByRole("checkbox");
+  const excludes = dialog.getByRole("tree", { name: "Exclude" }).getByRole("checkbox");
   await expect(excludes.first()).toBeVisible();
   const count = await excludes.count();
   expect(count).toBeGreaterThanOrEqual(databases.length);

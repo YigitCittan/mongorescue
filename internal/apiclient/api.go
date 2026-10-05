@@ -147,8 +147,8 @@ type BackupRequest struct {
 	// IncludeUsersAndRoles dumps the database's users and roles too.
 	IncludeUsersAndRoles bool `json:"include_users_and_roles,omitempty"`
 	// Databases backs up several databases in one run instead of Database
-	// (StartBackups).
-	Databases []string `json:"databases,omitempty"`
+	// (StartBackups); an entry without a collection filter is sent as its name.
+	Databases []models.DatabaseFilter `json:"databases,omitempty"`
 	// Parallelism is how many of Databases are backed up at once (nil: 1).
 	Parallelism *int `json:"parallelism,omitempty"`
 }

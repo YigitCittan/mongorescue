@@ -2,7 +2,9 @@ package operations_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +34,7 @@ func TestStartBackupsGroupsTheDatabasesUnderOneRun(t *testing.T) {
 	two := 2
 	run, err := e.svc.StartBackups(ctx, operations.BackupRequest{
 		BackupOptions: models.BackupOptions{ConnectionID: "conn_a", IncludeUsersAndRoles: true},
-		Databases:     []string{" a ", "b", "admin"}, Parallelism: &two,
+		Databases:     models.DatabaseNames(" a ", "b", "admin"), Parallelism: &two,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +76,7 @@ func TestStartBackupsSkipsABusyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	run, err := e.svc.StartBackups(ctx, operations.BackupRequest{
-		BackupOptions: models.BackupOptions{ConnectionID: "conn_a"}, Databases: []string{"a", "b", "c"},
+		BackupOptions: models.BackupOptions{ConnectionID: "conn_a"}, Databases: models.DatabaseNames("a", "b", "c"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +98,7 @@ func TestStartBackupsSkipsABusyDatabase(t *testing.T) {
 	}
 	// Every database busy: nothing starts.
 	if _, err = e.svc.StartBackups(ctx, operations.BackupRequest{
-		BackupOptions: models.BackupOptions{ConnectionID: "conn_a"}, Databases: []string{"b"},
+		BackupOptions: models.BackupOptions{ConnectionID: "conn_a"}, Databases: models.DatabaseNames("b"),
 	}); !errors.Is(err, operations.ErrBusy) {
 		t.Errorf("only busy databases: %v; want ErrBusy", err)
 	}
@@ -116,20 +118,26 @@ func TestStartBackupsValidation(t *testing.T) {
 		req  operations.BackupRequest
 		want error
 	}{
-		"database and databases": {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Database: "a"}, Databases: []string{"b"}}, operations.ErrDatabasesConflict},
-		"empty":                  {operations.BackupRequest{BackupOptions: conn, Databases: []string{}}, operations.ErrDatabasesCount},
-		"too many":               {operations.BackupRequest{BackupOptions: conn, Databases: many}, operations.ErrDatabasesCount},
-		"duplicate":              {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a", " a"}}, operations.ErrDuplicateDatabase},
-		"invalid name":           {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a", "--drop"}}, models.ErrInvalidNamespace},
-		"blank name":             {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a", " "}}, models.ErrInvalidNamespace},
-		"collections":            {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Collections: []string{"x"}}, Databases: []string{"a", "b"}}, operations.ErrCollectionsNeedOneDatabase},
-		"exclusions":             {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", ExcludeCollections: []string{"x"}}, Databases: []string{"a", "b"}}, operations.ErrCollectionsNeedOneDatabase},
-		"parallelism too high":   {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a", "b"}, Parallelism: &five}, operations.ErrInvalidParallelism},
-		"parallelism negative":   {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a", "b"}, Parallelism: &minus}, operations.ErrInvalidParallelism},
-		"users and roles admin":  {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", IncludeUsersAndRoles: true}, Databases: []string{"admin"}}, operations.ErrUsersAndRolesAdmin},
-		"no connection":          {operations.BackupRequest{Databases: []string{"a", "b"}}, operations.ErrConnectionRequired},
-		"unknown connection":     {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_x"}, Databases: []string{"a", "b"}}, operations.ErrUnknownConnection},
-		"databases on single":    {operations.BackupRequest{BackupOptions: conn, Databases: []string{"a"}}, nil},
+		"database and databases": {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Database: "a"}, Databases: models.DatabaseNames("b")}, operations.ErrDatabasesConflict},
+		"empty":                  {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames()}, operations.ErrDatabasesCount},
+		"too many":               {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames(many...)}, operations.ErrDatabasesCount},
+		"duplicate":              {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a", " a")}, operations.ErrDuplicateDatabase},
+		"invalid name":           {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a", "--drop")}, models.ErrInvalidNamespace},
+		"blank name":             {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a", " ")}, models.ErrInvalidNamespace},
+		"collections":            {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Collections: []string{"x"}}, Databases: models.DatabaseNames("a", "b")}, operations.ErrCollectionsNeedOneDatabase},
+		"exclusions":             {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", ExcludeCollections: []string{"x"}}, Databases: models.DatabaseNames("a", "b")}, operations.ErrCollectionsNeedOneDatabase},
+		"parallelism too high":   {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a", "b"), Parallelism: &five}, operations.ErrInvalidParallelism},
+		"parallelism negative":   {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a", "b"), Parallelism: &minus}, operations.ErrInvalidParallelism},
+		"users and roles admin":  {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", IncludeUsersAndRoles: true}, Databases: models.DatabaseNames("admin")}, operations.ErrUsersAndRolesAdmin},
+		"no connection":          {operations.BackupRequest{Databases: models.DatabaseNames("a", "b")}, operations.ErrConnectionRequired},
+		"unknown connection":     {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_x"}, Databases: models.DatabaseNames("a", "b")}, operations.ErrUnknownConnection},
+		"databases on single":    {operations.BackupRequest{BackupOptions: conn, Databases: models.DatabaseNames("a")}, nil},
+		"filter twice": {operations.BackupRequest{BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Collections: []string{"x"}},
+			Databases: []models.DatabaseFilter{{Name: "a", ExcludeCollections: []string{"y"}}}}, operations.ErrCollectionFilterTwice},
+		"bad entry collection": {operations.BackupRequest{BackupOptions: conn,
+			Databases: []models.DatabaseFilter{{Name: "a"}, {Name: "b", ExcludeCollections: []string{"bad$"}}}}, models.ErrInvalidNamespace},
+		"duplicate entry": {operations.BackupRequest{BackupOptions: conn,
+			Databases: []models.DatabaseFilter{{Name: "a"}, {Name: "a", Collections: []string{"x"}}}}, operations.ErrDuplicateDatabase},
 	} {
 		var err error
 		if name == "databases on single" {
@@ -149,7 +157,7 @@ func TestStartBackupsValidation(t *testing.T) {
 	}
 	// Collections apply to a run of one database.
 	run, err := e.svc.StartBackups(ctx, operations.BackupRequest{
-		BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Collections: []string{"orders"}}, Databases: []string{"shop"},
+		BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Collections: []string{"orders"}}, Databases: models.DatabaseNames("shop"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +174,52 @@ func TestStartBackupsValidation(t *testing.T) {
 			continue
 		}
 		release()
+	}
+}
+
+func TestStartBackupsAppliesEachDatabasesCollectionFilter(t *testing.T) {
+	e := newMultiEnv(t)
+	run, err := e.svc.StartBackups(context.Background(), operations.BackupRequest{
+		BackupOptions: models.BackupOptions{ConnectionID: "conn_a"},
+		Databases: []models.DatabaseFilter{
+			{Name: "a"},
+			{Name: " b ", Collections: []string{"orders", " orders "}},
+			{Name: "c", ExcludeCollections: []string{"logs"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Backups) != 3 {
+		t.Fatalf("run = %+v", run)
+	}
+	for i, want := range [][]string{nil, {"orders"}, nil} {
+		b := run.Backups[i]
+		if len(b.Collections) != len(want) || (len(want) > 0 && b.Collections[0] != want[0]) {
+			t.Errorf("backup of %s collections = %q; want %q", b.Database, b.Collections, want)
+		}
+		if done := e.awaitBackup(t, b.ID); done.Status != models.StatusCompleted {
+			t.Errorf("backup of %s = %s", b.Database, done.Status)
+		}
+	}
+}
+
+func TestBackupRequestDatabasesAcceptNamesAndObjects(t *testing.T) {
+	var req operations.BackupRequest
+	in := `{"connection_id":"conn_a","databases":["a",{"name":"b","exclude_collections":["logs","tmp_1"]},{"name":"c","collections":["orders"]}]}`
+	if err := json.Unmarshal([]byte(in), &req); err != nil {
+		t.Fatal(err)
+	}
+	want := []models.DatabaseFilter{{Name: "a"}, {Name: "b", ExcludeCollections: []string{"logs", "tmp_1"}}, {Name: "c", Collections: []string{"orders"}}}
+	if !reflect.DeepEqual(req.Databases, want) {
+		t.Errorf("databases = %+v; want %+v", req.Databases, want)
+	}
+	var old operations.BackupRequest
+	if err := json.Unmarshal([]byte(`{"connection_id":"conn_a","databases":["a","b"]}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(old.Databases, models.DatabaseNames("a", "b")) {
+		t.Errorf("string array = %+v", old.Databases)
 	}
 }
 

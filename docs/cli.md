@@ -76,14 +76,23 @@ mongorescue backup --connection ID --database NAME [--collections a,b | --exclud
                    [--storage-target ID] [--gzip=false] [--users-and-roles] [--wait]
 mongorescue backup --connection ID --database NAME --database NAME… [--parallelism N] [flags]
 mongorescue backup --connection ID --databases NAME,NAME… [--parallelism N] [flags]
+mongorescue backup --connection ID --databases-file FILE [--parallelism N] [flags]
 ```
 
 `--job` runs a scheduled job now (`POST /api/v1/jobs/{id}/run`) with its own settings; the other flags cannot be combined with it. For a job with several databases it waits for the whole run and prints each database's outcome. Otherwise it starts an on-demand backup of one database (`POST /api/v1/backups`): `--storage-target` defaults to the default target and `--gzip` to the server's setting. Without `--wait` it prints the new backup (or run) and returns at once. With `--wait` it exits `1` when the backup failed or was cancelled, or when any database of a job run did not complete.
 
-`--database` repeated, or `--databases` with a comma-separated list, backs up several databases of the connection in one run ([details](api.md#backing-up-several-databases-now)): each into its own backup, `--parallelism` (1 to 4, default 1) at a time. `--collections` and `--exclude-collections` apply to one database only. A database another backup is running is skipped and named on stderr. Without `--wait` it prints the run's ID and its backups (`--quiet`: the run ID; `--json`: the server's answer). With `--wait` it waits for all of them, prints a summary per database and exits `0` only when every database was backed up, `1` otherwise (a skipped database counts as not backed up); `--json` then prints `{run_id, backups, busy}` with the final records. Follow a run later with `mongorescue list backups --run RUN_ID`.
+`--database` repeated, or `--databases` with a comma-separated list, backs up several databases of the connection in one run ([details](api.md#backing-up-several-databases-now)): each into its own backup, `--parallelism` (1 to 4, default 1) at a time. `--collections` and `--exclude-collections` apply to one database only; with several, give each database its own filter (below). A database another backup is running is skipped and named on stderr. Without `--wait` it prints the run's ID and its backups (`--quiet`: the run ID; `--json`: the server's answer). With `--wait` it waits for all of them, prints a summary per database and exits `0` only when every database was backed up, `1` otherwise (a skipped database counts as not backed up); `--json` then prints `{run_id, backups, busy}` with the final records. Follow a run later with `mongorescue list backups --run RUN_ID`.
 
 ```bash
 mongorescue backup --connection conn_prod --databases shop,crm,billing --parallelism 2 --wait
+```
+
+**Collections per database.** A `--database` value may end in a collection filter for that database: `NAME:collections=A,B` backs up only those collections, `NAME:exclude=A,B` every collection except those (one of the two per value; collection names match literally, without wildcards). `--databases` stays a plain list of names. `--databases-file FILE` reads the databases from a JSON array in the API's form ([collection filters per database](api.md#collection-filters-per-database)); it always starts a run, even of one database, and adds to `--database` and `--databases`. One filtered `--database` on its own is a single backup with that filter, like `--collections`/`--exclude-collections` (which cannot be combined with it).
+
+```bash
+mongorescue backup --connection conn_prod --database shop --database crm:exclude=logs,tmp --database billing:collections=invoices --wait
+echo '["shop", {"name": "crm", "exclude_collections": ["logs", "tmp"]}]' > dbs.json
+mongorescue backup --connection conn_prod --databases-file dbs.json --parallelism 2
 ```
 
 ### restore
