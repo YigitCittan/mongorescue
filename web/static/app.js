@@ -1877,6 +1877,9 @@ function renderBackups() {
     const errorLine = failed && b.error_message
       ? errorDetail(b.error_message, truncate(errorSummary(b.error_message), 70))
       : "";
+    // Warnings did not fail the backup (e.g. an archive close to the S3 target's limit).
+    const warningLine = (b.warnings || []).map(w =>
+      `<details class="cell-sub error-detail"><summary class="cell-warning" title="${escapeHtml(w)}">${escapeHtml(truncate(w, 70))}</summary><div class="error-full">${escapeHtml(w)}</div></details>`).join("");
     const size = restorable || Number(b.size_bytes) > 0 ? escapeHtml(formatBytes(b.size_bytes)) : mutedDash();
     const restoreBtn = restorable
       ? `<button type="button" class="btn btn-secondary btn-sm" data-action="restore-backup" data-id="${escapeHtml(b.id)}" data-db="${escapeHtml(b.database)}">${escapeHtml(t("actions.rescue_restore"))}</button>`
@@ -1889,7 +1892,7 @@ function renderBackups() {
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
       ${bulkCell("backups", b.id, `${b.database} · ${b.id}`)}
       <td class="cell-primary"><div class="name-line">${ellipsis(b.database, "ell-md")}${lock}${trustPinIcon(b)}</div><div class="cell-sub">${ellipsis(backupOrigin(b), "ell-md")}</div>${idCopy(b.id, "cell-sub")}${retryLinks(b)}</td>
-      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}${typeof backupFilterBadge === "function" ? backupFilterBadge(b) : ""}</td>
+      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${warningLine}${runProgressHtml(b)}${trustBackupBadges(b)}${typeof backupFilterBadge === "function" ? backupFilterBadge(b) : ""}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
       <td class="num">${size}${backupStorageCell(b)}</td>
@@ -5622,6 +5625,31 @@ function setupStorageForm() {
   form.addEventListener("input", invalidate);
   form.addEventListener("change", invalidate);
   form.addEventListener("submit", saveStorageTarget);
+  document.getElementById("storage-part-size").addEventListener("input", updatePartSizeHint);
+  onLanguageChange(updatePartSizeHint);
+}
+
+// S3 multipart limits (models.S3MaxUploadParts, models.S3UploadConcurrency and the
+// part size range of internal/models/storage.go).
+const S3_MAX_PARTS = 10000;
+const S3_UPLOAD_CONCURRENCY = 2;
+const S3_PART_SIZE_MIN = 5;
+const S3_PART_SIZE_MAX = 512;
+const S3_PART_SIZE_DEFAULT = 16;
+
+// Shows the largest archive and the upload memory of the part size in the form.
+function updatePartSizeHint() {
+  const input = document.getElementById("storage-part-size");
+  if (!input) return;
+  const mb = Number(input.value);
+  if (!Number.isInteger(mb) || mb < S3_PART_SIZE_MIN || mb > S3_PART_SIZE_MAX) {
+    setText("storage-part-size-hint", tf("storage.err_part_size", { min: S3_PART_SIZE_MIN, max: S3_PART_SIZE_MAX }));
+    return;
+  }
+  setText("storage-part-size-hint", tf("storage.part_size_hint", {
+    max: formatBytes(mb * 1024 * 1024 * S3_MAX_PARTS),
+    memory: formatBytes(mb * 1024 * 1024 * S3_UPLOAD_CONCURRENCY)
+  }));
 }
 
 function presetEndpoint(preset, region) {
@@ -5671,6 +5699,8 @@ function openStorageModal(id) {
   setValue("storage-access-key", s3.access_key_id || "");
   setValue("storage-secret-key", s3.secret_access_key || "");
   document.getElementById("storage-path-style").checked = !!s3.use_path_style;
+  setValue("storage-part-size", String(s3.part_size_mb || S3_PART_SIZE_DEFAULT));
+  updatePartSizeHint();
   const provider = target ? inferProvider(target) : state.storageTargets.some(s => s.type === "local") ? "aws" : "local";
   setValue("storage-provider", provider);
   applyProvider(provider, !target);
@@ -5719,6 +5749,10 @@ function storagePayload() {
   if (!!accessKey !== !!secretKey) {
     throw new FieldError(accessKey ? "storage-secret-key" : "storage-access-key", t("storage.err_credentials"));
   }
+  const partSize = Number(getValue("storage-part-size") || S3_PART_SIZE_DEFAULT);
+  if (!Number.isInteger(partSize) || partSize < S3_PART_SIZE_MIN || partSize > S3_PART_SIZE_MAX) {
+    throw new FieldError("storage-part-size", tf("storage.err_part_size", { min: S3_PART_SIZE_MIN, max: S3_PART_SIZE_MAX }));
+  }
   return {
     name,
     type: "s3",
@@ -5729,7 +5763,8 @@ function storagePayload() {
       prefix: getValue("storage-prefix").replace(/^\/+/, ""),
       access_key_id: accessKey,
       secret_access_key: secretKey,
-      use_path_style: document.getElementById("storage-path-style").checked
+      use_path_style: document.getElementById("storage-path-style").checked,
+      part_size_mb: partSize
     }
   };
 }
