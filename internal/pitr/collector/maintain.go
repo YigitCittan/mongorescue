@@ -7,6 +7,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 )
 
 // retryFailedBase is how long the schedule waits after a failed base backup
@@ -85,7 +86,8 @@ func (s *Service) runBaseSchedule(ctx context.Context) {
 func (s *Service) baseDue(st *pitr.Stream, status *StreamStatus, bases []*models.BackupRecord, now time.Time) bool {
 	var newest *models.BackupRecord
 	for _, b := range bases {
-		if !b.Status.Deleted() {
+		// A skipped run never started; a deleted base does not count.
+		if !b.Status.Deleted() && b.Status != models.StatusSkipped {
 			newest = b
 			break
 		}
@@ -94,7 +96,11 @@ func (s *Service) baseDue(st *pitr.Stream, status *StreamStatus, bases []*models
 	case newest == nil:
 		return true
 	case newest.Status == models.StatusInProgress || newest.Status == models.StatusPending:
+		// Running, or waiting for a slot of the connection's max_concurrent_backups.
 		return false
+	case newest.Status == models.StatusCancelled && newest.CancelledBy == runs.SystemActor:
+		// Interrupted by a shutdown while it waited for a slot: it never ran.
+		return !hasOpenWindow(status)
 	case newest.Status == models.StatusFailed || newest.Status == models.StatusCancelled:
 		if now.Sub(newest.StartedAt) >= retryFailedBase {
 			return true

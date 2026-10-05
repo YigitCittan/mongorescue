@@ -8,6 +8,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 )
 
 func TestBaseDueFollowsEligibility(t *testing.T) {
@@ -105,5 +106,56 @@ func TestBusyBaseAfterABreakIsRetriedBySchedule(t *testing.T) {
 	fx.svc.runBaseSchedule(ctx)
 	if starts != 2 {
 		t.Fatalf("the schedule did not retry the base of the new chain (%d starts)", starts)
+	}
+}
+
+func TestBaseDueIgnoresSkippedAndRetriesInterruptedBases(t *testing.T) {
+	fx := newFixture(t)
+	ctx := context.Background()
+	fx.svc.cfg.Bases = fx.repo.ListBaseBackups
+	fx.svc.cfg.NextRun = func(string, time.Time) (time.Time, bool) { return fx.clock.Now().Add(24 * time.Hour), true }
+	w := fx.worker()
+	fx.step(w)
+	fx.step(w)
+	due := func() bool {
+		t.Helper()
+		st, err := fx.repo.GetStream(ctx, fx.stream.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := fx.svc.Status(ctx, st.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bases, err := fx.repo.ListBaseBackups(ctx, st.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fx.svc.baseDue(st, status, bases, fx.clock.Now())
+	}
+	save := func(b *models.BackupRecord) {
+		t.Helper()
+		b.Scope, b.PITRStreamID = models.ScopeInstance, fx.stream.ID
+		if err := fx.repo.SaveBackupRecord(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A base waiting for a slot of its connection is in progress: not due.
+	save(&models.BackupRecord{ID: "b_wait", Status: models.StatusInProgress, StartedAt: fx.clock.Now()})
+	if due() {
+		t.Fatal("due while a base waits for a slot")
+	}
+	// Interrupted by a shutdown while it waited: it never ran, so it is due again
+	// at once, not after an hour like a failed base.
+	save(&models.BackupRecord{ID: "b_wait", Status: models.StatusCancelled, StartedAt: fx.clock.Now(), CancelledBy: runs.SystemActor})
+	if !due() {
+		t.Fatal("an interrupted base is not retried")
+	}
+	// A newer skipped record does not hide the state of the bases before it.
+	fx.clock.advance(time.Minute)
+	save(&models.BackupRecord{ID: "b_wait", Status: models.StatusInProgress, StartedAt: fx.clock.Now().Add(-time.Minute)})
+	save(&models.BackupRecord{ID: "b_skip", Status: models.StatusSkipped, StartedAt: fx.clock.Now()})
+	if due() {
+		t.Fatal("a skipped record hides the running base")
 	}
 }

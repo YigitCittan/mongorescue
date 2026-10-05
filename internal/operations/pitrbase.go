@@ -49,11 +49,16 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 	if trigger != models.TriggerScheduled {
 		trigger = models.TriggerManual
 	}
+	// Like every backup of the connection, a base reads with the connection's
+	// read preference, uploads at most at the general.max_upload_mbps cap (the
+	// engine's default) and waits, shown as waiting, for a slot of the
+	// connection's max_concurrent_backups.
 	opts := models.BackupOptions{
 		Scope: models.ScopeInstance, PITRStreamID: stream.ID, ReplicaSet: stream.ReplicaSet,
 		ConnectionID: conn.ID, ConnectionName: conn.Name, MongoURI: conn.URI,
 		StorageTargetID: target.ID, StorageTargetName: target.Name, StorageType: target.Type,
 		Gzip: true, Trigger: trigger,
+		ReadPreference: conn.ReadPref(), MaxConcurrentBackups: conn.MaxConcurrentBackups,
 	}
 	record, err := s.cfg.Backup.Prepare(opts)
 	if err != nil {
