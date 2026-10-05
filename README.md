@@ -199,13 +199,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 
 ## Known limitations
 
-- It runs as a single instance. Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance on the same directory refuses to start.
-- Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but there is no per-connection access yet: an operator may back up and restore every connection, and an admin may change settings, storage targets and use the test endpoints that connect to hosts named in the request. Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
-- Losing `secret.key` (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable: keep a copy, stored apart from database backups.
-- Backups are per-database `mongodump` snapshots: users and roles are not included (recreate them after a disaster), and there is no oplog-based point-in-time recovery. See [docs/testing.md](docs/testing.md#known-limits).
-- The dashboard has no automated browser tests yet; the API behind it is covered by Go tests.
-- Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only.
+- **No point-in-time recovery yet.** Backups are per-database `mongodump` snapshots, so a restore goes back to the newest snapshot, not to the minute before an accident. Oplog-based PITR is designed ([docs/design/pitr.md](docs/design/pitr.md)) and in progress (#56, #57). Users and roles can be included per job (`include_users_and_roles`).
+- **Single instance.** Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance refuses to start. MongoRescue backs up its own metadata on a schedule and the recovery kit holds what a rebuild needs. High availability is planned (#64, #65); until then the instance is a single point of failure, and nothing alerts when it is down unless you monitor it from outside (#97).
+- **Deletes are immediate.** An admin, or a stolen admin API key, can delete backups and storage targets at once; there is no grace period or second approver yet (#96). Pins (legal hold) protect chosen backups, and S3 Object Lock is planned (#59).
+- **Roles are global.** Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but no per-connection access yet: an operator may back up and restore every connection (#98). Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
+- **`secret.key` is the root of trust.** Losing it (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable. Download the recovery kit and keep it apart from the backups. Keys cannot be rotated yet (#101).
+- **Backups read from wherever the connection string points**, normally the primary, without throttling or backup windows (#100).
+- Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only. The macOS app is not signed or notarized yet (see [docs/desktop.md](docs/desktop.md)).
 - The standalone server binary needs the MongoDB Database Tools (`mongodump`, `mongorestore`) installed on the host. The Docker image and the desktop app packages already include them.
+
+The full list of production gaps is tracked with the [production-gap](https://github.com/YigitCittan/mongorescue/issues?q=is%3Aissue+is%3Aopen+label%3Aproduction-gap) label.
 
 ## Roadmap
 
