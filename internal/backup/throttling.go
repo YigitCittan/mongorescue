@@ -18,6 +18,16 @@ import (
 // reachable secondary, or a directConnection=true URI that reaches the primary).
 var ErrNoEligibleMember = errors.New("backup: no member matches the read preference")
 
+// ErrInterrupted indicates that a backup ended before mongodump started because
+// MongoRescue shut down (or the run's context ended) while it waited for a slot
+// of its connection. Such a backup is recorded as cancelled by the system, never
+// as failed.
+var ErrInterrupted = errors.New("backup: interrupted before it started")
+
+// interruptedReason is the cancellation reason of a backup that waited for a slot
+// when MongoRescue shut down.
+const interruptedReason = "interrupted: MongoRescue shut down while the backup waited for a slot of its connection"
+
 // memberTimeout bounds the hello query that finds the member a backup reads from.
 const memberTimeout = 45 * time.Second
 
@@ -62,13 +72,29 @@ func (e *Engine) waitForSlot(ctx context.Context, opts models.BackupOptions, rec
 			slog.Int("max_concurrent_backups", opts.MaxConcurrentBackups))
 	}
 	release, err := e.slots.AcquireSlot(ctx, runs.ConnectionKey(opts.ConnectionID), opts.MaxConcurrentBackups, waiting)
-	if err != nil {
-		if c := runs.CancellationOf(ctx); c != nil {
-			return nil, fmt.Errorf("backup %w while waiting for a slot of its connection", c)
-		}
-		return nil, fmt.Errorf("backup: waiting for a slot of connection %s: %w", opts.ConnectionID, err)
+	switch {
+	case err == nil:
+		return release, nil
+	case runs.CancellationOf(ctx) != nil:
+		return nil, fmt.Errorf("backup %w while waiting for a slot of its connection", runs.CancellationOf(ctx))
+	default:
+		// The runs manager shut down, or the run's context ended (the scheduler
+		// stopping): the backup never started, so it was interrupted, not failed.
+		return nil, fmt.Errorf("%w: %w", ErrInterrupted, err)
 	}
-	return release, nil
+}
+
+// interrupt records a backup that ended before mongodump started because
+// MongoRescue shut down as cancelled by the system, so it emits backup.cancelled
+// and no heartbeat failure.
+func (e *Engine) interrupt(ctx context.Context, record *models.BackupRecord, err error) (*models.BackupRecord, error) {
+	record, err = e.fail(ctx, record, err)
+	record.Status = models.StatusCancelled
+	record.CancelledBy, record.CancelledAt = runs.SystemActor, models.Stamp(time.Now())
+	record.ErrorMessage = interruptedReason
+	runs.FromContext(ctx).Printf("backup cancelled: %s", interruptedReason)
+	e.logger.Info("backup interrupted while waiting for a slot of its connection", logsafe.Attr("backup_id", record.ID))
+	return record, err
 }
 
 // probeMember asks which member a read with opts' read preference selects and

@@ -381,6 +381,9 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	// A connection's max_concurrent_backups queues the backup (shown as waiting)
 	// before it starts; the wait does not count against the backup timeout.
 	releaseSlot, err := e.waitForSlot(ctx, opts, record)
+	if errors.Is(err, ErrInterrupted) {
+		return e.interrupt(ctx, record, err)
+	}
 	if err != nil {
 		return e.fail(ctx, record, err)
 	}
