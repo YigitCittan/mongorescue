@@ -402,7 +402,9 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		rt := *u.RestoreTest
 		job.RestoreTest = &rt
 	}
-	applyThrottlingUpdate(job, u)
+	if err = applyThrottlingUpdate(job, u); err != nil {
+		return nil, err
+	}
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}

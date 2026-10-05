@@ -31,8 +31,12 @@ func validateJobThrottling(job *models.Job) error {
 }
 
 // applyThrottlingUpdate copies the read preference, throttling and window fields
-// an update sets onto job.
-func applyThrottlingUpdate(job *models.Job, u JobUpdate) {
+// an update sets onto job. Tags without a read_preference are refused
+// (models.ErrTagsWithoutMode, an ErrInvalid error) rather than ignored.
+func applyThrottlingUpdate(job *models.Job, u JobUpdate) error {
+	if u.ReadPreference == nil && len(u.ReadPreferenceTags) > 0 {
+		return invalid(models.ErrTagsWithoutMode)
+	}
 	if u.ReadPreference != nil {
 		job.ReadPreference = *u.ReadPreference
 		job.ReadPreferenceTags = models.CloneTagSets(u.ReadPreferenceTags)
@@ -42,4 +46,5 @@ func applyThrottlingUpdate(job *models.Job, u JobUpdate) {
 	if u.BackupWindow != nil {
 		job.BackupWindow = u.BackupWindow.Clone()
 	}
+	return nil
 }

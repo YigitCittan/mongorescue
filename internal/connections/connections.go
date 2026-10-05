@@ -517,6 +517,8 @@ func validateInput(in *Input) error {
 		return fmt.Errorf("%w: uri is required", ErrInvalid)
 	case in.MaxConcurrentBackups != nil && (*in.MaxConcurrentBackups < 0 || *in.MaxConcurrentBackups > models.MaxConcurrentBackupsLimit):
 		return fmt.Errorf("%w: %w", ErrInvalid, models.ErrInvalidConcurrentBackups)
+	case in.ReadPreference == nil && len(in.ReadPreferenceTags) > 0:
+		return fmt.Errorf("%w: %w", ErrInvalid, models.ErrTagsWithoutMode)
 	}
 	if in.ReadPreference != nil {
 		rp := models.ReadPreference{Mode: strings.TrimSpace(*in.ReadPreference), Tags: in.ReadPreferenceTags}
