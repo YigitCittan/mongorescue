@@ -50,6 +50,8 @@ func TestJobSelectionTakesPerDatabaseCollectionFilters(t *testing.T) {
 		"not listed": `{"mode":"list","databases":["shop"],"collection_filters":[{"name":"crm","collections":["x"]}]}`,
 		"bad name":   `{"mode":"list","databases":[{"name":"shop","exclude_collections":["a$b"]}]}`,
 		"bad entry":  `{"mode":"list","databases":[42]}`,
+		"both":       `{"mode":"list","databases":[{"name":"shop","collections":["a"],"exclude_collections":["b"]}]}`,
+		"excluded":   `{"mode":"all","exclude":["sh*"],"databases":[{"name":"shop","collections":["a"]}]}`,
 	} {
 		rec = serve(h, "POST", "/api/v1/jobs", []byte(`{"name":"bad","cron_expression":"@daily","connection_id":"`+testConnID+`","database_selection":`+sel+`}`), nil)
 		if rec.Code != http.StatusBadRequest {

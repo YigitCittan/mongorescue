@@ -1173,9 +1173,10 @@ function dbSelLoadFilters(state, mode, filters) {
     if (!f || !f.name) return;
     const include = f.collections || [];
     const exclude = f.exclude_collections || [];
-    // A filter with both backs up the included collections that are not excluded.
+    // The server refuses a filter with both lists, and the editor only ever writes
+    // one of them (dbSelFilterOf), so an entry is either kind.
     const entry = include.length > 0
-      ? { kind: "include", names: new Set(include.filter(c => !exclude.includes(c))) }
+      ? { kind: "include", names: new Set(include) }
       : { kind: "exclude", names: new Set(exclude) };
     if (entry.names.size > 0) map.set(f.name, entry);
   });

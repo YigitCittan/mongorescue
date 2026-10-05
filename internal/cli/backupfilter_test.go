@@ -50,6 +50,10 @@ func TestBackupDatabaseFilterUsage(t *testing.T) {
 	if err := os.WriteFile(bad, []byte(`{"a": 1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	both := filepath.Join(t.TempDir(), "both.json")
+	if err := os.WriteFile(both, []byte(`[{"name": "a", "collections": ["x"], "exclude_collections": ["y"]}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
 		{"backup", "--connection", "c", "--database", "a:exclude="},
 		{"backup", "--connection", "c", "--database", ":collections=x"},
@@ -57,6 +61,7 @@ func TestBackupDatabaseFilterUsage(t *testing.T) {
 		{"backup", "--connection", "c", "--database", "a:exclude=x", "--collections", "y"},
 		{"backup", "--connection", "c", "--database", "a:exclude=x", "--database", "b", "--exclude-collections", "y"},
 		{"backup", "--connection", "c", "--databases-file", bad},
+		{"backup", "--connection", "c", "--databases-file", both},
 		{"backup", "--connection", "c", "--databases-file", filepath.Join(t.TempDir(), "missing.json")},
 		{"backup", "--job", "j", "--databases-file", bad},
 	} {

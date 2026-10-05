@@ -136,6 +136,8 @@ func TestStartBackupsValidation(t *testing.T) {
 			Databases: []models.DatabaseFilter{{Name: "a", ExcludeCollections: []string{"y"}}}}, operations.ErrCollectionFilterTwice},
 		"bad entry collection": {operations.BackupRequest{BackupOptions: conn,
 			Databases: []models.DatabaseFilter{{Name: "a"}, {Name: "b", ExcludeCollections: []string{"bad$"}}}}, models.ErrInvalidNamespace},
+		"include and exclude": {operations.BackupRequest{BackupOptions: conn,
+			Databases: []models.DatabaseFilter{{Name: "a"}, {Name: "b", Collections: []string{"x"}, ExcludeCollections: []string{"y"}}}}, models.ErrIncludeAndExclude},
 		"duplicate entry": {operations.BackupRequest{BackupOptions: conn,
 			Databases: []models.DatabaseFilter{{Name: "a"}, {Name: "a", Collections: []string{"x"}}}}, operations.ErrDuplicateDatabase},
 	} {

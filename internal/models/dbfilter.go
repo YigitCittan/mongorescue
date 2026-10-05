@@ -17,12 +17,18 @@ const MaxFilterCollections = 1000
 // database name nor an object with a name.
 var ErrInvalidDatabaseFilter = errors.New("a database entry is a name or an object with name, collections and exclude_collections")
 
+// ErrIncludeAndExclude is returned for a database filter that sets both collections
+// and exclude_collections: a database's filter either names the collections backed
+// up or the ones skipped.
+var ErrIncludeAndExclude = errors.New("a database's collection filter takes collections or exclude_collections, not both")
+
 // DatabaseFilter names one database of a backup of several databases, with an
 // optional collection filter for it: Collections backs up only those collections,
-// ExcludeCollections every collection but those, exactly like the collection
-// filters of a backup of one database (names are matched literally, without
-// wildcards). In JSON it is either the database name ("shop", no filter) or an
-// object {"name": "shop", "collections": [...], "exclude_collections": [...]}; an
+// ExcludeCollections every collection but those (one of the two), exactly like the
+// collection filters of a backup of one database ("*" and "?" are wildcards the
+// backup expands). In JSON it is either the database name ("shop", no filter) or an
+// object {"name": "shop", "collections": [...]} or {"name": "shop",
+// "exclude_collections": [...]}; an
 // entry without a filter is written as its name, so lists of names stay readable
 // by clients that predate filters.
 type DatabaseFilter struct {
@@ -66,8 +72,9 @@ func (f DatabaseFilter) Clone() DatabaseFilter {
 
 // Normalize trims the name and drops blank and repeated collection names, then
 // checks them: the database name follows ValidateDatabaseName, the collection names
-// ValidateCollectionName, and each list has at most MaxFilterCollections entries.
-// Errors wrap ErrInvalidNamespace.
+// ValidateCollectionName, each list has at most MaxFilterCollections entries, and
+// only one of the two lists is set. Errors wrap ErrInvalidNamespace or
+// ErrIncludeAndExclude.
 func (f *DatabaseFilter) Normalize() error {
 	f.Name = strings.TrimSpace(f.Name)
 	f.Collections = cleanList(f.Collections)
@@ -83,6 +90,9 @@ func (f *DatabaseFilter) Normalize() error {
 	}
 	if err := ValidateCollectionNames(f.ExcludeCollections); err != nil {
 		return fmt.Errorf("%s: exclude_collections: %w", f.Name, err)
+	}
+	if len(f.Collections) > 0 && len(f.ExcludeCollections) > 0 {
+		return fmt.Errorf("%w (database %s)", ErrIncludeAndExclude, f.Name)
 	}
 	return nil
 }
@@ -121,8 +131,12 @@ func (f DatabaseFilter) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads a selection whose databases may be names or objects with a
-// collection filter (see DatabaseFilter): every entry names its database in
-// Databases, and the filter of an object entry is added to CollectionFilters.
+// collection filter (see DatabaseFilter): the filter of an object entry is added to
+// CollectionFilters. In a list (or single) selection every entry also names its
+// database in Databases. In an all or pattern selection, where Databases are the
+// databases always backed up in addition to what the selection matches, an entry
+// with a filter only attaches the filter: it does not add the database to Databases
+// (a name does, as before).
 func (s *DatabaseSelection) UnmarshalJSON(b []byte) error {
 	type plain DatabaseSelection
 	var raw struct {
@@ -137,11 +151,15 @@ func (s *DatabaseSelection) UnmarshalJSON(b []byte) error {
 	if raw.Databases != nil {
 		s.Databases = make([]string, 0, len(raw.Databases))
 	}
+	attachOnly := s.Discovers()
 	for _, entry := range raw.Databases {
-		s.Databases = append(s.Databases, entry.Name)
 		if entry.Filtered() {
 			s.CollectionFilters = append(s.CollectionFilters, entry)
+			if attachOnly {
+				continue
+			}
 		}
+		s.Databases = append(s.Databases, entry.Name)
 	}
 	return nil
 }
@@ -205,7 +223,7 @@ func (s *DatabaseSelection) normalizeFilters() error {
 				return fmt.Errorf("%w: collection_filters: %s is a system database", ErrInvalidSelection, f.Name)
 			}
 			if p := matchesAny(s.Exclude, f.Name); p != "" {
-				return fmt.Errorf("%w: collection_filters: %s is excluded by %q", ErrInvalidSelection, f.Name, p)
+				return fmt.Errorf("%w: collection_filters: filter for an excluded database: %s is excluded by %q", ErrInvalidSelection, f.Name, p)
 			}
 		}
 	default:
