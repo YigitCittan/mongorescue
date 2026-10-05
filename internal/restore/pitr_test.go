@@ -147,8 +147,13 @@ func (f *pitrFixture) run() PITRRun {
 	plan := &pitr.RestorePlan{StreamID: "s1", ChainID: "ch1", Chunks: f.chunks, ChunkCount: len(f.chunks),
 		Limit: pitr.Timestamp{T: 116}, TargetTime: time.Unix(115, 0).UTC(),
 		Base: pitr.Base{ID: f.base.ID}}
-	return PITRRun{Plan: plan, Base: f.base}
+	// The base's manifest knows shop (and an earlier clone, never cloned again);
+	// "other" first appears in the oplog.
+	return PITRRun{Plan: plan, Base: f.base, Databases: []string{"admin", "shop", oldClone}}
 }
+
+// oldClone is a clone of an earlier restore that the base holds.
+const oldClone = "shop_rescue_20261001_000000_abcd"
 
 func pitrRequest(dbs ...string) models.RestoreRequest {
 	at := time.Unix(115, 0).UTC()
@@ -172,12 +177,27 @@ func TestPITRRestoreWholeInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	suffix := rec.PITR.CloneSuffix
-	if !strings.HasPrefix(suffix, "_rescue_") || rec.TargetDatabase != "*"+suffix || rec.BackupID != "b1" {
+	if !strings.HasPrefix(suffix, "_rescue_") || len(suffix) != 28 || rec.TargetDatabase != "*"+suffix || rec.BackupID != "b1" {
 		t.Fatalf("record = %+v", rec)
 	}
-	rec, err = e.ExecutePITR(context.Background(), req, f.run(), rec)
+	// The clones planned from the base's manifest are recorded before anything runs.
+	if !slices.Equal(rec.PITR.Clones, []string{"shop" + suffix}) {
+		t.Fatalf("planned clones %v", rec.PITR.Clones)
+	}
+	run := f.run()
+	var recorded [][]string
+	run.OnRecord = func(r *models.RestoreRecord) { recorded = append(recorded, r.PITR.Clones) }
+	rec, err = e.ExecutePITR(context.Background(), req, run, rec)
 	if err != nil {
 		t.Fatalf("ExecutePITR: %v (%s)", err, rec.ErrorMessage)
+	}
+	// A database first seen in the oplog is recorded before its first entry is written.
+	if len(recorded) != 1 || !slices.Equal(recorded[0], []string{"shop" + suffix, "other" + suffix}) ||
+		!slices.Equal(rec.PITR.Clones, recorded[0]) {
+		t.Fatalf("recorded %v, clones %v", recorded, rec.PITR.Clones)
+	}
+	if rec.PITR.OpsUnverified {
+		t.Error("ops_unverified with an applied count")
 	}
 	if rec.Status != models.RestoreStatusCompleted || rec.PITR.OpsReplayed != 3 || rec.PITR.OpsApplied == nil || *rec.PITR.OpsApplied != 3 {
 		t.Fatalf("record = %+v, pitr = %+v", rec, rec.PITR)
@@ -187,7 +207,7 @@ func TestPITRRestoreWholeInstance(t *testing.T) {
 	}
 	pass1, pass2 := r.calls[0], r.calls[1]
 	for _, want := range []string{"--archive", "--gzip", "--nsExclude=admin.*", "--nsExclude=config.*", "--nsExclude=local.*",
-		"--nsFrom=$db$.$coll$", "--nsTo=$db$" + suffix + ".$coll$"} {
+		"--nsExclude=" + oldClone + ".*", "--nsFrom=$db$.$coll$", "--nsTo=$db$" + suffix + ".$coll$"} {
 		if !hasArg(pass1, want) {
 			t.Errorf("pass 1 args %v lack %s", pass1, want)
 		}
@@ -276,14 +296,14 @@ func TestPITRRestoreOpCount(t *testing.T) {
 		req := pitrRequest()
 		rec, _ := e.PreparePITR(req, f.run())
 		rec, err := e.ExecutePITR(context.Background(), req, f.run(), rec)
-		if err != nil || rec.Status != models.RestoreStatusCompleted || !strings.Contains(rec.Warning, "cross-checked") {
-			t.Fatalf("err = %v, status %s, warning %q", err, rec.Status, rec.Warning)
+		if err != nil || rec.Status != models.RestoreStatusCompleted || !strings.Contains(rec.Warning, "cross-checked") || !rec.PITR.OpsUnverified {
+			t.Fatalf("err = %v, status %s, warning %q, ops_unverified %v", err, rec.Status, rec.Warning, rec.PITR.OpsUnverified)
 		}
 	})
 }
 
 func TestPITRRestoreRefusals(t *testing.T) {
-	t.Run("tampered chunk fails and drops the clones", func(t *testing.T) {
+	t.Run("tampered chunk is refused before anything is written", func(t *testing.T) {
 		f := newPITRFixture(t)
 		f.chunks[1].SHA256 = strings.Repeat("0", 64)
 		r := &pitrRunner{applied: "applied 3 oplog entries"}
@@ -291,21 +311,53 @@ func TestPITRRestoreRefusals(t *testing.T) {
 		e := f.engine(r, admin)
 		req := pitrRequest()
 		rec, _ := e.PreparePITR(req, f.run())
-		admin.names = []string{"shop"}
-		r.onRun = func([]string) {
-			// Pass 1 creates the clones.
+		rec, err := e.ExecutePITR(context.Background(), req, f.run(), rec)
+		if !errors.Is(err, ErrChunkChecksum) || !strings.Contains(rec.ErrorMessage, "untouched") {
+			t.Fatalf("err = %v (%s), want ErrChunkChecksum", err, rec.ErrorMessage)
+		}
+		if len(r.calls) != 0 || len(admin.dropped) != 0 {
+			t.Fatalf("ran %d times, dropped %v", len(r.calls), admin.dropped)
+		}
+	})
+	t.Run("chunk without a checksum", func(t *testing.T) {
+		f := newPITRFixture(t)
+		f.chunks[0].SHA256 = ""
+		r := &pitrRunner{}
+		e := f.engine(r, &pitrAdmin{})
+		req := pitrRequest()
+		rec, _ := e.PreparePITR(req, f.run())
+		if _, err := e.ExecutePITR(context.Background(), req, f.run(), rec); !errors.Is(err, ErrChunkChecksum) || len(r.calls) != 0 {
+			t.Fatalf("err = %v after %d runs, want ErrChunkChecksum", err, len(r.calls))
+		}
+	})
+	t.Run("inline check drops exactly the recorded clones", func(t *testing.T) {
+		f := newPITRFixture(t)
+		// Verified by the sweep a moment ago: the pre-pass skips it, the replay
+		// still hashes it.
+		now := time.Now()
+		f.chunks[1].SHA256, f.chunks[1].VerifiedAt = strings.Repeat("0", 64), &now
+		r := &pitrRunner{applied: "applied 3 oplog entries"}
+		admin := &pitrAdmin{}
+		e := f.engine(r, admin)
+		req := pitrRequest()
+		rec, _ := e.PreparePITR(req, f.run())
+		suffix := rec.PITR.CloneSuffix
+		// Another restore's clone and a regular safe clone must survive.
+		admin.names = []string{"shop", "shop_rescue_20261005_120000", "crm" + suffix[:len(suffix)-1] + "x"}
+		r.onRun = func(args []string) {
+			if slices.Contains(args, "--oplogReplay") {
+				return
+			}
 			admin.mu.Lock()
 			defer admin.mu.Unlock()
-			if len(admin.names) == 1 {
-				admin.names = append(admin.names, "shop"+rec.PITR.CloneSuffix, "other"+rec.PITR.CloneSuffix)
-			}
+			admin.names = append(admin.names, "shop"+suffix)
 		}
-		rec, err := e.ExecutePITR(context.Background(), req, f.run(), rec)
+		_, err := e.ExecutePITR(context.Background(), req, f.run(), rec)
 		if !errors.Is(err, ErrChecksumMismatch) {
 			t.Fatalf("err = %v, want ErrChecksumMismatch", err)
 		}
 		slices.Sort(admin.dropped)
-		if want := []string{"other" + rec.PITR.CloneSuffix, "shop" + rec.PITR.CloneSuffix}; !slices.Equal(admin.dropped, want) {
+		if want := []string{"other" + suffix, "shop" + suffix}; !slices.Equal(admin.dropped, want) {
 			t.Fatalf("dropped %v, want %v", admin.dropped, want)
 		}
 	})
@@ -369,8 +421,17 @@ func TestPITRRestoreRefusals(t *testing.T) {
 			t.Fatalf("in place: err = %v, want ErrPITRInPlace", err)
 		}
 		long := pitrRequest(strings.Repeat("d", 50))
-		if _, err := e.PreparePITR(long, f.run()); err == nil {
-			t.Fatal("a clone name past 63 bytes was accepted")
+		if _, err := e.PreparePITR(long, f.run()); !errors.Is(err, ErrCloneNameTooLong) {
+			t.Fatalf("a clone name past 63 bytes: err = %v", err)
+		}
+		// A whole instance: every database of the base's manifest is checked.
+		run := f.run()
+		run.Databases = append(run.Databases, strings.Repeat("w", 40))
+		if _, err := e.PreparePITR(pitrRequest(), run); !errors.Is(err, ErrCloneNameTooLong) || !strings.Contains(err.Error(), strings.Repeat("w", 40)) {
+			t.Fatalf("a whole instance with a long name: err = %v", err)
+		}
+		if _, err := e.PreparePITR(pitrRequest(oldClone), f.run()); err == nil {
+			t.Fatal("a clone was accepted as a database to restore")
 		}
 		if _, err := e.PreparePITR(pitrRequest("admin"), f.run()); err == nil {
 			t.Fatal("admin was accepted")

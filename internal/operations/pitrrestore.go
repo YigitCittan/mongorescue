@@ -46,6 +46,8 @@ type pitrPlan struct {
 	run    restore.PITRRun
 	// planErr is why no plan was found (preflights only).
 	planErr error
+	// cloneErr is why the clone names do not fit (preflights only).
+	cloneErr error
 	// chainTest marks the restore of a chain test.
 	chainTest bool
 }
@@ -130,7 +132,12 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	case err != nil:
 		out.planErr = pitrPlanError(err)
 	default:
-		out.run = restore.PITRRun{Plan: plan, Base: byID[plan.Base.ID]}
+		base := byID[plan.Base.ID]
+		out.run = restore.PITRRun{Plan: plan, Base: base, Databases: base.InstanceDatabases}
+		if missing := missingDatabases(base.InstanceDatabases, req.PITRDatabases()); len(missing) > 0 {
+			return nil, public(fmt.Sprintf("databases: %s not in base backup %s; restore the whole instance to get databases created after the base",
+				strings.Join(missing, ", "), base.ID), ErrInvalid)
+		}
 	}
 
 	targetID := req.TargetConnectionID
@@ -144,6 +151,21 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = conn.ID, conn.Name, conn.URI
 	out.req = req
 	return out, nil
+}
+
+// missingDatabases returns the entries of selected that the base's database list
+// does not hold; nothing when the base has no list (an earlier release).
+func missingDatabases(base, selected []string) []string {
+	if base == nil {
+		return nil
+	}
+	var out []string
+	for _, db := range selected {
+		if !slices.Contains(base, db) {
+			out = append(out, db)
+		}
+	}
+	return out
 }
 
 // startPITRRestore is StartRestore for a point-in-time request (req.PITR): an
@@ -189,11 +211,22 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		return nil, fmt.Errorf("save restore record: %w", err)
 	}
 	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
+	// The clones a restore discovers as it runs are stored before they are written
+	// to, so a restart can always drop exactly what an interrupted restore created.
+	run := pp.run
+	run.OnRecord = func(r *models.RestoreRecord) {
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+		defer cancel()
+		if saveErr := s.cfg.Store.SaveRestoreRecord(saveCtx, r); saveErr != nil {
+			s.logger.Error("failed to record the clones of a point-in-time restore",
+				logsafe.Attr("restore_id", r.ID), logsafe.Error(saveErr))
+		}
+	}
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
 		defer release()
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
-		final, runErr := s.cfg.PITRRestore.ExecutePITR(runCtx, req, pp.run, record)
+		final, runErr := s.cfg.PITRRestore.ExecutePITR(runCtx, req, run, record)
 		done(runCtx, final)
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
@@ -224,10 +257,16 @@ func (s *Service) preflightPITREndpoint(ctx context.Context, req models.RestoreR
 	}
 	var record *models.RestoreRecord
 	if pp.planErr == nil {
-		if record, err = s.cfg.PITRRestore.PreparePITR(pp.req, pp.run); err != nil {
+		record, err = s.cfg.PITRRestore.PreparePITR(pp.req, pp.run)
+		switch {
+		case errors.Is(err, restore.ErrCloneNameTooLong):
+			// Reported by the target_database check.
+			pp.cloneErr, record = err, nil
+		case err != nil:
 			return nil, public(redact.Text(err.Error()), ErrInvalid, err)
+		default:
+			record.PITR.BaseBytes = pp.run.Base.SizeBytes
 		}
-		record.PITR.BaseBytes = pp.run.Base.SizeBytes
 	}
 	return s.preflightPITR(ctx, pp, record), nil
 }
@@ -243,7 +282,8 @@ const (
 // oplogBytes, from the rate of the stream's newest completed chain test, or from
 // the default rates.
 func (s *Service) estimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes int64) (float64, string) {
-	if test := s.lastChainTest(ctx, streamID, true); test != nil && test.DurationSeconds > 0 {
+	completed := func(r *models.RestoreRecord) bool { return r.Status == models.RestoreStatusCompleted }
+	if test := s.lastChainTest(ctx, streamID, completed); test != nil && test.DurationSeconds > 0 {
 		if bytes := test.PITR.BaseBytes + test.PITR.OplogBytes; bytes > 0 {
 			rate := float64(bytes) / test.DurationSeconds
 			return float64(baseBytes+oplogBytes) / rate, "chain_test"
@@ -252,9 +292,9 @@ func (s *Service) estimatePITR(ctx context.Context, streamID string, baseBytes, 
 	return float64(baseBytes)/defaultBaseRate + float64(oplogBytes)/defaultReplayRate, "default"
 }
 
-// lastChainTest returns the newest chain test restore of streamID (completed only
-// with completed), or nil.
-func (s *Service) lastChainTest(ctx context.Context, streamID string, completed bool) *models.RestoreRecord {
+// lastChainTest returns the newest chain test restore of streamID that accept takes
+// (every one when accept is nil), or nil.
+func (s *Service) lastChainTest(ctx context.Context, streamID string, accept func(*models.RestoreRecord) bool) *models.RestoreRecord {
 	recs, err := s.cfg.Store.ListRestoreRecords(ctx)
 	if err != nil {
 		return nil
@@ -263,7 +303,7 @@ func (s *Service) lastChainTest(ctx context.Context, streamID string, completed 
 		if r.PITR == nil || !r.PITR.ChainTest || r.PITR.StreamID != streamID {
 			continue
 		}
-		if completed && r.Status != models.RestoreStatusCompleted {
+		if accept != nil && !accept(r) {
 			continue
 		}
 		return r
@@ -291,7 +331,10 @@ func (s *Service) preflightPITR(ctx context.Context, pp *pitrPlan, record *model
 	if p.source != nil {
 		p.serverVersion()
 	}
-	if record != nil {
+	switch {
+	case pp.cloneErr != nil:
+		p.res.Add(models.PreflightCheckTargetDatabase, models.PreflightFail, strings.TrimPrefix(pp.cloneErr.Error(), "restore: "))
+	case record != nil:
 		p.pitrClones(record.PITR)
 	}
 	p.pitrPrivileges()
@@ -332,17 +375,16 @@ func (p *preflightRun) pitrChain(pp *pitrPlan, record *models.RestoreRecord) {
 
 func (p *preflightRun) pitrClones(info *models.PITRRestore) {
 	const id = models.PreflightCheckTargetDatabase
-	if len(info.Databases) == 0 {
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf(
-			"every database except admin, config and local is restored into a new database named <database>%s; existing databases are untouched", info.CloneSuffix))
+	if len(info.Clones) == 0 {
+		p.res.Add(id, models.PreflightWarn,
+			"the base backup lists no databases (taken by an earlier release): the clone names cannot be checked in advance")
 		return
 	}
 	if p.skipServer(id) {
 		return
 	}
 	var clones []string
-	for _, db := range info.Databases {
-		clone := db + info.CloneSuffix
+	for _, clone := range info.Clones {
 		exists, err := p.target.DatabaseExists(p.ctx, clone)
 		if err != nil {
 			p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not check whether database %s exists: %s", clone, errText(err)))

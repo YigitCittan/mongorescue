@@ -30,6 +30,7 @@ type streamData struct {
 	BaseOnGap      bool   `json:"base_on_gap"`
 	ReadPreference string `json:"read_preference,omitempty"`
 	ChainTestCron  string `json:"chain_test_cron,omitempty"`
+	ChainTestConn  string `json:"chain_test_connection_id,omitempty"`
 }
 
 // oplogTS converts a stored integer pair to a BSON timestamp.
@@ -42,7 +43,7 @@ func (s *SQLiteStore) CreateStream(ctx context.Context, st *pitr.Stream) error {
 	if st == nil || st.ID == "" || st.ConnectionID == "" {
 		return fmt.Errorf("%w: PITR stream with ID and connection is required", ErrInvalidRecord)
 	}
-	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron})
+	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID})
 	if err != nil {
 		return fmt.Errorf("store: encode PITR stream %s: %w", st.ID, err)
 	}
@@ -68,7 +69,7 @@ func (s *SQLiteStore) UpdateStream(ctx context.Context, st *pitr.Stream) error {
 	if st == nil || st.ID == "" || st.ConnectionID == "" {
 		return fmt.Errorf("%w: PITR stream with ID and connection is required", ErrInvalidRecord)
 	}
-	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron})
+	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID})
 	if err != nil {
 		return fmt.Errorf("store: encode PITR stream %s: %w", st.ID, err)
 	}
@@ -152,6 +153,7 @@ func scanStream(r rowScanner) (*pitr.Stream, error) {
 		return nil, fmt.Errorf("%w: PITR stream %s: %w", ErrCorruptRecord, st.ID, err)
 	}
 	st.BaseOnGap, st.ReadPreference, st.ChainTestCron = d.BaseOnGap, d.ReadPreference, d.ChainTestCron
+	st.ChainTestConnectionID = d.ChainTestConn
 	st.CreatedAt, st.UpdatedAt = fromKey(created), fromKey(updated)
 	return &st, nil
 }

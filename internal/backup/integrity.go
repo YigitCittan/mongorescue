@@ -42,7 +42,8 @@ func WithManifestCapturer(fn ManifestFunc) Option {
 type DatabaseListFunc func(ctx context.Context, uri string) ([]string, error)
 
 // WithDatabaseLister makes PITR base backups (a whole instance) capture an instance
-// manifest: every database but admin, config and local, with collections named
+// manifest: every database but admin, config, local and MongoRescue's own clones
+// (models.IsRescueClone), with collections named
 // "<database>.<collection>". PITR chain tests compare their restores with it.
 func WithDatabaseLister(fn DatabaseListFunc) Option {
 	return func(e *Engine) {
@@ -50,8 +51,8 @@ func WithDatabaseLister(fn DatabaseListFunc) Option {
 	}
 }
 
-// captureInstanceManifest returns the manifest of every database but admin,
-// config and local, with collections named "<database>.<collection>", or nil.
+// captureInstanceManifest returns the manifest of every database but admin, config,
+// local and the clones, with collections named "<database>.<collection>", or nil.
 func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *models.Manifest {
 	if e.manifest == nil || e.listDatabases == nil {
 		return nil
@@ -66,7 +67,7 @@ func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *model
 	}
 	out := &models.Manifest{CapturedAt: time.Now().UTC(), Collections: []models.CollectionManifest{}}
 	for _, db := range names {
-		if db == models.AdminDatabase || db == "config" || db == "local" {
+		if db == models.AdminDatabase || db == "config" || db == "local" || models.IsRescueClone(db) {
 			continue
 		}
 		m, err := e.manifest(ctx, uri, db)
@@ -86,6 +87,27 @@ func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *model
 		}
 	}
 	out.Normalize()
+	return out
+}
+
+// instanceDatabases lists the databases of the instance at uri except admin, config
+// and local (clones included), or nil when the listing fails.
+func (e *Engine) instanceDatabases(ctx context.Context, uri string) []string {
+	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	defer cancel()
+	names, err := e.listDatabases(ctx, uri)
+	if err != nil {
+		e.logger.Warn("could not list the databases of a PITR base; point-in-time restores of it cannot plan their clone names",
+			slog.String("error", redact.Text(err.Error())))
+		return nil
+	}
+	out := []string{}
+	for _, db := range names {
+		if db != models.AdminDatabase && db != "config" && db != "local" {
+			out = append(out, db)
+		}
+	}
+	slices.Sort(out)
 	return out
 }
 
@@ -135,6 +157,9 @@ func dumped(name string, opts models.BackupOptions) bool {
 // finishManifest widens the manifest captured before the dump with the counts after
 // it and attaches it to record.
 func (e *Engine) finishManifest(ctx context.Context, uri string, opts models.BackupOptions, before *models.Manifest, record *models.BackupRecord) {
+	if opts.Scope == models.ScopeInstance && e.listDatabases != nil {
+		record.InstanceDatabases = e.instanceDatabases(ctx, uri)
+	}
 	if before == nil {
 		return
 	}

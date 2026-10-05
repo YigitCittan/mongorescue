@@ -327,6 +327,20 @@ func TestPITRRestoreToJustBeforeADrop(t *testing.T) {
 	target := time.Unix(int64(at), 0).UTC()
 	whole := r.restore(t, models.RestoreRequest{PITR: &models.PITRTarget{StreamID: r.stream.ID, At: &target}})
 	suffix := whole.PITR.CloneSuffix
+	// Every clone created is on the record, which names nothing else.
+	for _, name := range r.databases(t) {
+		if strings.HasSuffix(name, suffix) && !slices.Contains(whole.PITR.Clones, name) {
+			t.Errorf("clone %s is not recorded on the restore", name)
+		}
+	}
+	for _, clone := range whole.PITR.Clones {
+		if !strings.HasSuffix(clone, suffix) || models.IsRescueClone(strings.TrimSuffix(clone, suffix)) {
+			t.Errorf("recorded clone %s", clone)
+		}
+	}
+	if !slices.Contains(whole.PITR.Clones, dbA+suffix) || !slices.Contains(whole.PITR.Clones, dbB+suffix) {
+		t.Errorf("recorded clones %v lack %s or %s", whole.PITR.Clones, dbA+suffix, dbB+suffix)
+	}
 	assertSameState(t, "clone of the dropped database", env.state(t, dbA+suffix), wantA)
 	assertSameState(t, "clone of the other database", env.state(t, dbB+suffix), wantB)
 	if whole.PITR.OpsApplied == nil || *whole.PITR.OpsApplied != whole.PITR.OpsReplayed {

@@ -49,7 +49,7 @@ func TestChainTestComparesWithTheNewerBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartChainTest: %v", err)
 	}
-	if rec.PITR == nil || !rec.PITR.ChainTest || rec.PITR.BaseID != "b1" || !strings.HasPrefix(rec.PITR.CloneSuffix, "_rescue_verify_") ||
+	if rec.PITR == nil || !rec.PITR.ChainTest || rec.PITR.BaseID != "b1" || !strings.HasPrefix(rec.PITR.CloneSuffix, "_rescue_cv") || len(rec.PITR.CloneSuffix) != 20 ||
 		rec.PITR.Limit != (pitr.Timestamp{T: 125, I: 2}) {
 		t.Fatalf("record = %+v, pitr = %+v", rec, rec.PITR)
 	}

@@ -31,7 +31,7 @@ func chain(chainID string, bounds ...uint32) []*pitr.Chunk {
 	for i := 1; i < len(bounds); i++ {
 		out = append(out, &pitr.Chunk{
 			ID: chainID + "-" + ts(bounds[i]).String(), ChainID: chainID, From: ts(bounds[i-1]), To: ts(bounds[i]),
-			FirstTerm: 1, LastTerm: 1, SizeBytes: 10, Encrypted: true, EncryptionMode: "x25519",
+			FirstTerm: 1, LastTerm: 1, SizeBytes: 10, SHA256: "ab", Encrypted: true, EncryptionMode: "x25519",
 			Status: pitr.ChunkCommitted, VerifiedAt: &now,
 		})
 	}
@@ -169,6 +169,15 @@ func TestPlanRestoreRefusals(t *testing.T) {
 		repo := &planRepo{chains: []*pitr.Chain{{ChainID: "c1"}}, chunks: map[string][]*pitr.Chunk{"c1": chunks}}
 		src := pitr.PlanSource{Repo: repo, Bases: []pitr.Base{base("b1", 105, 108)}, HasKey: anyKey}
 		if _, err := pitr.PlanRestore(ctx, st, src, at(125)); !errors.Is(err, pitr.ErrChunkFailed) {
+			t.Fatalf("err = %v, want ErrChunkFailed", err)
+		}
+	})
+	t.Run("chunk without a checksum", func(t *testing.T) {
+		chunks := chain("c1", 100, 110, 120)
+		chunks[1].SHA256 = ""
+		repo := &planRepo{chains: []*pitr.Chain{{ChainID: "c1"}}, chunks: map[string][]*pitr.Chunk{"c1": chunks}}
+		src := pitr.PlanSource{Repo: repo, Bases: []pitr.Base{base("b1", 105, 108)}, HasKey: anyKey}
+		if _, err := pitr.PlanRestore(ctx, st, src, at(115)); !errors.Is(err, pitr.ErrChunkFailed) {
 			t.Fatalf("err = %v, want ErrChunkFailed", err)
 		}
 	})

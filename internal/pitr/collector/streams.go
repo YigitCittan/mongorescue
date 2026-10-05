@@ -73,6 +73,8 @@ type StreamRequest struct {
 	ReadPreference *string `json:"read_preference,omitempty"`
 	// ChainTestCron schedules chain tests; "" turns them off.
 	ChainTestCron *string `json:"chain_test_cron,omitempty"`
+	// ChainTestConnectionID is where chain tests restore; "" means the stream's own.
+	ChainTestConnectionID *string `json:"chain_test_connection_id,omitempty"`
 }
 
 // invalidf returns an ErrInvalid error with a message.
@@ -108,6 +110,9 @@ func (req StreamRequest) apply(st *pitr.Stream) {
 	}
 	if req.ChainTestCron != nil {
 		st.ChainTestCron = strings.TrimSpace(*req.ChainTestCron)
+	}
+	if req.ChainTestConnectionID != nil {
+		st.ChainTestConnectionID = strings.TrimSpace(*req.ChainTestConnectionID)
 	}
 }
 

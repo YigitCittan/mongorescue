@@ -23,7 +23,7 @@ func TestInstanceBackupCapturesAnInstanceManifest(t *testing.T) {
 	count := int64(10)
 	engine := NewEngine(storage.NewMockStorage(), "", WithRunner(runner), WithEncryptor(testEncryptor(t)), WithOpTimeReader(reader),
 		WithDatabaseLister(func(context.Context, string) ([]string, error) {
-			return []string{"admin", "shop", "config", "crm", "local"}, nil
+			return []string{"admin", "shop", "config", "crm", "local", "shop_rescue_20261001_000000"}, nil
 		}),
 		WithManifestCapturer(func(_ context.Context, _, db string) (*models.Manifest, error) {
 			mu.Lock()
@@ -52,6 +52,9 @@ func TestInstanceBackupCapturesAnInstanceManifest(t *testing.T) {
 		t.Fatalf("collections %v", names)
 	}
 	// Counts moved between the captures: the range covers both.
+	if got := strings.Join(rec.InstanceDatabases, ","); got != "crm,shop,shop_rescue_20261001_000000" {
+		t.Fatalf("instance databases %s", got)
+	}
 	if c := rec.Manifest.Collection("shop.orders"); c == nil || c.DocumentsMin != 11 || c.DocumentsMax != 13 {
 		t.Fatalf("shop.orders = %+v", c)
 	}

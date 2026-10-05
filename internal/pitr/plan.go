@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -213,6 +214,9 @@ func planFrom(chains []*Chain, byChain map[string][]*Chunk, b Base, limit Timest
 			ch := chunks[i]
 			if i > start && ch.From != chunks[i-1].To {
 				return nil, fmt.Errorf("%w: chain %s has no chunk from %s to %s", ErrChainBreak, c.ChainID, chunks[i-1].To, ch.From)
+			}
+			if strings.TrimSpace(ch.SHA256) == "" {
+				return nil, fmt.Errorf("%w: chunk %s (%s-%s) has no recorded checksum", ErrChunkFailed, ch.ID, ch.From, ch.To)
 			}
 			if ch.VerifyError != "" {
 				return nil, fmt.Errorf("%w: chunk %s (%s-%s): %s", ErrChunkFailed, ch.ID, ch.From, ch.To, ch.VerifyError)

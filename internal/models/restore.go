@@ -232,6 +232,9 @@ func (r RestoreRequest) ValidatePITR() error {
 		if db == AdminDatabase || db == "config" || db == "local" {
 			return fmt.Errorf("databases: %s is never restored to a point in time", db)
 		}
+		if IsRescueClone(db) {
+			return fmt.Errorf("databases: %s is a database MongoRescue restored into; point-in-time restores leave clones out", db)
+		}
 		if seen[db] {
 			return fmt.Errorf("databases: %s is listed twice", db)
 		}
@@ -273,11 +276,18 @@ type PITRRestore struct {
 	// CloneSuffix is appended to the name of every restored database
 	// ("_rescue_<YYYYMMDD_HHMMSS>").
 	CloneSuffix string `json:"clone_suffix"`
+	// Clones are the databases this restore creates, recorded before it writes
+	// anything and extended as it goes. Clean-up after a failure, a cancellation or
+	// an interruption drops exactly these names, never a pattern.
+	Clones []string `json:"clones,omitempty"`
 	// OpsReplayed counts the operations the oplog filter wrote and OpsApplied the
 	// ones mongorestore reported ("applied N oplog entries"; nil when it printed no
 	// count).
 	OpsReplayed int64  `json:"ops_replayed"`
 	OpsApplied  *int64 `json:"ops_applied,omitempty"`
+	// OpsUnverified is set when mongorestore printed no applied count, so the
+	// replay could not be cross-checked (the record also carries a warning).
+	OpsUnverified bool `json:"ops_unverified,omitempty"`
 	// ChainTest marks the restore of a scheduled chain test.
 	ChainTest bool `json:"chain_test,omitempty"`
 }

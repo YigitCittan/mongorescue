@@ -103,10 +103,13 @@ type App struct {
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
 	pitr          *collector.Service
-	readiness     *readiness.Service
-	auditLog      *auditlog.Service
-	auditForward  *auditlog.Forwarder
-	heartbeat     *heartbeat.Service
+	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
+	// or chain test (operations.Service.CleanupInterruptedPITR).
+	cleanupPITR  func(ctx context.Context, rec *models.RestoreRecord) string
+	readiness    *readiness.Service
+	auditLog     *auditlog.Service
+	auditForward *auditlog.Forwarder
+	heartbeat    *heartbeat.Service
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -695,6 +698,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
 		pitr:          pitrSvc,
+		cleanupPITR:   ops.CleanupInterruptedPITR,
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
@@ -1212,7 +1216,13 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 	if restores, err := a.metaStore.ListRestoreRecords(ctx); err == nil {
 		for _, r := range restores {
 			if r.Status == models.RestoreStatusInProgress {
-				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg
+				// An interrupted point-in-time restore or chain test drops the clones
+				// it recorded, and says so.
+				note := ""
+				if a.cleanupPITR != nil && r.PITR != nil {
+					note = a.cleanupPITR(ctx, r)
+				}
+				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg+note
 				if err := a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
 					a.logger.Warn("failed to mark interrupted restore", slog.String("restore_id", r.ID), logsafe.Error(err))
 				}

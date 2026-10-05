@@ -83,6 +83,9 @@ type Filter struct {
 	// Select lists the databases to keep; nil keeps every database except admin,
 	// config and local, which are always dropped.
 	Select map[string]bool
+	// Exclude, when set, drops the databases it reports, like the system databases
+	// (point-in-time restores leave MongoRescue's own clones out).
+	Exclude func(db string) bool
 	// Rename maps a kept database to the database to replay it into. It must return
 	// a valid database name other than db, or the Filter fails with ErrBadRename.
 	// Exactly one of Rename and InPlace must be set.
@@ -675,7 +678,7 @@ func (f *Filter) commitIndexBuild(doc, o bson.Raw, db string) ([]bson.D, int64, 
 
 // selected reports whether database db is replayed.
 func (f *Filter) selected(db string) bool {
-	if systemDB(db) {
+	if systemDB(db) || (f.Exclude != nil && f.Exclude(db)) {
 		return false
 	}
 	if f.Select == nil {

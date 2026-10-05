@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -109,22 +110,56 @@ func RescueDatabaseName(source string, t time.Time) string {
 	return withSuffix(source, rescueInfix+t.UTC().Format(rescueTimeLayout))
 }
 
-// RescueCloneSuffix returns the suffix a point-in-time restore started at t appends
-// to the name of every database it restores: "_rescue_<YYYYMMDD_HHMMSS>" in UTC.
-// Unlike RescueDatabaseName it never shortens the source name, since mongorestore
-// renames a whole instance with one pattern.
-func RescueCloneSuffix(t time.Time) string {
-	return rescueInfix + t.UTC().Format(rescueTimeLayout)
+// PITRCloneIDLength is the length of the random hex part of the clone suffixes of
+// point-in-time restores and chain tests.
+const PITRCloneIDLength = 4
+
+// ErrInvalidCloneID is returned for a clone ID that is not PITRCloneIDLength
+// lowercase hex characters.
+var ErrInvalidCloneID = errors.New("clone id must be 4 lowercase hex characters")
+
+// NewPITRCloneID returns a random clone ID for RescueCloneSuffix and
+// ChainTestCloneSuffix.
+func NewPITRCloneID() (string, error) {
+	b := make([]byte, PITRCloneIDLength/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("random clone id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
-// RescueVerifyCloneSuffix returns the suffix of the databases of a PITR chain test
-// started at t: "_rescue_verify_<YYYYMMDD_HHMMSS>_<suffix>", where suffix is
-// RescueVerifySuffixLength lowercase hex characters (ErrInvalidVerifySuffix).
-func RescueVerifyCloneSuffix(t time.Time, suffix string) (string, error) {
-	if !isLowerHex(suffix, RescueVerifySuffixLength) {
-		return "", ErrInvalidVerifySuffix
+// RescueCloneSuffix returns the suffix a point-in-time restore started at t appends
+// to the name of every database it restores: "_rescue_<YYYYMMDD_HHMMSS>_<id>" in UTC,
+// where id is a random clone ID (NewPITRCloneID), so two restores started within the
+// same second never share a name, nor with a backup's safe clone. Unlike
+// RescueDatabaseName it never shortens the source name, since mongorestore renames a
+// whole instance with one pattern.
+func RescueCloneSuffix(t time.Time, id string) (string, error) {
+	if !isLowerHex(id, PITRCloneIDLength) {
+		return "", ErrInvalidCloneID
 	}
-	return rescueVerifyInfix + t.UTC().Format(rescueTimeLayout) + "_" + suffix, nil
+	return rescueInfix + t.UTC().Format(rescueTimeLayout) + "_" + id, nil
+}
+
+// chainTestInfix marks the temporary databases of PITR chain tests.
+const chainTestInfix = rescueInfix + "cv"
+
+// ChainTestCloneSuffix returns the compact suffix of the databases of a PITR chain
+// test started at t: "_rescue_cv<unix seconds in base 36><id>" (20 bytes), so
+// database names up to 43 bytes fit.
+func ChainTestCloneSuffix(t time.Time, id string) (string, error) {
+	if !isLowerHex(id, PITRCloneIDLength) {
+		return "", ErrInvalidCloneID
+	}
+	return chainTestInfix + strconv.FormatInt(t.Unix(), 36) + id, nil
+}
+
+// IsRescueClone reports whether db looks like a database MongoRescue restored into
+// (a safe clone, a restore test, a point-in-time restore or a chain test): its name
+// contains "_rescue_". Instance manifests and point-in-time restores leave such
+// databases out, so clones are never cloned again.
+func IsRescueClone(db string) bool {
+	return strings.Contains(db, rescueInfix)
 }
 
 // rescueVerifyInfix marks the temporary databases of automated restore tests.

@@ -16,6 +16,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -79,7 +80,7 @@ func pitrService(t *testing.T, inspector operations.RestoreInspector, bases ...*
 	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "b1", Scope: models.ScopeInstance, PITRStreamID: "str_a",
 		ConnectionID: "conn_a", StorageTargetID: "tgt", StorageKey: "_mongorescue/base/conn_a/rs0/2026/10/b1.archive.gz.age",
 		Status: models.StatusCompleted, StartedAt: time.Unix(104, 0), SizeBytes: 1000, Encrypted: true, EncryptionMode: "x25519",
-		ServerVersion: "8.0.4", TBefore: &before, TAfter: &after}); err != nil {
+		ServerVersion: "8.0.4", TBefore: &before, TAfter: &after, InstanceDatabases: b1Databases}); err != nil {
 		t.Fatal(err)
 	}
 	for _, b := range bases {
@@ -102,8 +103,22 @@ func pitrService(t *testing.T, inspector operations.RestoreInspector, bases ...*
 		PITRBases:   st.ListBaseBackups,
 		Inspector:   inspector,
 	})
+	pitrStores[svc] = st
 	return svc, fake
 }
+
+// pitrStores are the stores of the services pitrService built.
+var pitrStores = map[*operations.Service]*store.SQLiteStore{}
+
+// svcStore returns the store of a service pitrService built.
+func svcStore(t *testing.T, svc *operations.Service) *store.SQLiteStore {
+	t.Helper()
+	return pitrStores[svc]
+}
+
+// b1Databases are the databases of base b1; a test may change it before
+// pitrService. The clone of an earlier restore is never planned again.
+var b1Databases = []string{"crm", "shop", "shop_rescue_20261001_000000_abcd"}
 
 func pitrAt(sec int64, dbs ...string) models.RestoreRequest {
 	at := time.Unix(sec, 0).UTC()

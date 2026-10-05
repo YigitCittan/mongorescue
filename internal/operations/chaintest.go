@@ -26,11 +26,13 @@ var ErrNoChainTest = errors.New("no PITR chain test is possible yet")
 // connection ID) in the background: the newest eligible base with a manifest (B2)
 // and the eligible base before it (B1) are taken, B1 is restored to B2's consistent
 // point (every write up to and including T_after) into temporary
-// <db>_rescue_verify_<timestamp>_<hex> clones, the clones are compared with B2's
+// <db>_rescue_cv<base36 time><id> clones on the stream's chain_test_connection_id
+// (default: its own connection), the clones are compared with B2's
 // manifest (RestoreRecord.Verification) and then dropped. The restore record is
 // marked as a chain test (PITRRestore.ChainTest); readiness reports the newest
 // failed one, and its duration feeds the RTO estimate of point-in-time restores.
-// It needs the admin scope. Expected failures: those of StartRestore with PITR, and
+// The preflight applies like to any restore (no force). It needs the admin scope.
+// Expected failures: those of StartRestore with PITR (a *PreflightError too), and
 // ErrNoChainTest.
 func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.RestoreRecord, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
@@ -68,24 +70,33 @@ func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.
 		}
 		return nil, public(msg, ErrNoChainTest, lastErr)
 	}
-	hex, err := models.NewRescueVerifySuffix()
+	cloneID, err := models.NewPITRCloneID()
 	if err != nil {
 		return nil, err
 	}
-	suffix, err := models.RescueVerifyCloneSuffix(s.now(), hex)
+	suffix, err := models.ChainTestCloneSuffix(s.now(), cloneID)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := s.ResolveConnection(ctx, stream.ConnectionID)
+	// The test may run on another server (chain_test_connection_id), so production
+	// is spared its load; it defaults to the stream's own connection.
+	targetID := stream.ChainTestConnectionID
+	if targetID == "" {
+		targetID = stream.ConnectionID
+	}
+	conn, err := s.ResolveConnection(ctx, targetID)
 	if err != nil {
 		return nil, err
 	}
 	limit := plan.Limit
+	// No force: the preflight (privileges, disk space) can refuse a chain test.
 	req := models.RestoreRequest{
 		PITR: &models.PITRTarget{StreamID: stream.ID, TS: &limit}, PITRCloneSuffix: suffix,
-		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI, Force: true,
+		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI,
 	}
-	pp := &pitrPlan{req: req, stream: stream, run: restore.PITRRun{Plan: plan, Base: byID[plan.Base.ID]}, chainTest: true}
+	base := byID[plan.Base.ID]
+	pp := &pitrPlan{req: req, stream: stream, chainTest: true,
+		run: restore.PITRRun{Plan: plan, Base: base, Databases: base.InstanceDatabases}}
 	expected := s.manifest(ctx, byID[b2.ID])
 	return s.runPITRRestore(ctx, pp, func(runCtx context.Context, final *models.RestoreRecord) {
 		s.finishChainTest(runCtx, final, b2.ID, expected, conn.URI)
@@ -169,11 +180,13 @@ type ChainTestResult struct {
 	Failed bool `json:"failed"`
 }
 
-// LastChainTest returns the outcome of the newest chain test of stream streamID, or
-// nil without one (or while one runs).
+// LastChainTest returns the outcome of the newest finished chain test of stream
+// streamID, or nil without one: while a new test runs, the previous result stays.
 func (s *Service) LastChainTest(ctx context.Context, streamID string) *ChainTestResult {
-	r := s.lastChainTest(ctx, streamID, false)
-	if r == nil || r.Status == models.RestoreStatusInProgress || r.Status == models.RestoreStatusPending {
+	r := s.lastChainTest(ctx, streamID, func(r *models.RestoreRecord) bool {
+		return r.Status != models.RestoreStatusInProgress && r.Status != models.RestoreStatusPending
+	})
+	if r == nil {
 		return nil
 	}
 	out := &ChainTestResult{RestoreID: r.ID, StartedAt: r.StartedAt, DurationSeconds: r.DurationSeconds, Status: r.Status}
@@ -187,8 +200,30 @@ func (s *Service) LastChainTest(ctx context.Context, streamID string) *ChainTest
 // LastChainTestStart returns when the newest chain test of streamID started (zero
 // without one), for the chain test schedule.
 func (s *Service) LastChainTestStart(ctx context.Context, streamID string) time.Time {
-	if r := s.lastChainTest(ctx, streamID, false); r != nil {
+	if r := s.lastChainTest(ctx, streamID, nil); r != nil {
 		return r.StartedAt
 	}
 	return time.Time{}
+}
+
+// CleanupInterruptedPITR drops the clones recorded on rec, a point-in-time restore
+// or chain test that a stop interrupted (the startup sweep calls it before it marks
+// the record failed), and returns a note for its message. It drops exactly the
+// names on the record (PITRRestore.Clones), never a pattern: a chain test's clones
+// are temporary, and a restore's are partial and cannot be trusted. It returns ""
+// for any other record.
+func (s *Service) CleanupInterruptedPITR(ctx context.Context, rec *models.RestoreRecord) string {
+	if rec == nil || rec.PITR == nil || len(rec.PITR.Clones) == 0 || s.cfg.PITRRestore == nil {
+		return ""
+	}
+	what := "partially restored clones"
+	if rec.PITR.ChainTest {
+		what = "chain test clones"
+	}
+	conn, err := s.ResolveConnection(ctx, rec.TargetConnectionID)
+	if err != nil {
+		return fmt.Sprintf("; the %s %s could not be dropped (%s), drop them manually",
+			what, strings.Join(rec.PITR.Clones, ", "), redact.Text(err.Error()))
+	}
+	return s.cfg.PITRRestore.DropPITRClones(ctx, conn.URI, rec.PITR)
 }

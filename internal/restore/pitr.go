@@ -11,8 +11,10 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -47,15 +49,59 @@ type PITRRun struct {
 	Plan *pitr.RestorePlan
 	// Base is the record of Plan.Base.
 	Base *models.BackupRecord
+	// Databases are the databases of the base (from its instance manifest), or nil
+	// when it has no manifest. A whole-instance restore plans its clone names from
+	// them and leaves MongoRescue's own clones among them out of pass 1.
+	Databases []string
+	// OnRecord, when set, is called with a copy of the record whenever the restore
+	// records more clone databases while it runs (a database created in the window,
+	// or one the base held beyond its manifest), so the caller can store them before
+	// they are written to.
+	OnRecord func(rec *models.RestoreRecord)
+}
+
+// ErrCloneNameTooLong is returned by PreparePITR when a database name plus the clone
+// suffix exceeds MongoDB's limit of models.MaxDatabaseNameLength bytes.
+var ErrCloneNameTooLong = errors.New("restore: a clone database name would be too long")
+
+// PITRClones returns the clone names a point-in-time restore of run with
+// databases (none: the whole instance) and suffix creates: each selected database,
+// or each database of the base except admin, config, local and MongoRescue's own
+// clones. known is false for a whole instance whose base has no manifest. It fails
+// with ErrCloneNameTooLong naming every name that does not fit.
+func PITRClones(run PITRRun, databases []string, suffix string) (clones []string, known bool, err error) {
+	sources := databases
+	if len(sources) == 0 {
+		if run.Databases == nil {
+			return nil, false, nil
+		}
+		for _, db := range run.Databases {
+			if db != models.AdminDatabase && db != "config" && db != "local" && !models.IsRescueClone(db) {
+				sources = append(sources, db)
+			}
+		}
+	}
+	var long []string
+	for _, db := range sources {
+		clone := db + suffix
+		if len(clone) > models.MaxDatabaseNameLength {
+			long = append(long, fmt.Sprintf("%s (%d bytes)", clone, len(clone)))
+		}
+		clones = append(clones, clone)
+	}
+	if len(long) > 0 {
+		return nil, true, fmt.Errorf("%w: %s exceed the %d bytes MongoDB allows; restore those databases from a database backup instead",
+			ErrCloneNameTooLong, strings.Join(long, ", "), models.MaxDatabaseNameLength)
+	}
+	return clones, true, nil
 }
 
 // DatabaseLister lists the database names on the server at uri. A whole-instance
 // point-in-time restore uses it to refuse clone names that exist already and to
-// find the clones to drop after a failure.
+// record clones the base held beyond its manifest.
 type DatabaseLister func(ctx context.Context, uri string) ([]string, error)
 
 // WithDatabaseLister sets the lister of whole-instance point-in-time restores.
-// Without it, a whole-instance restore cannot check or drop its clones.
 func WithDatabaseLister(fn DatabaseLister) Option {
 	return func(e *Engine) {
 		e.listDatabases = fn
@@ -74,7 +120,10 @@ const pitrIDPrefix = "rst_pitr_"
 // PreparePITR validates a point-in-time request (models.RestoreRequest.ValidatePITR)
 // against run and returns the in-progress record, without any I/O. Every restored
 // database goes into a clone named <db><suffix>, the suffix being
-// models.RescueCloneSuffix of the start time unless req.PITRCloneSuffix is set.
+// models.RescueCloneSuffix of the start time and a random clone ID unless
+// req.PITRCloneSuffix is set. The planned clone names are recorded (PITRRestore
+// .Clones) before anything is written; a name that does not fit fails with
+// ErrCloneNameTooLong.
 func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.RestoreRecord, error) {
 	if err := req.ValidatePITR(); err != nil {
 		return nil, fmt.Errorf("restore: %w", err)
@@ -91,16 +140,18 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 	start := time.Now().UTC()
 	suffix := req.PITRCloneSuffix
 	if suffix == "" {
-		suffix = models.RescueCloneSuffix(start)
+		cloneID, err := models.NewPITRCloneID()
+		if err != nil {
+			return nil, fmt.Errorf("restore: %w", err)
+		}
+		if suffix, err = models.RescueCloneSuffix(start, cloneID); err != nil {
+			return nil, fmt.Errorf("restore: %w", err)
+		}
 	}
 	dbs := req.PITRDatabases()
-	clones := make([]string, 0, len(dbs))
-	for _, db := range dbs {
-		clone := db + suffix
-		if len(clone) > models.MaxDatabaseNameLength {
-			return nil, fmt.Errorf("restore: the clone of database %s would be named %s, longer than %d bytes", db, clone, models.MaxDatabaseNameLength)
-		}
-		clones = append(clones, clone)
+	clones, _, err := PITRClones(run, dbs, suffix)
+	if err != nil {
+		return nil, err
 	}
 	idSuffix, err := models.NewIDSuffix()
 	if err != nil {
@@ -125,7 +176,7 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 			StreamID: plan.StreamID, ChainID: plan.ChainID, BaseID: plan.Base.ID,
 			TargetTime: plan.TargetTime, Limit: plan.Limit,
 			Chunks: plan.ChunkCount, OplogBytes: plan.OplogBytes,
-			Databases: dbs, CloneSuffix: suffix,
+			Databases: dbs, CloneSuffix: suffix, Clones: clones,
 		},
 	}, nil
 }
@@ -195,6 +246,13 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	if err = e.checkPITRClones(ctx, uri, info); err != nil {
 		return e.failRun(ctx, record, err, fmt.Sprintf("%v; nothing was written, retry the restore", err))
 	}
+	// Every chunk is checked against its checksum before anything is written.
+	tracker.Phase(models.PhaseVerifying, record.Phases)
+	if err = e.verifyPITRChunks(ctx, run); err != nil {
+		return e.failRun(ctx, record, err, err.Error()+"; the target is untouched")
+	}
+	record.Phases.VerifyDone = models.Stamp(time.Now())
+	clones := &cloneRecorder{rec: record, on: run.OnRecord}
 
 	// failAfterStart records a failure once mongorestore may have written, or the
 	// cancellation that caused it; keep leaves the clones for inspection.
@@ -206,7 +264,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 			return e.cancelled(ctx, record, c, e.dropPITRClones(ctx, uri, info))
 		}
 		err = e.withCause(ctx, err)
-		note := fmt.Sprintf("; the clones (databases ending in %s) were kept for inspection and must not be trusted", info.CloneSuffix)
+		note := fmt.Sprintf("; the clones %s were kept for inspection and must not be trusted", strings.Join(info.Clones, ", "))
 		if !keep {
 			note = e.dropPITRClones(ctx, uri, info)
 		}
@@ -216,7 +274,20 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	// Pass 1: the base.
 	tracker.Phase(models.PhaseRestoring, record.Phases)
 	tracker.Printf("pass 1 of 2: restoring base backup %s", base.ID)
-	started, err := e.restorePITRBase(ctx, uri, base, info)
+	started, err := e.restorePITRBase(ctx, uri, run, info)
+	// A database the base held beyond its manifest has a clone too: record it (the
+	// suffix carries this restore's random clone ID, so no other database matches).
+	if started && e.listDatabases != nil {
+		if names, listErr := e.listDatabases(context.WithoutCancel(ctx), uri); listErr == nil {
+			var found []string
+			for _, n := range names {
+				if strings.HasSuffix(n, info.CloneSuffix) {
+					found = append(found, n)
+				}
+			}
+			clones.add(found...)
+		}
+	}
 	if err != nil {
 		if !started {
 			return e.failRun(ctx, record, err, err.Error()+"; the target is untouched")
@@ -229,12 +300,13 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 
 	// Pass 2: the oplog.
 	tracker.Printf("pass 2 of 2: replaying %d oplog chunk(s) up to %d:%d", info.Chunks, info.Limit.T, info.Limit.I)
-	ops, applied, err := e.replayPITROplog(ctx, uri, version, run, info)
+	ops, applied, err := e.replayPITROplog(ctx, uri, version, run, info, clones)
 	info.OpsReplayed, info.OpsApplied = ops, applied
 	if err != nil {
 		return failAfterStart(err, false)
 	}
 	if applied == nil {
+		info.OpsUnverified = true
 		addWarning(record, "mongorestore printed no count of applied oplog entries; the replay could not be cross-checked")
 	} else if *applied != ops {
 		tracker.Finishing()
@@ -310,72 +382,90 @@ func pitrClones(info *models.PITRRestore) []string {
 	return out
 }
 
-// checkPITRClones refuses clone names that exist already (ErrCloneExists).
+// checkPITRClones refuses recorded clone names that exist already (ErrCloneExists).
 func (e *Engine) checkPITRClones(ctx context.Context, uri string, info *models.PITRRestore) error {
-	if len(info.Databases) > 0 {
-		if e.admin == nil {
-			return nil
+	if len(info.Clones) == 0 {
+		return nil
+	}
+	if e.listDatabases != nil {
+		names, err := e.listDatabases(ctx, uri)
+		if err != nil {
+			return fmt.Errorf("list the databases of the target: %w", err)
 		}
-		for _, clone := range pitrClones(info) {
-			exists, err := e.admin.DatabaseExists(ctx, uri, clone)
-			if err != nil {
-				return fmt.Errorf("check safe clone target %s: %w", clone, err)
-			}
-			if exists {
+		for _, clone := range info.Clones {
+			if slices.Contains(names, clone) {
 				return fmt.Errorf("%w: %s", ErrCloneExists, clone)
 			}
 		}
 		return nil
 	}
-	if e.listDatabases == nil {
+	if e.admin == nil {
 		return nil
 	}
-	names, err := e.listDatabases(ctx, uri)
-	if err != nil {
-		return fmt.Errorf("list the databases of the target: %w", err)
-	}
-	for _, n := range names {
-		if strings.HasSuffix(n, info.CloneSuffix) {
-			return fmt.Errorf("%w: %s", ErrCloneExists, n)
+	for _, clone := range info.Clones {
+		exists, err := e.admin.DatabaseExists(ctx, uri, clone)
+		if err != nil {
+			return fmt.Errorf("check safe clone target %s: %w", clone, err)
+		}
+		if exists {
+			return fmt.Errorf("%w: %s", ErrCloneExists, clone)
 		}
 	}
 	return nil
 }
 
-// DropPITRClones drops the clones of the point-in-time restore described by info on
-// the server at uri (PITR chain tests drop theirs once compared) and returns a note
+// cloneRecorder records the clones of a running restore on its record and reports
+// each new one through PITRRun.OnRecord before it is written to.
+type cloneRecorder struct {
+	mu  sync.Mutex
+	rec *models.RestoreRecord
+	on  func(*models.RestoreRecord)
+}
+
+// add records the names that are not recorded yet.
+func (c *cloneRecorder) add(names ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	added := false
+	for _, n := range names {
+		if !slices.Contains(c.rec.PITR.Clones, n) {
+			c.rec.PITR.Clones = append(c.rec.PITR.Clones, n)
+			added = true
+		}
+	}
+	if !added || c.on == nil {
+		return
+	}
+	cp := *c.rec
+	info := *c.rec.PITR
+	info.Clones = slices.Clone(info.Clones)
+	cp.PITR = &info
+	c.on(&cp)
+}
+
+// DropPITRClones drops the clones recorded on a point-in-time restore (info.Clones)
+// on the server at uri, and nothing else: chain tests drop theirs once compared, and
+// the startup sweep drops those of a restore a stop interrupted. It returns a note
 // for the record: what was dropped, or what to drop manually.
 func (e *Engine) DropPITRClones(ctx context.Context, uri string, info *models.PITRRestore) string {
-	if info == nil || info.CloneSuffix == "" {
+	if info == nil || len(info.Clones) == 0 {
 		return ""
 	}
 	return e.dropPITRClones(ctx, uri, info)
 }
 
-// dropPITRClones drops the clones of a failed restore and returns a note for the
+// dropPITRClones drops the clones recorded on info and returns a note for the
 // record's message.
 func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PITRRestore) string {
-	manual := fmt.Sprintf("; drop the databases ending in %s manually", info.CloneSuffix)
+	clones := slices.Clone(info.Clones)
+	if len(clones) == 0 {
+		return ""
+	}
 	if e.admin == nil {
-		return manual
+		return fmt.Sprintf("; drop the clones %s manually", strings.Join(clones, ", "))
 	}
 	dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cloneDropTimeout)
 	defer cancel()
-	clones := pitrClones(info)
-	if len(info.Databases) == 0 {
-		if e.listDatabases == nil {
-			return manual
-		}
-		names, err := e.listDatabases(dropCtx, uri)
-		if err != nil {
-			return fmt.Sprintf("; listing the partially restored clones failed (%v)%s", err, manual)
-		}
-		for _, n := range names {
-			if strings.HasSuffix(n, info.CloneSuffix) {
-				clones = append(clones, n)
-			}
-		}
-	}
 	var failed []string
 	for _, clone := range clones {
 		if err := e.admin.DropDatabase(dropCtx, uri, clone); err != nil {
@@ -387,13 +477,14 @@ func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PI
 	if len(failed) > 0 {
 		return fmt.Sprintf("; dropping the partially restored clones %s failed, drop them manually", strings.Join(failed, ", "))
 	}
-	return fmt.Sprintf("; the clones (databases ending in %s) were dropped", info.CloneSuffix)
+	return fmt.Sprintf("; the clones %s were dropped", strings.Join(clones, ", "))
 }
 
 // restorePITRBase runs pass 1: the base archive into the clones, without
 // --oplogReplay. started reports whether mongorestore was started (the target may
 // have been written to).
-func (e *Engine) restorePITRBase(ctx context.Context, uri string, base *models.BackupRecord, info *models.PITRRestore) (started bool, err error) {
+func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, info *models.PITRRestore) (started bool, err error) {
+	base := run.Base
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(base.SizeBytes)
 	stream, err := e.storage.Retrieve(ctx, base.StorageKey)
@@ -427,7 +518,7 @@ func (e *Engine) restorePITRBase(ctx context.Context, uri string, base *models.B
 		return false, fmt.Errorf("prepare mongorestore config: %w", err)
 	}
 	defer cleanup()
-	args := pitrBaseArgs(configArg, info, isGzip)
+	args := pitrBaseArgs(configArg, info, run.Databases, isGzip)
 	if e.pitrBypass(ctx, uri, info) {
 		args = append(args, "--bypassDocumentValidation")
 	}
@@ -459,16 +550,22 @@ func (e *Engine) restorePITRBase(ctx context.Context, uri string, base *models.B
 	return true, nil
 }
 
-// pitrBaseArgs returns the mongorestore arguments of pass 1.
-func pitrBaseArgs(configArg string, info *models.PITRRestore, isGzip bool) []string {
+// pitrBaseArgs returns the mongorestore arguments of pass 1. baseDatabases are the
+// databases of the base: for a whole instance, MongoRescue's own clones among them
+// are excluded, so a restore never clones a clone.
+func pitrBaseArgs(configArg string, info *models.PITRRestore, baseDatabases []string, isGzip bool) []string {
 	args := []string{configArg, "--archive"}
 	if isGzip {
 		args = append(args, "--gzip")
 	}
 	if len(info.Databases) == 0 {
-		return append(args,
-			"--nsExclude=admin.*", "--nsExclude=config.*", "--nsExclude=local.*",
-			"--nsFrom=$db$.$coll$", "--nsTo=$db$"+escapeNamespace(info.CloneSuffix)+".$coll$")
+		args = append(args, "--nsExclude=admin.*", "--nsExclude=config.*", "--nsExclude=local.*")
+		for _, db := range baseDatabases {
+			if models.IsRescueClone(db) {
+				args = append(args, "--nsExclude="+escapeNamespace(db)+".*")
+			}
+		}
+		return append(args, "--nsFrom=$db$.$coll$", "--nsTo=$db$"+escapeNamespace(info.CloneSuffix)+".$coll$")
 	}
 	for _, db := range info.Databases {
 		src := escapeNamespace(db)
@@ -492,11 +589,19 @@ func (e *Engine) pitrBypass(ctx context.Context, uri string, info *models.PITRRe
 }
 
 // pitrFilter returns the oplog filter of pass 2: the same selection and renaming as
-// pass 1, and the plan's limit.
-func pitrFilter(info *models.PITRRestore) *oplog.Filter {
+// pass 1 (MongoRescue's own clones left out), and the plan's limit. Every clone it
+// renames into is recorded through clones before its first entry is written.
+func pitrFilter(info *models.PITRRestore, clones *cloneRecorder) *oplog.Filter {
 	f := &oplog.Filter{
-		Rename: func(db string) string { return db + info.CloneSuffix },
-		Limit:  oplog.LimitAt(info.Limit.T, info.Limit.I),
+		Rename: func(db string) string {
+			clone := db + info.CloneSuffix
+			if clones != nil {
+				clones.add(clone)
+			}
+			return clone
+		},
+		Exclude: models.IsRescueClone,
+		Limit:   oplog.LimitAt(info.Limit.T, info.Limit.I),
 	}
 	if len(info.Databases) > 0 {
 		f.Select = make(map[string]bool, len(info.Databases))
@@ -513,7 +618,7 @@ var errReplayExited = errors.New("restore: mongorestore stopped reading the oplo
 
 // replayPITROplog runs pass 2 and returns the operations the filter wrote and the
 // count mongorestore reported applying (nil when it printed none).
-func (e *Engine) replayPITROplog(ctx context.Context, uri, version string, run PITRRun, info *models.PITRRestore) (int64, *int64, error) {
+func (e *Engine) replayPITROplog(ctx context.Context, uri, version string, run PITRRun, info *models.PITRRestore, clones *cloneRecorder) (int64, *int64, error) {
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(info.OplogBytes)
 	configArg, cleanup, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(uri))
@@ -526,7 +631,7 @@ func (e *Engine) replayPITROplog(ctx context.Context, uri, version string, run P
 		args = append(args, "--bypassDocumentValidation")
 	}
 
-	filter := pitrFilter(info)
+	filter := pitrFilter(info, clones)
 	pr, pw := io.Pipe()
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -580,6 +685,72 @@ func (e *Engine) writeOplogArchive(ctx context.Context, w io.Writer, version str
 		}
 	}
 	return aw.Close()
+}
+
+// ChunkVerifiedFresh is how recently the integrity sweep must have verified a chunk
+// for a point-in-time restore to skip its checksum pre-pass.
+const ChunkVerifiedFresh = 24 * time.Hour
+
+// ErrChunkChecksum indicates that an oplog chunk has no recorded checksum or does
+// not match it; the point-in-time restore is refused before anything is written.
+var ErrChunkChecksum = errors.New("restore: oplog chunk checksum")
+
+// verifyPITRChunks is the pre-pass of a point-in-time restore: every chunk of run
+// not verified by the integrity sweep within ChunkVerifiedFresh is downloaded once,
+// hashed and discarded (it is not decrypted), and must match its recorded SHA-256.
+// A chunk without a checksum is refused. Chunks are hashed again while they replay.
+func (e *Engine) verifyPITRChunks(ctx context.Context, run PITRRun) error {
+	tracker := runs.FromContext(ctx)
+	var todo []*pitr.Chunk
+	var bytes int64
+	now := time.Now()
+	for _, c := range run.Plan.Chunks {
+		if strings.TrimSpace(c.SHA256) == "" {
+			return fmt.Errorf("%w: chunk %s (%s-%s) has no recorded checksum", ErrChunkChecksum, c.ID, c.From, c.To)
+		}
+		if c.VerifiedAt != nil && c.VerifyError == "" && now.Sub(*c.VerifiedAt) < ChunkVerifiedFresh {
+			continue
+		}
+		todo = append(todo, c)
+		bytes += c.SizeBytes
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	tracker.Printf("checking %d oplog chunk(s) not verified in the last %s against their checksums", len(todo), ChunkVerifiedFresh)
+	tracker.StartTransfer(bytes)
+	stores := map[string]storage.Storage{run.Base.StorageTargetID: e.storage}
+	for _, c := range todo {
+		st, ok := stores[c.TargetID]
+		if !ok {
+			var err error
+			if st, err = e.chunkStorage(ctx, c.TargetID); err != nil {
+				return err
+			}
+			stores[c.TargetID] = st
+		}
+		if err := hashChunk(ctx, st, c, tracker.CountingReader); err != nil {
+			return fmt.Errorf("oplog chunk %s (%s-%s): %w", c.ID, c.From, c.To, err)
+		}
+	}
+	return nil
+}
+
+// hashChunk streams the stored object of c into a SHA-256 and compares it.
+func hashChunk(ctx context.Context, st storage.Storage, c *pitr.Chunk, count func(io.Reader) io.Reader) error {
+	rc, err := st.Retrieve(ctx, c.StorageKey)
+	if err != nil {
+		return fmt.Errorf("retrieve: %w", err)
+	}
+	defer rc.Close()
+	h := sha256.New()
+	if _, err = io.Copy(h, &ctxReader{ctx: ctx, r: count(rc)}); err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, strings.TrimSpace(c.SHA256)) {
+		return fmt.Errorf("%w mismatch: recorded %s, stored object %s", ErrChunkChecksum, c.SHA256, got)
+	}
+	return nil
 }
 
 // chunkStorage returns the storage driver of a chunk's target.
