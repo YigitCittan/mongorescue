@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -37,6 +38,10 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 			return nil, public("PITR stream not found", ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("load PITR stream: %w", err)
+	}
+	// A stream belongs to its connection: another connection's is not found.
+	if !auth.ConnectionAllowed(ctx, stream.ConnectionID) {
+		return nil, public("PITR stream not found", ErrNotFound)
 	}
 	conn, err := s.ResolveConnection(ctx, stream.ConnectionID)
 	if err != nil {

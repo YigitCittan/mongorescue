@@ -243,6 +243,8 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			return nil, fmt.Errorf("%w: PITR streams: %w", ErrUnavailable, err)
 		}
 	}
+	// A stream belongs to its connection: a limited caller sees its own only.
+	streams = slices.DeleteFunc(streams, func(st StreamInfo) bool { return !auth.ConnectionAllowed(ctx, st.ConnectionID) })
 	byConn := make(map[string]*StreamInfo, len(streams))
 	for i := range streams {
 		byConn[streams[i].ConnectionID] = &streams[i]

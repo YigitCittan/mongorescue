@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,8 +15,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -38,13 +42,15 @@ const (
 	accessRstB  = "rst_team_b"
 	accessTgtA  = "tgt_team_a"
 	accessTgtB  = "tgt_team_b"
+	accessPstA  = "pst_team_a"
+	accessPstB  = "pst_team_b"
 	accessDBB   = "billing"
 	accessNameB = "Team B server"
 )
 
 // accessMarkers are B's identifiers: no answer to a caller limited to A may contain
 // one, except an ID the request itself named.
-var accessMarkers = []string{accessConnB, accessJobB, accessBkpB, accessRstB, accessTgtB, accessDBB, accessNameB}
+var accessMarkers = []string{accessConnB, accessJobB, accessBkpB, accessRstB, accessTgtB, accessPstB, accessDBB, accessNameB}
 
 // accessKind is the kind of record a route's {id} names.
 type accessKind string
@@ -55,6 +61,7 @@ const (
 	kindJob        accessKind = "job"
 	kindBackup     accessKind = "backup"
 	kindRestore    accessKind = "restore"
+	kindStream     accessKind = "pitr stream"
 )
 
 // accessIDs are A's and B's record of each kind.
@@ -64,6 +71,7 @@ var accessIDs = map[accessKind][2]string{
 	kindJob:        {accessJobA, accessJobB},
 	kindBackup:     {accessBkpA, accessBkpB},
 	kindRestore:    {accessRstA, accessRstB},
+	kindStream:     {accessPstA, accessPstB},
 }
 
 // accessPathRoutes are the routes whose path names a connection, or a record of
@@ -107,6 +115,13 @@ var accessPathRoutes = map[string]accessKind{
 	undeleteRoute:                             kindBackup,
 	"POST /api/v1/restores/{id}/cancel":       kindRestore,
 	"GET /api/v1/restores/{id}/log":           kindRestore,
+
+	// A PITR stream belongs to its connection.
+	pitrStreamRoute:       kindStream,
+	pitrUpdateStreamRoute: kindStream,
+	pitrDeleteStreamRoute: kindStream,
+	pitrChunksRoute:       kindStream,
+	pitrBaseRoute:         kindStream,
 }
 
 // accessLimitedNotFound are path routes a limited caller is refused for every
@@ -144,6 +159,10 @@ var accessBodyRoutes = map[string][2]accessRequest{
 	userConnectionsRoute: {
 		{body: `{"connection_ids":["` + testConnID + `"]}`},
 		{body: `{"connection_ids":["` + accessConnB + `"]}`},
+	},
+	pitrCreateStreamRoute: {
+		{body: `{"connection_id":"` + testConnID + `"}`},
+		{body: `{"connection_id":"` + accessConnB + `"}`},
 	},
 	"POST /api/v1/jobs": {
 		{body: `{"name":"a2","database":"shop","connection_id":"` + testConnID + `","cron_expression":"@daily"}`},
@@ -215,6 +234,10 @@ func newAccessFixture(t *testing.T) *accessFixture {
 			TargetDatabase: s.db + "_rescue_1", SourceConnectionID: s.conn, TargetConnectionID: s.conn,
 			Status: models.RestoreStatusCompleted, StartedAt: now}))
 	}
+	for i, conn := range []string{testConnID, accessConnB} {
+		must(st.CreateStream(ctx, &pitr.Stream{ID: accessIDs[kindStream][i], ConnectionID: conn, ReplicaSet: "rs0",
+			TargetID: accessIDs[kindTarget][i], ChunkSeconds: 60}))
+	}
 
 	conns := connections.NewService(st, &fakeProber{dbs: []connections.Database{{Name: "shop"}}}, connections.WithTestTimeout(2*time.Second))
 	tg := targets.NewService(st, func(context.Context, *models.StorageTarget, string) (storage.Storage, error) { return mock, nil }, t.TempDir())
@@ -223,7 +246,21 @@ func newAccessFixture(t *testing.T) *accessFixture {
 	sched := scheduler.NewScheduler(st, bEngine, mock, nil, scheduler.WithConnectionResolver(conns), scheduler.WithStorageTargets(tg))
 	svc := newTestAuth(t, st, "")
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	srv := NewServer(bootConfig(), st, bEngine, rEngine, mock, sched, nil, nil,
+	_, recipient, err := encryption.GenerateX25519()
+	must(err)
+	enc, err := encryption.NewX25519Encryptor([]string{recipient})
+	must(err)
+	col := collector.New(collector.Config{
+		Repo:      st,
+		Open:      func(context.Context, *pitr.Stream) (collector.Session, error) { return nil, io.ErrUnexpectedEOF },
+		Storage:   func(context.Context, string) (storage.Storage, error) { return mock, nil },
+		Encryptor: func() *encryption.Encryptor { return enc },
+		StartBase: func(_ context.Context, id string, _ models.BackupTrigger) (*models.BackupRecord, error) {
+			return &models.BackupRecord{ID: "bkp_pitr-base_x", PITRStreamID: id, Scope: models.ScopeInstance}, nil
+		},
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	srv := NewServer(bootConfig(), st, bEngine, rEngine, mock, sched, nil, nil, WithPITR(col),
 		WithAuth(svc), WithConnections(conns), WithStorageTargets(tg), WithRunManager(manager),
 		WithIntegrity(integrity.New(integrity.Config{Store: st, Targets: tg, Runs: manager})),
 		WithSettings(newTestSettings(t, st, newTestConfig().Security)),
@@ -264,7 +301,7 @@ func hiddenNotFound(code int, body string) bool {
 		return false
 	}
 	for _, msg := range []string{"connection not found", "storage target not found", "job not found", "backup not found",
-		"restore not found", "source backup not found"} {
+		"restore not found", "source backup not found", "PITR stream not found"} {
 		if strings.Contains(body, msg) {
 			return true
 		}

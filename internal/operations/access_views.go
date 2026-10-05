@@ -34,6 +34,18 @@ func (s *Service) VisibleTargets(ctx context.Context) (map[string]bool, error) {
 	for _, id := range ids {
 		out[id] = true
 	}
+	// The PITR streams of the caller's connections write to their targets too.
+	if s.cfg.PITR != nil {
+		streams, listErr := s.cfg.PITR.ListStreams(ctx)
+		if listErr != nil {
+			return nil, fmt.Errorf("list PITR streams: %w", listErr)
+		}
+		for _, st := range streams {
+			if set.Allows(st.ConnectionID) && st.TargetID != "" {
+				out[st.TargetID] = true
+			}
+		}
+	}
 	if s.cfg.Targets != nil {
 		if def, defErr := s.cfg.Targets.Resolve(ctx, ""); defErr == nil {
 			out[def.ID] = true

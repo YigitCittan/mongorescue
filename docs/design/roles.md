@@ -118,7 +118,13 @@ is read, so every adapter inherits it:
   connection are;
 - readiness and restore tests check the job's connection (and the restore test
   server's), the storage targets the connections their jobs and backups use plus the
-  default target.
+  default target;
+- the PITR collector reads streams through the same kind of view (`accessRepo` in
+  `internal/pitr/collector`): a stream belongs to its connection, so the stream list,
+  a stream's status and chunks, and taking a base backup follow the caller's
+  connections, and so do the readiness report's `streams` and the dashboard's PITR
+  panel, which shows what the API returns. The collector's own work runs without a
+  principal and sees every stream.
 
 A connection outside the caller's access answers `404`, worded like an unknown ID,
 so its existence is not leaked; for a limited caller an unknown connection named in

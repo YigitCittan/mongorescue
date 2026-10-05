@@ -230,6 +230,8 @@ func New(cfg Config) *Service {
 	if cfg.RetentionInterval <= 0 {
 		cfg.RetentionInterval = 10 * time.Minute
 	}
+	// Every read of a stream follows the caller's connection access (accessRepo).
+	cfg.Repo = accessRepo{cfg.Repo}
 	return &Service{cfg: cfg, logger: cfg.Logger, workers: map[string]*runningWorker{}, kick: make(chan struct{}, 1)}
 }
 

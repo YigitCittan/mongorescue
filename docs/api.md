@@ -21,7 +21,8 @@ A user or an API key reaches every connection (the default) or only some ([desig
 
 For a caller limited to some connections, every route behaves as if the other connections, their jobs, backups, restores and run logs did not exist:
 
-- lists (`GET /api/v1/connections`, `/jobs`, `/backups`, `/restores`, their `databases` lists, `/runs/active`, `/readiness`, `/stats`, `/stats/history`, `/notifications/rules`, `/pending-changes`) contain only the caller's records; filters naming another connection find nothing;
+- lists (`GET /api/v1/connections`, `/jobs`, `/backups`, `/restores`, their `databases` lists, `/runs/active`, `/readiness` with its PITR `streams`, `/pitr/streams`, `/stats`, `/stats/history`, `/notifications/rules`, `/pending-changes`) contain only the caller's records; filters naming another connection find nothing;
+- a PITR stream belongs to its connection: another connection's stream, its chunks and `POST /api/v1/pitr/streams/{id}/base` answer `404` (`PITR stream not found`), and the targets of the caller's streams count as its targets;
 - a route whose path, query or body names another connection or one of its records answers `404` (`connection not found`, `job not found`, `backup not found`, ...), exactly like an ID that does not exist; restoring into another connection is `404` too;
 - bulk actions skip such items as `not_found`;
 - storage targets: only the targets the caller's jobs and backups use and the default target are listed and readable (`404` otherwise), and a backup may only name those; the storage scans (`GET /api/v1/storage-targets/{id}/scan`, and the scans and sweep of `GET /api/v1/integrity`) cover every connection's archives and are not shown;

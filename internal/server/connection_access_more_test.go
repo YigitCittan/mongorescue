@@ -74,6 +74,7 @@ func TestListsShowOnlyTheCallersConnections(t *testing.T) {
 		{"/api/v1/restores/databases", "shop_rescue_1", accessDBB},
 		{"/api/v1/readiness", testConnID, accessConnB},
 		{"/api/v1/stats", accessJobA, accessJobB},
+		{"/api/v1/pitr/streams", accessPstA, accessPstB},
 	} {
 		for _, h := range []map[string]string{f.keyHeaders(), f.session(t)} {
 			code, body := f.get(tc.path, h)
