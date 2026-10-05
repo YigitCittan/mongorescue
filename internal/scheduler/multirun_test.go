@@ -535,7 +535,7 @@ func TestScheduledMultiRunPrunesEachDatabase(t *testing.T) {
 		}
 	}
 	_, _ = f.sched.runBackupForJob(ctx, mustJob(t, f.store, "job_ret"))
-	if a, _ := f.store.GetBackupRecord(ctx, "old_a"); a == nil || a.Status != models.StatusPruned {
+	if a, _ := f.store.GetBackupRecord(ctx, "old_a"); a == nil || a.Status != models.StatusDeleted {
 		t.Errorf("old_a = %+v; want pruned after a's new backup", a)
 	}
 	if b, _ := f.store.GetBackupRecord(ctx, "old_b"); b == nil || b.Status != models.StatusCompleted {

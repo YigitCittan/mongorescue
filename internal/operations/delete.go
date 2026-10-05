@@ -2,82 +2,34 @@ package operations
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
+	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runs"
-	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
-// errNoStorage is the cause logged when a backup is deleted without Config.Storage.
-var errNoStorage = errors.New("no storage configured")
-
-// archiveErrorText is DeleteResult.ArchiveError when the archive could not be removed.
-const archiveErrorText = "the archive could not be deleted from storage (see the server log); the record was removed"
-
-// DeleteResult is the outcome of deleting one backup.
+// DeleteResult is the outcome of deleting one backup. The deletion is soft: the
+// archive stays in storage until PurgeAfter, and the backup can be undeleted until
+// then (UndeleteBackup).
 type DeleteResult struct {
 	// DeletedID is the deleted backup record.
 	DeletedID string `json:"deleted_id"`
-	// ArchiveDeleted reports that the archive was removed from storage.
+	// Status is models.StatusDeleted.
+	Status models.BackupStatus `json:"status"`
+	// DeletedAt is when it was deleted.
+	DeletedAt time.Time `json:"deleted_at"`
+	// PurgeAfter is the end of the grace period: the purge removes the archive
+	// afterwards. Until then the deletion can be undone.
+	PurgeAfter time.Time `json:"purge_after"`
+	// ArchiveDeleted is always false: a deletion frees no storage at once (kept for
+	// clients of earlier releases, which deleted the archive here).
 	ArchiveDeleted bool `json:"archive_deleted"`
-	// ArchiveKept says why the archive stayed in storage: another record names it.
-	ArchiveKept string `json:"archive_kept,omitempty"`
-	// ArchiveError says that removing the archive failed; the record is gone anyway,
-	// as before, so a broken storage target never blocks cleaning up the history.
-	ArchiveError string `json:"archive_error,omitempty"`
-}
-
-// archiveRefLister lists the backup rows, readable or not, naming an archive
-// (implemented by *store.SQLiteStore).
-type archiveRefLister interface {
-	ArchiveReferenceIDs(ctx context.Context, targetID, key string) ([]string, error)
-}
-
-// archiveOthers returns the other backup rows naming the archive of rec, read now.
-// Without the store's query, only readable rows are counted.
-func (s *Service) archiveOthers(ctx context.Context, rec *models.BackupRecord) ([]string, error) {
-	var ids []string
-	if l, ok := s.cfg.Store.(archiveRefLister); ok {
-		found, err := l.ArchiveReferenceIDs(ctx, rec.StorageTargetID, rec.StorageKey)
-		if err != nil {
-			return nil, fmt.Errorf("list archive references: %w", err)
-		}
-		ids = found
-	} else {
-		all, err := s.cfg.Store.ListBackupRecords(ctx, "")
-		if err != nil {
-			return nil, fmt.Errorf("list backups: %w", err)
-		}
-		for _, o := range models.ArchiveReferences(all, rec) {
-			ids = append(ids, o.ID)
-		}
-	}
-	return slices.DeleteFunc(ids, func(id string) bool { return id == rec.ID }), nil
-}
-
-// archiveKept returns why the archive must stay when its record goes ("" when it may
-// go): others name it. A pinned or unreadable one is named, since it holds the archive.
-func (s *Service) archiveKept(ctx context.Context, others []string) string {
-	if len(others) == 0 {
-		return ""
-	}
-	for _, id := range others {
-		o, err := s.cfg.Store.GetBackupRecord(ctx, id)
-		switch {
-		case err != nil && !errors.Is(err, store.ErrNotFound):
-			return fmt.Sprintf("the archive is kept: backup %s, which cannot be read, also names it; only this record was deleted", id)
-		case err == nil && o.Pinned:
-			return fmt.Sprintf("the archive is kept: it also belongs to backup %s, which is pinned (legal hold); unpin and delete that backup to remove it", id)
-		}
-	}
-	return fmt.Sprintf("the archive is kept: it also belongs to backup %s; only this record was deleted", others[0])
 }
 
 // deletionLock takes the deletion lock of rec's job (or database), see
@@ -86,14 +38,124 @@ func deletionLock(ctx context.Context, rec *models.BackupRecord) (func(), error)
 	return runs.LockDeletion(ctx, runs.DeletionKey(rec.JobID, rec.ConnectionID, rec.Database))
 }
 
-// DeleteBackup deletes backup id: its record, its run log and its archive on the
-// storage target it was written to (unless another record names the same archive,
-// see DeleteResult.ArchiveKept). It holds the deletion lock of the backup's job and
-// re-reads the record inside it, so a pin set meanwhile is honoured: a pinned backup
-// is refused (ErrPinned). A failure to remove the archive is logged and reported in
-// DeleteResult.ArchiveError; the record is still deleted. Expected failures:
-// ErrNotFound and ErrPinned.
-func (s *Service) DeleteBackup(ctx context.Context, id string) (*DeleteResult, error) {
+// checkSoftDeletable returns why rec cannot be deleted now, or nil: it is pinned
+// (ErrPinned), still running (ErrBackupRunning) or already deleted
+// (ErrAlreadyDeleted).
+func checkSoftDeletable(rec *models.BackupRecord) error {
+	switch {
+	case rec.Status.Deleted():
+		return public(fmt.Sprintf("backup %s is already %s", rec.ID, rec.Status), ErrAlreadyDeleted)
+	case rec.Status == models.StatusPending || rec.Status == models.StatusInProgress:
+		return public(fmt.Sprintf("backup %s is still %s; cancel it before deleting it", rec.ID, rec.Status), ErrBackupRunning)
+	}
+	return CheckDeletable(rec)
+}
+
+// DeleteBackup deletes backup id softly, with an optional reason: the record moves to
+// models.StatusDeleted with the end of the grace period (security.delete_grace_days)
+// as purge_after, and the archive stays in storage until the scheduler's purge
+// removes it afterwards; until then UndeleteBackup restores the backup. It holds the
+// deletion lock of the backup's job and re-reads the record inside it, so a pin set
+// meanwhile is honoured: a pinned backup is refused (ErrPinned), and so is a running
+// (ErrBackupRunning) or an already deleted one (ErrAlreadyDeleted). With the
+// two-person rule on, the deletion waits for a second administrator
+// (*ApprovalPendingError). Expected failures: ErrNotFound, ErrInvalid, ErrPinned,
+// ErrBackupRunning, ErrAlreadyDeleted and ErrApprovalRequired.
+func (s *Service) DeleteBackup(ctx context.Context, id, reason string) (*DeleteResult, error) {
+	reason, err := checkReason(reason)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	if err != nil {
+		return nil, notFound(err, "backup not found")
+	}
+	if err = checkSoftDeletable(rec); err != nil {
+		return nil, err
+	}
+	if s.needsApproval(ctx) {
+		return nil, s.requestApproval(ctx, &models.Approval{Action: models.ApprovalDeleteBackup, Subject: rec.ID, Reason: reason,
+			Summary: fmt.Sprintf("delete backup %s (db %s)", rec.ID, rec.Database)})
+	}
+	unlock, err := deletionLock(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	updated, err := s.softDelete(ctx, rec.ID, reason)
+	if err != nil {
+		return nil, err
+	}
+	s.destructive(ctx, "delete_backup", fmt.Sprintf("backup %s (db %s) deleted; recoverable until %s", updated.ID, updated.Database, updated.PurgeAfter.Format(time.RFC3339)),
+		func(e *events.Event) { e.BackupID, e.JobID, e.Database = updated.ID, updated.JobID, updated.Database })
+	return deleteResult(updated), nil
+}
+
+// deleteResult describes the soft deletion of rec.
+func deleteResult(rec *models.BackupRecord) *DeleteResult {
+	res := &DeleteResult{DeletedID: rec.ID, Status: rec.Status}
+	if rec.DeletedAt != nil {
+		res.DeletedAt = *rec.DeletedAt
+	}
+	if rec.PurgeAfter != nil {
+		res.PurgeAfter = *rec.PurgeAfter
+	}
+	return res
+}
+
+// softDelete marks backup id deleted, re-checking it in the same transaction. The
+// caller holds its deletion lock.
+func (s *Service) softDelete(ctx context.Context, id, reason string) (*models.BackupRecord, error) {
+	now := s.now().UTC()
+	by, approvedBy := actorNames(ctx)
+	d := models.SoftDelete{At: now, PurgeAfter: now.Add(s.deleteGrace()), By: by, ApprovedBy: approvedBy, Reason: reason}
+	mark := func(r *models.BackupRecord) error {
+		if err := checkSoftDeletable(r); err != nil {
+			return err
+		}
+		r.MarkDeleted(d)
+		return nil
+	}
+	var updated *models.BackupRecord
+	if u, ok := s.cfg.Store.(backupUpdater); ok {
+		rec, err := u.UpdateBackupRecord(ctx, id, mark)
+		if err != nil {
+			return nil, notFound(err, "backup not found (deleted meanwhile)")
+		}
+		updated = rec
+	} else {
+		rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+		if err != nil {
+			return nil, notFound(err, "backup not found (deleted meanwhile)")
+		}
+		if err = mark(rec); err != nil {
+			return nil, err
+		}
+		if err = s.cfg.Store.SaveBackupRecord(ctx, rec); err != nil {
+			return nil, fmt.Errorf("save deleted backup: %w", err)
+		}
+		updated = rec
+	}
+	auditlog.Annotate(ctx, "protection", "soft_deleted")
+	auditlog.Annotate(ctx, "purge_after", updated.PurgeAfter.Format(time.RFC3339))
+	s.logger.With(actorAttrs(ctx)...).Info("backup deleted; its archive is kept until the grace period ends",
+		logsafe.Attr("backup_id", updated.ID),
+		logsafe.Attr("database", updated.Database),
+		slog.Time("purge_after", *updated.PurgeAfter),
+	)
+	return updated, nil
+}
+
+// UndeleteBackup undoes the deletion of backup id during its grace period: the
+// record gets back the status it had before (completed, failed, …) and its archive,
+// which the deletion kept, is restorable again. It holds the backup's deletion lock,
+// so it never interleaves with the purge. A purged backup cannot be undeleted
+// (ErrNotDeleted). It needs the admin scope. Expected failures: ErrNotFound,
+// ErrNotDeleted and auth.ErrForbidden.
+func (s *Service) UndeleteBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
+		return nil, fmt.Errorf("undeleting a backup needs the admin role or an admin API key: %w", err)
+	}
 	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
@@ -103,74 +165,24 @@ func (s *Service) DeleteBackup(ctx context.Context, id string) (*DeleteResult, e
 		return nil, err
 	}
 	defer unlock()
-	if rec, err = s.cfg.Store.GetBackupRecord(ctx, id); err != nil {
-		return nil, notFound(err, "backup not found")
-	}
-	if err = CheckDeletable(rec); err != nil {
+	updated, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
+		switch r.Status {
+		case models.StatusDeleted:
+			r.Undelete()
+			return nil
+		case models.StatusPurged:
+			return public(fmt.Sprintf("backup %s was purged after its grace period; its archive is gone", r.ID), ErrNotDeleted)
+		default:
+			return public(fmt.Sprintf("backup %s is not deleted (it is %s)", r.ID, r.Status), ErrNotDeleted)
+		}
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.deleteBackup(ctx, rec)
-}
-
-// deleteBackup deletes a deletable record and, when no other record names it, its
-// archive. The caller holds rec's deletion lock; deleteBackup takes the archive's
-// lock around "read its references, delete the record, delete the object", so two
-// records sharing an archive never both leave it behind (or both delete it).
-func (s *Service) deleteBackup(ctx context.Context, rec *models.BackupRecord) (*DeleteResult, error) {
-	res := &DeleteResult{DeletedID: rec.ID}
-	var others []string
-	if rec.StorageKey != "" {
-		unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(rec.StorageTargetID, rec.StorageKey))
-		if err != nil {
-			return nil, err
-		}
-		defer unlock()
-		if others, err = s.archiveOthers(ctx, rec); err != nil {
-			return nil, err
-		}
-	}
-	if err := s.cfg.Store.DeleteBackupRecord(ctx, rec.ID); err != nil {
-		return nil, notFound(err, "backup not found (deleted meanwhile)")
-	}
-	s.RemoveRunLog(rec.ID)
-	if rec.StorageKey != "" {
-		if res.ArchiveKept = s.archiveKept(ctx, others); res.ArchiveKept == "" {
-			err := s.deleteArchive(ctx, rec)
-			switch {
-			case err == nil:
-				res.ArchiveDeleted = true
-			case errors.Is(err, storage.ErrNotFound):
-				// Already gone (pruned or removed by hand): nothing to report.
-			default:
-				s.logger.Error("failed to delete backup artifact from storage",
-					logsafe.Attr("backup_id", rec.ID),
-					logsafe.Attr("storage_key", rec.StorageKey),
-					logsafe.Attr("storage_target_id", rec.StorageTargetID),
-					logsafe.Error(err),
-				)
-				res.ArchiveError = archiveErrorText
-			}
-		}
-	}
-	s.logger.With(actorAttrs(ctx)...).Info("backup deleted",
-		logsafe.Attr("backup_id", rec.ID),
-		logsafe.Attr("database", rec.Database),
-		slog.Bool("archive_deleted", res.ArchiveDeleted),
-	)
-	return res, nil
-}
-
-// deleteArchive removes the archive of rec from its own storage target (not the
-// current default).
-func (s *Service) deleteArchive(ctx context.Context, rec *models.BackupRecord) error {
-	if s.cfg.Storage == nil {
-		return errNoStorage
-	}
-	driver, err := s.cfg.Storage(ctx, rec.StorageTargetID)
-	if err != nil {
-		return err
-	}
-	return driver.Delete(ctx, rec.StorageKey)
+	auditlog.Annotate(ctx, "protection", "undeleted")
+	s.logger.With(actorAttrs(ctx)...).Info("backup undeleted",
+		logsafe.Attr("backup_id", updated.ID), slog.String("status", string(updated.Status)))
+	return updated, nil
 }
 
 // deleteRestore deletes the history record of a restore. The restored database is
@@ -200,6 +212,13 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	}
 	if err := s.cfg.Store.DeleteJob(ctx, id); err != nil {
 		return notFound(err, "job not found")
+	}
+	// A pending retention change belongs to the deleted job, never to a job created
+	// later under the same ID.
+	if st, ok := s.cfg.Store.(pendingStore); ok {
+		if _, err := st.DeletePendingChangesOf(ctx, models.PendingRetention, id); err != nil {
+			s.logger.Warn("could not drop the pending retention change of a deleted job", logsafe.Attr("job_id", id), logsafe.Error(err))
+		}
 	}
 	if s.cfg.OnJobDeleted != nil {
 		s.cfg.OnJobDeleted(id)

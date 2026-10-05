@@ -103,6 +103,12 @@ func (s *Service) ListBackupCollectionsWithin(ctx context.Context, id string, ti
 	case models.StatusPruned:
 		s.archiveCache.remove(rec.ID)
 		return s.recordCollections(out, rec, "the backup was pruned; its archive was deleted"), nil
+	case models.StatusPurged:
+		s.archiveCache.remove(rec.ID)
+		return s.recordCollections(out, rec, "the backup was purged after its grace period; its archive was deleted"), nil
+	case models.StatusDeleted:
+		s.archiveCache.remove(rec.ID)
+		return s.recordCollections(out, rec, "the backup was deleted; undelete it to read its archive"), nil
 	default:
 		s.archiveCache.remove(rec.ID)
 	}

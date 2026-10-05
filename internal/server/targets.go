@@ -62,7 +62,7 @@ func (s *Server) writeTargetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, targets.ErrNotFound):
 		writeError(w, http.StatusNotFound, "storage target not found")
 	case errors.Is(err, targets.ErrInUse), errors.Is(err, targets.ErrIsDefault), errors.Is(err, targets.ErrNoDefault),
-		errors.Is(err, targets.ErrConflict), errors.Is(err, targets.ErrLocationInUse):
+		errors.Is(err, targets.ErrConflict), errors.Is(err, targets.ErrLocationInUse), errors.Is(err, targets.ErrUnverifiedChange):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, targets.ErrInvalid), errors.Is(err, targets.ErrMaskedSecret):
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -138,7 +138,18 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := svc.Delete(r.Context(), id); err != nil {
+	// Through the operations service: with the two-person rule the deletion waits
+	// for a second administrator (202).
+	var err error
+	if s.ops != nil {
+		err = s.ops.DeleteTarget(r.Context(), id)
+	} else {
+		err = svc.Delete(r.Context(), id)
+	}
+	if err != nil {
+		if writeApprovalPending(w, err) {
+			return
+		}
 		s.writeTargetError(w, err)
 		return
 	}

@@ -42,7 +42,25 @@ const (
 	// longer found on its target. A later scan that finds it again restores
 	// StatusCompleted; nothing is deleted automatically.
 	StatusMissing BackupStatus = "missing"
+
+	// StatusDeleted indicates a backup deleted by a user, an API key or retention
+	// whose archive is kept until PurgeAfter (the delete grace period): it is hidden
+	// from lists by default, cannot be restored or verified, and can be undeleted,
+	// which restores StatusBeforeDelete.
+	StatusDeleted BackupStatus = "deleted"
+
+	// StatusPurged indicates a deleted backup whose grace period ended: the purge
+	// removed its archive (unless another record still names it). The record stays
+	// as history.
+	StatusPurged BackupStatus = "purged"
 )
+
+// Deleted reports whether a backup in state st was deleted (StatusDeleted, waiting
+// for its purge, or StatusPurged): it cannot be restored, verified, pinned or deleted
+// again.
+func (st BackupStatus) Deleted() bool {
+	return st == StatusDeleted || st == StatusPurged
+}
 
 // BackupTrigger records how a backup was started. Retention only ever prunes
 // scheduled backups of the job that runs it; the others are kept until an admin
@@ -206,6 +224,87 @@ type BackupRecord struct {
 
 	// LastRestoreTest is the latest automated restore test of this backup.
 	LastRestoreTest *RestoreTestSummary `json:"last_restore_test,omitempty"`
+
+	// DeletedAt is when the backup was deleted (StatusDeleted and StatusPurged).
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+
+	// DeletedBy names who deleted it: a username, "API key <name>", "retention" or
+	// "system".
+	DeletedBy string `json:"deleted_by,omitempty"`
+
+	// DeleteApprovedBy names the second administrator who approved the deletion
+	// (security.require_second_approver).
+	DeleteApprovedBy string `json:"delete_approved_by,omitempty"`
+
+	// DeleteReason is the optional reason given with the deletion (for retention,
+	// the rule that selected it).
+	DeleteReason string `json:"delete_reason,omitempty"`
+
+	// PurgeAfter is the end of the grace period: the purge removes the archive once
+	// it has passed. Until then the deletion can be undone.
+	PurgeAfter *time.Time `json:"purge_after,omitempty"`
+
+	// StatusBeforeDelete is the status the backup had when it was deleted; undeleting
+	// restores it.
+	StatusBeforeDelete BackupStatus `json:"status_before_delete,omitempty"`
+
+	// PurgedAt is when the purge removed the archive (StatusPurged).
+	PurgedAt *time.Time `json:"purged_at,omitempty"`
+}
+
+// SoftDelete describes a deletion: when, by whom and why, and the end of its grace
+// period.
+type SoftDelete struct {
+	// At is the time of the deletion.
+	At time.Time
+	// PurgeAfter is the end of the grace period.
+	PurgeAfter time.Time
+	// By names who deleted the backup.
+	By string
+	// ApprovedBy names the second administrator who approved it, if any.
+	ApprovedBy string
+	// Reason is the optional reason.
+	Reason string
+}
+
+// MarkDeleted moves r to StatusDeleted as d describes, remembering its current status
+// for Undelete. The archive is not touched.
+func (r *BackupRecord) MarkDeleted(d SoftDelete) {
+	at, purge := d.At.UTC(), d.PurgeAfter.UTC()
+	r.StatusBeforeDelete = r.Status
+	r.Status = StatusDeleted
+	r.DeletedAt, r.PurgeAfter = &at, &purge
+	r.DeletedBy, r.DeleteApprovedBy, r.DeleteReason = d.By, d.ApprovedBy, d.Reason
+	r.PurgedAt = nil
+}
+
+// Undelete restores the status r had before MarkDeleted (StatusCompleted for a record
+// that did not remember it) and clears the deletion.
+func (r *BackupRecord) Undelete() {
+	prev := r.StatusBeforeDelete
+	if prev == "" || prev.Deleted() {
+		prev = StatusCompleted
+	}
+	r.Status = prev
+	r.StatusBeforeDelete = ""
+	r.DeletedAt, r.PurgeAfter, r.PurgedAt = nil, nil, nil
+	r.DeletedBy, r.DeleteApprovedBy, r.DeleteReason = "", "", ""
+}
+
+// PurgeDue reports whether deleted record r may be purged at now: its grace period
+// has ended, both as recorded (PurgeAfter) and as grace, the grace period in force
+// now, counts it from DeletedAt (a longer grace period protects deletions made
+// before it was raised). A pinned record, or one without a deletion time, is never
+// due.
+func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
+	if r.Status != StatusDeleted || r.Pinned || r.DeletedAt == nil || r.PurgeAfter == nil {
+		return false
+	}
+	end := *r.PurgeAfter
+	if byGrace := r.DeletedAt.Add(grace); byGrace.After(end) {
+		end = byGrace
+	}
+	return !now.Before(end)
 }
 
 // EffectiveTrigger returns r.Trigger, or for records written before triggers existed

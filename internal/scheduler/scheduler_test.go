@@ -56,7 +56,7 @@ func TestRetentionPruningDays(t *testing.T) {
 	}
 
 	// Prune with 14 days retention
-	pruned, err := PruneBackups(ctx, 14, 0, []*models.BackupRecord{recOld, recRecent, recFresh}, metaStore, mockStorage, nil)
+	pruned, err := PruneBackups(ctx, 14, 0, []*models.BackupRecord{recOld, recRecent, recFresh}, metaStore, 7*24*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("unexpected prune error: %v", err)
 	}
@@ -65,16 +65,26 @@ func TestRetentionPruningDays(t *testing.T) {
 		t.Fatalf("expected bkp_old to be pruned, got %v", pruned)
 	}
 
-	// Verify status in store is pruned
+	// Retention deletes softly: the record is deleted, the archive stays for the
+	// grace period.
 	updatedOld, _ := metaStore.GetBackupRecord(ctx, "bkp_old")
-	if updatedOld.Status != models.StatusPruned {
-		t.Errorf("expected status pruned, got %s", updatedOld.Status)
+	if updatedOld.Status != models.StatusDeleted || updatedOld.DeletedBy != RetentionActor || updatedOld.PurgeAfter == nil {
+		t.Errorf("expected a deleted record with a purge time, got %+v", updatedOld)
+	}
+	if _, err = mockStorage.Stat(ctx, recOld.StorageKey); err != nil {
+		t.Errorf("the archive must stay until the grace period ends: %v", err)
 	}
 
-	// Verify file was deleted from storage
-	_, err = mockStorage.Retrieve(ctx, recOld.StorageKey)
-	if err == nil {
-		t.Error("expected physical file to be deleted from storage")
+	// The purge removes it once the grace period has passed.
+	storages := func(context.Context, string) (storage.Storage, error) { return mockStorage, nil }
+	if purged, purgeErr := PurgeDeleted(ctx, now.Add(7*24*time.Hour+time.Minute), 7*24*time.Hour, metaStore, storages, nil, nil); purgeErr != nil || len(purged) != 1 {
+		t.Fatalf("purge = %v, %v", purged, purgeErr)
+	}
+	if _, err = mockStorage.Retrieve(ctx, recOld.StorageKey); err == nil {
+		t.Error("expected physical file to be deleted from storage by the purge")
+	}
+	if r, _ := metaStore.GetBackupRecord(ctx, "bkp_old"); r.Status != models.StatusPurged || r.PurgedAt == nil {
+		t.Errorf("expected status purged, got %+v", r)
 	}
 }
 
@@ -101,7 +111,7 @@ func TestRetentionPruningCount(t *testing.T) {
 	}
 
 	// Keep only 2 backups
-	pruned, err := PruneBackups(ctx, 0, 2, records, metaStore, mockStorage, nil)
+	pruned, err := PruneBackups(ctx, 0, 2, records, metaStore, 7*24*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("unexpected prune error: %v", err)
 	}
@@ -524,11 +534,17 @@ func TestJobRunsUseTheirTargetAndRetentionCountsPerTarget(t *testing.T) {
 
 	// Retention on target b pruned the old backup there (the on-demand run is under a
 	// day old and kept), not the backup on target a.
-	if r, _ := metaStore.GetBackupRecord(ctx, oldB.ID); r.Status != models.StatusPruned {
-		t.Fatalf("old backup on b = %s; want pruned", r.Status)
+	if r, _ := metaStore.GetBackupRecord(ctx, oldB.ID); r.Status != models.StatusDeleted {
+		t.Fatalf("old backup on b = %s; want deleted", r.Status)
+	}
+	if _, err := tg.drivers["stg_b"].Stat(ctx, oldB.StorageKey); err != nil {
+		t.Fatalf("a deleted artifact must stay for the grace period: %v", err)
+	}
+	if _, err := PurgeDeleted(ctx, time.Now().Add(8*24*time.Hour), 7*24*time.Hour, metaStore, sched.storageFor, nil, nil); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := tg.drivers["stg_b"].Stat(ctx, oldB.StorageKey); err == nil {
-		t.Fatal("pruned artifact still on target b")
+		t.Fatal("purged artifact still on target b")
 	}
 	if r, _ := metaStore.GetBackupRecord(ctx, oldA.ID); r.Status != models.StatusCompleted {
 		t.Fatalf("backup on another target = %s; want untouched", r.Status)

@@ -79,8 +79,8 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/readiness` | One row per database a job backs up: last good, verified and restore-tested backups, RPO, estimated RTO, escrowed keys and an `ok` / `warn` / `fail` status ([details](#recovery-readiness)) | 200 | |
-| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, metadata_backup, restart_required, warnings}` | 200 | |
-| `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
+| `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, metadata_backup, restart_required, warnings, pending_changes}` | 200 | |
+| `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings, the `pending_changes` and, when a change waits for a second administrator, `approvals_requested` ([delete protection](#delete-protection)) | 200 | 400, 409 two-person rule with fewer than two admins |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
 | `POST` | `/api/v1/settings/warnings/{id}/dismiss` | Dismiss a persistent warning for good; returns the remaining `{warnings}` | 200, 404 | |
 | `POST` | `/api/v1/settings/monitoring/test` | Send one test ping: `{heartbeat_url}` (optional; empty, `"******"` or the masked stored URL ping the stored `monitoring.heartbeat_url`) → `{ok, host}`; admin only, at most 5 per minute per user or API key | 200 | 400 invalid or masked URL, nothing configured; 429 too many test pings (`Retry-After`); 502 the monitor was unreachable or did not answer 2xx (a fixed reason such as `connection refused`, `timeout`, `TLS error` or `DNS error`, with the host only, never an address); 503 |
@@ -90,15 +90,15 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/recovery-kit` | When the last recovery kit was downloaded and whether it is still current | 200 | 503 |
 | `POST` | `/api/v1/recovery-kit` | Download the recovery kit `{passphrase, current_password}` as an age-encrypted tar (admin, signed-in users only) ([details](#metadata-backups-and-the-recovery-kit)) | 200 | 400, 403, 429 |
 | `GET` / `POST` | `/api/v1/storage-targets` | List / create `{name, type, local \| s3}` (the first target becomes the default) | 200 / 201 | 400 |
-| `GET` / `PUT` | `/api/v1/storage-targets/{id}` | Get / update a target | 200 | 400, 404, 409 changed meanwhile or location locked |
-| `DELETE` | `/api/v1/storage-targets/{id}` | Delete a target | 200 | 404, 409 default or in use |
+| `GET` / `PUT` | `/api/v1/storage-targets/{id}` | Get / update a target | 200 | 400, 404, 409 changed meanwhile, location locked, or new credentials of a target in use failed the connection test |
+| `DELETE` | `/api/v1/storage-targets/{id}` | Delete a target nothing references; with the two-person rule `202` with an [approval request](#delete-protection) | 200, 202 | 404, 409 default or in use (by a job or any backup record but purged ones) |
 | `POST` | `/api/v1/storage-targets/{id}/test` | Test a saved target → `{ok, latency_ms, error}` | 200 | 404 |
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
 | `GET` | `/api/v1/jobs` | List scheduled jobs, by name; optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
-| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated) | 201 | 400 |
-| `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC) and its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) | 200 | 404 |
-| `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)) | 200 | 400, 404, 409 changed meanwhile |
+| `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated). A shorter retention of an existing job is answered as `pending_retention` (or `approval`) and applies later ([delete protection](#delete-protection)) | 201 | 400 |
+| `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC), its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) and a pending retention shortening (`pending_retention`) | 200 | 404 |
+| `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)); a shorter retention is answered as `pending_retention` (or `approval`) and applies after the grace period | 200 | 400, 404, 409 changed meanwhile |
 | `DELETE` | `/api/v1/jobs/{id}` | Delete a job | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/run` | Run a job now: the body is the backup record, or for a job with several databases the run (`status: "running"`), whose databases are resolved and backed up in the background | 202 | 400, 404, 409 |
 | `POST` | `/api/v1/jobs/{id}/cancel` | Stop the job's current run: the running database and those still waiting ([details](#jobs-with-several-databases)) | 200, 202 still stopping | 404, 409 not running |
@@ -108,14 +108,21 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
 | `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip, include_users_and_roles}` ([users and roles](#users-and-roles)), or one run of several with `databases` and `parallelism` instead of `database` ([details](#backing-up-several-databases-now)) | 202 | 400, 409 |
-| `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target → `{deleted_id, archive_deleted, archive_kept}`. The archive is kept when another record (in any status) names it; `archive_kept` says which, a pinned one included | 200 | 404, 409 pinned |
+| `DELETE` | `/api/v1/backups/{id}` | Delete a backup softly, with an optional `?reason=` → `{deleted_id, status: "deleted", deleted_at, purge_after, archive_deleted: false}`. The archive stays until `purge_after` (the delete grace period) and the deletion can be undone until then; with the two-person rule `202` with an approval request ([delete protection](#delete-protection)) | 200, 202 | 404, 409 pinned, running or already deleted |
+| `POST` | `/api/v1/backups/{id}/undelete` | Undo the deletion during the grace period: the backup gets back its earlier status (admin) | 200 | 403, 404, 409 not deleted or already purged |
 | `POST` | `/api/v1/backups/bulk` | Run one action on many backups (`delete`, `verify`, `pin`, `unpin`, `cancel`), with a dry run ([details](#bulk-actions)) | 200 | 400, 403, 409 confirm_count, 422 too many |
 | `POST` | `/api/v1/restores/bulk` | Delete restore history records or cancel restores in bulk ([details](#bulk-actions)) | 200 | 400, 403, 409, 422 |
 | `POST` | `/api/v1/jobs/bulk` | Enable, disable, run or delete jobs in bulk ([details](#bulk-actions)) | 200 | 400, 403, 409, 422 |
 | `GET` | `/api/v1/bulk/actions` | The available bulk actions and whether the caller may run each | 200 | |
 | `POST` | `/api/v1/backups/{id}/verify` | Re-read the archive and compare it with its checksum, in the background; poll the backup for `verified_at` ([verification](verification.md)) | 202 | 404, 409 not completed or already running |
 | `POST` | `/api/v1/backups/{id}/pin` | Pin (legal hold) with an optional `{note}`: retention and deletion skip it | 200 | 400, 404 |
-| `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin (admin: it makes the backup deletable again) | 200 | 403, 404 |
+| `POST` | `/api/v1/backups/{id}/unpin` | Lift the pin (admin: it makes the backup deletable again); with the two-person rule `202` with an approval request | 200, 202 | 403, 404 |
+| `GET` | `/api/v1/approvals` | Requests of the two-person rule, newest first (`?status=` `pending`, `approved`, `failed`, `rejected` or `expired`); admin | 200 | 400, 403 |
+| `GET` | `/api/v1/approvals/{id}` | One request; admin | 200 | 403, 404 |
+| `POST` | `/api/v1/approvals/{id}/approve` | Approve and run the request: an administrator signed in to the dashboard, not the requester; API keys never | 200 | 403 API key, requester or not admin, 404, 409 decided or expired |
+| `POST` | `/api/v1/approvals/{id}/reject` | Reject the request, with an optional `{reason}` (admin, API keys and the requester included) | 200 | 403, 404, 409 decided or expired |
+| `GET` | `/api/v1/pending-changes` | Lowered protections that take effect later: `[{id, kind: "retention"\|"delete_grace_days", job_id, retention_days, retention_count, delete_grace_days, requested_by, approved_by, created_at, effective_at}]` | 200 | |
+| `DELETE` | `/api/v1/pending-changes/{id}` | Cancel a pending change; the current protection stays (admin) | 200 | 403, 404 |
 | `GET` | `/api/v1/jobs/{id}/retention/preview` | Backups the retention policy would delete now and why (`?retention_days=`, `?retention_count=` preview other values) | 200 | 400, 404 |
 | `GET` | `/api/v1/jobs/{id}/retention/log` | Backups the job's retention deleted, newest first (`?limit=` ≤ 200) | 200 | 404 |
 | `POST` | `/api/v1/jobs/{id}/restore-test` | Run a restore test of the job's latest backup now, in the background → `{job_id, backup_id}` | 202 | 404, 409 no backup or already running, 503 |
@@ -123,7 +130,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/integrity` | Integrity sweep status, the latest scan of every storage target, the next scheduled scan and the integrity work running | 200 | |
 | `POST` | `/api/v1/integrity/sweep` | Start an integrity sweep now (admin) | 202 | 409 already running |
 | `GET` / `POST` | `/api/v1/storage-targets/{id}/scan` | Latest / a new storage scan: orphan and missing archives (`POST` admin) | 200 | 404 |
-| `POST` | `/api/v1/storage-targets/{id}/import` | Create (or revive the failed or pruned record of) the orphan archive `{key}`, hashed in the background (admin) | 202 | 400 no valid database in the key, 404, 409 not an orphan or already importing |
+| `POST` | `/api/v1/storage-targets/{id}/import` | Create (or revive the failed, pruned or purged record of) the orphan archive `{key}`, hashed in the background (admin); the archive of a deleted backup waiting for its purge is not an orphan | 202 | 400 no valid database in the key, 404, 409 not an orphan or already importing |
 | `POST` | `/api/v1/backups/{id}/retry` | Retry a failed backup with its parameters; the new record's `retry_of` is `{id}` ([details](#retrying-a-failed-backup)) | 202 | 404, 409 not failed or already running, 422 connection or target gone |
 | `GET` | `/api/v1/backups/{id}/collections` | Collections stored in the backup, read from its archive header ([details](#selective-restores)) | 200 | 404, 422 key missing |
 | `POST` | `/api/v1/backups/{id}/cancel` | Cancel a running backup ([details](#cancelling-a-run)) | 200, 202 still stopping | 404, 409 not running or finishing |
@@ -154,9 +161,9 @@ Jobs and manual backups name a `connection_id`. Backup records keep `connection_
 
 ## Settings
 
-`GET /api/v1/settings` returns every setting grouped as `general`, `security` and `encryption` ([descriptions](configuration.md#settings)), plus `restart_required` (always empty: every change applies to the next operation or request) and `warnings`, the persistent notices the dashboard shows as a banner: `[{id, message, setting}]`. The warnings are `encryption_off_after_upgrade` (see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)), `metadata_backup_unencrypted` (metadata backups are on but encryption is off; it cannot be dismissed) and `recovery_kit_missing` (no recovery kit was downloaded since `secret.key`, the encryption keys or the storage targets last changed; dismissing it hides it until they change again). Durations are Go duration strings (`"6h0m0s"`), secrets (`encryption.identity`, `encryption.passphrase`) are `"******"` when set and `""` when not, and `encryption.retired_keys` lists `{kind, recipient, retired_at}` without key material.
+`GET /api/v1/settings` returns every setting grouped as `general`, `security` and `encryption` ([descriptions](configuration.md#settings)), plus `restart_required` (always empty: every change applies to the next operation or request), `pending_changes` (lowered protections that take effect later, see [delete protection](#delete-protection)) and `warnings`, the persistent notices the dashboard shows as a banner: `[{id, message, setting}]`. The warnings are `encryption_off_after_upgrade` (see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)), `metadata_backup_unencrypted` (metadata backups are on but encryption is off; it cannot be dismissed) and `recovery_kit_missing` (no recovery kit was downloaded since `secret.key`, the encryption keys or the storage targets last changed; dismissing it hides it until they change again). Durations are Go duration strings (`"6h0m0s"`), secrets (`encryption.identity`, `encryption.passphrase`) are `"******"` when set and `""` when not, and `encryption.retired_keys` lists `{kind, recipient, retired_at}` without key material.
 
-`PUT /api/v1/settings` takes one or more groups with only the fields to change and answers with the full settings. Unknown fields, invalid values and malformed durations are rejected with `400` and nothing is changed. Sending `"******"` for a secret keeps the stored value; `""` removes it. A replaced or removed identity or passphrase is moved to `retired_keys`, so backups encrypted with it stay restorable.
+`PUT /api/v1/settings` takes one or more groups with only the fields to change and answers with the full settings. Unknown fields, invalid values and malformed durations are rejected with `400` and nothing is changed. A lower `security.delete_grace_days` and turning `security.require_second_approver` off are not applied by the request: the first becomes a pending change (or, with the two-person rule, an approval request), the second always an approval request; see [delete protection](#delete-protection). Sending `"******"` for a secret keeps the stored value; `""` removes it. A replaced or removed identity or passphrase is moved to `retired_keys`, so backups encrypted with it stay restorable.
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/settings -H "Authorization: Bearer $KEY" \
@@ -173,11 +180,11 @@ To encrypt new backups with a fresh key pair, call `POST /api/v1/settings/encryp
 
 ## Storage targets
 
-A target is `{id, name, type: "local"|"s3", is_default, local: {path}, s3: {endpoint, region, bucket, prefix, access_key_id, secret_access_key, use_path_style}, created_at, updated_at, last_test_at, last_test_ok, last_test_error}`. Create and update bodies contain only the sub-object of their type; the default is changed only with `POST /api/v1/storage-targets/{id}/default`. The secret access key is returned as `"******"`; sending it back keeps the stored key only while `endpoint`, `bucket` and `access_key_id` are unchanged. Tests answer `200` with `ok: false` and an `error` when the probe fails. `local.path` must be absolute and must not be `/`, the data directory or inside it. Updates are refused with `409` when the target changed meanwhile, and when they would move a target that holds completed or running backups (type, path, endpoint, bucket or prefix); create a new target instead.
+A target is `{id, name, type: "local"|"s3", is_default, local: {path}, s3: {endpoint, region, bucket, prefix, access_key_id, secret_access_key, use_path_style}, created_at, updated_at, last_test_at, last_test_ok, last_test_error}`. Create and update bodies contain only the sub-object of their type; the default is changed only with `POST /api/v1/storage-targets/{id}/default`. The secret access key is returned as `"******"`; sending it back keeps the stored key only while `endpoint`, `bucket` and `access_key_id` are unchanged. Tests answer `200` with `ok: false` and an `error` when the probe fails. `local.path` must be absolute and must not be `/`, the data directory or inside it. Updates are refused with `409` when the target changed meanwhile, when they would move a target that backup records reference (type, path, endpoint, bucket or prefix; every record but purged ones counts, deleted backups waiting for their purge included), and when new credentials, region or path style of such a target fail a connection test; create a new target instead of moving one.
 
 Every signed-in user, and every API key with the `admin` scope, has full rights, including settings, storage targets and the connection and storage test endpoints, which connect to hosts named in the request. Roles for users are on the roadmap.
 
-Jobs and manual backups take an optional `storage_target_id` (the default target when omitted). Backup records carry `storage_target_id` and a `storage_target_name` snapshot; restores, deletions and retention use the record's target. Deleting the default target, or a target still used by a job or holding a completed or running backup, answers `409` with the reason.
+Jobs and manual backups take an optional `storage_target_id` (the default target when omitted). Backup records carry `storage_target_id` and a `storage_target_name` snapshot; restores, deletions and retention use the record's target. Deleting the default target, or a target still used by a job or referenced by any backup record but purged ones, answers `409` with the reason.
 
 ## Metadata backups and the recovery kit
 
@@ -450,7 +457,8 @@ In the dashboard, a failed backup that has not been retried yet shows a **Retry*
 | Parameter | Backups | Restores | Meaning |
 | --- | --- | --- | --- |
 | `id` | yes | yes | Records with exactly these IDs, comma-separated (at most 200) |
-| `status` | `pending`, `in_progress`, `completed`, `failed`, `cancelled`, `pruned` | `pending`, `in_progress`, `completed`, `failed`, `cancelled` | Records in this state |
+| `status` | `pending`, `in_progress`, `completed`, `failed`, `cancelled`, `pruned`, `missing`, `deleted`, `purged` | `pending`, `in_progress`, `completed`, `failed`, `cancelled` | Records in this state. Without `status` (and without `id`), deleted and purged backups are hidden |
+| `deleted` | `true` | | Only deleted backups waiting for their purge (like `status=deleted`; the dashboard's Deleted view) |
 | `database` | Backed-up database | Target database | Exact, case-sensitive match |
 | `connection_id` | yes | | Backups taken from this connection |
 | `job_id` | yes | | Backups of this scheduled job |
@@ -573,7 +581,7 @@ The report reads each kind of record (jobs, newest and verified backups, restore
 
 | Resource | Action | Scope | Skipped (reason) |
 | :--- | :--- | :--- | :--- |
-| backups | `delete` | admin | `in_progress`, `pinned`, `last_good_backup` (the newest completed backup of a job), `last_verified` (the job's newest verified scheduled backup, which retention keeps), `not_found` |
+| backups | `delete` (soft, optional `reason`) | admin | `in_progress`, `pinned`, `already_deleted`, `last_good_backup` (the newest completed backup of a job), `last_verified` (the job's newest verified scheduled backup, which retention keeps), `not_found` |
 | backups | `verify` | operator | `not_verifiable` (not completed or no checksum) |
 | backups | `pin` (optional `note`) | operator | `already_pinned` |
 | backups | `unpin` | admin | `not_pinned` |
@@ -584,9 +592,29 @@ The report reads each kind of record (jobs, newest and verified backups, restore
 | jobs | `run_now` | operator | — (a database that is already being backed up fails the item) |
 | jobs | `delete` (their backups are kept) | admin | — |
 
-Every action also skips IDs that name no record (`not_found`). A bulk delete never removes a job's last good backup, a pinned backup or the backup retention keeps as the last verified one; delete those one at a time (after unpinning) if you really mean to. There is no undo.
+Every action also skips IDs that name no record (`not_found`). A bulk delete never removes a job's last good backup, a pinned backup or the backup retention keeps as the last verified one; delete those one at a time (after unpinning) if you really mean to. Deleting backups in bulk is soft like a single delete: every result's `detail` says until when the backup is recoverable (`recoverable until …`), the archives stay for the grace period, and each deletion can be undone. With the two-person rule a real run of `delete` or `unpin` answers `202` with one approval request for all its actionable IDs; the approved run re-checks every item ([delete protection](#delete-protection)).
 
 The dashboard selects rows with checkboxes (shift-click for a range, the header box for the page, then *Select all N matching the filters*, which sends the filter), shows the dry run with the skipped items grouped by reason, asks to type the count for destructive actions on more than 10 items, and runs the confirmed IDs in batches of 25 with a progress bar.
+
+## Delete protection
+
+Deletes are soft, lowering a protection waits for the delete grace period, and with the two-person rule destructive actions wait for a second administrator. The threat model is in [security.md](security.md).
+
+- `DELETE /api/v1/backups/{id}` marks the backup `deleted` and answers `{deleted_id, status, deleted_at, purge_after, archive_deleted: false}`; the archive stays until `purge_after`. Backup records gain `deleted_at`, `deleted_by`, `delete_approved_by`, `delete_reason`, `purge_after`, `status_before_delete` and, once purged, `purged_at`. A deleted backup cannot be restored (`409`, also for the preflight), verified, pinned or deleted again (`409`); `POST /api/v1/backups/{id}/undelete` (admin) gives it back its earlier status.
+- Every ten minutes the scheduler purges the deleted backups whose grace period ended: the archive is removed (unless another live record names it) and the record becomes `purged`. The grace period is `max(purge_after, deleted_at + security.delete_grace_days)`, so raising it protects earlier deletions. Retention deletes softly too (`deleted_by: retention`).
+- A shorter job retention (`PUT /api/v1/jobs/{id}`, `POST /api/v1/jobs`) and a lower `security.delete_grace_days` are stored as pending changes and applied at their `effective_at`, the end of the current grace period. The answers carry `pending_retention` and `pending_changes`; `GET /api/v1/pending-changes` lists them and `DELETE /api/v1/pending-changes/{id}` (admin) cancels one, keeping the current protection.
+- With `security.require_second_approver`, deleting backups (single or bulk), unpinning (single or bulk), deleting a storage target, shortening retention, lowering the grace period and turning the rule off answer `202 Accepted`:
+
+```json
+{"success": true, "message": "a second administrator must approve this action: delete backup bkp_shop_20260924_030000_3f9a1c2e (db shop)",
+ "data": {"approval_required": true, "approval": {"id": "apr_5c2e9b1f0a7d3e46", "action": "delete_backup", "status": "pending",
+  "summary": "delete backup bkp_shop_20260924_030000_3f9a1c2e (db shop)", "subject": "bkp_shop_20260924_030000_3f9a1c2e",
+  "requested_by": "API key ci", "requested_by_user_id": "usr_1a2b3c4d", "requested_via": "api_key",
+  "created_at": "2026-10-05T09:00:00Z", "expires_at": "2026-10-08T09:00:00Z"}}}
+```
+
+  Another administrator approves it with `POST /api/v1/approvals/{id}/approve` from a dashboard session (API keys, the requester and non-admins get `403`), which runs the action and answers the request with `status: "approved"` and a `result`, or `status: "failed"` and an `error`; `POST /api/v1/approvals/{id}/reject` rejects it. Requests expire after 72 hours (`409` afterwards). Actions: `delete_backup`, `bulk_delete_backups`, `unpin_backup`, `bulk_unpin_backups`, `delete_storage_target`, `shorten_retention`, `lower_delete_grace`, `disable_second_approver`. Turning the rule on with fewer than two administrators answers `409`.
+- The audit log entries of these requests carry the targets `protection` (`soft_deleted`, `undeleted`, `approval_requested`, `approved`, `rejected`, `pending_change_cancelled`), `approval_id`, `purge_after` and `effective_at`; purges and applied pending changes are recorded as `SYSTEM backup.purge` and `SYSTEM protection.apply_pending`. The events `security.destructive_action` and `security.approval_requested` can be selected by [notification rules](notifications.md).
 
 ## Cancelling a run
 

@@ -152,6 +152,9 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 	if err != nil {
 		return Settings{}, nil, err
 	}
+	if err = checkProtection(ctx, cur.Security, next.Security); err != nil {
+		return Settings{}, nil, err
+	}
 	// The passphrase length rule applies to new passphrases only: one imported from an
 	// older release must not block unrelated changes.
 	if err = validate(&next, next.Encryption.Passphrase != cur.Encryption.Passphrase); err != nil {

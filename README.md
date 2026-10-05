@@ -43,6 +43,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 
 - Manage many MongoDB servers from one instance: connections are tested, their databases and collections listed, and backups can be restored into another server
 - Scheduled and on-demand backups with retention by age or count, a dry-run preview of what retention deletes, pins (legal hold) and a retention history
+- Delete protection: soft deletes with a grace period and undo, delayed lowering of retention and the grace period, storage targets locked while in use, and an optional two-person rule for destructive actions
 - Jobs that back up one database, a list of them, all databases of a connection or those matching glob patterns such as `prod_*`, each database into its own backup, with a live preview, optional automatic inclusion of new databases and one notification per run ([jobs with several databases](docs/api.md#jobs-with-several-databases))
 - Evidence that backups restore: every archive is re-read and checksum-verified after upload, an optional integrity sweep re-verifies them at rest, automated restore tests restore a job's latest backup into a temporary database and compare collection counts and indexes, and weekly storage scans report orphan and missing archives ([verification](docs/verification.md))
 - Disaster recovery for MongoRescue itself: scheduled, encrypted snapshots of its metadata database to a storage target, and a passphrase-sealed recovery kit with `secret.key`, the age keys and the storage credentials ([runbook](docs/production.md#restore-mongorescue-from-a-snapshot))
@@ -178,6 +179,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [AI assistants (MCP)](docs/mcp.md)
 - [Encryption and verified restores](docs/encryption.md)
 - [Verification, restore tests and retention safety](docs/verification.md)
+- [Delete protection and its threat model](docs/security.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
 - [Monitoring: heartbeats, health check and alert rules](docs/monitoring.md)
@@ -203,7 +205,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 
 - **No point-in-time recovery yet.** Backups are per-database `mongodump` snapshots, so a restore goes back to the newest snapshot, not to the minute before an accident. Oplog-based PITR is designed ([docs/design/pitr.md](docs/design/pitr.md)) and in progress (#56, #57). Users and roles can be included per job (`include_users_and_roles`).
 - **Single instance.** Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance refuses to start. MongoRescue backs up its own metadata on a schedule and the recovery kit holds what a rebuild needs. High availability is planned (#64, #65); until then the instance is a single point of failure, and nothing alerts when it is down unless you monitor it from outside (#97).
-- **Deletes are immediate.** An admin, or a stolen admin API key, can delete backups and storage targets at once; there is no grace period or second approver yet (#96). Pins (legal hold) protect chosen backups, and S3 Object Lock is planned (#59).
+- **Delete protection stops at MongoRescue.** Deletes are soft (a grace period of 7 days by default, with undo), lowered protections wait for the grace period, and an optional two-person rule needs a second administrator ([docs/security.md](docs/security.md)). Whoever holds the bucket's credentials can still delete archives directly: use least-privilege credentials without `s3:DeleteObject`; S3 Object Lock is planned (#59).
 - **Roles are global.** Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but no per-connection access yet: an operator may back up and restore every connection (#98). Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
 - **`secret.key` is the root of trust.** Losing it (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable. Download the recovery kit and keep it apart from the backups. Keys cannot be rotated yet (#101).
 - **Backups read from wherever the connection string points**, normally the primary, without throttling or backup windows (#100).

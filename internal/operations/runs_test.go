@@ -270,7 +270,7 @@ func TestPauseJobUntil(t *testing.T) {
 	if err := f.st.SaveJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	update := func(enabled *bool, until *time.Time) (*models.Job, error) {
+	update := func(enabled *bool, until *time.Time) (*operations.JobSaveResult, error) {
 		return f.svc.UpdateJob(ctx, "job_p", operations.JobUpdate{
 			Name: "p", Database: "shop", ConnectionID: "conn_a", CronExpression: "@daily", Enabled: enabled, PausedUntil: until,
 		})

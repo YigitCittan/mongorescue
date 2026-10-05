@@ -301,7 +301,7 @@ func runRetentionAfterFailures(t *testing.T, env *mongoEnv, db string, failed []
 		}
 	}
 
-	pruned, err := scheduler.PruneBackups(ctx, 7, 1, records, meta, st, discardLogger)
+	pruned, err := scheduler.PruneBackups(ctx, 7, 1, records, meta, 7*24*time.Hour, discardLogger)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -311,8 +311,16 @@ func runRetentionAfterFailures(t *testing.T, env *mongoEnv, db string, failed []
 	if _, err := st.Stat(ctx, good.StorageKey); err != nil {
 		t.Fatalf("the last good backup's artifact was removed: %v", err)
 	}
+	// Retention deletes softly; the purge after the grace period removes the archive.
+	if _, err := st.Stat(ctx, older.StorageKey); err != nil {
+		t.Fatalf("the deleted backup's artifact was removed before its grace period: %v", err)
+	}
+	storages := func(context.Context, string) (storage.Storage, error) { return st, nil }
+	if _, err := scheduler.PurgeDeleted(ctx, time.Now().Add(8*24*time.Hour), 7*24*time.Hour, meta, storages, discardLogger, nil); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
 	if _, err := st.Stat(ctx, older.StorageKey); !errors.Is(err, storage.ErrNotFound) {
-		t.Fatalf("the pruned backup's artifact still exists: %v", err)
+		t.Fatalf("the purged backup's artifact still exists: %v", err)
 	}
 	for _, f := range failed {
 		got, err := meta.GetBackupRecord(ctx, f.ID)

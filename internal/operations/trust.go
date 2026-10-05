@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -72,22 +73,44 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 	by := principalName(ctx)
 	now := s.now().UTC()
 	return s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
+		if r.Status.Deleted() {
+			return public(fmt.Sprintf("backup %s is %s; undelete it before pinning it", r.ID, r.Status), ErrBackupDeleted)
+		}
 		r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy = true, note, &now, by
 		return nil
 	})
 }
 
 // UnpinBackup lifts the pin of backup id, which makes it deletable again; it needs a
-// principal with the admin scope in ctx (auth.ErrForbidden otherwise). Expected
-// failures: ErrNotFound and auth.ErrForbidden.
+// principal with the admin scope in ctx (auth.ErrForbidden otherwise). With the
+// two-person rule on, it waits for a second administrator (*ApprovalPendingError).
+// Expected failures: ErrNotFound, auth.ErrForbidden and ErrApprovalRequired.
 func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("lifting a legal hold needs the admin role or an admin API key: %w", err)
 	}
-	return s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
+	if s.needsApproval(ctx) {
+		rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+		if err != nil {
+			return nil, notFound(err, "backup not found")
+		}
+		if !rec.Pinned {
+			return rec, nil
+		}
+		return nil, s.requestApproval(ctx, &models.Approval{Action: models.ApprovalUnpinBackup, Subject: rec.ID,
+			Summary: fmt.Sprintf("unpin backup %s (db %s)", rec.ID, rec.Database)})
+	}
+	wasPinned := false
+	rec, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
+		wasPinned = r.Pinned
 		r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy = false, "", nil, ""
 		return nil
 	})
+	if err == nil && wasPinned {
+		s.destructive(ctx, "unpin_backup", fmt.Sprintf("backup %s (db %s) unpinned", rec.ID, rec.Database),
+			func(e *events.Event) { e.BackupID, e.JobID, e.Database = rec.ID, rec.JobID, rec.Database })
+	}
+	return rec, err
 }
 
 // updateBackup applies fn to backup id atomically.

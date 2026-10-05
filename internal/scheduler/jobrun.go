@@ -874,7 +874,8 @@ func (s *Scheduler) applyRetention(ctx context.Context, job *models.Job, record 
 	// Retention only ever sees this job's own scheduled backups (see
 	// JobRetentionHistory).
 	history = JobRetentionHistory(job, record.StorageTargetID, history)
-	pruned, _ := prune(ctx, time.Now().UTC(), job.RetentionDays, job.RetentionCount, history,
-		s.metadataStore, s.storageFor, s.logger, s.retentionDeleted)
-	s.removeRunLogs(pruned)
+	// Retention deletes softly: the archives stay for the grace period, the purge
+	// removes them (and the run logs) afterwards.
+	_, _ = prune(ctx, s.clock().UTC(), s.deleteGrace(), job.RetentionDays, job.RetentionCount, history,
+		s.metadataStore, s.logger, s.retentionDeleted)
 }

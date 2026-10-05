@@ -207,6 +207,14 @@ type Config struct {
 	OnJobDeleted func(jobID string)
 	// Settings returns the live settings; nil means the defaults.
 	Settings func() settings.Settings
+	// SettingsUpdater applies settings changes for UpdateSettings and for the
+	// delayed or approved changes of the delete protection; nil makes UpdateSettings
+	// fail with ErrUnavailable.
+	SettingsUpdater SettingsUpdater
+	// SecondApproverCheck returns an error (auth.ErrTooFewAdmins) unless the
+	// two-person rule can be turned on (implemented by
+	// auth.Service.CheckSecondApproverPossible); nil refuses turning it on.
+	SecondApproverCheck func(ctx context.Context) error
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
@@ -721,6 +729,11 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 			return nil, public("source backup not found", ErrNotFound, err)
 		}
 		return nil, fmt.Errorf("load source backup: %w", err)
+	}
+	// A deleted backup is not restorable during its grace period: undelete it first
+	// (its archive is still there). A purged one has no archive any more.
+	if source.Status.Deleted() {
+		return nil, public(fmt.Sprintf("backup %s is %s; undelete it to restore it", source.ID, source.Status), ErrBackupDeleted)
 	}
 	if err = req.ValidateUsersAndRoles(source); err != nil && !forPreflight {
 		return nil, invalid(err)

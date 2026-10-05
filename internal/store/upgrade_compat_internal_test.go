@@ -879,6 +879,55 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 22,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"bkp_v22_deleted", "job_v3", "shop", "deleted", ns(31*time.Hour), "conn_v2", "tgt_s3", jsonDoc(t, map[string]any{
+					"id": "bkp_v22_deleted", "job_id": "job_v3", "database": "shop", "status": "deleted", "connection_id": "conn_v2",
+					"storage_type": "s3", "storage_target_id": "tgt_s3", "storage_key": "shop/2026/09/bkp_v22_deleted.archive.gz",
+					"started_at": rfc(31 * time.Hour), "deleted_at": rfc(32 * time.Hour), "deleted_by": "admin",
+					"delete_reason": "duplicate", "purge_after": rfc(32*time.Hour + 7*24*time.Hour), "status_before_delete": "completed",
+				}))
+			f.exec(t, `INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES (?, ?, ?, ?, ?)`,
+				"chg_v22", "retention", "job_v3", ns(40*time.Hour), jsonDoc(t, map[string]any{
+					"id": "chg_v22", "kind": "retention", "job_id": "job_v3", "retention_count": 2, "requested_by": "admin",
+					"created_at": rfc(33 * time.Hour), "effective_at": rfc(40 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO approvals (id, status, created_at, expires_at, data) VALUES (?, ?, ?, ?, ?)`,
+				"apr_v22", "pending", ns(34*time.Hour), ns(34*time.Hour+72*time.Hour), jsonDoc(t, map[string]any{
+					"id": "apr_v22", "action": "delete_backup", "status": "pending", "summary": "delete backup bkp_v3 (db shop)",
+					"subject": "bkp_v3", "requested_by": "admin", "requested_by_user_id": "usr_v1", "requested_via": "session",
+					"created_at": rfc(34 * time.Hour), "expires_at": rfc(34*time.Hour + 72*time.Hour),
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			rec, err := s.GetBackupRecord(ctx, "bkp_v22_deleted")
+			if err != nil || rec.Status != models.StatusDeleted || rec.StatusBeforeDelete != models.StatusCompleted ||
+				rec.PurgeAfter == nil || !rec.PurgeAfter.Equal(compatT0.Add(32*time.Hour+7*24*time.Hour)) || rec.DeleteReason != "duplicate" {
+				t.Errorf("bkp_v22_deleted = %+v, %v; want a deleted backup with its grace period", rec, err)
+			}
+			// A deleted backup keeps its target in use.
+			if n, countErr := s.CountStorageTargetBackups(ctx, "tgt_s3"); countErr != nil || n < 2 {
+				t.Errorf("backups keeping tgt_s3 = %d, %v; want the completed and the deleted one", n, countErr)
+			}
+			changes, err := s.ListPendingChanges(ctx)
+			if err != nil || len(changes) != 1 || changes[0].JobID != "job_v3" || changes[0].RetentionCount == nil || *changes[0].RetentionCount != 2 {
+				t.Errorf("pending changes = %+v, %v", changes, err)
+			}
+			a, err := s.GetApproval(ctx, "apr_v22")
+			if err != nil || a.Action != models.ApprovalDeleteBackup || a.Status != models.ApprovalPending || a.RequestedByUserID != "usr_v1" {
+				t.Errorf("apr_v22 = %+v, %v", a, err)
+			}
+			if _, err = s.db.Exec(`UPDATE approvals SET status = 'maybe' WHERE id = 'apr_v22'`); err == nil {
+				t.Error("an unknown approval status was stored")
+			}
+			if _, err = s.db.Exec(`INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES ('chg_x', 'retention', 'job_v3', 1, '{}')`); err == nil {
+				t.Error("a job got two pending retention changes")
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

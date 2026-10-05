@@ -92,6 +92,11 @@ type WebhookPayload struct {
 	Run *events.RunSummary `json:"run,omitempty"`
 	// Databases names the databases of a job.databases_added event.
 	Databases []string `json:"databases,omitempty"`
+	// Action, Actor and ApprovalID describe security events: the destructive action,
+	// who took or requested it, and the approval request.
+	Action     string `json:"action,omitempty"`
+	Actor      string `json:"actor,omitempty"`
+	ApprovalID string `json:"approval_id,omitempty"`
 	// Subject is the rendered one-line summary.
 	Subject string `json:"subject"`
 	// Text is the rendered human-readable body.
@@ -122,6 +127,9 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 		RunID:           e.RunID,
 		Run:             e.Run,
 		Databases:       e.Databases,
+		Action:          e.Action,
+		Actor:           e.Actor,
+		ApprovalID:      e.ApprovalID,
 		Subject:         msg.Subject,
 		Text:            msg.Body,
 	}

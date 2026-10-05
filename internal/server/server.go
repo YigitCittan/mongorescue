@@ -357,6 +357,9 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// Bulk actions on backups, restores and jobs
 	s.registerBulkRoutes(mux)
 
+	// Delete protection: undelete, approvals and pending changes
+	s.registerProtectionRoutes(mux)
+
 	// API Notifications (channels & rule workflows)
 	s.registerNotificationRoutes(mux)
 
@@ -535,6 +538,12 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		s.writeJobError(w, err)
 		return
 	}
+	// A shorter retention is stored later, after the delete grace period.
+	hold, holdErr := s.ops.HoldRetention(r.Context(), existing, &job)
+	if holdErr != nil {
+		s.writeJobError(w, holdErr)
+		return
+	}
 	// A new job is inserted and never overwrites another; an existing one is updated
 	// and never recreated after a concurrent delete. Run history is owned by the
 	// scheduler, not by clients: it is re-read right before the write.
@@ -571,8 +580,14 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		s.writeOperationError(w, saveErr) // 500, logged
 		return
 	}
+	changed := existing != nil && (job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount)
+	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
+	if holdErr != nil {
+		s.writeOperationError(w, holdErr)
+		return
+	}
 
-	writeJSON(w, http.StatusCreated, job.Redacted())
+	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot})
 }
 
 // handleGetJob returns a job with its next activations.
@@ -593,12 +608,13 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request json")
 		return
 	}
-	job, err := s.ops.UpdateJob(r.Context(), r.PathValue("id"), req)
+	res, err := s.ops.UpdateJob(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		s.writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, job.Redacted())
+	// The redacted job with what the edit deferred (a shorter retention).
+	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Job.Redacted(), JobProtection: res.JobProtection})
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target
@@ -707,10 +723,24 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeErrorData(w, http.StatusConflict, err.Error(), preflight.Result)
 		return
 	}
+	// A destructive action that waits for a second administrator answers 202.
+	if writeApprovalPending(w, err) {
+		return
+	}
 	switch {
 	// Retry errors come first: they also wrap the connection and target sentinels.
-	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned):
+	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned),
+		errors.Is(err, operations.ErrAlreadyDeleted), errors.Is(err, operations.ErrNotDeleted), errors.Is(err, operations.ErrBackupDeleted),
+		errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, operations.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrInUse), errors.Is(err, targets.ErrIsDefault):
+		s.writeTargetError(w, err)
 	case errors.Is(err, operations.ErrBulkTooLarge):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, operations.ErrRetryUnavailable):
@@ -736,15 +766,17 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	}
 }
 
-// handleDeleteBackup deletes a backup's archive (unless another record shares it) and
-// its record; see operations.DeleteBackup.
+// handleDeleteBackup deletes a backup softly, with an optional ?reason=: the archive
+// stays until the grace period ends (the answer's purge_after) and the deletion can
+// be undone until then; see operations.DeleteBackup. With the two-person rule it
+// answers 202 with the approval request.
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "backup id required")
 		return
 	}
-	res, err := s.ops.DeleteBackup(r.Context(), id)
+	res, err := s.ops.DeleteBackup(r.Context(), id, r.URL.Query().Get("reason"))
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
@@ -836,6 +868,12 @@ func (s *Server) operationsConfig() operations.Config {
 	}
 	if s.integrity != nil {
 		cfg.Verifier = s.integrity
+	}
+	if s.settings != nil {
+		cfg.SettingsUpdater = s.settings
+	}
+	if s.auth != nil {
+		cfg.SecondApproverCheck = s.auth.CheckSecondApproverPossible
 	}
 	return cfg
 }

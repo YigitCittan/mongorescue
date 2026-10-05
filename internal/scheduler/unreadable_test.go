@@ -29,7 +29,7 @@ func TestRetentionNeverDeletesWhatAnUnreadableRowNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pruned, err := PruneBackups(context.Background(), 0, 1, listed, st, mock, nil)
+	pruned, err := PruneBackups(context.Background(), 0, 1, listed, st, 7*24*time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,12 +37,16 @@ func TestRetentionNeverDeletesWhatAnUnreadableRowNames(t *testing.T) {
 	if !slices.Equal(pruned, []string{"bkp_01", "bkp_02"}) {
 		t.Fatalf("pruned = %v (the plan from the stale list was %d records)", pruned, len(records))
 	}
+	storages := func(context.Context, string) (storage.Storage, error) { return mock, nil }
+	if _, err := PurgeDeleted(context.Background(), time.Now().Add(8*24*time.Hour), 7*24*time.Hour, st, storages, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	for _, key := range []string{"shop/02.archive", "shop/03.archive"} {
 		if _, err := mock.Stat(context.Background(), key); err != nil {
 			t.Errorf("%s must stay (named by an unreadable row): %v", key, err)
 		}
 	}
 	if _, err := mock.Stat(context.Background(), "shop/01.archive"); err == nil {
-		t.Error("an unshared archive must be deleted")
+		t.Error("an unshared archive must be deleted by the purge")
 	}
 }

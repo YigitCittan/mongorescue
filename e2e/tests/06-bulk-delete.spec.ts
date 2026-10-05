@@ -48,7 +48,9 @@ test("bulk deletes backups after a dry-run preview", async ({ page, services }) 
   await expect(stat(dialog, "Selected")).toHaveText("2");
   await expect(stat(dialog, "Will be changed")).toHaveText("2");
   await expect(stat(dialog, "Skipped")).toHaveText("0");
-  await expect(dialog).toContainText("This cannot be undone");
+  // Deletes are soft: the archives stay for the grace period and can be undone.
+  await expect(dialog).toContainText("their archives stay in storage for 7 days");
+  await expect(dialog).not.toContainText("This cannot be undone");
   // The preview deleted nothing.
   await expect(rows).toHaveCount(2);
 

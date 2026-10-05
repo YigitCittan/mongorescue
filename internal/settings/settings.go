@@ -172,6 +172,20 @@ type Security struct {
 	// MCPEnabled serves the MCP endpoint (/mcp) to API keys; when off it answers 403
 	// and the stdio bridge cannot connect.
 	MCPEnabled bool `json:"mcp_enabled"`
+	// DeleteGraceDays is the delete grace period: deleted backups (by a user, an API
+	// key or retention) keep their archive this many days and can be undeleted until
+	// then (models.MinDeleteGraceDays to models.MaxDeleteGraceDays). Lowering it takes
+	// effect only after the current grace period (see protection.go).
+	DeleteGraceDays int `json:"delete_grace_days"`
+	// RequireSecondApprover turns on the two-person rule: destructive actions wait
+	// for a second administrator's approval. It can only be turned on while at least
+	// two administrators exist, and turning it off needs an approval too.
+	RequireSecondApprover bool `json:"require_second_approver"`
+}
+
+// DeleteGrace returns the delete grace period as a duration.
+func (s Security) DeleteGrace() time.Duration {
+	return models.GraceDuration(s.DeleteGraceDays)
 }
 
 // Encryption configures age encryption.
@@ -223,6 +237,7 @@ func Defaults() Settings {
 			SecureCookies:          CookiesAuto,
 			CORSOrigins:            []string{},
 			MCPEnabled:             true,
+			DeleteGraceDays:        models.DefaultDeleteGraceDays,
 		},
 		Encryption: Encryption{
 			Mode:        ModeX25519,
@@ -317,6 +332,8 @@ type SecurityPatch struct {
 	CORSOrigins            *[]string     `json:"cors_origins,omitempty"`
 	MetricsPublic          *bool         `json:"metrics_public,omitempty"`
 	MCPEnabled             *bool         `json:"mcp_enabled,omitempty"`
+	DeleteGraceDays        *int          `json:"delete_grace_days,omitempty"`
+	RequireSecondApprover  *bool         `json:"require_second_approver,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -354,6 +371,8 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		}
 		setIf(&next.Security.MetricsPublic, sec.MetricsPublic)
 		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
+		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
+		setIf(&next.Security.RequireSecondApprover, sec.RequireSecondApprover)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)
@@ -456,6 +475,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: security.session_absolute_timeout must be between 1m and 8760h", ErrInvalid)
 	case sec.SessionAbsoluteTimeout < sec.SessionIdleTimeout:
 		return fmt.Errorf("%w: security.session_absolute_timeout must not be shorter than session_idle_timeout", ErrInvalid)
+	case sec.DeleteGraceDays < models.MinDeleteGraceDays || sec.DeleteGraceDays > models.MaxDeleteGraceDays:
+		return fmt.Errorf("%w: security.delete_grace_days must be between %d and %d", ErrInvalid, models.MinDeleteGraceDays, models.MaxDeleteGraceDays)
 	}
 	switch sec.SecureCookies {
 	case CookiesAuto, CookiesAlways, CookiesNever:

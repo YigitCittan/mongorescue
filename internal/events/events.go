@@ -85,6 +85,15 @@ const (
 	// JobRPORecovered is emitted when a database whose RPO breach was reported
 	// (JobRPOMissed) has a recent enough successful backup again.
 	JobRPORecovered EventType = "job.rpo_recovered"
+	// SecurityDestructiveAction is emitted for every destructive action that took
+	// effect or was scheduled: backups deleted (single or bulk) or purged, a storage
+	// target deleted, a retention shortening or a lower delete grace period
+	// scheduled or applied, a backup unpinned, the two-person rule turned off
+	// (Event.Action names it, Event.Actor who, Event.Detail what).
+	SecurityDestructiveAction EventType = "security.destructive_action"
+	// SecurityApprovalRequested is emitted when a destructive action waits for a
+	// second administrator (security.require_second_approver; Event.ApprovalID).
+	SecurityApprovalRequested EventType = "security.approval_requested"
 )
 
 // Sources of verification events.
@@ -127,6 +136,7 @@ var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
+	SecurityDestructiveAction, SecurityApprovalRequested,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -210,6 +220,21 @@ type Event struct {
 	InRun bool `json:"in_run,omitempty"`
 	// Databases names the databases of a JobDatabasesAdded event.
 	Databases []string `json:"databases,omitempty"`
+
+	// Action names the destructive action of security events (such as
+	// "delete_backup" or "purge").
+	Action string `json:"action,omitempty"`
+	// Actor names who took it: a username, "API key <name>", "retention" or "system".
+	Actor string `json:"actor,omitempty"`
+	// ApprovalID is the approval request of security events, if any.
+	ApprovalID string `json:"approval_id,omitempty"`
+}
+
+// SecurityEvent returns a SecurityDestructiveAction event (or, with approvalID and
+// requested, a SecurityApprovalRequested one) for action by actor; detail is
+// redacted.
+func SecurityEvent(t EventType, at time.Time, action, actor, approvalID, detail string) Event {
+	return Event{Type: t, Time: at.UTC(), Action: action, Actor: actor, ApprovalID: approvalID, Detail: redact.Text(detail)}
 }
 
 // RunSummary describes a finished job run (see Event.Run).

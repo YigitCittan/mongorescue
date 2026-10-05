@@ -59,9 +59,11 @@ Only administrators (the `admin` dashboard role, or an `admin` API key of an adm
 | `backup_stall_timeout` | `10m` | Abort a backup when `mongodump` produces no output for this long (`0s` = off) |
 | `restore_timeout` | `12h` | Maximum duration of one restore, verification included (`0s` = unlimited) |
 | `restore_verify_policy` | `auto` | `always`, `auto` or `never`; decides for safe clones only, in-place restores are always verified; see [encryption.md](encryption.md#verify-before-restore) |
-| `log_retention_days` | `30` | Keep the log of every backup and restore run (`<data_dir>/logs/<id>.log`, redacted, at most 5 MiB each) for this many days; `0` keeps them until their backup is deleted or pruned. See [api.md](api.md#run-logs) |
+| `log_retention_days` | `30` | Keep the log of every backup and restore run (`<data_dir>/logs/<id>.log`, redacted, at most 5 MiB each) for this many days; `0` keeps them until their backup is purged. See [api.md](api.md#run-logs) |
 
 Retention is applied only after a successful **scheduled** (cron) run of a job, and only to that job's own scheduled backups: every backup record has a `trigger` (`scheduled`, `on_demand`, `manual` or `mcp`), and on-demand job runs (`POST /api/v1/jobs/{id}/run`, the MCP `run_job` tool), manual backups and MCP backups neither prune nor count towards the kept backups; they stay until an admin deletes them. Two floors protect good backups: the newest `retention_count` scheduled backups of the job (at least one) are always kept, and count-based retention never deletes a backup less than 24 hours old. Pinned backups and the job's newest verified backup are never deleted either, and every deletion is recorded in the job's retention history; see [verification.md](verification.md#retention). Backups recorded before triggers existed count as `scheduled` when they belong to a job and as `manual` otherwise.
+
+Retention deletes like a user does: softly. A backup it selects becomes `deleted` and keeps its archive for the delete grace period (`security.delete_grace_days`); the purge removes the archive afterwards, and until then the deletion can be undone. A shorter retention (fewer days, fewer backups, or a rule where there was none) takes effect only after the current grace period; a longer one applies at once. See [security.md](security.md#delete-protection).
 
 ### Integrity
 
@@ -97,6 +99,8 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `cors_origins` | empty | Exact origins (`https://ops.example.com`) allowed to call the API cross-origin; no wildcards. Empty disables CORS |
 | `metrics_public` | `false` | Serve `/metrics` without an API key |
 | `mcp_enabled` | `true` | Serve the [MCP endpoint](mcp.md) `/mcp` for AI assistants (API keys only). When off it answers `403` and the stdio bridge cannot connect |
+| `delete_grace_days` | `7` | Delete grace period, 1 to 90 days: a deleted backup (by a user, an API key or retention) keeps its archive this long and can be undone; the purge removes it afterwards. A higher value applies at once (also to deletions made before); a lower one takes effect only after the current grace period (and, with `require_second_approver`, after a second administrator's approval). See [security.md](security.md#delete-protection) |
+| `require_second_approver` | `false` | Two-person rule: deleting backups or storage targets, shortening retention, unpinning, lowering `delete_grace_days` and turning this off wait for the approval of another administrator, signed in to the dashboard (API keys can request but never approve). It can only be turned on while at least two administrators exist |
 
 ### Monitoring
 
@@ -164,8 +168,8 @@ A storage target is where backup archives are written: a directory on the MongoR
 
 - **Default target.** Jobs and manual backups that name no `storage_target_id` use the default target. The default is changed with *Set default*; it cannot be deleted.
 - **Backups stay with their target.** Every backup record stores the target it was written to (`storage_target_id` and a name snapshot). Restores, deletions and retention always use that target, never the current default. Retention counts per target: backups a job left on a previous target are not pruned by runs on the new one.
-- **Deleting a target** is refused (`409`) while a job uses it or a completed or running backup is stored on it, so every restorable backup keeps its target. Reassign the jobs and delete or let retention remove those backups first.
-- **The location is fixed once backups are stored.** While completed or running backups are on a target, its type, local path, S3 endpoint, bucket and prefix cannot change (`409`): the records would point to a place that does not hold them. Create a new target instead and move the jobs to it; the name, credentials, region and path style can always be changed.
+- **Deleting a target** is refused (`409`) while a job uses it or any backup record but purged ones references it (deleted backups waiting for their purge included), so every backup that can still be restored or undeleted keeps its target. Reassign the jobs, delete those backups and wait for their purge (the delete grace period) first. A target nothing references is deleted at once (with the two-person rule, after a second administrator's approval).
+- **The location is fixed once backups are stored.** While backup records (any but purged ones) reference a target, its type, local path, S3 endpoint, bucket and prefix cannot change (`409`): the records would point to a place that does not hold them. Create a new target instead and move the jobs to it. The name can always be changed; new credentials, region or path style of a target that holds backups must pass a connection test first, or the change is refused (`409`) and the target keeps its settings.
 - **Concurrent edits** are detected: an update of a target that was changed or deleted meanwhile answers `409` or `404` instead of overwriting or recreating it.
 - **Test** writes, reads back and deletes a small object named `.mongorescue-probe-<random>` in the target's root (or prefix); it creates no directory. Testing an unsaved local target whose directory does not exist reports that instead of creating it; saving the target creates the directory. The dashboard tests before saving.
 

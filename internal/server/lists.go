@@ -133,7 +133,9 @@ func writeList(w http.ResponseWriter, p listPage, total int, items any) {
 }
 
 // handleListBackups lists backups matching the query parameters, newest first. Without
-// limit every match is returned, as before pagination existed.
+// limit every match is returned, as before pagination existed. Deleted and purged
+// backups are hidden unless status (or deleted=true, the deleted backups waiting for
+// their purge) asks for them.
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	p, err := parseListPage(q, store.BackupSortKeys)
@@ -141,9 +143,22 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	status := models.BackupStatus(q.Get("status"))
+	switch q.Get("deleted") {
+	case "", "false":
+	case "true":
+		if status != "" && status != models.StatusDeleted {
+			writeError(w, http.StatusBadRequest, "deleted=true lists deleted backups; it cannot be combined with another status")
+			return
+		}
+		status = models.StatusDeleted
+	default:
+		writeError(w, http.StatusBadRequest, "deleted must be \"true\" or \"false\"")
+		return
+	}
 	page, err := s.ops.QueryBackups(r.Context(), operations.BackupFilter{
 		IDs:    idList(q.Get("id")),
-		Status: models.BackupStatus(q.Get("status")), Database: q.Get("database"),
+		Status: status, Database: q.Get("database"),
 		ConnectionID: q.Get("connection_id"), JobID: q.Get("job_id"),
 		Trigger: models.BackupTrigger(q.Get("trigger")), RetryOf: q.Get("retry_of"), RunID: q.Get("run_id"),
 		From: p.from, To: p.to, Search: q.Get("q"), Sort: p.sort, SortBy: p.sortBy, Limit: p.limit, Offset: p.offset,

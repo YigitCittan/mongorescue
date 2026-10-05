@@ -24,6 +24,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -155,9 +156,16 @@ func (env *bulkEnv) hasObject(key string) bool {
 	return err == nil
 }
 
+// hasBackup reports whether backup id is stored and not deleted.
 func (env *bulkEnv) hasBackup(id string) bool {
-	_, err := env.st.GetBackupRecord(context.Background(), id)
-	return err == nil
+	rec, err := env.st.GetBackupRecord(context.Background(), id)
+	return err == nil && !rec.Status.Deleted()
+}
+
+// isDeleted reports whether backup id is deleted and waits for its purge.
+func (env *bulkEnv) isDeleted(id string) bool {
+	rec, err := env.st.GetBackupRecord(context.Background(), id)
+	return err == nil && rec.Status == models.StatusDeleted && rec.PurgeAfter != nil
 }
 
 func intPtr(n int) *int { return &n }
@@ -207,13 +215,19 @@ func TestBulkDeleteBackupsDryRunMatchesRun(t *testing.T) {
 		t.Fatalf("run = %+v; want the dry run's plan", run)
 	}
 	for _, id := range dry.ActionableIDs {
-		if env.hasBackup(id) {
-			t.Errorf("%s still stored", id)
+		if !env.isDeleted(id) {
+			t.Errorf("%s not deleted", id)
 		}
 	}
+	// The deletion is soft: the archives stay for the grace period.
 	for _, key := range []string{"shop/old1", "shop/old2", "shop/manual"} {
-		if env.hasObject(key) {
-			t.Errorf("archive %s still in storage", key)
+		if !env.hasObject(key) {
+			t.Errorf("archive %s removed before the grace period", key)
+		}
+	}
+	for _, r := range run.Results {
+		if !strings.HasPrefix(r.Detail, "recoverable until ") {
+			t.Errorf("result %+v; want the purge time", r)
 		}
 	}
 	if !env.hasBackup("b_last") || !env.hasObject("shop/last") || !env.hasBackup("b_run") {
@@ -360,42 +374,67 @@ func TestBulkScopes(t *testing.T) {
 	}
 }
 
-func TestBulkSharedArchives(t *testing.T) {
+// TestDeletesAreSoftAndUndoable proves that single and bulk deletes leave the
+// archives in storage, report the end of the grace period, refuse deleting again,
+// and can be undone.
+func TestDeletesAreSoftAndUndoable(t *testing.T) {
 	env := newBulkEnv(t)
 	ctx := admin()
 	now := time.Now().UTC()
-	env.backupAt(t, "s1", "", models.StatusCompleted, now.Add(-2*time.Hour), "shop/shared", 10)
-	env.backupAt(t, "s2", "", models.StatusFailed, now.Add(-time.Hour), "shop/shared", 0)
-	env.backupAt(t, "s3", "", models.StatusCompleted, now, "shop/shared", 10)
+	env.backupAt(t, "s1", "", models.StatusCompleted, now.Add(-2*time.Hour), "shop/s1", 10)
+	env.backupAt(t, "s2", "", models.StatusFailed, now.Add(-time.Hour), "", 0)
+	env.backupAt(t, "u1", "", models.StatusCompleted, now, "shop/u1", 1)
 
-	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"s1"}})
-	if err != nil || res.Succeeded != 1 || !strings.Contains(res.Results[0].Detail, "archive is kept") {
-		t.Fatalf("deleting one sharer = %+v, %v", res, err)
+	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"s1", "s2"}, Reason: "cleanup"})
+	if err != nil || res.Succeeded != 2 {
+		t.Fatalf("bulk delete = %+v, %v", res, err)
 	}
-	if !env.hasObject("shop/shared") {
-		t.Fatal("an archive other records name was deleted")
+	single, err := env.svc.DeleteBackup(ctx, "u1", "duplicate")
+	if err != nil || single.ArchiveDeleted || single.Status != models.StatusDeleted ||
+		single.PurgeAfter.Sub(single.DeletedAt) != models.GraceDuration(models.DefaultDeleteGraceDays) {
+		t.Fatalf("single delete = %+v, %v; want a soft delete with the default grace period", single, err)
 	}
-	// The last record naming it takes the archive with it, also within one run.
-	res, err = env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"s2", "s3"}})
-	if err != nil || res.Succeeded != 2 || res.Results[0].Detail == "" || res.Results[1].Detail != "" {
-		t.Fatalf("deleting the rest = %+v, %v", res, err)
+	for _, key := range []string{"shop/s1", "shop/u1"} {
+		if !env.hasObject(key) {
+			t.Fatalf("archive %s removed by a delete", key)
+		}
 	}
-	if env.hasObject("shop/shared") {
-		t.Fatal("the archive outlived its last record")
+	rec, _ := env.st.GetBackupRecord(ctx, "u1")
+	if rec.DeleteReason != "duplicate" || rec.DeletedBy == "" || rec.StatusBeforeDelete != models.StatusCompleted {
+		t.Fatalf("deleted record = %+v", rec)
+	}
+	if rec, _ = env.st.GetBackupRecord(ctx, "s1"); rec.DeleteReason != "cleanup" {
+		t.Fatalf("bulk deleted record = %+v; want the reason", rec)
+	}
+	if _, err = env.svc.DeleteBackup(ctx, "u1", ""); !errors.Is(err, operations.ErrAlreadyDeleted) {
+		t.Fatalf("deleting a deleted backup: %v; want ErrAlreadyDeleted", err)
+	}
+	dry, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"s1"}, DryRun: true})
+	if err != nil || dry.Actionable != 0 || dry.Skipped[0].Reason != operations.SkipAlreadyDeleted {
+		t.Fatalf("bulk delete of a deleted backup = %+v, %v", dry, err)
+	}
+	// Deleted backups are hidden from lists unless asked for.
+	page, err := env.svc.QueryBackups(ctx, operations.BackupFilter{})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("default list = %+v, %v; want deleted backups hidden", page, err)
+	}
+	if page, err = env.svc.QueryBackups(ctx, operations.BackupFilter{Status: models.StatusDeleted}); err != nil || page.Total != 3 {
+		t.Fatalf("deleted list = %+v, %v", page, err)
 	}
 
-	// The single-item delete follows the same rule.
-	env.backupAt(t, "u1", "", models.StatusCompleted, now, "shop/u", 1)
-	env.backupAt(t, "u2", "", models.StatusCompleted, now, "shop/u", 1)
-	single, err := env.svc.DeleteBackup(ctx, "u1")
-	if err != nil || single.ArchiveDeleted || single.ArchiveKept == "" || !env.hasObject("shop/u") {
-		t.Fatalf("single delete of a sharer = %+v, %v", single, err)
+	// Undo restores the earlier state.
+	if _, err = env.svc.UndeleteBackup(operator(), "u1"); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("operator undelete: %v; want ErrForbidden", err)
 	}
-	if single, err = env.svc.DeleteBackup(ctx, "u2"); err != nil || !single.ArchiveDeleted || env.hasObject("shop/u") {
-		t.Fatalf("single delete of the last sharer = %+v, %v", single, err)
+	back, err := env.svc.UndeleteBackup(ctx, "u1")
+	if err != nil || back.Status != models.StatusCompleted || back.DeletedAt != nil || back.PurgeAfter != nil {
+		t.Fatalf("undelete = %+v, %v", back, err)
 	}
-	if _, err = env.svc.DeleteBackup(ctx, "u2"); !errors.Is(err, operations.ErrNotFound) {
-		t.Fatalf("deleting a deleted backup: %v; want ErrNotFound", err)
+	if back, err = env.svc.UndeleteBackup(ctx, "s2"); err != nil || back.Status != models.StatusFailed {
+		t.Fatalf("undelete of a failed backup = %+v, %v; want failed again", back, err)
+	}
+	if _, err = env.svc.UndeleteBackup(ctx, "u1"); !errors.Is(err, operations.ErrNotDeleted) {
+		t.Fatalf("undelete of a live backup: %v; want ErrNotDeleted", err)
 	}
 }
 
@@ -403,14 +442,14 @@ func TestBulkPartialFailures(t *testing.T) {
 	env := newBulkEnv(t)
 	ctx := admin()
 	now := time.Now().UTC()
-	// An unreachable storage target still lets the record go, with a warning.
+	// An unreachable storage target does not matter: a delete does not touch storage.
 	if err := env.st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "broken", Database: "shop", Status: models.StatusCompleted,
 		StartedAt: now, StorageKey: "shop/broken", StorageTargetID: env.brokenTarget}); err != nil {
 		t.Fatal(err)
 	}
 	env.backupAt(t, "fine", "", models.StatusCompleted, now, "shop/fine", 1)
 	res, err := env.svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"broken", "fine"}})
-	if err != nil || res.Succeeded != 2 || res.Results[0].Warning == "" || res.Results[1].Warning != "" {
+	if err != nil || res.Succeeded != 2 || res.Results[0].Warning != "" || res.Results[1].Warning != "" {
 		t.Fatalf("delete with a broken target = %+v, %v", res, err)
 	}
 
@@ -494,21 +533,25 @@ func TestBulkStopsWhenTheRequestEnds(t *testing.T) {
 		StartedAt: now, StorageKey: "k", StorageTargetID: "tgt_cancel"}); err != nil {
 		t.Fatal(err)
 	}
-	// The first item's storage lookup ends the request; that item is still finished.
+	// The first item's read of the grace period ends the request (the run reads the
+	// settings once before the items); that item is still finished.
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	var reads int
 	svc := operations.New(operations.Config{
 		Store: env.st, Backup: backup.NewEngine(env.mock, ""), Restore: restore.NewEngine(env.mock, ""), Runs: manager,
-		Storage: func(context.Context, string) (storage.Storage, error) {
-			cancel()
-			return nil, errors.New("gone")
+		Settings: func() settings.Settings {
+			if reads++; reads == 2 {
+				cancel()
+			}
+			return settings.Defaults()
 		},
 	})
 	res, err := svc.Bulk(ctx, operations.BulkBackups, operations.BulkRequest{Action: "delete", IDs: []string{"c0", "c1", "c2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Succeeded != 1 || res.Failed != 2 || res.Results[0].Warning == "" || !strings.Contains(res.Results[2].Error, "not processed") {
+	if res.Succeeded != 1 || res.Failed != 2 || !strings.Contains(res.Results[2].Error, "not processed") {
 		t.Fatalf("cancelled run = %+v", res)
 	}
 	if env.hasBackup("c0") {
@@ -633,7 +676,7 @@ func TestBulkTrustProtections(t *testing.T) {
 	if !errors.Is(err, operations.ErrBulkConfirm) {
 		t.Fatalf("stale count after a pin: %+v, %v; want ErrBulkConfirm", res, err)
 	}
-	if _, err = env.svc.DeleteBackup(ctx, "v_old"); !errors.Is(err, operations.ErrPinned) {
+	if _, err = env.svc.DeleteBackup(ctx, "v_old", ""); !errors.Is(err, operations.ErrPinned) {
 		t.Fatalf("single delete of a pinned backup: %v; want ErrPinned", err)
 	}
 

@@ -76,6 +76,7 @@ type RestorePage struct {
 var (
 	validBackupStatuses = []models.BackupStatus{
 		models.StatusPending, models.StatusInProgress, models.StatusCompleted, models.StatusFailed, models.StatusCancelled, models.StatusPruned, models.StatusMissing,
+		models.StatusDeleted, models.StatusPurged,
 	}
 	validTriggers = []models.BackupTrigger{
 		models.TriggerScheduled, models.TriggerOnDemand, models.TriggerManual, models.TriggerMCP,
@@ -133,6 +134,10 @@ func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage
 		if err := checkText(map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
+	}
+	// Deleted and purged backups are hidden unless asked for (by status or by ID).
+	if f.Status == "" && len(f.IDs) == 0 && f.ExcludeStatuses == nil {
+		f.ExcludeStatuses = []models.BackupStatus{models.StatusDeleted, models.StatusPurged}
 	}
 	page, err := s.cfg.Store.QueryBackupRecords(ctx, f)
 	if err != nil {

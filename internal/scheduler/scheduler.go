@@ -70,6 +70,13 @@ type Scheduler struct {
 	// jobChanged is told about every job written through ApplyJobUpdate.
 	jobChanged func(jobID string)
 
+	// now is the time source of retention and the purge (WithClock), grace the
+	// delete grace period in force (WithDeleteGrace) and maintenance the hooks
+	// Maintain runs after each purge (WithMaintenance); see purge.go.
+	now         func() time.Time
+	grace       func() time.Duration
+	maintenance []func(ctx context.Context)
+
 	// databases lists a connection's databases for multi-database jobs.
 	databases DatabaseLister
 	// jobRunsMu guards jobRuns, the active multi-database run of each job.
@@ -330,6 +337,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.recordTick()
 	if _, err := s.cron.AddFunc(tickSchedule, s.tick); err != nil {
 		s.logger.Error("failed to schedule the scheduler liveness tick", slog.Any("error", err))
+	}
+	// Deleted backups are purged once their grace period ends, and pending changes
+	// that lower a protection are applied once they are due.
+	if _, err := s.cron.AddFunc(maintenanceSchedule, s.runMaintenance); err != nil {
+		s.logger.Error("failed to schedule the purge of deleted backups", slog.Any("error", err))
 	}
 
 	s.cron.Start()
@@ -872,15 +884,6 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 	}
 
 	return record, nil
-}
-
-// removeRunLogs deletes the run logs of the backups retention pruned.
-func (s *Scheduler) removeRunLogs(ids []string) {
-	for _, id := range ids {
-		if err := s.registry.RemoveLog(id); err != nil {
-			s.logger.Warn("failed to delete the log of a pruned backup", slog.String("backup_id", id), slog.Any("error", err))
-		}
-	}
 }
 
 // storageFor returns the driver of a storage target: through WithStorageTargets when

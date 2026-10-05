@@ -622,6 +622,8 @@ async function refreshAll() {
   scheduleActivePoll();
   // The overview's history and the jobs' sparklines (overview.js, throttled).
   if (typeof overviewRefresh === "function") overviewRefresh(false);
+  // Waiting approvals and the Deleted view toggle (protection.js).
+  if (typeof protectionRefresh === "function") protectionRefresh();
 }
 
 // While any backup or restore is still running, refresh those lists every few
@@ -819,7 +821,11 @@ const LIST_STATUSES = [
   { value: "in_progress", label: "filters.status_running" },
   { value: "cancelled", label: "run.status_cancelled" },
   // Completed backups whose archive a storage scan no longer found (trust.js).
-  { value: "missing", label: "status.missing", kinds: ["backups"] }
+  { value: "missing", label: "status.missing", kinds: ["backups"] },
+  // Deleted backups wait for their purge (the "Deleted" view, protection.js); purged
+  // ones are history. Both are hidden unless chosen here.
+  { value: "deleted", label: "status.deleted", kinds: ["backups"] },
+  { value: "purged", label: "status.purged", kinds: ["backups"] }
 ];
 
 // The status filter options of list kind (an option without kinds applies to both).
@@ -1825,6 +1831,10 @@ function backupStatus(status) {
       return ["warn", t("run.status_cancelled")];
     case "missing":
       return ["danger", t("status.missing")];
+    case "deleted":
+      return ["warn", t("status.deleted")];
+    case "purged":
+      return ["neutral", t("status.purged")];
     default:
       return ["neutral", String(status || "")];
   }
@@ -2243,6 +2253,9 @@ function rowMenuItems(kind, id) {
     return [["job-details", t("actions.details")], ["edit-job", t("ui.edit")], ...jobRunMenuItems(id), ["delete-job", t("actions.delete"), true]];
   }
   if (kind === "backup") {
+    // A deleted backup offers Undo instead (protection.js).
+    const deleted = typeof protectionBackupMenuItems === "function" ? protectionBackupMenuItems(id) : null;
+    if (deleted) return deleted;
     // Run control (runs.js), verify now and pin / unpin (trust.js).
     return [["backup-details", t("actions.details")], ...backupRunMenuItems(id), ...trustBackupMenuItems(id), ["delete-backup", t("actions.delete"), true]];
   }
@@ -2411,7 +2424,9 @@ function setupForms() {
         body: JSON.stringify(payload)
       });
       if (json.success) {
-        showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
+        // A shorter retention takes effect later (protection.js).
+        const deferred = typeof protectionJobSaved === "function" && protectionJobSaved(json.data);
+        if (!deferred) showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
         closeModal("modal-new-job");
         refreshAll();
         // The schedule and RPO feed the readiness report: refetch it now.
@@ -3408,16 +3423,23 @@ async function deleteBackup(backupID) {
   const b = backupCache.get(backupID);
   const started = b ? parseDate(b.started_at) : null;
   const facts = b ? [b.database, formatBytes(b.size_bytes), started ? formatAbsolute(started) : ""].filter(Boolean).join(" · ") : "";
+  // Deletes are soft: the confirmation says until when the archive stays (protection.js).
+  const soft = typeof protectionDeleteConfirm === "function";
   if (!(await confirmDialog({
-    title: t("dialog.delete_title"),
-    body: [t("toasts.confirm_delete_backup"), backupID, facts],
+    title: soft ? t("protection.delete_title") : t("dialog.delete_title"),
+    body: [soft ? protectionDeleteConfirm() : t("toasts.confirm_delete_backup"), backupID, facts],
     danger: true,
+    undoNote: soft ? protectionUndoNote() : "",
     confirmLabel: t("actions.delete")
   }))) return;
   try {
     const json = await apiJSON(`/api/v1/backups/${encodeURIComponent(backupID)}`, { method: "DELETE" });
+    if (json.success && typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) {
+      return;
+    }
     if (json.success) {
-      showToast(t("toasts.backup_deleted"), "success");
+      if (soft) protectionDeletedToast(json.data);
+      else showToast(t("toasts.backup_deleted"), "success");
       backupCache.delete(backupID);
       bulkForget("backups", backupID);
       if (detailsBackupId === backupID) closeModal("modal-backup-details");
@@ -3534,6 +3556,8 @@ function renderBackupDetails() {
   backupCancelRows(b, row);
   // Verification, pin, restore test and import (trust.js).
   trustBackupDetailRows(b, row);
+  // When and by whom it was deleted, and until when it can be undone (protection.js).
+  if (typeof protectionBackupDetailRows === "function") protectionBackupDetailRows(b, row);
   // Progress, cancel button, phase timeline and log viewer (runs.js).
   renderRunPanel("backup", "backup", b);
 
@@ -4921,6 +4945,8 @@ function fillSecurity(sec) {
   setValue("set-cors-origins", (sec.cors_origins || []).join("\n"));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
+  // Delete grace period, two-person rule and pending changes (protection.js).
+  if (typeof protectionFillSecurity === "function") protectionFillSecurity(sec);
   updateDurationPreviews("form-security");
 }
 
@@ -5104,7 +5130,8 @@ function collectSecurity() {
     trust_proxy_headers: document.getElementById("set-trust-proxy").checked,
     cors_origins: origins,
     metrics_public: document.getElementById("set-metrics-public").checked,
-    mcp_enabled: document.getElementById("set-mcp-enabled").checked
+    mcp_enabled: document.getElementById("set-mcp-enabled").checked,
+    ...(typeof protectionCollectSecurity === "function" ? protectionCollectSecurity() : {})
   };
 }
 
@@ -5188,6 +5215,8 @@ async function saveSettingsGroup(group, submitter, overrides) {
     fillSettingsForms(false);
     renderWarnings();
     showSaved(group, data.restart_required);
+    // A lowered protection waits (protection.js).
+    if (typeof protectionSettingsSaved === "function") protectionSettingsSaved(data);
     return true;
   } catch (err) {
     showFormError(cfg.error, err.message);
