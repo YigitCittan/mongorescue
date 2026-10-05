@@ -20,10 +20,11 @@ func (s *Server) registerJobDatabaseRoutes(mux *router) {
 }
 
 // previewRequest reads the optional selection of a preview from the query: mode,
-// repeated databases, include and exclude parameters, auto_include_new, and
-// connection_id. Without mode the job's stored selection is previewed.
+// repeated databases, include and exclude parameters, auto_include_new,
+// connection_id and storage_target_id. Without mode the job's stored selection is
+// previewed.
 func previewRequest(q url.Values) (operations.DatabasePreviewRequest, error) {
-	req := operations.DatabasePreviewRequest{ConnectionID: q.Get("connection_id")}
+	req := operations.DatabasePreviewRequest{ConnectionID: q.Get("connection_id"), StorageTargetID: q.Get("storage_target_id")}
 	if mode := q.Get("mode"); mode != "" {
 		sel := &models.DatabaseSelection{
 			Mode: models.SelectionMode(mode), Databases: q["databases"], Include: q["include"], Exclude: q["exclude"],
