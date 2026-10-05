@@ -624,7 +624,7 @@ The report reads each kind of record (jobs, newest and verified backups, restore
 
 ## Point-in-time recovery streams (experimental)
 
-> **Experimental.** The stream API may change in a later release without a deprecation period. Point-in-time *restores* are not available yet (#57). See [Point-in-time recovery](pitr.md).
+> **Experimental.** The stream API and the point-in-time body of restores may change in a later release without a deprecation period. See [Point-in-time recovery](pitr.md).
 
 A PITR stream collects the oplog of one replica set connection into encrypted chunks and takes base backups of the whole instance. Reading streams needs the read scope; creating, changing and deleting them needs admin; `POST /api/v1/pitr/streams/{id}/base` needs operator. The answers carry chunk metadata only, never oplog contents.
 
@@ -641,14 +641,41 @@ A PITR stream collects the oplog of one replica set connection into encrypted ch
 | `chunk_seconds` | `60` | Chunk interval, 15-900 seconds |
 | `base_on_gap` | `true` | Take a base backup as soon as a gap breaks the chain |
 | `read_preference` | `secondaryPreferred` | Read preference of oplog reads |
+| `chain_test_cron` | empty (off) | Schedule of [chain tests](pitr.md#chain-tests); `""` turns them off |
 
 Creating or enabling a stream is refused with 400 unless the connection is a replica set, its user may read `local.oplog.rs` (`backup`, `read` on `local` or a custom role) and backup encryption is on with age keys: the oplog keeps deleted data, so PITR data is always encrypted.
 
-A database row's `rpo.source` is `pitr` when the stream's durable lag is the better recovery point; until point-in-time restores exist (#57) that only means the oplog is captured.
+A database row's `rpo.source` is `pitr` when the stream's durable lag is the better recovery point: the oplog up to it is captured and can be restored to a point in time.
 
 `GET /api/v1/pitr/streams/{id}` returns `{stream, state, running, live, lag_seconds, headroom_seconds, durable_rpo_seconds, windows, chains, bases, chain_breaks, experimental}`. `windows` lists `[{chain_id, open, start, end, start_time, end_time, bases}]`, one per chain with an eligible base: a gap or a divergence splits them. `state.status` is `running`, `failed` (with `last_error`) or `stopped`.
 
 `DELETE` refuses an enabled stream (409). For a disabled stream with chunks it ends the open chain, deletes every chunk with the [delete grace period](#delete-protection) and answers 409 until the purge removed them; delete it again then. Base backups stay as backups.
+
+`POST /api/v1/pitr/streams/{id}/chain-test` (admin) starts a [chain test](pitr.md#chain-tests) now and answers 202 with its restore (`pitr.chain_test: true`); 409 when the stream has no two eligible bases in one window, the newer with a manifest.
+
+### Point-in-time restores (experimental)
+
+`POST /api/v1/restore` and `POST /api/v1/restores/preflight` restore to a point in time when the body has `pitr` instead of `backup_id`:
+
+```json
+{"pitr": {"stream_id": "str_…", "at": "2026-10-05T14:30:00Z"}, "databases": ["shop"]}
+{"pitr": {"stream_id": "conn_…", "ts": {"t": 1791210600, "i": 3}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `pitr.stream_id` | The PITR stream, or the ID of its connection |
+| `pitr.at` | RFC 3339 time: every write up to and including that second (the primary's clock) is restored; the replay stops at `(at+1):0` |
+| `pitr.ts` | Exact oplog position instead of `at`: every write before it is restored |
+| `databases` | Restore only these databases (default: every database but `admin`, `config` and `local`, which are never restored) |
+| `target_connection_id` | Another connection to restore into (default: the stream's) |
+| `force` | Start although a preflight check failed |
+
+Every restored database goes into a new database `<db>_rescue_<YYYYMMDD_HHMMSS>`. Point-in-time restores and their preflight need the **admin** scope (403 otherwise). An in-place request (`safe_clone: false`, `confirm_in_place`, `target_database`) is refused with 400, as are `backup_id`, `dry_run`, `drop_target`, `selected_collections` and `restore_users_and_roles`, and `databases` without `pitr`. A target outside every window, behind a chain break or a chunk that failed verification is refused with **422**; a missing key for the encryption of the base or a chunk with 422 too (`ErrKeyRequired`); a server without point-in-time support answers 503.
+
+The restore record has `pitr: {stream_id, chain_id, base_id, target_time, limit, chunks, oplog_bytes, base_bytes, databases, clone_suffix, ops_replayed, ops_applied, chain_test}`: the plan chosen, and the operations the oplog filter wrote and `mongorestore` applied. A mismatch of the two fails the restore and keeps the clones. `source_database` is `*` (or the selected databases) and `target_database` is `*<clone_suffix>` (or the clones).
+
+The preflight checks `pitr_chain`, `connection`, `server_version`, `target_database`, `privileges` (the replay roles), `disk_space` (base plus oplog) and `tools_version` (`mongorestore` 100.12 or newer); a plan that does not reach the target fails `pitr_chain` instead of the call. Its result adds `pitr: {base_id, base_started_at, base_consistent_at, base_bytes, oplog_bytes, chunks, unverified_chunks, target_time, limit, clone_suffix, estimated_seconds, estimate_from}`; `estimate_from` is `chain_test` when the stream's newest chain test gave the rate, `default` otherwise.
 
 ## Bulk actions
 

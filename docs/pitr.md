@@ -1,8 +1,8 @@
 # Point-in-time recovery (experimental)
 
-> **Experimental.** This release collects what point-in-time recovery needs: the oplog of a replica set and base backups of the whole instance. **Restoring to a point in time is not available yet**; it comes with [#57](https://github.com/YigitCittan/mongorescue/issues/57). The stream API and the dashboard panel may change without a deprecation period. The design is in [design/pitr.md](design/pitr.md).
+> **Experimental.** MongoRescue collects the oplog of a replica set and base backups of the whole instance, and restores a replica set, or some of its databases, to a point in time **into new safe-clone databases**. In-place point-in-time restores and sharded clusters are not offered. The stream API, the restore body and the dashboard panel may change without a deprecation period. The design is in [design/pitr.md](design/pitr.md).
 
-Point-in-time recovery (PITR) will restore a replica set, or one of its databases, to any moment within a window. It needs two things, which MongoRescue now collects for every enabled **PITR stream**:
+Point-in-time recovery (PITR) restores a replica set, or one of its databases, to any moment within a window. It needs two things, which MongoRescue collects for every enabled **PITR stream**:
 
 - **base backups** of the whole instance, taken with `mongodump --oplog` on a schedule;
 - a continuous **oplog chain**: the replica set's oplog, read every chunk interval and stored as encrypted chunks.
@@ -19,10 +19,10 @@ A window runs from the consistent point of the oldest base the chain covers to t
   | --- | --- |
   | The collector | `find` on `local.oplog.rs`: the `backup` role, `read` on the `local` database, or a custom role. `readAnyDatabase` does **not** grant it: its wildcard excludes `local`. |
   | Base backups | The `backup` role (`mongodump --oplog` reads the whole instance and the oplog). |
-  | Point-in-time restores (#57) | `restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase` (or `anyAction`) on the target, ideally through a separate user and connection. |
+  | Point-in-time restores | `restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase` on `admin` (or `anyAction`, e.g. `root`) on the target, ideally through a separate user and connection. Replaying the oplog checks privileges per operation: `restore` alone fails at the first update, and `restore` + `readWriteAnyDatabase` fails at `dropDatabase`. |
 
   Creating or enabling a stream checks the oplog access through `connectionStatus` and refuses it with a clear message otherwise.
-- **MongoDB Database Tools** as for every backup.
+- **MongoDB Database Tools** as for every backup; point-in-time restores need **100.12 or newer** (tested with 100.12.2 and 100.16.0).
 
 ## Enabling a stream
 
@@ -36,6 +36,48 @@ In the dashboard, open **Connections**: the **Point-in-time recovery** panel lis
 | Base on gap | on | Take a base backup as soon as a gap breaks the chain. |
 | `oplog_max_days` | unset | Delete chunks older than this many days, even if that shortens the window (privacy). |
 | Read preference | `secondaryPreferred` | Where oplog reads go. |
+| `chain_test_cron` | unset | A cron schedule of [chain tests](#chain-tests); unset turns them off. |
+
+## Restoring to a point in time
+
+A point-in-time restore picks the **newest eligible base** whose consistent point (`t_after`) is before the target, checks that the live chunks from the base's `t_before` up to the target form one unbroken run (no gap, no divergence, no chunk that failed verification) and that a key is configured for the encryption of the base and of every chunk, and records that choice on the restore (`pitr` in the restore record). Then it runs in two passes, both streamed from storage into `mongorescue` without temporary copies:
+
+1. **The base** is restored with `mongorestore` without `--oplogReplay`. A whole-instance restore renames every database with `--nsFrom '$db$.$coll$' --nsTo '$db$_rescue_<timestamp>.$coll$'` and always excludes `admin.*`, `config.*` and `local.*`; a restore of some databases uses `--nsInclude=<db>.*` and the same rename per database.
+2. **The oplog.** The chunks are fetched in order, each hashed while it streams and checked against its recorded SHA-256, decrypted, gunzipped and passed through the namespace filter (the same renaming and selection, up to the limit), which writes a synthetic oplog-only archive to the stdin of `mongorestore --archive --oplogReplay --oplogLimit=<t>:<i>`.
+
+Afterwards the number of operations the filter wrote is compared with the "applied N oplog entries" line of `mongorestore`. A mismatch fails the restore and keeps the clones for inspection; a missing line adds a warning. A restore that fails otherwise, or is cancelled, drops its clones.
+
+**The target.** A time `S` (RFC 3339, on the primary's clock, UTC in the dashboard) restores every write up to and including the second `S`: the replay stops at `(S+1):0`. An exact oplog position `{t, i}` restores every write *before* it. The target must lie in a window: from the consistent point of its base to one second before the newest collected entry.
+
+**Where it goes.** Every restored database is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>` (the start of the restore, UTC); nothing that exists is overwritten, and the restore refuses to start when such a name is taken. In-place point-in-time restores are refused in this release. Because the whole instance is renamed with one pattern, a database whose name is longer than 40 bytes cannot be restored this way (MongoDB allows 63); restore it from a database backup instead.
+
+**Who may.** Point-in-time restores and their preflight are admin-only in this release. They only add databases, so the two-person rule of [delete protection](security.md) does not hold them back, like other safe-clone restores.
+
+**Dashboard.** In **Connections → Point-in-time recovery**, **Restore to a time** on a stream opens the wizard: choose a window and a time inside it (UTC) and optionally the databases, then **Check** runs the preflight and shows the base it chose, the number and size of the chunks and the estimated duration, and **Restore** asks for a confirmation and starts the restore.
+
+**CLI.** `mongorescue restore --pitr <stream-or-connection> --at <RFC3339> [--database a,b]` runs the preflight and starts the restore; `--wait` waits for it. See [cli.md](cli.md).
+
+**API and MCP.** `POST /api/v1/restore` and `POST /api/v1/restores/preflight` take `"pitr": {"stream_id": "…", "at": "…"}` (or `"ts": {"t": …, "i": …}`) and an optional `"databases"`; see [api.md](api.md#point-in-time-restores-experimental). MCP offers `pitr_status` (read) and `pitr_restore` (admin keys); see [mcp.md](mcp.md).
+
+**Preflight.** Besides the connection and the server versions, the preflight of a point-in-time restore checks:
+
+| Check | Fails when |
+| --- | --- |
+| `pitr_chain` | No base and unbroken, verified chain reach the target, or a key for the encryption of the range is missing. Chunks that were never verified are accepted; they are checked while they stream. |
+| `privileges` | The target's user certainly lacks `restore`, `readWriteAnyDatabase` or `dbAdminAnyDatabase` on `admin` and holds neither `anyAction` nor `root` (custom roles only warn). |
+| `disk_space` | The server reports less free space than the base archive plus the oplog of the range (it warns below four times the base plus the oplog). |
+| `target_database` | A clone name of the selected databases is taken. |
+| `tools_version` | `mongorestore` is missing or older than 100.12. |
+
+The result carries the plan (`pitr` in the preflight result) with an estimate of the duration: from the rate of the stream's newest chain test, or else from default rates (50 MiB/s for the base, 4 MiB/s for the oplog, which is replayed on one thread).
+
+**Limits.** No in-place restores, no sharded clusters, no restore across a gap, `admin`, `config` and `local` are never restored (users and roles stay as they are), and a view or time-series collection follows the filter's rules in [design/pitr.md](design/pitr.md#restore-57). Indexes that were dropped or hidden in the window stay as they were in the base.
+
+## Chain tests
+
+A chain test proves that a stream can actually be restored: it restores the eligible base before the newest base that has a manifest to the consistent point of that newer base (every write up to and including its `t_after`) into temporary `<db>_rescue_verify_<timestamp>_<hex>` databases, compares their document counts and indexes with the newer base's manifest, records the outcome on the restore (`pitr.chain_test: true`, `verification`) and drops the clones. Base backups capture an instance manifest (every database but `admin`, `config` and `local`) for this.
+
+Chain tests run on the stream's `chain_test_cron` schedule (unset by default) and on demand with `POST /api/v1/pitr/streams/{id}/chain-test` (admin). They need two eligible bases in one window. A failed chain test adds `pitr_chain_test_failed` (warn) to readiness, and the duration of the newest successful one drives the RTO estimate of point-in-time restores.
 
 ## How it works
 
@@ -51,10 +93,10 @@ In the dashboard, open **Connections**: the **Point-in-time recovery** panel lis
 
 - **Events** (selectable by notification rules): `pitr.chain_broken` and `pitr.diverged` (critical), `pitr.collector_failed` / `pitr.collector_recovered`, `pitr.lag_high` / `pitr.lag_recovered` (the lag exceeds max(5 min, 5 × the interval); raised once per episode, also across restarts) and `pitr.window_low` (the oplog headroom, how long the collector may stop before entries are lost, is below max(6 h, 3 × lag); also raised once per episode, across restarts too). The replica set ID seen first is stored, so a set re-initiated under the same name while the collector was stopped is treated as a gap.
 - **Metrics** `mongorescue_pitr_*` with the label `stream`: see [metrics.md](metrics.md).
-- **Readiness.** Point-in-time restores are not available yet (#57): a PITR RPO only means that the oplog up to that point is captured, and the readiness row says so next to its RPO. The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` (a gap, a divergence or a chunk that failed verification and no newer base) and `pitr_collector_down` (fail), `pitr_lag_high`, `pitr_window_low` and `pitr_no_window` (no eligible base for the current chain yet) (warn).
+- **Readiness.** A PITR RPO means that the oplog up to that point is captured and can be restored to a point in time (experimental); the readiness row says so next to its RPO. The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` (a gap, a divergence or a chunk that failed verification and no newer base) and `pitr_collector_down` (fail), `pitr_lag_high`, `pitr_window_low`, `pitr_no_window` (no eligible base for the current chain yet) and `pitr_chain_test_failed` (the newest chain test failed) (warn).
 
 ## Not there yet
 
-- Restoring to a point in time, whole-instance or per database (#57), the restore wizard and the CLI and MCP tools.
-- The scheduled chain test and the operation browser.
+- In-place point-in-time restores, and point-in-time restores by operators (admin only for now).
+- The operation browser (restoring to just before one oplog entry is possible through the API with `ts`).
 - Sharded clusters (#58) and high availability of the collector.
