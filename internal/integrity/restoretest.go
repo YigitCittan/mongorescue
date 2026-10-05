@@ -43,7 +43,9 @@ func (s *Service) latestBackup(ctx context.Context, job *models.Job) (*models.Ba
 		return nil, fmt.Errorf("list backups: %w", err)
 	}
 	for _, r := range records { // newest first
-		if r.JobID == job.ID && r.Status == models.StatusCompleted && r.StorageKey != "" {
+		// A backup's own connection decides, not its job's: a job that moved from a
+		// connection the caller may not touch never tests that connection's backups.
+		if r.JobID == job.ID && r.Status == models.StatusCompleted && r.StorageKey != "" && auth.ConnectionAllowed(ctx, r.ConnectionID) {
 			return r, nil
 		}
 	}

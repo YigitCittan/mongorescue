@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,10 +39,9 @@ type BackupHistoryQuery struct {
 	// MaxIssues bounds the backups with a failed verification that are returned (at
 	// most MaxHistoryIssues); VerificationIssueTotal counts all of them.
 	MaxIssues int
-	// Connections keeps the backups taken from these connections in the daily
-	// figures, the stored size and the verification issues (the caller's access);
-	// nil keeps every backup. JobRuns and LastSuccess are per job: callers keep the
-	// jobs they may see.
+	// Connections keeps the backups taken from these connections (the caller's
+	// access) in every figure, also in a job's runs and last success; nil keeps
+	// every backup. Callers keep the jobs they may see.
 	Connections auth.ConnectionSet
 }
 
@@ -177,11 +177,11 @@ func (s *SQLiteStore) BackupHistory(ctx context.Context, q BackupHistoryQuery) (
 		return nil, fmt.Errorf("store: stored bytes before the history: %w", err)
 	}
 	if perJob := min(max(q.RunsPerJob, 0), MaxHistoryRunsPerJob); perJob > 0 {
-		if err := s.historyJobRuns(ctx, h, perJob); err != nil {
+		if err := s.historyJobRuns(ctx, h, perJob, q.Connections); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.historyLastSuccess(ctx, h); err != nil {
+	if err := s.historyLastSuccess(ctx, h, q.Connections); err != nil {
 		return nil, err
 	}
 	if err := s.historyVerification(ctx, h, from, min(max(q.MaxIssues, 0), MaxHistoryIssues), q.Connections); err != nil {
@@ -236,8 +236,15 @@ func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, starts 
 	return nil
 }
 
-func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJob int) error {
-	rows, err := s.db.QueryContext(ctx, historyRunsSQL, perJob)
+func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJob int, set auth.ConnectionSet) error {
+	// A job's runs are its backups from the caller's connections (a job may have
+	// moved from another connection).
+	query, args := historyRunsSQL, []any{perJob}
+	if clause, connArgs := connectionClause("connection_id", set); clause != "" {
+		query = strings.Replace(query, "WHERE job_id = j.id", "WHERE job_id = j.id"+clause, 1)
+		args = append(slices.Clone(connArgs), perJob)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: recent job runs: %w", err)
 	}
@@ -261,8 +268,13 @@ func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJ
 	return nil
 }
 
-func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) error {
-	rows, err := s.db.QueryContext(ctx, historyLastSuccessSQL, string(models.StatusCompleted))
+func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory, set auth.ConnectionSet) error {
+	query, args := historyLastSuccessSQL, []any{string(models.StatusCompleted)}
+	if clause, connArgs := connectionClause("connection_id", set); clause != "" {
+		query = strings.Replace(query, "AND +status = ?", "AND +status = ?"+clause, 1)
+		args = append(args, connArgs...)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: last successful job runs: %w", err)
 	}

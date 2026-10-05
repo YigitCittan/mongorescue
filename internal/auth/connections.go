@@ -38,13 +38,56 @@ const (
 // administrators); a non-nil set, even an empty one, allows only its members.
 type ConnectionSet map[string]struct{}
 
-// NewConnectionSet returns the set of ids, or nil (every connection) when ids is
-// empty: a user or key stored without connection IDs is not limited.
-func NewConnectionSet(ids []string) ConnectionSet {
-	if len(ids) == 0 {
+// ConnectionAccess is the stored connection access of a user, an API key or a group
+// mapping: every connection when AllConnections is set, otherwise exactly
+// ConnectionIDs. An empty list never means every connection: it means none. The
+// zero value allows nothing (fail closed).
+type ConnectionAccess struct {
+	// AllConnections allows every connection; ConnectionIDs is then empty.
+	AllConnections bool `json:"all_connections"`
+	// ConnectionIDs are the connections allowed without AllConnections (none when
+	// empty). It is null in JSON for AllConnections.
+	ConnectionIDs []string `json:"connection_ids"`
+}
+
+// EveryConnection is the access to every connection.
+func EveryConnection() ConnectionAccess { return ConnectionAccess{AllConnections: true} }
+
+// AccessOf describes set as a ConnectionAccess: AllConnections for nil, otherwise
+// its sorted members (an empty, non-nil list for none).
+func AccessOf(set ConnectionSet) ConnectionAccess {
+	if !set.Limited() {
+		return EveryConnection()
+	}
+	return ConnectionAccess{ConnectionIDs: set.IDs()}
+}
+
+// ConnectionSet returns the connections a allows: nil for every connection.
+func (a ConnectionAccess) ConnectionSet() ConnectionSet {
+	if a.AllConnections {
 		return nil
 	}
-	return OnlyConnections(ids...)
+	return OnlyConnections(a.ConnectionIDs...)
+}
+
+// Normalized checks and normalizes a (see NormalizeConnectionIDs): AllConnections
+// with connection IDs is refused (ErrInvalidConnections), a limited access keeps a
+// non-nil list (empty for none), and every connection has none.
+func (a ConnectionAccess) Normalized() (ConnectionAccess, error) {
+	ids, err := NormalizeConnectionIDs(a.ConnectionIDs)
+	if err != nil {
+		return ConnectionAccess{}, err
+	}
+	if a.AllConnections {
+		if len(ids) > 0 {
+			return ConnectionAccess{}, fmt.Errorf("%w: all_connections and connection_ids exclude each other", ErrInvalidConnections)
+		}
+		return EveryConnection(), nil
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	return ConnectionAccess{ConnectionIDs: ids}, nil
 }
 
 // OnlyConnections returns a limited set of exactly ids; with no ids it allows no

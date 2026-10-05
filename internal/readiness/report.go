@@ -201,6 +201,17 @@ type rowAcc struct {
 	verifyKO bool
 }
 
+// latestBackups returns the newest (verified) backup of every job and database
+// the caller in ctx may see: a backup's own connection decides, not its job's, so
+// a job that moved from another connection shows the newest backup of the
+// caller's connections.
+func (s *Service) latestBackups(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error) {
+	if set := auth.ConnectionFilter(ctx); set.Limited() {
+		return s.cfg.Store.LatestJobDatabaseBackupsAllIn(ctx, verified, set)
+	}
+	return s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, verified)
+}
+
 // Report computes the readiness of every database a job backs up, enabled or not.
 // A caller limited to some connections (auth.ConnectionFilter) gets the rows of its
 // connections only. It fails with an ErrUnavailable error when the metadata cannot
@@ -228,13 +239,19 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	names := s.connectionNames(ctx)
 
 	// One query per kind of evidence, whatever the number of jobs.
-	verified, err := s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, true)
+	verified, err := s.latestBackups(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("%w: verified backups: %w", ErrUnavailable, err)
 	}
 	tests, err := s.cfg.Store.LatestRestoreTestsAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: restore tests: %w", ErrUnavailable, err)
+	}
+	// A restore test into a test server the caller may not touch is not its evidence.
+	for id, list := range tests {
+		tests[id] = slices.DeleteFunc(list, func(t *models.RestoreTestResult) bool {
+			return t.ConnectionID != "" && !auth.ConnectionAllowed(ctx, t.ConnectionID)
+		})
 	}
 
 	var streams []StreamInfo
@@ -270,6 +287,10 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	}
 	byDB := make(map[rowKey]*models.RestoreRecord, len(restores))
 	for _, r := range restores {
+		// The RTO counts only restores whose source and target the caller may touch.
+		if !auth.ConnectionAllowed(ctx, r.SourceConnectionID) || !auth.ConnectionAllowed(ctx, cmp.Or(r.TargetConnectionID, r.SourceConnectionID)) {
+			continue
+		}
 		byDB[rowKey{r.SourceConnectionID, r.SourceDatabase}] = r
 	}
 

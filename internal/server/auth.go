@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -554,10 +555,10 @@ type meResponse struct {
 	// KeyScope is the API key's own scope (API keys only); Scope is lower when the
 	// creator's role caps the key.
 	KeyScope auth.Scope `json:"key_scope,omitempty"`
-	// ConnectionIDs are the connections the caller may touch, present only for a
-	// caller limited to some connections (possibly none); absent means every
-	// connection.
-	ConnectionIDs *[]string `json:"connection_ids,omitempty"`
+	// AllConnections and ConnectionIDs are the connections the caller may touch
+	// (signed in only): every connection, or exactly the list (none when empty).
+	AllConnections *bool     `json:"all_connections,omitempty"`
+	ConnectionIDs  *[]string `json:"connection_ids,omitempty"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -566,19 +567,15 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, meResponse{})
 		return
 	}
-	writeJSON(w, http.StatusOK, meResponse{
+	me := meResponse{
 		User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method, Role: p.Role, Scope: p.Scope, KeyScope: p.KeyScope,
-		ConnectionIDs: connectionIDsOf(p.Connections),
-	})
-}
-
-// connectionIDsOf returns the members of a limited set, nil for every connection.
-func connectionIDsOf(set auth.ConnectionSet) *[]string {
-	if !set.Limited() {
-		return nil
 	}
-	ids := set.IDs()
-	return &ids
+	a := auth.AccessOf(p.Connections)
+	me.AllConnections = &a.AllConnections
+	if !a.AllConnections {
+		me.ConnectionIDs = &a.ConnectionIDs
+	}
+	writeJSON(w, http.StatusOK, me)
 }
 
 // handleListSessions lists the caller's own sessions, or with ?all=true (admin) those
@@ -678,33 +675,62 @@ const (
 	targetConnections    = "connection_ids"
 )
 
-// checkConnectionIDs answers 400 and returns false unless every ID names a connection
-// the caller may touch: a connection outside the caller's access is as unknown as
-// one that does not exist. A caller limited to some connections gets 404 for both,
-// like every route that names a connection.
-func (s *Server) checkConnectionIDs(w http.ResponseWriter, r *http.Request, ids []string) bool {
-	if len(ids) == 0 || s.connections == nil {
-		return true
+// connectionAccessRequest is the connection access in a request body:
+// all_connections, or exactly connection_ids (an empty list is none, never every
+// connection). A body with neither field keeps the behaviour of clients that
+// predate connection access: every connection.
+type connectionAccessRequest struct {
+	AllConnections *bool    `json:"all_connections"`
+	ConnectionIDs  []string `json:"connection_ids"`
+}
+
+// access returns the requested access (checked by auth's Normalized).
+func (c connectionAccessRequest) access() auth.ConnectionAccess {
+	switch {
+	case c.AllConnections != nil:
+		return auth.ConnectionAccess{AllConnections: *c.AllConnections, ConnectionIDs: c.ConnectionIDs}
+	case c.ConnectionIDs != nil:
+		return auth.ConnectionAccess{ConnectionIDs: c.ConnectionIDs}
+	default:
+		return auth.EveryConnection()
 	}
-	if len(ids) > auth.MaxConnectionIDs {
+}
+
+// checkConnectionAccess returns a with every listed ID naming a connection the
+// caller may touch, answering and returning false otherwise: 400 for an unknown
+// connection (a connection outside the caller's access is as unknown as one that
+// does not exist), and 404 for a caller limited to some connections, like every
+// route that names a connection. IDs in keep, the access stored before, that no
+// longer exist (deleted connections) are dropped silently, so removing a deleted
+// connection never forces anyone to widen the access.
+func (s *Server) checkConnectionAccess(w http.ResponseWriter, r *http.Request, a auth.ConnectionAccess, keep []string) (auth.ConnectionAccess, bool) {
+	if a.AllConnections || s.connections == nil {
+		return a, true
+	}
+	if len(a.ConnectionIDs) > auth.MaxConnectionIDs {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("connection_ids takes at most %d connections", auth.MaxConnectionIDs))
-		return false
+		return a, false
 	}
-	for _, id := range ids {
-		if _, err := s.connections.Get(r.Context(), strings.TrimSpace(id)); err != nil {
+	ids := make([]string, 0, len(a.ConnectionIDs))
+	for _, id := range a.ConnectionIDs {
+		id = strings.TrimSpace(id)
+		if _, err := s.connections.Get(r.Context(), id); err != nil {
 			switch {
+			case errors.Is(err, connections.ErrNotFound) && slices.Contains(keep, id):
+				continue
 			case errors.Is(err, connections.ErrNotFound) && auth.ConnectionFilter(r.Context()).Limited():
 				writeError(w, http.StatusNotFound, "connection not found")
-				return false
+				return a, false
 			case errors.Is(err, connections.ErrNotFound):
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown connection_id %q", id))
-				return false
+				return a, false
 			}
 			s.writeConnectionError(w, err)
-			return false
+			return a, false
 		}
+		ids = append(ids, id)
 	}
-	return true
+	return auth.ConnectionAccess{ConnectionIDs: ids}, true
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -721,14 +747,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		// Role is viewer, operator or admin; omitted means viewer.
 		Role auth.Role `json:"role"`
-		// ConnectionIDs limits the user to these connections; omitted or empty means
-		// every connection. Administrators cannot be limited.
-		ConnectionIDs []string `json:"connection_ids"`
+		// The user's connections (administrators always have every connection).
+		connectionAccessRequest
 	}
-	if !decodeBody(w, r, &req) || !s.checkConnectionIDs(w, r, req.ConnectionIDs) {
+	if !decodeBody(w, r, &req) {
 		return
 	}
-	user, err := svc.CreateUserWithConnections(r.Context(), p, req.Username, req.Password, req.Role, req.ConnectionIDs)
+	access, ok := s.checkConnectionAccess(w, r, req.access(), nil)
+	if !ok {
+		return
+	}
+	user, err := svc.CreateUserWithConnections(r.Context(), p, req.Username, req.Password, req.Role, access)
 	if user != nil && writeApprovalPendingWith(w, err, approvalRequired{User: user}) {
 		// The two-person rule: the user exists as a viewer, the admin role waits.
 		auditlog.Annotate(r.Context(), targetRole, string(user.Role))
@@ -739,25 +768,29 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditlog.Annotate(r.Context(), targetRole, string(user.Role))
-	if len(user.ConnectionIDs) > 0 {
-		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionIDs))
+	if !user.AllConnections {
+		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionAccess))
 	}
 	writeJSON(w, http.StatusCreated, user)
 }
 
-// connectionsNote describes a connection list for the audit log.
-func connectionsNote(ids []string) string {
-	if len(ids) == 0 {
+// connectionsNote describes a connection access for the audit log.
+func connectionsNote(a auth.ConnectionAccess) string {
+	switch {
+	case a.AllConnections:
 		return "all"
+	case len(a.ConnectionIDs) == 0:
+		return "none"
 	}
-	return strings.Join(ids, ",")
+	return strings.Join(a.ConnectionIDs, ",")
 }
 
-// handleSetUserConnections limits a user to some connections, or lifts the limit
-// with an empty list (admin): 400 for an unknown connection or an administrator, 404
-// for an unknown user, 409 for a single sign-on user whose connections the group
-// mappings decide. The change applies to the user's sessions and API keys from their
-// next request.
+// handleSetUserConnections sets a user's connections (admin):
+// {all_connections, connection_ids}, where an empty list is none. 400 for an
+// unknown connection or a limit on an administrator, 404 for an unknown user, 409
+// for a single sign-on user whose connections the group mappings decide. IDs of
+// deleted connections the user still had are dropped. The change applies to the
+// user's sessions and API keys from their next request.
 func (s *Server) handleSetUserConnections(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireAuth(w)
 	if !ok {
@@ -767,18 +800,35 @@ func (s *Server) handleSetUserConnections(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var req struct {
-		ConnectionIDs []string `json:"connection_ids"`
-	}
-	if !decodeBody(w, r, &req) || !s.checkConnectionIDs(w, r, req.ConnectionIDs) {
+	var req connectionAccessRequest
+	if !decodeBody(w, r, &req) {
 		return
 	}
-	user, err := svc.SetUserConnections(r.Context(), p, r.PathValue("id"), req.ConnectionIDs)
+	if req.AllConnections == nil && req.ConnectionIDs == nil {
+		writeError(w, http.StatusBadRequest, "send all_connections or connection_ids")
+		return
+	}
+	// The user's current list: IDs of deleted connections on it are dropped.
+	var keep []string
+	if p.Allows(auth.ScopeAdmin) {
+		if users, listErr := svc.ListUsers(r.Context(), p); listErr == nil {
+			for _, u := range users {
+				if u.ID == r.PathValue("id") {
+					keep = u.ConnectionIDs
+				}
+			}
+		}
+	}
+	access, ok := s.checkConnectionAccess(w, r, req.access(), keep)
+	if !ok {
+		return
+	}
+	user, err := svc.SetUserConnections(r.Context(), p, r.PathValue("id"), access)
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
 	}
-	auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionIDs))
+	auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionAccess))
 	writeJSON(w, http.StatusOK, user)
 }
 
@@ -890,9 +940,9 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		// Scope is read, operator or admin; omitted means read.
 		Scope auth.Scope `json:"scope"`
-		// ConnectionIDs limits the key to these connections (below admin only);
-		// omitted or empty means every connection its creator may touch.
-		ConnectionIDs []string `json:"connection_ids"`
+		// The key's connections (a limit needs a scope below admin); every
+		// connection reaches what its creator may touch.
+		connectionAccessRequest
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -902,10 +952,11 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthError(w, err)
 		return
 	}
-	if !s.checkConnectionIDs(w, r, req.ConnectionIDs) {
+	access, ok := s.checkConnectionAccess(w, r, req.access(), nil)
+	if !ok {
 		return
 	}
-	k, plain, err := svc.CreateAPIKeyWithConnections(r.Context(), p, req.Name, req.Scope, req.ConnectionIDs)
+	k, plain, err := svc.CreateAPIKeyWithConnections(r.Context(), p, req.Name, req.Scope, access)
 	if k != nil && err != nil {
 		// The two-person rule: the key works with the operator scope, the admin scope
 		// waits. Its plaintext is shown here, once, like for any new key.
@@ -922,8 +973,8 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	// ceiling_applied: the key has a creator, so that user's role caps it from now on.
 	auditlog.Annotate(r.Context(), targetScope, string(k.Scope))
 	auditlog.Annotate(r.Context(), targetCeilingApplied, strconv.FormatBool(k.CreatedBy != ""))
-	if len(k.ConnectionIDs) > 0 {
-		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(k.ConnectionIDs))
+	if !k.AllConnections {
+		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(k.ConnectionAccess))
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, createdAPIKey{APIKey: k, Key: plain})

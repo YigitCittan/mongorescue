@@ -767,6 +767,9 @@ function ssoFillSettings(force) {
   document.getElementById("sso-rp-logout").checked = !!o.rp_logout;
   sso.mappings = (Array.isArray(o.role_mappings) ? o.role_mappings : []).map(m => ({
     group: String((m && m.group) || ""), role: USER_ROLES.includes(m && m.role) ? m.role : "viewer",
+    // Stored mappings carry all_connections; one without it predates connection
+    // access and reaches every connection.
+    all_connections: !(m && m.all_connections === false),
     connection_ids: Array.isArray(m && m.connection_ids) ? m.connection_ids.map(String) : []
   }));
   ssoRenderMappings();
@@ -815,7 +818,7 @@ function ssoReadMappings() {
   });
   document.querySelectorAll(".sso-mapping-connections").forEach(el => {
     const i = Number(el.dataset.index);
-    if (sso.mappings[i]) sso.mappings[i].connection_ids = Array.from(el.selectedOptions).map(o => o.value);
+    if (sso.mappings[i] && typeof readMappingAccess === "function") Object.assign(sso.mappings[i], readMappingAccess(el));
   });
 }
 
@@ -827,10 +830,10 @@ async function ssoSaveSettings(e) {
   e.preventDefault();
   ssoReadMappings();
   // An admin mapping always reaches every connection.
-  const mappings = sso.mappings.map(m => ({
-    group: String(m.group || "").trim(), role: m.role,
-    connection_ids: m.role === "admin" ? [] : (m.connection_ids || [])
-  }));
+  const mappings = sso.mappings.map(m => {
+    const all = m.role === "admin" || m.all_connections !== false;
+    return { group: String(m.group || "").trim(), role: m.role, all_connections: all, connection_ids: all ? [] : (m.connection_ids || []) };
+  });
   if (mappings.some(m => !m.group)) {
     showFormError("sso-error", t("sso.mapping_invalid"));
     return;
@@ -967,7 +970,7 @@ function ssoSetup() {
         break;
       case "sso-add-mapping":
         ssoReadMappings();
-        if (sso.mappings.length < SSO_MAX_MAPPINGS) sso.mappings.push({ group: "", role: "viewer" });
+        if (sso.mappings.length < SSO_MAX_MAPPINGS) sso.mappings.push({ group: "", role: "viewer", all_connections: true, connection_ids: [] });
         sso.dirty = true;
         ssoRenderMappings();
         {

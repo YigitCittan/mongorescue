@@ -24,13 +24,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Connections",
       col_connections: "Connections",
       all: "All connections",
+      none: "No connection",
       some: "Connections: {count}",
       none_available: "No connections yet.",
       deleted: "{id} (deleted)",
-      user_hint: "Leave every box empty for every connection. Administrators always have every connection.",
-      key_hint: "Leave every box empty for every connection. Admin keys always have every connection.",
+      user_hint: "Check All connections, or the connections the user may use; none checked means no connection. Administrators always have every connection.",
+      key_hint: "Check All connections (those you may use), or the connections the key may use; none checked means no connection. Admin keys always have every connection.",
       edit_title: "Connections of {name}",
-      edit_hint: "The user sees, backs up and restores only the checked connections, and so do their API keys. Leave every box empty for every connection.",
+      edit_hint: "The user sees, backs up and restores only these connections, and so do their API keys. None checked means no connection.",
       edit_button_label: "Connections of {name}: {value}",
       save: "Save",
       saved: "Connections of {name} saved.",
@@ -51,13 +52,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Bağlantılar",
       col_connections: "Bağlantılar",
       all: "Tüm bağlantılar",
+      none: "Bağlantı yok",
       some: "Bağlantılar: {count}",
       none_available: "Henüz bağlantı yok.",
       deleted: "{id} (silinmiş)",
-      user_hint: "Tüm bağlantılar için hiçbir kutuyu işaretlemeyin. Yöneticiler her zaman tüm bağlantılara erişir.",
-      key_hint: "Tüm bağlantılar için hiçbir kutuyu işaretlemeyin. Yönetici anahtarları her zaman tüm bağlantılara erişir.",
+      user_hint: "Tüm bağlantıları ya da kullanıcının kullanabileceği bağlantıları işaretleyin; hiçbiri işaretli değilse hiçbir bağlantı yoktur. Yöneticiler her zaman tüm bağlantılara erişir.",
+      key_hint: "Tüm bağlantıları (sizin kullanabildikleriniz) ya da anahtarın kullanabileceği bağlantıları işaretleyin; hiçbiri işaretli değilse hiçbir bağlantı yoktur. Yönetici anahtarları her zaman tüm bağlantılara erişir.",
       edit_title: "{name} kullanıcısının bağlantıları",
-      edit_hint: "Kullanıcı yalnızca işaretli bağlantıları görür, yedekler ve geri yükler; API anahtarları da öyle. Tüm bağlantılar için hiçbir kutuyu işaretlemeyin.",
+      edit_hint: "Kullanıcı yalnızca bu bağlantıları görür, yedekler ve geri yükler; API anahtarları da öyle. Hiçbiri işaretli değilse hiçbir bağlantı yoktur.",
       edit_button_label: "{name} kullanıcısının bağlantıları: {value}",
       save: "Kaydet",
       saved: "{name} kullanıcısının bağlantıları kaydedildi.",
@@ -78,13 +80,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Verbindungen",
       col_connections: "Verbindungen",
       all: "Alle Verbindungen",
+      none: "Keine Verbindung",
       some: "Verbindungen: {count}",
       none_available: "Noch keine Verbindungen.",
       deleted: "{id} (gelöscht)",
-      user_hint: "Für alle Verbindungen kein Kästchen ankreuzen. Administratoren haben immer alle Verbindungen.",
-      key_hint: "Für alle Verbindungen kein Kästchen ankreuzen. Admin-Schlüssel haben immer alle Verbindungen.",
+      user_hint: "Alle Verbindungen ankreuzen oder die Verbindungen, die der Benutzer nutzen darf; ohne Häkchen hat er keine Verbindung. Administratoren haben immer alle Verbindungen.",
+      key_hint: "Alle Verbindungen ankreuzen (die Sie nutzen dürfen) oder die Verbindungen des Schlüssels; ohne Häkchen hat er keine Verbindung. Admin-Schlüssel haben immer alle Verbindungen.",
       edit_title: "Verbindungen von {name}",
-      edit_hint: "Der Benutzer sieht, sichert und stellt nur die angekreuzten Verbindungen wieder her, ebenso seine API-Schlüssel. Für alle Verbindungen kein Kästchen ankreuzen.",
+      edit_hint: "Der Benutzer sieht, sichert und stellt nur diese Verbindungen wieder her, ebenso seine API-Schlüssel. Ohne Häkchen hat er keine Verbindung.",
       edit_button_label: "Verbindungen von {name}: {value}",
       save: "Speichern",
       saved: "Verbindungen von {name} gespeichert.",
@@ -105,13 +108,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Conexiones",
       col_connections: "Conexiones",
       all: "Todas las conexiones",
+      none: "Ninguna conexión",
       some: "Conexiones: {count}",
       none_available: "Aún no hay conexiones.",
       deleted: "{id} (eliminada)",
-      user_hint: "Deje todas las casillas vacías para todas las conexiones. Los administradores siempre tienen todas las conexiones.",
-      key_hint: "Deje todas las casillas vacías para todas las conexiones. Las claves de administrador siempre tienen todas las conexiones.",
+      user_hint: "Marque Todas las conexiones o las conexiones que el usuario puede usar; sin ninguna marcada no tiene ninguna conexión. Los administradores siempre tienen todas las conexiones.",
+      key_hint: "Marque Todas las conexiones (las que usted puede usar) o las conexiones de la clave; sin ninguna marcada no tiene ninguna conexión. Las claves de administrador siempre tienen todas las conexiones.",
       edit_title: "Conexiones de {name}",
-      edit_hint: "El usuario solo ve, respalda y restaura las conexiones marcadas, y sus claves de API también. Deje todas las casillas vacías para todas las conexiones.",
+      edit_hint: "El usuario solo ve, respalda y restaura estas conexiones, y sus claves de API también. Sin ninguna marcada no tiene ninguna conexión.",
       edit_button_label: "Conexiones de {name}: {value}",
       save: "Guardar",
       saved: "Conexiones de {name} guardadas.",
@@ -132,13 +136,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Connexions",
       col_connections: "Connexions",
       all: "Toutes les connexions",
+      none: "Aucune connexion",
       some: "Connexions : {count}",
       none_available: "Aucune connexion pour l'instant.",
       deleted: "{id} (supprimée)",
-      user_hint: "Ne cochez aucune case pour toutes les connexions. Les administrateurs ont toujours toutes les connexions.",
-      key_hint: "Ne cochez aucune case pour toutes les connexions. Les clés administrateur ont toujours toutes les connexions.",
+      user_hint: "Cochez Toutes les connexions, ou les connexions que l'utilisateur peut utiliser ; sans case cochée, il n'a aucune connexion. Les administrateurs ont toujours toutes les connexions.",
+      key_hint: "Cochez Toutes les connexions (celles que vous pouvez utiliser), ou les connexions de la clé ; sans case cochée, elle n'a aucune connexion. Les clés administrateur ont toujours toutes les connexions.",
       edit_title: "Connexions de {name}",
-      edit_hint: "L'utilisateur ne voit, ne sauvegarde et ne restaure que les connexions cochées, ses clés d'API aussi. Ne cochez aucune case pour toutes les connexions.",
+      edit_hint: "L'utilisateur ne voit, ne sauvegarde et ne restaure que ces connexions, ses clés d'API aussi. Sans case cochée, il n'a aucune connexion.",
       edit_button_label: "Connexions de {name} : {value}",
       save: "Enregistrer",
       saved: "Connexions de {name} enregistrées.",
@@ -159,13 +164,14 @@ const ACCESS_TRANSLATIONS = {
       label: "连接",
       col_connections: "连接",
       all: "所有连接",
+      none: "无连接",
       some: "连接：{count}",
       none_available: "还没有连接。",
       deleted: "{id}（已删除）",
-      user_hint: "不勾选任何项表示所有连接。管理员始终拥有所有连接。",
-      key_hint: "不勾选任何项表示所有连接。管理员密钥始终拥有所有连接。",
+      user_hint: "勾选“所有连接”，或勾选该用户可使用的连接；都不勾选表示没有任何连接。管理员始终拥有所有连接。",
+      key_hint: "勾选“所有连接”（即您可使用的连接），或勾选该密钥可使用的连接；都不勾选表示没有任何连接。管理员密钥始终拥有所有连接。",
       edit_title: "{name} 的连接",
-      edit_hint: "该用户只能查看、备份和恢复勾选的连接，其 API 密钥也是如此。不勾选任何项表示所有连接。",
+      edit_hint: "该用户只能查看、备份和恢复这些连接，其 API 密钥也是如此。都不勾选表示没有任何连接。",
       edit_button_label: "{name} 的连接：{value}",
       save: "保存",
       saved: "已保存 {name} 的连接。",
@@ -186,13 +192,14 @@ const ACCESS_TRANSLATIONS = {
       label: "接続",
       col_connections: "接続",
       all: "すべての接続",
+      none: "接続なし",
       some: "接続: {count}",
       none_available: "接続はまだありません。",
       deleted: "{id}（削除済み）",
-      user_hint: "すべての接続を許可するには、どれもチェックしないでください。管理者は常にすべての接続を利用できます。",
-      key_hint: "すべての接続を許可するには、どれもチェックしないでください。管理者キーは常にすべての接続を利用できます。",
+      user_hint: "「すべての接続」か、ユーザーが利用できる接続をチェックしてください。何もチェックしないと接続はありません。管理者は常にすべての接続を利用できます。",
+      key_hint: "「すべての接続」（あなたが利用できる接続）か、キーが利用できる接続をチェックしてください。何もチェックしないと接続はありません。管理者キーは常にすべての接続を利用できます。",
       edit_title: "{name} の接続",
-      edit_hint: "このユーザーは、チェックした接続だけを表示、バックアップ、復元できます。API キーも同様です。すべての接続を許可するには、どれもチェックしないでください。",
+      edit_hint: "このユーザーはこれらの接続だけを表示、バックアップ、復元できます。API キーも同様です。何もチェックしないと接続はありません。",
       edit_button_label: "{name} の接続: {value}",
       save: "保存",
       saved: "{name} の接続を保存しました。",
@@ -213,13 +220,14 @@ const ACCESS_TRANSLATIONS = {
       label: "Подключения",
       col_connections: "Подключения",
       all: "Все подключения",
+      none: "Нет подключений",
       some: "Подключения: {count}",
       none_available: "Подключений пока нет.",
       deleted: "{id} (удалено)",
-      user_hint: "Не отмечайте ничего, чтобы разрешить все подключения. Администраторы всегда имеют доступ ко всем подключениям.",
-      key_hint: "Не отмечайте ничего, чтобы разрешить все подключения. Ключи администратора всегда имеют доступ ко всем подключениям.",
+      user_hint: "Отметьте «Все подключения» или подключения, доступные пользователю; если ничего не отмечено, подключений нет. Администраторы всегда имеют доступ ко всем подключениям.",
+      key_hint: "Отметьте «Все подключения» (доступные вам) или подключения ключа; если ничего не отмечено, подключений нет. Ключи администратора всегда имеют доступ ко всем подключениям.",
       edit_title: "Подключения пользователя {name}",
-      edit_hint: "Пользователь видит, резервирует и восстанавливает только отмеченные подключения, как и его API-ключи. Не отмечайте ничего, чтобы разрешить все подключения.",
+      edit_hint: "Пользователь видит, резервирует и восстанавливает только эти подключения, как и его API-ключи. Если ничего не отмечено, подключений нет.",
       edit_button_label: "Подключения пользователя {name}: {value}",
       save: "Сохранить",
       saved: "Подключения пользователя {name} сохранены.",
@@ -266,29 +274,49 @@ function accessEnsureConnections(fresh) {
   return accessConnectionsLoading;
 }
 
-// fillConnectionChecklist renders one checkbox per connection into containerId,
-// checking selected; IDs of deleted connections stay listed (checked) so saving
-// does not drop them silently.
-async function fillConnectionChecklist(containerId, selected) {
+// accessOf reads the connection access of a server object: every connection only
+// with all_connections true; otherwise exactly connection_ids (none when empty).
+function accessOf(o) {
+  const all = !!(o && o.all_connections === true);
+  const ids = !all && o && Array.isArray(o.connection_ids) ? o.connection_ids.map(String) : [];
+  return { all, ids };
+}
+
+// fillConnectionChecklist renders, into containerId, an "All connections" toggle
+// (id containerId-all) and one checkbox per connection, from access ({all, ids}).
+// IDs of deleted connections stay listed (checked) so the server can drop them.
+async function fillConnectionChecklist(containerId, access) {
   const box = document.getElementById(containerId);
   if (!box) return;
+  const a = access || { all: true, ids: [] };
   // A dialog offers the connections as they are now.
   await accessEnsureConnections(true);
-  const chosen = new Set((selected || []).map(String));
+  const chosen = new Set((a.ids || []).map(String));
   const list = (state.connections || []).map(c => ({ id: String(c.id), name: String(c.name || c.id) }));
   chosen.forEach(id => {
     if (!list.some(c => c.id === id)) list.push({ id, name: tf("access.deleted", { id }) });
   });
-  if (list.length === 0) {
-    box.innerHTML = `<span class="muted">${escapeHtml(t("access.none_available"))}</span>`;
-    return;
-  }
-  box.innerHTML = list.map(c => `<label class="check-inline"><input type="checkbox" value="${escapeHtml(c.id)}"${chosen.has(c.id) ? " checked" : ""}> <span>${escapeHtml(c.name)}</span></label>`).join("");
+  const toggle = `<label class="check-inline access-all"><input type="checkbox" id="${escapeHtml(containerId)}-all" data-access-all="${escapeHtml(containerId)}"${a.all ? " checked" : ""}> <span>${escapeHtml(t("access.all"))}</span></label>`;
+  const boxes = list.length === 0
+    ? `<span class="muted">${escapeHtml(t("access.none_available"))}</span>`
+    : list.map(c => `<label class="check-inline"><input type="checkbox" class="access-connection" value="${escapeHtml(c.id)}"${chosen.has(c.id) ? " checked" : ""}${a.all ? " disabled" : ""}> <span>${escapeHtml(c.name)}</span></label>`).join("");
+  box.innerHTML = toggle + boxes;
 }
 
-// checkedConnections returns the IDs checked in containerId.
-function checkedConnections(containerId) {
-  return Array.from(document.querySelectorAll(`#${containerId} input[type=checkbox]:checked`)).map(el => el.value);
+// readConnectionAccess returns the access chosen in containerId as a request body
+// part: {all_connections: true} or {all_connections: false, connection_ids: [...]}
+// (an empty list is no connection).
+function readConnectionAccess(containerId) {
+  const all = document.getElementById(`${containerId}-all`);
+  if (!all || all.checked) return { all_connections: true };
+  const ids = Array.from(document.querySelectorAll(`#${containerId} input.access-connection:checked`)).map(el => el.value);
+  return { all_connections: false, connection_ids: ids };
+}
+
+// accessLabel describes an access: all, none or a count.
+function accessLabel(a) {
+  if (a.all) return t("access.all");
+  return a.ids.length ? tf("access.some", { count: a.ids.length }) : t("access.none");
 }
 
 // ---------------------------------------------------------------------------
@@ -300,12 +328,12 @@ function checkedConnections(containerId) {
 // no button.
 function userConnectionsCell(u, managed) {
   if (!can("admin")) return "";
-  const ids = Array.isArray(u.connection_ids) ? u.connection_ids : [];
   if (u.role === "admin") {
     return `<span class="muted" title="${escapeHtml(t("access.admin_all"))}">${escapeHtml(t("access.all"))}</span>`;
   }
-  const value = ids.length ? tf("access.some", { count: ids.length }) : t("access.all");
-  const title = ids.length ? accessConnectionNames(ids) : "";
+  const a = accessOf(u);
+  const value = accessLabel(a);
+  const title = !a.all && a.ids.length ? accessConnectionNames(a.ids) : "";
   if (managed) {
     return `<span class="muted" title="${escapeHtml(t("access.managed"))}">${escapeHtml(value)}</span>`;
   }
@@ -316,8 +344,8 @@ function userConnectionsCell(u, managed) {
 // keyConnectionsNote marks a key that reaches only some connections (its own,
 // within its creator's).
 function keyConnectionsNote(k) {
-  const eff = k.effective_connection_ids;
-  if (!Array.isArray(eff)) return "";
+  if (k.effective_all_connections !== false) return "";
+  const eff = Array.isArray(k.effective_connection_ids) ? k.effective_connection_ids : [];
   if (eff.length === 0) {
     return ` <span class="chip chip-warn" title="${escapeHtml(t("access.key_none_title"))}">${escapeHtml(t("access.key_none"))}</span>`;
   }
@@ -345,7 +373,7 @@ async function openUserConnections(id) {
   setValue("user-connections-user-id", id);
   setText("user-connections-title", tf("access.edit_title", { name: user.username }));
   hideFormError("user-connections-error");
-  await fillConnectionChecklist("user-connections-edit", user.connection_ids || []);
+  await fillConnectionChecklist("user-connections-edit", accessOf(user));
   openModal("modal-user-connections");
 }
 
@@ -357,7 +385,7 @@ async function saveUserConnections(e) {
     const json = await apiJSON(`/api/v1/users/${encodeURIComponent(id)}/connections`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connection_ids: checkedConnections("user-connections-edit") })
+      body: JSON.stringify(readConnectionAccess("user-connections-edit"))
     });
     if (!json.success) {
       showFormError("user-connections-error", json.error || t("toasts.request_failed"));
@@ -377,9 +405,11 @@ async function saveUserConnections(e) {
 // ---------------------------------------------------------------------------
 
 let accessMappingsWaiting = false;
+const ACCESS_ALL_OPTION = "__all__";
 
 // mappingConnectionsSelect renders the connections of mapping m (index i): a
-// multiple select, disabled for admin mappings, which reach every connection.
+// multiple select whose first option is "All connections"; nothing selected is no
+// connection. Admin mappings always reach every connection: disabled.
 function mappingConnectionsSelect(m, i) {
   if (!state.loaded.connections && !accessMappingsWaiting && typeof ssoRenderMappings === "function") {
     accessMappingsWaiting = true;
@@ -388,15 +418,25 @@ function mappingConnectionsSelect(m, i) {
       ssoRenderMappings();
     });
   }
-  const chosen = new Set((m.connection_ids || []).map(String));
+  const a = accessOf(m);
+  const chosen = new Set(a.ids);
   const list = (state.connections || []).map(c => ({ id: String(c.id), name: String(c.name || c.id) }));
   chosen.forEach(id => {
     if (!list.some(c => c.id === id)) list.push({ id, name: tf("access.deleted", { id }) });
   });
   const admin = m.role === "admin";
-  const options = list.map(c => `<option value="${escapeHtml(c.id)}"${chosen.has(c.id) && !admin ? " selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
-  return `<select multiple class="form-select sso-mapping-connections" data-index="${i}" size="${Math.min(Math.max(list.length, 2), 4)}"
+  const options = [`<option value="${ACCESS_ALL_OPTION}"${a.all || admin ? " selected" : ""}>${escapeHtml(t("access.all"))}</option>`]
+    .concat(list.map(c => `<option value="${escapeHtml(c.id)}"${!a.all && chosen.has(c.id) && !admin ? " selected" : ""}>${escapeHtml(c.name)}</option>`))
+    .join("");
+  return `<select multiple class="form-select sso-mapping-connections" data-index="${i}" size="${Math.min(Math.max(list.length + 1, 2), 5)}"
     aria-label="${escapeHtml(t("access.mapping_label"))}" title="${escapeHtml(admin ? t("access.mapping_admin") : t("access.mapping_label"))}"${admin ? " disabled" : ""}>${options}</select>`;
+}
+
+// readMappingAccess returns the access chosen in a mapping's select.
+function readMappingAccess(select) {
+  const values = Array.from(select.selectedOptions).map(o => o.value);
+  if (values.includes(ACCESS_ALL_OPTION)) return { all_connections: true, connection_ids: [] };
+  return { all_connections: false, connection_ids: values };
 }
 
 // ---------------------------------------------------------------------------
@@ -408,14 +448,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const btn = e.target instanceof Element ? e.target.closest('[data-action="edit-user-connections"]') : null;
     if (btn && !btn.disabled && can("admin")) openUserConnections(btn.dataset.id || "");
   });
-  // An admin mapping reaches every connection: its select is disabled.
   document.addEventListener("change", (e) => {
-    const role = e.target instanceof Element ? e.target.closest(".sso-mapping-role") : null;
+    const el = e.target instanceof Element ? e.target : null;
+    if (!el) return;
+    // The "All connections" toggle disables the list.
+    if (el.matches("[data-access-all]")) {
+      document.querySelectorAll(`#${el.dataset.accessAll} input.access-connection`).forEach(cb => { cb.disabled = el.checked; });
+      return;
+    }
+    // An admin mapping reaches every connection: its select is disabled.
+    const role = el.closest(".sso-mapping-role");
     if (!role) return;
     const select = document.querySelector(`.sso-mapping-connections[data-index="${role.dataset.index}"]`);
     if (select) {
       select.disabled = role.value === "admin";
-      if (select.disabled) Array.from(select.options).forEach(o => { o.selected = false; });
+      if (select.disabled) Array.from(select.options).forEach(o => { o.selected = o.value === ACCESS_ALL_OPTION; });
     }
   });
   const form = document.getElementById("form-user-connections");

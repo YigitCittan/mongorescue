@@ -37,7 +37,10 @@ test("an operator limited to one connection sees only that connection", async ({
     await dialog.getByLabel("Confirm password").fill(password);
     await dialog.getByRole("combobox", { name: "Role" }).selectOption("operator");
     const checklist = dialog.getByRole("group", { name: "Connections" });
-    await expect(checklist.getByRole("checkbox", { name: OTHER })).toBeVisible();
+    // Every connection is the default; unchecking it enables the list.
+    await expect(checklist.getByRole("checkbox", { name: "All connections" })).toBeChecked();
+    await expect(checklist.getByRole("checkbox", { name: OTHER })).toBeDisabled();
+    await checklist.getByRole("checkbox", { name: "All connections" }).uncheck();
     await checklist.getByRole("checkbox", { name: CONNECTION_NAME }).check();
     await dialog.getByRole("button", { name: "Add user" }).click();
     await expect(dialog).toBeHidden();

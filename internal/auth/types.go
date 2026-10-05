@@ -115,9 +115,10 @@ type User struct {
 	// chooses a new one, their sessions may only change it (see
 	// Principal.PasswordChangeRequired).
 	MustChangePassword bool `json:"must_change_password,omitempty"`
-	// ConnectionIDs limits the user to these connections; empty means every
-	// connection. Administrators are never limited (see SetUserConnections).
-	ConnectionIDs []string `json:"connection_ids,omitempty"`
+	// ConnectionAccess is the connections the user may touch: every connection or
+	// exactly a list (none when empty). Administrators always have every
+	// connection (see SetUserConnections).
+	ConnectionAccess
 }
 
 // Local reports whether u signs in with a password (an empty AuthProvider counts as
@@ -164,13 +165,21 @@ type APIKey struct {
 	// EffectiveScope is what the key may do today: its scope, capped by the current
 	// role of its creator. It is computed by Service.ListAPIKeys and never stored.
 	EffectiveScope Scope `json:"effective_scope,omitempty"`
-	// ConnectionIDs limits the key to these connections; empty means every
-	// connection its creator may touch.
-	ConnectionIDs []string `json:"connection_ids,omitempty"`
-	// EffectiveConnectionIDs is the connections the key may touch today: its own,
-	// within its creator's current ones. null means every connection, an empty list
-	// none. It is computed by Service.ListAPIKeys and CreateAPIKey and never stored.
-	EffectiveConnectionIDs []string `json:"effective_connection_ids"`
+	// ConnectionAccess is the key's own connection access: every connection (that
+	// its creator may touch) or exactly a list (none when empty).
+	ConnectionAccess
+	// EffectiveAllConnections and EffectiveConnectionIDs are the connections the
+	// key may touch today: its own, within its creator's current ones (an empty
+	// list without EffectiveAllConnections is none). They are computed by
+	// Service.ListAPIKeys and CreateAPIKey and never stored.
+	EffectiveAllConnections bool     `json:"effective_all_connections"`
+	EffectiveConnectionIDs  []string `json:"effective_connection_ids"`
+}
+
+// setEffective records the effective connections set on k.
+func (k *APIKey) setEffective(set ConnectionSet) {
+	a := AccessOf(set)
+	k.EffectiveAllConnections, k.EffectiveConnectionIDs = a.AllConnections, a.ConnectionIDs
 }
 
 // Method identifies how a request was authenticated.
@@ -283,11 +292,11 @@ type Repository interface {
 	// unknown subject without AutoCreate and ErrAccountConflict when the name of a
 	// new user is taken: a user is never linked by username or email.
 	SignInExternalUser(ctx context.Context, in *ExternalSignIn) (*ExternalSignInResult, error)
-	// UpdateUserConnections limits userID to connectionIDs (every connection when
-	// empty), in one transaction that returns ErrUserNotFound, ErrAdminConnections
-	// for a non-empty list on an administrator, and a *ScopeError when actorID is not
-	// "" and that user is no longer an admin.
-	UpdateUserConnections(ctx context.Context, actorID, userID string, connectionIDs []string, updatedAt time.Time) error
+	// UpdateUserConnections sets the connection access of userID, in one
+	// transaction that returns ErrUserNotFound, ErrAdminConnections for a limit on
+	// an administrator, and a *ScopeError when actorID is not "" and that user is no
+	// longer an admin.
+	UpdateUserConnections(ctx context.Context, actorID, userID string, access ConnectionAccess, updatedAt time.Time) error
 	// UpdateAPIKeyScope sets the scope of key id or returns ErrAPIKeyNotFound.
 	UpdateAPIKeyScope(ctx context.Context, id string, scope Scope) error
 	// ResetPassword stores another user's new password hash, revokes all their

@@ -9,13 +9,18 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 )
 
+// only is the access to exactly ids (none without ids).
+func only(ids ...string) auth.ConnectionAccess {
+	if ids == nil {
+		ids = []string{}
+	}
+	return auth.ConnectionAccess{ConnectionIDs: ids}
+}
+
 func TestConnectionSet(t *testing.T) {
 	var all auth.ConnectionSet
 	if all.Limited() || !all.Allows("conn_a") || !all.Allows("") || all.IDs() != nil {
 		t.Fatal("a nil set allows every connection")
-	}
-	if auth.NewConnectionSet(nil) != nil {
-		t.Fatal("no IDs is every connection")
 	}
 	a := auth.OnlyConnections("conn_a")
 	if !a.Limited() || !a.Allows("conn_a") || a.Allows("conn_b") || a.Allows("") {
@@ -58,13 +63,33 @@ func TestConnectionSet(t *testing.T) {
 	}
 }
 
+func TestConnectionAccessNeverReadsEmptyAsEvery(t *testing.T) {
+	var zero auth.ConnectionAccess
+	if s := zero.ConnectionSet(); !s.Limited() || len(s) != 0 {
+		t.Fatal("the zero access allows nothing")
+	}
+	if s := only().ConnectionSet(); !s.Limited() || len(s) != 0 {
+		t.Fatal("an empty list is none")
+	}
+	if auth.EveryConnection().ConnectionSet().Limited() {
+		t.Fatal("all_connections allows every connection")
+	}
+	n, err := zero.Normalized()
+	if err != nil || n.AllConnections || n.ConnectionIDs == nil || len(n.ConnectionIDs) != 0 {
+		t.Fatalf("normalized zero = %+v, %v; want none with []", n, err)
+	}
+	if _, err = (auth.ConnectionAccess{AllConnections: true, ConnectionIDs: []string{"conn_a"}}).Normalized(); !errors.Is(err, auth.ErrInvalidConnections) {
+		t.Fatalf("all with a list: %v; want ErrInvalidConnections", err)
+	}
+	if a := auth.AccessOf(auth.OnlyConnections()); a.AllConnections || a.ConnectionIDs == nil {
+		t.Fatalf("AccessOf(none) = %+v", a)
+	}
+}
+
 func TestNormalizeConnectionIDs(t *testing.T) {
 	got, err := auth.NormalizeConnectionIDs([]string{" conn_b ", "conn_a", "conn_b"})
 	if err != nil || !slices.Equal(got, []string{"conn_a", "conn_b"}) {
 		t.Fatalf("normalize = %v, %v", got, err)
-	}
-	if got, err = auth.NormalizeConnectionIDs(nil); err != nil || got != nil {
-		t.Fatalf("empty = %v, %v", got, err)
 	}
 	for _, bad := range [][]string{{""}, {"a\nb"}, {string(make([]byte, 200))}, make([]string, auth.MaxConnectionIDs+1)} {
 		if _, err = auth.NormalizeConnectionIDs(bad); !errors.Is(err, auth.ErrInvalidConnections) {
@@ -78,17 +103,17 @@ func TestUserConnectionsLimitSessionsAndKeys(t *testing.T) {
 	ctx := context.Background()
 	admin := f.session(t, f.setup(t).Token)
 	op := f.signIn(t, admin, "oncall", auth.RoleOperator)
-	if op.Connections.Limited() {
+	if op.Connections.Limited() || !op.User.AllConnections {
 		t.Fatal("a new user reaches every connection")
 	}
-	// The operator's unlimited key, created before the limit.
+	// The operator's key for every connection, created before the limit.
 	_, wide, err := f.svc.CreateAPIKey(ctx, op, "wide", auth.ScopeOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	u, err := f.svc.SetUserConnections(ctx, admin, op.User.ID, []string{"conn_a"})
-	if err != nil || !slices.Equal(u.ConnectionIDs, []string{"conn_a"}) {
+	u, err := f.svc.SetUserConnections(ctx, admin, op.User.ID, only("conn_a"))
+	if err != nil || u.AllConnections || !slices.Equal(u.ConnectionIDs, []string{"conn_a"}) {
 		t.Fatalf("SetUserConnections = %+v, %v", u, err)
 	}
 	res, err := f.svc.Login(ctx, ip, "oncall", adminPassword)
@@ -105,33 +130,48 @@ func TestUserConnectionsLimitSessionsAndKeys(t *testing.T) {
 		t.Fatalf("key of a limited creator = %+v, %v", kp, err)
 	}
 
-	// A limited user cannot mint a key beyond their connections, nor an unlimited one.
-	if _, _, err = f.svc.CreateAPIKeyWithConnections(ctx, p, "beyond", auth.ScopeRead, []string{"conn_b"}); !errors.Is(err, auth.ErrConnectionsExceedAccess) {
+	// A limited user cannot mint a key beyond their connections; a key for every
+	// connection reaches theirs only.
+	if _, _, err = f.svc.CreateAPIKeyWithConnections(ctx, p, "beyond", auth.ScopeRead, only("conn_b")); !errors.Is(err, auth.ErrConnectionsExceedAccess) {
 		t.Fatalf("key beyond the creator: err = %v; want ErrConnectionsExceedAccess", err)
 	}
-	k, plain, err := f.svc.CreateAPIKeyWithConnections(ctx, p, "inherits", auth.ScopeRead, nil)
-	if err != nil || !slices.Equal(k.EffectiveConnectionIDs, []string{"conn_a"}) {
-		t.Fatalf("key without a limit = %+v, %v; want the creator's connections", k, err)
+	k, plain, err := f.svc.CreateAPIKeyWithConnections(ctx, p, "inherits", auth.ScopeRead, auth.EveryConnection())
+	if err != nil || k.EffectiveAllConnections || !slices.Equal(k.EffectiveConnectionIDs, []string{"conn_a"}) {
+		t.Fatalf("key for every connection = %+v, %v; want the creator's connections", k, err)
 	}
 	if kp, err = f.svc.AuthenticateAPIKey(ctx, plain); err != nil || !kp.Connections.Limited() || kp.AllowsConnection("conn_b") {
 		t.Fatalf("inherited key = %+v, %v", kp, err)
 	}
 
-	// Lifting the user's limit lifts the cap of their keys.
-	if _, err = f.svc.SetUserConnections(ctx, admin, op.User.ID, nil); err != nil {
-		t.Fatal(err)
+	// An empty list is none: the user, and their keys, reach no connection.
+	if u, err = f.svc.SetUserConnections(ctx, admin, op.User.ID, only()); err != nil || u.AllConnections || len(u.ConnectionIDs) != 0 {
+		t.Fatalf("limit to none = %+v, %v", u, err)
 	}
-	if kp, err = f.svc.AuthenticateAPIKey(ctx, plain); err != nil || kp.Connections.Limited() {
-		t.Fatalf("key after lifting the limit = %+v, %v", kp, err)
+	if p = f.session(t, res.Token); !p.Connections.Limited() || len(p.Connections) != 0 {
+		t.Fatalf("session of a user with none = %+v", p.Connections)
+	}
+	if kp, err = f.svc.AuthenticateAPIKey(ctx, plain); err != nil || !kp.Connections.Limited() || len(kp.Connections) != 0 {
+		t.Fatalf("key under a creator with none = %+v, %v; want none", kp, err)
 	}
 	keys, err := f.svc.ListAPIKeys(ctx, admin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range keys {
-		if key.EffectiveConnectionIDs != nil {
-			t.Errorf("key %s effective connections = %v; want every connection", key.Name, key.EffectiveConnectionIDs)
+		if key.EffectiveAllConnections || key.EffectiveConnectionIDs == nil || len(key.EffectiveConnectionIDs) != 0 {
+			t.Errorf("key %s under a creator with none: %v %v; want none", key.Name, key.EffectiveAllConnections, key.EffectiveConnectionIDs)
 		}
+	}
+
+	// all_connections lifts the limit of the user and their keys.
+	if _, err = f.svc.SetUserConnections(ctx, admin, op.User.ID, auth.EveryConnection()); err != nil {
+		t.Fatal(err)
+	}
+	if kp, err = f.svc.AuthenticateAPIKey(ctx, plain); err != nil || kp.Connections.Limited() {
+		t.Fatalf("key after lifting the limit = %+v, %v", kp, err)
+	}
+	if _, err = f.svc.SetUserConnections(ctx, admin, op.User.ID, auth.ConnectionAccess{AllConnections: true, ConnectionIDs: []string{"conn_a"}}); !errors.Is(err, auth.ErrInvalidConnections) {
+		t.Fatalf("all_connections with a list: %v", err)
 	}
 }
 
@@ -140,18 +180,20 @@ func TestAdminsAreNeverLimitedToConnections(t *testing.T) {
 	ctx := context.Background()
 	admin := f.session(t, f.setup(t).Token)
 	bob := f.signIn(t, admin, "bob", auth.RoleAdmin)
-	if _, err := f.svc.SetUserConnections(ctx, admin, bob.User.ID, []string{"conn_a"}); !errors.Is(err, auth.ErrAdminConnections) {
-		t.Fatalf("limit an admin: err = %v; want ErrAdminConnections", err)
-	}
-	if _, err := f.svc.CreateUserWithConnections(ctx, admin, "carol", adminPassword, auth.RoleAdmin, []string{"conn_a"}); !errors.Is(err, auth.ErrAdminConnections) {
-		t.Fatalf("create a limited admin: err = %v; want ErrAdminConnections", err)
-	}
-	if _, _, err := f.svc.CreateAPIKeyWithConnections(ctx, admin, "ci", auth.ScopeAdmin, []string{"conn_a"}); !errors.Is(err, auth.ErrAdminConnections) {
-		t.Fatalf("limited admin key: err = %v; want ErrAdminConnections", err)
+	for _, a := range []auth.ConnectionAccess{only("conn_a"), only()} {
+		if _, err := f.svc.SetUserConnections(ctx, admin, bob.User.ID, a); !errors.Is(err, auth.ErrAdminConnections) {
+			t.Fatalf("limit an admin to %v: err = %v; want ErrAdminConnections", a.ConnectionIDs, err)
+		}
+		if _, err := f.svc.CreateUserWithConnections(ctx, admin, "carol", adminPassword, auth.RoleAdmin, a); !errors.Is(err, auth.ErrAdminConnections) {
+			t.Fatalf("create a limited admin: err = %v; want ErrAdminConnections", err)
+		}
+		if _, _, err := f.svc.CreateAPIKeyWithConnections(ctx, admin, "ci", auth.ScopeAdmin, a); !errors.Is(err, auth.ErrAdminConnections) {
+			t.Fatalf("limited admin key: err = %v; want ErrAdminConnections", err)
+		}
 	}
 	// An admin may create a limited key below admin.
-	k, plain, err := f.svc.CreateAPIKeyWithConnections(ctx, admin, "team a", auth.ScopeOperator, []string{"conn_a"})
-	if err != nil || !slices.Equal(k.ConnectionIDs, []string{"conn_a"}) {
+	k, plain, err := f.svc.CreateAPIKeyWithConnections(ctx, admin, "team a", auth.ScopeOperator, only("conn_a"))
+	if err != nil || k.AllConnections || !slices.Equal(k.ConnectionIDs, []string{"conn_a"}) {
 		t.Fatalf("limited operator key = %+v, %v", k, err)
 	}
 	if p, authErr := f.svc.AuthenticateAPIKey(ctx, plain); authErr != nil || p.AllowsConnection("conn_b") || p.Scope != auth.ScopeOperator {
@@ -159,12 +201,12 @@ func TestAdminsAreNeverLimitedToConnections(t *testing.T) {
 	}
 
 	// Promoting a limited user lifts the limit; non-admins may not set limits.
-	dave, err := f.svc.CreateUserWithConnections(ctx, admin, "dave", adminPassword, auth.RoleViewer, []string{"conn_a"})
-	if err != nil || !slices.Equal(dave.ConnectionIDs, []string{"conn_a"}) {
+	dave, err := f.svc.CreateUserWithConnections(ctx, admin, "dave", adminPassword, auth.RoleViewer, only("conn_a"))
+	if err != nil || dave.AllConnections || !slices.Equal(dave.ConnectionIDs, []string{"conn_a"}) {
 		t.Fatalf("limited viewer = %+v, %v", dave, err)
 	}
 	op := f.signIn(t, admin, "erin", auth.RoleOperator)
-	if _, err = f.svc.SetUserConnections(ctx, op, dave.ID, nil); !errors.Is(err, auth.ErrForbidden) {
+	if _, err = f.svc.SetUserConnections(ctx, op, dave.ID, auth.EveryConnection()); !errors.Is(err, auth.ErrForbidden) {
 		t.Fatalf("operator sets connections: err = %v; want ErrForbidden", err)
 	}
 	if _, err = f.svc.SetUserRole(ctx, admin, dave.ID, auth.RoleAdmin); err != nil {
@@ -174,10 +216,10 @@ func TestAdminsAreNeverLimitedToConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := f.session(t, res.Token); p.Connections.Limited() || len(p.User.ConnectionIDs) != 0 || p.Scope != auth.ScopeAdmin {
+	if p := f.session(t, res.Token); p.Connections.Limited() || !p.User.AllConnections || p.Scope != auth.ScopeAdmin {
 		t.Fatalf("promoted user = %+v", p)
 	}
-	if _, err = f.svc.SetUserConnections(ctx, admin, "usr_missing", nil); !errors.Is(err, auth.ErrUserNotFound) {
+	if _, err = f.svc.SetUserConnections(ctx, admin, "usr_missing", auth.EveryConnection()); !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("unknown user: err = %v", err)
 	}
 }

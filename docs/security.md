@@ -71,7 +71,7 @@ In a shared instance, limit the people and the automation of each team to their 
 - **Administrators.** They always reach every connection, and so do admin-scope keys; a limit on them is refused. Keep administrators few.
 - **The storage.** Teams that share a storage target share its bucket or directory: anyone with the target's credentials reads every team's archives. Give each team its own target (and encrypt with their own recipients) where that matters; a limited user sees only the targets their connections use.
 - **Global settings and names.** Settings, notification channels and the names of users stay readable to every role, as before.
-- **Deleted connections.** Deleting a connection keeps it in the lists of the users and keys limited to it (it simply no longer exists), so a limit never widens to every connection by itself.
+- **Deleted connections.** Deleting a connection keeps it in the lists of the users and keys limited to it (it simply no longer exists), and an empty list is no connection, never every connection, so a limit never widens by itself. Saving a user's list drops the deleted IDs.
 
 ## What this protects against
 

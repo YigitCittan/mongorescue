@@ -55,16 +55,38 @@ type OIDCRoleMapping struct {
 	Group string `json:"group"`
 	// Role is viewer, operator or admin.
 	Role string `json:"role"`
-	// ConnectionIDs limits the members to these connections; empty means every
-	// connection. A user matching several mappings gets the union of their
-	// connections, or every connection when one of them has none. Admin mappings
-	// cannot be limited.
+	// AllConnections grants every connection with the role; ConnectionIDs is then
+	// empty. Without it the mapping grants exactly ConnectionIDs (none when empty).
+	// Saving the settings always stores it; a mapping stored before connection
+	// access existed (neither field) grants every connection. Admin mappings always
+	// grant every connection.
+	AllConnections *bool `json:"all_connections,omitempty"`
+	// ConnectionIDs are the connections granted without AllConnections.
 	ConnectionIDs []string `json:"connection_ids,omitempty"`
+}
+
+// Access returns the connections m grants (see AllConnections).
+func (m OIDCRoleMapping) Access() auth.ConnectionAccess {
+	if m.AllConnections != nil && !*m.AllConnections {
+		return auth.ConnectionAccess{ConnectionIDs: slices.Clone(m.ConnectionIDs)}
+	}
+	if m.AllConnections == nil && m.ConnectionIDs != nil {
+		// Sent without the flag: the listed connections, none for an empty list.
+		return auth.ConnectionAccess{ConnectionIDs: slices.Clone(m.ConnectionIDs)}
+	}
+	return auth.EveryConnection()
 }
 
 // equal reports whether m and o are the same mapping.
 func (m OIDCRoleMapping) equal(o OIDCRoleMapping) bool {
-	return m.Group == o.Group && m.Role == o.Role && slices.Equal(m.ConnectionIDs, o.ConnectionIDs)
+	a, b := m.Access(), o.Access()
+	return m.Group == o.Group && m.Role == o.Role && a.AllConnections == b.AllConnections && slices.Equal(a.ConnectionIDs, b.ConnectionIDs)
+}
+
+// Redacted returns m without its connections, for callers that are not
+// administrators.
+func (m OIDCRoleMapping) Redacted() OIDCRoleMapping {
+	return OIDCRoleMapping{Group: m.Group, Role: m.Role}
 }
 
 // OIDC configures single sign-on through an OpenID Connect provider. Local
@@ -131,6 +153,10 @@ func (o OIDC) clone() OIDC {
 	o.RoleMappings = slices.Clone(o.RoleMappings)
 	for i := range o.RoleMappings {
 		o.RoleMappings[i].ConnectionIDs = slices.Clone(o.RoleMappings[i].ConnectionIDs)
+		if a := o.RoleMappings[i].AllConnections; a != nil {
+			v := *a
+			o.RoleMappings[i].AllConnections = &v
+		}
 	}
 	o.AllowedEmailDomains = slices.Clone(o.AllowedEmailDomains)
 	return o
@@ -418,14 +444,17 @@ func validateOIDC(o *OIDC) error {
 		default:
 			return fmt.Errorf("%w: oidc.role_mappings: the role of %q must be viewer, operator or admin", ErrInvalid, truncate(m.Group, 40))
 		}
-		ids, err := auth.NormalizeConnectionIDs(m.ConnectionIDs)
-		if err != nil {
-			return fmt.Errorf("%w: oidc.role_mappings: the connections of %q: %w", ErrInvalid, truncate(m.Group, 40), err)
+		access, err := m.Access().Normalized()
+		if err != nil || (m.AllConnections != nil && *m.AllConnections && len(m.ConnectionIDs) > 0) {
+			return fmt.Errorf("%w: oidc.role_mappings: the connections of %q: %w", ErrInvalid, truncate(m.Group, 40),
+				errors.Join(err, auth.ErrInvalidConnections))
 		}
-		if m.Role == "admin" && len(ids) > 0 {
+		if m.Role == "admin" && !access.AllConnections {
 			return fmt.Errorf("%w: oidc.role_mappings: %q maps to admin, and administrators always have access to every connection", ErrInvalid, truncate(m.Group, 40))
 		}
-		m.ConnectionIDs = ids
+		// Stored explicitly, so an empty list always means none.
+		all := access.AllConnections
+		m.AllConnections, m.ConnectionIDs = &all, access.ConnectionIDs
 		if !slices.ContainsFunc(mappings, m.equal) {
 			mappings = append(mappings, m)
 		}

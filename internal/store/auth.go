@@ -16,7 +16,7 @@ import (
 // Compile-time check that SQLiteStore serves the auth port.
 var _ auth.Repository = (*SQLiteStore)(nil)
 
-const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject, role_changed_at, must_change_password, connection_ids"
+const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject, role_changed_at, must_change_password, all_connections, connection_ids"
 
 // errInconsistentIdentity is returned when a user's provider, subject and password
 // hash disagree: an OIDC user has a subject and an empty hash, a local user neither
@@ -86,12 +86,15 @@ func insertUser(ctx context.Context, e execer, u *auth.User) error {
 	if u.RoleChangedAt.IsZero() {
 		u.RoleChangedAt = u.CreatedAt
 	}
-	if u.Role == auth.RoleAdmin && len(u.ConnectionIDs) > 0 {
-		return fmt.Errorf("store: insert user: %w", auth.ErrAdminConnections)
+	// Administrators always have every connection; anyone else gets exactly the
+	// access bound here (the zero value is none).
+	if u.Role == auth.RoleAdmin {
+		u.ConnectionAccess = auth.EveryConnection()
 	}
-	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	all, ids := accessColumns(u.ConnectionAccess)
+	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role),
-		string(u.AuthProvider), subject, timeKey(u.RoleChangedAt), boolInt(u.MustChangePassword), connectionIDsJSON(u.ConnectionIDs))
+		string(u.AuthProvider), subject, timeKey(u.RoleChangedAt), boolInt(u.MustChangePassword), all, ids)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return auth.ErrUserExists
@@ -282,8 +285,9 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string
 // connection limit.
 func setRole(ctx context.Context, tx *sql.Tx, userID string, role auth.Role, updatedAt time.Time) error {
 	if err := execOne(ctx, tx, auth.ErrUserNotFound, `UPDATE users SET role = ?, updated_at = ?, role_changed_at = ?,
+		all_connections = CASE WHEN ? = 'admin' THEN 1 ELSE all_connections END,
 		connection_ids = CASE WHEN ? = 'admin' THEN '[]' ELSE connection_ids END WHERE id = ?`,
-		string(role), timeKey(updatedAt), timeKey(updatedAt), string(role), userID); err != nil {
+		string(role), timeKey(updatedAt), timeKey(updatedAt), string(role), string(role), userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
@@ -292,10 +296,10 @@ func setRole(ctx context.Context, tx *sql.Tx, userID string, role auth.Role, upd
 	return nil
 }
 
-// UpdateUserConnections limits userID to connectionIDs (every connection when
-// empty) in one transaction, refusing a limit on an administrator and, when actorID
-// is not "", acting for a user who is no longer an admin.
-func (s *SQLiteStore) UpdateUserConnections(ctx context.Context, actorID, userID string, connectionIDs []string, updatedAt time.Time) error {
+// UpdateUserConnections sets the connection access of userID in one transaction,
+// refusing a limit on an administrator and, when actorID is not "", acting for a
+// user who is no longer an admin.
+func (s *SQLiteStore) UpdateUserConnections(ctx context.Context, actorID, userID string, access auth.ConnectionAccess, updatedAt time.Time) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		if actorID != "" {
 			if err := requireAdminRole(ctx, tx, actorID); err != nil {
@@ -306,42 +310,50 @@ func (s *SQLiteStore) UpdateUserConnections(ctx context.Context, actorID, userID
 		if err != nil {
 			return err
 		}
-		if role == auth.RoleAdmin && len(connectionIDs) > 0 {
+		if role == auth.RoleAdmin && !access.AllConnections {
 			return auth.ErrAdminConnections
 		}
-		return execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET connection_ids = ?, updated_at = ? WHERE id = ?",
-			connectionIDsJSON(connectionIDs), timeKey(updatedAt), userID)
+		all, ids := accessColumns(access)
+		return execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET all_connections = ?, connection_ids = ?, updated_at = ? WHERE id = ?",
+			all, ids, timeKey(updatedAt), userID)
 	})
 }
 
-// connectionIDsJSON encodes a connection list for the connection_ids columns: a
-// JSON array, "[]" for every connection.
-func connectionIDsJSON(ids []string) string {
-	if len(ids) == 0 {
-		return "[]"
+// accessColumns encodes a connection access for the all_connections and
+// connection_ids columns: 1 and "[]" for every connection, otherwise 0 and the
+// JSON array of the IDs ("[]" for none).
+func accessColumns(a auth.ConnectionAccess) (all int64, ids string) {
+	if a.AllConnections {
+		return 1, "[]"
 	}
-	b, err := json.Marshal(ids)
+	if len(a.ConnectionIDs) == 0 {
+		return 0, "[]"
+	}
+	b, err := json.Marshal(a.ConnectionIDs)
 	if err != nil {
-		// A []string always encodes.
-		return "[]"
+		// A []string always encodes; fail closed to none.
+		return 0, "[]"
 	}
-	return string(b)
+	return 0, string(b)
 }
 
-// parseConnectionIDs decodes a connection_ids column. An unreadable value is a
-// corrupt record: it is never read as "every connection".
-func parseConnectionIDs(raw string) ([]string, error) {
-	if raw == "" || raw == "[]" {
-		return nil, nil
+// parseAccess decodes the all_connections and connection_ids columns. An empty list
+// without all_connections is none, and an unreadable list is a corrupt record:
+// neither is ever read as every connection.
+func parseAccess(all int64, raw string) (auth.ConnectionAccess, error) {
+	if all == 1 {
+		return auth.EveryConnection(), nil
 	}
-	var ids []string
-	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
-		return nil, unreadable(fmt.Errorf("connection_ids: %w", err))
+	ids := []string{}
+	if raw != "" && raw != "[]" {
+		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+			return auth.ConnectionAccess{}, unreadable(fmt.Errorf("connection_ids: %w", err))
+		}
+		if ids == nil {
+			ids = []string{}
+		}
 	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	return ids, nil
+	return auth.ConnectionAccess{ConnectionIDs: ids}, nil
 }
 
 // guardLocalAdmin refuses to remove the last local admin id when keep is set or
@@ -466,8 +478,10 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 			at := in.At
 			u = &auth.User{ID: in.NewUserID, Username: in.Username, Role: in.Role, AuthProvider: auth.ProviderOIDC,
 				Subject: in.Subject, CreatedAt: at, UpdatedAt: at, LastLoginAt: &at}
-			if in.Role != auth.RoleAdmin {
-				u.ConnectionIDs = in.ConnectionIDs
+			// Without mappings (RoleOnCreate) a new user gets every connection.
+			u.ConnectionAccess = in.Connections
+			if in.RoleOnCreate {
+				u.ConnectionAccess = auth.EveryConnection()
 			}
 			if err = insertUser(ctx, tx, u); err != nil {
 				if errors.Is(err, auth.ErrUserExists) {
@@ -514,14 +528,17 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 		// The group mappings decide the connections with the role; an administrator
 		// (also one whose demotion was kept or held) reaches every connection.
 		if !in.RoleOnCreate {
-			ids := in.ConnectionIDs
+			access := in.Connections
 			if u.Role == auth.RoleAdmin {
-				ids = nil
+				access = auth.EveryConnection()
 			}
-			if _, err = tx.ExecContext(ctx, "UPDATE users SET connection_ids = ? WHERE id = ?", connectionIDsJSON(ids), u.ID); err != nil {
+			all, ids := accessColumns(access)
+			if _, err = tx.ExecContext(ctx, "UPDATE users SET all_connections = ?, connection_ids = ? WHERE id = ?", all, ids, u.ID); err != nil {
 				return fmt.Errorf("store: external sign-in: connections: %w", err)
 			}
-			u.ConnectionIDs = ids
+			if u.ConnectionAccess, err = parseAccess(all, ids); err != nil {
+				return err
+			}
 		}
 		at := in.At
 		u.UpdatedAt, u.LastLoginAt = at, &at
@@ -672,7 +689,7 @@ func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time, 
 }
 
 // apiKeyColumns lists column names only; key_hash holds SHA-256 digests.
-const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, connection_ids" //nolint:gosec // G101: column names, not credentials.
+const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, all_connections, connection_ids" //nolint:gosec // G101: column names, not credentials.
 
 // CreateAPIKey stores k. A key without a scope is stored with the least privileged
 // one, auth.ScopeRead.
@@ -681,9 +698,10 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, k *auth.APIKey) error {
 	if scope == "" {
 		scope = auth.ScopeRead
 	}
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	all, ids := accessColumns(k.ConnectionAccess)
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		k.ID, k.Name, k.Prefix, k.Hash, k.CreatedBy, timeKey(k.CreatedAt), nullTime(k.LastUsedAt), string(scope),
-		connectionIDsJSON(k.ConnectionIDs)); err != nil {
+		all, ids); err != nil {
 		return fmt.Errorf("store: create api key: %w", err)
 	}
 	return nil
@@ -764,16 +782,17 @@ func scanUserInto(r rowScanner, u *auth.User) error {
 	var created, updated, roleChanged, mustChange int64
 	var lastLogin sql.NullInt64
 	var role, provider, conns string
+	var all int64
 	var subject sql.NullString
 	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject, &roleChanged, &mustChange,
-		&conns); err != nil {
+		&all, &conns); err != nil {
 		return scanRowError("user", err)
 	}
-	ids, err := parseConnectionIDs(conns)
+	access, err := parseAccess(all, conns)
 	if err != nil {
 		return err
 	}
-	u.ConnectionIDs = ids
+	u.ConnectionAccess = access
 	u.MustChangePassword = mustChange != 0
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.Role = fromKey(created), fromKey(updated), nullableKey(lastLogin), auth.Role(role)
 	u.RoleChangedAt = fromKey(roleChanged)
@@ -797,14 +816,15 @@ func scanAPIKeyInto(r rowScanner, k *auth.APIKey) error {
 	var created int64
 	var lastUsed sql.NullInt64
 	var scope, conns string
-	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope, &conns); err != nil {
+	var all int64
+	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope, &all, &conns); err != nil {
 		return scanRowError("api key", err)
 	}
-	ids, err := parseConnectionIDs(conns)
+	access, err := parseAccess(all, conns)
 	if err != nil {
 		return err
 	}
-	k.ConnectionIDs = ids
+	k.ConnectionAccess = access
 	k.CreatedAt, k.LastUsedAt, k.Scope = fromKey(created), nullableKey(lastUsed), auth.Scope(scope)
 	return nil
 }

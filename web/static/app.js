@@ -3956,11 +3956,16 @@ function setAuth(data) {
   auth.role = data.role || (auth.user && auth.user.role) || "";
   auth.scope = data.scope || ROLE_SCOPES[auth.role] || "read";
   auth.keyScope = data.key_scope || "";
-  // The connections the caller may touch (access.js); null means every connection.
-  // Sign-in answers carry only the user, whose own list is its sessions' access.
-  const own = auth.user && auth.user.role !== "admin" && Array.isArray(auth.user.connection_ids) && auth.user.connection_ids.length
-    ? auth.user.connection_ids : null;
-  auth.connections = Array.isArray(data.connection_ids) ? data.connection_ids : (data.auth === "api_key" ? null : own);
+  // The connections the caller may touch (access.js); null means every connection,
+  // an empty list none. Sign-in answers carry only the user, whose own access is
+  // its sessions'.
+  const own = auth.user && auth.user.role !== "admin" && auth.user.all_connections === false
+    ? (Array.isArray(auth.user.connection_ids) ? auth.user.connection_ids : []) : null;
+  if (data.all_connections === false) {
+    auth.connections = Array.isArray(data.connection_ids) ? data.connection_ids : [];
+  } else {
+    auth.connections = data.all_connections === true || data.auth === "api_key" ? null : own;
+  }
   renderUserMenu();
   if (typeof applyRole === "function") applyRole();
 }
@@ -6087,7 +6092,7 @@ function openUserModal() {
   // New users are viewers unless an administrator picks more.
   setValue("user-role", "viewer");
   hideFormError("user-error");
-  if (typeof fillConnectionChecklist === "function") fillConnectionChecklist("user-connections", []);
+  if (typeof fillConnectionChecklist === "function") fillConnectionChecklist("user-connections", { all: true, ids: [] });
   openModal("modal-user");
 }
 
@@ -6109,7 +6114,7 @@ async function saveUser(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username, password, role,
-        connection_ids: typeof checkedConnections === "function" && role !== "admin" ? checkedConnections("user-connections") : []
+        ...(typeof readConnectionAccess === "function" && role !== "admin" ? readConnectionAccess("user-connections") : { all_connections: true })
       })
     });
     // With the two-person rule an administrator is created as a viewer and the role
@@ -6223,7 +6228,7 @@ function openApiKeyModal() {
   // Administrators may limit a key to some connections (access.js).
   const conns = document.getElementById("api-key-connections-group");
   if (conns) conns.hidden = !can("admin");
-  if (can("admin") && typeof fillConnectionChecklist === "function") fillConnectionChecklist("api-key-connections", []);
+  if (can("admin") && typeof fillConnectionChecklist === "function") fillConnectionChecklist("api-key-connections", { all: true, ids: [] });
   showApiKeyStep("name");
   openModal("modal-api-key");
 }
@@ -6255,7 +6260,8 @@ async function createApiKey(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name, scope,
-        connection_ids: can("admin") && scope !== "admin" && typeof checkedConnections === "function" ? checkedConnections("api-key-connections") : []
+        ...(can("admin") && scope !== "admin" && typeof readConnectionAccess === "function"
+          ? readConnectionAccess("api-key-connections") : { all_connections: true })
       })
     });
     if (!json.success) {

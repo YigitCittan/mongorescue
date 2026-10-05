@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -72,7 +73,15 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.refreshRecoveryKit(r.Context())
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}, Warnings: svc.Warnings(),
+	masked := svc.Masked()
+	// The connections of the group mappings name connections: only administrators
+	// see them; everyone else gets the groups and roles.
+	if !auth.PrincipalFrom(r.Context()).Allows(auth.ScopeAdmin) {
+		for i, m := range masked.OIDC.RoleMappings {
+			masked.OIDC.RoleMappings[i] = m.Redacted()
+		}
+	}
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: masked, RestartRequired: []string{}, Warnings: svc.Warnings(),
 		PendingChanges: s.pendingChanges(r)})
 }
 

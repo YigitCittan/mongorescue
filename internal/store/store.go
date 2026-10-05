@@ -135,6 +135,9 @@ type Store interface {
 	// LatestJobBackups maps every job ID with backups to its newest backup, only
 	// considering backups in status when it is not empty.
 	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
+	// LatestJobBackupsIn is LatestJobBackups over the backups taken from the
+	// connections in set (every backup when set is nil).
+	LatestJobBackupsIn(ctx context.Context, status models.BackupStatus, set auth.ConnectionSet) (map[string]*models.BackupRecord, error)
 	// LatestJobDatabaseBackups maps every database of a job with backups in status
 	// (any when empty) to its newest one.
 	LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error)

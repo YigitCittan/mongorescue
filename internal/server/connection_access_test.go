@@ -64,14 +64,25 @@ const (
 	kindStream     accessKind = "pitr stream"
 )
 
-// accessIDs are A's and B's record of each kind.
-var accessIDs = map[accessKind][2]string{
-	kindConnection: {testConnID, accessConnB},
-	kindTarget:     {accessTgtA, accessTgtB},
-	kindJob:        {accessJobA, accessJobB},
-	kindBackup:     {accessBkpA, accessBkpB},
-	kindRestore:    {accessRstA, accessRstB},
-	kindStream:     {accessPstA, accessPstB},
+// accessID returns A's (side 0) or B's (side 1) record of kind. (A switch, not a
+// map: with -race, Go 1.26.0 read the wrong entry of a map of [2]string here.)
+func accessID(kind accessKind, side int) string {
+	var ids [2]string
+	switch kind {
+	case kindConnection:
+		ids = [2]string{testConnID, accessConnB}
+	case kindTarget:
+		ids = [2]string{accessTgtA, accessTgtB}
+	case kindJob:
+		ids = [2]string{accessJobA, accessJobB}
+	case kindBackup:
+		ids = [2]string{accessBkpA, accessBkpB}
+	case kindRestore:
+		ids = [2]string{accessRstA, accessRstB}
+	case kindStream:
+		ids = [2]string{accessPstA, accessPstB}
+	}
+	return ids[side]
 }
 
 // accessPathRoutes are the routes whose path names a connection, or a record of
@@ -235,8 +246,8 @@ func newAccessFixture(t *testing.T) *accessFixture {
 			Status: models.RestoreStatusCompleted, StartedAt: now}))
 	}
 	for i, conn := range []string{testConnID, accessConnB} {
-		must(st.CreateStream(ctx, &pitr.Stream{ID: accessIDs[kindStream][i], ConnectionID: conn, ReplicaSet: "rs0",
-			TargetID: accessIDs[kindTarget][i], ChunkSeconds: 60}))
+		must(st.CreateStream(ctx, &pitr.Stream{ID: accessID(kindStream, i), ConnectionID: conn, ReplicaSet: "rs0",
+			TargetID: accessID(kindTarget, i), ChunkSeconds: 60}))
 	}
 
 	conns := connections.NewService(st, &fakeProber{dbs: []connections.Database{{Name: "shop"}}}, connections.WithTestTimeout(2*time.Second))
@@ -271,9 +282,9 @@ func newAccessFixture(t *testing.T) *accessFixture {
 	must(err)
 	admin, err := svc.AuthenticateSession(ctx, res.Token)
 	must(err)
-	f.operator, err = svc.CreateUserWithConnections(ctx, admin, "team-a", testPassword, auth.RoleOperator, []string{testConnID})
+	f.operator, err = svc.CreateUserWithConnections(ctx, admin, "team-a", testPassword, auth.RoleOperator, auth.ConnectionAccess{ConnectionIDs: []string{testConnID}})
 	must(err)
-	_, f.key, err = svc.CreateAPIKeyWithConnections(ctx, admin, "team a automation", auth.ScopeOperator, []string{testConnID})
+	_, f.key, err = svc.CreateAPIKeyWithConnections(ctx, admin, "team a automation", auth.ScopeOperator, auth.ConnectionAccess{ConnectionIDs: []string{testConnID}})
 	must(err)
 	return f
 }
@@ -327,7 +338,7 @@ func accessPath(pattern string, kind accessKind, side int) (method, path string)
 	if side == 1 {
 		db = accessDBB
 	}
-	return method, strings.NewReplacer("{id}", accessIDs[kind][side], "{db}", db).Replace(path)
+	return method, strings.NewReplacer("{id}", accessID(kind, side), "{db}", db).Replace(path)
 }
 
 // TestEveryRouteIsClassifiedForConnectionAccess fails when a route is registered

@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -94,11 +96,22 @@ func (s *SQLiteStore) JobDatabaseJoins(ctx context.Context) (map[string]map[stri
 // completed backup of that job and database, in one query; with verified, the
 // newest completed one whose stored archive passed verification ("ok").
 func (s *SQLiteStore) LatestJobDatabaseBackupsAll(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error) {
+	return s.LatestJobDatabaseBackupsAllIn(ctx, verified, nil)
+}
+
+// LatestJobDatabaseBackupsAllIn is LatestJobDatabaseBackupsAll over the backups
+// taken from the connections in set (every backup when set is nil): a backup's own
+// connection decides, so a job that moved keeps the newest backup of set.
+func (s *SQLiteStore) LatestJobDatabaseBackupsAllIn(ctx context.Context, verified bool, set auth.ConnectionSet) (map[string]map[string]*models.BackupRecord, error) {
+	clause, connArgs := connectionClause("connection_id", set)
 	// cond selects the rows of the table aliased t.
 	cond := func(t string) string {
 		c := t + `.job_id != '' AND ` + t + `.status = ?`
 		if verified {
 			c += ` AND json_extract(` + t + `.data, '$.verification') = ?`
+		}
+		if clause != "" {
+			c += strings.Replace(clause, "connection_id", t+".connection_id", 1)
 		}
 		return c
 	}
@@ -106,6 +119,7 @@ func (s *SQLiteStore) LatestJobDatabaseBackupsAll(ctx context.Context, verified 
 	if verified {
 		args = append(args, string(models.VerificationOK))
 	}
+	args = append(args, connArgs...)
 	query := `SELECT b.id, b.data FROM backups b JOIN (
 			SELECT i.job_id, i.database_name, max(i.started_at) AS latest FROM backups i WHERE ` + cond("i") + ` GROUP BY i.job_id, i.database_name
 		) l ON b.job_id = l.job_id AND b.database_name = l.database_name AND b.started_at = l.latest

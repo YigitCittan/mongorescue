@@ -36,3 +36,41 @@ func TestReportFollowsConnectionAccess(t *testing.T) {
 		t.Fatalf("unlimited report: %+v, %v", report, err)
 	}
 }
+
+// TestReportEvidenceFollowsTheBackupsConnection checks that a job moved from
+// another connection does not show that connection's backups to a limited caller,
+// and that a restore into a connection the caller may not touch is no RTO evidence.
+func TestReportEvidenceFollowsTheBackupsConnection(t *testing.T) {
+	st := storetest.New(t)
+	ctx := context.Background()
+	clk := &clock{now: t0.Add(48 * time.Hour)}
+	svc := readiness.New(readiness.Config{Store: unedited{st}, Now: clk.Now})
+	saveJob(t, st, &models.Job{ID: "job_m", Name: "moved", Database: "shop", CronExpression: "@daily", Enabled: true,
+		ConnectionID: "c1", CreatedAt: t0})
+	saveBackup(t, st, &models.BackupRecord{ID: "b_c1", JobID: "job_m", Database: "shop", ConnectionID: "c1", StartedAt: t0.Add(10 * time.Hour),
+		Verification: models.VerificationOK})
+	saveBackup(t, st, &models.BackupRecord{ID: "b_c2", JobID: "job_m", Database: "shop", ConnectionID: "c2", StartedAt: t0.Add(20 * time.Hour),
+		Verification: models.VerificationOK})
+	restored := t0.Add(30 * time.Hour)
+	if err := st.SaveRestoreRecord(ctx, &models.RestoreRecord{ID: "rs_c2", SourceDatabase: "shop", SourceConnectionID: "c1",
+		TargetConnectionID: "c2", Status: models.RestoreStatusCompleted, StartedAt: t0.Add(29 * time.Hour), CompletedAt: &restored,
+		DurationSeconds: 900}); err != nil {
+		t.Fatal(err)
+	}
+	limited := auth.WithPrincipal(ctx, &auth.Principal{Method: auth.MethodSession, Scope: auth.ScopeOperator, Connections: auth.OnlyConnections("c1")})
+	report, err := svc.Report(limited)
+	if err != nil || len(report.Rows) != 1 {
+		t.Fatalf("limited report = %+v, %v", report, err)
+	}
+	row := report.Rows[0]
+	if row.LastGoodBackup == nil || row.LastGoodBackup.ID != "b_c1" || row.LastVerifiedBackup == nil || row.LastVerifiedBackup.ID != "b_c1" {
+		t.Fatalf("evidence of a limited caller = good %+v, verified %+v; want b_c1", row.LastGoodBackup, row.LastVerifiedBackup)
+	}
+	if row.RTO != nil && row.RTO.Source == readiness.RTOSourceRestore {
+		t.Fatalf("RTO from a restore into c2: %+v", row.RTO)
+	}
+	if report, err = svc.Report(ctx); err != nil || report.Rows[0].LastGoodBackup.ID != "b_c2" ||
+		report.Rows[0].RTO == nil || report.Rows[0].RTO.Source != readiness.RTOSourceRestore {
+		t.Fatalf("unlimited row = %+v, %v", report.Rows[0], err)
+	}
+}

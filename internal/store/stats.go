@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -98,15 +100,24 @@ func (s *SQLiteStore) BackupStatsIn(ctx context.Context, since time.Time, set au
 // newest backup of a job cannot be read, it is skipped (and reported) and the job's
 // newest readable backup is used instead.
 func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
+	return s.LatestJobBackupsIn(ctx, status, nil)
+}
+
+// LatestJobBackupsIn is LatestJobBackups over the backups taken from the connections
+// in set (every backup when set is nil): a backup's own connection decides, so a
+// job that moved keeps its newest backup of set.
+func (s *SQLiteStore) LatestJobBackupsIn(ctx context.Context, status models.BackupStatus, set auth.ConnectionSet) (map[string]*models.BackupRecord, error) {
+	clause, connArgs := connectionClause("connection_id", set)
+	bClause := strings.Replace(clause, "connection_id", "b.connection_id", 1)
 	query := `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
-			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest`
-	var args []any
+			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != ''` + clause + ` GROUP BY job_id
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE 1` + bClause
+	args := append(slices.Clone(connArgs), connArgs...)
 	if status != "" {
 		query = `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
-			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ? GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?`
-		args = []any{string(status), string(status)}
+			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ?` + clause + ` GROUP BY job_id
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?` + bClause
+		args = append(append(append([]any{string(status)}, connArgs...), string(status)), connArgs...)
 	}
 	out, skipped, err := s.latestJobRows(ctx, query, args...)
 	if err != nil {
@@ -116,12 +127,14 @@ func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.Backup
 		if _, ok := out[jobID]; ok {
 			continue
 		}
-		fallback := "SELECT id, data FROM backups WHERE job_id = ? ORDER BY started_at DESC, id DESC"
+		fallback := "SELECT id, data FROM backups WHERE job_id = ?"
 		fargs := []any{jobID}
 		if status != "" {
-			fallback = "SELECT id, data FROM backups WHERE job_id = ? AND status = ? ORDER BY started_at DESC, id DESC"
+			fallback += " AND status = ?"
 			fargs = append(fargs, string(status))
 		}
+		fallback += clause + " ORDER BY started_at DESC, id DESC"
+		fargs = append(fargs, connArgs...)
 		b, err := firstReadable[models.BackupRecord](ctx, s, tableBackups, fallback, fargs...)
 		if err != nil {
 			return nil, err

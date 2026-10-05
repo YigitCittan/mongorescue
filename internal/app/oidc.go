@@ -20,7 +20,7 @@ func oidcPolicy(o settings.OIDC, desktop bool) auth.OIDCPolicy {
 		AutoCreateUsers:     o.AutoCreateUsers,
 	}
 	for _, m := range o.RoleMappings {
-		p.RoleMappings = append(p.RoleMappings, auth.RoleMapping{Group: m.Group, Role: auth.Role(m.Role), ConnectionIDs: m.ConnectionIDs})
+		p.RoleMappings = append(p.RoleMappings, auth.RoleMapping{Group: m.Group, Role: auth.Role(m.Role), ConnectionAccess: m.Access()})
 	}
 	return p
 }

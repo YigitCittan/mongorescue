@@ -388,7 +388,8 @@ func TestUsersAPI(t *testing.T) {
 	}
 	for _, u := range users {
 		for k := range u {
-			if k != "id" && k != "username" && k != "role" && k != "auth_provider" && k != "created_at" && k != "last_login_at" {
+			if k != "id" && k != "username" && k != "role" && k != "auth_provider" && k != "created_at" && k != "last_login_at" &&
+				k != "all_connections" && k != "connection_ids" {
 				t.Errorf("unexpected user field %q", k)
 			}
 		}

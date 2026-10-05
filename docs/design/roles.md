@@ -80,15 +80,18 @@ may do to a set of connections.
 
 ### Model
 
-- `users.connection_ids` and `api_keys.connection_ids` (migration
-  `0024_connection_access.sql`, JSON arrays, `[]` for every connection) hold the
-  limits. Every user and key stored before the migration comes out unlimited.
+- `users` and `api_keys` gain `all_connections` and `connection_ids` (migration
+  `0024_connection_access.sql`): every connection, or exactly a JSON array. An empty
+  list is no connection, never every connection, and the zero value of
+  `auth.ConnectionAccess` allows nothing (fail closed). Every user and key stored
+  before the migration keeps `all_connections`; the store binds both columns of
+  every new row, so the column default never applies to one.
 - Administrators are always unlimited: a limit on an admin user, an admin-scope key
   or an admin group mapping is refused (`auth.ErrAdminConnections`), and promoting a
   user to admin clears the limit in the same transaction.
 - A key is capped by its creator like its scope: `effectiveConnections` intersects
-  the key's own list with the creator's *current* connections on every request, so
-  limiting a user limits their keys at once, and a key created without a list by a
+  the key's own access with the creator's *current* connections on every request, so
+  limiting a user limits their keys at once, and a key with `all_connections` of a
   limited user reaches the user's connections. A list naming a connection outside
   the creator's is refused (`auth.ErrConnectionsExceedAccess`). Keys without a
   creator (imported) and the system are unlimited.
@@ -143,10 +146,14 @@ records keyed by connection, which they are not; it is out of scope.
 
 ### OIDC
 
-A group mapping may carry `connection_ids`. A user's connections are the union over
-every matching mapping, or every connection when one matching mapping has none, when
-only the default role applies, or when the role is admin; they are recomputed with
-the role at every sign-in and cannot be changed by hand while mappings exist.
+A group mapping carries `all_connections` or `connection_ids` like a user. Only the
+mappings that grant the chosen (highest) role count: the user's connections are the
+union of their lists, or every connection when one of them has `all_connections`, so
+a mapping of a lower role never widens a higher one (G1 → operator on A, G2 →
+viewer on everything: a member of both is an operator on A only). The default role
+and the admin role get every connection. They are recomputed with the role at every
+sign-in and cannot be changed by hand while mappings exist; non-admins do not see
+the mappings' connections in the settings.
 Changing connections is never an admin grant, so the two-person rule does not hold
 it, not even when it widens someone's access to every connection.
 

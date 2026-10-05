@@ -167,12 +167,12 @@ func (a accessStore) BackupHistory(ctx context.Context, q store.BackupHistoryQue
 
 // LatestJobBackups maps the jobs to their newest backups the caller may touch.
 func (a accessStore) LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
-	m, err := a.Store.LatestJobBackups(ctx, status)
-	if err != nil || !auth.ConnectionFilter(ctx).Limited() {
-		return m, err
+	// A backup's own connection decides, not its job's: a job that moved from
+	// another connection shows its newest backup of the caller's connections.
+	if set := auth.ConnectionFilter(ctx); set.Limited() {
+		return a.LatestJobBackupsIn(ctx, status, set)
 	}
-	maps.DeleteFunc(m, func(_ string, b *models.BackupRecord) bool { return !backupVisible(ctx, b) })
-	return m, nil
+	return a.Store.LatestJobBackups(ctx, status)
 }
 
 // LatestJobDatabaseBackups maps the databases of job jobID to their newest backups

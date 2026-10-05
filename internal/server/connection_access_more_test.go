@@ -130,8 +130,8 @@ func TestUserConnectionsOverHTTP(t *testing.T) {
 			t.Errorf("me of a limited caller: %d %s", code, body)
 		}
 	}
-	if _, body := f.get("/api/v1/auth/me", admin); strings.Contains(body, "connection_ids") {
-		t.Errorf("me of an unlimited caller: %s; want no connection_ids", body)
+	if _, body := f.get("/api/v1/auth/me", admin); !strings.Contains(body, `"all_connections":true`) {
+		t.Errorf("me of an unlimited caller: %s; want all_connections", body)
 	}
 	if _, body := f.get("/api/v1/users", admin); !strings.Contains(body, `"connection_ids":["`+testConnID+`"]`) {
 		t.Errorf("users: %s; want the operator's connections", body)
@@ -150,6 +150,40 @@ func TestUserConnectionsOverHTTP(t *testing.T) {
 	}
 	if code, body := put(f.operator.ID, `{"connection_ids":["conn_nope"]}`); code != http.StatusBadRequest {
 		t.Errorf("unknown connection: %d %s; want 400", code, body)
+	}
+	if code, body := put(f.operator.ID, `{"all_connections":true,"connection_ids":["`+testConnID+`"]}`); code != http.StatusBadRequest {
+		t.Errorf("all_connections with a list: %d %s; want 400", code, body)
+	}
+	if code, body := put(f.operator.ID, `{}`); code != http.StatusBadRequest {
+		t.Errorf("neither field: %d %s; want 400", code, body)
+	}
+
+	// An empty list is none, never every connection.
+	if code, body := put(f.operator.ID, `{"connection_ids":[]}`); code != http.StatusOK || !strings.Contains(body, `"all_connections":false`) {
+		t.Fatalf("limit to none: %d %s", code, body)
+	}
+	if code, body := f.get("/api/v1/connections", f.session(t)); code != http.StatusOK || strings.Contains(body, testConnID) {
+		t.Errorf("a user with no connection lists: %d %s; want none", code, body)
+	}
+	// A deleted connection still on the list is dropped, not a reason to widen:
+	// limited to A and a connection deleted since, the admin saves A alone.
+	if code, body := put(f.operator.ID, `{"connection_ids":["`+testConnID+`"]}`); code != http.StatusOK {
+		t.Fatalf("limit to A: %d %s", code, body)
+	}
+	if err := f.st.UpdateUserConnections(context.Background(), "", f.operator.ID,
+		auth.ConnectionAccess{ConnectionIDs: []string{testConnID, "conn_deleted"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := put(f.operator.ID, `{"connection_ids":["`+testConnID+`","conn_deleted"]}`); code != http.StatusOK ||
+		strings.Contains(body, "conn_deleted") || !strings.Contains(body, `"connection_ids":["`+testConnID+`"]`) {
+		t.Errorf("saving a list with a deleted connection: %d %s; want it dropped", code, body)
+	}
+	if err := f.st.UpdateUserConnections(context.Background(), "", f.operator.ID,
+		auth.ConnectionAccess{ConnectionIDs: []string{"conn_deleted"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := put(f.operator.ID, `{"connection_ids":["conn_deleted"]}`); code != http.StatusOK || !strings.Contains(body, `"connection_ids":[]`) {
+		t.Errorf("a list of only a deleted connection: %d %s; want none, not every connection", code, body)
 	}
 	users, err := f.auth.ListUsers(context.Background(), auth.SystemPrincipal())
 	if err != nil {
@@ -179,7 +213,7 @@ func TestUserConnectionsOverHTTP(t *testing.T) {
 func TestLimitedKeysAreCappedByTheirCreator(t *testing.T) {
 	f := newAccessFixture(t)
 	// The limited operator's own key, created without a limit, inherits theirs.
-	rec := serve(f.h, http.MethodPost, "/api/v1/api-keys", []byte(`{"name":"mine","scope":"operator"}`), f.session(t))
+	rec := serve(f.h, http.MethodPost, "/api/v1/api-keys", []byte(`{"name":"mine","scope":"operator","all_connections":true}`), f.session(t))
 	var res struct {
 		Data struct {
 			Key    string `json:"key"`
