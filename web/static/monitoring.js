@@ -6,7 +6,7 @@
  * pinged every interval while the scheduler is healthy) and its interval, with a
  * "Send test ping" button (POST /api/v1/settings/monitoring/test, admin). The job
  * form gets an optional heartbeat URL of its own (heartbeat_url): pinged at
- * <url>/start when a run starts, <url> on success and <url>/fail on failure.
+ * <url>/start when a run starts, <url> on success and <url>/fail on failure (nothing more for a cancelled run).
  *
  * Heartbeat URLs are secrets: the server returns them masked (origin + "******")
  * and keeps the stored URL when the masked value is sent back. Loaded after
@@ -37,7 +37,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "The interval must be between 1 and 60 minutes.",
       alerts_hint: "Prometheus alert rules for these signals ship in deploy/prometheus/alerts.yml; see the monitoring guide.",
       job_url: "Heartbeat URL",
-      job_url_hint: "Optional. Pinged at <url>/start when a run starts, <url> when it succeeds and <url>/fail when it fails, is partial or is cancelled. Stored encrypted."
+      job_url_hint: "Optional. Pinged at <url>/start when a run starts, <url> when it succeeds and <url>/fail when it fails or is partial; a cancelled run sends nothing more. Stored encrypted."
     }
   },
   tr: {
@@ -58,7 +58,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "Aralık 1 ile 60 dakika arasında olmalıdır.",
       alerts_hint: "Bu sinyaller için Prometheus alarm kuralları deploy/prometheus/alerts.yml dosyasında gelir; izleme kılavuzuna bakın.",
       job_url: "Heartbeat URL'si",
-      job_url_hint: "İsteğe bağlı. Çalışma başladığında <url>/start, başarılı olduğunda <url>, başarısız, kısmi veya iptal edildiğinde <url>/fail adresine ping gönderilir. Şifreli saklanır."
+      job_url_hint: "İsteğe bağlı. Çalışma başladığında <url>/start, başarılı olduğunda <url>, başarısız veya kısmi olduğunda <url>/fail adresine ping gönderilir; iptal edilen çalışma başka ping göndermez. Şifreli saklanır."
     }
   },
   de: {
@@ -79,7 +79,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "Das Intervall muss zwischen 1 und 60 Minuten liegen.",
       alerts_hint: "Prometheus-Alarmregeln für diese Signale liegen in deploy/prometheus/alerts.yml; siehe die Überwachungsanleitung.",
       job_url: "Heartbeat-URL",
-      job_url_hint: "Optional. Gepingt wird <url>/start beim Start eines Laufs, <url> bei Erfolg und <url>/fail bei Fehlschlag, Teilerfolg oder Abbruch. Wird verschlüsselt gespeichert."
+      job_url_hint: "Optional. Gepingt wird <url>/start beim Start eines Laufs, <url> bei Erfolg und <url>/fail bei Fehlschlag oder Teilerfolg; ein abgebrochener Lauf sendet nichts mehr. Wird verschlüsselt gespeichert."
     }
   },
   es: {
@@ -100,7 +100,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "El intervalo debe estar entre 1 y 60 minutos.",
       alerts_hint: "Las reglas de alerta de Prometheus para estas señales se incluyen en deploy/prometheus/alerts.yml; consulta la guía de monitorización.",
       job_url: "URL de heartbeat",
-      job_url_hint: "Opcional. Se envía un ping a <url>/start cuando empieza una ejecución, a <url> cuando termina bien y a <url>/fail cuando falla, es parcial o se cancela. Se guarda cifrada."
+      job_url_hint: "Opcional. Se envía un ping a <url>/start cuando empieza una ejecución, a <url> cuando termina bien y a <url>/fail cuando falla o es parcial; una ejecución cancelada no envía nada más. Se guarda cifrada."
     }
   },
   fr: {
@@ -121,7 +121,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "L'intervalle doit être compris entre 1 et 60 minutes.",
       alerts_hint: "Les règles d'alerte Prometheus pour ces signaux sont fournies dans deploy/prometheus/alerts.yml ; voir le guide de surveillance.",
       job_url: "URL de heartbeat",
-      job_url_hint: "Facultatif. Ping de <url>/start au début d'une exécution, de <url> en cas de succès et de <url>/fail en cas d'échec, de résultat partiel ou d'annulation. Stockée chiffrée."
+      job_url_hint: "Facultatif. Ping de <url>/start au début d'une exécution, de <url> en cas de succès et de <url>/fail en cas d'échec ou de résultat partiel ; une exécution annulée n'envoie plus rien. Stockée chiffrée."
     }
   },
   zh: {
@@ -142,7 +142,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "间隔必须在 1 到 60 分钟之间。",
       alerts_hint: "这些信号的 Prometheus 告警规则位于 deploy/prometheus/alerts.yml；请参阅监控指南。",
       job_url: "心跳 URL",
-      job_url_hint: "可选。运行开始时 ping <url>/start，成功时 ping <url>，失败、部分成功或取消时 ping <url>/fail。加密存储。"
+      job_url_hint: "可选。运行开始时 ping <url>/start，成功时 ping <url>，失败或部分成功时 ping <url>/fail；已取消的运行不再发送 ping。加密存储。"
     }
   },
   ja: {
@@ -163,7 +163,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "間隔は 1〜60 分にしてください。",
       alerts_hint: "これらのシグナル用の Prometheus アラートルールは deploy/prometheus/alerts.yml に含まれています。監視ガイドを参照してください。",
       job_url: "ハートビート URL",
-      job_url_hint: "任意。実行開始時に <url>/start、成功時に <url>、失敗・一部失敗・キャンセル時に <url>/fail へ ping します。暗号化して保存されます。"
+      job_url_hint: "任意。実行開始時に <url>/start、成功時に <url>、失敗・一部失敗時に <url>/fail へ ping します。キャンセルされた実行はそれ以上送信しません。暗号化して保存されます。"
     }
   },
   ru: {
@@ -184,7 +184,7 @@ const MONITORING_TRANSLATIONS = {
       interval_invalid: "Интервал должен быть от 1 до 60 минут.",
       alerts_hint: "Правила оповещений Prometheus для этих сигналов поставляются в deploy/prometheus/alerts.yml; см. руководство по мониторингу.",
       job_url: "URL heartbeat",
-      job_url_hint: "Необязательно. Пинг <url>/start при запуске, <url> при успехе и <url>/fail при сбое, частичном результате или отмене. Хранится в зашифрованном виде."
+      job_url_hint: "Необязательно. Пинг <url>/start при запуске, <url> при успехе и <url>/fail при сбое или частичном результате; отменённый запуск больше ничего не отправляет. Хранится в зашифрованном виде."
     }
   }
 };

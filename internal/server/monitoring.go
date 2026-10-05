@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -15,6 +17,13 @@ import (
 
 // heartbeatTestRoute sends a test ping to the global heartbeat URL.
 const heartbeatTestRoute = "POST /api/v1/settings/monitoring/test"
+
+// Test pings each caller may send per window: the endpoint makes outbound requests
+// to a host the caller names.
+const (
+	heartbeatTestsPerWindow = 5
+	heartbeatTestWindow     = time.Minute
+)
 
 // Scheduler states reported by GET /api/v1/health.
 const (
@@ -43,8 +52,9 @@ func (s *Server) registerMonitoringRoutes(mux *router) {
 type schedulerLiveness interface {
 	// LastTick returns the time of the last liveness tick (zero before Start).
 	LastTick() time.Time
-	// Stale reports whether the last tick is older than scheduler.StaleAfter.
-	Stale(now time.Time) bool
+	// Stale reports whether the last tick is older than scheduler.StaleAfter,
+	// measured with the monotonic clock.
+	Stale() bool
 }
 
 // liveness returns the scheduler liveness source, or nil without a scheduler.
@@ -58,10 +68,10 @@ func (s *Server) liveness() schedulerLiveness {
 	return nil
 }
 
-// handleHealth reports liveness. It answers 503 with status "unhealthy" and
-// scheduler "stale" when the scheduler's last tick is older than
-// scheduler.StaleAfter, so a hung scheduler fails the health check; otherwise 200
-// with status "healthy". scheduler_last_tick is the time of that tick.
+// handleHealth reports liveness. It answers 503 with scheduler "stale" when the
+// scheduler's last tick is older than scheduler.StaleAfter, so a hung scheduler
+// fails the health check; otherwise 200. status keeps its value ("healthy") either
+// way, for clients that read it; scheduler and scheduler_last_tick are additions.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now().UTC()
 	body := map[string]any{
@@ -81,9 +91,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	switch {
 	case last.IsZero():
 		body["scheduler"] = schedulerNotStarted
-	case live.Stale(now):
+	case live.Stale():
 		body["scheduler"] = schedulerStale
-		body["status"] = "unhealthy"
 		writeErrorData(w, http.StatusServiceUnavailable, "the scheduler is stale: its last tick is older than "+scheduler.StaleAfter.String(), body)
 		return
 	default:
@@ -100,11 +109,21 @@ type heartbeatTestRequest struct {
 }
 
 // handleTestHeartbeat sends one success ping and reports the outcome. Failures are
-// 502 with a message naming the URL's host only.
+// 502 with a fixed description and the URL's host only. Each caller (user or API
+// key) may send heartbeatTestsPerWindow test pings per heartbeatTestWindow; more
+// are 429.
 func (s *Server) handleTestHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if s.heartbeat == nil {
 		writeError(w, http.StatusServiceUnavailable, "the heartbeat is not configured")
 		return
+	}
+	if s.heartbeatThrottle != nil {
+		if wait := s.heartbeatThrottle.CountFailure(heartbeatTestKey(auth.PrincipalFrom(r.Context())),
+			heartbeatTestsPerWindow, heartbeatTestWindow); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			writeError(w, http.StatusTooManyRequests, "too many test pings; try again in a minute")
+			return
+		}
 	}
 	svc, ok := s.requireSettings(w)
 	if !ok {
@@ -144,4 +163,19 @@ func (s *Server) handleTestHeartbeat(w http.ResponseWriter, r *http.Request) {
 		host = u.Hostname()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "host": host})
+}
+
+// heartbeatTestKey is the throttle key of p's test pings: its user, else its API
+// key.
+func heartbeatTestKey(p *auth.Principal) string {
+	switch {
+	case p == nil:
+		return "heartbeat-test|anonymous"
+	case p.User != nil:
+		return "heartbeat-test|user|" + p.User.ID
+	case p.APIKeyID != "":
+		return "heartbeat-test|key|" + p.APIKeyID
+	default:
+		return "heartbeat-test|" + string(p.Method)
+	}
 }

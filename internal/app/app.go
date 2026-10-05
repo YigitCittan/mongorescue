@@ -450,7 +450,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			m := settingsSvc.Current().Monitoring
 			return m.HeartbeatURL, m.HeartbeatInterval.Std()
 		},
-		Healthy: func() bool { return !sched.Stale(time.Now()) },
+		Healthy: func() bool { return !sched.Stale() },
+		OnDrop:  metricSet.IncHeartbeatDropped,
 		Logger:  logger,
 	})
 

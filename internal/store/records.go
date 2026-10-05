@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,9 +54,32 @@ func (s *SQLiteStore) sealJob(job *models.Job) (*models.Job, error) {
 	return &sealed, nil
 }
 
-// openJob decrypts job.HeartbeatURL in place. Plaintext values are refused (see
-// open): a job whose heartbeat cannot be opened is reported as corrupt.
+// tableJobHeartbeats names the heartbeat URLs of jobs in CorruptRecord.Table: a URL
+// that cannot be opened is reported there, apart from the job, which stays usable.
+const tableJobHeartbeats = "jobs.heartbeat_url"
+
+// openJob decrypts job.HeartbeatURL in place. A URL that cannot be opened (planted
+// plaintext, a damaged or swapped ciphertext) never makes the job unreadable: it is
+// dropped, so the job runs without its heartbeat, and reported through
+// CorruptRecords (table jobs.heartbeat_url) until the URL is entered again. Only a
+// missing secret box is an error.
 func (s *SQLiteStore) openJob(job *models.Job) error {
+	err := s.openJobHeartbeat(job)
+	switch {
+	case err == nil:
+		s.clearCorrupt(tableJobHeartbeats, job.ID)
+		return nil
+	case errors.Is(err, ErrNoSecretBox):
+		return err
+	}
+	job.HeartbeatURL = ""
+	s.reportCorruptField(tableJobHeartbeats, job.ID, err)
+	return nil
+}
+
+// openJobHeartbeat decrypts job.HeartbeatURL in place, refusing plaintext (see
+// open).
+func (s *SQLiteStore) openJobHeartbeat(job *models.Job) error {
 	v, err := s.open(secretbox.At(tableJobs, job.ID, fieldJobHeartbeatURL), job.HeartbeatURL)
 	if err != nil {
 		return err
@@ -171,8 +195,8 @@ func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*models.Job, error
 }
 
 // ListJobs returns all registered backup jobs sorted by name, their heartbeat URLs
-// decrypted. A job whose heartbeat URL cannot be opened is skipped and reported
-// through CorruptRecords.
+// decrypted. A job whose heartbeat URL cannot be opened is returned without it (see
+// openJob); only a job whose JSON cannot be read is skipped.
 func (s *SQLiteStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
 	return listRecords(ctx, s, tableJobs, s.openJob, "SELECT id, data FROM jobs ORDER BY name, id")
 }

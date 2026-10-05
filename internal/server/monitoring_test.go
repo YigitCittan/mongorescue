@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
@@ -22,8 +23,8 @@ import (
 type fakeLiveness struct{ last time.Time }
 
 func (f fakeLiveness) LastTick() time.Time { return f.last }
-func (f fakeLiveness) Stale(now time.Time) bool {
-	return !f.last.IsZero() && now.Sub(f.last) > scheduler.StaleAfter
+func (f fakeLiveness) Stale() bool {
+	return !f.last.IsZero() && time.Since(f.last) > scheduler.StaleAfter
 }
 
 func getHealth(t *testing.T, srv *Server) (int, map[string]any) {
@@ -57,7 +58,8 @@ func TestHealthReportsTheScheduler(t *testing.T) {
 	// A hung scheduler: its last tick is older than three intervals.
 	srv.livenessSource = fakeLiveness{last: time.Now().Add(-scheduler.StaleAfter - time.Minute)}
 	code, data = getHealth(t, srv)
-	if code != http.StatusServiceUnavailable || data["scheduler"] != schedulerStale || data["status"] != "unhealthy" {
+	// status keeps its value: the stale signal is the 503 and the scheduler field.
+	if code != http.StatusServiceUnavailable || data["scheduler"] != schedulerStale || data["status"] != "healthy" {
 		t.Fatalf("stale tick: %d %v", code, data)
 	}
 }
@@ -173,6 +175,8 @@ func TestHeartbeatTestEndpoint(t *testing.T) {
 	}))
 	t.Cleanup(monitor.Close)
 	srv.heartbeat = heartbeat.New(heartbeat.Config{Client: monitor.Client(), Logger: slog.New(slog.DiscardHandler)})
+	// More test pings than one caller may send per minute (see TestHeartbeatTestIsThrottled).
+	srv.heartbeatThrottle = nil
 	srv.settings = newTestSettings(t, metaStore.(settings.Repository), settings.Defaults().Security)
 	mux = srv.buildRoutes()
 
@@ -220,5 +224,40 @@ func TestSettingsMaskTheHeartbeatURL(t *testing.T) {
 	}
 	if code, _, raw = serveJSON(t, mux, http.MethodGet, "/api/v1/settings", nil); code != http.StatusOK || strings.Contains(raw, "settings-secret") || !strings.Contains(raw, "https://hc-ping.com/"+models.SecretMask) {
 		t.Fatalf("GET settings: %d %s", code, raw)
+	}
+}
+
+// TestHeartbeatTestIsThrottled proves each caller may send heartbeatTestsPerWindow
+// test pings per window (the endpoint makes outbound requests), and that a failure
+// shows a fixed reason and the host, never the dialled address.
+func TestHeartbeatTestIsThrottled(t *testing.T) {
+	srv, metaStore, _ := setupTestServer(t)
+	closed := httptest.NewServer(http.NotFoundHandler())
+	target := closed.URL + "/ping/secret"
+	closed.Close()
+	srv.heartbeat = heartbeat.New(heartbeat.Config{Logger: slog.New(slog.DiscardHandler)})
+	srv.settings = newTestSettings(t, metaStore.(settings.Repository), settings.Defaults().Security)
+	mux := srv.buildRoutes()
+	as := func(id string) http.Handler {
+		return asPrincipal(mux, &auth.Principal{User: &auth.User{ID: id}, Scope: auth.ScopeAdmin})
+	}
+	body := map[string]any{"heartbeat_url": target}
+	port := strings.TrimPrefix(closed.Listener.Addr().String(), "127.0.0.1:")
+	for i := range heartbeatTestsPerWindow {
+		code, _, raw := serveJSON(t, as("u1"), http.MethodPost, "/api/v1/settings/monitoring/test", body)
+		if code != http.StatusBadGateway || !strings.Contains(raw, "connection refused") || strings.Contains(raw, "secret") ||
+			strings.Contains(raw, ":"+port) {
+			t.Fatalf("test ping %d: %d %s", i+1, code, raw)
+		}
+	}
+	rec := httptest.NewRecorder()
+	raw, _ := json.Marshal(body)
+	as("u1").ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/settings/monitoring/test", bytes.NewReader(raw)))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("test ping over the limit: %d %s", rec.Code, rec.Body.String())
+	}
+	// Another user has a budget of their own.
+	if code, _, out := serveJSON(t, as("u2"), http.MethodPost, "/api/v1/settings/monitoring/test", body); code != http.StatusBadGateway {
+		t.Fatalf("another user's test ping: %d %s", code, out)
 	}
 }

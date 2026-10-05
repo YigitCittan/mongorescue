@@ -79,27 +79,33 @@ func testService(m *monitor, logger *slog.Logger) *Service {
 }
 
 func TestJobPingSequence(t *testing.T) {
+	// A cancelled run (a deliberate action) and a run interrupted by a shutdown
+	// send nothing after their start: the monitor reports the check as late when
+	// no successful run follows, and nobody is paged for a cancellation.
 	cases := []struct {
-		status models.JobRunStatus
-		last   string
+		name        string
+		status      models.JobRunStatus
+		interrupted bool
+		want        []string
 	}{
-		{models.JobRunOK, "/ping/abc"},
-		{models.JobRunFailed, "/ping/abc/fail"},
-		{models.JobRunPartial, "/ping/abc/fail"},
-		{models.JobRunCancelled, "/ping/abc/fail"},
+		{"ok", models.JobRunOK, false, []string{"/ping/abc/start", "/ping/abc"}},
+		{"failed", models.JobRunFailed, false, []string{"/ping/abc/start", "/ping/abc/fail"}},
+		{"partial", models.JobRunPartial, false, []string{"/ping/abc/start", "/ping/abc/fail"}},
+		{"cancelled by a user", models.JobRunCancelled, false, []string{"/ping/abc/start"}},
+		{"interrupted by a shutdown", models.JobRunFailed, true, []string{"/ping/abc/start"}},
+		{"cancelled during a shutdown", models.JobRunCancelled, true, []string{"/ping/abc/start"}},
 	}
 	for _, tc := range cases {
-		t.Run(string(tc.status), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			m := newMonitor(t)
 			s := testService(m, nil)
 			stop := run(s)
 			job := &models.Job{ID: "job_1", HeartbeatURL: m.srv.URL + "/ping/abc"}
 			s.JobRunStarted(job, &models.JobRun{Status: models.JobRunRunning})
-			s.JobRunFinished(job, &models.JobRun{Status: tc.status})
+			s.JobRunFinished(job, &models.JobRun{Status: tc.status}, tc.interrupted)
 			stop() // drains the pings in flight
-			want := []string{"/ping/abc/start", tc.last}
-			if got := m.got(); !slices.Equal(got, want) {
-				t.Fatalf("pings = %v; want %v", got, want)
+			if got := m.got(); !slices.Equal(got, tc.want) {
+				t.Fatalf("pings = %v; want %v", got, tc.want)
 			}
 		})
 	}
@@ -119,7 +125,7 @@ func TestJobPingsStayInOrder(t *testing.T) {
 	stop := run(s)
 	job := &models.Job{ID: "job_1", HeartbeatURL: m.srv.URL + "/p"}
 	s.JobRunStarted(job, nil)
-	s.JobRunFinished(job, &models.JobRun{Status: models.JobRunOK})
+	s.JobRunFinished(job, &models.JobRun{Status: models.JobRunOK}, false)
 	stop()
 	want := []string{"/p/start", "/p/start", "/p"}
 	if got := m.got(); !slices.Equal(got, want) {
@@ -132,7 +138,7 @@ func TestJobWithoutHeartbeatIsNotPinged(t *testing.T) {
 	s := testService(m, nil)
 	stop := run(s)
 	s.JobRunStarted(&models.Job{ID: "job_1"}, nil)
-	s.JobRunFinished(&models.Job{ID: "job_1"}, &models.JobRun{Status: models.JobRunOK})
+	s.JobRunFinished(&models.Job{ID: "job_1"}, &models.JobRun{Status: models.JobRunOK}, false)
 	stop()
 	if got := m.got(); len(got) != 0 {
 		t.Fatalf("pings = %v; want none", got)
@@ -142,10 +148,10 @@ func TestJobWithoutHeartbeatIsNotPinged(t *testing.T) {
 func TestPingsOutsideRunAreDropped(t *testing.T) {
 	m := newMonitor(t)
 	s := testService(m, nil)
-	s.JobRunFinished(&models.Job{ID: "job_1", HeartbeatURL: m.srv.URL}, &models.JobRun{Status: models.JobRunOK})
+	s.JobRunFinished(&models.Job{ID: "job_1", HeartbeatURL: m.srv.URL}, &models.JobRun{Status: models.JobRunOK}, false)
 	stop := run(s)
 	stop()
-	s.JobRunFinished(&models.Job{ID: "job_1", HeartbeatURL: m.srv.URL}, &models.JobRun{Status: models.JobRunOK})
+	s.JobRunFinished(&models.Job{ID: "job_1", HeartbeatURL: m.srv.URL}, &models.JobRun{Status: models.JobRunOK}, false)
 	if got := m.got(); len(got) != 0 {
 		t.Fatalf("pings = %v; want none before Run and after it returned", got)
 	}
@@ -334,8 +340,22 @@ func TestPingURL(t *testing.T) {
 }
 
 func TestSignalOf(t *testing.T) {
-	if SignalOf(models.JobRunOK) != SignalSuccess || SignalOf(models.JobRunPartial) != SignalFail ||
-		SignalOf(models.JobRunFailed) != SignalFail || SignalOf(models.JobRunCancelled) != SignalFail {
-		t.Fatal("SignalOf maps run statuses wrongly")
+	cases := []struct {
+		status      models.JobRunStatus
+		interrupted bool
+		sig         Signal
+		ok          bool
+	}{
+		{models.JobRunOK, false, SignalSuccess, true},
+		{models.JobRunPartial, false, SignalFail, true},
+		{models.JobRunFailed, false, SignalFail, true},
+		{models.JobRunCancelled, false, "", false},
+		{models.JobRunFailed, true, "", false},
+		{models.JobRunOK, true, "", false},
+	}
+	for _, tc := range cases {
+		if sig, ok := SignalOf(tc.status, tc.interrupted); sig != tc.sig || ok != tc.ok {
+			t.Errorf("SignalOf(%s, %v) = %q, %v; want %q, %v", tc.status, tc.interrupted, sig, ok, tc.sig, tc.ok)
+		}
 	}
 }

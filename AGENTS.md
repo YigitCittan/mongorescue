@@ -47,6 +47,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/secretbox` | AES-256-GCM encryption of stored credentials, `secret.key` |
 | `internal/encryption` | age encryption |
 | `internal/events`, `internal/notify`, `internal/metrics` | Event bus, notifications, Prometheus |
+| `internal/heartbeat` | Outbound dead-man's-switch pings: the global heartbeat while the scheduler is healthy, and per job `/start`, success and `/fail` (nothing for cancelled runs), via a `scheduler.RunObserver`; alert rules in `deploy/prometheus` |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and MCP |
 | `internal/pitr` | Point-in-time recovery domain: streams, chains, oplog chunks, collector state and the `Repository` port (store in `internal/store`, oplog reads in `internal/mongoconn`) |
 | `internal/runlog` | Per-run log files under `<datadir>/logs` (redacted, 5 MiB cap with head and tail), read by the run registry in `internal/runs` |

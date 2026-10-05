@@ -7,15 +7,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// livenessSources feed the scheduler tick and settings warning gauges.
+// livenessSources feed the scheduler tick and settings warning gauges; dropped
+// counts the heartbeat pings dropped because too many were pending.
 type livenessSources struct {
 	lastTick atomic.Pointer[func() time.Time]
 	warnings atomic.Pointer[func() int]
+	dropped  prometheus.Counter
 }
 
-// newLivenessSeries returns the collectors of the liveness gauges: the scheduler's
-// last tick (mongorescue_scheduler_last_tick_timestamp_seconds) and the number of
-// active settings warnings (mongorescue_settings_warnings).
+// newLivenessSeries returns the collectors of the liveness series: the scheduler's
+// last tick (mongorescue_scheduler_last_tick_timestamp_seconds), the number of
+// active settings warnings (mongorescue_settings_warnings) and the dropped
+// heartbeat pings (mongorescue_heartbeat_dropped_total).
 func (m *Metrics) newLivenessSeries() []prometheus.Collector {
 	lastTick := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -39,7 +42,18 @@ func (m *Metrics) newLivenessSeries() []prometheus.Collector {
 		}
 		return 0
 	})
-	return []prometheus.Collector{lastTick, warnings}
+	m.liveness.dropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "heartbeat_dropped_total",
+		Help:      "Total number of job heartbeat pings dropped because too many pings were queued or in flight.",
+	})
+	return []prometheus.Collector{lastTick, warnings, m.liveness.dropped}
+}
+
+// IncHeartbeatDropped counts one dropped heartbeat ping; use it as
+// heartbeat.Config.OnDrop.
+func (m *Metrics) IncHeartbeatDropped() {
+	m.liveness.dropped.Inc()
 }
 
 // SetSchedulerTickSource registers the function reporting the scheduler's last
