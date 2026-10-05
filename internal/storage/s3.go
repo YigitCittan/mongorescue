@@ -129,10 +129,11 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
-	// 3. Configure memory-efficient streaming uploader
-	// 5MB is minimum S3 multipart part size. Concurrency of 2 keeps RAM strictly within ~15-20MB.
+	// 3. Configure memory-efficient streaming uploader. S3 allows at most 10,000 parts,
+	// so the part size bounds the largest archive: 16 MiB parts allow about 156 GiB, and
+	// with a concurrency of 2 the uploader holds about 32 MiB in memory.
 	uploader := manager.NewUploader(client, func(u *manager.Uploader) { //nolint:staticcheck // SA1019: see S3Storage.uploader.
-		u.PartSize = 5 * 1024 * 1024
+		u.PartSize = s3PartSize
 		u.Concurrency = 2
 	})
 
@@ -144,6 +145,10 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		logger:   logger,
 	}, nil
 }
+
+// s3PartSize is the multipart part size of uploads. With S3's limit of
+// manager.MaxUploadParts (10,000) parts it caps one archive at about 156 GiB.
+const s3PartSize = 16 * 1024 * 1024
 
 // Save streams data from the reader directly to S3 using multipart upload without buffering into memory.
 func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
@@ -161,6 +166,10 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 	})
 	if err != nil {
 		s.abortFailedUpload(ctx, objKey, err)
+		if strings.Contains(err.Error(), "MaxUploadParts") {
+			return nil, fmt.Errorf("s3 multipart upload failed: the archive is larger than %d GiB, the most %d parts of %d MiB can hold: %w",
+				int64(s3PartSize)*int64(manager.MaxUploadParts)>>30, manager.MaxUploadParts, s3PartSize>>20, err)
+		}
 		return nil, fmt.Errorf("s3 multipart upload failed: %w", err)
 	}
 

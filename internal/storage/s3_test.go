@@ -237,7 +237,7 @@ func TestNewS3StorageConfig(t *testing.T) {
 	if !opts.UsePathStyle {
 		t.Error("path-style addressing not applied")
 	}
-	if store.bucket != "b" || store.uploader.PartSize != 5*1024*1024 || store.uploader.Concurrency != 2 {
+	if store.bucket != "b" || store.uploader.PartSize != s3PartSize || store.uploader.Concurrency != 2 {
 		t.Errorf("unexpected uploader settings: bucket=%q part=%d conc=%d",
 			store.bucket, store.uploader.PartSize, store.uploader.Concurrency)
 	}
