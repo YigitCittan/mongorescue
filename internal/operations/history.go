@@ -304,6 +304,10 @@ func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History
 	hj.Runs = make([]HistoryRun, 0, len(list))
 	for i := len(list) - 1; i >= 0; i-- { // oldest first
 		run := list[i]
+		if run.Status == models.JobRunSkipped {
+			// A run outside the backup window backed nothing up.
+			continue
+		}
 		ok, _, _, _ := run.Counts()
 		hj.Runs = append(hj.Runs, HistoryRun{
 			ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,
