@@ -16,6 +16,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
+	"github.com/yigitcittan/mongorescue/internal/targets"
 )
 
 const testGrace = 7 * 24 * time.Hour
@@ -214,6 +215,44 @@ func TestPurgeKeepsAnObjectAnotherTargetAliases(t *testing.T) {
 	}
 	if _, err := mock.Stat(ctx, "shop/same.archive"); err != nil {
 		t.Fatalf("the aliased object was deleted: %v", err)
+	}
+}
+
+// TestPurgeLocatesThroughTheTargetNormalisation wires the purge to the real
+// targets.Service locator: two targets spelling Amazon S3 differently (no endpoint
+// and a regional endpoint) on the same bucket and prefix name one object, so the
+// purge keeps it for the live backup on the other target.
+func TestPurgeLocatesThroughTheTargetNormalisation(t *testing.T) {
+	ctx := context.Background()
+	st, mock := storetest.New(t), storage.NewMockStorage()
+	for id, endpoint := range map[string]string{"tgt_1": "", "tgt_2": "https://S3.eu-west-1.amazonaws.com:443/"} {
+		tg := &models.StorageTarget{ID: id, Name: id, Type: models.StorageS3,
+			S3: &models.S3Target{Endpoint: endpoint, Region: "eu-west-1", Bucket: "bucket", Prefix: "team/"}}
+		if err := st.CreateStorageTarget(ctx, tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := targets.NewService(st, func(context.Context, *models.StorageTarget, string) (storage.Storage, error) {
+		return mock, nil
+	}, t.TempDir())
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	saveDeleted(t, st, mock, "bkp_t1", t0, testGrace, func(r *models.BackupRecord) {
+		r.StorageTargetID, r.StorageKey = "tgt_1", "shop/same.archive"
+	})
+	alias := &models.BackupRecord{ID: "bkp_t2", Database: "shop", Status: models.StatusCompleted, StorageTargetID: "tgt_2",
+		StorageKey: "/shop/same.archive", StartedAt: t0}
+	if err := st.SaveBackupRecord(ctx, alias); err != nil {
+		t.Fatal(err)
+	}
+	run := purgeRun{now: t0.Add(testGrace), grace: func() time.Duration { return testGrace }, store: st, storages: fixedStorage(mock),
+		locate: svc.ObjectLocation, logger: slog.New(slog.DiscardHandler)}
+	var outcomes []PurgeOutcome
+	run.onPurged = func(_ context.Context, o PurgeOutcome) { outcomes = append(outcomes, o) }
+	if purged, err := run.run(ctx); err != nil || len(purged) != 1 {
+		t.Fatalf("purge = %v, %v", purged, err)
+	}
+	if len(outcomes) != 1 || outcomes[0].ArchiveDeleted || outcomes[0].ArchiveKept != "bkp_t2" {
+		t.Fatalf("outcome = %+v; want the archive kept for bkp_t2 on the aliasing target", outcomes)
 	}
 }
 

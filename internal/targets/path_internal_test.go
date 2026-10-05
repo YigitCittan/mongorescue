@@ -69,3 +69,36 @@ func TestCleanLocalPathDotDotElements(t *testing.T) {
 		}
 	}
 }
+
+// TestEndpointKey covers the S3 endpoint normalisation behind the overlap check and
+// the purge's physical-object check.
+func TestEndpointKey(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{"", "https://s3.eu-west-1.amazonaws.com"},
+		{"", "https://s3.amazonaws.com"},
+		{"aws", "https://s3.dualstack.us-east-1.amazonaws.com/"},
+		{"", "https://bucket-a.s3.eu-west-1.amazonaws.com"},
+		{"", "https://S3.AmazonAWS.com.:443"},
+		{"https://minio:9000", "http://minio:9000"},
+		{"https://minio:9000", "minio:9000/"},
+		{"https://x", "https://x:443"},
+		{"https://x", "http://x:80"},
+		{"https://X.example.com.", "https://x.example.com//"},
+		{"http://[::1]:9000", "https://[::1]:9000/"},
+	} {
+		if ka, kb := endpointKey(tc.a), endpointKey(tc.b); ka != kb {
+			t.Errorf("endpointKey(%q) = %q, endpointKey(%q) = %q; want equal", tc.a, ka, tc.b, kb)
+		}
+	}
+	for _, tc := range []struct{ a, b string }{
+		{"", "https://minio:9000"},
+		{"https://minio:9000", "https://minio:9001"},
+		{"https://x", "https://x:8443"},
+		{"https://x/a", "https://x/b"},
+		{"https://s3.example.com", "https://s3.amazonaws.example.com"},
+	} {
+		if ka, kb := endpointKey(tc.a), endpointKey(tc.b); ka == kb {
+			t.Errorf("endpointKey(%q) = endpointKey(%q) = %q; want different", tc.a, tc.b, ka)
+		}
+	}
+}

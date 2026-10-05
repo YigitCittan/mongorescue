@@ -393,13 +393,44 @@ func (s *Service) baseLocation(t *models.StorageTarget) string {
 		dir := realPath(s.LocalPath(t.Local.Path))
 		return "local:" + strings.TrimSuffix(filepath.ToSlash(dir), "/") + "/"
 	case t.Type == models.StorageS3 && t.S3 != nil:
-		endpoint := strings.ToLower(strings.TrimRight(strings.TrimSpace(t.S3.Endpoint), "/"))
-		if endpoint == "" {
-			endpoint = "aws"
-		}
-		return "s3:" + endpoint + "|" + strings.ToLower(t.S3.Bucket) + "|" + storage.NormalizePrefix(t.S3.Prefix)
+		return "s3:" + endpointKey(t.S3.Endpoint) + "|" + strings.ToLower(t.S3.Bucket) + "|" + storage.NormalizePrefix(t.S3.Prefix)
 	}
 	return "unknown:" + t.ID
+}
+
+// awsEndpoint is the endpoint key of every Amazon S3 endpoint (see endpointKey).
+const awsEndpoint = "aws"
+
+// endpointKey returns the S3 endpoint in a form that compares equal for every
+// spelling of the same service: without the scheme, with a lower-case host without
+// trailing dots, without the default ports 80 and 443 and without trailing slashes.
+// The empty endpoint, "aws" and every *.amazonaws.com host (regional, global,
+// dual-stack or virtual-host "bucket.s3…") are Amazon S3, where a bucket name is
+// unique, so they all map to awsEndpoint and only the bucket and prefix tell
+// locations apart.
+func endpointKey(endpoint string) string {
+	e := strings.TrimSpace(endpoint)
+	if e == "" || strings.EqualFold(e, awsEndpoint) {
+		return awsEndpoint
+	}
+	if !strings.Contains(e, "://") {
+		e = "//" + e
+	}
+	u, err := url.Parse(e)
+	if err != nil || u.Host == "" {
+		return strings.ToLower(strings.TrimRight(strings.TrimSpace(endpoint), "/"))
+	}
+	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	if host == "amazonaws.com" || strings.HasSuffix(host, ".amazonaws.com") {
+		return awsEndpoint
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" && port != "80" && port != "443" {
+		host += ":" + port
+	}
+	return host + strings.TrimRight(u.EscapedPath(), "/")
 }
 
 // checkOverlap refuses t when its location equals or overlaps that of another target
