@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-05
+
 ### Fixed
 - Backups larger than about 48.8 GiB failed at the end of an S3 upload: uploads used 5 MiB parts and S3 allows at most 10,000 of them. Parts are now 16 MiB, which raises the limit to about 156 GiB (the uploader holds about 32 MiB in memory), and an upload that still runs out of parts fails with an error that names the limit (#118). A configurable part size follows in a minor release.
 
