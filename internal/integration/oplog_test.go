@@ -25,23 +25,6 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/oplog"
 )
 
-// requireReplicaSet skips the test unless the server is a replica set member, the
-// only topology with an oplog.
-func requireReplicaSet(t *testing.T, m *mongoEnv) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-	var hello struct {
-		SetName string `bson:"setName"`
-	}
-	if err := m.Client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil {
-		t.Fatalf("hello: %v", err)
-	}
-	if hello.SetName == "" {
-		t.Skip("not a replica set (MONGO_TOPOLOGY=replset); the oplog tests need one")
-	}
-}
-
 // archiveOptions returns the options of a synthetic archive of entries from the
 // server under test.
 func (m *mongoEnv) archiveOptions(t *testing.T) oplog.ArchiveOptions {
