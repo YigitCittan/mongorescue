@@ -6,7 +6,7 @@
 // The package is the domain core and imports no MongoDB driver: persistence
 // (Repository) is a port implemented by internal/store, and oplog reads are served
 // by internal/mongoconn, which returns the OplogWindow and OplogStats defined here.
-// The collector service is not part of this package yet.
+// The collector service is internal/pitr/collector.
 package pitr
 
 import (
