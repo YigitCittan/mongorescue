@@ -3957,7 +3957,10 @@ function setAuth(data) {
   auth.scope = data.scope || ROLE_SCOPES[auth.role] || "read";
   auth.keyScope = data.key_scope || "";
   // The connections the caller may touch (access.js); null means every connection.
-  auth.connections = Array.isArray(data.connection_ids) ? data.connection_ids : null;
+  // Sign-in answers carry only the user, whose own list is its sessions' access.
+  const own = auth.user && auth.user.role !== "admin" && Array.isArray(auth.user.connection_ids) && auth.user.connection_ids.length
+    ? auth.user.connection_ids : null;
+  auth.connections = Array.isArray(data.connection_ids) ? data.connection_ids : (data.auth === "api_key" ? null : own);
   renderUserMenu();
   if (typeof applyRole === "function") applyRole();
 }

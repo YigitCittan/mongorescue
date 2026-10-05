@@ -257,10 +257,11 @@ function accessConnectionNames(ids) {
   return ids.map(accessConnectionName).join(", ");
 }
 
-// accessEnsureConnections loads the connection list once, for the names.
+// accessEnsureConnections loads the connection list (once, unless fresh), for the
+// names and the checklists.
 let accessConnectionsLoading = null;
-function accessEnsureConnections() {
-  if (state.loaded.connections || typeof loadConnections !== "function") return Promise.resolve();
+function accessEnsureConnections(fresh) {
+  if ((state.loaded.connections && !fresh) || typeof loadConnections !== "function") return Promise.resolve();
   if (!accessConnectionsLoading) accessConnectionsLoading = loadConnections().finally(() => { accessConnectionsLoading = null; });
   return accessConnectionsLoading;
 }
@@ -271,7 +272,8 @@ function accessEnsureConnections() {
 async function fillConnectionChecklist(containerId, selected) {
   const box = document.getElementById(containerId);
   if (!box) return;
-  await accessEnsureConnections();
+  // A dialog offers the connections as they are now.
+  await accessEnsureConnections(true);
   const chosen = new Set((selected || []).map(String));
   const list = (state.connections || []).map(c => ({ id: String(c.id), name: String(c.name || c.id) }));
   chosen.forEach(id => {
