@@ -159,12 +159,14 @@ func (p *Principal) ScopeSource() ScopeSource {
 	return ""
 }
 
-// Access is what a principal may do, as computed by effectiveScope. It is a struct
-// so that finer limits (for example per connection) can join the scope later
-// without changing its callers.
+// Access is what a principal may do, as computed by effectiveAccess: its scope and
+// the connections it may touch.
 type Access struct {
 	// Scope is the effective scope.
 	Scope Scope
+	// Connections limits the caller to some connections; nil allows every one (see
+	// effectiveConnections).
+	Connections ConnectionSet
 }
 
 // effectiveScope is the one place that decides what a caller may do:
