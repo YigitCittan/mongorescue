@@ -17,7 +17,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_database_backups_total` | counter | `job`, `database`, `status` | Finished backups per database (`status`: `succeeded`, `failed`, `cancelled`; `job="manual"` for manual backups) |
 | `mongorescue_database_backup_size_bytes` | gauge | `job`, `database` | Size of the last successful backup of each database |
 | `mongorescue_database_last_successful_backup_timestamp_seconds` | gauge | `job`, `database` | Unix time of the last successful backup of each database |
-| `mongorescue_job_runs_total` | counter | `job`, `status` | Finished job runs over all their databases (`status`: `ok`, `partial`, `failed`, `cancelled`) |
+| `mongorescue_job_runs_total` | counter | `job`, `status` | Finished job runs over all their databases (`status`: `ok`, `partial`, `failed`, `cancelled`, or `skipped` for a scheduled run outside its backup window, which backs nothing up) |
 | `mongorescue_job_run_duration_seconds` | histogram | `job` | Duration of job runs (all databases) |
 | `mongorescue_restores_total` | counter | `status` | Finished restores (`succeeded`, `failed`) |
 | `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure`, `dropped`) |

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Backups from secondaries, throttling and backup windows (#100). Connections take a `read_preference` (`primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`) with `read_preference_tags`, and jobs may override both; empty keeps the connection string's own, as before. The preference is added to the connection string `mongodump` reads from its private config file (never `--uri`) and to the manifest capture, whose `listCollections` and `listIndexes` now follow it too. Before the dump, `hello` on the selected member records it on the backup (`source_member`: host, state, replica set; and `read_preference`), and `secondary` fails at once with a clear error when no secondary is available (a standalone server, a single-member replica set or a `directConnection=true` URI). Connection tests report the member a backup would read from (`read_member`).
+- Throttling: a token-bucket upload cap per job (`max_upload_mbps`) with a global default (`general.max_upload_mbps`, Settings → General → Throttling), `num_parallel_collections` per job (`mongodump --numParallelCollections`, 1 to 16), and `max_concurrent_backups` per connection: further backups from that connection wait in arrival order instead of failing, shown with the new `waiting` phase, without counting against the backup timeout.
+- Backup windows per job (`backup_window`: time zone, days, start and end, crossing midnight and following daylight saving changes). A scheduled run outside the window does not start: it is recorded as a `skipped` job run (`skip_reason: "outside window"`) and emits `backup.skipped`, which notification rules may select and `mongorescue_job_runs_total{status="skipped"}` counts; it is not a failure. `cancel_at_window_end` cancels a scheduled run still going when the window closes. Manual runs ignore the window, with a warning in the dashboard. The default RPO counts only the runs the window allows, and job details add `window_open` and list only those runs in `next_runs`.
+- Dashboard fields for all of the above in the job and connection forms and in Settings, in all eight languages; MCP `get_job` names the read preference and the window.
+- docs/production.md: sizing large databases, the practical limits of `mongodump`, when filesystem snapshots or cloud provider backups are the better tool, and the S3 multipart limit of 10,000 parts (about 156 GiB per archive with MongoRescue's 16 MiB parts).
+
+### Fixed
+- `TestPreflightCheckMatrix/a_taken_clone_name_fails` no longer depends on the clock: the safe-clone name carries a timestamp to the second, so under load the test built a different name than the restore engine.
+
 ## [0.20.1] - 2026-10-05
 
 ### Fixed
