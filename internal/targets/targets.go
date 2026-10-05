@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -404,7 +405,7 @@ func (s *Service) baseLocation(t *models.StorageTarget) string {
 	switch {
 	case t.Type == models.StorageLocal && t.Local != nil:
 		dir := realPath(s.LocalPath(t.Local.Path))
-		return "local:" + strings.TrimSuffix(filepath.ToSlash(dir), "/") + "/"
+		return "local:" + foldLocal(strings.TrimSuffix(filepath.ToSlash(dir), "/")+"/")
 	case t.Type == models.StorageS3 && t.S3 != nil:
 		return "s3:" + endpointKey(t.S3.Endpoint) + "|" + strings.ToLower(t.S3.Bucket) + "|" + storage.NormalizePrefix(t.S3.Prefix)
 	}
@@ -476,7 +477,30 @@ func (s *Service) ObjectLocation(ctx context.Context, id, key string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return s.baseLocation(t) + strings.TrimPrefix(path.Clean("/"+filepath.ToSlash(key)), "/"), nil
+	return s.objectKey(t, key), nil
+}
+
+// objectKey is the location of key on target t (see ObjectLocation).
+func (s *Service) objectKey(t *models.StorageTarget, key string) string {
+	rel := strings.TrimPrefix(path.Clean("/"+filepath.ToSlash(key)), "/")
+	if t.Type == models.StorageLocal {
+		rel = foldLocal(rel)
+	}
+	return s.baseLocation(t) + rel
+}
+
+// foldLocalCase reports whether local paths are compared case-insensitively: the
+// default file systems of macOS (APFS, HFS+) and Windows (NTFS) ignore case, so
+// /Backups and /backups are one directory there. On a case-sensitive volume of
+// those systems this only refuses more, never less.
+var foldLocalCase = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+
+// foldLocal returns p lower-cased when foldLocalCase is set.
+func foldLocal(p string) string {
+	if foldLocalCase {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 // verifyInUseChange tests t, the new credentials, region or path style of existing,
