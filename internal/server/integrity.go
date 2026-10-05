@@ -205,6 +205,11 @@ func (s *Server) handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeIntegrityError(w, err)
 		return
 	}
+	// The sweep and the storage scans cover every connection's backups: a caller
+	// limited to some connections gets neither.
+	if auth.ConnectionFilter(r.Context()).Limited() {
+		ov = &integrity.Overview{Scans: []*integrity.DriftReport{}, Running: []string{}}
+	}
 	writeJSON(w, http.StatusOK, ov)
 }
 
@@ -226,6 +231,11 @@ func (s *Server) handleStartSweep(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLastScan(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireIntegrity(w)
 	if !ok {
+		return
+	}
+	// A scan lists every archive on the target, whichever connection it came from.
+	if auth.ConnectionFilter(r.Context()).Limited() {
+		writeError(w, http.StatusNotFound, "storage target not found")
 		return
 	}
 	report, found := svc.LastScan(r.Context(), r.PathValue("id"))

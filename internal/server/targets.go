@@ -82,12 +82,34 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		s.writeTargetError(w, err)
 		return
 	}
+	// A caller limited to some connections sees the targets its connections use.
+	if list, err = s.ops.FilterTargets(r.Context(), list); err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// targetVisible answers 404 and returns false when the caller may not see storage
+// target id (see operations.Service.VisibleTargets).
+func (s *Server) targetVisible(w http.ResponseWriter, r *http.Request, id string) bool {
+	ok, err := s.ops.TargetVisible(r.Context(), id)
+	if err != nil {
+		s.writeOperationError(w, err)
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "storage target not found")
+	}
+	return ok
 }
 
 func (s *Server) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireTargets(w)
 	if !ok {
+		return
+	}
+	if !s.targetVisible(w, r, r.PathValue("id")) {
 		return
 	}
 	t, err := svc.Get(r.Context(), r.PathValue("id"))

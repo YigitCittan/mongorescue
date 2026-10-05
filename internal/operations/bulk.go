@@ -772,7 +772,7 @@ func (s *Service) backupsByID(ctx context.Context, ids []string) ([]BulkItem, er
 	found := make(map[string]*models.BackupRecord, len(ids))
 	for start := 0; start < len(ids); start += store.MaxFilterIDs {
 		chunk := ids[start:min(start+store.MaxFilterIDs, len(ids))]
-		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{IDs: chunk})
+		page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{IDs: chunk})
 		if err != nil {
 			return nil, fmt.Errorf("load backups: %w", err)
 		}
@@ -792,7 +792,7 @@ func (s *Service) restoresByID(ctx context.Context, ids []string) ([]BulkItem, e
 	items := make([]BulkItem, len(ids))
 	for i, id := range ids {
 		items[i] = BulkItem{ID: id}
-		rec, err := s.cfg.Store.GetRestoreRecord(ctx, id)
+		rec, err := s.store.GetRestoreRecord(ctx, id)
 		switch {
 		case err == nil:
 			items[i].Restore = rec
@@ -855,7 +855,7 @@ func (s *Service) protectedBackups(ctx context.Context, items []BulkItem) (lastG
 		}
 		key := jobDatabaseKey(it.Backup)
 		seen[key] = true
-		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{
+		page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{
 			JobID: it.Backup.JobID, Database: it.Backup.Database, Status: models.StatusCompleted,
 		})
 		if err != nil {
@@ -891,7 +891,7 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 	if jobName == "" {
 		jobName = b.JobID
 	}
-	newest, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, Limit: 1})
+	newest, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, Limit: 1})
 	if err != nil {
 		return nil, fmt.Errorf("load the job's last good backup: %w", err)
 	}
@@ -902,7 +902,7 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 		return nil, nil
 	}
 	// Protected unless a newer completed backup of the job is verified too.
-	newer, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, From: b.StartedAt})
+	newer, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: b.JobID, Database: b.Database, Status: models.StatusCompleted, From: b.StartedAt})
 	if err != nil {
 		return nil, fmt.Errorf("load the job's verified backups: %w", err)
 	}
@@ -970,7 +970,7 @@ func (s *Service) registerBulkActions() {
 				return s.failed(err)
 			}
 			defer unlock()
-			current, err := s.cfg.Store.GetBackupRecord(ctx, it.ID)
+			current, err := s.store.GetBackupRecord(ctx, it.ID)
 			if errors.Is(err, store.ErrNotFound) {
 				return BulkItemResult{Skip: &BulkSkip{Reason: SkipNotFound, Detail: "deleted meanwhile"}}
 			}

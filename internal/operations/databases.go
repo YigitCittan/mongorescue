@@ -98,7 +98,7 @@ func (s *Service) ListJobRuns(ctx context.Context, jobID string, limit int) ([]*
 	if limit <= 0 || limit > MaxJobRunList {
 		limit = MaxJobRunList
 	}
-	list, err := s.cfg.Store.ListJobRuns(ctx, jobID, limit)
+	list, err := s.store.ListJobRuns(ctx, jobID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list job runs: %w", err)
 	}
@@ -151,7 +151,7 @@ func (s *Service) CancelJobRun(ctx context.Context, jobID, via string) (*JobRunC
 		}
 	}
 	for _, run := range active {
-		rec, err := s.cfg.Store.GetBackupRecord(context.WithoutCancel(ctx), run.ID())
+		rec, err := s.store.GetBackupRecord(context.WithoutCancel(ctx), run.ID())
 		if err != nil {
 			continue
 		}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -57,9 +58,14 @@ func (s *Service) StartRestoreTest(ctx context.Context, jobID string) (*models.B
 	if !s.restoreTestsAvailable() {
 		return nil, fmt.Errorf("%w: restore tests need the restore engine and a MongoDB connection", ErrUnavailable)
 	}
-	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	job, err := s.visibleJob(ctx, jobID)
 	if err != nil {
-		return nil, notFound(err, "job not found")
+		return nil, err
+	}
+	// The test restores into the job's test server when it has one: a caller limited
+	// to some connections may not write into another one.
+	if p := job.RestoreTest; p != nil && p.ConnectionID != "" && !auth.ConnectionAllowed(ctx, p.ConnectionID) {
+		return nil, fmt.Errorf("%w: connection not found", ErrNotFound)
 	}
 	backup, err := s.latestBackup(ctx, job)
 	if err != nil {
@@ -361,11 +367,24 @@ func (s *Service) finishRestoreTest(ctx context.Context, job *models.Job, res *m
 	}
 }
 
+// visibleJob returns job jobID, or an ErrNotFound error when it does not exist or
+// the caller in ctx may not touch its connection (auth.ConnectionAllowed).
+func (s *Service) visibleJob(ctx context.Context, jobID string) (*models.Job, error) {
+	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, notFound(err, "job not found")
+	}
+	if !auth.ConnectionAllowed(ctx, job.ConnectionID) {
+		return nil, fmt.Errorf("%w: job not found", ErrNotFound)
+	}
+	return job, nil
+}
+
 // ListRestoreTests returns up to limit (at most MaxRestoreTestList) restore tests of
 // job jobID, newest first.
 func (s *Service) ListRestoreTests(ctx context.Context, jobID string, limit int) ([]*models.RestoreTestResult, error) {
-	if _, err := s.cfg.Store.GetJob(ctx, jobID); err != nil {
-		return nil, notFound(err, "job not found")
+	if _, err := s.visibleJob(ctx, jobID); err != nil {
+		return nil, err
 	}
 	if limit <= 0 || limit > MaxRestoreTestList {
 		limit = MaxRestoreTestList

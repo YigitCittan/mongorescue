@@ -90,7 +90,7 @@ func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRec
 		return nil, fmt.Errorf("lifting a legal hold needs the admin role or an admin API key: %w", err)
 	}
 	if s.needsApproval(ctx) {
-		rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+		rec, err := s.store.GetBackupRecord(ctx, id)
 		if err != nil {
 			return nil, notFound(err, "backup not found")
 		}
@@ -199,7 +199,7 @@ func (s *Service) RetentionPreview(ctx context.Context, jobID string, days, coun
 		return nil, invalid(ErrNegativeRetention)
 	}
 	// Every database of the job: the policy applies to each of them separately.
-	page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID})
+	page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID})
 	if err != nil {
 		return nil, fmt.Errorf("list backups: %w", err)
 	}

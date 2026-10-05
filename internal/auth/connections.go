@@ -19,6 +19,10 @@ var (
 	// ErrConnectionsExceedAccess is returned when an API key would reach a
 	// connection its creator cannot.
 	ErrConnectionsExceedAccess = errors.New("auth: an API key cannot reach connections its creator cannot")
+	// ErrConnectionsLimited is returned for a request that covers every connection
+	// (the Prometheus scrape) from a caller limited to some connections. It wraps
+	// ErrForbidden.
+	ErrConnectionsLimited = fmt.Errorf("%w: this caller is limited to some connections and this request covers every connection", ErrForbidden)
 )
 
 // Limits of a connection list.
@@ -145,6 +149,19 @@ func NormalizeConnectionIDs(ids []string) ([]string, error) {
 // principal allows nothing.
 func (p *Principal) AllowsConnection(id string) bool {
 	return p != nil && p.Connections.Allows(id)
+}
+
+// RequireAllConnections refuses (ErrConnectionsLimited) a principal limited to some
+// connections, for requests whose answer covers every connection, such as the
+// Prometheus metrics. A nil principal is refused with a *ScopeError.
+func (p *Principal) RequireAllConnections() error {
+	if p == nil {
+		return &ScopeError{Need: ScopeRead}
+	}
+	if p.Connections.Limited() {
+		return ErrConnectionsLimited
+	}
+	return nil
 }
 
 // ConnectionFilter returns the connections the principal in ctx may touch: nil

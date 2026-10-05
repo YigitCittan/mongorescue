@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -201,13 +202,16 @@ type rowAcc struct {
 }
 
 // Report computes the readiness of every database a job backs up, enabled or not.
-// It fails with an ErrUnavailable error when the metadata cannot be read.
+// A caller limited to some connections (auth.ConnectionFilter) gets the rows of its
+// connections only. It fails with an ErrUnavailable error when the metadata cannot
+// be read.
 func (s *Service) Report(ctx context.Context) (*Report, error) {
 	now := s.now()
 	jobs, err := s.cfg.Store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list jobs: %w", ErrUnavailable, err)
 	}
+	jobs = slices.DeleteFunc(jobs, func(j *models.Job) bool { return !auth.ConnectionAllowed(ctx, j.ConnectionID) })
 	points, err := s.points(ctx, jobs, now)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)

@@ -882,6 +882,10 @@ func (s *Server) listStorageTargets(ctx context.Context, _ noInput) (targetList,
 	if err != nil {
 		return out, "", err
 	}
+	// A key limited to some connections sees the targets they use.
+	if list, err = s.cfg.Operations.FilterTargets(ctx, list); err != nil {
+		return out, "", err
+	}
 	def := "none"
 	for _, t := range list {
 		out.StorageTargets = append(out.StorageTargets, TargetView{

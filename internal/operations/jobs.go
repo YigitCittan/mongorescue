@@ -349,7 +349,7 @@ func (s *Service) ValidatePausedUntil(until *time.Time) error {
 // failures: ErrNotFound, ErrJobChanged, ErrPausedUntilPast (for a paused_until sent
 // in the past) and those of ValidateJob.
 func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSaveResult, error) {
-	existing, err := s.cfg.Store.GetJob(ctx, id)
+	existing, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
@@ -421,7 +421,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	// against, and the run history taken from, what is stored right now, so a run that
 	// finished since the first read is not reverted.
 	persist := func() error {
-		current, getErr := s.cfg.Store.GetJob(ctx, id)
+		current, getErr := s.store.GetJob(ctx, id)
 		if getErr != nil {
 			return notFound(getErr, "job not found")
 		}
@@ -431,7 +431,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		job.LastRun, job.CreatedAt, job.LastRestoreTest = current.LastRun, current.CreatedAt, current.LastRestoreTest
 		RefreshKnownDatabases(job, current)
 		// UpdateJob never recreates a job deleted meanwhile.
-		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
+		return notFound(s.store.UpdateJob(ctx, job), "job not found")
 	}
 	if s.cfg.Scheduler != nil {
 		err = s.cfg.Scheduler.ApplyJobUpdate(job, persist)

@@ -66,7 +66,7 @@ func (s *Service) DeleteBackup(ctx context.Context, id, reason string) (*DeleteR
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
@@ -124,14 +124,14 @@ func (s *Service) softDelete(ctx context.Context, id, reason string) (*models.Ba
 		}
 		updated = rec
 	} else {
-		rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+		rec, err := s.store.GetBackupRecord(ctx, id)
 		if err != nil {
 			return nil, notFound(err, "backup not found (deleted meanwhile)")
 		}
 		if err = mark(rec); err != nil {
 			return nil, err
 		}
-		if err = s.cfg.Store.SaveBackupRecord(ctx, rec); err != nil {
+		if err = s.store.SaveBackupRecord(ctx, rec); err != nil {
 			return nil, fmt.Errorf("save deleted backup: %w", err)
 		}
 		updated = rec
@@ -156,7 +156,7 @@ func (s *Service) UndeleteBackup(ctx context.Context, id string) (*models.Backup
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("undeleting a backup needs the admin role or an admin API key: %w", err)
 	}
-	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
@@ -188,7 +188,7 @@ func (s *Service) UndeleteBackup(ctx context.Context, id string) (*models.Backup
 // deleteRestore deletes the history record of a restore. The restored database is
 // never touched.
 func (s *Service) deleteRestore(ctx context.Context, rec *models.RestoreRecord) error {
-	if err := s.cfg.Store.DeleteRestoreRecord(ctx, rec.ID); err != nil {
+	if err := s.store.DeleteRestoreRecord(ctx, rec.ID); err != nil {
 		return notFound(err, "restore not found (deleted meanwhile)")
 	}
 	s.logger.With(actorAttrs(ctx)...).Info("restore record deleted",
@@ -210,7 +210,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	if u, ok := s.cfg.Scheduler.(jobUnregisterer); ok {
 		u.UnregisterJob(id)
 	}
-	if err := s.cfg.Store.DeleteJob(ctx, id); err != nil {
+	if err := s.store.DeleteJob(ctx, id); err != nil {
 		return notFound(err, "job not found")
 	}
 	// A pending retention change belongs to the deleted job, never to a job created
@@ -233,7 +233,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 // job whose connection is gone cannot be enabled); pausing always works. Expected
 // failures: ErrNotFound and those of ValidateJob.
 func (s *Service) SetJobEnabled(ctx context.Context, id string, enabled bool) (*models.Job, error) {
-	existing, err := s.cfg.Store.GetJob(ctx, id)
+	existing, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
@@ -244,7 +244,7 @@ func (s *Service) SetJobEnabled(ctx context.Context, id string, enabled bool) (*
 	}
 	job := existing.Clone()
 	persist := func() error {
-		current, getErr := s.cfg.Store.GetJob(ctx, id)
+		current, getErr := s.store.GetJob(ctx, id)
 		if getErr != nil {
 			return notFound(getErr, "job not found")
 		}
@@ -254,7 +254,7 @@ func (s *Service) SetJobEnabled(ctx context.Context, id string, enabled bool) (*
 		if enabled && s.cfg.Scheduler == nil {
 			job.NextRun = nextRunOf(job.CronExpression, s.now())
 		}
-		return notFound(s.cfg.Store.UpdateJob(ctx, job), "job not found")
+		return notFound(s.store.UpdateJob(ctx, job), "job not found")
 	}
 	if s.cfg.Scheduler != nil {
 		err = s.cfg.Scheduler.ApplyJobUpdate(job, persist)

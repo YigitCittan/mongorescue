@@ -217,13 +217,13 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	from := starts[0].UTC()
 	_, offset := local.Zone()
 
-	agg, err := s.cfg.Store.BackupHistory(ctx, store.BackupHistoryQuery{
+	agg, err := s.store.BackupHistory(ctx, store.BackupHistoryQuery{
 		DayStarts: starts, RunsPerJob: HistoryRunsPerJob, MaxIssues: HistoryMaxVerificationIssues,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("backup history: %w", err)
 	}
-	jobs, err := s.cfg.Store.ListJobs(ctx)
+	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -298,7 +298,7 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History) error {
 	// Skipped runs (outside the backup window) backed nothing up; they are left
 	// out before the limit, so they never push real runs out of the history.
-	list, err := s.cfg.Store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
+	list, err := s.store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
 	if err != nil {
 		return fmt.Errorf("runs of job %s: %w", j.ID, err)
 	}
