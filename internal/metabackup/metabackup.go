@@ -190,6 +190,10 @@ type Service struct {
 	cfg    Config
 	logger *slog.Logger
 
+	// installID is the install ID in use (a secret key rotation replaces it).
+	idMu      sync.RWMutex
+	installID string
+
 	// runMu makes snapshots single-flight; running mirrors it for Status.
 	runMu   sync.Mutex
 	mu      sync.Mutex
@@ -221,11 +225,31 @@ func New(cfg Config) *Service {
 	if cfg.StartDelay <= 0 {
 		cfg.StartDelay = time.Minute
 	}
-	return &Service{cfg: cfg, logger: cfg.Logger}
+	return &Service{cfg: cfg, logger: cfg.Logger, installID: cfg.InstallID}
 }
 
 // Prefix returns the storage key prefix of this installation's snapshots.
-func (s *Service) Prefix() string { return Prefix + s.cfg.InstallID + "/" }
+func (s *Service) Prefix() string { return Prefix + s.InstallID() + "/" }
+
+// InstallID returns the install ID snapshots are written under.
+func (s *Service) InstallID() string {
+	s.idMu.RLock()
+	defer s.idMu.RUnlock()
+	return s.installID
+}
+
+// SetInstallID switches to the install ID of a rotated secret.key (see InstallID):
+// later snapshots, sealed with the new key, go below the new prefix, and the
+// snapshots sealed with the old key stay below the old one, out of retention.
+func (s *Service) SetInstallID(id string) error {
+	if !installIDPattern.MatchString(id) {
+		return errors.New("metabackup: invalid install ID")
+	}
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	s.installID = id
+	return nil
+}
 
 // settings returns the live metadata backup settings or the defaults.
 func (s *Service) settings() settings.MetadataBackup {
@@ -464,12 +488,13 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 	if s.cfg.Encryptor != nil {
 		enc = s.cfg.Encryptor()
 	}
-	key := s.Prefix() + snapshotFile(at, enc != nil)
+	installID := s.InstallID()
+	key := Prefix + installID + "/" + snapshotFile(at, enc != nil)
 	obj, err := upload(ctx, driver, key, file, enc)
 	if err != nil {
 		return res, err
 	}
-	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, InstallID: s.cfg.InstallID, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
+	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, InstallID: installID, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
 	res.retentionErr = s.prune(ctx, driver, key)
 	return res, nil
 }
