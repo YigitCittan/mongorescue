@@ -67,6 +67,19 @@ Offline, rate-limited or when GitHub is unreachable, the check fails quietly: it
 
 The prompt talks to the app through `/desktop/update` endpoints answered in-process before the dashboard handler (`internal/desktop.Updater`): only same-origin requests from the app's own window are served (`GET /desktop/update` for the status with the download percentage and the legacy copy, `POST /desktop/update/install`, `/desktop/update/release-page`, `/desktop/update/remove-legacy` and `/desktop/update/check`, which checks now and answers with the status once the check is done, `502` when it failed and `409` for a build without a release version), and the `POST` endpoints also require the `X-MongoRescue-Desktop: 1` header. The check and the download are bound to the app's lifetime and stop when it closes.
 
+### How the update is tested
+
+The **Desktop update E2E** workflow (`.github/workflows/desktop-e2e.yml`) tests the in-app update end to end on `windows-latest`, `macos-latest` and `ubuntu-latest`. It runs on pull requests that touch `cmd/mongorescue-desktop`, `internal/desktop`, `internal/update` or the test itself and on `main`; it is not a required check. Run it locally with `make test-desktop-update-e2e` (see [CONTRIBUTING.md](../CONTRIBUTING.md#building-and-testing)).
+
+`scripts/test-desktop-update-e2e.sh` builds the app twice from the same commit with the Wails CLI, stamped `0.0.1` and `0.0.2` (`main.Version` and the bundle version, as the release does), packages each build as the release's *Package artifacts* step does and writes the checksums file. The bundled MongoDB Database Tools are replaced by small placeholder files, and the Windows installer by a placeholder that must never be downloaded or started. The Go test in `internal/desktop/updatee2e` then installs `0.0.1` as users do (`MongoRescue.app` in an Applications folder, the tarball in a directory, the portable archive in a per-user Programs folder), serves `0.0.2` as GitHub's latest release from a local server, and runs the installed app with a hidden `--e2e-update=<dir>` flag. Without a window, the app creates its updater as usual and drives it through the same `/desktop/update` endpoints the dashboard uses: check, install, and the status until the end. The installer launch, the file manager and the browser are replaced by records, so the test can check that none of them was used. Two cases run on each system:
+
+- **Update.** On Windows the app swaps itself in place and starts the new version, which waits for the old process to exit and removes the leftovers; the test checks that `MongoRescue.exe --version` and `tools\` are now `0.0.2`, and that no `*.old` file or `.update-*` folder is left. On macOS and Linux the verified archive is saved in the download folder and shown; the test checks its SHA-256 against the checksums file, that the archive unpacks to `0.0.2` (`--version` and, on macOS, `CFBundleShortVersionString`), and that the installed app is unchanged, file by file.
+- **Tampered archive.** One byte of the archive is changed and the checksums file is not. The update must fail with *checksum mismatch*, without a restart, a reveal or an installer, and the installed app must be unchanged, file by file, still reporting `0.0.1`. No download is left behind.
+
+On macOS the test also logs the extended attributes (`xattr -l`) of the downloaded archive and of `MongoRescue.app` unpacked from it with `ditto -x -k`, and writes them to the job summary. Neither carries `com.apple.quarantine`: the app does not set `LSFileQuarantineEnabled`, so its download is not quarantined and Gatekeeper does not check the updated app again. Only `com.apple.provenance` is set. A copy downloaded with a browser is quarantined as usual.
+
+The `--e2e-update` flag and the release server override exist only in builds with the `desktop_e2e` build tag, which the release never sets. Such a build reads `MONGORESCUE_E2E_UPDATE_BASE_URL` and accepts only an `http` URL on a loopback address (`127.0.0.1`, `::1` or `localhost`) without a path. Every other build ignores the variable and always uses GitHub, which a unit test checks.
+
 ## Running in the background
 
 On Windows the app keeps running with a MongoRescue icon in the notification area (system tray), so scheduled backups continue while its window is closed. macOS and Linux are unchanged: closing the window quits the app.
@@ -95,7 +108,7 @@ The window opens where it was closed, with the same size (and maximised if it wa
 
 `<user config dir>` is `%AppData%` on Windows, `~/Library/Application Support` on macOS and `$XDG_CONFIG_HOME` (usually `~/.config`) on Linux.
 
-The app accepts `-data-dir` (or `MONGORESCUE_DATA_DIR`), `-log-level` and `MONGORESCUE_SECRET_KEY`; the listen address options and `MONGORESCUE_DASHBOARD` are not read, so leftover server variables cannot keep it from starting. As with the server, back up the data directory and keep a copy of `secret.key` apart from your database backups ([production.md](production.md#data-directory)).
+The app accepts `-data-dir` (or `MONGORESCUE_DATA_DIR`), `-log-level` and `MONGORESCUE_SECRET_KEY`, and `--version` alone prints the version and commit (`MongoRescue 0.19.0 (abc1234)`) and exits without opening the data directory or a window; the listen address options and `MONGORESCUE_DASHBOARD` are not read, so leftover server variables cannot keep it from starting. As with the server, back up the data directory and keep a copy of `secret.key` apart from your database backups ([production.md](production.md#data-directory)).
 
 A data directory can be used by one process at a time: stop a server that uses the same directory before opening it in the app.
 

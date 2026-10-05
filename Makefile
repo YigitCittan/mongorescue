@@ -60,7 +60,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-e2e fuzz cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-e2e test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -109,6 +109,10 @@ test-integration-docker:
 ## test-e2e: Runs the Playwright browser suite (e2e/) against the built binary, MongoDB and MinIO in Docker
 test-e2e:
 	./scripts/test-e2e-docker.sh
+
+## test-desktop-update-e2e: Builds the desktop app in two versions with the Wails CLI and tests its in-app update against a fake release
+test-desktop-update-e2e:
+	./scripts/test-desktop-update-e2e.sh
 
 ## fuzz: Runs each fuzz target in FUZZ_TARGETS for FUZZTIME (default 30s), one after another
 fuzz:

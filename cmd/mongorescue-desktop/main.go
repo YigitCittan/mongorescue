@@ -7,7 +7,8 @@
 // Flags: -data-dir (default <user config dir>/MongoRescue/data) and -log-level. Logs go
 // to <data dir>/desktop.log. --after-update=<pid> is set by the in-app update on
 // Windows when it starts the new version: the app then waits for the old process to
-// exit before it opens the data directory.
+// exit before it opens the data directory. --version prints the version and commit
+// and exits.
 //
 // On Windows the app keeps running in the background with a tray icon: closing the
 // window hides it, so scheduled backups continue, and the tray menu quits the app.
@@ -84,6 +85,15 @@ func main() {
 // run builds the application, runs the window until it is closed and returns the
 // process exit code.
 func run(args []string, getenv func(string) string, stderr io.Writer) int {
+	if desktop.IsVersionFlag(args) {
+		fmt.Fprintln(os.Stdout, "MongoRescue "+Version+" ("+Commit+")")
+		return 0
+	}
+	// The headless update of the desktop update end-to-end test: desktop_e2e builds
+	// only (see e2e.go).
+	if code, ok := runE2E(args); ok {
+		return code
+	}
 	// After an in-app update the old process is still shutting down: wait for it to
 	// exit (it holds the data directory lock and the single instance lock) before
 	// the log file is truncated and the data directory opened.

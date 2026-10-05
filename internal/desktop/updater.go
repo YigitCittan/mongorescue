@@ -132,7 +132,8 @@ type UpdateSource interface {
 
 // UpdaterOptions configures NewUpdater. Nil functions get the real implementations.
 type UpdaterOptions struct {
-	// Source is the release source; nil means a zero *update.Checker.
+	// Source is the release source; nil means a zero *update.Checker (GitHub), or
+	// in a desktop_e2e build the server named by E2EUpdateBaseURLEnv.
 	Source UpdateSource
 	// Version is the running version. A version that is not a final release, such
 	// as "dev", disables the updater.
@@ -303,7 +304,7 @@ type checkRound struct {
 // NewUpdater returns an idle updater for opts.Version.
 func NewUpdater(opts UpdaterOptions) *Updater {
 	if opts.Source == nil {
-		opts.Source = &update.Checker{}
+		opts.Source = defaultUpdateSource(os.Getenv)
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()

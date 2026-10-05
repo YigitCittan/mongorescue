@@ -81,6 +81,14 @@ E2E_KEYCLOAK=1 make test-e2e                 # also Keycloak, for the single sig
 cd e2e && npm run typecheck && npx playwright show-report               # type-check, open the last report
 ```
 
+**Desktop update test** (`internal/desktop/updatee2e`, `desktop_e2e` build tag) checks the desktop app's in-app update end to end. `make test-desktop-update-e2e` builds the app twice with the Wails CLI (stamped `0.0.1` and `0.0.2`), packages both builds as the release does, then installs the old one and updates it from a fake GitHub release on a loopback port, once with the real archive and once with a tampered one. On Windows the update is in place, with a restart; on macOS and Linux the app downloads, verifies and shows the archive. Run it on the system you want to test: it needs Go, the Wails CLI at the version in `go.mod` (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`), `jq`, and the webview build dependencies of `make desktop` (Xcode command line tools on macOS, `libgtk-3-dev` and `libwebkit2gtk-4.1-dev` on Linux; on Windows run it from Git Bash with `7z` on `PATH`). The script moves `cmd/mongorescue-desktop/build/bin` aside during the builds and restores it afterwards. On macOS it also logs whether the download carries `com.apple.quarantine`. See [docs/desktop.md](docs/desktop.md#how-the-update-is-tested).
+
+```bash
+make test-desktop-update-e2e                     # build both versions, run both cases
+E2E_OUT=/tmp/desktop-e2e make test-desktop-update-e2e   # keep the builds and release files
+go test -tags desktop_e2e -run E2E ./internal/desktop/  # the release-server override's own tests
+```
+
 When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths).
 
 The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only by `internal/mongoconn` and `_test.go` files**, plus its `bson` codec (and nothing else from the driver) by `internal/oplog`; CI fails on any other import. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
@@ -95,6 +103,8 @@ On every push and pull request (`.github/workflows/ci.yml`):
 - **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, and the fuzz targets; see [docs/testing.md](docs/testing.md).
 - **E2E (Playwright)**: the browser suite in `e2e/` against MongoDB 7 and MinIO; the report and traces are uploaded when it fails.
 - **Docker smoke test**: builds the image and checks health, auth, dashboard and bundled tools.
+
+Pull requests that touch the desktop app or its updater, and pushes to `main`, also run **Desktop update E2E** (`.github/workflows/desktop-e2e.yml`) on Windows, macOS and Linux. It is not a required check.
 
 The cloud provider suite runs only on pushes to `main` and on `v*` tags in `YigitCittan/mongorescue`, never on pull requests. You do not need cloud credentials to contribute.
 
@@ -215,6 +225,7 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | `make test-integration` | Unit + `integration`-tagged tests against the services in your `MONGORESCUE_TEST_*` env; missing services are skipped | Go, MongoDB Database Tools |
 | `make test-integration-docker` | Same, against disposable MongoDB 7, MinIO and LocalStack containers | Docker, curl, Go, MongoDB Database Tools |
 | `make test-e2e` | Playwright browser suite (`e2e/`) against the built binary and disposable MongoDB 7 and MinIO containers | Docker, curl 7.75+, Go, Node.js 20+ and npm, MongoDB Database Tools |
+| `make test-desktop-update-e2e` | Desktop app in-app update, end to end, on the host OS: two Wails builds, the release's packaging, a fake GitHub release; an update and a tampered archive | Go, Wails CLI, jq, the webview build dependencies (7z and Git Bash on Windows) |
 | `make fuzz` | Each fuzz target in `FUZZ_TARGETS` for `FUZZTIME` (default `30s`), one after another | Go |
 | `make docker-smoke` | Builds the image and checks health, auth, dashboard and bundled tools | Docker, curl |
 
