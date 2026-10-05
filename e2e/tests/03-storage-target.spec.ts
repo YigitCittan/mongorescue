@@ -19,6 +19,12 @@ test("adds an S3 storage target and makes it the default", async ({ page, servic
   await dialog.getByRole("textbox", { name: "Access key ID" }).fill(services.s3AccessKey);
   await dialog.getByRole("textbox", { name: "Secret access key" }).fill(services.s3SecretKey);
   await dialog.getByRole("checkbox", { name: "Use path-style URLs" }).check();
+  // The part size bounds the largest archive (10,000 parts), shown next to it.
+  const partSize = dialog.getByRole("spinbutton", { name: "Upload part size (MiB)" });
+  await expect(partSize).toHaveValue("16");
+  await expect(dialog.getByText(/Largest archive: about 156 GiB/)).toBeVisible();
+  await partSize.fill("64");
+  await expect(dialog.getByText(/Largest archive: about 625 GiB/)).toBeVisible();
   await dialog.getByRole("checkbox", { name: "Use as default for new backups" }).check();
 
   await dialog.getByRole("button", { name: "Test storage" }).click();

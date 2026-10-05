@@ -827,6 +827,15 @@ time,
   max-width: 190px;
 }
 
+.cell-warning {
+  color: var(--warn);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 3px;
+}
+
 #backups-tbody .error-full {
   width: 190px;
 }

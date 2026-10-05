@@ -2293,6 +2293,11 @@
               <input type="checkbox" id="storage-path-style">
               <span class="check-text"><span class="check-title" data-i18n="storage.path_style_label">Use path-style URLs</span></span>
             </label>
+            <div class="form-group">
+              <label class="form-label" for="storage-part-size" data-i18n="storage.part_size_label">Upload part size (MiB)</label>
+              <input type="number" id="storage-part-size" class="form-input mono" min="5" max="512" step="1" value="16" inputmode="numeric" aria-describedby="storage-part-size-hint">
+              <span class="form-hint" id="storage-part-size-hint" role="status" aria-live="polite"></span>
+            </div>
           </div>
 
           <label class="check check-plain" for="storage-default" id="storage-default-row">
