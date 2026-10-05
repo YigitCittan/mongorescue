@@ -20,6 +20,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
@@ -110,6 +111,19 @@ type TestResult struct {
 	LatencyMS int64 `json:"latency_ms"`
 	// Error is the redacted failure reason.
 	Error string `json:"error,omitempty"`
+	// ReadPreference is the read preference the test selected a member with ("" for
+	// the URI's own), and ReadMember the member a backup with it would read from
+	// (when the prober can tell, see MemberProber).
+	ReadPreference string               `json:"read_preference,omitempty"`
+	ReadMember     *models.SourceMember `json:"read_member,omitempty"`
+	// ReadMemberError explains, redacted, why no member could be selected.
+	ReadMemberError string `json:"read_member_error,omitempty"`
+}
+
+// MemberProber is implemented by Probers that can tell which member a read with a
+// connection string's read preference selects (see mongotools.WithReadPreference).
+type MemberProber interface {
+	ServingMember(ctx context.Context, uri string) (models.SourceMember, error)
 }
 
 // Input is the client-editable part of a connection.
@@ -121,6 +135,28 @@ type Input struct {
 	URI string `json:"uri"`
 	// Description is optional.
 	Description string `json:"description"`
+	// ReadPreference, when set, replaces the read preference of backups from the
+	// connection ("" keeps the URI's own) and its tag sets with
+	// ReadPreferenceTags; omitted keeps both.
+	ReadPreference     *string             `json:"read_preference,omitempty"`
+	ReadPreferenceTags []map[string]string `json:"read_preference_tags,omitempty"`
+	// MaxConcurrentBackups, when set, replaces how many backups may read from the
+	// connection at once (0 = unlimited).
+	MaxConcurrentBackups *int `json:"max_concurrent_backups,omitempty"`
+}
+
+// apply copies the optional fields of in onto c.
+func (in Input) apply(c *models.Connection) {
+	if in.ReadPreference != nil {
+		c.ReadPreference = *in.ReadPreference
+		c.ReadPreferenceTags = models.CloneTagSets(in.ReadPreferenceTags)
+		if len(c.ReadPreferenceTags) == 0 {
+			c.ReadPreferenceTags = nil
+		}
+	}
+	if in.MaxConcurrentBackups != nil {
+		c.MaxConcurrentBackups = *in.MaxConcurrentBackups
+	}
 }
 
 // Service implements the connection use cases. It is safe for concurrent use.
@@ -208,6 +244,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	}
 	now := s.now().UTC()
 	c := &models.Connection{ID: id, Name: in.Name, URI: in.URI, Description: in.Description, CreatedAt: now, UpdatedAt: now}
+	in.apply(c)
 	if err := s.repo.SaveConnection(ctx, c); err != nil {
 		return nil, err
 	}
@@ -240,6 +277,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 		updated.LastTestAt, updated.LastTestOK, updated.LastTestError, updated.ServerVersion = nil, false, "", ""
 	}
 	updated.Name, updated.URI, updated.Description = in.Name, uri, in.Description
+	in.apply(&updated)
 	updated.UpdatedAt = s.now().UTC()
 	if err := s.repo.SaveConnection(ctx, &updated); err != nil {
 		return nil, err
@@ -279,7 +317,7 @@ func (s *Service) Test(ctx context.Context, id string) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	res := s.probe(ctx, c.URI)
+	res := s.probe(ctx, c.URI, c.ReadPref())
 
 	now := s.now().UTC()
 	c.LastTestAt, c.LastTestOK, c.LastTestError = &now, res.OK, res.Error
@@ -299,6 +337,15 @@ func (s *Service) Test(ctx context.Context, id string) (TestResult, error) {
 // uri is the redacted form of that connection's stored URI, the stored URI is used, so
 // an edit form can be re-tested without re-entering the password.
 func (s *Service) TestURI(ctx context.Context, uri, id string) (TestResult, error) {
+	return s.TestURIWith(ctx, uri, id, models.ReadPreference{})
+}
+
+// TestURIWith is TestURI that also reports the member a backup with read
+// preference rp (validated first) would read from.
+func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.ReadPreference) (TestResult, error) {
+	if err := rp.Validate(); err != nil {
+		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	stored := ""
 	if id != "" && strings.Contains(uri, redact.Mask) {
 		existing, err := s.repo.GetConnection(ctx, id)
@@ -322,7 +369,7 @@ func (s *Service) TestURI(ctx context.Context, uri, id string) (TestResult, erro
 	if err := checkURI(uri, stored); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	return s.probe(ctx, uri), nil
+	return s.probe(ctx, uri, rp), nil
 }
 
 // Databases lists the databases of connection id, hiding admin, config and local
@@ -393,8 +440,9 @@ func (s *Service) EnsureDefault(ctx context.Context, uri string) (bool, error) {
 	return true, nil
 }
 
-// probe pings uri within the test timeout.
-func (s *Service) probe(ctx context.Context, uri string) TestResult {
+// probe pings uri within the test timeout and, when the prober can tell, reports
+// the member a backup with rp would read from.
+func (s *Service) probe(ctx context.Context, uri string, rp models.ReadPreference) TestResult {
 	if s.prober == nil {
 		return TestResult{Error: ErrUnavailable.Error()}
 	}
@@ -408,6 +456,15 @@ func (s *Service) probe(ctx context.Context, uri string) TestResult {
 		return res
 	}
 	res.OK, res.ServerVersion = true, info.Version
+	if mp, ok := s.prober.(MemberProber); ok {
+		res.ReadPreference = rp.String()
+		member, err := mp.ServingMember(ctx, mongotools.WithReadPreference(uri, rp.Mode, rp.Tags))
+		if err != nil {
+			res.ReadMemberError = scrub(err, uri)
+		} else {
+			res.ReadMember = &member
+		}
+	}
 	return res
 }
 
@@ -458,6 +515,15 @@ func validateInput(in *Input) error {
 		return fmt.Errorf("%w: description must be at most %d characters", ErrInvalid, maxDescriptionLength)
 	case in.URI == "":
 		return fmt.Errorf("%w: uri is required", ErrInvalid)
+	case in.MaxConcurrentBackups != nil && (*in.MaxConcurrentBackups < 0 || *in.MaxConcurrentBackups > models.MaxConcurrentBackupsLimit):
+		return fmt.Errorf("%w: %w", ErrInvalid, models.ErrInvalidConcurrentBackups)
+	}
+	if in.ReadPreference != nil {
+		rp := models.ReadPreference{Mode: strings.TrimSpace(*in.ReadPreference), Tags: in.ReadPreferenceTags}
+		if err := rp.Validate(); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		in.ReadPreference = &rp.Mode
 	}
 	return nil
 }
