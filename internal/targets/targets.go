@@ -300,6 +300,8 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 	if err != nil {
 		return nil, err
 	}
+	// A first check keeps the write probe out of another target's place; the one
+	// under the lock below decides.
 	if err = s.checkOverlap(ctx, t, ""); err != nil {
 		return nil, err
 	}
@@ -315,8 +317,13 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 	now := s.now().UTC()
 	t.ID, t.CreatedAt, t.UpdatedAt = id, now, now
 
+	// The overlap check and the write share the lock, so two concurrent creates
+	// (or a create and a move) cannot both pass the check for one place.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err = s.checkOverlap(ctx, t, ""); err != nil {
+		return nil, err
+	}
 	list, err := s.repo.ListStorageTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -375,8 +382,14 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 		t.LastTestAt, t.LastTestOK, t.LastTestError = existing.LastTestAt, existing.LastTestOK, existing.LastTestError
 	}
 
+	// Like in Create, the overlap check and the write share the lock.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if moved {
+		if err = s.checkOverlap(ctx, t, existing.ID); err != nil {
+			return nil, err
+		}
+	}
 	if err = s.repo.UpdateStorageTarget(ctx, t, existing.UpdatedAt, moved); err != nil {
 		return nil, err
 	}

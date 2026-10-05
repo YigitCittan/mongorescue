@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -485,6 +487,53 @@ func TestS3EndpointSpellingsAlias(t *testing.T) {
 		if loc1 != loc2 {
 			t.Errorf("%q and %q: object locations %q and %q; want equal", tc.a, tc.b, loc1, loc2)
 		}
+	}
+}
+
+// TestConcurrentCreatesCannotAlias proves the overlap check and the write are one
+// step: of many concurrent creates of one place (S3 spellings and nested local
+// directories), exactly one succeeds and the others are refused.
+func TestConcurrentCreatesCannotAlias(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	const n = 12
+	inputs := make([]targets.Input, 0, 2*n)
+	for i := range n {
+		in := s3Input(fmt.Sprintf("s3-%d", i), "bucket-race", "s3cret")
+		if i%2 == 1 {
+			in.S3.Endpoint = "https://S3.example.com:443"
+		}
+		inputs = append(inputs, in)
+		dir := f.abs("race")
+		if i%2 == 1 {
+			dir = filepath.Join(dir, fmt.Sprintf("nested-%d", i))
+		}
+		inputs = append(inputs, targets.Input{Name: fmt.Sprintf("local-%d", i), Type: models.StorageLocal, Local: &models.LocalTarget{Path: dir}})
+	}
+	start := make(chan struct{})
+	errs := make([]error, len(inputs))
+	var wg sync.WaitGroup
+	for i, in := range inputs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errs[i] = f.svc.Create(ctx, in)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	created := map[models.StorageType]int{}
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			created[inputs[i].Type]++
+		case !errors.Is(err, targets.ErrLocationOverlap):
+			t.Errorf("create %s = %v; want nil or ErrLocationOverlap", inputs[i].Name, err)
+		}
+	}
+	if created[models.StorageS3] != 1 || created[models.StorageLocal] != 1 {
+		t.Fatalf("created = %v; want exactly one target per place", created)
 	}
 }
 
