@@ -91,6 +91,7 @@ func (s *SQLiteStore) openJobHeartbeat(job *models.Job) error {
 // SaveJob creates or updates a scheduled backup job. It sets CreatedAt (when zero) and
 // UpdatedAt on job before persisting it; its heartbeat URL is sealed.
 func (s *SQLiteStore) SaveJob(ctx context.Context, job *models.Job) error {
+	defer s.lockKey()()
 	if job == nil || job.ID == "" {
 		return fmt.Errorf("%w: job with ID is required", ErrInvalidRecord)
 	}
@@ -108,6 +109,7 @@ func (s *SQLiteStore) SaveJob(ctx context.Context, job *models.Job) error {
 
 // CreateJob inserts a new job; it returns ErrAlreadyExists when the ID is taken.
 func (s *SQLiteStore) CreateJob(ctx context.Context, job *models.Job) error {
+	defer s.lockKey()()
 	if job == nil || job.ID == "" {
 		return fmt.Errorf("%w: job with ID is required", ErrInvalidRecord)
 	}
@@ -139,6 +141,7 @@ func (s *SQLiteStore) CreateJob(ctx context.Context, job *models.Job) error {
 // UpdateJob replaces an existing job; it returns ErrNotFound when the job was
 // deleted, so a concurrent delete is never undone.
 func (s *SQLiteStore) UpdateJob(ctx context.Context, job *models.Job) error {
+	defer s.lockKey()()
 	if job == nil || job.ID == "" {
 		return fmt.Errorf("%w: job with ID is required", ErrInvalidRecord)
 	}
@@ -184,6 +187,7 @@ func (s *SQLiteStore) UpdateJobRunTimes(ctx context.Context, id string, lastRun,
 
 // GetJob returns a job by ID (its heartbeat URL decrypted) or ErrNotFound.
 func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
+	defer s.lockKey()()
 	job, err := getRecord[models.Job](ctx, s.db, ErrNotFound, "SELECT data FROM jobs WHERE id = ?", id)
 	if err != nil {
 		return nil, err
@@ -198,6 +202,7 @@ func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*models.Job, error
 // decrypted. A job whose heartbeat URL cannot be opened is returned without it (see
 // openJob); only a job whose JSON cannot be read is skipped.
 func (s *SQLiteStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
+	defer s.lockKey()()
 	return listRecords(ctx, s, tableJobs, s.openJob, "SELECT id, data FROM jobs ORDER BY name, id")
 }
 

@@ -52,8 +52,12 @@ type SQLiteStore struct {
 	db     *sql.DB
 	path   string
 	logger *slog.Logger
-	// box encrypts connection URIs and notification channel secrets at rest.
+	// box encrypts connection URIs and notification channel secrets at rest. A
+	// secret key rotation replaces it while holding keyMu.
 	box *secretbox.Box
+	// keyMu orders secret key rotations (write side) against code that seals or
+	// opens values (read side, see lockKey).
+	keyMu sync.RWMutex
 	// corrupt holds the rows that lists skipped because they cannot be read.
 	corrupt corruptLog
 

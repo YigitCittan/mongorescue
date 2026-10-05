@@ -28,6 +28,7 @@ const (
 // ListChannels returns all notification channels sorted by name. Channel secrets are
 // returned as stored; masking is the caller's responsibility.
 func (s *SQLiteStore) ListChannels(ctx context.Context) ([]*notify.Channel, error) {
+	defer s.lockKey()()
 	return listRecords(ctx, s, tableChannels, func(ch *notify.Channel) error {
 		opened, err := s.openChannel(ch)
 		if err == nil {
@@ -39,6 +40,7 @@ func (s *SQLiteStore) ListChannels(ctx context.Context) ([]*notify.Channel, erro
 
 // GetChannel returns a notification channel or notify.ErrChannelNotFound.
 func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*notify.Channel, error) {
+	defer s.lockKey()()
 	ch, err := getRecord[notify.Channel](ctx, s.db, notify.ErrChannelNotFound,
 		"SELECT data FROM notification_channels WHERE id = ?", id)
 	if err != nil {
@@ -49,6 +51,7 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*notify.Channe
 
 // SaveChannel creates or replaces a notification channel.
 func (s *SQLiteStore) SaveChannel(ctx context.Context, ch *notify.Channel) error {
+	defer s.lockKey()()
 	if ch == nil || ch.ID == "" {
 		return fmt.Errorf("%w: channel with ID is required", ErrInvalidRecord)
 	}
