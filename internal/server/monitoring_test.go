@@ -229,23 +229,25 @@ func TestSettingsMaskTheHeartbeatURL(t *testing.T) {
 
 // TestHeartbeatTestIsThrottled proves each caller may send heartbeatTestsPerWindow
 // test pings per window (the endpoint makes outbound requests), and that a failure
-// shows a fixed reason and the host, never the dialled address.
+// names the host, never the address or the URL.
 func TestHeartbeatTestIsThrottled(t *testing.T) {
 	srv, metaStore, _ := setupTestServer(t)
-	closed := httptest.NewServer(http.NotFoundHandler())
-	target := closed.URL + "/ping/secret"
-	closed.Close()
-	srv.heartbeat = heartbeat.New(heartbeat.Config{Logger: slog.New(slog.DiscardHandler)})
+	// A monitor that answers 404: the outcome does not depend on how the operating
+	// system reports dial errors.
+	monitor := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(monitor.Close)
+	target := monitor.URL + "/ping/secret"
+	srv.heartbeat = heartbeat.New(heartbeat.Config{Client: monitor.Client(), Logger: slog.New(slog.DiscardHandler)})
 	srv.settings = newTestSettings(t, metaStore.(settings.Repository), settings.Defaults().Security)
 	mux := srv.buildRoutes()
 	as := func(id string) http.Handler {
 		return asPrincipal(mux, &auth.Principal{User: &auth.User{ID: id}, Scope: auth.ScopeAdmin})
 	}
 	body := map[string]any{"heartbeat_url": target}
-	port := strings.TrimPrefix(closed.Listener.Addr().String(), "127.0.0.1:")
+	port := strings.TrimPrefix(monitor.Listener.Addr().String(), "127.0.0.1:")
 	for i := range heartbeatTestsPerWindow {
 		code, _, raw := serveJSON(t, as("u1"), http.MethodPost, "/api/v1/settings/monitoring/test", body)
-		if code != http.StatusBadGateway || !strings.Contains(raw, "connection refused") || strings.Contains(raw, "secret") ||
+		if code != http.StatusBadGateway || !strings.Contains(raw, "127.0.0.1: http status 404") || strings.Contains(raw, "secret") ||
 			strings.Contains(raw, ":"+port) {
 			t.Fatalf("test ping %d: %d %s", i+1, code, raw)
 		}
