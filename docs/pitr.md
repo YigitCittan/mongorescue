@@ -37,19 +37,24 @@ In the dashboard, open **Connections**: the **Point-in-time recovery** panel lis
 | `oplog_max_days` | unset | Delete chunks older than this many days, even if that shortens the window (privacy). |
 | Read preference | `secondaryPreferred` | Where oplog reads go. |
 | `chain_test_cron` | unset | A cron schedule of [chain tests](#chain-tests); unset turns them off. |
+| `chain_test_connection_id` | the stream's connection | The connection chain tests restore into: another server spares production their load. |
 
 ## Restoring to a point in time
 
 A point-in-time restore picks the **newest eligible base** whose consistent point (`t_after`) is before the target, checks that the live chunks from the base's `t_before` up to the target form one unbroken run (no gap, no divergence, no chunk that failed verification) and that a key is configured for the encryption of the base and of every chunk, and records that choice on the restore (`pitr` in the restore record). Then it runs in two passes, both streamed from storage into `mongorestore` without temporary copies:
 
+Before anything is written, a **checksum pre-pass** downloads every chunk of the range that the integrity sweep has not verified in the last 24 hours, hashes it (without decrypting it) and refuses the restore when one does not match its recorded SHA-256; a chunk without a recorded checksum is refused too. Unverified chunks are therefore downloaded twice (once for the pre-pass, once for the replay); keep the integrity sweep running to avoid it.
+
 1. **The base** is restored with `mongorestore` without `--oplogReplay`. A whole-instance restore renames every database with `--nsFrom '$db$.$coll$' --nsTo '$db$_rescue_<timestamp>.$coll$'` and always excludes `admin.*`, `config.*` and `local.*`; a restore of some databases uses `--nsInclude=<db>.*` and the same rename per database.
 2. **The oplog.** The chunks are fetched in order, each hashed while it streams and checked against its recorded SHA-256, decrypted, gunzipped and passed through the namespace filter (the same renaming and selection, up to the limit), which writes a synthetic oplog-only archive to the stdin of `mongorestore --archive --oplogReplay --oplogLimit=<t>:<i>`.
 
-Afterwards the number of operations the filter wrote is compared with the "applied N oplog entries" line of `mongorestore`. A mismatch fails the restore and keeps the clones for inspection; a missing line adds a warning. A restore that fails otherwise, or is cancelled, drops its clones.
+Afterwards the number of operations the filter wrote is compared with the "applied N oplog entries" line of `mongorestore`. A mismatch fails the restore and keeps the clones for inspection; a missing line adds a warning and sets `pitr.ops_unverified: true` on the record. A restore that fails otherwise, or is cancelled, drops its clones.
+
+**Recorded clones.** The clone names are recorded on the restore (`pitr.clones`) before anything is written: the databases the base listed after its dump (`instance_databases`), and, while the restore runs, each database that first appears in the oplog, stored before its first entry is replayed. Clean-up drops exactly these names, never a pattern. When the server stops in the middle of a restore or a chain test, the next start marks the record failed, drops its recorded clones (temporary for a chain test, partial and untrustworthy for a restore) and says so in its message.
 
 **The target.** A time `S` (RFC 3339, on the primary's clock, UTC in the dashboard) restores every write up to and including the second `S`: the replay stops at `(S+1):0`. An exact oplog position `{t, i}` restores every write *before* it. The target must lie in a window: from the consistent point of its base to one second before the newest collected entry.
 
-**Where it goes.** Every restored database is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>` (the start of the restore, UTC); nothing that exists is overwritten, and the restore refuses to start when such a name is taken. In-place point-in-time restores are refused in this release. Because the whole instance is renamed with one pattern, a database whose name is longer than 40 bytes cannot be restored this way (MongoDB allows 63); restore it from a database backup instead.
+**Where it goes.** Every restored database is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>_<id>` (the start of the restore in UTC and a random 4-character ID, so two restores in the same second never collide with each other or with a backup's safe clone); nothing that exists is overwritten, and the restore refuses to start when such a name is taken. In-place point-in-time restores are refused in this release. A clone name may not exceed MongoDB's 63 bytes, so databases longer than 35 bytes cannot be restored this way: the preflight computes every clone name from the base's database list and refuses the restore, naming them; restore those databases from a database backup instead. Databases MongoRescue restored into (names containing `_rescue_`) are never cloned again: a whole-instance restore leaves them out of both passes, and they cannot be selected. `mongodump --oplog` cannot exclude databases, so they still take room in base backups; drop clones you no longer need. A database selected in `databases` must be one the base holds; to get a database created after the base, restore the whole instance.
 
 **Who may.** Point-in-time restores and their preflight are admin-only in this release. They only add databases, so the two-person rule of [delete protection](security.md) does not hold them back, like other safe-clone restores.
 
@@ -63,10 +68,10 @@ Afterwards the number of operations the filter wrote is compared with the "appli
 
 | Check | Fails when |
 | --- | --- |
-| `pitr_chain` | No base and unbroken, verified chain reach the target, or a key for the encryption of the range is missing. Chunks that were never verified are accepted; they are checked while they stream. |
+| `pitr_chain` | No base and unbroken, verified chain reach the target, a chunk has no recorded checksum, or a key for the encryption of the range is missing. Chunks that were never verified are accepted; the pre-pass and the replay check them. |
 | `privileges` | The target's user certainly lacks `restore`, `readWriteAnyDatabase` or `dbAdminAnyDatabase` on `admin` and holds neither `anyAction` nor `root` (custom roles only warn). |
 | `disk_space` | The server reports less free space than the base archive plus the oplog of the range (it warns below four times the base plus the oplog). |
-| `target_database` | A clone name of the selected databases is taken. |
+| `target_database` | A clone name is longer than 63 bytes, or taken. |
 | `tools_version` | `mongorestore` is missing or older than 100.12. |
 
 The result carries the plan (`pitr` in the preflight result) with an estimate of the duration: from the rate of the stream's newest chain test, or else from default rates (50 MiB/s for the base, 4 MiB/s for the oplog, which is replayed on one thread).
@@ -75,9 +80,9 @@ The result carries the plan (`pitr` in the preflight result) with an estimate of
 
 ## Chain tests
 
-A chain test proves that a stream can actually be restored: it restores the eligible base before the newest base that has a manifest to the consistent point of that newer base (every write up to and including its `t_after`) into temporary `<db>_rescue_verify_<timestamp>_<hex>` databases, compares their document counts and indexes with the newer base's manifest, records the outcome on the restore (`pitr.chain_test: true`, `verification`) and drops the clones. Base backups capture an instance manifest (every database but `admin`, `config` and `local`) for this.
+A chain test proves that a stream can actually be restored: it restores the eligible base before the newest base that has a manifest to the consistent point of that newer base (every write up to and including its `t_after`) into temporary `<db>_rescue_cv<time in base 36><id>` databases (20 bytes of suffix, so database names up to 43 bytes fit), compares their document counts and indexes with the newer base's manifest, records the outcome on the restore (`pitr.chain_test: true`, `verification`) and drops the clones. Base backups capture an instance manifest (every database but `admin`, `config`, `local` and the clones) for this.
 
-Chain tests run on the stream's `chain_test_cron` schedule (unset by default) and on demand with `POST /api/v1/pitr/streams/{id}/chain-test` (admin). They need two eligible bases in one window. A failed chain test adds `pitr_chain_test_failed` (warn) to readiness, and the duration of the newest successful one drives the RTO estimate of point-in-time restores.
+Chain tests are opt-in: they run on the stream's `chain_test_cron` schedule (unset by default) and on demand with `POST /api/v1/pitr/streams/{id}/chain-test` (admin). They need two eligible bases in one window. **A chain test is a full restore**: it downloads a base and the oplog between two bases and writes a copy of every database into the target, so it costs the disk space, I/O and time of a whole-instance restore. Point `chain_test_connection_id` at another server to spare production; the restore preflight applies like to any restore (no force), so a target without the privileges or the free space refuses the test. A failed chain test adds `pitr_chain_test_failed` (warn) to readiness, and the duration of the newest successful one drives the RTO estimate of point-in-time restores.
 
 ## How it works
 

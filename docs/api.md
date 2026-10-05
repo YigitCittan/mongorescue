@@ -642,6 +642,7 @@ A PITR stream collects the oplog of one replica set connection into encrypted ch
 | `base_on_gap` | `true` | Take a base backup as soon as a gap breaks the chain |
 | `read_preference` | `secondaryPreferred` | Read preference of oplog reads |
 | `chain_test_cron` | empty (off) | Schedule of [chain tests](pitr.md#chain-tests); `""` turns them off |
+| `chain_test_connection_id` | empty (the stream's connection) | Connection chain tests restore into; another server spares production the load of a full restore |
 
 Creating or enabling a stream is refused with 400 unless the connection is a replica set, its user may read `local.oplog.rs` (`backup`, `read` on `local` or a custom role) and backup encryption is on with age keys: the oplog keeps deleted data, so PITR data is always encrypted.
 
@@ -651,7 +652,7 @@ A database row's `rpo.source` is `pitr` when the stream's durable lag is the bet
 
 `DELETE` refuses an enabled stream (409). For a disabled stream with chunks it ends the open chain, deletes every chunk with the [delete grace period](#delete-protection) and answers 409 until the purge removed them; delete it again then. Base backups stay as backups.
 
-`POST /api/v1/pitr/streams/{id}/chain-test` (admin) starts a [chain test](pitr.md#chain-tests) now and answers 202 with its restore (`pitr.chain_test: true`); 409 when the stream has no two eligible bases in one window, the newer with a manifest.
+`POST /api/v1/pitr/streams/{id}/chain-test` (admin) starts a [chain test](pitr.md#chain-tests) now and answers 202 with its restore (`pitr.chain_test: true`); 409 when the stream has no two eligible bases in one window, the newer with a manifest, or when its preflight fails (with the checks, like a restore).
 
 ### Point-in-time restores (experimental)
 
@@ -671,9 +672,9 @@ A database row's `rpo.source` is `pitr` when the stream's durable lag is the bet
 | `target_connection_id` | Another connection to restore into (default: the stream's) |
 | `force` | Start although a preflight check failed |
 
-Every restored database goes into a new database `<db>_rescue_<YYYYMMDD_HHMMSS>`. Point-in-time restores and their preflight need the **admin** scope (403 otherwise). An in-place request (`safe_clone: false`, `confirm_in_place`, `target_database`) is refused with 400, as are `backup_id`, `dry_run`, `drop_target`, `selected_collections` and `restore_users_and_roles`, and `databases` without `pitr`. A target outside every window, behind a chain break or a chunk that failed verification is refused with **422**; a missing key for the encryption of the base or a chunk with 422 too (`ErrKeyRequired`); a server without point-in-time support answers 503.
+Every restored database goes into a new database `<db>_rescue_<YYYYMMDD_HHMMSS>_<id>`. Point-in-time restores and their preflight need the **admin** scope (403 otherwise). An in-place request (`safe_clone: false`, `confirm_in_place`, `target_database`) is refused with 400, as are `backup_id`, `dry_run`, `drop_target`, `selected_collections` and `restore_users_and_roles`, and `databases` without `pitr`. A target outside every window, behind a chain break or a chunk that failed verification is refused with **422**; a missing key for the encryption of the base or a chunk with 422 too (`ErrKeyRequired`); a server without point-in-time support answers 503.
 
-The restore record has `pitr: {stream_id, chain_id, base_id, target_time, limit, chunks, oplog_bytes, base_bytes, databases, clone_suffix, ops_replayed, ops_applied, chain_test}`: the plan chosen, and the operations the oplog filter wrote and `mongorestore` applied. A mismatch of the two fails the restore and keeps the clones. `source_database` is `*` (or the selected databases) and `target_database` is `*<clone_suffix>` (or the clones).
+The restore record has `pitr: {stream_id, chain_id, base_id, target_time, limit, chunks, oplog_bytes, base_bytes, databases, clone_suffix, clones, ops_replayed, ops_applied, ops_unverified, chain_test}`: the plan chosen, the clone databases (recorded before they are written; clean-up drops exactly these), and the operations the oplog filter wrote and `mongorestore` applied. A mismatch of the two fails the restore and keeps the clones; `ops_unverified: true` says `mongorestore` printed no count. The clone suffix is `_rescue_<YYYYMMDD_HHMMSS>_<id>` with a random `id`. A database in `databases` the base does not hold, or a MongoRescue clone (`_rescue_` in its name), is refused with 400. `source_database` is `*` (or the selected databases) and `target_database` is `*<clone_suffix>` (or the clones).
 
 The preflight checks `pitr_chain`, `connection`, `server_version`, `target_database`, `privileges` (the replay roles), `disk_space` (base plus oplog) and `tools_version` (`mongorestore` 100.12 or newer); a plan that does not reach the target fails `pitr_chain` instead of the call. Its result adds `pitr: {base_id, base_started_at, base_consistent_at, base_bytes, oplog_bytes, chunks, unverified_chunks, target_time, limit, clone_suffix, estimated_seconds, estimate_from}`; `estimate_from` is `chain_test` when the stream's newest chain test gave the rate, `default` otherwise.
 
