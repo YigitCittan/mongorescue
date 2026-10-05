@@ -1,0 +1,14 @@
+# Vulnerabilities that OSV-Scanner (and the OpenSSF Scorecard "Vulnerabilities"
+# check, which reads this file) should not report. Every entry says why and
+# when to look again. govulncheck in CI still runs on every push and fails on
+# any vulnerability our code can reach.
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+ignoreUntil = 2027-04-01T00:00:00Z
+reason = """
+golang.org/x/crypto/openpgp is deprecated and will never get a fixed version.
+MongoRescue never imports that package: govulncheck reports it as present in
+the module but not called. Re-check when the date passes or if x/crypto drops
+the package.
+"""
