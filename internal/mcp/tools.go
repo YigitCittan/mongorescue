@@ -233,7 +233,7 @@ type startBackupInput struct {
 	ConnectionID       string   `json:"connection_id" jsonschema:"ID of the connection to back up from (see list_connections)"`
 	Database           string   `json:"database,omitempty" jsonschema:"database to back up (see list_databases); give database or databases"`
 	Databases          []string `json:"databases,omitempty" jsonschema:"several databases to back up in one run, each into its own backup (instead of database)"`
-	Parallelism        int      `json:"parallelism,omitempty" jsonschema:"with databases: how many are backed up at once (default 1)"`
+	Parallelism        int      `json:"parallelism,omitempty" jsonschema:"with databases: how many are backed up at once (0 or omitted: 1)"`
 	StorageTargetID    string   `json:"storage_target_id,omitempty" jsonschema:"storage target to write to (default: the default target)"`
 	Collections        []string `json:"collections,omitempty" jsonschema:"only these collections (one database only)"`
 	ExcludeCollections []string `json:"exclude_collections,omitempty" jsonschema:"skip these collections (one database only)"`
@@ -507,7 +507,7 @@ func (s *Server) registerTools() {
 					d.Items.MinLength, d.Items.MaxLength = ptr(1), ptr(maxNameLength)
 				}
 			}
-			p["parallelism"].Minimum, p["parallelism"].Maximum = ptr(1.0), ptr(float64(models.MaxJobParallelism))
+			p["parallelism"].Minimum, p["parallelism"].Maximum = ptr(0.0), ptr(float64(models.MaxJobParallelism))
 			collectionProps(p, "collections", "exclude_collections")
 		}),
 	}, s.startBackup)

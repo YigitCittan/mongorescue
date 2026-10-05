@@ -226,6 +226,9 @@ type RunSummary struct {
 	Cancelled int `json:"cancelled"`
 	// FailedDatabases names the databases that failed.
 	FailedDatabases []string `json:"failed_databases,omitempty"`
+	// SkippedDatabases names the databases skipped because another backup of them
+	// was already running; they are neither succeeded nor failed.
+	SkippedDatabases []string `json:"skipped_databases,omitempty"`
 	// NewDatabases names databases found since the last run that were not backed up.
 	NewDatabases []string `json:"new_databases,omitempty"`
 }
@@ -239,7 +242,7 @@ func RunSummaryOf(run *models.JobRun, multi bool) *RunSummary {
 	return &RunSummary{
 		Status: string(run.Status), Multi: multi, Databases: len(run.Databases),
 		Succeeded: ok, Failed: failed, Cancelled: cancelled,
-		FailedDatabases: run.FailedDatabases(), NewDatabases: slices.Clone(run.NewDatabases),
+		FailedDatabases: run.FailedDatabases(), SkippedDatabases: run.SkippedDatabases(), NewDatabases: slices.Clone(run.NewDatabases),
 	}
 }
 
@@ -263,7 +266,7 @@ func JobRunEvent(run *models.JobRun) Event {
 		var parts []string
 		for _, d := range run.Databases {
 			switch d.Status {
-			case models.StatusCompleted, models.StatusCancelled, models.StatusInProgress, models.StatusPending:
+			case models.StatusCompleted, models.StatusCancelled, models.StatusInProgress, models.StatusPending, models.StatusSkipped:
 			default:
 				msg := d.Database
 				if d.Error != "" {

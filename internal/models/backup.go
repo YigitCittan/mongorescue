@@ -32,6 +32,12 @@ const (
 	// is not a failure: failure counts and failure alerts ignore it.
 	StatusCancelled BackupStatus = "cancelled"
 
+	// StatusSkipped is the outcome of a database of a run that was not backed up
+	// because another backup of it was already running when the run started
+	// (JobRunDatabase only; no backup record has it). It is neither a success nor a
+	// failure: run outcomes, failure counts and failure alerts ignore it.
+	StatusSkipped BackupStatus = "skipped"
+
 	// StatusMissing indicates a completed backup whose archive a storage scan no
 	// longer found on its target. A later scan that finds it again restores
 	// StatusCompleted; nothing is deleted automatically.

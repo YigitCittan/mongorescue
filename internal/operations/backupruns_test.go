@@ -171,8 +171,10 @@ func TestStartBackupsValidation(t *testing.T) {
 
 func TestStartBackupOfOneDatabaseIsUnchanged(t *testing.T) {
 	e := newMultiEnv(t)
+	// A single backup ignores parallelism, as it always did, whatever its value.
+	nine := 9
 	rec, err := e.svc.StartBackup(context.Background(), operations.BackupRequest{
-		BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Database: "shop"},
+		BackupOptions: models.BackupOptions{ConnectionID: "conn_a", Database: "shop"}, Parallelism: &nine,
 	})
 	if err != nil {
 		t.Fatal(err)

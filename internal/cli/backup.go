@@ -218,7 +218,7 @@ func (s *session) printRunBackups(run apiclient.BackupRun) error {
 		t.row(b.Database, b.ID, string(b.Status), size, clean(b.ErrorMessage))
 	}
 	for _, b := range run.Busy {
-		t.row(b.Database, "", "busy", "", clean(b.Error))
+		t.row(b.Database, "", "skipped (already running)", "", clean(b.Error))
 	}
 	return t.flush()
 }

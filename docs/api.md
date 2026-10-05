@@ -397,7 +397,7 @@ curl -s -X POST http://localhost:8080/api/v1/backups \
 ```
 
 - `databases` names 1 to 200 databases, each a valid database name, none twice. It cannot be combined with `database` (`400`).
-- `parallelism` is how many of them are backed up at once: 1 to 4, default 1, as for jobs. Every database keeps its own run lock.
+- `parallelism` is how many of them are backed up at once: 0 to 4, where 0 or omitted means 1, as for jobs. Every database keeps its own run lock.
 - `collections` and `exclude_collections` apply only to a run of one database; with several they are refused with `400`.
 - `include_users_and_roles` applies to each database, as for a job with several databases; `admin` is backed up without it (its dumps already contain every user and role). A run of `admin` alone with the option is refused with `400`.
 - `storage_target_id` and `gzip` apply to every database.
@@ -419,7 +419,7 @@ The response is `202` with the run:
 }
 ```
 
-`backups` are the in-progress records, in the order they run. A database another backup is running when the request arrives is not backed up: it comes back in `busy` (an empty array when none is) and the others start. When every database is busy the request is refused with `409`. A request with `database` is answered exactly as before: the one backup record, without `run_id`.
+`backups` are the in-progress records, in the order they run. A database another backup is running when the request arrives is not backed up: it comes back in `busy` (an empty array when none is) and the others start. A skipped database is neither a success nor a failure: it does not change the run's outcome (a run whose other databases all succeed is `ok`), its failure counts or metrics, and the summary notification lists it as "Skipped (already running)" (`run.skipped_databases` in webhooks). When every database is busy the request is refused with `409`. A request with `database` is answered exactly as before: the one backup record, without `run_id`; it ignores `parallelism`, as it always did.
 
 ## Retrying a failed backup
 

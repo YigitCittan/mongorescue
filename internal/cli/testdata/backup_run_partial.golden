@@ -1,5 +1,5 @@
 Run run_1: 1 of 3 databases backed up.
-DATABASE  BACKUP  STATUS     SIZE     ERROR
-a         bkp_a   completed  1.0 KiB  -
-c         bkp_c   failed     -        mongodump exited 1
-b         -       busy       -        another backup of database b is already running
+DATABASE  BACKUP  STATUS                     SIZE     ERROR
+a         bkp_a   completed                  1.0 KiB  -
+c         bkp_c   failed                     -        mongodump exited 1
+b         -       skipped (already running)  -        another backup of database b is already running

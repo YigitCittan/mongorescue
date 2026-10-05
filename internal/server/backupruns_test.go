@@ -92,7 +92,8 @@ func TestCreateBackupOfSeveralDatabases(t *testing.T) {
 // backup record itself, as before databases existed.
 func TestCreateBackupSingleUnchanged(t *testing.T) {
 	f := newRunFixture(t)
-	rec := f.do("POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "shop"})
+	// parallelism was always ignored by a single backup and still is.
+	rec := f.do("POST", "/api/v1/backups", map[string]any{"connection_id": testConnID, "database": "shop", "parallelism": 9})
 	body := rec.Body.String()
 	id := acceptedID(t, rec)
 	var env struct {
