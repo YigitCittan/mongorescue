@@ -379,3 +379,35 @@ func (fx *fixture) stateChain() string {
 	}
 	return st.ChainID
 }
+
+func TestReplicaSetIDChangeAcrossARestartIsAGap(t *testing.T) {
+	fx := newFixture(t)
+	w := fx.worker()
+	fx.step(w)
+	fx.step(w)
+	if id := fx.state().ReplicaSetID; id != "id1" {
+		t.Fatalf("stored replica set ID %q, want id1", id)
+	}
+	// The set is re-initiated under the same name while the collector is stopped.
+	fx.f.rsID = "id2"
+	fx.f.add(t, 2)
+	restarted := fx.worker()
+	fx.step(restarted)
+	var ended *pitr.Chain
+	for _, c := range fx.chains() {
+		if !c.Open() {
+			ended = c
+		}
+	}
+	if ended == nil || ended.EndReason != pitr.EndReplicaSetChanged || len(fx.chains()) != 2 {
+		t.Fatalf("chains after the restart %+v", fx.chains())
+	}
+	if fx.events.count(events.PITRChainBroken) != 1 || len(fx.bases) != 1 || fx.state().ReplicaSetID != "id2" {
+		t.Fatalf("chain_broken %d, bases %v, stored ID %q", fx.events.count(events.PITRChainBroken), fx.bases, fx.state().ReplicaSetID)
+	}
+	// The new ID is the reference from now on: another restart breaks nothing.
+	fx.step(fx.worker())
+	if len(fx.chains()) != 2 {
+		t.Fatalf("%d chains after a second restart", len(fx.chains()))
+	}
+}

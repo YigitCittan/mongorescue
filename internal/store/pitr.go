@@ -555,9 +555,9 @@ func (s *SQLiteStore) LoadState(ctx context.Context, streamID string) (*pitr.Sta
 		updated      int64
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT stream_id, chain_id, last_t, last_i, last_term, status, last_error,
-			lag_since, updated_at
+			lag_since, updated_at, replica_set_id
 		FROM pitr_state WHERE stream_id = ?`, streamID).Scan(&st.StreamID, &st.ChainID, &lastT, &lastI,
-		&st.Last.Term, &status, &st.LastError, &lagSince, &updated)
+		&st.Last.Term, &status, &st.LastError, &lagSince, &updated, &st.ReplicaSetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, pitr.ErrNotFound
 	}
@@ -597,4 +597,11 @@ func (s *SQLiteStore) ListBaseBackups(ctx context.Context, streamID string) ([]*
 	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
 		`SELECT id, data FROM backups WHERE database_name = '' AND json_extract(data, '$.scope') = 'instance'
 			AND json_extract(data, '$.pitr_stream_id') = ? ORDER BY started_at DESC, id DESC`, streamID)
+}
+
+// SetReplicaSetID records the replica set ID the collector of a stream reads from.
+// It returns pitr.ErrNotFound without a state.
+func (s *SQLiteStore) SetReplicaSetID(ctx context.Context, streamID, replicaSetID string) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE pitr_state SET replica_set_id = ? WHERE stream_id = ?",
+		replicaSetID, streamID)
 }

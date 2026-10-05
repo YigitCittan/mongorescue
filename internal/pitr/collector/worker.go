@@ -219,27 +219,37 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	st, err := w.svc.cfg.Repo.LoadState(ctx, w.stream.ID)
 	if errors.Is(err, pitr.ErrNotFound) {
 		// A new stream starts at the newest majority-committed entry.
-		w.rsID = win.ReplicaSetID
-		return 0, w.startChain(ctx, win.MajorityOpTime)
+		if startErr := w.startChain(ctx, win.MajorityOpTime); startErr != nil {
+			return 0, startErr
+		}
+		w.adoptReplicaSetID(ctx, win.ReplicaSetID)
+		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("load the collector state: %w", err)
 	}
 	if !w.checked {
+		// The alerts already raised and the replica set first seen survive a
+		// restart.
 		w.lagSince = st.LagSince
 		w.failing = w.failing || st.Status == pitr.CollectorFailed
-		if done, startErr := w.checkStart(ctx, st, win); startErr != nil || done {
-			return 0, startErr
-		}
+		w.rsID = st.ReplicaSetID
 	}
 
-	// A changed replica set ends the chain: its oplog is another history.
+	// A changed replica set ends the chain: its oplog is another history. The ID
+	// is compared with the one stored at first contact, so a set re-initiated
+	// under the same name while the collector was stopped is a gap too.
 	if win.ReplicaSet != w.stream.ReplicaSet || (w.rsID != "" && win.ReplicaSetID != "" && win.ReplicaSetID != w.rsID) {
 		detail := fmt.Sprintf("the replica set changed from %s (%s) to %s (%s)", w.stream.ReplicaSet, w.rsID, win.ReplicaSet, win.ReplicaSetID)
 		return 0, w.breakChain(ctx, st, win, pitr.EndReplicaSetChanged, detail)
 	}
 	if w.rsID == "" {
-		w.rsID = win.ReplicaSetID
+		w.adoptReplicaSetID(ctx, win.ReplicaSetID)
+	}
+	if !w.checked {
+		if done, startErr := w.checkStart(ctx, st, win); startErr != nil || done {
+			return 0, startErr
+		}
 	}
 	// The window was overrun: entries after the position are lost.
 	if win.Oldest.Compare(st.Last.TS) > 0 {
@@ -362,7 +372,6 @@ func (w *worker) checkStart(ctx context.Context, st *pitr.State, win pitr.OplogW
 	if err != nil {
 		return false, fmt.Errorf("check the stored position: %w", err)
 	}
-	w.rsID = win.ReplicaSetID
 	switch {
 	case !found && win.Oldest.Compare(st.Last.TS) > 0:
 		detail := fmt.Sprintf("the oplog window was overrun while the collector was stopped: it was at %s, the oldest entry is %s", st.Last.TS, win.Oldest)
@@ -465,11 +474,11 @@ func (w *worker) breakChain(ctx context.Context, st *pitr.State, win pitr.OplogW
 		}
 		w.stream.ReplicaSet, w.stream.UpdatedAt = updated.ReplicaSet, updated.UpdatedAt
 	}
-	w.rsID = win.ReplicaSetID
 	w.svc.publish(ctx, w.event(events.PITRChainBroken, string(reason), "", detail))
 	if err := w.startAtOldest(ctx, win); err != nil {
 		return err
 	}
+	w.adoptReplicaSetID(ctx, win.ReplicaSetID)
 	w.baseAfterBreak(ctx)
 	return nil
 }
@@ -494,7 +503,7 @@ func (w *worker) diverge(ctx context.Context, st *pitr.State, win pitr.OplogWind
 	w.svc.logger.Error("PITR oplog diverged", logsafe.Attr("stream_id", w.stream.ID), logsafe.Attr("chain_id", st.ChainID), logsafe.Attr("detail", detail))
 	w.svc.observe(func(o Observer) { o.IncPITRChainBreak(w.stream.ID, string(pitr.EndDiverged)) })
 	w.svc.publish(ctx, w.event(events.PITRDiverged, string(pitr.EndDiverged), "", detail))
-	w.rsID = win.ReplicaSetID
+	w.adoptReplicaSetID(ctx, win.ReplicaSetID)
 	term, found, err := w.sess.EntryAt(ctx, point)
 	switch {
 	case err != nil:
@@ -596,6 +605,19 @@ func (w *worker) observeLag(ctx context.Context, st *pitr.State, win pitr.OplogW
 			fmt.Sprintf("the oplog holds %s before the collector's position (threshold %s)", headroom, HeadroomThreshold(lag))))
 	case !low:
 		w.windowLow = false
+	}
+}
+
+// adoptReplicaSetID records id as the replica set the collector reads from, in
+// memory and in the stored state, so a different ID after a restart is a gap. An
+// empty id (the user may not read the configuration) is not recorded.
+func (w *worker) adoptReplicaSetID(ctx context.Context, id string) {
+	if id == "" {
+		return
+	}
+	w.rsID = id
+	if err := w.svc.cfg.Repo.SetReplicaSetID(ctx, w.stream.ID, id); err != nil && !errors.Is(err, pitr.ErrNotFound) {
+		w.svc.logger.Warn("cannot record the replica set ID", logsafe.Attr("stream_id", w.stream.ID), logsafe.Error(err))
 	}
 }
 
