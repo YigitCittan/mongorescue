@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-06
+
 ### Added
 - Point-in-time restores, **experimental** (#57): `POST /api/v1/restore` and its preflight take `pitr: {stream_id, at | ts}` and an optional `databases`, and restore a replica set, or some of its databases, to a moment in a window into new `<db>_rescue_<timestamp>` databases. The newest eligible base before the target is restored without `--oplogReplay` (`$db$` renaming, `admin`, `config` and `local` always excluded), then the chunks are streamed in order through their SHA-256 check, age, gunzip and the oplog filter into a synthetic archive on `mongorestore --oplogReplay --oplogLimit` stdin, with no temporary files; the filter's operation count is compared with `mongorestore`'s "applied N oplog entries". Admin only; in-place requests are refused. The restore record carries the plan (`pitr`). See [docs/pitr.md](docs/pitr.md#restoring-to-a-point-in-time).
 - The preflight of a point-in-time restore checks the chain up to the target and the keys of every encryption mode in it (`pitr_chain`), the replay roles (`restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase`, or `anyAction`), the disk space for the base and the oplog and the `mongorestore` version (`tools_version`, 100.12 or newer), and returns the chosen base, the chunk count and an RTO estimate (`pitr`).
