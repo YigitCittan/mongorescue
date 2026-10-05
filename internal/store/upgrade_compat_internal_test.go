@@ -783,7 +783,7 @@ var compatSteps = []compatStep{
 				if u, err := s.GetUser(ctx, id); err != nil || u.Role != want {
 					t.Errorf("%s = %+v, %v; want role %s", id, u, err, want)
 				}
-				// Users stored before 0023 reach every connection.
+				// Users stored before 0024 reach every connection.
 				if u, err := s.GetUser(ctx, id); err != nil || len(u.ConnectionIDs) != 0 {
 					t.Errorf("%s = %+v, %v; want no connection limit", id, u, err)
 				}
