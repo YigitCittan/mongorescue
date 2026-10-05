@@ -209,6 +209,15 @@ var selfServiceRoutes = []string{
 	logoutRoute, changePasswordRoute, revokeSessionRoute, listAPIKeysRoute, createAPIKeyRoute, deleteAPIKeyRoute,
 }
 
+// passwordChangeRoutes are the only routes a session may use while its user must
+// choose a new password (auth.Principal.PasswordChangeRequired): changing it (the
+// auth service refuses another user's), signing out and reading the session.
+var passwordChangeRoutes = map[string]bool{
+	changePasswordRoute: true,
+	logoutRoute:         true,
+	"GET " + meRoute:    true,
+}
+
 // requiredScope returns the scope pattern requires; unknown patterns require admin.
 func requiredScope(pattern string) auth.Scope {
 	if s, ok := routeScopes[pattern]; ok {

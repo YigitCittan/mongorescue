@@ -617,7 +617,7 @@ func (s *Service) RequestAdminGrant(ctx context.Context, g auth.AdminGrant) erro
 		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalGrantAdminKey, Subject: g.KeyID, Summary: summary})
 	case auth.ResetUserPassword:
 		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalResetPassword, Subject: g.UserID, Secret: g.PasswordHash,
-			Summary: fmt.Sprintf("reset the password of user %s (%s)", g.Username, g.UserID)})
+			Summary: fmt.Sprintf("reset the password of user %s (%s); they will be forced to choose a new password at their next sign-in", g.Username, g.UserID)})
 	case auth.DemoteAdmin:
 		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalChangeAdminRole, Subject: g.UserID, Role: string(g.Role),
 			Summary: fmt.Sprintf("change administrator %s (%s) to %s", g.Username, g.UserID, g.Role)})

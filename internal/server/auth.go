@@ -177,6 +177,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
 			return
 		}
+		if principal.PasswordChangeRequired() && !passwordChangeRoutes[pattern] {
+			writeError(w, http.StatusForbidden, "forbidden: "+auth.ErrPasswordChangeRequired.Error()+" (PUT /api/v1/users/{id}/password)")
+			return
+		}
 		next.ServeHTTP(w, req)
 	})
 }
@@ -385,7 +389,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired),
-		errors.Is(err, auth.ErrScopeExceedsRole), errors.Is(err, auth.ErrLocalLoginDisabled):
+		errors.Is(err, auth.ErrScopeExceedsRole), errors.Is(err, auth.ErrLocalLoginDisabled), errors.Is(err, auth.ErrPasswordChangeRequired):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser),
 		errors.Is(err, auth.ErrLastAdmin), errors.Is(err, auth.ErrLastLocalAdmin), errors.Is(err, auth.ErrRoleManagedByProvider):

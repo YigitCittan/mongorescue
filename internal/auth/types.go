@@ -53,6 +53,10 @@ var (
 	// ErrNoPassword is returned when a password is checked or changed for a user who
 	// signs in through single sign-on and so has none.
 	ErrNoPassword = errors.New("auth: this user signs in through single sign-on and has no password")
+	// ErrPasswordChangeRequired is returned for a session of a user whose password
+	// another user reset: until they choose a new one, they may only change it, sign
+	// out and read their session.
+	ErrPasswordChangeRequired = errors.New("auth: your password was reset by an administrator; choose a new password first")
 )
 
 // Provider says how a user signs in.
@@ -107,6 +111,10 @@ type User struct {
 	// role change). An approver of the two-person rule must have been an
 	// administrator before the request was made (see CheckApprover).
 	RoleChangedAt time.Time `json:"-"`
+	// MustChangePassword is set when another user reset the password: until the user
+	// chooses a new one, their sessions may only change it (see
+	// Principal.PasswordChangeRequired).
+	MustChangePassword bool `json:"must_change_password,omitempty"`
 }
 
 // Local reports whether u signs in with a password (an empty AuthProvider counts as
@@ -192,6 +200,13 @@ type Principal struct {
 	// KeyScope is the scope the API key was created with (MethodAPIKey only); Scope
 	// is below it when the creator's role caps the key.
 	KeyScope Scope
+}
+
+// PasswordChangeRequired reports whether p is a session of a user whose password
+// another user reset (User.MustChangePassword): the session may only change the
+// user's own password, sign out and read itself until then.
+func (p *Principal) PasswordChangeRequired() bool {
+	return p != nil && p.Method == MethodSession && p.User != nil && p.User.MustChangePassword
 }
 
 // UserID returns the acting user's ID or "".

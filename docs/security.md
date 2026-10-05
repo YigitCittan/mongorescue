@@ -50,6 +50,8 @@ With `security.require_second_approver` on, these actions do not run; they becom
 - a single sign-on that would demote an administrator: the user keeps the admin role, Settings shows the `oidc_role_kept` warning, and an approval request (`sso_demote_admin`) asks a second administrator to apply the role the groups give (one open request per user and role, not one per sign-in);
 - resetting another user's password: it needs a dashboard session (API keys get `403`), and the new password's bcrypt hash waits apart from the request, never shown, until the request is decided.
 
+A password reset by another user (with or without the rule) also forces the user to choose a new password: until they do, their sessions can only change their own password (`PUT /api/v1/users/{id}/password`), sign out and read `GET /api/v1/auth/me` (`must_change_password: true`); every other request answers `403`. So whoever chose the password cannot keep using it unnoticed.
+
 A different administrator must approve (`POST /api/v1/approvals/{id}/approve`) or reject (`.../reject`) the request within 72 hours; afterwards it expires. The rules live in `internal/auth`:
 
 - The requester cannot approve their own request, also not through a session when they requested it with one of their API keys.
