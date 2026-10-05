@@ -902,6 +902,13 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 		AccessKeyID:     strings.TrimSpace(in.AccessKeyID),
 		SecretAccessKey: strings.TrimSpace(in.SecretAccessKey),
 		UsePathStyle:    in.UsePathStyle,
+		PartSizeMB:      in.PartSizeMB,
+	}
+	if out.PartSizeMB == 0 {
+		out.PartSizeMB = models.DefaultS3PartSizeMB
+	}
+	if out.PartSizeMB < models.MinS3PartSizeMB || out.PartSizeMB > models.MaxS3PartSizeMB {
+		return out, fmt.Errorf("%w: s3.part_size_mb must be %d to %d (MiB)", ErrInvalid, models.MinS3PartSizeMB, models.MaxS3PartSizeMB)
 	}
 	for _, v := range []string{out.Endpoint, out.Region, out.Bucket, out.Prefix, out.AccessKeyID, out.SecretAccessKey} {
 		if len(v) > maxFieldLength || strings.ContainsFunc(v, isControl) {
@@ -925,7 +932,8 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 	return out, nil
 }
 
-// sameConfig reports whether a and b store to the same place with the same credentials.
+// sameConfig reports whether a and b store to the same place with the same
+// credentials. The S3 part size is ignored: it changes neither.
 func sameConfig(a, b *models.StorageTarget) bool {
 	if a.Type != b.Type {
 		return false
@@ -934,7 +942,12 @@ func sameConfig(a, b *models.StorageTarget) bool {
 	case models.StorageLocal:
 		return a.Local != nil && b.Local != nil && *a.Local == *b.Local
 	case models.StorageS3:
-		return a.S3 != nil && b.S3 != nil && *a.S3 == *b.S3
+		if a.S3 == nil || b.S3 == nil {
+			return false
+		}
+		x, y := *a.S3, *b.S3
+		x.PartSizeMB, y.PartSizeMB = 0, 0
+		return x == y
 	}
 	return false
 }
