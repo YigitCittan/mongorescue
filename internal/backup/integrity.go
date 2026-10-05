@@ -50,7 +50,8 @@ func WithVerifyAfterUpload(on bool) Option {
 // captureManifest returns the manifest of the collections opts dumps, or nil when
 // no capturer is configured or the capture failed.
 func (e *Engine) captureManifest(ctx context.Context, uri string, opts models.BackupOptions) *models.Manifest {
-	if e.manifest == nil {
+	// A manifest describes one database; a PITR base dumps a whole instance.
+	if e.manifest == nil || opts.Scope == models.ScopeInstance {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)

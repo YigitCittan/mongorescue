@@ -306,6 +306,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithManifestCapturer(prober.Manifest),
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
+		backup.WithOpTimeReader(prober.LastWrite),
 		backup.WithRunConfig(func() backup.RunConfig {
 			cur := settingsSvc.Current()
 			g := cur.General
@@ -536,6 +537,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Verifier:            integritySvc,
 		Inspector:           prober,
 		Audit:               auditSvc,
+		PITR:                metaStore,
 		Logger:              logger,
 		Version:             o.version,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer

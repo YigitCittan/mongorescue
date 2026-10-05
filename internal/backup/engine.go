@@ -21,6 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -46,7 +47,39 @@ var (
 	// naming several, and to expand wildcard patterns ("*", "?") into the collections
 	// they match. A pattern is never passed to mongodump as a literal name.
 	ErrCollectionFilter = errors.New("backup: collection filter cannot be applied")
+
+	// ErrEncryptionRequired is returned for an instance-scope (PITR base) backup
+	// while backup encryption is off: the oplog keeps deleted data, so PITR data is
+	// always encrypted.
+	ErrEncryptionRequired = errors.New("backup: a PITR base backup requires backup encryption")
+
+	// ErrInstanceScope is returned for an instance-scope backup with a database,
+	// collection filter or users and roles: mongodump --oplog dumps a whole
+	// instance only.
+	ErrInstanceScope = errors.New("backup: an instance backup dumps the whole instance")
+
+	// ErrOpTime is returned when the lastWrite optime of an instance-scope backup
+	// could not be read before or after the dump.
+	ErrOpTime = errors.New("backup: cannot read the replica set's lastWrite optime")
 )
+
+// BaseKeyPrefix is the storage key prefix of PITR base backups:
+// BaseKeyPrefix + <conn_id>/<rs>/<yyyy>/<mm>/<id>.archive.gz.age.
+const BaseKeyPrefix = "_mongorescue/base/"
+
+// OpTimeReader returns hello.lastWrite.opTime of the primary of the replica set at
+// uri (implemented by mongoconn.Prober.LastWrite). Errors must never include the
+// URI's credentials.
+type OpTimeReader func(ctx context.Context, uri string) (pitr.OpTime, error)
+
+// WithOpTimeReader lets the engine take instance-scope (PITR base) backups: fn
+// records T_before and T_after around the dump. Without it such backups fail with
+// ErrOpTime.
+func WithOpTimeReader(fn OpTimeReader) Option {
+	return func(e *Engine) {
+		e.opTime = fn
+	}
+}
 
 // CollectionLister returns the names of the collections and views of database on the
 // server at uri. Implementations must never include the URI's credentials in errors.
@@ -80,6 +113,7 @@ type Engine struct {
 	stallTimeout time.Duration
 
 	listCollections CollectionLister
+	opTime          OpTimeReader
 
 	// manifest captures the manifest of every backup; verifyUpload and
 	// verifyDecryptor configure the post-upload verification (see integrity.go).
@@ -254,6 +288,12 @@ func (e *Engine) Run(ctx context.Context, opts models.BackupOptions) (*models.Ba
 // time) the backup will produce, without performing any I/O. Callers that run backups
 // asynchronously persist this record before handing it to Execute.
 func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error) {
+	if opts.Scope == models.ScopeInstance {
+		return e.prepareInstance(opts)
+	}
+	if opts.Scope != models.ScopeDatabase {
+		return nil, fmt.Errorf("backup: unknown scope %q", opts.Scope)
+	}
 	if strings.TrimSpace(opts.Database) == "" {
 		return nil, errors.New("backup: target database name is required")
 	}
@@ -318,6 +358,52 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 	return record, nil
 }
 
+// prepareInstance prepares an instance-scope (PITR base) backup: the whole
+// instance with mongodump --oplog, always gzipped and encrypted, under
+// BaseKeyPrefix.
+func (e *Engine) prepareInstance(opts models.BackupOptions) (*models.BackupRecord, error) {
+	switch {
+	case opts.Database != "" || len(opts.Collections) > 0 || len(opts.ExcludeCollections) > 0 || opts.IncludeUsersAndRoles:
+		return nil, ErrInstanceScope
+	case opts.ConnectionID == "" || opts.ReplicaSet == "":
+		return nil, errors.New("backup: an instance backup needs its connection and replica set")
+	case e.resolveURI(opts) == "":
+		return nil, errors.New("backup: mongo connection uri is required")
+	}
+	enc := e.runConfig().Encryptor
+	if enc == nil {
+		return nil, ErrEncryptionRequired
+	}
+	startTime := time.Now().UTC()
+	suffix, err := models.NewIDSuffix()
+	if err != nil {
+		return nil, fmt.Errorf("backup: %w", err)
+	}
+	backupID := fmt.Sprintf("bkp_pitr-base_%s_%s", startTime.Format("20060102_150405"), suffix)
+	targetKey := fmt.Sprintf("%s%s/%s/%s/%s.archive.gz%s", BaseKeyPrefix,
+		models.SanitizeIDComponent(opts.ConnectionID, 0), models.SanitizeIDComponent(opts.ReplicaSet, 0),
+		startTime.Format("2006/01"), backupID, encryption.FileExtension)
+	return &models.BackupRecord{
+		ID:             backupID,
+		Trigger:        opts.Trigger,
+		ConnectionID:   opts.ConnectionID,
+		ConnectionName: opts.ConnectionName,
+		Status:         models.StatusInProgress,
+		StorageType:    opts.StorageType,
+		StorageKey:     targetKey,
+		StartedAt:      startTime,
+		Phases:         models.RunPhases{Queued: models.Stamp(startTime)},
+		Encrypted:      true,
+		EncryptionMode: string(enc.Mode()),
+		Scope:          models.ScopeInstance,
+		PITRStreamID:   opts.PITRStreamID,
+		ReplicaSet:     opts.ReplicaSet,
+
+		StorageTargetID:   opts.StorageTargetID,
+		StorageTargetName: opts.StorageTargetName,
+	}, nil
+}
+
 // alignEncryption updates record when the encryption settings changed between Prepare
 // and Execute, so the record always describes the artifact actually written.
 func (e *Engine) alignEncryption(record *models.BackupRecord) {
@@ -364,6 +450,13 @@ func (e *Engine) Execute(ctx context.Context, opts models.BackupOptions, record 
 	if err != nil {
 		return e.fail(ctx, record, err)
 	}
+	if record.InstanceScope() {
+		// A base backup is never written unencrypted, nor with gzip off.
+		if run.encryptor == nil {
+			return e.fail(ctx, record, ErrEncryptionRequired)
+		}
+		opts.Gzip = true
+	}
 	run.alignEncryption(record)
 	return run.execute(ctx, opts, record)
 }
@@ -392,8 +485,12 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	if record.Phases.Queued == nil {
 		record.Phases.Queued = models.Stamp(startTime)
 	}
-	tracker.Printf("backup %s of database %s started (connection %s, storage key %s, encrypted %v)",
-		backupID, opts.Database, redact.URI(mongoURI), targetKey, record.Encrypted)
+	what := "database " + opts.Database
+	if record.InstanceScope() {
+		what = "the whole instance (PITR base, replica set " + opts.ReplicaSet + ")"
+	}
+	tracker.Printf("backup %s of %s started (connection %s, storage key %s, encrypted %v)",
+		backupID, what, redact.URI(mongoURI), targetKey, record.Encrypted)
 	tracker.Phase(models.PhaseDumping, record.Phases)
 	tracker.StartTransfer(0)
 
@@ -443,6 +540,17 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 
 	// Build mongodump arguments
 	args := e.buildDumpArgs(configArg, dumpOpts)
+
+	// A base backup's T_before: every write before it is in the dump or in the
+	// oplog chain from here on.
+	if record.InstanceScope() {
+		before, opErr := e.readOpTime(runCtx, mongoURI)
+		if opErr != nil {
+			return e.fail(runCtx, record, opErr)
+		}
+		record.TBefore = &before
+		tracker.Printf("T_before %s (term %d)", before.TS, before.Term)
+	}
 
 	// procCtx lets failure paths kill mongodump even when the caller's ctx is still live,
 	// so a blocked writer can never keep Wait from returning.
@@ -541,7 +649,18 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	record.CompletedAt = &finishTime
 	record.DurationSeconds = finishTime.Sub(startTime).Seconds()
 
-	if failErr := e.classifyFailure(runCtx, saveErr, waitErr, stageErr, proc.stderrLogs); failErr != nil {
+	failErr := e.classifyFailure(runCtx, saveErr, waitErr, stageErr, proc.stderrLogs)
+	if failErr == nil && record.InstanceScope() {
+		// T_after, the base's consistent point, is read once mongodump has exited.
+		after, opErr := e.readOpTime(runCtx, mongoURI)
+		if opErr != nil {
+			failErr = opErr
+		} else {
+			record.TAfter = &after
+			tracker.Printf("T_after %s (term %d)", after.TS, after.Term)
+		}
+	}
+	if failErr != nil {
 		e.deleteArtifact(runCtx, targetKey)
 		record.Phases.UploadDone = nil
 		if runs.CancellationOf(runCtx) != nil {
@@ -577,6 +696,22 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		return e.fail(runCtx, record, err)
 	}
 	return record, nil
+}
+
+// readOpTime reads the lastWrite optime of the replica set at uri for an
+// instance-scope backup.
+func (e *Engine) readOpTime(ctx context.Context, uri string) (pitr.OpTime, error) {
+	if e.opTime == nil {
+		return pitr.OpTime{}, fmt.Errorf("%w: no optime reader is configured", ErrOpTime)
+	}
+	op, err := e.opTime(ctx, uri)
+	if err != nil {
+		return pitr.OpTime{}, fmt.Errorf("%w: %w", ErrOpTime, err)
+	}
+	if op.TS.IsZero() {
+		return pitr.OpTime{}, fmt.Errorf("%w: the server reported no lastWrite optime", ErrOpTime)
+	}
+	return op, nil
 }
 
 // fail marks record as failed with a redacted message and returns it with err. When
@@ -934,6 +1069,12 @@ func (e *Engine) buildDumpArgs(configArg string, opts models.BackupOptions) []st
 
 	if opts.Gzip {
 		args = append(args, "--gzip")
+	}
+
+	if opts.Scope == models.ScopeInstance {
+		// The whole instance, with the writes made during the dump in the archive's
+		// oplog namespace (mongodump refuses --db, --collection and --query with it).
+		return append(args, "--oplog")
 	}
 
 	if opts.Database != "" {

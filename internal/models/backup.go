@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -269,6 +270,23 @@ type BackupRecord struct {
 
 	// PurgedAt is when the purge removed the archive (StatusPurged).
 	PurgedAt *time.Time `json:"purged_at,omitempty"`
+
+	// Scope is ScopeInstance for a PITR base backup of a whole replica set
+	// instance (mongodump --oplog, Database empty); empty for a backup of one
+	// database.
+	Scope BackupScope `json:"scope,omitempty"`
+
+	// PITRStreamID is the PITR stream a base backup belongs to.
+	PITRStreamID string `json:"pitr_stream_id,omitempty"`
+
+	// ReplicaSet is the replica set name of a base backup.
+	ReplicaSet string `json:"replica_set,omitempty"`
+
+	// TBefore and TAfter are hello.lastWrite.opTime before and after the dump of
+	// a base backup: TAfter is its consistent point, and the base is PITR-eligible
+	// only if an oplog chain covers [TBefore, TAfter] without a break.
+	TBefore *pitr.OpTime `json:"t_before,omitempty"`
+	TAfter  *pitr.OpTime `json:"t_after,omitempty"`
 }
 
 // SoftDelete describes a deletion: when, by whom and why, and the end of its grace
@@ -325,6 +343,21 @@ func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
 	}
 	return !now.Before(end)
 }
+
+// InstanceScope reports whether r is a PITR base backup of a whole instance.
+func (r *BackupRecord) InstanceScope() bool { return r.Scope == ScopeInstance }
+
+// BackupScope says what a backup covers.
+type BackupScope string
+
+// Backup scopes.
+const (
+	// ScopeDatabase (the empty scope) is a backup of one database.
+	ScopeDatabase BackupScope = ""
+	// ScopeInstance is a PITR base backup of a whole replica set instance, taken
+	// with mongodump --oplog.
+	ScopeInstance BackupScope = "instance"
+)
 
 // EffectiveTrigger returns r.Trigger, or for records written before triggers existed
 // TriggerScheduled when the record belongs to a job and TriggerManual otherwise (the
@@ -413,6 +446,17 @@ type BackupOptions struct {
 	// MaxConcurrentBackups is the connection's limit of concurrent backups (0 =
 	// unlimited); the engine waits for a slot before mongodump starts.
 	MaxConcurrentBackups int `json:"-"`
+
+	// Scope is ScopeInstance for a PITR base backup: Database must be empty,
+	// mongodump runs with --oplog instead of --db, the archive is always gzipped and
+	// encryption is required. It is set by the application, never read from
+	// clients.
+	Scope BackupScope `json:"-"`
+
+	// PITRStreamID and ReplicaSet name the stream and replica set of a base
+	// backup. They are set by the application, never read from clients.
+	PITRStreamID string `json:"-"`
+	ReplicaSet   string `json:"-"`
 }
 
 // Redacted returns a copy of the options with the MongoURI password masked, suitable

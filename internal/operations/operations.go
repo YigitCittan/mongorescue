@@ -25,6 +25,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -229,6 +230,9 @@ type Config struct {
 	// with it and verifies restored databases. nil skips both (PreflightRestore then
 	// reports the server checks as not checked).
 	Inspector RestoreInspector
+	// PITR holds the PITR streams StartBaseBackup reads; nil makes it fail with
+	// ErrPITRUnavailable.
+	PITR pitr.Repository
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Version is the build version reported by Status.
@@ -765,6 +769,11 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	// (its archive is still there). A purged one has no archive any more.
 	if source.Status.Deleted() {
 		return nil, public(fmt.Sprintf("backup %s is %s; undelete it to restore it", source.ID, source.Status), ErrBackupDeleted)
+	}
+	// A PITR base holds a whole instance: its restore (into safe clones, with the
+	// oplog replayed) comes with point-in-time restores.
+	if source.InstanceScope() {
+		return nil, public(fmt.Sprintf("backup %s is a PITR base backup of a whole instance; it cannot be restored as a database backup", source.ID), ErrInvalid)
 	}
 	if err = req.ValidateUsersAndRoles(source); err != nil && !forPreflight {
 		return nil, invalid(err)

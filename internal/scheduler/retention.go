@@ -88,7 +88,8 @@ type DatabaseRetention struct {
 //
 // Only completed scheduled backups (models.TriggerScheduled, see
 // BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups
-// are never pruned automatically. The policy applies to every database separately
+// are never pruned automatically, and neither are PITR base backups
+// (models.ScopeInstance), which their stream's retention owns. The policy applies to every database separately
 // (a multi-database job keeps N backups of each of its databases), and so do the
 // floors that protect the scheduled ones: the max(retentionCount, 1) most recent of
 // each database are never deleted (by either rule), so a database whose backup
@@ -103,7 +104,7 @@ func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*
 	}
 	byDatabase := map[string][]*models.BackupRecord{}
 	for _, r := range records {
-		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled {
+		if r.Status == models.StatusCompleted && r.EffectiveTrigger() == models.TriggerScheduled && !r.InstanceScope() {
 			byDatabase[r.Database] = append(byDatabase[r.Database], r)
 		}
 	}
@@ -180,7 +181,7 @@ func planDatabase(now time.Time, retentionDays, retentionCount int, successful [
 func JobRetentionHistory(job *models.Job, targetID string, records []*models.BackupRecord) []*models.BackupRecord {
 	out := make([]*models.BackupRecord, 0, len(records))
 	for _, r := range records {
-		if r.JobID == job.ID && r.EffectiveTrigger() == models.TriggerScheduled &&
+		if r.JobID == job.ID && r.EffectiveTrigger() == models.TriggerScheduled && !r.InstanceScope() &&
 			r.ConnectionID == job.ConnectionID && r.StorageTargetID == targetID {
 			out = append(out, r)
 		}
