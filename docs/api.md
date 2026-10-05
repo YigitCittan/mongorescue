@@ -584,7 +584,7 @@ Every 5 minutes, right after a job's backup finished and right after a job is cr
 | --- | --- |
 | `connection_id`, `connection_name`, `database` | The database |
 | `jobs` | `[{id, name, enabled, target_seconds, default, age_seconds, no_backup, met, breached_since}]`: each job backing it up, with its objective, the age of its newest successful backup of the database and whether the objective is met |
-| `last_good_backup` | `{id, at, job_id}`: the newest completed backup by any of them |
+| `last_good_backup` | `{id, at, job_id}`: the newest completed backup by any of them; a [filtered](#collection-filters-per-database) one adds `filtered: true` and its `collections` or `exclude_collections` (it still counts towards the RPO) |
 | `last_verified_backup` | The newest completed backup whose archive passed [verification](verification.md) |
 | `last_restore_test` | `{id, job_id, at, status, duration_seconds}`: the newest [restore test](verification.md#automated-restore-tests) of the database (`ok`, `mismatch` or `error`) |
 | `rpo` | `{target_seconds, age_seconds, met}`: the strictest objective of the enabled jobs, the age of `last_good_backup`, and whether every enabled job meets its objective (`met` is absent when every job is paused) |
