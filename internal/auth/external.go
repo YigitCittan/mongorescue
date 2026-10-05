@@ -109,6 +109,10 @@ type RoleMapping struct {
 	Group string
 	// Role is the dashboard role its members get.
 	Role Role
+	// ConnectionAccess is the connections the mapping grants with its role: every
+	// connection or exactly a list (none when empty); see
+	// OIDCPolicy.MapConnections.
+	ConnectionAccess
 }
 
 // OIDCPolicy is the part of the single sign-on settings the sign-in rules depend
@@ -163,6 +167,35 @@ func (p OIDCPolicy) MapRole(groups []string) Role {
 		best = p.DefaultRole
 	}
 	return best
+}
+
+// MapConnections returns the connections a member of groups gets with role, the
+// role MapRole chose. Only the mappings that grant role count: the union of their
+// connections, or every connection when one of them has AllConnections. A mapping
+// of a lower role never widens the connections of a higher one. An administrator,
+// and a user whose role is the default role (no mapping matched), get every
+// connection.
+func (p OIDCPolicy) MapConnections(groups []string, role Role) ConnectionAccess {
+	if role == RoleAdmin {
+		return EveryConnection()
+	}
+	union := []string{}
+	matched := false
+	for _, m := range p.RoleMappings {
+		if m.Group == "" || m.Role != role || !slices.Contains(groups, m.Group) {
+			continue
+		}
+		if m.AllConnections {
+			return EveryConnection()
+		}
+		matched = true
+		union = append(union, m.ConnectionIDs...)
+	}
+	if !matched {
+		return EveryConnection()
+	}
+	slices.Sort(union)
+	return ConnectionAccess{ConnectionIDs: slices.Compact(union)}
 }
 
 // EmailDomainAllowed reports whether the email domain filter lets email through.
@@ -252,6 +285,10 @@ type ExternalSignIn struct {
 	// keeps the stored role, such as one an administrator set by hand. A new user
 	// without a Role is refused with ErrNoRole.
 	RoleOnCreate bool
+	// Connections are the connections the identity may touch now. They are applied
+	// with Role, unless RoleOnCreate is set (then only to a new user, with every
+	// connection); an administrator always has every connection.
+	Connections ConnectionAccess
 	// AutoCreate creates the user when no user has Subject.
 	AutoCreate bool
 	// KeepAdmin keeps the admin role of an administrator whom Role would demote
@@ -339,7 +376,8 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 	gate := s.holdsAdminGrant(ctx)
 	res, err := s.repo.SignInExternalUser(ctx, &ExternalSignIn{
 		Subject: ExternalSubject(id.Issuer, id.Subject), NewUserID: userID, Username: username,
-		Role: role, RoleOnCreate: onCreate, AutoCreate: policy.AutoCreateUsers, KeepAdmin: gate != nil, At: now,
+		Role: role, RoleOnCreate: onCreate, Connections: policy.MapConnections(id.Groups, role),
+		AutoCreate: policy.AutoCreateUsers, KeepAdmin: gate != nil, At: now,
 	})
 	if err != nil {
 		return nil, err

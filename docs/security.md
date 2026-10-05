@@ -50,6 +50,8 @@ With `security.require_second_approver` on, these actions do not run; they becom
 - a single sign-on that would demote an administrator: the user keeps the admin role, Settings shows the `oidc_role_kept` warning, and an approval request (`sso_demote_admin`) asks a second administrator to apply the role the groups give (one open request per user and role, not one per sign-in);
 - resetting another user's password: it needs a dashboard session (API keys get `403`), and the new password's bcrypt hash waits apart from the request, never shown, until the request is decided.
 
+Changing which connections a user or an API key may touch is not on this list: it never makes anyone an administrator, so it applies at once, also when it lifts a limit (by hand, or because a sign-in matched a group mapping without connections).
+
 A password reset by another user (with or without the rule) also forces the user to choose a new password: until they do, their sessions can only change their own password (`PUT /api/v1/users/{id}/password`), sign out and read `GET /api/v1/auth/me` (`must_change_password: true`); every other request answers `403`. So whoever chose the password cannot keep using it unnoticed.
 
 A different administrator must approve (`POST /api/v1/approvals/{id}/approve`) or reject (`.../reject`) the request within 72 hours; afterwards it expires. The rules live in `internal/auth`:
@@ -61,6 +63,15 @@ A different administrator must approve (`POST /api/v1/approvals/{id}/approve`) o
 - The rule can only be turned on while at least two administrators exist. If fewer than two remain anyway (data edits, single sign-on demotions), turning it off needs no approval: it becomes a pending change that applies after the grace period, and is dropped if two administrators can approve again by then. It records the administrators of the moment and is dropped as well when one of them is no longer an administrator when it is due, unless an approved request demoted or deleted them, so a credential that makes itself the last administrator cannot use the lockout path.
 
 The approved action runs with the approver's rights and every protection checked again (pins, running backups, the newest good and verified backups, targets in use). Requests, approvals, rejections, undeletes and purges are recorded in the [audit log](audit.md) (`approval_id`, `protection`, `purge_after`), and every destructive action and request is published as `security.destructive_action` or `security.approval_requested`, which [notification rules](notifications.md) can select.
+
+## Per-connection access
+
+In a shared instance, limit the people and the automation of each team to their connections ([API](api.md#connection-access), [design](design/roles.md#per-connection-access)). A user or an API key limited to some connections cannot list, read, back up, restore from or restore into another connection, read its backups, restores and run logs, or see its jobs and readiness, by any route, bulk action, MCP tool or CLI command; such requests answer `404`, exactly like a connection that does not exist, so a team does not even learn which other servers exist. Their API keys are capped by their own connections on every request, and they cannot scrape `/metrics`. What it does not cover:
+
+- **Administrators.** They always reach every connection, and so do admin-scope keys; a limit on them is refused. Keep administrators few.
+- **The storage.** Teams that share a storage target share its bucket or directory: anyone with the target's credentials reads every team's archives. Give each team its own target (and encrypt with their own recipients) where that matters; a limited user sees only the targets their connections use.
+- **Global settings and names.** Settings, notification channels and the names of users stay readable to every role, as before.
+- **Deleted connections.** Deleting a connection keeps it in the lists of the users and keys limited to it (it simply no longer exists), and an empty list is no connection, never every connection, so a limit never widens by itself. Saving a user's list drops the deleted IDs.
 
 ## What this protects against
 

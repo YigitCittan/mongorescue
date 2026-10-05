@@ -115,6 +115,10 @@ type User struct {
 	// chooses a new one, their sessions may only change it (see
 	// Principal.PasswordChangeRequired).
 	MustChangePassword bool `json:"must_change_password,omitempty"`
+	// ConnectionAccess is the connections the user may touch: every connection or
+	// exactly a list (none when empty). Administrators always have every
+	// connection (see SetUserConnections).
+	ConnectionAccess
 }
 
 // Local reports whether u signs in with a password (an empty AuthProvider counts as
@@ -161,6 +165,21 @@ type APIKey struct {
 	// EffectiveScope is what the key may do today: its scope, capped by the current
 	// role of its creator. It is computed by Service.ListAPIKeys and never stored.
 	EffectiveScope Scope `json:"effective_scope,omitempty"`
+	// ConnectionAccess is the key's own connection access: every connection (that
+	// its creator may touch) or exactly a list (none when empty).
+	ConnectionAccess
+	// EffectiveAllConnections and EffectiveConnectionIDs are the connections the
+	// key may touch today: its own, within its creator's current ones (an empty
+	// list without EffectiveAllConnections is none). They are computed by
+	// Service.ListAPIKeys and CreateAPIKey and never stored.
+	EffectiveAllConnections bool     `json:"effective_all_connections"`
+	EffectiveConnectionIDs  []string `json:"effective_connection_ids"`
+}
+
+// setEffective records the effective connections set on k.
+func (k *APIKey) setEffective(set ConnectionSet) {
+	a := AccessOf(set)
+	k.EffectiveAllConnections, k.EffectiveConnectionIDs = a.AllConnections, a.ConnectionIDs
 }
 
 // Method identifies how a request was authenticated.
@@ -200,6 +219,9 @@ type Principal struct {
 	// KeyScope is the scope the API key was created with (MethodAPIKey only); Scope
 	// is below it when the creator's role caps the key.
 	KeyScope Scope
+	// Connections limits the caller to some connections (see effectiveConnections):
+	// nil allows every one. Use AllowsConnection.
+	Connections ConnectionSet
 }
 
 // PasswordChangeRequired reports whether p is a session of a user whose password
@@ -259,7 +281,7 @@ type Repository interface {
 	DeleteUser(ctx context.Context, actorID, id string, keepLocalAdmin bool) error
 	// UpdateUserRole sets the role of userID and deletes the user's sessions, in one
 	// transaction, and returns the previous role. Setting the role a user already
-	// has changes nothing. It returns ErrUserNotFound, ErrLastAdmin (atomically) when
+	// has changes nothing; promoting a user to admin lifts their connection limit. It returns ErrUserNotFound, ErrLastAdmin (atomically) when
 	// it would demote the only admin, ErrLastLocalAdmin when keepLocalAdmin is set
 	// and it would demote the only local admin, and a *ScopeError when actorID is
 	// not "" and that user is no longer an admin.
@@ -270,6 +292,11 @@ type Repository interface {
 	// unknown subject without AutoCreate and ErrAccountConflict when the name of a
 	// new user is taken: a user is never linked by username or email.
 	SignInExternalUser(ctx context.Context, in *ExternalSignIn) (*ExternalSignInResult, error)
+	// UpdateUserConnections sets the connection access of userID, in one
+	// transaction that returns ErrUserNotFound, ErrAdminConnections for a limit on
+	// an administrator, and a *ScopeError when actorID is not "" and that user is no
+	// longer an admin.
+	UpdateUserConnections(ctx context.Context, actorID, userID string, access ConnectionAccess, updatedAt time.Time) error
 	// UpdateAPIKeyScope sets the scope of key id or returns ErrAPIKeyNotFound.
 	UpdateAPIKeyScope(ctx context.Context, id string, scope Scope) error
 	// ResetPassword stores another user's new password hash, revokes all their

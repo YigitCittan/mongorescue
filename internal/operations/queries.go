@@ -17,7 +17,7 @@ import (
 // ListJobs returns every scheduled job sorted by name, heartbeat URLs masked (see
 // models.Job.Redacted).
 func (s *Service) ListJobs(ctx context.Context) ([]*models.Job, error) {
-	jobs, err := s.cfg.Store.ListJobs(ctx)
+	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -27,7 +27,7 @@ func (s *Service) ListJobs(ctx context.Context) ([]*models.Job, error) {
 // GetJob returns job id or an ErrNotFound error. Its heartbeat URL is masked (see
 // models.Job.Redacted), so the job is safe to return to clients.
 func (s *Service) GetJob(ctx context.Context, id string) (*models.Job, error) {
-	job, err := s.cfg.Store.GetJob(ctx, id)
+	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
@@ -139,7 +139,7 @@ func (s *Service) QueryBackups(ctx context.Context, f BackupFilter) (*BackupPage
 	if f.Status == "" && len(f.IDs) == 0 && f.ExcludeStatuses == nil {
 		f.ExcludeStatuses = []models.BackupStatus{models.StatusDeleted, models.StatusPurged}
 	}
-	page, err := s.cfg.Store.QueryBackupRecords(ctx, f)
+	page, err := s.store.QueryBackupRecords(ctx, f)
 	if err != nil {
 		return nil, filterError(err, "backups")
 	}
@@ -169,7 +169,7 @@ func (s *Service) ListBackups(ctx context.Context, f BackupFilter) ([]*models.Ba
 
 // BackupDatabases returns the distinct database names of all backups, sorted.
 func (s *Service) BackupDatabases(ctx context.Context) ([]string, error) {
-	dbs, err := s.cfg.Store.ListBackupDatabases(ctx)
+	dbs, err := s.store.ListBackupDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list backup databases: %w", err)
 	}
@@ -178,7 +178,7 @@ func (s *Service) BackupDatabases(ctx context.Context) ([]string, error) {
 
 // GetBackup returns backup record id or an ErrNotFound error.
 func (s *Service) GetBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
-	b, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	b, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
@@ -204,7 +204,7 @@ func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestoreP
 			return nil, err
 		}
 	}
-	page, err := s.cfg.Store.QueryRestoreRecords(ctx, f)
+	page, err := s.store.QueryRestoreRecords(ctx, f)
 	if err != nil {
 		return nil, filterError(err, "restores")
 	}
@@ -214,7 +214,7 @@ func (s *Service) QueryRestores(ctx context.Context, f RestoreFilter) (*RestoreP
 
 // ListRestores returns every restore record, newest first.
 func (s *Service) ListRestores(ctx context.Context) ([]*models.RestoreRecord, error) {
-	list, err := s.cfg.Store.ListRestoreRecords(ctx)
+	list, err := s.store.ListRestoreRecords(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list restores: %w", err)
 	}
@@ -224,7 +224,7 @@ func (s *Service) ListRestores(ctx context.Context) ([]*models.RestoreRecord, er
 
 // RestoreDatabases returns the distinct target databases of all restores, sorted.
 func (s *Service) RestoreDatabases(ctx context.Context) ([]string, error) {
-	dbs, err := s.cfg.Store.ListRestoreDatabases(ctx)
+	dbs, err := s.store.ListRestoreDatabases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list restore databases: %w", err)
 	}
@@ -233,7 +233,7 @@ func (s *Service) RestoreDatabases(ctx context.Context) ([]string, error) {
 
 // GetRestore returns restore record id or an ErrNotFound error.
 func (s *Service) GetRestore(ctx context.Context, id string) (*models.RestoreRecord, error) {
-	r, err := s.cfg.Store.GetRestoreRecord(ctx, id)
+	r, err := s.store.GetRestoreRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "restore not found")
 	}
@@ -347,7 +347,7 @@ type Stats struct {
 // logged.
 func (s *Service) Stats(ctx context.Context) Stats {
 	var reasons []string
-	jobs, err := s.cfg.Store.ListJobs(ctx)
+	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		reasons = append(reasons, "list jobs: "+err.Error())
 	}
@@ -365,7 +365,7 @@ func (s *Service) Stats(ctx context.Context) Stats {
 // CorruptRecords returns the stored rows that cannot be read and are skipped by every
 // list (see store.CorruptRecord). The rows are never changed.
 func (s *Service) CorruptRecords(ctx context.Context) ([]store.CorruptRecord, error) {
-	list, err := s.cfg.Store.CorruptRecords(ctx)
+	list, err := s.store.CorruptRecords(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("check stored records: %w", err)
 	}
@@ -388,7 +388,7 @@ func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) 
 	// The newest run of every multi-database job in one query (the dashboard polls
 	// this). A failed read leaves the map empty, as each failed lookup used to.
 	if len(multi) > 0 {
-		if runs, err := s.cfg.Store.LatestJobRuns(ctx, multi); err == nil {
+		if runs, err := s.store.LatestJobRuns(ctx, multi); err == nil {
 			for id, run := range runs {
 				st.JobLastRuns[id] = briefRun(run)
 			}
@@ -400,7 +400,7 @@ func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) 
 			st.DefaultStorageTarget = &TargetRef{ID: def.ID, Name: def.Name, Type: def.Type}
 		}
 	}
-	bs, err := s.cfg.Store.BackupStats(ctx, now.Add(-24*time.Hour))
+	bs, err := s.store.BackupStats(ctx, now.Add(-24*time.Hour))
 	if err != nil {
 		return st, nil, nil, fmt.Errorf("backup stats: %w", err)
 	}
@@ -411,14 +411,14 @@ func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) 
 	if b := bs.Last; b != nil {
 		st.LastBackup = &BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt, ErrorMessage: b.ErrorMessage}
 	}
-	latest, err := s.cfg.Store.LatestJobBackups(ctx, "")
+	latest, err := s.store.LatestJobBackups(ctx, "")
 	if err != nil {
 		return st, bs, nil, fmt.Errorf("latest job backups: %w", err)
 	}
 	for id, b := range latest {
 		st.JobLastBackups[id] = BackupBrief{ID: b.ID, Database: b.Database, JobID: b.JobID, Status: b.Status, StartedAt: b.StartedAt}
 	}
-	rs, err := s.cfg.Store.RestoreStats(ctx)
+	rs, err := s.store.RestoreStats(ctx)
 	if err != nil {
 		return st, bs, nil, fmt.Errorf("restore stats: %w", err)
 	}
@@ -491,7 +491,7 @@ func jobDatabases(j *models.Job, latest map[string]*models.BackupRecord) []strin
 // multiJobStatus fills the per-database last successes of multi-database job j
 // into js: LastSuccessAt is the stalest database's.
 func (s *Service) multiJobStatus(ctx context.Context, j *models.Job, js *JobStatus) error {
-	latest, err := s.cfg.Store.LatestJobDatabaseBackups(ctx, j.ID, models.StatusCompleted)
+	latest, err := s.store.LatestJobDatabaseBackups(ctx, j.ID, models.StatusCompleted)
 	if err != nil {
 		return fmt.Errorf("latest backups of job %s: %w", j.ID, err)
 	}
@@ -567,7 +567,7 @@ const MaxStatusFailures = 20
 // Status returns an operational overview: health, version, counts, the last
 // successful backup of every job and the backups that failed in the last 24 hours.
 func (s *Service) Status(ctx context.Context) (*Status, error) {
-	jobs, err := s.cfg.Store.ListJobs(ctx)
+	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -587,7 +587,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 			st.Connections = len(conns)
 		}
 	}
-	failed, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{
+	failed, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{
 		Status: models.StatusFailed, From: now.Add(-24 * time.Hour), Limit: MaxStatusFailures,
 	})
 	if err != nil {
@@ -600,7 +600,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 			ID: b.ID, Database: b.Database, JobID: b.JobID, StartedAt: b.StartedAt, Error: b.ErrorMessage,
 		})
 	}
-	lastSuccess, err := s.cfg.Store.LatestJobBackups(ctx, models.StatusCompleted)
+	lastSuccess, err := s.store.LatestJobBackups(ctx, models.StatusCompleted)
 	if err != nil {
 		return nil, fmt.Errorf("latest job backups: %w", err)
 	}

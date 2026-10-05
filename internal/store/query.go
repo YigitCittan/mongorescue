@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -93,6 +94,9 @@ type BackupFilter struct {
 	Database string
 	// ConnectionID keeps backups taken from this connection.
 	ConnectionID string
+	// Connections keeps the backups taken from these connections (the caller's
+	// access, see auth.ConnectionFilter); nil keeps every backup.
+	Connections auth.ConnectionSet
 	// JobID keeps backups taken by this scheduled job.
 	JobID string
 	// Trigger keeps backups started this way. Records written before triggers existed
@@ -131,6 +135,9 @@ type RestoreFilter struct {
 	BackupID string
 	// TargetDatabase keeps restores into exactly this database.
 	TargetDatabase string
+	// Connections keeps the restores whose source and target connections are both
+	// in this set (the caller's access); nil keeps every restore.
+	Connections auth.ConnectionSet
 	// From keeps restores started at or after this time.
 	From time.Time
 	// To keeps restores started before this time.
@@ -270,6 +277,31 @@ func (c *conditions) addIDs(p string, ids []string) {
 	c.add(p+"id IN (?"+strings.Repeat(", ?", len(ids)-1)+")", args...)
 }
 
+// addConnections keeps the rows whose connection, the SQL expression expr, is in
+// set; a limited set without members keeps no row, and nil adds no condition.
+func (c *conditions) addConnections(expr string, set auth.ConnectionSet) {
+	if !set.Limited() {
+		return
+	}
+	ids := set.IDs()
+	if len(ids) == 0 {
+		c.add("0")
+		return
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	c.add(expr+" IN (?"+strings.Repeat(", ?", len(ids)-1)+")", args...)
+}
+
+// restoreSourceSQL and restoreTargetSQL are the connections of a restore in
+// "restores r"; a restore without a target connection went into its source.
+const (
+	restoreSourceSQL = `coalesce(json_extract(r.data, '$.source_connection_id'), '')`
+	restoreTargetSQL = `coalesce(nullif(json_extract(r.data, '$.target_connection_id'), ''), json_extract(r.data, '$.source_connection_id'), '')`
+)
+
 // addTimeRange adds the started_at range of a filter.
 func (c *conditions) addTimeRange(p string, from, to time.Time) {
 	if !from.IsZero() {
@@ -301,6 +333,7 @@ func backupConditions(f BackupFilter) conditions {
 	if f.ConnectionID != "" {
 		c.add("b.connection_id = ?", f.ConnectionID)
 	}
+	c.addConnections("b.connection_id", f.Connections)
 	if f.JobID != "" {
 		c.add("b.job_id = ?", f.JobID)
 	}
@@ -395,6 +428,8 @@ func restoreConditions(f RestoreFilter) conditions {
 	if f.TargetDatabase != "" {
 		c.add("r.target_database = ?", f.TargetDatabase)
 	}
+	c.addConnections(restoreSourceSQL, f.Connections)
+	c.addConnections(restoreTargetSQL, f.Connections)
 	c.addTimeRange("r.", f.From, f.To)
 	if f.Search != "" {
 		q := strings.ToLower(f.Search)
@@ -446,18 +481,43 @@ func (s *SQLiteStore) total(ctx context.Context, count string, c conditions, lim
 // ListBackupDatabases returns the distinct database names of all backup records,
 // sorted.
 func (s *SQLiteStore) ListBackupDatabases(ctx context.Context) ([]string, error) {
-	return s.distinct(ctx, "SELECT DISTINCT database_name FROM backups WHERE database_name != '' ORDER BY database_name")
+	return s.ListBackupDatabasesIn(ctx, nil)
+}
+
+// ListBackupDatabasesIn returns the distinct database names of the backup records
+// taken from the connections in set (every record when set is nil), sorted.
+func (s *SQLiteStore) ListBackupDatabasesIn(ctx context.Context, set auth.ConnectionSet) ([]string, error) {
+	c := conditions{clauses: []string{"database_name != ''"}}
+	c.addConnections("connection_id", set)
+	return s.distinct(ctx, "SELECT DISTINCT database_name FROM backups"+c.where()+" ORDER BY database_name", c.args...)
 }
 
 // ListRestoreDatabases returns the distinct target database names of all restore
 // records, sorted.
 func (s *SQLiteStore) ListRestoreDatabases(ctx context.Context) ([]string, error) {
-	return s.distinct(ctx, "SELECT DISTINCT target_database FROM restores WHERE target_database != '' ORDER BY target_database")
+	return s.ListRestoreDatabasesIn(ctx, nil)
+}
+
+// ListBackupTargetsIn returns the distinct storage target IDs of the backup records
+// taken from the connections in set (every record when set is nil), sorted.
+func (s *SQLiteStore) ListBackupTargetsIn(ctx context.Context, set auth.ConnectionSet) ([]string, error) {
+	c := conditions{clauses: []string{"storage_target_id != ''"}}
+	c.addConnections("connection_id", set)
+	return s.distinct(ctx, "SELECT DISTINCT storage_target_id FROM backups"+c.where()+" ORDER BY storage_target_id", c.args...)
+}
+
+// ListRestoreDatabasesIn returns the distinct target database names of the restore
+// records whose connections are in set (every record when set is nil), sorted.
+func (s *SQLiteStore) ListRestoreDatabasesIn(ctx context.Context, set auth.ConnectionSet) ([]string, error) {
+	c := conditions{clauses: []string{"r.target_database != ''"}}
+	c.addConnections(restoreSourceSQL, set)
+	c.addConnections(restoreTargetSQL, set)
+	return s.distinct(ctx, "SELECT DISTINCT r.target_database FROM restores r"+c.where()+" ORDER BY r.target_database", c.args...)
 }
 
 // distinct returns the strings of the single column query selects; never nil.
-func (s *SQLiteStore) distinct(ctx context.Context, query string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, query)
+func (s *SQLiteStore) distinct(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query: %w", err)
 	}

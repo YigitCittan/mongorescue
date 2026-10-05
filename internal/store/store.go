@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -116,17 +117,35 @@ type Store interface {
 	// ListRestoreDatabases returns the distinct target databases of all restores,
 	// sorted.
 	ListRestoreDatabases(ctx context.Context) ([]string, error)
+	// ListBackupDatabasesIn is ListBackupDatabases for the backups taken from the
+	// connections in set (every backup when set is nil).
+	ListBackupDatabasesIn(ctx context.Context, set auth.ConnectionSet) ([]string, error)
+	// ListRestoreDatabasesIn is ListRestoreDatabases for the restores whose source
+	// and target connections are in set (every restore when set is nil).
+	ListRestoreDatabasesIn(ctx context.Context, set auth.ConnectionSet) ([]string, error)
+	// ListBackupTargetsIn returns the distinct storage target IDs of the backups taken
+	// from the connections in set (every backup when set is nil), sorted.
+	ListBackupTargetsIn(ctx context.Context, set auth.ConnectionSet) ([]string, error)
 	// BackupStats returns SQL aggregates over every backup: counts by status, failures
 	// started at or after since, the size of completed backups and the newest backup.
 	BackupStats(ctx context.Context, since time.Time) (*BackupStats, error)
+	// BackupStatsIn is BackupStats over the backups taken from the connections in set
+	// (every backup when set is nil).
+	BackupStatsIn(ctx context.Context, since time.Time, set auth.ConnectionSet) (*BackupStats, error)
 	// LatestJobBackups maps every job ID with backups to its newest backup, only
 	// considering backups in status when it is not empty.
 	LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error)
+	// LatestJobBackupsIn is LatestJobBackups over the backups taken from the
+	// connections in set (every backup when set is nil).
+	LatestJobBackupsIn(ctx context.Context, status models.BackupStatus, set auth.ConnectionSet) (map[string]*models.BackupRecord, error)
 	// LatestJobDatabaseBackups maps every database of a job with backups in status
 	// (any when empty) to its newest one.
 	LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error)
 	// RestoreStats returns the number of restores and their counts by status.
 	RestoreStats(ctx context.Context) (*RestoreStats, error)
+	// RestoreStatsIn is RestoreStats over the restores whose source and target
+	// connections are in set (every restore when set is nil).
+	RestoreStatsIn(ctx context.Context, set auth.ConnectionSet) (*RestoreStats, error)
 	// BackupHistory returns SQL aggregates of the backups over time: outcomes and
 	// sizes per day, each job's newest runs and last success, and failed
 	// verifications (see BackupHistoryQuery).

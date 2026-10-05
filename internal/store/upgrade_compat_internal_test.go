@@ -396,7 +396,9 @@ var compatSteps = []compatStep{
 			if err != nil || key.Scope != auth.ScopeRead || key.LastUsedAt == nil || !key.LastUsedAt.Equal(compatT0.Add(8*time.Hour)) {
 				t.Errorf("key_v4 = %+v, %v", key, err)
 			}
-			if keys, err := s.ListAPIKeys(context.Background()); err != nil || len(keys) != 2 {
+			keys, err := s.ListAPIKeys(context.Background())
+			keys = slices.DeleteFunc(keys, func(k *auth.APIKey) bool { return k.ID == "key_v24_limited" })
+			if err != nil || len(keys) != 2 {
 				t.Errorf("ListAPIKeys = %d, %v", len(keys), err)
 			}
 		},
@@ -781,6 +783,19 @@ var compatSteps = []compatStep{
 				if u, err := s.GetUser(ctx, id); err != nil || u.Role != want {
 					t.Errorf("%s = %+v, %v; want role %s", id, u, err, want)
 				}
+				// Users stored before 0024 reach every connection.
+				if u, err := s.GetUser(ctx, id); err != nil || !u.AllConnections || len(u.ConnectionIDs) != 0 {
+					t.Errorf("%s = %+v, %v; want no connection limit", id, u, err)
+				}
+			}
+			keys, err := s.ListAPIKeys(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range keys {
+				if k.ID != "key_v24_limited" && (!k.AllConnections || len(k.ConnectionIDs) != 0) {
+					t.Errorf("key %s = %v; want no connection limit", k.ID, k.ConnectionIDs)
+				}
 			}
 			// The CHECK constraint keeps unknown roles out.
 			if _, err := s.db.Exec(`UPDATE users SET role = 'root' WHERE id = 'usr_v19_viewer'`); err == nil {
@@ -979,6 +994,60 @@ var compatSteps = []compatStep{
 			}
 			if err = s.SetWindowLow(ctx, "pst_unknown", nil); !errors.Is(err, pitr.ErrNotFound) {
 				t.Errorf("SetWindowLow of an unknown stream = %v", err)
+			}
+		},
+	},
+	{
+		version: 24,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO users (id, username, password_hash, created_at, updated_at, last_login_at, role, all_connections, connection_ids)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"usr_v24_limited", "team-a", compatPassword, ns(35*time.Hour), ns(35*time.Hour), nil, "operator", 0, `["conn_v2"]`,
+				"usr_v24_none", "team-z", compatPassword, ns(35*time.Hour), ns(35*time.Hour), nil, "viewer", 0, `[]`)
+			f.exec(t, `INSERT INTO api_keys (id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, all_connections, connection_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"key_v24_limited", "team-a ci", "mrk_v24ccc", strings.Repeat("ef", 32), "usr_v24_limited", ns(36*time.Hour), nil, "read", 0, `["conn_v2"]`)
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			u, err := s.GetUser(ctx, "usr_v24_limited")
+			if err != nil || u.AllConnections || len(u.ConnectionIDs) != 1 || u.ConnectionIDs[0] != "conn_v2" {
+				t.Errorf("usr_v24_limited = %+v, %v; want limited to conn_v2", u, err)
+			}
+			k, err := s.GetAPIKeyByPrefix(ctx, "mrk_v24ccc")
+			if err != nil || len(k.ConnectionIDs) != 1 || k.ConnectionIDs[0] != "conn_v2" {
+				t.Errorf("key_v24_limited = %+v, %v; want limited to conn_v2", k, err)
+			}
+			// An empty list is none, never every connection.
+			if none, getErr := s.GetUser(ctx, "usr_v24_none"); getErr != nil || none.AllConnections || none.ConnectionIDs == nil ||
+				len(none.ConnectionIDs) != 0 || none.ConnectionSet().Allows("conn_v2") {
+				t.Errorf("usr_v24_none = %+v, %v; want no connection", none, getErr)
+			}
+			// The column default never applies to a new row: a user stored without an
+			// access gets none.
+			fresh := &auth.User{ID: "usr_v24_fresh", Username: "fresh", Role: auth.RoleViewer, PasswordHash: "x", CreatedAt: compatT0, UpdatedAt: compatT0}
+			if err = s.CreateUser(ctx, fresh); err != nil {
+				t.Fatal(err)
+			}
+			if got, getErr := s.GetUser(ctx, "usr_v24_fresh"); getErr != nil || got.AllConnections {
+				t.Errorf("a user stored without access = %+v, %v; want none", got, getErr)
+			}
+			// An administrator is never limited.
+			if err = s.UpdateUserConnections(ctx, "", "usr_v1", auth.ConnectionAccess{ConnectionIDs: []string{"conn_v2"}}, compatT0); !errors.Is(err, auth.ErrAdminConnections) {
+				t.Errorf("limit an admin: err = %v; want ErrAdminConnections", err)
+			}
+			// A promotion to admin lifts the limit.
+			if _, err = s.UpdateUserRole(ctx, "", "usr_v24_limited", auth.RoleAdmin, compatT0, false); err != nil {
+				t.Fatal(err)
+			}
+			if u, err = s.GetUser(ctx, "usr_v24_limited"); err != nil || !u.AllConnections || len(u.ConnectionIDs) != 0 {
+				t.Errorf("promoted user = %+v, %v; want no connection limit", u, err)
+			}
+			// An unreadable list is a corrupt record, never "every connection".
+			if _, err = s.db.Exec(`UPDATE api_keys SET connection_ids = 'oops' WHERE id = 'key_v24_limited'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.GetAPIKeyByPrefix(ctx, "mrk_v24ccc"); !errors.Is(err, ErrCorruptRecord) {
+				t.Errorf("key with unreadable connections: err = %v; want ErrCorruptRecord", err)
 			}
 		},
 	},

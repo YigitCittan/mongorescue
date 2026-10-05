@@ -9,12 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/settings"
@@ -68,6 +70,7 @@ func (s *Server) registerAuthRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/users", s.handleCreateUser)
 	mux.HandleFunc("DELETE /api/v1/users/{id}", s.handleDeleteUser)
 	mux.HandleFunc(userRoleRoute, s.handleSetUserRole)
+	mux.HandleFunc(userConnectionsRoute, s.handleSetUserConnections)
 	mux.HandleFunc(changePasswordRoute, s.handleChangePassword)
 
 	mux.HandleFunc(listAPIKeysRoute, s.handleListAPIKeys)
@@ -389,14 +392,16 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, auth.ErrInvalidSetupCode), errors.Is(err, auth.ErrCurrentPassword), errors.Is(err, auth.ErrSessionRequired),
-		errors.Is(err, auth.ErrScopeExceedsRole), errors.Is(err, auth.ErrLocalLoginDisabled), errors.Is(err, auth.ErrPasswordChangeRequired):
+		errors.Is(err, auth.ErrScopeExceedsRole), errors.Is(err, auth.ErrLocalLoginDisabled), errors.Is(err, auth.ErrPasswordChangeRequired),
+		errors.Is(err, auth.ErrConnectionsExceedAccess):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrSetupCompleted), errors.Is(err, auth.ErrUserExists), errors.Is(err, auth.ErrLastUser),
 		errors.Is(err, auth.ErrLastAdmin), errors.Is(err, auth.ErrLastLocalAdmin), errors.Is(err, auth.ErrRoleManagedByProvider):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrInvalidUsername),
 		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope),
-		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole), errors.Is(err, auth.ErrNoPassword):
+		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole), errors.Is(err, auth.ErrNoPassword),
+		errors.Is(err, auth.ErrInvalidConnections), errors.Is(err, auth.ErrAdminConnections):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, auth.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
@@ -550,6 +555,10 @@ type meResponse struct {
 	// KeyScope is the API key's own scope (API keys only); Scope is lower when the
 	// creator's role caps the key.
 	KeyScope auth.Scope `json:"key_scope,omitempty"`
+	// AllConnections and ConnectionIDs are the connections the caller may touch
+	// (signed in only): every connection, or exactly the list (none when empty).
+	AllConnections *bool     `json:"all_connections,omitempty"`
+	ConnectionIDs  *[]string `json:"connection_ids,omitempty"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -558,9 +567,15 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, meResponse{})
 		return
 	}
-	writeJSON(w, http.StatusOK, meResponse{
+	me := meResponse{
 		User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method, Role: p.Role, Scope: p.Scope, KeyScope: p.KeyScope,
-	})
+	}
+	a := auth.AccessOf(p.Connections)
+	me.AllConnections = &a.AllConnections
+	if !a.AllConnections {
+		me.ConnectionIDs = &a.ConnectionIDs
+	}
+	writeJSON(w, http.StatusOK, me)
 }
 
 // handleListSessions lists the caller's own sessions, or with ?all=true (admin) those
@@ -657,7 +672,66 @@ const (
 	targetRoleTo         = "role_to"
 	targetScope          = "scope"
 	targetCeilingApplied = "ceiling_applied"
+	targetConnections    = "connection_ids"
 )
+
+// connectionAccessRequest is the connection access in a request body:
+// all_connections, or exactly connection_ids (an empty list is none, never every
+// connection). A body with neither field keeps the behaviour of clients that
+// predate connection access: every connection.
+type connectionAccessRequest struct {
+	AllConnections *bool    `json:"all_connections"`
+	ConnectionIDs  []string `json:"connection_ids"`
+}
+
+// access returns the requested access (checked by auth's Normalized).
+func (c connectionAccessRequest) access() auth.ConnectionAccess {
+	switch {
+	case c.AllConnections != nil:
+		return auth.ConnectionAccess{AllConnections: *c.AllConnections, ConnectionIDs: c.ConnectionIDs}
+	case c.ConnectionIDs != nil:
+		return auth.ConnectionAccess{ConnectionIDs: c.ConnectionIDs}
+	default:
+		return auth.EveryConnection()
+	}
+}
+
+// checkConnectionAccess returns a with every listed ID naming a connection the
+// caller may touch, answering and returning false otherwise: 400 for an unknown
+// connection (a connection outside the caller's access is as unknown as one that
+// does not exist), and 404 for a caller limited to some connections, like every
+// route that names a connection. IDs in keep, the access stored before, that no
+// longer exist (deleted connections) are dropped silently, so removing a deleted
+// connection never forces anyone to widen the access.
+func (s *Server) checkConnectionAccess(w http.ResponseWriter, r *http.Request, a auth.ConnectionAccess, keep []string) (auth.ConnectionAccess, bool) {
+	if a.AllConnections || s.connections == nil {
+		return a, true
+	}
+	if len(a.ConnectionIDs) > auth.MaxConnectionIDs {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("connection_ids takes at most %d connections", auth.MaxConnectionIDs))
+		return a, false
+	}
+	ids := make([]string, 0, len(a.ConnectionIDs))
+	for _, id := range a.ConnectionIDs {
+		id = strings.TrimSpace(id)
+		if _, err := s.connections.Get(r.Context(), id); err != nil {
+			switch {
+			case errors.Is(err, connections.ErrNotFound) && slices.Contains(keep, id):
+				continue
+			case errors.Is(err, connections.ErrNotFound) && auth.ConnectionFilter(r.Context()).Limited():
+				writeError(w, http.StatusNotFound, "connection not found")
+				return a, false
+			case errors.Is(err, connections.ErrNotFound):
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown connection_id %q", id))
+				return a, false
+			}
+			s.writeConnectionError(w, err)
+			return a, false
+		}
+		ids = append(ids, id)
+	}
+	return auth.ConnectionAccess{ConnectionIDs: ids}, true
+}
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.requireAuth(w)
@@ -673,11 +747,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		// Role is viewer, operator or admin; omitted means viewer.
 		Role auth.Role `json:"role"`
+		// The user's connections (administrators always have every connection).
+		connectionAccessRequest
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	user, err := svc.CreateUser(r.Context(), p, req.Username, req.Password, req.Role)
+	access, ok := s.checkConnectionAccess(w, r, req.access(), nil)
+	if !ok {
+		return
+	}
+	user, err := svc.CreateUserWithConnections(r.Context(), p, req.Username, req.Password, req.Role, access)
 	if user != nil && writeApprovalPendingWith(w, err, approvalRequired{User: user}) {
 		// The two-person rule: the user exists as a viewer, the admin role waits.
 		auditlog.Annotate(r.Context(), targetRole, string(user.Role))
@@ -688,7 +768,68 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditlog.Annotate(r.Context(), targetRole, string(user.Role))
+	if !user.AllConnections {
+		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionAccess))
+	}
 	writeJSON(w, http.StatusCreated, user)
+}
+
+// connectionsNote describes a connection access for the audit log.
+func connectionsNote(a auth.ConnectionAccess) string {
+	switch {
+	case a.AllConnections:
+		return "all"
+	case len(a.ConnectionIDs) == 0:
+		return "none"
+	}
+	return strings.Join(a.ConnectionIDs, ",")
+}
+
+// handleSetUserConnections sets a user's connections (admin):
+// {all_connections, connection_ids}, where an empty list is none. 400 for an
+// unknown connection or a limit on an administrator, 404 for an unknown user, 409
+// for a single sign-on user whose connections the group mappings decide. IDs of
+// deleted connections the user still had are dropped. The change applies to the
+// user's sessions and API keys from their next request.
+func (s *Server) handleSetUserConnections(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.requireAuth(w)
+	if !ok {
+		return
+	}
+	p, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	var req connectionAccessRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.AllConnections == nil && req.ConnectionIDs == nil {
+		writeError(w, http.StatusBadRequest, "send all_connections or connection_ids")
+		return
+	}
+	// The user's current list: IDs of deleted connections on it are dropped.
+	var keep []string
+	if p.Allows(auth.ScopeAdmin) {
+		if users, listErr := svc.ListUsers(r.Context(), p); listErr == nil {
+			for _, u := range users {
+				if u.ID == r.PathValue("id") {
+					keep = u.ConnectionIDs
+				}
+			}
+		}
+	}
+	access, ok := s.checkConnectionAccess(w, r, req.access(), keep)
+	if !ok {
+		return
+	}
+	user, err := svc.SetUserConnections(r.Context(), p, r.PathValue("id"), access)
+	if err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	auditlog.Annotate(r.Context(), targetConnections, connectionsNote(user.ConnectionAccess))
+	writeJSON(w, http.StatusOK, user)
 }
 
 // handleSetUserRole changes a user's dashboard role: 400 for an unknown role or the
@@ -799,11 +940,23 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		// Scope is read, operator or admin; omitted means read.
 		Scope auth.Scope `json:"scope"`
+		// The key's connections (a limit needs a scope below admin); every
+		// connection reaches what its creator may touch.
+		connectionAccessRequest
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	k, plain, err := svc.CreateAPIKey(r.Context(), p, req.Name, req.Scope)
+	// Who may create keys at all is checked before the connections are looked up.
+	if err := p.RequireKeyCreator(); err != nil {
+		s.writeAuthError(w, err)
+		return
+	}
+	access, ok := s.checkConnectionAccess(w, r, req.access(), nil)
+	if !ok {
+		return
+	}
+	k, plain, err := svc.CreateAPIKeyWithConnections(r.Context(), p, req.Name, req.Scope, access)
 	if k != nil && err != nil {
 		// The two-person rule: the key works with the operator scope, the admin scope
 		// waits. Its plaintext is shown here, once, like for any new key.
@@ -820,6 +973,9 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	// ceiling_applied: the key has a creator, so that user's role caps it from now on.
 	auditlog.Annotate(r.Context(), targetScope, string(k.Scope))
 	auditlog.Annotate(r.Context(), targetCeilingApplied, strconv.FormatBool(k.CreatedBy != ""))
+	if !k.AllConnections {
+		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(k.ConnectionAccess))
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, createdAPIKey{APIKey: k, Key: plain})
 }

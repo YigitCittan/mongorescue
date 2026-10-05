@@ -67,6 +67,7 @@
               <span class="menu-caption" data-i18n="auth.signed_in_as">Signed in as</span>
               <span class="menu-user" id="user-menu-fullname"></span>
               <span class="menu-note" id="user-menu-role" hidden></span>
+              <span class="menu-note" id="user-menu-access" hidden></span>
             </div>
             <button type="button" role="menuitem" class="menu-item" data-action="change-own-password" data-i18n="auth.change_password">Change password</button>
             <button type="button" role="menuitem" class="menu-item" data-action="account-section" data-section="apikeys" data-i18n="settings.keys_title">API keys</button>
@@ -1458,13 +1459,14 @@
               <tr>
                 <th scope="col" data-i18n="settings.col_username">Username</th>
                 <th scope="col" data-i18n="settings.user_role_col">Role</th>
+                <th scope="col" data-i18n="access.col_connections">Connections</th>
                 <th scope="col" data-i18n="settings.col_created">Created</th>
                 <th scope="col" data-i18n="settings.col_last_login">Last sign-in</th>
                 <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
               </tr>
             </thead>
             <tbody id="users-tbody">
-              <tr class="empty-row"><td colspan="5"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+              <tr class="empty-row"><td colspan="6"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -1557,6 +1559,7 @@
                   <tr>
                     <th scope="col" data-i18n="sso.mapping_group">Group</th>
                     <th scope="col" data-i18n="sso.mapping_role">Role</th>
+                    <th scope="col" data-i18n="access.col_connections">Connections</th>
                     <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
                   </tr>
                 </thead>
@@ -2710,11 +2713,43 @@
             </select>
             <span class="form-hint" id="user-role-hint" data-i18n="settings.user_role_hint">Viewer: sees everything, changes nothing. Operator: also starts backups, runs jobs and restores into safe clones. Admin: everything, including users, settings and deletions.</span>
           </div>
+          <fieldset class="form-group access-fieldset" id="user-connections-group" aria-describedby="user-connections-hint">
+            <legend class="form-label" data-i18n="access.label">Connections</legend>
+            <div class="access-checklist" id="user-connections"></div>
+            <span class="form-hint" id="user-connections-hint" data-i18n="access.user_hint">Check All connections, or the connections the user may use; none checked means no connection. Administrators always have every connection.</span>
+          </fieldset>
           <p class="form-error" id="user-error" role="alert" hidden></p>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-user" data-i18n="actions.cancel">Cancel</button>
           <button type="submit" class="btn btn-primary" data-i18n="settings.add_user">Add user</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Connections of a user (access.js) -->
+  <div id="modal-user-connections" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card modal-sm" role="dialog" aria-modal="true" aria-labelledby="user-connections-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="user-connections-title" data-i18n="access.edit_title">Connections</h3>
+        <button type="button" class="modal-close" data-action="close-modal" data-target="modal-user-connections" aria-label="Close" data-i18n-aria-label="actions.close">
+          <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <form id="form-user-connections" novalidate>
+        <input type="hidden" id="user-connections-user-id">
+        <div class="modal-body">
+          <fieldset class="form-group access-fieldset" aria-describedby="user-connections-edit-hint">
+            <legend class="form-label" data-i18n="access.label">Connections</legend>
+            <div class="access-checklist" id="user-connections-edit"></div>
+            <span class="form-hint" id="user-connections-edit-hint" data-i18n="access.edit_hint">The user sees, backs up and restores only these connections, and so do their API keys. None checked means no connection.</span>
+          </fieldset>
+          <p class="form-error" id="user-connections-error" role="alert" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close-modal" data-target="modal-user-connections" data-i18n="actions.cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" data-i18n="access.save">Save</button>
         </div>
       </form>
     </div>
@@ -2780,6 +2815,11 @@
             <span class="form-hint" id="api-key-scope-hint" data-i18n="settings.key_scope_hint">Read only: view everything (GET requests and read-only MCP tools). Operator: also start backups, run jobs and restore into safe clones. Admin: full access, including deletions and settings.</span>
             <span class="form-hint" id="api-key-scope-limit" data-i18n="settings.user_role_scope_limit" hidden>Scopes above your role are not offered.</span>
           </div>
+          <fieldset class="form-group access-fieldset" id="api-key-connections-group" aria-describedby="api-key-connections-hint" hidden>
+            <legend class="form-label" data-i18n="access.label">Connections</legend>
+            <div class="access-checklist" id="api-key-connections"></div>
+            <span class="form-hint" id="api-key-connections-hint" data-i18n="access.key_hint">Check All connections (those you may use), or the connections the key may use; none checked means no connection. Admin keys always have every connection.</span>
+          </fieldset>
         </div>
         <div class="modal-body" id="api-key-step-secret" hidden>
           <p class="notice notice-warn" role="alert" data-i18n="settings.key_once_warning">Copy this key now. It won't be shown again.</p>
@@ -3070,6 +3110,7 @@
   <script src="/readiness.js"></script>
   <script src="/roles.js"></script>
   <script src="/sso.js"></script>
+  <script src="/access.js"></script>
   <script src="/monitoring.js"></script>
   <script src="/pitr.js"></script>
   <script src="/protection.js"></script>

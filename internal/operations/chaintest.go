@@ -35,6 +35,9 @@ var ErrNoChainTest = errors.New("no PITR chain test is possible yet")
 // Expected failures: those of StartRestore with PITR (a *PreflightError too), and
 // ErrNoChainTest.
 func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.RestoreRecord, error) {
+	if err := s.visibleStreamFirst(ctx, streamID); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("PITR chain tests need the admin role or an admin API key: %w", err)
 	}

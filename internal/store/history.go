@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -37,6 +39,21 @@ type BackupHistoryQuery struct {
 	// MaxIssues bounds the backups with a failed verification that are returned (at
 	// most MaxHistoryIssues); VerificationIssueTotal counts all of them.
 	MaxIssues int
+	// Connections keeps the backups taken from these connections (the caller's
+	// access) in every figure, also in a job's runs and last success; nil keeps
+	// every backup. Callers keep the jobs they may see.
+	Connections auth.ConnectionSet
+}
+
+// connectionClause returns " AND col IN (...)" with its arguments for a limited
+// set, " AND 0" for a limited set without members, and "" for nil.
+func connectionClause(col string, set auth.ConnectionSet) (string, []any) {
+	var c conditions
+	c.addConnections(col, set)
+	if len(c.clauses) == 0 {
+		return "", nil
+	}
+	return " AND " + c.clauses[0], c.args
 }
 
 // BackupDay aggregates the backups that started on one day.
@@ -151,34 +168,40 @@ func (s *SQLiteStore) BackupHistory(ctx context.Context, q BackupHistoryQuery) (
 		}
 	}
 	h := &BackupHistory{JobRuns: map[string][]JobRun{}, LastSuccess: map[string]time.Time{}}
-	if err := s.historyDays(ctx, h, q.DayStarts); err != nil {
+	if err := s.historyDays(ctx, h, q.DayStarts, q.Connections); err != nil {
 		return nil, err
 	}
 	from := timeKey(q.DayStarts[0])
-	if err := s.db.QueryRowContext(ctx, historyBytesBeforeSQL, string(models.StatusCompleted), from).Scan(&h.BytesBefore); err != nil {
+	clause, connArgs := connectionClause("connection_id", q.Connections)
+	if err := s.db.QueryRowContext(ctx, historyBytesBeforeSQL+clause, append([]any{string(models.StatusCompleted), from}, connArgs...)...).Scan(&h.BytesBefore); err != nil {
 		return nil, fmt.Errorf("store: stored bytes before the history: %w", err)
 	}
 	if perJob := min(max(q.RunsPerJob, 0), MaxHistoryRunsPerJob); perJob > 0 {
-		if err := s.historyJobRuns(ctx, h, perJob); err != nil {
+		if err := s.historyJobRuns(ctx, h, perJob, q.Connections); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.historyLastSuccess(ctx, h); err != nil {
+	if err := s.historyLastSuccess(ctx, h, q.Connections); err != nil {
 		return nil, err
 	}
-	if err := s.historyVerification(ctx, h, from, min(max(q.MaxIssues, 0), MaxHistoryIssues)); err != nil {
+	if err := s.historyVerification(ctx, h, from, min(max(q.MaxIssues, 0), MaxHistoryIssues), q.Connections); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, starts []time.Time) error {
+func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, starts []time.Time, set auth.ConnectionSet) error {
 	n := len(starts) - 1
 	args := make([]any, 0, 3*n)
 	for i := range n {
 		args = append(args, i, timeKey(starts[i]), timeKey(starts[i+1]))
 	}
-	rows, err := s.db.QueryContext(ctx, historyDaysSQL(n), args...)
+	query := historyDaysSQL(n)
+	if clause, connArgs := connectionClause("b.connection_id", set); clause != "" {
+		query = strings.Replace(query, "AND b.started_at < d.hi", "AND b.started_at < d.hi"+clause, 1)
+		args = append(args, connArgs...)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: backup history: %w", err)
 	}
@@ -213,8 +236,15 @@ func (s *SQLiteStore) historyDays(ctx context.Context, h *BackupHistory, starts 
 	return nil
 }
 
-func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJob int) error {
-	rows, err := s.db.QueryContext(ctx, historyRunsSQL, perJob)
+func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJob int, set auth.ConnectionSet) error {
+	// A job's runs are its backups from the caller's connections (a job may have
+	// moved from another connection).
+	query, args := historyRunsSQL, []any{perJob}
+	if clause, connArgs := connectionClause("connection_id", set); clause != "" {
+		query = strings.Replace(query, "WHERE job_id = j.id", "WHERE job_id = j.id"+clause, 1)
+		args = append(slices.Clone(connArgs), perJob)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: recent job runs: %w", err)
 	}
@@ -238,8 +268,13 @@ func (s *SQLiteStore) historyJobRuns(ctx context.Context, h *BackupHistory, perJ
 	return nil
 }
 
-func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) error {
-	rows, err := s.db.QueryContext(ctx, historyLastSuccessSQL, string(models.StatusCompleted))
+func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory, set auth.ConnectionSet) error {
+	query, args := historyLastSuccessSQL, []any{string(models.StatusCompleted)}
+	if clause, connArgs := connectionClause("connection_id", set); clause != "" {
+		query = strings.Replace(query, "AND +status = ?", "AND +status = ?"+clause, 1)
+		args = append(args, connArgs...)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: last successful job runs: %w", err)
 	}
@@ -262,14 +297,19 @@ func (s *SQLiteStore) historyLastSuccess(ctx context.Context, h *BackupHistory) 
 	return nil
 }
 
-func (s *SQLiteStore) historyVerification(ctx context.Context, h *BackupHistory, from int64, limit int) error {
+func (s *SQLiteStore) historyVerification(ctx context.Context, h *BackupHistory, from int64, limit int, set auth.ConnectionSet) error {
 	if limit == 0 {
 		// Only the count is wanted: one row is enough to carry it.
 		limit = 1
 		defer func() { h.VerificationIssues = nil }()
 	}
-	rows, err := s.db.QueryContext(ctx, historyVerificationSQL, string(models.StatusCompleted), from,
-		string(models.VerificationMismatch), string(models.VerificationError), limit)
+	query, args := historyVerificationSQL, []any{string(models.StatusCompleted), from}
+	if clause, connArgs := connectionClause("connection_id", set); clause != "" {
+		query = strings.Replace(query, "WHERE status = ? AND started_at >= ?)", "WHERE status = ? AND started_at >= ?"+clause+")", 1)
+		args = append(args, connArgs...)
+	}
+	args = append(args, string(models.VerificationMismatch), string(models.VerificationError), limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: failed verifications: %w", err)
 	}

@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -47,6 +48,9 @@ type Store interface {
 	// LatestJobDatabaseBackupsAll returns the newest completed (with verified: and
 	// verified) backup of every job and database, keyed by job and database.
 	LatestJobDatabaseBackupsAll(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error)
+	// LatestJobDatabaseBackupsAllIn is LatestJobDatabaseBackupsAll over the
+	// backups taken from the connections in set (every backup when nil).
+	LatestJobDatabaseBackupsAllIn(ctx context.Context, verified bool, set auth.ConnectionSet) (map[string]map[string]*models.BackupRecord, error)
 	// LatestRestoreTestsAll returns per job the newest restore test of each
 	// database and the newest passed one, newest first.
 	LatestRestoreTestsAll(ctx context.Context) (map[string][]*models.RestoreTestResult, error)
@@ -287,7 +291,7 @@ func (s *Service) points(ctx context.Context, jobs []*models.Job, now time.Time)
 	if len(jobs) == 0 {
 		return nil, nil
 	}
-	latest, err := s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, false)
+	latest, err := s.latestBackups(ctx, false)
 	if err != nil {
 		return nil, fmt.Errorf("latest backups: %w", err)
 	}

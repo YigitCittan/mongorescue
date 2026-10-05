@@ -60,9 +60,10 @@ func (s *Server) handleCancelRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, cancelStatus(rec.Status == models.RestoreStatusInProgress), rec)
 }
 
-// handleActiveRuns returns the live progress of every running backup and restore.
-func (s *Server) handleActiveRuns(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.ops.ActiveRuns())
+// handleActiveRuns returns the live progress of every running backup and restore
+// the caller may see.
+func (s *Server) handleActiveRuns(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.ops.ActiveRunsFor(r.Context()))
 }
 
 // handleBackupLog serves the log of a backup (see serveRunLog).

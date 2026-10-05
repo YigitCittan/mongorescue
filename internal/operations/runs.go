@@ -59,7 +59,7 @@ func canceller(ctx context.Context, via string, at time.Time) runs.Cancellation 
 // record with its progress (Cancelling); poll GetBackup then. via names the adapter for the record ("MCP", or "" for the REST API).
 // Expected failures: ErrNotFound and ErrNotRunning.
 func (s *Service) CancelBackup(ctx context.Context, id, via string) (*models.BackupRecord, error) {
-	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
@@ -69,7 +69,7 @@ func (s *Service) CancelBackup(ctx context.Context, id, via string) (*models.Bac
 	if err := s.cancel(ctx, id, via); err != nil {
 		return nil, err
 	}
-	if final, getErr := s.cfg.Store.GetBackupRecord(context.WithoutCancel(ctx), id); getErr == nil {
+	if final, getErr := s.store.GetBackupRecord(context.WithoutCancel(ctx), id); getErr == nil {
 		rec = final
 	}
 	s.withBackupProgress([]*models.BackupRecord{rec})
@@ -83,7 +83,7 @@ func (s *Service) CancelBackup(ctx context.Context, id, via string) (*models.Bac
 // one while the run is still stopping. Expected failures:
 // ErrNotFound, ErrNotRunning and auth.ErrForbidden.
 func (s *Service) CancelRestore(ctx context.Context, id, via string) (*models.RestoreRecord, error) {
-	rec, err := s.cfg.Store.GetRestoreRecord(ctx, id)
+	rec, err := s.store.GetRestoreRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "restore not found")
 	}
@@ -98,7 +98,7 @@ func (s *Service) CancelRestore(ctx context.Context, id, via string) (*models.Re
 	if err := s.cancel(ctx, id, via); err != nil {
 		return nil, err
 	}
-	if final, getErr := s.cfg.Store.GetRestoreRecord(context.WithoutCancel(ctx), id); getErr == nil {
+	if final, getErr := s.store.GetRestoreRecord(context.WithoutCancel(ctx), id); getErr == nil {
 		rec = final
 	}
 	s.withRestoreProgress([]*models.RestoreRecord{rec})
@@ -204,7 +204,7 @@ func (s *Service) withRestoreProgress(list []*models.RestoreRecord) []*models.Re
 // the reader. Expected failures: ErrNotFound (unknown backup, or no log recorded:
 // backups from older releases, or logs removed by retention).
 func (s *Service) OpenBackupLog(ctx context.Context, id string) (*runlog.Reader, error) {
-	if _, err := s.cfg.Store.GetBackupRecord(ctx, id); err != nil {
+	if _, err := s.store.GetBackupRecord(ctx, id); err != nil {
 		return nil, notFound(err, "backup not found")
 	}
 	return s.openLog(id)
@@ -212,7 +212,7 @@ func (s *Service) OpenBackupLog(ctx context.Context, id string) (*runlog.Reader,
 
 // OpenRestoreLog opens the log of restore id (see OpenBackupLog).
 func (s *Service) OpenRestoreLog(ctx context.Context, id string) (*runlog.Reader, error) {
-	if _, err := s.cfg.Store.GetRestoreRecord(ctx, id); err != nil {
+	if _, err := s.store.GetRestoreRecord(ctx, id); err != nil {
 		return nil, notFound(err, "restore not found")
 	}
 	return s.openLog(id)

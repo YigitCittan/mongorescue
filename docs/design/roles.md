@@ -51,9 +51,8 @@ and is the only thing the rest of the code checks (`Principal.Require`,
   the system): the key's scope;
 - the system: admin.
 
-Its return type is a struct (`auth.Access`) so that finer limits, such as
-per-connection access, can join the scope later without changing callers. They are
-out of scope for now.
+Its return type is a struct (`auth.Access`) so that finer limits can join the scope
+without changing callers: per-connection access (below) is the first.
 
 `*auth.ScopeError` carries a `Source` (`role`, `key` or `key_capped_by_role`), the
 role and the key's scope, so refusals read correctly: "your role (viewer) has the
@@ -70,6 +69,117 @@ the `corrupt_records` of `GET /api/v1/stats` and the MCP tool scopes all read
 Defence in depth: `Service.CreateUser`, `DeleteUser`, `SetUserRole`, `ListUsers` and
 changing another user's password call `actor.Require(ScopeAdmin)` in the service, not
 only in the route table.
+
+## Per-connection access
+
+Status: implemented (#98).
+
+A user or an API key reaches every connection (the default, and the only access
+before) or only some. Roles stay global; the connection limit narrows what the role
+may do to a set of connections.
+
+### Model
+
+- `users` and `api_keys` gain `all_connections` and `connection_ids` (migration
+  `0024_connection_access.sql`): every connection, or exactly a JSON array. An empty
+  list is no connection, never every connection, and the zero value of
+  `auth.ConnectionAccess` allows nothing (fail closed). Every user and key stored
+  before the migration keeps `all_connections`; the store binds both columns of
+  every new row, so the column default never applies to one.
+- Administrators are always unlimited: a limit on an admin user, an admin-scope key
+  or an admin group mapping is refused (`auth.ErrAdminConnections`), and promoting a
+  user to admin clears the limit in the same transaction.
+- A key is capped by its creator like its scope: `effectiveConnections` intersects
+  the key's own access with the creator's *current* connections on every request, so
+  limiting a user limits their keys at once, and a key with `all_connections` of a
+  limited user reaches the user's connections. A list naming a connection outside
+  the creator's is refused (`auth.ErrConnectionsExceedAccess`). Keys without a
+  creator (imported) and the system are unlimited.
+- `effectiveAccess` returns the scope and the connections (`auth.ConnectionSet`,
+  nil for every connection) in `auth.Access`, and caps a limited caller at
+  `operator`: users, settings, connections, storage targets and the audit logs are
+  global, so a limited caller is never an admin.
+- Deleting a connection does not shorten the lists, so a limit never widens to every
+  connection by itself.
+
+### One enforcement point
+
+`Principal.Connections` sits next to `Principal.Scope`; `Principal.AllowsConnection`
+and `auth.ConnectionFilter(ctx)` (every connection for a context without a
+principal: the application itself) are the only rule. It is applied where the data
+is read, so every adapter inherits it:
+
+- the connections service filters its repository (`accessRepo`): lists, details,
+  tests, database and collection listings, and every `Resolve` the operations
+  service does for a backup, a restore or a preview;
+- the operations service reads jobs, backups and restores through a view of the
+  caller's connections (`accessStore`): details, lists (with SQL filters, so paging
+  and totals stay exact), statistics, the history, logs, retries, pins, verification,
+  restores and preflights, job runs and previews, bulk actions, active runs and
+  pending changes. A record outside the caller's connections reads as
+  `store.ErrNotFound`. A restore is visible when both its source and its target
+  connection are;
+- readiness and restore tests check the job's connection (and the restore test
+  server's), the storage targets the connections their jobs and backups use plus the
+  default target;
+- the PITR collector reads streams through the same kind of view (`accessRepo` in
+  `internal/pitr/collector`): a stream belongs to its connection, so the stream list,
+  a stream's status and chunks, taking a base backup, chain tests and
+  point-in-time restores and their preflight (checked before the admin scope, so a
+  limited caller gets 404 rather than learning the stream exists) follow the
+  caller's connections, and so do the readiness report's `streams` and the dashboard's PITR
+  panel, which shows what the API returns. The collector's own work runs without a
+  principal and sees every stream.
+
+A connection outside the caller's access answers `404`, worded like an unknown ID,
+so its existence is not leaked; for a limited caller an unknown connection named in
+a body answers `404` too, where an unlimited caller gets the usual `400`. Bulk items
+are skipped as `not_found`. Storage scans and the integrity sweep cover every
+connection's archives and are not shown to a limited caller.
+
+**Metrics** are refused (`403`, `auth.ErrConnectionsLimited`) rather than filtered:
+the Prometheus registry is global and its series carry job and database labels, and
+a filtering gatherer would have to know which label of which family names which
+connection. A limited team scrapes through an unlimited read key or not at all.
+
+**The audit view** stays admin-only: limited callers are never admins, so they see
+no audit rows at all. A per-connection audit view for operators would need audit
+records keyed by connection, which they are not; it is out of scope.
+
+### OIDC
+
+A group mapping carries `all_connections` or `connection_ids` like a user. Only the
+mappings that grant the chosen (highest) role count: the user's connections are the
+union of their lists, or every connection when one of them has `all_connections`, so
+a mapping of a lower role never widens a higher one (G1 → operator on A, G2 →
+viewer on everything: a member of both is an operator on A only). The default role
+and the admin role get every connection. They are recomputed with the role at every
+sign-in and cannot be changed by hand while mappings exist; non-admins do not see
+the mappings' connections in the settings.
+Changing connections is never an admin grant, so the two-person rule does not hold
+it, not even when it widens someone's access to every connection.
+
+### API and dashboard
+
+`PUT /api/v1/users/{id}/connections` (admin), `connection_ids` in `POST
+/api/v1/users` and `POST /api/v1/api-keys`, `connection_ids` in `GET
+/api/v1/auth/me` for a limited caller and `effective_connection_ids` in the key list.
+The dashboard (`access.js`) adds a Connections column with an editor to the users
+table, checklists to the Add user and Create API key dialogs (admins only), a chip
+for limited keys, a connection select per group mapping and the caller's
+connections in the user menu; everything else follows from the filtered API.
+
+### Tests
+
+`TestConnectionAccessIsEnforcedForEveryRoute` walks every registered route with an
+operator session and an operator key limited to connection A: a route naming B in
+its path, query or body answers `404` like an unknown record, one naming A gets the
+handler's answer, a bulk item of B is skipped, admin routes are refused by scope,
+and no answer contains an identifier of B. `TestEveryRouteIsClassifiedForConnectionAccess`
+fails for a new route with an `{id}` that is not classified. Further tests cover
+lists and filters, restores into B, user and key limits over HTTP, key capping,
+the admin refusal, OIDC mappings, MCP tools, the CLI, the migration and a browser
+spec.
 
 ## API keys
 

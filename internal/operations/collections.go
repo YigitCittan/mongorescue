@@ -81,7 +81,7 @@ func (s *Service) ListBackupCollectionsWithin(ctx context.Context, id string, ti
 	if strings.TrimSpace(id) == "" {
 		return nil, public("backup id required", ErrInvalid)
 	}
-	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.archiveCache.remove(id)

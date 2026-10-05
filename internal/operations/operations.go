@@ -251,7 +251,10 @@ type Config struct {
 
 // Service implements the backup and restore use cases. It is safe for concurrent use.
 type Service struct {
-	cfg    Config
+	cfg Config
+	// store is Config.Store seen through the caller's connection access
+	// (accessStore); use it for every read of jobs, backups and restores.
+	store  store.Store
 	logger *slog.Logger
 	now    func() time.Time
 
@@ -277,7 +280,7 @@ func New(cfg Config) *Service {
 		logger = slog.Default()
 	}
 	s := &Service{
-		cfg: cfg, logger: logger, now: time.Now,
+		cfg: cfg, store: accessStore{cfg.Store}, logger: logger, now: time.Now,
 		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
 		bulkCap: MaxBulkItems,
 	}
@@ -385,7 +388,7 @@ func validateNamespaces(database string, collections, excluded []string) error {
 // models.TriggerManual. Expected failures: ErrNotFound, ErrNotRetryable,
 // ErrRetryUnavailable, ErrInvalid, ErrBusy and ErrShuttingDown.
 func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.BackupTrigger) (*models.BackupRecord, error) {
-	original, err := s.cfg.Store.GetBackupRecord(ctx, id)
+	original, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, public("backup not found", ErrNotFound, err)
@@ -417,7 +420,7 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 		req.Gzip = &gzip
 	}
 	if original.JobID != "" {
-		if job, jobErr := s.cfg.Store.GetJob(ctx, original.JobID); jobErr == nil {
+		if job, jobErr := s.store.GetJob(ctx, original.JobID); jobErr == nil {
 			req.JobID = job.ID
 			if original.ExcludedCollections == nil && !job.MultiDatabase() {
 				// Records written before exclusions were recorded.
@@ -497,7 +500,7 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
-		if saveErr := s.cfg.Store.SaveBackupRecord(persistCtx, final); saveErr != nil {
+		if saveErr := s.store.SaveBackupRecord(persistCtx, final); saveErr != nil {
 			s.logger.Error("failed to persist backup metadata record",
 				logsafe.Attr("backup_id", final.ID),
 				logsafe.Error(saveErr),
@@ -524,7 +527,7 @@ func (s *Service) RunJob(ctx context.Context, jobID string, trigger models.Backu
 		return nil, ErrSchedulerUnavailable
 	}
 	// Lookup-based: any stored job (including legacy-format IDs) may be triggered.
-	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, jobRunError(err)
 	}
@@ -576,7 +579,7 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 		return nil, runError(err, "a backup of database "+record.Database+" is already running")
 	}
 	snapshot := *record
-	if err := s.cfg.Store.SaveBackupRecord(ctx, &snapshot); err != nil {
+	if err := s.store.SaveBackupRecord(ctx, &snapshot); err != nil {
 		release()
 		return nil, fmt.Errorf("save backup record: %w", err)
 	}
@@ -598,7 +601,7 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 func (s *Service) abandonBackup(ctx context.Context, record *models.BackupRecord, cause error) {
 	record.Status = models.StatusFailed
 	record.ErrorMessage = "backup not started: " + cause.Error()
-	if err := s.cfg.Store.SaveBackupRecord(context.WithoutCancel(ctx), record); err != nil {
+	if err := s.store.SaveBackupRecord(context.WithoutCancel(ctx), record); err != nil {
 		s.logger.Error("failed to persist abandoned backup record", logsafe.Attr("backup_id", record.ID), logsafe.Error(err))
 	}
 }
@@ -694,7 +697,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 	}
 	snapshot := *record
-	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
+	if err := s.store.SaveRestoreRecord(ctx, &snapshot); err != nil {
 		release()
 		return nil, fmt.Errorf("save restore record: %w", err)
 	}
@@ -717,7 +720,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		if ve, ok := events.RestoreVerificationEvent(final); ok {
 			s.publish(persistCtx, ve)
 		}
-		if saveErr := s.cfg.Store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
+		if saveErr := s.store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
 			s.logger.Error("failed to persist restore metadata record",
 				logsafe.Attr("restore_id", final.ID),
 				logsafe.Error(saveErr),
@@ -728,7 +731,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		release()
 		snapshot.Status = models.RestoreStatusFailed
 		snapshot.ErrorMessage = "restore not started: " + err.Error()
-		if saveErr := s.cfg.Store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
+		if saveErr := s.store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
 			s.logger.Error("failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
 		}
 		return nil, runError(err, "")
@@ -777,7 +780,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	}
 
 	// Lookup-based: any stored backup (including legacy-format IDs) may be restored.
-	source, err := s.cfg.Store.GetBackupRecord(ctx, req.BackupID)
+	source, err := s.store.GetBackupRecord(ctx, req.BackupID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, public("source backup not found", ErrNotFound, err)
@@ -800,7 +803,10 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 
 	// The target defaults to the server the backup was taken from; another connection
 	// restores across servers, which writes to a server the backup did not come from
-	// and so needs admin.
+	// and so needs admin. A connection outside the caller's access is not found.
+	if req.TargetConnectionID != "" && !auth.ConnectionAllowed(ctx, req.TargetConnectionID) {
+		return nil, connectionNotFound()
+	}
 	if req.TargetConnectionID != "" && req.TargetConnectionID != source.ConnectionID {
 		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
 			return nil, fmt.Errorf("restores into another connection than the backup's need the admin role or an admin API key: %w", scopeErr)
@@ -833,18 +839,32 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 
 // ResolveConnection returns connection id with its full URI. It returns
 // ErrConnectionRequired for an empty id and ErrUnknownConnection for a missing one.
+// A caller limited to some connections gets ErrNotFound instead, both for a missing
+// connection and for one outside its access, so the two cannot be told apart.
 func (s *Service) ResolveConnection(ctx context.Context, id string) (*models.Connection, error) {
 	if id == "" {
 		return nil, ErrConnectionRequired
+	}
+	if !auth.ConnectionAllowed(ctx, id) {
+		return nil, connectionNotFound()
 	}
 	if s.cfg.Connections == nil {
 		return nil, fmt.Errorf("%w: connections are not configured", ErrUnknownConnection)
 	}
 	c, err := s.cfg.Connections.Resolve(ctx, id)
 	if errors.Is(err, connections.ErrNotFound) {
+		if auth.ConnectionFilter(ctx).Limited() {
+			return nil, connectionNotFound()
+		}
 		return nil, fmt.Errorf("%w: %s", ErrUnknownConnection, id)
 	}
 	return c, err
+}
+
+// connectionNotFound is the answer to a caller limited to some connections that
+// names a connection outside them (or one that does not exist).
+func connectionNotFound() error {
+	return public("connection not found", ErrNotFound)
 }
 
 // ResolveTarget returns target id (the default target for ""). Without a targets
@@ -852,6 +872,16 @@ func (s *Service) ResolveConnection(ctx context.Context, id string) (*models.Con
 func (s *Service) ResolveTarget(ctx context.Context, id string) (*models.StorageTarget, error) {
 	if s.cfg.Targets == nil {
 		return &models.StorageTarget{Type: models.StorageLocal}, nil
+	}
+	if id != "" {
+		// A caller limited to some connections may only name the targets it sees.
+		visible, err := s.VisibleTargets(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if visible != nil && !visible[id] {
+			return nil, public("storage target not found", ErrNotFound)
+		}
 	}
 	t, err := s.cfg.Targets.Resolve(ctx, id)
 	if errors.Is(err, targets.ErrNotFound) {
@@ -867,7 +897,7 @@ func (s *Service) knownJobID(ctx context.Context, id string) string {
 	if id == "" {
 		return ""
 	}
-	if _, err := s.cfg.Store.GetJob(ctx, id); err != nil {
+	if _, err := s.store.GetJob(ctx, id); err != nil {
 		return ""
 	}
 	return id

@@ -3620,3 +3620,22 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
   display: grid;
   gap: 0.35rem;
 }
+
+/* Per-connection access (access.js) */
+.access-fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.access-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.sso-mapping-connections {
+  min-width: 10rem;
+}

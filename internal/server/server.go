@@ -380,7 +380,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Prometheus metrics
 	if s.metricsHandler != nil {
-		mux.Handle("GET /metrics", s.metricsHandler)
+		mux.Handle("GET /metrics", s.unlimitedOnly(s.metricsHandler))
 	}
 
 	// Embedded Static Frontend

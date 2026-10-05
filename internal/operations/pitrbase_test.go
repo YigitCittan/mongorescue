@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -68,6 +69,12 @@ func TestStartBaseBackupDumpsTheInstanceUnderItsOwnKey(t *testing.T) {
 	if err = st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: "conn_a", ReplicaSet: "rs0", BaseCron: "@daily",
 		BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 60}); err != nil {
 		t.Fatal(err)
+	}
+	// A caller limited to another connection does not find the stream.
+	limited := auth.WithPrincipal(ctx, &auth.Principal{Method: auth.MethodAPIKey, Scope: auth.ScopeOperator,
+		Connections: auth.OnlyConnections("conn_b")})
+	if _, err = svc.StartBaseBackup(limited, "str_a", models.TriggerManual); !errors.Is(err, operations.ErrNotFound) {
+		t.Fatalf("stream of another connection: %v; want ErrNotFound", err)
 	}
 	rec, err := svc.StartBaseBackup(ctx, "str_a", models.TriggerScheduled)
 	if err != nil {

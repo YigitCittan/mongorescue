@@ -217,13 +217,13 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	from := starts[0].UTC()
 	_, offset := local.Zone()
 
-	agg, err := s.cfg.Store.BackupHistory(ctx, store.BackupHistoryQuery{
+	agg, err := s.store.BackupHistory(ctx, store.BackupHistoryQuery{
 		DayStarts: starts, RunsPerJob: HistoryRunsPerJob, MaxIssues: HistoryMaxVerificationIssues,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("backup history: %w", err)
 	}
-	jobs, err := s.cfg.Store.ListJobs(ctx)
+	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -248,7 +248,15 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 			Bytes: d.CompletedBytes, StoredBytes: stored,
 		})
 	}
+	// JobRuns and LastSuccess cover every job: keep the jobs the caller may see.
+	visible := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		visible[j.ID] = true
+	}
 	for jobID, runs := range agg.JobRuns {
+		if !visible[jobID] {
+			continue
+		}
 		hj := HistoryJob{Runs: make([]HistoryRun, 0, len(runs))}
 		for _, r := range runs {
 			hj.Runs = append(hj.Runs, HistoryRun{ID: r.ID, Status: r.Status, StartedAt: r.StartedAt, DurationSeconds: r.DurationSeconds})
@@ -256,6 +264,9 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 		h.Jobs[jobID] = hj
 	}
 	for jobID, at := range agg.LastSuccess {
+		if !visible[jobID] {
+			continue
+		}
 		hj := h.Jobs[jobID]
 		if hj.Runs == nil {
 			hj.Runs = []HistoryRun{}
@@ -298,7 +309,7 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History) error {
 	// Skipped runs (outside the backup window) backed nothing up; they are left
 	// out before the limit, so they never push real runs out of the history.
-	list, err := s.cfg.Store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
+	list, err := s.store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
 	if err != nil {
 		return fmt.Errorf("runs of job %s: %w", j.ID, err)
 	}

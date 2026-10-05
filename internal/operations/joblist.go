@@ -176,7 +176,7 @@ func jobLastStatus(j *models.Job, lastBackups map[string]*models.BackupRecord, l
 // lastOutcomes loads, in one query each, the newest backup of every job and the
 // newest run of the multi-database jobs among jobs (never one query per job).
 func (s *Service) lastOutcomes(ctx context.Context, jobs []*models.Job) (map[string]*models.BackupRecord, map[string]*models.JobRun, error) {
-	backups, err := s.cfg.Store.LatestJobBackups(ctx, "")
+	backups, err := s.store.LatestJobBackups(ctx, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("load the jobs' last backups: %w", err)
 	}
@@ -188,7 +188,7 @@ func (s *Service) lastOutcomes(ctx context.Context, jobs []*models.Job) (map[str
 	}
 	runs := map[string]*models.JobRun{}
 	if len(multi) > 0 {
-		if runs, err = s.cfg.Store.LatestJobRuns(ctx, multi); err != nil {
+		if runs, err = s.store.LatestJobRuns(ctx, multi); err != nil {
 			return nil, nil, fmt.Errorf("load the jobs' last runs: %w", err)
 		}
 	}

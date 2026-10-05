@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -45,8 +48,17 @@ func (r *RestoreStats) Active() int {
 // after since, the size of completed backups and the newest backup, without reading
 // every record.
 func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*BackupStats, error) {
+	return s.BackupStatsIn(ctx, since, nil)
+}
+
+// BackupStatsIn is BackupStats over the backups taken from the connections in set
+// (every backup when set is nil).
+func (s *SQLiteStore) BackupStatsIn(ctx context.Context, since time.Time, set auth.ConnectionSet) (*BackupStats, error) {
 	st := &BackupStats{ByStatus: map[models.BackupStatus]int{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*), coalesce(sum(size_bytes), 0) FROM backups GROUP BY status`)
+	var c conditions
+	c.addConnections("connection_id", set)
+	query := `SELECT status, count(*), coalesce(sum(size_bytes), 0) FROM backups` + c.where() + ` GROUP BY status` //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
+	rows, err := s.db.QueryContext(ctx, query, c.args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: backup stats: %w", err)
 	}
@@ -69,14 +81,15 @@ func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*Backup
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: read backup stats: %w", err)
 	}
-	if err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM backups WHERE status = ? AND started_at >= ?`,
-		string(models.StatusFailed), timeKey(since)).Scan(&st.FailedSince); err != nil {
+	recent := conditions{clauses: []string{"status = ?", "started_at >= ?"}, args: []any{string(models.StatusFailed), timeKey(since)}}
+	recent.addConnections("connection_id", set)
+	if err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM backups`+recent.where(), recent.args...).Scan(&st.FailedSince); err != nil {
 		return nil, fmt.Errorf("store: count recent failures: %w", err)
 	}
 	// A newest backup that cannot be read is skipped (and reported): Last is the newest
 	// readable one.
 	if st.Last, err = firstReadable[models.BackupRecord](ctx, s, tableBackups,
-		"SELECT id, data FROM backups ORDER BY started_at DESC, id DESC"); err != nil {
+		"SELECT id, data FROM backups"+c.where()+" ORDER BY started_at DESC, id DESC", c.args...); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -87,15 +100,24 @@ func (s *SQLiteStore) BackupStats(ctx context.Context, since time.Time) (*Backup
 // newest backup of a job cannot be read, it is skipped (and reported) and the job's
 // newest readable backup is used instead.
 func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.BackupStatus) (map[string]*models.BackupRecord, error) {
+	return s.LatestJobBackupsIn(ctx, status, nil)
+}
+
+// LatestJobBackupsIn is LatestJobBackups over the backups taken from the connections
+// in set (every backup when set is nil): a backup's own connection decides, so a
+// job that moved keeps its newest backup of set.
+func (s *SQLiteStore) LatestJobBackupsIn(ctx context.Context, status models.BackupStatus, set auth.ConnectionSet) (map[string]*models.BackupRecord, error) {
+	clause, connArgs := connectionClause("connection_id", set)
+	bClause := strings.Replace(clause, "connection_id", "b.connection_id", 1)
 	query := `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
-			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest`
-	var args []any
+			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != ''` + clause + ` GROUP BY job_id
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE 1` + bClause
+	args := append(slices.Clone(connArgs), connArgs...)
 	if status != "" {
 		query = `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
-			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ? GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?`
-		args = []any{string(status), string(status)}
+			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ?` + clause + ` GROUP BY job_id
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?` + bClause
+		args = append(append(append([]any{string(status)}, connArgs...), string(status)), connArgs...)
 	}
 	out, skipped, err := s.latestJobRows(ctx, query, args...)
 	if err != nil {
@@ -105,12 +127,14 @@ func (s *SQLiteStore) LatestJobBackups(ctx context.Context, status models.Backup
 		if _, ok := out[jobID]; ok {
 			continue
 		}
-		fallback := "SELECT id, data FROM backups WHERE job_id = ? ORDER BY started_at DESC, id DESC"
+		fallback := "SELECT id, data FROM backups WHERE job_id = ?"
 		fargs := []any{jobID}
 		if status != "" {
-			fallback = "SELECT id, data FROM backups WHERE job_id = ? AND status = ? ORDER BY started_at DESC, id DESC"
+			fallback += " AND status = ?"
 			fargs = append(fargs, string(status))
 		}
+		fallback += clause + " ORDER BY started_at DESC, id DESC"
+		fargs = append(fargs, connArgs...)
 		b, err := firstReadable[models.BackupRecord](ctx, s, tableBackups, fallback, fargs...)
 		if err != nil {
 			return nil, err
@@ -157,8 +181,18 @@ func (s *SQLiteStore) latestJobRows(ctx context.Context, query string, args ...a
 
 // RestoreStats returns the number of restores and their counts by status.
 func (s *SQLiteStore) RestoreStats(ctx context.Context) (*RestoreStats, error) {
+	return s.RestoreStatsIn(ctx, nil)
+}
+
+// RestoreStatsIn is RestoreStats over the restores whose source and target
+// connections are in set (every restore when set is nil).
+func (s *SQLiteStore) RestoreStatsIn(ctx context.Context, set auth.ConnectionSet) (*RestoreStats, error) {
 	st := &RestoreStats{ByStatus: map[models.RestoreStatus]int{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*) FROM restores GROUP BY status`)
+	var c conditions
+	c.addConnections(restoreSourceSQL, set)
+	c.addConnections(restoreTargetSQL, set)
+	query := `SELECT r.status, count(*) FROM restores r` + c.where() + ` GROUP BY r.status` //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
+	rows, err := s.db.QueryContext(ctx, query, c.args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: restore stats: %w", err)
 	}

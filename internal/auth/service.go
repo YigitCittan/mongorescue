@@ -401,9 +401,10 @@ func (s *Service) AuthenticateSession(ctx context.Context, token string) (*Princ
 			s.logger.Warn("failed to update session activity", slog.Any("error", err))
 		}
 	}
+	access := effectiveAccess(MethodSession, user.Role, "", true, user.ConnectionSet(), nil)
 	return &Principal{
 		User: user, Method: MethodSession, SessionHash: hash, CSRFToken: sess.CSRFToken,
-		Role: user.Role, Scope: effectiveScope(MethodSession, user.Role, "", true).Scope,
+		Role: user.Role, Scope: access.Scope, Connections: access.Connections,
 	}, nil
 }
 
@@ -435,6 +436,7 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 		scope = ScopeRead
 	}
 	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, KeyScope: scope}
+	var creatorConns ConnectionSet
 	if stored.CreatedBy != "" {
 		u, err := s.repo.GetUser(ctx, stored.CreatedBy)
 		switch {
@@ -446,9 +448,11 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 			return nil, err
 		}
 		p.User, p.Role = u, u.Role
+		creatorConns = u.ConnectionSet()
 	}
-	// The creator's current role caps the key on every request.
-	p.Scope = effectiveScope(MethodAPIKey, p.Role, scope, stored.CreatedBy != "").Scope
+	// The creator's current role and connections cap the key on every request.
+	access := effectiveAccess(MethodAPIKey, p.Role, scope, stored.CreatedBy != "", creatorConns, stored.ConnectionSet())
+	p.Scope, p.Connections = access.Scope, access.Connections
 	return p, nil
 }
 
@@ -505,6 +509,13 @@ func (s *Service) ListUserNames(ctx context.Context, actor *Principal) ([]UserNa
 // CreateUser adds a user with role (RoleViewer when empty). It needs the admin
 // scope and returns ErrInvalidRole for an unknown role.
 func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, password string, role Role) (*User, error) {
+	return s.CreateUserWithConnections(ctx, actor, username, password, role, EveryConnection())
+}
+
+// CreateUserWithConnections is CreateUser with the user's connection access. An
+// administrator cannot be limited (ErrAdminConnections); ErrInvalidConnections
+// reports a malformed access.
+func (s *Service) CreateUserWithConnections(ctx context.Context, actor *Principal, username, password string, role Role, access ConnectionAccess) (*User, error) {
 	if err := actor.Require(ScopeAdmin); err != nil {
 		return nil, err
 	}
@@ -514,6 +525,13 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	role, err := ParseRole(string(role))
 	if err != nil {
 		return nil, err
+	}
+	access, err = access.Normalized()
+	if err != nil {
+		return nil, err
+	}
+	if role == RoleAdmin && !access.AllConnections {
+		return nil, ErrAdminConnections
 	}
 	// With the two-person rule an administrator is created as a viewer, and the
 	// admin role waits for a second administrator.
@@ -526,6 +544,7 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	if err != nil {
 		return nil, err
 	}
+	user.ConnectionAccess = access
 	if err = s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
@@ -636,6 +655,43 @@ func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, 
 			logsafe.Attr("role_to", string(role)), slog.String("by", actor.UserID()))
 	}
 	return &RoleChange{User: user, From: from}, nil
+}
+
+// SetUserConnections sets the connection access of the user id: every connection,
+// or exactly a list (none when empty). It needs the admin scope and returns ErrUserNotFound,
+// ErrInvalidConnections for a malformed list, ErrAdminConnections for an
+// administrator (who always reaches every connection) and ErrRoleManagedByProvider
+// for a single sign-on user while group mappings decide roles and connections. The
+// change applies to the user's sessions and API keys from their next request. No
+// change of connections grants the admin role, so the two-person rule does not hold
+// it, not even when it lifts the limit.
+func (s *Service) SetUserConnections(ctx context.Context, actor *Principal, id string, access ConnectionAccess) (*User, error) {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return nil, err
+	}
+	access, err := access.Normalized()
+	if err != nil {
+		return nil, err
+	}
+	if len(s.OIDC().RoleMappings) > 0 {
+		target, getErr := s.repo.GetUser(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if !target.Local() {
+			return nil, ErrRoleManagedByProvider
+		}
+	}
+	if err = s.repo.UpdateUserConnections(ctx, actor.UserID(), id, access, s.now().UTC()); err != nil {
+		return nil, err
+	}
+	user, err := s.repo.GetUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info("user connections changed", logsafe.Attr("user_id", user.ID),
+		slog.Bool("all_connections", access.AllConnections), slog.Int("connections", len(access.ConnectionIDs)), slog.String("by", actor.UserID()))
+	return user, nil
 }
 
 // ChangePassword sets a new password for userID. Changing one's own password needs
@@ -780,8 +836,10 @@ func (s *Service) ListAPIKeys(ctx context.Context, actor *Principal) ([]*APIKey,
 		return nil, err
 	}
 	roles := make(map[string]Role, len(users))
+	conns := make(map[string]ConnectionSet, len(users))
 	for _, u := range users {
 		roles[u.ID] = u.Role
+		conns[u.ID] = u.ConnectionSet()
 	}
 	admin := actor.Allows(ScopeAdmin)
 	out := make([]*APIKey, 0, len(keys))
@@ -791,7 +849,9 @@ func (s *Service) ListAPIKeys(ctx context.Context, actor *Principal) ([]*APIKey,
 		}
 		// A key whose creator is gone is refused at sign-in; the empty role shows it
 		// as read, the least it could do.
-		k.EffectiveScope = effectiveScope(MethodAPIKey, roles[k.CreatedBy], k.Scope, k.CreatedBy != "").Scope
+		access := effectiveAccess(MethodAPIKey, roles[k.CreatedBy], k.Scope, k.CreatedBy != "", conns[k.CreatedBy], k.ConnectionSet())
+		k.EffectiveScope = access.Scope
+		k.setEffective(access.Connections)
 		out = append(out, k)
 	}
 	return out, nil
@@ -803,13 +863,19 @@ func (s *Service) ListAPIKeys(ctx context.Context, actor *Principal) ([]*APIKey,
 // (ErrScopeExceedsRole). It returns ErrInvalidName for a bad name and
 // ErrInvalidScope for an unknown scope.
 func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name string, scope Scope) (*APIKey, string, error) {
-	if actor == nil {
-		return nil, "", ErrUnauthenticated
-	}
-	if actor.Method != MethodSession {
-		if err := actor.Require(ScopeAdmin); err != nil {
-			return nil, "", err
-		}
+	return s.CreateAPIKeyWithConnections(ctx, actor, name, scope, EveryConnection())
+}
+
+// CreateAPIKeyWithConnections is CreateAPIKey with the key's own connection access:
+// every connection its creator may touch, or exactly a list (none when empty). A
+// limit needs a scope below admin (ErrAdminConnections), and a caller limited to
+// some connections may only list connections among their own
+// (ErrConnectionsExceedAccess); a key it creates with every connection reaches the
+// caller's connections only, because the creator's connections cap the key on
+// every request.
+func (s *Service) CreateAPIKeyWithConnections(ctx context.Context, actor *Principal, name string, scope Scope, access ConnectionAccess) (*APIKey, string, error) {
+	if err := actor.RequireKeyCreator(); err != nil {
+		return nil, "", err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > maxKeyNameLength || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
@@ -821,6 +887,21 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	}
 	if !actor.Allows(scope) {
 		return nil, "", fmt.Errorf("%w: the %q scope is above yours (%q)", ErrScopeExceedsRole, scope, actor.Scope)
+	}
+	access, err = access.Normalized()
+	if err != nil {
+		return nil, "", err
+	}
+	if !access.AllConnections && scope == ScopeAdmin {
+		return nil, "", ErrAdminConnections
+	}
+	if !access.AllConnections && !actor.Connections.Covers(access.ConnectionSet()) {
+		return nil, "", ErrConnectionsExceedAccess
+	}
+	if actor.Connections.Limited() && actor.UserID() == "" {
+		// A limited key of no user would not be capped by anyone: never happens, as
+		// only keys with a creator are limited, but fail closed.
+		return nil, "", ErrConnectionsExceedAccess
 	}
 	// With the two-person rule an admin key is created with the operator scope, and
 	// the admin scope waits for a second administrator.
@@ -837,10 +918,12 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	if err != nil {
 		return nil, "", err
 	}
-	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC()}
+	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC(),
+		ConnectionAccess: access}
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return nil, "", err
 	}
+	k.setEffective(access.ConnectionSet().Intersect(actor.Connections))
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
 		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()))
 	if held {
@@ -958,7 +1041,8 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	// chosen by an administrator, not generated, so it is stored as a keyed MAC
 	// rather than a plain digest.
 	hash := importedKeyMACScheme + importedKeyMAC(s.importedKeyMACKey, key)
-	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC()}
+	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC(),
+		ConnectionAccess: EveryConnection()}
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}
@@ -1030,5 +1114,6 @@ func (s *Service) newUser(username, password string, role Role) (*User, error) {
 		return nil, err
 	}
 	now := s.now().UTC()
-	return &User{ID: id, Username: username, Role: role, AuthProvider: ProviderLocal, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}, nil
+	return &User{ID: id, Username: username, Role: role, AuthProvider: ProviderLocal, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now,
+		ConnectionAccess: EveryConnection()}, nil
 }

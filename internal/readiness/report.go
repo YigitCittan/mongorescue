@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -200,14 +201,28 @@ type rowAcc struct {
 	verifyKO bool
 }
 
+// latestBackups returns the newest (verified) backup of every job and database
+// the caller in ctx may see: a backup's own connection decides, not its job's, so
+// a job that moved from another connection shows the newest backup of the
+// caller's connections.
+func (s *Service) latestBackups(ctx context.Context, verified bool) (map[string]map[string]*models.BackupRecord, error) {
+	if set := auth.ConnectionFilter(ctx); set.Limited() {
+		return s.cfg.Store.LatestJobDatabaseBackupsAllIn(ctx, verified, set)
+	}
+	return s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, verified)
+}
+
 // Report computes the readiness of every database a job backs up, enabled or not.
-// It fails with an ErrUnavailable error when the metadata cannot be read.
+// A caller limited to some connections (auth.ConnectionFilter) gets the rows of its
+// connections only. It fails with an ErrUnavailable error when the metadata cannot
+// be read.
 func (s *Service) Report(ctx context.Context) (*Report, error) {
 	now := s.now()
 	jobs, err := s.cfg.Store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list jobs: %w", ErrUnavailable, err)
 	}
+	jobs = slices.DeleteFunc(jobs, func(j *models.Job) bool { return !auth.ConnectionAllowed(ctx, j.ConnectionID) })
 	points, err := s.points(ctx, jobs, now)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -224,13 +239,19 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	names := s.connectionNames(ctx)
 
 	// One query per kind of evidence, whatever the number of jobs.
-	verified, err := s.cfg.Store.LatestJobDatabaseBackupsAll(ctx, true)
+	verified, err := s.latestBackups(ctx, true)
 	if err != nil {
 		return nil, fmt.Errorf("%w: verified backups: %w", ErrUnavailable, err)
 	}
 	tests, err := s.cfg.Store.LatestRestoreTestsAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: restore tests: %w", ErrUnavailable, err)
+	}
+	// A restore test into a test server the caller may not touch is not its evidence.
+	for id, list := range tests {
+		tests[id] = slices.DeleteFunc(list, func(t *models.RestoreTestResult) bool {
+			return t.ConnectionID != "" && !auth.ConnectionAllowed(ctx, t.ConnectionID)
+		})
 	}
 
 	var streams []StreamInfo
@@ -239,6 +260,8 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			return nil, fmt.Errorf("%w: PITR streams: %w", ErrUnavailable, err)
 		}
 	}
+	// A stream belongs to its connection: a limited caller sees its own only.
+	streams = slices.DeleteFunc(streams, func(st StreamInfo) bool { return !auth.ConnectionAllowed(ctx, st.ConnectionID) })
 	byConn := make(map[string]*StreamInfo, len(streams))
 	for i := range streams {
 		byConn[streams[i].ConnectionID] = &streams[i]
@@ -264,6 +287,10 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	}
 	byDB := make(map[rowKey]*models.RestoreRecord, len(restores))
 	for _, r := range restores {
+		// The RTO counts only restores whose source and target the caller may touch.
+		if !auth.ConnectionAllowed(ctx, r.SourceConnectionID) || !auth.ConnectionAllowed(ctx, cmp.Or(r.TargetConnectionID, r.SourceConnectionID)) {
+			continue
+		}
 		byDB[rowKey{r.SourceConnectionID, r.SourceDatabase}] = r
 	}
 

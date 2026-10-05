@@ -813,7 +813,8 @@ func (s *Service) pending() (pendingStore, error) {
 }
 
 // PendingChanges returns every lowered protection waiting to take effect, the
-// earliest first.
+// earliest first. A caller limited to some connections sees the settings changes
+// and the retention changes of its own jobs.
 func (s *Service) PendingChanges(ctx context.Context) ([]*models.PendingChange, error) {
 	st, err := s.pending()
 	if err != nil {
@@ -822,6 +823,15 @@ func (s *Service) PendingChanges(ctx context.Context) ([]*models.PendingChange, 
 	list, err := st.ListPendingChanges(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list pending changes: %w", err)
+	}
+	if auth.ConnectionFilter(ctx).Limited() {
+		list = slices.DeleteFunc(list, func(c *models.PendingChange) bool {
+			if c.JobID == "" {
+				return false
+			}
+			_, getErr := s.store.GetJob(ctx, c.JobID)
+			return getErr != nil
+		})
 	}
 	return list, nil
 }
@@ -886,7 +896,7 @@ func (s *Service) schedulePending(ctx context.Context, c *models.PendingChange) 
 // bound, when set, is the creation time of the job the request was made for: a job
 // deleted and recreated under the same ID since is refused (ErrJobRecreated).
 func (s *Service) scheduleRetention(ctx context.Context, jobID string, days, count *int, bound *time.Time) (*models.PendingChange, error) {
-	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
@@ -993,7 +1003,7 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 
 // applyRetentionChange sets the retention of the job of c to its values.
 func (s *Service) applyRetentionChange(ctx context.Context, c *models.PendingChange) error {
-	existing, err := s.cfg.Store.GetJob(ctx, c.JobID)
+	existing, err := s.store.GetJob(ctx, c.JobID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil
@@ -1006,7 +1016,7 @@ func (s *Service) applyRetentionChange(ctx context.Context, c *models.PendingCha
 	}
 	job := existing.Clone()
 	persist := func() error {
-		current, getErr := s.cfg.Store.GetJob(ctx, c.JobID)
+		current, getErr := s.store.GetJob(ctx, c.JobID)
 		if getErr != nil {
 			return getErr
 		}
@@ -1020,7 +1030,7 @@ func (s *Service) applyRetentionChange(ctx context.Context, c *models.PendingCha
 		if c.RetentionCount != nil {
 			job.RetentionCount = *c.RetentionCount
 		}
-		return s.cfg.Store.UpdateJob(ctx, job)
+		return s.store.UpdateJob(ctx, job)
 	}
 	if s.cfg.Scheduler != nil {
 		err = s.cfg.Scheduler.ApplyJobUpdate(job, persist)
@@ -1314,7 +1324,7 @@ func shorter(v, old int) bool {
 func (s *Service) HoldRetention(ctx context.Context, existing, job *models.Job) (*RetentionHold, error) {
 	baseline := existing
 	if baseline == nil {
-		page, err := s.cfg.Store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID, Limit: 1})
+		page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID, Limit: 1})
 		if err != nil {
 			return nil, fmt.Errorf("check the backups of job %s: %w", job.ID, err)
 		}
@@ -1357,7 +1367,7 @@ func (s *Service) ApplyRetentionHold(ctx context.Context, jobID string, h *Reten
 	}
 	if s.needsApproval(ctx) {
 		var bound *time.Time
-		if job, err := s.cfg.Store.GetJob(ctx, jobID); err == nil {
+		if job, err := s.store.GetJob(ctx, jobID); err == nil {
 			created := job.CreatedAt
 			bound = &created
 		}
