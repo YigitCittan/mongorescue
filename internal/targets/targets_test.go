@@ -445,6 +445,49 @@ func TestAliasedLocationsAreRefused(t *testing.T) {
 	}
 }
 
+// TestS3EndpointSpellingsAlias proves that every spelling of an S3 endpoint naming
+// the same place is refused as an overlap and resolves to the same physical object,
+// which is what the purge compares before it deletes an archive.
+func TestS3EndpointSpellingsAlias(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{"", "https://s3.eu-west-1.amazonaws.com"},
+		{"", "https://s3.amazonaws.com"},
+		{"https://minio:9000", "http://minio:9000"},
+		{"https://x", "https://x:443"},
+	} {
+		f := newFixture(t)
+		ctx := context.Background()
+		in := s3Input("t1", "bucket-a", "s3cret")
+		in.S3.Endpoint = tc.a
+		t1, err := f.svc.Create(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in = s3Input("t2", "bucket-a", "s3cret")
+		in.S3.Endpoint = tc.b
+		if _, err = f.svc.Create(ctx, in); !errors.Is(err, targets.ErrLocationOverlap) {
+			t.Errorf("%q then %q: create = %v; want ErrLocationOverlap", tc.a, tc.b, err)
+		}
+		// A target stored before the check existed names the same objects.
+		alias := &models.StorageTarget{ID: "alias", Name: "alias", Type: models.StorageS3,
+			S3: &models.S3Target{Endpoint: tc.b, Region: "auto", Bucket: "bucket-a", Prefix: "team/"}}
+		if err = f.store.CreateStorageTarget(ctx, alias); err != nil {
+			t.Fatal(err)
+		}
+		loc1, err := f.svc.ObjectLocation(ctx, t1.ID, "x.archive")
+		if err != nil {
+			t.Fatal(err)
+		}
+		loc2, err := f.svc.ObjectLocation(ctx, alias.ID, "/x.archive")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loc1 != loc2 {
+			t.Errorf("%q and %q: object locations %q and %q; want equal", tc.a, tc.b, loc1, loc2)
+		}
+	}
+}
+
 // TestFailedBackupsWithoutObjectsDoNotBlockDeletion proves that a failed backup that
 // never stored an object (no key, or the target says the object is missing) does
 // not keep a target in use, while one whose object exists does.
