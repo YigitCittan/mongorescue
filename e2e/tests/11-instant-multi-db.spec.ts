@@ -27,7 +27,7 @@ test("backs up two databases in one run from Back up now", async ({ page, servic
   expect(body.database).toBeUndefined();
 
   // One toast for the run; it opens the run's backups.
-  await expect(page.getByText("Backup of 2 databases started.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Messages" }).getByText("Backup of 2 databases started.")).toBeVisible();
   await page.getByRole("button", { name: "View run" }).click();
   await expect(backups).toBeVisible();
   await expect(backups.getByText(/^Run run_/)).toBeVisible();
