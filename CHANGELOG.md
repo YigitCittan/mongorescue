@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-06
+
 ### Added
 - Backups from secondaries, throttling and backup windows (#100). Connections take a `read_preference` (`primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`) with `read_preference_tags`, and jobs may override both; empty keeps the connection string's own, as before. The preference is added to the connection string `mongodump` reads from its private config file (never `--uri`) and to the manifest capture, whose `listCollections` and `listIndexes` now follow it too. Before the dump, `hello` on the selected member records it on the backup (`source_member`: host, state, replica set; and `read_preference`), and `secondary` fails at once with a clear error when no secondary is available (a standalone server, a single-member replica set or a `directConnection=true` URI). Connection tests report the member a backup would read from (`read_member`).
 - Throttling: a token-bucket upload cap per job (`max_upload_mbps`) with a global default (`general.max_upload_mbps`, Settings → General → Throttling), `num_parallel_collections` per job (`mongodump --numParallelCollections`, 1 to 16), and `max_concurrent_backups` per connection: further backups from that connection wait in arrival order instead of failing, shown with the new `waiting` phase, without counting against the backup timeout.
