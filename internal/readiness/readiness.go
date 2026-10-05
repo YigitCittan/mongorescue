@@ -247,6 +247,36 @@ func (p point) age(now time.Time) time.Duration { return max(now.Sub(p.since), 0
 // met reports whether the recovery point is within the objective at now.
 func (p point) met(now time.Time) bool { return p.age(now) <= p.target }
 
+// metWith reports whether the recovery point is within the objective at now,
+// counting the PITR stream of the job's connection: its durable lag is the
+// database's recovery point while its window is open and its collector healthy
+// (see pitrAge). A broken, failing or lagging stream leaves the job's own RPO.
+func (p point) metWith(now time.Time, stream *StreamInfo) bool {
+	if p.met(now) {
+		return true
+	}
+	age, ok := pitrAge(stream)
+	return ok && time.Duration(age*float64(time.Second)) <= p.target
+}
+
+// streamsByConnection lists the PITR streams by connection. A failed listing is
+// logged and treated as no stream, so the job RPO applies.
+func (s *Service) streamsByConnection(ctx context.Context) map[string]*StreamInfo {
+	out := map[string]*StreamInfo{}
+	if s.cfg.Streams == nil {
+		return out
+	}
+	streams, err := s.cfg.Streams(ctx)
+	if err != nil {
+		s.logger.Warn("PITR streams are unavailable to the RPO check; the job RPOs apply", logsafe.Error(err))
+		return out
+	}
+	for i := range streams {
+		out[streams[i].ConnectionID] = &streams[i]
+	}
+	return out
+}
+
 // key identifies a job's database in the breach table.
 type key struct{ job, database string }
 
@@ -360,6 +390,7 @@ func (s *Service) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list rpo breaches: %w", err)
 	}
+	streams := s.streamsByConnection(ctx)
 	breachedSince := make(map[key]time.Time, len(stored))
 	for _, b := range stored {
 		breachedSince[key{b.JobID, b.Database}] = b.Since
@@ -373,7 +404,7 @@ func (s *Service) Check(ctx context.Context) error {
 		seen[k] = true
 		samples = append(samples, Sample{JobID: p.job.ID, Database: p.database, Since: p.since, Target: p.target})
 		since, breached := breachedSince[k]
-		switch met := p.met(now); {
+		switch met := p.metWith(now, streams[p.job.ConnectionID]); {
 		case !met && !breached:
 			if err := s.reportMissed(ctx, p, now); err != nil {
 				errs = append(errs, err)

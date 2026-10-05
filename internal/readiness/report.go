@@ -233,6 +233,17 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		return nil, fmt.Errorf("%w: restore tests: %w", ErrUnavailable, err)
 	}
 
+	var streams []StreamInfo
+	if s.cfg.Streams != nil {
+		if streams, err = s.cfg.Streams(ctx); err != nil {
+			return nil, fmt.Errorf("%w: PITR streams: %w", ErrUnavailable, err)
+		}
+	}
+	byConn := make(map[string]*StreamInfo, len(streams))
+	for i := range streams {
+		byConn[streams[i].ConnectionID] = &streams[i]
+	}
+
 	rows := map[rowKey]*rowAcc{}
 	for _, p := range points {
 		rk := rowKey{p.job.ConnectionID, p.database}
@@ -244,7 +255,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			}}
 			rows[rk] = acc
 		}
-		s.addJob(acc, p, now, since)
+		s.addJob(acc, p, now, since, byConn[rk.connection])
 		addEvidence(acc, p, verified[p.job.ID], tests[p.job.ID])
 	}
 	restores, err := s.cfg.Store.LatestCompletedRestores(ctx)
@@ -254,17 +265,6 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	byDB := make(map[rowKey]*models.RestoreRecord, len(restores))
 	for _, r := range restores {
 		byDB[rowKey{r.SourceConnectionID, r.SourceDatabase}] = r
-	}
-
-	var streams []StreamInfo
-	if s.cfg.Streams != nil {
-		if streams, err = s.cfg.Streams(ctx); err != nil {
-			return nil, fmt.Errorf("%w: PITR streams: %w", ErrUnavailable, err)
-		}
-	}
-	byConn := make(map[string]*StreamInfo, len(streams))
-	for i := range streams {
-		byConn[streams[i].ConnectionID] = &streams[i]
 	}
 
 	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names)}
@@ -293,9 +293,10 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	return report, nil
 }
 
-// addJob adds p's job and recovery point to acc.
-func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time.Time) {
-	met := p.met(now)
+// addJob adds p's job and recovery point to acc; stream is the PITR stream of
+// the row's connection, or nil (see point.metWith).
+func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time.Time, stream *StreamInfo) {
+	met := p.metWith(now, stream)
 	jr := JobRPO{
 		ID: p.job.ID, Name: p.job.Name, Enabled: p.job.Enabled,
 		TargetSeconds: p.target.Seconds(), Default: p.isDefault,
@@ -373,10 +374,6 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 		r.RPO.PITRAgeSeconds = &pAge
 		if r.RPO.AgeSeconds == nil || pAge < *r.RPO.AgeSeconds {
 			r.RPO.AgeSeconds, r.RPO.Source = &pAge, RPOSourcePITR
-		}
-		// The point-in-time window recovers the database within its objective.
-		if acc.missed && r.RPO.TargetSeconds > 0 && pAge <= r.RPO.TargetSeconds {
-			acc.missed = false
 		}
 	}
 	if acc.enabled > 0 {
