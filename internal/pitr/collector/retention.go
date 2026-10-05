@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -143,6 +144,9 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 		return err
 	}
 	now := s.now()
+	if orphanErr := s.sweepOrphans(ctx, st, now); orphanErr != nil {
+		s.logger.Warn("cannot remove the orphan oplog chunks of a PITR stream", logsafe.Attr("stream_id", id), logsafe.Error(orphanErr))
+	}
 	if err = s.purgeChunks(ctx, st, now); err != nil {
 		return err
 	}
@@ -194,6 +198,61 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 			logsafe.Attr("stream_id", id), slog.Int64("chunks", n))
 	}
 	s.observeWindow(ctx, id)
+	return nil
+}
+
+// OrphanAge is how old an oplog chunk object without a chunk row must be before
+// it counts as an orphan (an upload may still be committing a younger one).
+const OrphanAge = time.Hour
+
+// sweepOrphans deletes the chunk objects of st's connection on its target that no
+// chunk row names (left by an upload interrupted between storing the object and
+// committing its row) once they are older than OrphanAge plus the delete grace
+// period: the storage scan reports them as orphans in the meantime. Its caller
+// holds the stream's deletion lock.
+func (s *Service) sweepOrphans(ctx context.Context, st *pitr.Stream, now time.Time) error {
+	driver, err := s.cfg.Storage(ctx, st.TargetID)
+	if err != nil {
+		return fmt.Errorf("storage target: %w", err)
+	}
+	prefix := KeyPrefix + models.SanitizeIDComponent(st.ConnectionID, 0) + "/"
+	objects, err := driver.List(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("list the chunk objects: %w", err)
+	}
+	keys, err := s.cfg.Repo.ChunkKeys(ctx, st.TargetID)
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-(OrphanAge + s.deleteGrace()))
+	var errs []error
+	for _, obj := range objects {
+		if obj == nil || keys[obj.Key] || !strings.HasPrefix(obj.Key, prefix) || obj.ModTime.IsZero() || obj.ModTime.After(cutoff) {
+			continue
+		}
+		if err := s.purgeOrphan(ctx, st, driver, obj.Key); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// purgeOrphan deletes one orphan chunk object under its archive lock, checking
+// again that no chunk row names it.
+func (s *Service) purgeOrphan(ctx context.Context, st *pitr.Stream, driver storage.Storage, key string) error {
+	unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(st.TargetID, key))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	keys, err := s.cfg.Repo.ChunkKeys(ctx, st.TargetID)
+	if err != nil || keys[key] {
+		return err
+	}
+	if err := driver.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return fmt.Errorf("delete the orphan chunk object %s: %w", key, err)
+	}
+	s.logger.Info("removed an orphan oplog chunk object", logsafe.Attr("stream_id", st.ID), logsafe.Attr("storage_key", key))
 	return nil
 }
 

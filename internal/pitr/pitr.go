@@ -370,6 +370,9 @@ type Repository interface {
 	// ChainSpans returns the span of the live committed chunks of every chain of a
 	// stream, ordered by chain start.
 	ChainSpans(ctx context.Context, streamID string) ([]ChainSpan, error)
+	// ChunkKeys returns the storage keys of the chunks on a target whose object
+	// is expected to exist (every status but pruned).
+	ChunkKeys(ctx context.Context, targetID string) (map[string]bool, error)
 	// MarkChunkVerified records the outcome of a chunk's verification.
 	MarkChunkVerified(ctx context.Context, id string, at time.Time, verifyError string) error
 	// DeleteChunks soft-deletes chunks (see Chunk.DeletedAt) and returns how many.

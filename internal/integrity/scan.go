@@ -105,8 +105,19 @@ var defaultLayout = regexp.MustCompile(`^([^/]+)/(\d{4})/(\d{2})/(bkp_[A-Za-z0-9
 // idTimestamp finds the "_YYYYMMDD_HHMMSS" timestamp in a backup ID.
 var idTimestamp = regexp.MustCompile(`_(\d{8}_\d{6})(?:_|$)`)
 
-// IsArchiveKey reports whether key names a backup archive.
-func IsArchiveKey(key string) bool { return archiveKey.MatchString(key) }
+// chunkKey matches the keys of PITR oplog chunks (collector.ChunkKey).
+var chunkKey = regexp.MustCompile(`^_mongorescue/oplog/.+/\d{10}\.\d{10}-\d{10}\.\d{10}\.bson\.gz\.age$`)
+
+// ChunkOrphanAge is how old an oplog chunk object without a chunk row must be to
+// count as an orphan: a younger one may belong to an upload in progress, whose
+// row is committed after the object is stored.
+const ChunkOrphanAge = time.Hour
+
+// IsArchiveKey reports whether key names a backup archive or a PITR oplog chunk.
+func IsArchiveKey(key string) bool { return archiveKey.MatchString(key) || IsChunkKey(key) }
+
+// IsChunkKey reports whether key names a PITR oplog chunk.
+func IsChunkKey(key string) bool { return chunkKey.MatchString(key) }
 
 // liveStatus reports whether a record with status st owns its storage key: its
 // object is expected to exist (or to be written right now). A deleted backup owns
@@ -230,6 +241,12 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 		return err
 	}
 	readable := readableIDs(records)
+	var chunks map[string]bool
+	if s.cfg.ChunkKeys != nil {
+		if chunks, err = s.cfg.ChunkKeys(ctx, target.ID); err != nil {
+			return fmt.Errorf("list the oplog chunks of the target: %w", err)
+		}
+	}
 
 	present := make(map[string]bool, len(objects))
 	for _, obj := range objects {
@@ -239,6 +256,19 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 		}
 		report.Objects++
 		present[obj.Key] = true
+		if IsChunkKey(obj.Key) {
+			// An oplog chunk is an orphan when no chunk row names it and it is older
+			// than an upload can take; the collector's retention removes such
+			// objects once the delete grace period has passed too.
+			if chunks[obj.Key] || chunks == nil || listStart.Sub(obj.ModTime) < ChunkOrphanAge {
+				continue
+			}
+			report.OrphanCount++
+			if len(report.Orphans) < MaxReportedOrphans {
+				report.Orphans = append(report.Orphans, Orphan{Key: obj.Key, SizeBytes: obj.SizeBytes, ModTime: obj.ModTime})
+			}
+			continue
+		}
 		rec := byKey[obj.Key]
 		if rec != nil && liveStatus(rec.Status) {
 			continue

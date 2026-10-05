@@ -406,13 +406,7 @@ func (w *worker) confirm(ctx context.Context, st *pitr.State) (win pitr.OplogWin
 // doubling with every break in a row up to maxGapBackoff, so an oplog that keeps
 // being overrun is not checked (and alerted) in a tight loop.
 func (w *worker) afterBreak() time.Duration {
-	switch {
-	case w.gapBackoff == 0:
-		w.gapBackoff = w.interval
-	default:
-		w.gapBackoff = min(2*w.gapBackoff, maxGapBackoff)
-	}
-	w.gapBackoff = max(w.gapBackoff, w.interval)
+	w.gapBackoff = max(min(2*w.gapBackoff, maxGapBackoff), w.interval)
 	return w.gapBackoff
 }
 

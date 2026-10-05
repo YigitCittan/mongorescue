@@ -385,6 +385,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// The PITR collector is built below; the sweep's chunk item calls it.
 	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
+		ChunkKeys: metaStore.ChunkKeys,
 		VerifyChunks: func(ctx context.Context) (integrity.ChunkSweep, error) {
 			if pitrSvc == nil {
 				return integrity.ChunkSweep{}, nil

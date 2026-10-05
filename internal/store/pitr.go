@@ -614,3 +614,25 @@ func (s *SQLiteStore) SetReplicaSetID(ctx context.Context, streamID, replicaSetI
 	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE pitr_state SET replica_set_id = ? WHERE stream_id = ?",
 		replicaSetID, streamID)
 }
+
+// ChunkKeys returns the storage keys of the oplog chunks on target targetID whose
+// object is expected to exist: every chunk that is not pruned.
+func (s *SQLiteStore) ChunkKeys(ctx context.Context, targetID string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT storage_key FROM oplog_chunks WHERE target_id = ? AND status != 'pruned'", targetID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the chunk keys of target %s: %w", targetID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]bool{}
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("store: read a chunk key: %w", err)
+		}
+		out[key] = true
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list the chunk keys of target %s: %w", targetID, err)
+	}
+	return out, nil
+}

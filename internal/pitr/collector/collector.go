@@ -369,6 +369,14 @@ func newID(prefix string) string {
 }
 
 // ChunkKey returns the storage key of the chunk (from, to] of chain on stream st.
+//
+// The key cannot be made deterministic per attempt: it names the range read, and
+// its end (the majority-committed optime of the tick, or the cap of a catch-up
+// chunk) moves between attempts. A chunk whose upload was interrupted after its
+// object was stored but before its row was committed (a crash) is therefore not
+// overwritten by the retry: it stays an orphan, which the storage scan reports
+// once it is an hour old and retention deletes after the delete grace period
+// (see Service.sweepOrphans).
 func ChunkKey(st *pitr.Stream, chainID string, from, to pitr.Timestamp) string {
 	return KeyPrefix + models.SanitizeIDComponent(st.ConnectionID, 0) + "/" + models.SanitizeIDComponent(st.ReplicaSet, 0) +
 		"/" + chainID + "/" + from.String() + "-" + to.String() + ".bson.gz" + encryption.FileExtension
