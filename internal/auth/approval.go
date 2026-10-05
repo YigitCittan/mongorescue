@@ -25,7 +25,25 @@ var (
 	// at or after the time a request was made tries to approve it: a freshly created
 	// or promoted administrator can never approve a request that predates them.
 	ErrApproverTooRecent = errors.New("auth: only an administrator who was one before the request was made can approve it")
+	// ErrAwaitingApproval is wrapped by the error an AdminGrantGate returns once it
+	// stored the request: the grant waits for a second administrator. Any other
+	// error means no request exists.
+	ErrAwaitingApproval = errors.New("auth: the change waits for a second administrator")
 )
+
+// rollbackUnrequested undoes what a held grant created (undo) when gate could not
+// store the approval request (err does not wrap ErrAwaitingApproval), so a failed
+// request leaves no viewer account or operator key behind. It returns err.
+func (s *Service) rollbackUnrequested(ctx context.Context, err error, what string, undo func(context.Context) error) error {
+	if err == nil || errors.Is(err, ErrAwaitingApproval) {
+		return err
+	}
+	if undoErr := undo(context.WithoutCancel(ctx)); undoErr != nil {
+		s.logger.Error("could not remove the "+what+" of a failed approval request", logsafe.Error(undoErr))
+		return errors.Join(err, undoErr)
+	}
+	return err
+}
 
 // AdminGrantKind names a grant of admin rights.
 type AdminGrantKind string
