@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -32,7 +33,9 @@ func (m *mongoEnv) collectionNames(t *testing.T, db string) []string {
 // to "ab", "abc" and `a\b`: mongorestore reads '*' as a wildcard and '\' as its escape
 // character, so an unescaped selection would select, and with --drop drop, every
 // collection starting with "a". It also checks a database whose name has a '*', and
-// that mongodump's --excludeCollection=a* skips "a*" only.
+// that a backup filter treats "a*" as a pattern: expanded against the database (so
+// it excludes "a*", "ab" and "abc"), never passed to mongodump as a name, and refused
+// without a collection lister.
 func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
 	env := requireMongo(t)
 	st, err := storage.NewLocalStorage(t.TempDir())
@@ -86,11 +89,17 @@ func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
 		t.Fatalf("restored %s.a* = %d; want 2", rst.TargetDatabase, got)
 	}
 
-	// mongodump matches --excludeCollection literally.
+	// A backup filter expands "a*" into the collections it matches.
 	logger, _ := captureLogger()
-	excl, err := backup.NewEngine(st, env.URI, backup.WithLogger(logger)).Run(ctx, models.BackupOptions{Database: db, ExcludeCollections: []string{"a*"}, MongoURI: env.URI})
+	if _, err = backup.NewEngine(st, env.URI, backup.WithLogger(logger)).Prepare(models.BackupOptions{Database: db, ExcludeCollections: []string{"a*"}, MongoURI: env.URI}); !errors.Is(err, backup.ErrCollectionFilter) {
+		t.Fatalf("pattern without a collection lister: %v; want ErrCollectionFilter", err)
+	}
+	excl, err := newBackupEngine(env, st, backup.WithLogger(logger)).Run(ctx, models.BackupOptions{Database: db, ExcludeCollections: []string{"a*"}, MongoURI: env.URI})
 	if err != nil || excl.Status != models.StatusCompleted {
 		t.Fatalf("backup excluding a*: %+v, %v", excl, err)
+	}
+	if got := slices.Sorted(slices.Values(excl.ExcludedCollections)); !slices.Equal(got, []string{"a*", "ab", "abc"}) || !excl.Filtered {
+		t.Fatalf("record of the backup excluding a* = %q (filtered %v)", excl.ExcludedCollections, excl.Filtered)
 	}
 	t.Cleanup(func() { _ = st.Delete(context.Background(), excl.StorageKey) })
 	list, err := restore.NewEngine(st, env.URI).ArchiveCollections(ctx, excl)
@@ -101,8 +110,8 @@ func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
 	for _, c := range list {
 		names = append(names, c.Name)
 	}
-	if !slices.Equal(names, []string{`a\b`, "ab", "abc"}) {
-		t.Fatalf("backup excluding a* holds %q; want every other collection", names)
+	if !slices.Equal(names, []string{`a\b`}) {
+		t.Fatalf("backup excluding a* holds %q; want a\\b only", names)
 	}
 }
 

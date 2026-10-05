@@ -447,7 +447,9 @@ func TestReportRows(t *testing.T) {
 	})
 	saveBackup(t, st, &models.BackupRecord{ID: "ba", JobID: "job_m", Database: "app_a", StartedAt: t0.Add(47 * time.Hour),
 		Verification: models.VerificationOK, Encrypted: true})
-	saveBackup(t, st, &models.BackupRecord{ID: "bb", JobID: "job_m", Database: "app_b", StartedAt: t0.Add(10 * time.Hour)})
+	// app_b's backup is filtered: it still counts towards the RPO, and the row says so.
+	saveBackup(t, st, &models.BackupRecord{ID: "bb", JobID: "job_m", Database: "app_b", StartedAt: t0.Add(10 * time.Hour),
+		Filtered: true, ExcludedCollections: []string{"logs", "tmp"}})
 	done := t0.Add(47*time.Hour + 30*time.Minute)
 	if err := st.SaveRestoreTest(ctx, &models.RestoreTestResult{ID: "rt1", JobID: "job_m", Database: "app_a", Status: models.RestoreTestOK,
 		StartedAt: t0.Add(47*time.Hour + 20*time.Minute), CompletedAt: &done, DurationSeconds: 600}); err != nil {
@@ -482,6 +484,12 @@ func TestReportRows(t *testing.T) {
 		a.LastRestoreTest == nil || a.LastRestoreTest.ID != "rt1" || a.RTO == nil || a.RTO.Source != readiness.RTOSourceRestoreTest ||
 		a.RTO.Seconds != 600 || a.RPO.Met == nil || !*a.RPO.Met || a.RPO.TargetSeconds != (13*time.Hour).Seconds() {
 		t.Fatalf("c1/app_a = %+v", a)
+	}
+	if a.LastGoodBackup.Filtered {
+		t.Errorf("c1/app_a's last good backup is not filtered: %+v", a.LastGoodBackup)
+	}
+	if lb := rows["c1/app_b"].LastGoodBackup; lb == nil || lb.ID != "bb" || !lb.Filtered || !slices.Equal(lb.ExcludedCollections, []string{"logs", "tmp"}) {
+		t.Errorf("c1/app_b's last good backup = %+v; want bb, filtered, without logs and tmp", lb)
 	}
 	// Encrypted without an escrowed key: a warning, nothing else.
 	if a.Status != readiness.StatusWarn || !slices.Equal(a.Reasons, []string{readiness.ReasonKeysNotEscrowed}) {

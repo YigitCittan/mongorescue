@@ -56,6 +56,11 @@ test("backs up a database without one of its collections", async ({ page, servic
   await expect(backups.getByText(/^Run run_/)).toBeVisible();
   const row = backups.getByRole("row").filter({ hasText: shop }).filter({ hasNotText: `${shop}_rescue_` });
   await expect(row).toContainText("Succeeded", { timeout: 60_000 });
+  // The filtered backup is marked as such; the whole-database one is not.
+  await expect(row.getByText("Filtered", { exact: true })).toBeVisible();
+  const crmRow = backups.getByRole("row").filter({ hasText: crm }).filter({ hasNotText: `${crm}_rescue_` });
+  await expect(crmRow).toContainText("Succeeded", { timeout: 60_000 });
+  await expect(crmRow.getByText("Filtered", { exact: true })).toHaveCount(0);
 
   // The archive holds only the collections backed up.
   const runID = page.url().match(/[#&?]run=(run_[^&]+)/)?.[1] ?? "";

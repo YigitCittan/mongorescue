@@ -1889,7 +1889,7 @@ function renderBackups() {
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
       ${bulkCell("backups", b.id, `${b.database} · ${b.id}`)}
       <td class="cell-primary"><div class="name-line">${ellipsis(b.database, "ell-md")}${lock}${trustPinIcon(b)}</div><div class="cell-sub">${ellipsis(backupOrigin(b), "ell-md")}</div>${idCopy(b.id, "cell-sub")}${retryLinks(b)}</td>
-      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}</td>
+      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${runProgressHtml(b)}${trustBackupBadges(b)}${typeof backupFilterBadge === "function" ? backupFilterBadge(b) : ""}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
       <td class="num">${size}${backupStorageCell(b)}</td>
@@ -3546,7 +3546,9 @@ function renderBackupDetails() {
   }
   row(t("backup_details.connection"), conn);
   row(t("backup_details.database"), b.database, true);
-  row(t("backup_details.collections"), (b.collections || []).length > 0 ? b.collections.join(", ") : t("backup_details.all_collections"));
+  // A filtered backup names what it kept: its collections or the ones it excluded.
+  const filtered = typeof backupIsFiltered === "function" && backupIsFiltered(b);
+  row(t("backup_details.collections"), filtered ? `${t("jobdb.filtered_badge")}: ${backupFilterText(b)}` : t("backup_details.all_collections"));
   row(t("backup_details.target"), backupStorageName(b) || b.storage_type);
   row(t("backup_details.started"), absolute(b.started_at));
   row(failed ? t("backup_details.failed_at") : t("backup_details.finished"), absolute(b.completed_at));
