@@ -2,9 +2,11 @@
  * MongoRescue dashboard: jobs that back up several databases.
  *
  * The job form's database selector (Single / Selected / All / Pattern) with its
- * live preview, the Database column of the jobs table, and the job details' run
- * history grouped by run with the newly discovered databases. Loaded after app.js,
- * runs.js and trust.js, whose helpers it uses; app.js calls the jobDbs* hooks.
+ * live preview, the same selector (Single / Selected / All) in the Backup now
+ * dialog, the Database column of the jobs table, and the job details' run history
+ * grouped by run with the newly discovered databases. Loaded after app.js, runs.js
+ * and trust.js, whose helpers it uses; app.js calls the jobDbs* and instantDbs*
+ * hooks.
  *
  * Same security invariants as app.js: every server value goes through
  * escapeHtml() or textContent, interaction goes through listeners bound here or
@@ -18,6 +20,18 @@
 
 const JOBDB_TRANSLATIONS = {
   en: {
+    instantdb: {
+      list_hint: "Backs up each checked database into its own backup, all in one run.",
+      all_hint: "Backs up every database the connection lists except admin, config and local and the ones checked here.",
+      list_failed: "The databases could not be listed; choose Single to enter a name.",
+      summary_n: "{n} databases selected · about {size} in total",
+      summary_n_nosize: "{n} databases selected",
+      too_many: "At most {max} databases can be backed up at once.",
+      started_n: "Backup of {n} databases started.",
+      busy_list: "Skipped, already being backed up: {list}.",
+      view_run: "View run",
+    },
+    filters: { run_filter: "Run {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} databases",
       last_run_result: "Last run result",
@@ -106,6 +120,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   tr: {
+    instantdb: {
+      list_hint: "İşaretli her veritabanını ayrı bir yedeğe, hepsini tek bir çalıştırmada yedekler.",
+      all_hint: "Bağlantının listelediği admin, config, local ve burada işaretlenenler dışındaki tüm veritabanlarını yedekler.",
+      list_failed: "Veritabanları listelenemedi; bir ad girmek için Tek'i seçin.",
+      summary_n: "{n} veritabanı seçildi · toplam yaklaşık {size}",
+      summary_n_nosize: "{n} veritabanı seçildi",
+      too_many: "Aynı anda en fazla {max} veritabanı yedeklenebilir.",
+      started_n: "{n} veritabanının yedeklemesi başladı.",
+      busy_list: "Zaten yedeklendiği için atlandı: {list}.",
+      view_run: "Çalıştırmayı göster",
+    },
+    filters: { run_filter: "Çalıştırma {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} veritabanı",
       last_run_result: "Son çalıştırma sonucu",
@@ -194,6 +220,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   de: {
+    instantdb: {
+      list_hint: "Sichert jede markierte Datenbank in eine eigene Sicherung, alle in einem Lauf.",
+      all_hint: "Sichert jede Datenbank, die die Verbindung auflistet, außer admin, config und local und den hier markierten.",
+      list_failed: "Die Datenbanken konnten nicht aufgelistet werden; wählen Sie „Eine“, um einen Namen einzugeben.",
+      summary_n: "{n} Datenbanken ausgewählt · insgesamt etwa {size}",
+      summary_n_nosize: "{n} Datenbanken ausgewählt",
+      too_many: "Es können höchstens {max} Datenbanken auf einmal gesichert werden.",
+      started_n: "Sicherung von {n} Datenbanken gestartet.",
+      busy_list: "Übersprungen, da bereits gesichert: {list}.",
+      view_run: "Lauf anzeigen",
+    },
+    filters: { run_filter: "Lauf {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} Datenbanken",
       last_run_result: "Ergebnis des letzten Laufs",
@@ -282,6 +320,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   es: {
+    instantdb: {
+      list_hint: "Respalda cada base de datos marcada en su propia copia, todas en una sola ejecución.",
+      all_hint: "Respalda todas las bases de datos que lista la conexión excepto admin, config y local y las marcadas aquí.",
+      list_failed: "No se pudieron listar las bases de datos; elija Una para escribir un nombre.",
+      summary_n: "{n} bases de datos seleccionadas · unos {size} en total",
+      summary_n_nosize: "{n} bases de datos seleccionadas",
+      too_many: "Se pueden respaldar como máximo {max} bases de datos a la vez.",
+      started_n: "Copia de seguridad de {n} bases de datos iniciada.",
+      busy_list: "Omitidas, ya se están respaldando: {list}.",
+      view_run: "Ver ejecución",
+    },
+    filters: { run_filter: "Ejecución {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} bases de datos",
       last_run_result: "Resultado de la última ejecución",
@@ -370,6 +420,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   fr: {
+    instantdb: {
+      list_hint: "Sauvegarde chaque base cochée dans sa propre sauvegarde, toutes en une seule exécution.",
+      all_hint: "Sauvegarde toutes les bases que la connexion liste, sauf admin, config et local et celles cochées ici.",
+      list_failed: "Les bases de données n'ont pas pu être listées ; choisissez « Une » pour saisir un nom.",
+      summary_n: "{n} bases sélectionnées · environ {size} au total",
+      summary_n_nosize: "{n} bases sélectionnées",
+      too_many: "Au plus {max} bases de données peuvent être sauvegardées à la fois.",
+      started_n: "Sauvegarde de {n} bases de données lancée.",
+      busy_list: "Ignorées, déjà en cours de sauvegarde : {list}.",
+      view_run: "Voir l'exécution",
+    },
+    filters: { run_filter: "Exécution {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} bases",
       last_run_result: "Résultat de la dernière exécution",
@@ -458,6 +520,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   zh: {
+    instantdb: {
+      list_hint: "将每个勾选的数据库分别备份为独立的备份，全部在一次运行中完成。",
+      all_hint: "备份该连接列出的所有数据库，admin、config、local 以及此处勾选的除外。",
+      list_failed: "无法列出数据库；请选择“单个”以输入名称。",
+      summary_n: "已选择 {n} 个数据库 · 总计约 {size}",
+      summary_n_nosize: "已选择 {n} 个数据库",
+      too_many: "一次最多可备份 {max} 个数据库。",
+      started_n: "已开始备份 {n} 个数据库。",
+      busy_list: "已跳过（正在备份中）：{list}。",
+      view_run: "查看运行",
+    },
+    filters: { run_filter: "运行 {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} 个数据库",
       last_run_result: "最近一次运行结果",
@@ -546,6 +620,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   ja: {
+    instantdb: {
+      list_hint: "チェックした各データベースを個別のバックアップとして、1 回の実行でまとめてバックアップします。",
+      all_hint: "接続が一覧表示するすべてのデータベースをバックアップします（admin、config、local とここでチェックしたものを除く）。",
+      list_failed: "データベースを一覧表示できませんでした。名前を入力するには「単一」を選択してください。",
+      summary_n: "{n} 個のデータベースを選択 · 合計約 {size}",
+      summary_n_nosize: "{n} 個のデータベースを選択",
+      too_many: "一度にバックアップできるデータベースは最大 {max} 個です。",
+      started_n: "{n} 個のデータベースのバックアップを開始しました。",
+      busy_list: "バックアップ中のためスキップ: {list}。",
+      view_run: "実行を表示",
+    },
+    filters: { run_filter: "実行 {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} データベース",
       last_run_result: "前回の実行結果",
@@ -634,6 +720,18 @@ const JOBDB_TRANSLATIONS = {
     },
   },
   ru: {
+    instantdb: {
+      list_hint: "Копирует каждую отмеченную базу данных в отдельную резервную копию, все за один запуск.",
+      all_hint: "Копирует все базы данных, которые перечисляет подключение, кроме admin, config, local и отмеченных здесь.",
+      list_failed: "Не удалось получить список баз данных; выберите «Одна», чтобы ввести имя.",
+      summary_n: "Выбрано баз данных: {n} · всего около {size}",
+      summary_n_nosize: "Выбрано баз данных: {n}",
+      too_many: "За один раз можно скопировать не более {max} баз данных.",
+      started_n: "Запущено резервное копирование баз данных: {n}.",
+      busy_list: "Пропущены, уже копируются: {list}.",
+      view_run: "Показать запуск",
+    },
+    filters: { run_filter: "Запуск {id}" },
     jobdb: {
       n_of_m: "{ok}/{n} баз данных",
       last_run_result: "Результат последнего запуска",
@@ -760,40 +858,112 @@ const jobDbs = {
 // Job form: the database selector
 // ---------------------------------------------------------------------------
 
-function setupJobDatabases() {
-  const group = document.getElementById("job-db-mode");
-  if (!group) return;
+// ---------------------------------------------------------------------------
+// Shared selector parts (the job form and the Backup now dialog)
+// ---------------------------------------------------------------------------
+
+// Binds the segmented mode control, the search field and the checkbox lists of
+// the selector whose elements start with prefix ("job", "instant"). state holds
+// mode, search, selected and excluded; setMode(mode) switches modes, render()
+// redraws the lists and changed() runs after a box is (un)checked.
+function dbSelBind(prefix, modes, state, hooks) {
+  const group = document.getElementById(`${prefix}-db-mode`);
+  if (!group) return false;
   group.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-db-mode]");
-    if (btn) jobDbsSetMode(btn.dataset.dbMode, true);
+    if (btn) hooks.setMode(btn.dataset.dbMode);
   });
   group.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
-    const idx = JOBDB_MODES.indexOf(jobDbs.mode);
-    const next = JOBDB_MODES[(idx + (e.key === "ArrowRight" ? 1 : JOBDB_MODES.length - 1)) % JOBDB_MODES.length];
-    jobDbsSetMode(next, true);
+    const idx = modes.indexOf(state.mode);
+    const next = modes[(idx + (e.key === "ArrowRight" ? 1 : modes.length - 1)) % modes.length];
+    hooks.setMode(next);
     const btn = group.querySelector(`[data-db-mode="${next}"]`);
     if (btn) btn.focus();
   });
-  const search = document.getElementById("job-dbs-search");
+  const search = document.getElementById(`${prefix}-dbs-search`);
   if (search) {
     search.addEventListener("input", () => {
-      jobDbs.search = search.value.trim().toLowerCase();
-      jobDbsRenderLists();
+      state.search = search.value.trim().toLowerCase();
+      hooks.render();
     });
   }
-  ["job-dbs-list", "job-dbs-exclude-list"].forEach(id => {
+  [`${prefix}-dbs-list`, `${prefix}-dbs-exclude-list`].forEach(id => {
     const list = document.getElementById(id);
     if (!list) return;
     list.addEventListener("change", (e) => {
       const box = e.target;
       if (!box || box.type !== "checkbox") return;
-      const set = id === "job-dbs-list" ? jobDbs.selected : jobDbs.excluded;
+      const set = id === `${prefix}-dbs-list` ? state.selected : state.excluded;
       if (box.checked) set.add(box.value); else set.delete(box.value);
-      jobDbsSchedulePreview();
+      hooks.changed();
     });
   });
+  return true;
+}
+
+// Shows mode in the segmented control and the panels of the selector with prefix,
+// and moves the search field above the list of the visible panel (Selected or All).
+function dbSelShowMode(prefix, modes, mode) {
+  document.querySelectorAll(`#${prefix}-db-mode [data-db-mode]`).forEach(btn => {
+    btn.setAttribute("aria-pressed", String(btn.dataset.dbMode === mode));
+    btn.tabIndex = btn.dataset.dbMode === mode ? 0 : -1;
+  });
+  modes.forEach(m => {
+    const panel = document.getElementById(`${prefix}-db-panel-${m}`);
+    if (panel) panel.hidden = m !== mode;
+  });
+  const search = document.getElementById(`${prefix}-dbs-search`);
+  const host = mode === "all" ? document.getElementById(`${prefix}-dbs-exclude-list`) : document.getElementById(`${prefix}-dbs-list`);
+  if (search && host && search.nextElementSibling !== host) host.parentNode.insertBefore(search, host);
+}
+
+// Renders the checkbox list listId from names (plus checked names the server does
+// not list, so nothing is dropped silently), filtered by search. detail(name)
+// returns an optional note shown after a listed name (such as its size).
+function dbSelRenderChecks(listId, emptyId, names, set, search, listFailed, detail) {
+  const list = document.getElementById(listId);
+  if (!list) return;
+  list.textContent = "";
+  const all = names.slice();
+  set.forEach(n => { if (!all.includes(n)) all.push(n); });
+  all.sort();
+  const shown = all.filter(n => !search || n.toLowerCase().includes(search));
+  shown.forEach(name => {
+    const label = document.createElement("label");
+    label.className = "check-inline db-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = name;
+    box.checked = set.has(name);
+    const text = document.createElement("span");
+    text.className = "mono";
+    text.textContent = name;
+    label.title = name;
+    label.append(box, text);
+    const note = names.includes(name) ? (detail ? detail(name) : "") : t("jobdb.reason_not_found");
+    if (note) {
+      const sub = document.createElement("span");
+      sub.className = "cell-sub";
+      sub.textContent = ` (${note})`;
+      label.appendChild(sub);
+    }
+    list.appendChild(label);
+  });
+  const empty = document.getElementById(emptyId);
+  if (empty) {
+    empty.hidden = all.length > 0;
+    empty.textContent = listFailed ? t(listFailed) : t("jobdb.list_none");
+  }
+}
+
+function setupJobDatabases() {
+  if (!dbSelBind("job", JOBDB_MODES, jobDbs, {
+    setMode: mode => jobDbsSetMode(mode, true),
+    render: () => jobDbsRenderLists(),
+    changed: () => jobDbsSchedulePreview()
+  })) return;
   ["job-db-include", "job-db-exclude", "job-db-auto", "job-connection", "job-database-select", "job-database"].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -806,14 +976,7 @@ function setupJobDatabases() {
 function jobDbsSetMode(mode, user) {
   if (!JOBDB_MODES.includes(mode)) mode = "single";
   jobDbs.mode = mode;
-  document.querySelectorAll("#job-db-mode [data-db-mode]").forEach(btn => {
-    btn.setAttribute("aria-pressed", String(btn.dataset.dbMode === mode));
-    btn.tabIndex = btn.dataset.dbMode === mode ? 0 : -1;
-  });
-  JOBDB_MODES.forEach(m => {
-    const panel = document.getElementById(`job-db-panel-${m}`);
-    if (panel) panel.hidden = m !== mode;
-  });
+  dbSelShowMode("job", JOBDB_MODES, mode);
   const multi = mode !== "single";
   const discovers = mode === "all" || mode === "pattern";
   const auto = document.getElementById("job-db-auto-group");
@@ -830,10 +993,6 @@ function jobDbsSetMode(mode, user) {
   if (note) note.hidden = !multi;
   const rtScope = document.getElementById("job-rt-databases-group");
   if (rtScope) rtScope.hidden = !multi;
-  // The search field filters the list of the visible panel (Selected or All).
-  const search = document.getElementById("job-dbs-search");
-  const host = mode === "all" ? document.getElementById("job-dbs-exclude-list") : document.getElementById("job-dbs-list");
-  if (search && host && search.nextElementSibling !== host) host.parentNode.insertBefore(search, host);
   if (multi || user) jobDbsSchedulePreview();
 }
 
@@ -849,6 +1008,10 @@ function jobDbsApplyRequired() {
 
 // Called by app.js when the job picker's database list loaded (or failed to).
 function jobDbsOnDatabases(p) {
+  if (p && p.prefix === "instant") {
+    instantDbsOnDatabases(p);
+    return;
+  }
   if (!p || p.prefix !== "job") return;
   jobDbsApplyRequired();
   jobDbs.names = Array.isArray(p.dbs) ? p.dbs.map(db => db.name) : null;
@@ -867,42 +1030,9 @@ function jobDbsPatterns(id) {
 // silently while editing).
 function jobDbsRenderLists() {
   const names = jobDbs.names || [];
-  const render = (id, set, emptyId) => {
-    const list = document.getElementById(id);
-    if (!list) return;
-    list.textContent = "";
-    const all = names.slice();
-    set.forEach(n => { if (!all.includes(n)) all.push(n); });
-    all.sort();
-    const shown = all.filter(n => !jobDbs.search || n.toLowerCase().includes(jobDbs.search));
-    shown.forEach(name => {
-      const label = document.createElement("label");
-      label.className = "check-inline db-check";
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.value = name;
-      box.checked = set.has(name);
-      const text = document.createElement("span");
-      text.className = "mono";
-      text.textContent = name;
-      label.title = name;
-      label.append(box, text);
-      if (!names.includes(name)) {
-        const missing = document.createElement("span");
-        missing.className = "cell-sub";
-        missing.textContent = ` (${t("jobdb.reason_not_found")})`;
-        label.appendChild(missing);
-      }
-      list.appendChild(label);
-    });
-    const empty = document.getElementById(emptyId);
-    if (empty) {
-      empty.hidden = all.length > 0;
-      empty.textContent = jobDbs.listFailed ? t("jobdb.list_failed") : t("jobdb.list_none");
-    }
-  };
-  render("job-dbs-list", jobDbs.selected, "job-dbs-list-empty");
-  render("job-dbs-exclude-list", jobDbs.excluded, "job-dbs-exclude-empty");
+  const failed = jobDbs.listFailed ? "jobdb.list_failed" : "";
+  dbSelRenderChecks("job-dbs-list", "job-dbs-list-empty", names, jobDbs.selected, jobDbs.search, failed);
+  dbSelRenderChecks("job-dbs-exclude-list", "job-dbs-exclude-empty", names, jobDbs.excluded, jobDbs.search, failed);
 }
 
 // Prefills the selector from job (null for a new job).
@@ -1452,6 +1582,179 @@ function jobDbsRetentionBreakdown(preview) {
   return parts.length > 0 ? tf("jobdb.retention_per_db", { list: parts.join(", ") }) : "";
 }
 
+// ---------------------------------------------------------------------------
+// Backup now: one or several databases
+// ---------------------------------------------------------------------------
+
+const INSTANTDB_MODES = ["single", "list", "all"];
+// The most databases one Backup now may name (MaxBackupDatabases on the server).
+const INSTANTDB_MAX = 200;
+
+const instantDbs = {
+  mode: "single",
+  // Databases of the connection ({name, size_bytes, empty}), or null.
+  dbs: null,
+  listFailed: false,
+  selected: new Set(),
+  excluded: new Set(),
+  search: "",
+};
+
+function setupInstantDatabases() {
+  dbSelBind("instant", INSTANTDB_MODES, instantDbs, {
+    setMode: mode => instantDbsSetMode(mode),
+    render: () => instantDbsRenderLists(),
+    changed: () => instantDbsRenderSummary()
+  });
+}
+
+// Switches the Backup now dialog to mode: one database with its collection
+// filters, or several (checked, or all but the checked ones) at a parallelism.
+function instantDbsSetMode(mode) {
+  if (!INSTANTDB_MODES.includes(mode)) mode = "single";
+  instantDbs.mode = mode;
+  dbSelShowMode("instant", INSTANTDB_MODES, mode);
+  const multi = mode !== "single";
+  const par = document.getElementById("instant-db-parallel-group");
+  if (par) par.hidden = !multi;
+  const colls = document.getElementById("instant-collections-fieldset");
+  if (colls) {
+    colls.disabled = multi;
+    colls.classList.toggle("is-disabled", multi);
+  }
+  const note = document.getElementById("instant-colls-note");
+  if (note) note.hidden = !multi;
+  instantDbsApplyRequired();
+  instantDbsRenderSummary();
+}
+
+// Only a single database needs the picker's database field (see jobDbsApplyRequired).
+function instantDbsApplyRequired() {
+  const single = instantDbs.mode === "single";
+  const select = document.getElementById("instant-database-select");
+  const manual = document.getElementById("instant-database");
+  if (select) select.required = single && !select.hidden;
+  if (manual) manual.required = single && !manual.hidden;
+}
+
+// Called (through jobDbsOnDatabases) when the dialog's database list loaded or failed.
+function instantDbsOnDatabases(p) {
+  instantDbs.dbs = Array.isArray(p.dbs) ? p.dbs : null;
+  instantDbs.listFailed = !Array.isArray(p.dbs) && !!p.dbError;
+  // Checked names of another connection do not carry over.
+  const names = instantDbsListed();
+  instantDbs.selected = new Set(Array.from(instantDbs.selected).filter(n => names.includes(n)));
+  instantDbs.excluded = new Set(Array.from(instantDbs.excluded).filter(n => names.includes(n)));
+  instantDbsApplyRequired();
+  instantDbsRenderLists();
+  instantDbsRenderSummary();
+}
+
+// Names of the databases the connection lists.
+function instantDbsListed() {
+  return (instantDbs.dbs || []).map(db => db.name);
+}
+
+function instantDbsRenderLists() {
+  const names = instantDbsListed();
+  const sizes = new Map((instantDbs.dbs || []).map(db => [db.name, db]));
+  const detail = name => {
+    const db = sizes.get(name);
+    if (!db) return "";
+    return db.empty ? t("picker.empty_db") : formatBytes(db.size_bytes);
+  };
+  const failed = instantDbs.listFailed ? "instantdb.list_failed" : "";
+  dbSelRenderChecks("instant-dbs-list", "instant-dbs-list-empty", names, instantDbs.selected, instantDbs.search, failed, detail);
+  dbSelRenderChecks("instant-dbs-exclude-list", "instant-dbs-exclude-empty", names, instantDbs.excluded, instantDbs.search, failed, detail);
+}
+
+// Resets the dialog to a single database (openBackupNowModal).
+function instantDbsReset() {
+  instantDbs.dbs = null;
+  instantDbs.listFailed = false;
+  instantDbs.selected = new Set();
+  instantDbs.excluded = new Set();
+  instantDbs.search = "";
+  setValue("instant-dbs-search", "");
+  setValue("instant-db-parallelism", "1");
+  instantDbsSetMode("single");
+  instantDbsRenderLists();
+}
+
+// The databases the dialog backs up in a multi-database mode, sorted.
+function instantDbsNames() {
+  if (instantDbs.mode === "list") return Array.from(instantDbs.selected).sort();
+  if (instantDbs.mode === "all") return instantDbsListed().filter(n => !instantDbs.excluded.has(n)).sort();
+  return [];
+}
+
+// "3 databases selected · about 1.2 GB" from the sizes the connection listed.
+function instantDbsRenderSummary() {
+  const box = document.getElementById("instant-db-summary");
+  if (!box) return;
+  if (instantDbs.mode === "single") {
+    box.hidden = true;
+    box.textContent = "";
+    return;
+  }
+  box.hidden = false;
+  const names = instantDbsNames();
+  box.classList.toggle("text-danger", names.length === 0 || names.length > INSTANTDB_MAX);
+  if (names.length === 0) {
+    box.textContent = t("jobdb.need_selection");
+    return;
+  }
+  if (names.length > INSTANTDB_MAX) {
+    box.textContent = tf("instantdb.too_many", { max: INSTANTDB_MAX });
+    return;
+  }
+  const sizes = new Map((instantDbs.dbs || []).map(db => [db.name, Number(db.size_bytes) || 0]));
+  const known = names.filter(n => sizes.has(n));
+  const total = known.reduce((sum, n) => sum + sizes.get(n), 0);
+  box.textContent = known.length > 0
+    ? tf("instantdb.summary_n", { n: names.length, size: formatBytes(total) })
+    : tf("instantdb.summary_n_nosize", { n: names.length });
+}
+
+// The source part of the Backup now request: the picker for a single database,
+// else the connection, the databases and the parallelism; null after telling the
+// user what is missing.
+function instantDbsSource() {
+  if (instantDbs.mode === "single") return pickerValue("instant");
+  const conn = document.getElementById("instant-connection");
+  if (!conn || !conn.value) {
+    if (conn) conn.focus();
+    showToast(t("conn.add_first"), "error");
+    return null;
+  }
+  const databases = instantDbsNames();
+  if (databases.length === 0) {
+    showToast(t("jobdb.need_selection"), "error");
+    return null;
+  }
+  if (databases.length > INSTANTDB_MAX) {
+    showToast(tf("instantdb.too_many", { max: INSTANTDB_MAX }), "error");
+    return null;
+  }
+  return {
+    connection_id: conn.value,
+    databases,
+    parallelism: parseInt(getValue("instant-db-parallelism"), 10) || 1
+  };
+}
+
+// Reports a started run of several backups (the answer of POST /api/v1/backups with
+// databases) in one toast that opens the run's backups.
+function instantDbsStarted(run) {
+  const busy = (run && run.busy) || [];
+  let text = tf("instantdb.started_n", { n: ((run && run.backups) || []).length });
+  if (busy.length > 0) text += ` ${tf("instantdb.busy_list", { list: busy.map(b => b.database).join(", ") })}`;
+  const id = run && run.run_id;
+  const opts = id && typeof showRunBackups === "function"
+    ? { action: { label: t("instantdb.view_run"), run: () => showRunBackups(id) } } : undefined;
+  showToast(text, "info", opts);
+}
+
 // Delegated actions of this module (called by runs.js for actions it does not
 // handle).
 function handleJobDbAction(action, id, btn) {
@@ -1463,3 +1766,4 @@ function handleJobDbAction(action, id, btn) {
 }
 
 document.addEventListener("DOMContentLoaded", setupJobDatabases);
+document.addEventListener("DOMContentLoaded", setupInstantDatabases);

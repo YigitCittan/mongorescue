@@ -537,6 +537,10 @@ func (r blockingRunner) PrepareJobRun(ctx context.Context, jobID string, trigger
 
 func (r blockingRunner) BeginJobRun(context.Context, *scheduler.JobRunPlan) error { return nil }
 
+func (r blockingRunner) PrepareAdHocRun(scheduler.AdHocRun) (*scheduler.JobRunPlan, error) {
+	return nil, scheduler.ErrInvalidAdHocRun
+}
+
 func (r blockingRunner) StartJobRun(context.Context, string, models.BackupTrigger, func(func(context.Context)) error) (*models.JobRun, error) {
 	return nil, scheduler.ErrNotMulti
 }

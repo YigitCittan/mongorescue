@@ -28,6 +28,7 @@ type multiEnv struct {
 	svc    *operations.Service
 	st     store.Store
 	sched  *scheduler.Scheduler
+	runs   *runs.Manager
 	mu     sync.Mutex
 	server []string
 }
@@ -41,6 +42,7 @@ func newMultiEnv(t *testing.T, server ...string) *multiEnv {
 	mock := storage.NewMockStorage()
 	engine := backup.NewEngine(mock, "", backup.WithRunner(runner))
 	manager := runs.NewManager(nil)
+	e.runs = manager
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	registry := runs.NewRegistry(runs.WithLogs(runlog.NewDir(t.TempDir())))
 	conns := fakeConnections{"conn_a": {ID: "conn_a", Name: "primary", URI: "mongodb://u:pw@db.internal/"}}

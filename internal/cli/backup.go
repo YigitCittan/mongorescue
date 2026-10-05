@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/apiclient"
@@ -10,20 +13,48 @@ import (
 )
 
 const backupUsage = `Usage: mongorescue backup --job ID [flags]
-       mongorescue backup --connection ID --database NAME [flags]
+       mongorescue backup --connection ID --database NAME [--database NAME...] [flags]
+       mongorescue backup --connection ID --databases NAME,NAME [flags]
 
 Starts a backup on the server: the run of a scheduled job (--job), or an on-demand
-backup of one database of a managed connection. Without --wait it prints the new
-backup (or job run) and returns at once; with --wait it polls until it finishes and
-exits 1 when it failed. Needs an operator or admin API key.
+backup of databases of a managed connection. Several databases (--database
+repeated, or --databases) are backed up in one run, each into its own backup; a
+database another backup is running is skipped. Without --wait it prints the new
+backup (or run) and returns at once; with --wait it polls until it finishes and
+exits 1 when it failed (for a run: unless every database succeeded, with a summary
+per database). Needs an operator or admin API key.
 `
+
+// runPageSize is the page size polled for the backups of a run: the server's
+// largest page, as many as a run may have backups.
+const runPageSize = 200
+
+// stringsFlag is a flag that may be repeated; each value is kept.
+type stringsFlag []string
+
+// String implements flag.Value.
+func (f *stringsFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+// Set implements flag.Value.
+func (f *stringsFlag) Set(v string) error {
+	*f = append(*f, strings.TrimSpace(v))
+	return nil
+}
 
 // runBackup implements "mongorescue backup".
 func runBackup(ctx context.Context, s *session, args []string) error {
 	fs := s.newFlagSet("backup", backupUsage, true)
 	job := fs.String("job", "", "Run this job now")
 	conn := fs.String("connection", "", "Connection ID to back up (with --database)")
-	database := fs.String("database", "", "Database to back up (with --connection)")
+	var databases stringsFlag
+	fs.Var(&databases, "database", "Database to back up (with --connection); repeat it to back up several in one run")
+	databaseList := fs.String("databases", "", "Databases to back up in one run, comma-separated (with --connection)")
+	parallelism := fs.Int("parallelism", 0, "With several databases: how many are backed up at once (1 to 4; default 1)")
 	collections := fs.String("collections", "", "Only these collections, comma-separated")
 	exclude := fs.String("exclude-collections", "", "Every collection except these, comma-separated")
 	target := fs.String("storage-target", "", "Storage target ID (default: the default target)")
@@ -37,18 +68,27 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 	if len(pos) > 0 {
 		return usageErrorf("backup takes no arguments, got %s (use --job or --connection and --database)", strings.Join(pos, " "))
 	}
-	*job, *conn, *database = strings.TrimSpace(*job), strings.TrimSpace(*conn), strings.TrimSpace(*database)
+	*job, *conn = strings.TrimSpace(*job), strings.TrimSpace(*conn)
+	names := append(slicesWithout(databases, ""), csv(*databaseList)...)
+	// --databases always starts a run, even of one database.
+	multi := len(names) > 1 || s.set["databases"]
 	if *job != "" {
-		for _, name := range []string{"connection", "database", "collections", "exclude-collections", "storage-target", "gzip", "users-and-roles"} {
+		for _, name := range []string{"connection", "database", "databases", "parallelism", "collections", "exclude-collections", "storage-target", "gzip", "users-and-roles"} {
 			if s.set[name] {
 				return usageErrorf("--%s cannot be combined with --job: the job's settings apply", name)
 			}
 		}
-	} else if *conn == "" || *database == "" {
-		return usageErrorf("give --job, or --connection and --database")
+	} else if *conn == "" || len(names) == 0 {
+		return usageErrorf("give --job, or --connection and --database (or --databases)")
 	}
 	if *collections != "" && *exclude != "" {
 		return usageErrorf("--collections and --exclude-collections cannot be combined")
+	}
+	if len(names) > 1 && (*collections != "" || *exclude != "") {
+		return usageErrorf("--collections and --exclude-collections apply to a backup of one database")
+	}
+	if s.set["parallelism"] && !multi {
+		return usageErrorf("--parallelism needs several databases")
 	}
 	client, err := s.connect()
 	if err != nil {
@@ -57,14 +97,130 @@ func runBackup(ctx context.Context, s *session, args []string) error {
 	if *job != "" {
 		return s.runJob(ctx, client, *job)
 	}
-	res, err := client.StartBackup(ctx, apiclient.BackupRequest{
-		ConnectionID: *conn, Database: *database, Collections: csv(*collections), ExcludeCollections: csv(*exclude),
+	req := apiclient.BackupRequest{
+		ConnectionID: *conn, Collections: csv(*collections), ExcludeCollections: csv(*exclude),
 		StorageTargetID: strings.TrimSpace(*target), Gzip: gzip.ptr(), IncludeUsersAndRoles: *usersAndRoles,
-	})
+	}
+	if multi {
+		req.Databases = names
+		if s.set["parallelism"] {
+			req.Parallelism = parallelism
+		}
+		run, startErr := client.StartBackups(ctx, req)
+		if startErr != nil {
+			return startError(startErr, "backups")
+		}
+		return s.finishBackupRun(ctx, client, run)
+	}
+	req.Database = names[0]
+	res, err := client.StartBackup(ctx, req)
 	if err != nil {
 		return startError(err, "backups")
 	}
 	return s.finishBackup(ctx, client, res)
+}
+
+// slicesWithout returns the values of list other than drop.
+func slicesWithout(list []string, drop string) []string {
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		if v != drop {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// finishBackupRun prints a started run of several backups, or waits for all of them
+// with --wait: it exits 0 only when every database was backed up.
+func (s *session) finishBackupRun(ctx context.Context, client *apiclient.Client, res *apiclient.Result[apiclient.BackupRun]) error {
+	run := res.Value
+	for _, b := range run.Busy {
+		s.warnf("skipped %s: %s", b.Database, clean(b.Error))
+	}
+	hint := "mongorescue list backups --run " + run.RunID
+	if !s.opts.wait {
+		switch {
+		case s.opts.json:
+			return writeJSON(s.stdout, res.Raw)
+		case s.opts.quiet:
+			_, err := fmt.Fprintln(s.stdout, run.RunID)
+			return err
+		}
+		fmt.Fprintf(s.stdout, "Started run %s: %d backups.\nFollow it with: %s\n", run.RunID, len(run.Backups), hint)
+		return s.printRunBackups(run)
+	}
+	s.infof("Started run %s of %d backups; waiting for them to finish.", run.RunID, len(run.Backups))
+	final := run
+	query := url.Values{"run_id": {run.RunID}, "limit": {strconv.Itoa(runPageSize)}}
+	err := s.wait(ctx, waitTarget{kind: "run", id: run.RunID, hint: hint}, func(ctx context.Context) (bool, string, error) {
+		got, pollErr := client.ListBackups(ctx, query)
+		if pollErr != nil {
+			return false, "", pollErr
+		}
+		byID := make(map[string]models.BackupRecord, len(got.Value))
+		for _, b := range got.Value {
+			byID[b.ID] = b
+		}
+		done := 0
+		for i, b := range run.Backups {
+			if latest, ok := byID[b.ID]; ok {
+				final.Backups[i] = latest
+			}
+			if st := final.Backups[i].Status; st != models.StatusPending && st != models.StatusInProgress {
+				done++
+			}
+		}
+		return done == len(run.Backups), fmt.Sprintf("%d of %d databases done", done, len(run.Backups)), nil
+	})
+	if err != nil {
+		return err
+	}
+	failed := len(final.Busy)
+	for _, b := range final.Backups {
+		if b.Status != models.StatusCompleted {
+			failed++
+		}
+	}
+	switch {
+	case s.opts.json:
+		raw, marshalErr := json.Marshal(final)
+		if marshalErr != nil {
+			return fmt.Errorf("%w: encode the run: %w", ErrFailed, marshalErr)
+		}
+		if err = writeJSON(s.stdout, raw); err != nil {
+			return err
+		}
+	case s.opts.quiet:
+		if _, err = fmt.Fprintln(s.stdout, final.RunID); err != nil {
+			return err
+		}
+	default:
+		fmt.Fprintf(s.stdout, "Run %s: %d of %d databases backed up.\n", final.RunID, len(final.Backups)+len(final.Busy)-failed, len(final.Backups)+len(final.Busy))
+		if err = s.printRunBackups(final); err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return s.reportedInText(failedErrorf("run %s: %d of %d databases not backed up", final.RunID, failed, len(final.Backups)+len(final.Busy)))
+	}
+	return nil
+}
+
+// printRunBackups prints the databases of a run of backups as a table.
+func (s *session) printRunBackups(run apiclient.BackupRun) error {
+	t := newTable(s.stdout, "DATABASE", "BACKUP", "STATUS", "SIZE", "ERROR")
+	for _, b := range run.Backups {
+		size := ""
+		if b.Status == models.StatusCompleted {
+			size = fmtBytes(b.SizeBytes)
+		}
+		t.row(b.Database, b.ID, string(b.Status), size, clean(b.ErrorMessage))
+	}
+	for _, b := range run.Busy {
+		t.row(b.Database, "", "busy", "", clean(b.Error))
+	}
+	return t.flush()
 }
 
 // runJob starts job id and reports (or waits for) its backup or run.

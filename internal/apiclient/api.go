@@ -140,6 +140,31 @@ type BackupRequest struct {
 	Gzip *bool `json:"gzip,omitempty"`
 	// IncludeUsersAndRoles dumps the database's users and roles too.
 	IncludeUsersAndRoles bool `json:"include_users_and_roles,omitempty"`
+	// Databases backs up several databases in one run instead of Database
+	// (StartBackups).
+	Databases []string `json:"databases,omitempty"`
+	// Parallelism is how many of Databases are backed up at once (nil: 1).
+	Parallelism *int `json:"parallelism,omitempty"`
+}
+
+// BackupRun is what POST /api/v1/backups with databases started: one backup per
+// database, grouped under RunID, and the databases skipped because another backup
+// of them was running.
+type BackupRun struct {
+	// RunID groups the backups (GET /api/v1/backups?run_id=).
+	RunID string `json:"run_id"`
+	// Backups are the in-progress records.
+	Backups []models.BackupRecord `json:"backups"`
+	// Busy are the databases that were not backed up.
+	Busy []BusyDatabase `json:"busy"`
+}
+
+// BusyDatabase is a database of a BackupRun another backup was running.
+type BusyDatabase struct {
+	// Database is the database name.
+	Database string `json:"database"`
+	// Error says why it was skipped.
+	Error string `json:"error"`
 }
 
 // JobStart is what POST /api/v1/jobs/{id}/run started: the backup of a
@@ -269,6 +294,11 @@ func (c *Client) GetJobRun(ctx context.Context, jobID, runID string) (*Result[mo
 // StartBackup calls POST /api/v1/backups and returns the in-progress record.
 func (c *Client) StartBackup(ctx context.Context, req BackupRequest) (*Result[models.BackupRecord], error) {
 	return call[models.BackupRecord](ctx, c, http.MethodPost, "/backups", nil, req)
+}
+
+// StartBackups calls POST /api/v1/backups with req.Databases and returns the run.
+func (c *Client) StartBackups(ctx context.Context, req BackupRequest) (*Result[BackupRun], error) {
+	return call[BackupRun](ctx, c, http.MethodPost, "/backups", nil, req)
 }
 
 // RunJob calls POST /api/v1/jobs/{id}/run.

@@ -99,12 +99,14 @@ type RestoreEngine interface {
 // *scheduler.Scheduler, which persists the final records and the run and publishes
 // the outcome).
 type JobRunner interface {
+	// PrepareAdHocRun plans a run of several databases started without a job.
+	PrepareAdHocRun(req scheduler.AdHocRun) (*scheduler.JobRunPlan, error)
 	// PrepareJobRun loads the job and plans an on-demand run started by trigger
 	// (models.TriggerOnDemand or models.TriggerMCP): one in-progress record per
 	// database.
 	PrepareJobRun(ctx context.Context, jobID string, trigger models.BackupTrigger) (*scheduler.JobRunPlan, error)
-	// BeginJobRun stores, locks and tracks a multi-database plan (a no-op for a
-	// single-database one, whose caller does that).
+	// BeginJobRun stores, locks and tracks a multi-database or ad-hoc plan (a no-op
+	// for a single-database one, whose caller does that).
 	BeginJobRun(ctx context.Context, plan *scheduler.JobRunPlan) error
 	// ExecuteJobRun runs the prepared plan.
 	ExecuteJobRun(ctx context.Context, plan *scheduler.JobRunPlan) (*models.JobRun, error)
@@ -290,12 +292,19 @@ func invalid(err error) error {
 	return public(err.Error(), ErrInvalid, err)
 }
 
-// BackupRequest starts an on-demand backup. An omitted Gzip takes the
+// BackupRequest starts an on-demand backup of Database (StartBackup), or of every
+// one of Databases in one run (StartBackups). An omitted Gzip takes the
 // general.default_gzip setting.
 type BackupRequest struct {
 	models.BackupOptions
 	// Gzip overrides the default compression when set.
 	Gzip *bool `json:"gzip"`
+	// Databases names the databases of a run of several (StartBackups); it cannot be
+	// combined with Database.
+	Databases []string `json:"databases,omitempty"`
+	// Parallelism is how many of Databases are backed up at once (0 or omitted
+	// means 1, as for jobs; at most models.MaxJobParallelism).
+	Parallelism *int `json:"parallelism,omitempty"`
 	// Trigger is set by the adapter: models.TriggerMCP for MCP, anything else is
 	// recorded as models.TriggerManual. It is never read from clients.
 	Trigger models.BackupTrigger `json:"-"`
@@ -306,6 +315,12 @@ type BackupRequest struct {
 // the outcome. Expected failures: ErrConnectionRequired, ErrUnknownConnection,
 // ErrUnknownStorageTarget, ErrInvalid, ErrBusy and ErrShuttingDown.
 func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.BackupRecord, error) {
+	if req.Databases != nil {
+		return nil, invalid(fmt.Errorf("databases: %w", ErrDatabasesConflict))
+	}
+	if err := validateParallelism(req.Parallelism); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.Database) != "" {
 		if err := validateNamespaces(req.Database, req.Collections, req.ExcludeCollections); err != nil {
 			return nil, err
@@ -404,24 +419,34 @@ func gzipFromKey(key string) (gzip, ok bool) {
 	}
 }
 
-// startManualBackup implements StartBackup; a non-empty retryOf is recorded as the
-// new record's RetryOf.
-func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retryOf string) (*models.BackupRecord, error) {
+// manualOptions returns the backup options of an on-demand backup request: its
+// connection and storage target resolved, its compression and its trigger.
+func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.BackupOptions, error) {
 	opts := req.BackupOptions
 	conn, err := s.ResolveConnection(ctx, opts.ConnectionID)
 	if err != nil {
-		return nil, err
+		return opts, err
 	}
 	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
 	target, err := s.ResolveTarget(ctx, opts.StorageTargetID)
 	if err != nil {
-		return nil, err
+		return opts, err
 	}
 	opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
 	opts.Gzip = derefOr(req.Gzip, s.settings().General.DefaultGzip)
 	opts.Trigger = models.TriggerManual
 	if req.Trigger == models.TriggerMCP {
 		opts.Trigger = models.TriggerMCP
+	}
+	return opts, nil
+}
+
+// startManualBackup implements StartBackup; a non-empty retryOf is recorded as the
+// new record's RetryOf.
+func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retryOf string) (*models.BackupRecord, error) {
+	opts, err := s.manualOptions(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	record, err := s.cfg.Backup.Prepare(opts)

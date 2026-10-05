@@ -33,6 +33,9 @@ var (
 	// ErrNotMulti is returned by StartJobRun for a single-database job, which is
 	// started with PrepareJobRun and ExecuteJobRun.
 	ErrNotMulti = errors.New("scheduler: the job backs up a single database")
+	// ErrInvalidAdHocRun is returned by PrepareAdHocRun for a run without
+	// databases or whose locks do not match its databases.
+	ErrInvalidAdHocRun = errors.New("scheduler: invalid ad-hoc run")
 )
 
 // DatabaseLister lists the database names of a managed connection, including the
@@ -56,11 +59,12 @@ func WithAfterRun(fn AfterRunFunc) Option {
 	return func(s *Scheduler) { s.afterRun = fn }
 }
 
-// JobRunPlan is a prepared run of a job: one in-progress backup record per database
-// it backs up, all sharing the run's ID. Get one from PrepareJobRun and pass it to
+// JobRunPlan is a prepared run of a job, or of several databases started without a
+// job (an ad-hoc run): one in-progress backup record per database it backs up, all
+// sharing the run's ID. Get one from PrepareJobRun or PrepareAdHocRun and pass it to
 // ExecuteJobRun.
 type JobRunPlan struct {
-	// Job is the job as it was loaded.
+	// Job is the job as it was loaded; nil for an ad-hoc run.
 	Job *models.Job
 	// Run is the run's summary, updated as its databases finish.
 	Run *models.JobRun
@@ -74,11 +78,57 @@ type JobRunPlan struct {
 	trackers []*runs.Run
 	multi    bool
 	begun    bool
+	// adhoc marks a run without a job (PrepareAdHocRun): it has no job to claim,
+	// update or store the run of; parallelism is its own.
+	adhoc       bool
+	parallelism int
+	// held are the run locks the caller of PrepareAdHocRun took, by record (nil: the
+	// database's lock is taken when its turn comes). Guarded by the run's mutex
+	// while it runs.
+	held []func()
 }
 
-// Multi reports whether the plan is a run of a multi-database job, which the
-// scheduler persists, locks and tracks itself (BeginJobRun).
+// Multi reports whether the plan is a run of a multi-database job or an ad-hoc run,
+// which the scheduler persists, locks and tracks itself (BeginJobRun).
 func (p *JobRunPlan) Multi() bool { return p != nil && p.multi }
+
+// AdHoc reports whether the plan is an ad-hoc run (PrepareAdHocRun), which has no job.
+func (p *JobRunPlan) AdHoc() bool { return p != nil && p.adhoc }
+
+// jobID returns the plan's job ID, "" for an ad-hoc run.
+func (p *JobRunPlan) jobID() string {
+	if p.Job == nil {
+		return ""
+	}
+	return p.Job.ID
+}
+
+// effectiveParallelism returns how many databases of the plan run at once.
+func (p *JobRunPlan) effectiveParallelism() int {
+	if p.adhoc {
+		return min(max(p.parallelism, 1), models.MaxJobParallelism)
+	}
+	return p.Job.EffectiveParallelism()
+}
+
+// takeHeld returns the run lock the caller took for record i and forgets it, or nil.
+func (p *JobRunPlan) takeHeld(i int) func() {
+	if i >= len(p.held) {
+		return nil
+	}
+	release := p.held[i]
+	p.held[i] = nil
+	return release
+}
+
+// releaseHeld releases the run locks of plan's databases that never started.
+func (p *JobRunPlan) releaseHeld() {
+	for i := range p.held {
+		if release := p.takeHeld(i); release != nil {
+			release()
+		}
+	}
+}
 
 // First returns the first backup record of the plan, or nil.
 func (p *JobRunPlan) First() *models.BackupRecord {
@@ -90,13 +140,19 @@ func (p *JobRunPlan) First() *models.BackupRecord {
 
 // newRun returns the summary of a run of job started now by trigger.
 func newRun(job *models.Job, trigger models.BackupTrigger) *models.JobRun {
+	return newRunOf(job.ID, trigger)
+}
+
+// newRunOf returns the summary of a run of job jobID ("" for an ad-hoc run) started
+// now by trigger.
+func newRunOf(jobID string, trigger models.BackupTrigger) *models.JobRun {
 	now := time.Now().UTC()
 	id, err := models.NewRunID(now)
 	if err != nil {
 		id = fmt.Sprintf("run_%s_%d", now.Format("20060102_150405"), now.UnixNano())
 	}
 	return &models.JobRun{
-		ID: id, JobID: job.ID, Trigger: trigger, Status: models.JobRunRunning,
+		ID: id, JobID: jobID, Trigger: trigger, Status: models.JobRunRunning,
 		StartedAt: now, Databases: []models.JobRunDatabase{},
 	}
 }
@@ -165,19 +221,8 @@ func (s *Scheduler) planRun(ctx context.Context, job *models.Job, run *models.Jo
 			run.NewDatabases = res.New
 		}
 	}
-	for _, db := range databases {
-		o := opts
-		if plan.multi {
-			o.Database, o.Collections, o.ExcludeCollections = db, nil, nil
-		}
-		rec, err := s.backupEngine.Prepare(o)
-		if err != nil {
-			return plan, fmt.Errorf("prepare the backup of %s: %w", db, err)
-		}
-		rec.RunID = run.ID
-		plan.Records = append(plan.Records, rec)
-		plan.options = append(plan.options, o)
-		run.Databases = append(run.Databases, models.JobRunDatabase{Database: rec.Database, BackupID: rec.ID, Status: rec.Status})
+	if err := s.prepareDatabases(plan, opts, databases, plan.multi); err != nil {
+		return plan, err
 	}
 	if plan.Resolution != nil {
 		for _, db := range plan.Resolution.Missing {
@@ -188,6 +233,95 @@ func (s *Scheduler) planRun(ctx context.Context, job *models.Job, run *models.Jo
 		}
 	}
 	return plan, nil
+}
+
+// prepareDatabases adds to plan the in-progress record and the options of every one
+// of databases, backed up with opts; perDatabase sets each database's name in the
+// options and clears the collection filters, which only a single database has.
+func (s *Scheduler) prepareDatabases(plan *JobRunPlan, opts models.BackupOptions, databases []string, perDatabase bool) error {
+	for _, db := range databases {
+		o := opts
+		if perDatabase {
+			o.Database, o.Collections, o.ExcludeCollections = db, nil, nil
+		}
+		rec, err := s.backupEngine.Prepare(o)
+		if err != nil {
+			return fmt.Errorf("prepare the backup of %s: %w", db, err)
+		}
+		rec.RunID = plan.Run.ID
+		plan.Records = append(plan.Records, rec)
+		plan.options = append(plan.options, o)
+		plan.Run.Databases = append(plan.Run.Databases, models.JobRunDatabase{Database: rec.Database, BackupID: rec.ID, Status: rec.Status})
+	}
+	return nil
+}
+
+// AdHocRun is a run of several databases of one connection started without a job,
+// such as the dashboard's "Backup now" of more than one database. Its databases are
+// backed up like those of a multi-database job run: each into its own record and
+// archive, sharing the run's ID, up to Parallelism at once, and cancelled together.
+// The run itself is not stored (it belongs to no job); its records are, and one
+// summary event is published when it ends.
+type AdHocRun struct {
+	// Options are the backup options every database shares: connection and URI,
+	// storage target, compression, trigger and users and roles. Database is set per
+	// database; the collection filters are kept only for a run of one database.
+	Options models.BackupOptions
+	// Databases are backed up in this order (at least one).
+	Databases []string
+	// Locks are, by database, the releases of the run locks the caller took (a nil
+	// slice or entry: the run takes the lock when the database's turn comes,
+	// waiting for it as a job run does). Once PrepareAdHocRun succeeds the plan owns
+	// them and releases each when its database ends or the run is abandoned; when
+	// it fails the caller still owns them.
+	Locks []func()
+	// Busy are databases the run does not back up because another backup of them is
+	// running; they are recorded in the run as failed with BusyError.
+	Busy []string
+	// Parallelism is how many databases run at once (1 to models.MaxJobParallelism;
+	// 0 means 1, as for jobs).
+	Parallelism int
+}
+
+// BusyError is the error an ad-hoc run records for database db, which another
+// backup was running when the run started.
+func BusyError(db string) string {
+	return fmt.Sprintf("another backup of database %s is already running", db)
+}
+
+// PrepareAdHocRun plans an ad-hoc run: one in-progress backup record per database,
+// all sharing the run's ID. Start it with BeginJobRun and ExecuteJobRun (or give it
+// up with AbandonJobRun), exactly like the plan of a multi-database job. Expected
+// failures: ErrInvalidAdHocRun and the engine's validation errors.
+func (s *Scheduler) PrepareAdHocRun(req AdHocRun) (*JobRunPlan, error) {
+	if len(req.Databases) == 0 {
+		return nil, fmt.Errorf("%w: no database to back up", ErrInvalidAdHocRun)
+	}
+	if req.Locks != nil && len(req.Locks) != len(req.Databases) {
+		return nil, fmt.Errorf("%w: %d locks for %d databases", ErrInvalidAdHocRun, len(req.Locks), len(req.Databases))
+	}
+	opts := req.Options
+	opts.JobID = ""
+	if len(req.Databases) == 1 {
+		opts.Database = req.Databases[0]
+	}
+	plan := &JobRunPlan{Run: newRunOf("", opts.Trigger), multi: true, adhoc: true, parallelism: req.Parallelism}
+	if err := s.prepareDatabases(plan, opts, req.Databases, len(req.Databases) > 1); err != nil {
+		return nil, err
+	}
+	for _, db := range req.Busy {
+		plan.Run.Databases = append(plan.Run.Databases, models.JobRunDatabase{Database: db, Status: models.StatusFailed, Error: BusyError(db)})
+	}
+	plan.held = slices.Clone(req.Locks)
+	return plan, nil
+}
+
+// saveRunOf stores plan's run; an ad-hoc run has no job to store it with.
+func (s *Scheduler) saveRunOf(ctx context.Context, plan *JobRunPlan) error {
+	if plan.adhoc {
+		return nil
+	}
+	return s.metadataStore.SaveJobRun(ctx, plan.Run)
 }
 
 // claimJobRun marks a run of job jobID as active, or fails with ErrJobRunning.
@@ -220,32 +354,36 @@ func (s *Scheduler) ActiveJobRun(jobID string) string {
 	return s.jobRuns[jobID]
 }
 
-// BeginJobRun starts a prepared multi-database run: it marks the job's run as active
-// (ErrJobRunning when another one is), stores the run and every database's backup
-// record as queued, and registers them with the run registry, so the dashboard
-// shows them and cancelling the run reaches the databases still waiting. It does
-// nothing for single-database plans, whose caller locks, stores and tracks the one
-// record. Call ExecuteJobRun next, or AbandonJobRun when the run cannot start.
+// BeginJobRun starts a prepared multi-database or ad-hoc run: it marks the job's
+// run as active (ErrJobRunning when another one is; an ad-hoc run has no job to
+// claim), stores the run and every database's backup record as queued, and
+// registers them with the run registry, so the dashboard shows them and cancelling
+// the run reaches the databases still waiting. It does nothing for single-database
+// plans, whose caller locks, stores and tracks the one record. Call ExecuteJobRun
+// next, or AbandonJobRun when the run cannot start.
 func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	if !plan.Multi() || plan.begun {
 		return nil
 	}
-	if err := s.claimJobRun(plan.Job.ID, plan.Run.ID); err != nil {
-		return err
+	jobID := plan.jobID()
+	if !plan.adhoc {
+		if err := s.claimJobRun(jobID, plan.Run.ID); err != nil {
+			return err
+		}
 	}
 	plan.begun = true
-	if err := s.metadataStore.SaveJobRun(ctx, plan.Run); err != nil {
+	if err := s.saveRunOf(ctx, plan); err != nil {
 		s.logger.Warn("failed to record the job run as running",
-			slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID), slog.Any("error", err))
+			slog.String("job_id", jobID), slog.String("run_id", plan.Run.ID), slog.Any("error", err))
 	}
 	plan.trackers = make([]*runs.Run, len(plan.Records))
 	for i, rec := range plan.Records {
 		if err := s.metadataStore.SaveBackupRecord(ctx, rec); err != nil {
 			s.logger.Warn("failed to record a queued backup of the job run",
-				slog.String("job_id", plan.Job.ID), slog.String("backup_id", rec.ID), slog.Any("error", err))
+				slog.String("job_id", jobID), slog.String("backup_id", rec.ID), slog.Any("error", err))
 		}
 		tracked, err := s.registry.Register(runs.Meta{
-			Kind: models.RunBackup, ID: rec.ID, JobID: plan.Job.ID, Database: rec.Database, Group: plan.Run.ID,
+			Kind: models.RunBackup, ID: rec.ID, JobID: jobID, Database: rec.Database, Group: plan.Run.ID,
 		})
 		if err != nil {
 			s.logger.Warn("backup of the job run is not tracked", slog.String("backup_id", rec.ID), slog.Any("error", err))
@@ -255,12 +393,14 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	return nil
 }
 
-// AbandonJobRun records a begun multi-database run that could not start as failed
-// with cause: every queued record, the run itself and the job's active-run mark.
+// AbandonJobRun records a begun multi-database or ad-hoc run that could not start as
+// failed with cause: every queued record, the run itself and the job's active-run
+// mark. The run locks the caller of an ad-hoc run took are released.
 func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause error) {
 	if !plan.Multi() {
 		return
 	}
+	defer plan.releaseHeld()
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	msg := "backup not started: " + redact.Text(cause.Error())
@@ -276,10 +416,12 @@ func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause e
 	}
 	plan.Run.Error = msg
 	plan.Run.Finish(time.Now())
-	if err := s.metadataStore.SaveJobRun(persistCtx, plan.Run); err != nil {
+	if err := s.saveRunOf(persistCtx, plan); err != nil {
 		s.logger.Error("failed to persist an abandoned job run", slog.String("run_id", plan.Run.ID), slog.Any("error", err))
 	}
-	s.releaseJobRun(plan.Job.ID, plan.Run.ID)
+	if !plan.adhoc {
+		s.releaseJobRun(plan.Job.ID, plan.Run.ID)
+	}
 }
 
 // cancellation returns the Cancellation of a database of the run, or nil when none
@@ -316,7 +458,8 @@ func (s *Scheduler) runMulti(ctx context.Context, plan *JobRunPlan, scheduled bo
 	if err := s.BeginJobRun(ctx, plan); err != nil {
 		return plan.Run, err
 	}
-	released := false
+	// An ad-hoc run claimed no job run.
+	released := plan.adhoc
 	release := func() {
 		if !released {
 			released = true
@@ -325,13 +468,13 @@ func (s *Scheduler) runMulti(ctx context.Context, plan *JobRunPlan, scheduled bo
 	}
 	defer release()
 	s.logger.Info("running multi-database backup job",
-		slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID),
-		slog.Int("databases", len(plan.Records)), slog.Int("parallelism", plan.Job.EffectiveParallelism()))
+		slog.String("job_id", plan.jobID()), slog.String("run_id", plan.Run.ID),
+		slog.Int("databases", len(plan.Records)), slog.Int("parallelism", plan.effectiveParallelism()))
 
 	var mu sync.Mutex
 	work := make(chan int)
 	var wg sync.WaitGroup
-	for range min(plan.Job.EffectiveParallelism(), len(plan.Records)) {
+	for range min(plan.effectiveParallelism(), len(plan.Records)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -364,11 +507,16 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	defer tracked.End()
 	mu.Lock()
 	rec, opts := plan.Records[i], plan.options[i]
+	release := plan.takeHeld(i)
 	mu.Unlock()
 
 	// Bound now, so a cancellation of the run also ends the wait for the lock below.
 	dbCtx := tracked.Bind(ctx)
-	release, err := s.waitForDatabase(dbCtx, rec)
+	var err error
+	if release == nil {
+		// No lock was taken for this database when the run started: wait for it.
+		release, err = s.waitForDatabase(dbCtx, rec)
+	}
 	if err != nil {
 		now := time.Now().UTC()
 		rec.Status = models.StatusFailed
@@ -403,10 +551,10 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	defer cancel()
 	if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, rec); saveErr != nil {
 		s.logger.Error("failed to persist backup record",
-			slog.String("job_id", plan.Job.ID), slog.String("backup_id", rec.ID), slog.Any("error", saveErr))
+			slog.String("job_id", plan.jobID()), slog.String("backup_id", rec.ID), slog.Any("error", saveErr))
 	}
 	if s.publisher != nil {
-		e := events.BackupEvent(rec, err, plan.Job.ID, rec.Database)
+		e := events.BackupEvent(rec, err, plan.jobID(), rec.Database)
 		e.RunID, e.InRun = plan.Run.ID, true
 		s.publisher.Publish(persistCtx, e)
 		if ve, ok := events.VerificationEvent(rec, events.VerificationAfterUpload); ok {
@@ -415,7 +563,7 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	}
 	if err != nil {
 		s.logger.Warn("database of the job run failed",
-			slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID),
+			slog.String("job_id", plan.jobID()), slog.String("run_id", plan.Run.ID),
 			slog.String("database", rec.Database), slog.String("status", string(rec.Status)), slog.Any("error", err))
 	}
 	// The run is stored after every database, so a crash leaves the outcome of the
@@ -424,9 +572,9 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	mu.Lock()
 	plan.Records[i] = rec
 	plan.setDatabase(rec)
-	if saveErr := s.metadataStore.SaveJobRun(persistCtx, plan.Run); saveErr != nil {
+	if saveErr := s.saveRunOf(persistCtx, plan); saveErr != nil {
 		s.logger.Warn("failed to record the progress of the job run",
-			slog.String("job_id", plan.Job.ID), slog.String("run_id", plan.Run.ID), slog.Any("error", saveErr))
+			slog.String("job_id", plan.jobID()), slog.String("run_id", plan.Run.ID), slog.Any("error", saveErr))
 	}
 	mu.Unlock()
 }
@@ -489,27 +637,30 @@ func (s *Scheduler) waitForDatabase(ctx context.Context, rec *models.BackupRecor
 	}
 }
 
-// finishMulti records the outcome of a multi-database run (see runMulti).
+// finishMulti records the outcome of a multi-database or ad-hoc run (see runMulti).
+// An ad-hoc run has no job whose run times and known databases to update.
 func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan) (*models.JobRun, error) {
-	job, run := plan.Job, plan.Run
+	run := plan.Run
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 
 	run.Finish(time.Now())
-	s.recordRunTimes(persistCtx, job)
-	run.AddedDatabases = s.storeKnownDatabases(persistCtx, plan)
-	if err := s.metadataStore.SaveJobRun(persistCtx, run); err != nil {
-		s.logger.Error("failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
+	if !plan.adhoc {
+		s.recordRunTimes(persistCtx, plan.Job)
+		run.AddedDatabases = s.storeKnownDatabases(persistCtx, plan)
+	}
+	if err := s.saveRunOf(persistCtx, plan); err != nil {
+		s.logger.Error("failed to persist the job run", slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
 	if s.publisher != nil {
 		if len(run.AddedDatabases) > 0 {
-			s.publisher.Publish(persistCtx, events.DatabasesAddedEvent(job.ID, run.ID, run.AddedDatabases))
+			s.publisher.Publish(persistCtx, events.DatabasesAddedEvent(plan.jobID(), run.ID, run.AddedDatabases))
 		}
 		s.publisher.Publish(persistCtx, events.JobRunEvent(run))
 	}
 	ok, failed, cancelled, _ := run.Counts()
 	s.logger.Info("multi-database backup job finished",
-		slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.String("status", string(run.Status)),
+		slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.String("status", string(run.Status)),
 		slog.Int("succeeded", ok), slog.Int("failed", failed), slog.Int("cancelled", cancelled),
 		slog.Int("new_databases", len(run.NewDatabases)))
 
