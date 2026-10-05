@@ -147,7 +147,14 @@ type BackupRecord struct {
 	EncryptionMode string `json:"encryption_mode,omitempty"`
 
 	// Collections lists specific collections included in the backup, if filtered.
+	// Once the backup ran, wildcard patterns of the request are replaced by the
+	// collections they matched.
 	Collections []string `json:"collections,omitempty"`
+
+	// ExcludedCollections lists the collections the backup excluded by request (with
+	// wildcard patterns replaced by the collections they matched), if any. Exclusions
+	// derived from an include filter are not listed.
+	ExcludedCollections []string `json:"exclude_collections,omitempty"`
 
 	// StartedAt is the timestamp when the dump process initiated.
 	StartedAt time.Time `json:"started_at"`

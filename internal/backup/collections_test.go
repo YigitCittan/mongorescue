@@ -75,28 +75,27 @@ func TestBackupSeveralCollectionsBecomeExclusions(t *testing.T) {
 	if got := runner.values("--excludeCollection"); !slices.Equal(got, want) {
 		t.Fatalf("--excludeCollection = %v; want %v", got, want)
 	}
-	if !slices.Equal(record.Collections, []string{" orders", "customers", "orders"}) {
-		t.Fatalf("the record keeps the requested collections, got %v", record.Collections)
+	// The record names the filter that was applied: trimmed, without duplicates.
+	if !slices.Equal(record.Collections, []string{"orders", "customers"}) || !slices.Equal(record.ExcludedCollections, []string{"customers_tmp"}) {
+		t.Fatalf("record filter = %v, %v", record.Collections, record.ExcludedCollections)
 	}
 }
 
-// TestDumpArgsKeepWildcardsLiteral checks that names with '*' or '\' reach mongodump
-// unchanged: --db, --collection and --excludeCollection compare names literally (an
-// integration test checks that --excludeCollection=a* skips "a*" only), unlike the
-// namespace patterns of mongorestore, which the restore engine escapes.
-func TestDumpArgsKeepWildcardsLiteral(t *testing.T) {
+// TestDumpArgsKeepNamesLiteral checks that names with '\' and a database name with
+// '*' reach mongodump unchanged: --db, --collection and --excludeCollection compare
+// names literally, unlike the namespace patterns of mongorestore, which the restore
+// engine escapes. Collection names with '*' or '?' are wildcard patterns, expanded
+// by the engine (see patterns_test.go), and never reach mongodump.
+func TestDumpArgsKeepNamesLiteral(t *testing.T) {
 	runner := &argsRunner{}
 	engine := NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", WithRunner(runner.run))
-	if _, err := engine.Run(context.Background(), models.BackupOptions{Database: "x*", Collections: []string{"a*"}, ExcludeCollections: []string{`a\b`, "*"}}); err != nil {
+	if _, err := engine.Run(context.Background(), models.BackupOptions{Database: "x*", ExcludeCollections: []string{`a\b`, "c"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := runner.values("--db"); !slices.Equal(got, []string{"x*"}) {
 		t.Fatalf("--db = %q", got)
 	}
-	if got := runner.values("--collection"); !slices.Equal(got, []string{"a*"}) {
-		t.Fatalf("--collection = %q", got)
-	}
-	if got := runner.values("--excludeCollection"); !slices.Equal(got, []string{`a\b`, "*"}) {
+	if got := runner.values("--excludeCollection"); !slices.Equal(got, []string{`a\b`, "c"}) {
 		t.Fatalf("--excludeCollection = %q", got)
 	}
 }

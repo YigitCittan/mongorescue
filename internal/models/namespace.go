@@ -66,6 +66,21 @@ func ValidateCollectionName(name string) error {
 	return nil
 }
 
+// IsCollectionPattern reports whether a collection filter entry is a wildcard pattern:
+// it contains "*" (any run of characters) or "?" (one character). Backup filters
+// never take such an entry as a literal name; it is matched against the database's
+// collections (see MatchCollectionPattern).
+func IsCollectionPattern(name string) bool {
+	return strings.ContainsAny(name, "*?")
+}
+
+// MatchCollectionPattern reports whether collection name matches the wildcard
+// pattern ("*" any run of characters, "?" one character, case-sensitive). Patterns
+// never match system collections (names starting with "system.").
+func MatchCollectionPattern(pattern, name string) bool {
+	return !strings.HasPrefix(name, "system.") && MatchDatabasePattern(pattern, name)
+}
+
 // ValidateCollectionNames validates every non-blank entry of names (blank entries are
 // ignored by the tools' argument builders).
 func ValidateCollectionNames(names []string) error {
