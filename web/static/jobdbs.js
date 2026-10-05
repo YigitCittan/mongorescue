@@ -66,6 +66,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "+{n} more",
       colls_single_only: "Collection filters only apply to a single database. Choose Single to back up only some collections.",
       need_selection: "Check at least one database.",
+      all_excluded: "All databases are excluded. Uncheck at least one to back it up.",
       need_pattern: "Enter at least one include pattern.",
       cell_n: "{n} databases",
       cell_all: "All",
@@ -166,6 +167,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "+{n} daha",
       colls_single_only: "Koleksiyon filtreleri yalnızca tek veritabanında geçerlidir. Yalnızca bazı koleksiyonları yedeklemek için Tek'i seçin.",
       need_selection: "En az bir veritabanı işaretleyin.",
+      all_excluded: "Tüm veritabanları hariç tutuldu. Yedeklemek için en az birinin işaretini kaldırın.",
       need_pattern: "En az bir dahil deseni girin.",
       cell_n: "{n} veritabanı",
       cell_all: "Tümü",
@@ -266,6 +268,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "+{n} weitere",
       colls_single_only: "Collection-Filter gelten nur für eine einzelne Datenbank. Wählen Sie „Eine“, um nur einige Collections zu sichern.",
       need_selection: "Markieren Sie mindestens eine Datenbank.",
+      all_excluded: "Alle Datenbanken sind ausgeschlossen. Entfernen Sie bei mindestens einer das Häkchen, um sie zu sichern.",
       need_pattern: "Geben Sie mindestens ein Einschlussmuster ein.",
       cell_n: "{n} Datenbanken",
       cell_all: "Alle",
@@ -366,6 +369,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "+{n} más",
       colls_single_only: "Los filtros de colecciones solo se aplican a una única base de datos. Elija «Una» para respaldar solo algunas colecciones.",
       need_selection: "Marque al menos una base de datos.",
+      all_excluded: "Todas las bases de datos están excluidas. Desmarque al menos una para respaldarla.",
       need_pattern: "Introduzca al menos un patrón de inclusión.",
       cell_n: "{n} bases de datos",
       cell_all: "Todas",
@@ -466,6 +470,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "+{n} de plus",
       colls_single_only: "Les filtres de collections ne s'appliquent qu'à une seule base. Choisissez « Une » pour ne sauvegarder que certaines collections.",
       need_selection: "Cochez au moins une base.",
+      all_excluded: "Toutes les bases sont exclues. Décochez-en au moins une pour la sauvegarder.",
       need_pattern: "Saisissez au moins un motif d'inclusion.",
       cell_n: "{n} bases",
       cell_all: "Toutes",
@@ -566,6 +571,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "另外 {n} 个",
       colls_single_only: "集合筛选仅适用于单个数据库。如需只备份部分集合，请选择“单个”。",
       need_selection: "请至少勾选一个数据库。",
+      all_excluded: "所有数据库均已排除。请至少取消勾选一个以进行备份。",
       need_pattern: "请至少输入一个包含模式。",
       cell_n: "{n} 个数据库",
       cell_all: "全部",
@@ -666,6 +672,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "ほか {n} 個",
       colls_single_only: "コレクションのフィルターは単一のデータベースにのみ適用されます。一部のコレクションだけをバックアップするには「単一」を選んでください。",
       need_selection: "少なくとも 1 つのデータベースをチェックしてください。",
+      all_excluded: "すべてのデータベースが除外されています。バックアップするには少なくとも 1 つのチェックを外してください。",
       need_pattern: "含めるパターンを少なくとも 1 つ入力してください。",
       cell_n: "{n} 個のデータベース",
       cell_all: "すべて",
@@ -766,6 +773,7 @@ const JOBDB_TRANSLATIONS = {
       preview_more: "ещё {n}",
       colls_single_only: "Фильтры коллекций применяются только к одной базе данных. Выберите «Одна», чтобы копировать лишь некоторые коллекции.",
       need_selection: "Отметьте хотя бы одну базу данных.",
+      all_excluded: "Все базы данных исключены. Снимите отметку хотя бы с одной, чтобы создать её резервную копию.",
       need_pattern: "Введите хотя бы один шаблон включения.",
       cell_n: "Баз данных: {n}",
       cell_all: "Все",
@@ -862,10 +870,38 @@ const jobDbs = {
 // Shared selector parts (the job form and the Backup now dialog)
 // ---------------------------------------------------------------------------
 
+// A selector keeps one set of checked names per mode, and a check means the
+// opposite in each: in Selected (mode "list") state.selected holds the databases
+// to back up, in All state.excluded holds the ones to skip. The sets never feed
+// each other, so switching modes never turns an included database into an
+// excluded one; All starts with nothing excluded.
+
+// The databases a multi-database selection backs up out of listed (the names the
+// connection lists): the checked ones in Selected, the unchecked ones in All;
+// sorted, empty for any other mode.
+function dbSelIncluded(mode, listed, selected, excluded) {
+  if (mode === "list") return Array.from(selected).sort();
+  if (mode === "all") return (listed || []).filter(n => !excluded.has(n)).sort();
+  return [];
+}
+
+// The translation key of what keeps a multi-database selection from being used, or
+// "": Selected needs a checked database; All only fails when its exclusions leave
+// none of the listed databases (never because nothing is checked).
+function dbSelProblem(mode, listed, selected, excluded) {
+  if (mode === "list") return selected.size === 0 ? "jobdb.need_selection" : "";
+  if (mode === "all") {
+    const names = listed || [];
+    return names.length > 0 && names.every(n => excluded.has(n)) ? "jobdb.all_excluded" : "";
+  }
+  return "";
+}
+
 // Binds the segmented mode control, the search field and the checkbox lists of
 // the selector whose elements start with prefix ("job", "instant"). state holds
-// mode, search, selected and excluded; setMode(mode) switches modes, render()
-// redraws the lists and changed() runs after a box is (un)checked.
+// mode, search, selected (Selected's list) and excluded (All's list); setMode(mode)
+// switches modes, render() redraws the lists and changed() runs after a box is
+// (un)checked.
 function dbSelBind(prefix, modes, state, hooks) {
   const group = document.getElementById(`${prefix}-db-mode`);
   if (!group) return false;
@@ -895,6 +931,7 @@ function dbSelBind(prefix, modes, state, hooks) {
     list.addEventListener("change", (e) => {
       const box = e.target;
       if (!box || box.type !== "checkbox") return;
+      // Each list writes only its own mode's set (see dbSelIncluded).
       const set = id === `${prefix}-dbs-list` ? state.selected : state.excluded;
       if (box.checked) set.add(box.value); else set.delete(box.value);
       hooks.changed();
@@ -993,6 +1030,8 @@ function jobDbsSetMode(mode, user) {
   if (note) note.hidden = !multi;
   const rtScope = document.getElementById("job-rt-databases-group");
   if (rtScope) rtScope.hidden = !multi;
+  // The boxes always show the set of the mode now shown.
+  if (multi) jobDbsRenderLists();
   if (multi || user) jobDbsSchedulePreview();
 }
 
@@ -1063,20 +1102,27 @@ function jobDbsFill(job) {
 function jobDbsSelection() {
   switch (jobDbs.mode) {
     case "list": {
-      const databases = Array.from(jobDbs.selected).sort();
-      if (databases.length === 0) {
-        showToast(t("jobdb.need_selection"), "error");
+      const problem = dbSelProblem("list", jobDbs.names, jobDbs.selected, jobDbs.excluded);
+      if (problem) {
+        showToast(t(problem), "error");
         return null;
       }
-      return { mode: "list", databases };
+      return { mode: "list", databases: dbSelIncluded("list", jobDbs.names, jobDbs.selected, jobDbs.excluded) };
     }
-    case "all":
+    case "all": {
+      // Databases the job names explicitly are backed up whatever is excluded.
+      const problem = (jobDbs.extraDatabases || []).length > 0 ? "" : dbSelProblem("all", jobDbs.names, jobDbs.selected, jobDbs.excluded);
+      if (problem) {
+        showToast(t(problem), "error");
+        return null;
+      }
       return {
         mode: "all",
         databases: (jobDbs.extraDatabases || []).slice(),
         exclude: Array.from(jobDbs.excluded).sort().concat(jobDbs.extraExcludes),
         auto_include_new: !!(document.getElementById("job-db-auto") || {}).checked
       };
+    }
     case "pattern": {
       const include = jobDbsPatterns("job-db-include");
       if (include.length === 0) {
@@ -1625,6 +1671,8 @@ function instantDbsSetMode(mode) {
   const note = document.getElementById("instant-colls-note");
   if (note) note.hidden = !multi;
   instantDbsApplyRequired();
+  // The boxes always show the set of the mode now shown.
+  if (multi) instantDbsRenderLists();
   instantDbsRenderSummary();
 }
 
@@ -1683,9 +1731,17 @@ function instantDbsReset() {
 
 // The databases the dialog backs up in a multi-database mode, sorted.
 function instantDbsNames() {
-  if (instantDbs.mode === "list") return Array.from(instantDbs.selected).sort();
-  if (instantDbs.mode === "all") return instantDbsListed().filter(n => !instantDbs.excluded.has(n)).sort();
-  return [];
+  return dbSelIncluded(instantDbs.mode, instantDbsListed(), instantDbs.selected, instantDbs.excluded);
+}
+
+// The translation key of what keeps the dialog's databases from being backed up,
+// or "" (see dbSelProblem). All backs up the listed databases, so it also needs the
+// list: still loading, failed or empty.
+function instantDbsProblem() {
+  const problem = dbSelProblem(instantDbs.mode, instantDbsListed(), instantDbs.selected, instantDbs.excluded);
+  if (problem || instantDbs.mode !== "all" || instantDbsListed().length > 0) return problem;
+  if (instantDbs.listFailed) return "instantdb.list_failed";
+  return instantDbs.dbs === null ? "jobdb.preview_loading" : "jobdb.list_none";
 }
 
 // "3 databases selected · about 1.2 GB" from the sizes the connection listed.
@@ -1699,9 +1755,10 @@ function instantDbsRenderSummary() {
   }
   box.hidden = false;
   const names = instantDbsNames();
-  box.classList.toggle("text-danger", names.length === 0 || names.length > INSTANTDB_MAX);
-  if (names.length === 0) {
-    box.textContent = t("jobdb.need_selection");
+  const problem = instantDbsProblem();
+  box.classList.toggle("text-danger", (problem !== "" && problem !== "jobdb.preview_loading") || names.length > INSTANTDB_MAX);
+  if (problem) {
+    box.textContent = t(problem);
     return;
   }
   if (names.length > INSTANTDB_MAX) {
@@ -1727,11 +1784,12 @@ function instantDbsSource() {
     showToast(t("conn.add_first"), "error");
     return null;
   }
-  const databases = instantDbsNames();
-  if (databases.length === 0) {
-    showToast(t("jobdb.need_selection"), "error");
+  const problem = instantDbsProblem();
+  if (problem) {
+    showToast(t(problem), "error");
     return null;
   }
+  const databases = instantDbsNames();
   if (databases.length > INSTANTDB_MAX) {
     showToast(tf("instantdb.too_many", { max: INSTANTDB_MAX }), "error");
     return null;
