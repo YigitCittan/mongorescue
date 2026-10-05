@@ -15,6 +15,9 @@ import (
 // member). Tag names and values are query-escaped; callers validate that they hold
 // no ',' or ':' (see models.ReadPreference.Validate).
 //
+// The primary takes no maxStalenessSeconds (the driver and the tools refuse the
+// pair), so mode "primary" also removes that option.
+//
 // An empty mode returns uri unchanged, so the connection string's own read
 // preference (the primary by default) applies as before. Both the Database Tools
 // and the Go driver read these options from the URI, so mongodump (through
@@ -48,6 +51,10 @@ func WithReadPreference(uri, mode string, tagSets []map[string]string) string {
 		switch strings.ToLower(key) {
 		case "readpreference", "readpreferencetags":
 			continue
+		case "maxstalenessseconds":
+			if mode == "primary" {
+				continue
+			}
 		}
 		kept = append(kept, opt)
 	}
@@ -56,6 +63,29 @@ func WithReadPreference(uri, mode string, tagSets []map[string]string) string {
 		kept = append(kept, "readPreferenceTags="+encodeTagSet(set))
 	}
 	return base + "?" + strings.Join(kept, "&")
+}
+
+// HasOption reports whether uri sets the connection string option name (matched
+// case-insensitively, also percent-encoded).
+func HasOption(uri, name string) bool {
+	rest := uri
+	if i := strings.Index(uri, "://"); i != -1 {
+		rest = uri[i+3:]
+	}
+	i := strings.IndexByte(rest, '?')
+	if i == -1 {
+		return false
+	}
+	for _, opt := range strings.Split(rest[i+1:], "&") {
+		key, _, _ := strings.Cut(opt, "=")
+		if unescaped, err := url.QueryUnescape(key); err == nil {
+			key = unescaped
+		}
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // encodeTagSet renders a tag set as "k1:v1,k2:v2", sorted by name and
