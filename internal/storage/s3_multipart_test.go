@@ -83,7 +83,7 @@ func TestS3SaveAbortsMultipartUploadAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Two full parts, so the multipart upload is created before the cancellation.
-	body := &cancelAfterReader{ctx: ctx, cancel: cancel, left: 11 << 20}
+	body := &cancelAfterReader{ctx: ctx, cancel: cancel, left: 2*s3PartSize + 1<<20}
 	if _, err := st.Save(ctx, "db/cancelled.archive", body); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Save error = %v; want context.Canceled", err)
 	}
@@ -109,7 +109,7 @@ func TestS3SaveReadErrorAbortsMultipartUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	boom := errors.New("dump failed")
-	body := io.MultiReader(bytes.NewReader(make([]byte, 11<<20)), &errReader{err: boom})
+	body := io.MultiReader(bytes.NewReader(make([]byte, 2*s3PartSize+1<<20)), &errReader{err: boom})
 	if _, err := st.Save(context.Background(), "db/failed.archive", body); !errors.Is(err, boom) {
 		t.Fatalf("Save error = %v; want %v", err, boom)
 	}
@@ -137,7 +137,7 @@ func TestS3SaveLogsFailedAbort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := io.MultiReader(bytes.NewReader(make([]byte, 11<<20)), &errReader{err: errors.New("dump failed")})
+	body := io.MultiReader(bytes.NewReader(make([]byte, 2*s3PartSize+1<<20)), &errReader{err: errors.New("dump failed")})
 	if _, err := st.Save(context.Background(), "db/failed.archive", body); err == nil {
 		t.Fatal("Save must fail")
 	}
