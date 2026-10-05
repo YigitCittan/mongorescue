@@ -322,6 +322,12 @@ func New(cfg Config) *Rotator {
 	return &Rotator{cfg: cfg, key: cfg.Key}
 }
 
+// PreviousKeyKept reports whether secret.key.previous exists.
+func (r *Rotator) PreviousKeyKept() bool {
+	ok, _ := secretbox.KeyFileExists(r.cfg.Files.Previous)
+	return ok && !r.cfg.FromEnv
+}
+
 // FromEnv reports whether the key comes from MONGORESCUE_SECRET_KEY.
 func (r *Rotator) FromEnv() bool { return r.cfg.FromEnv }
 

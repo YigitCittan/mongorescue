@@ -30,6 +30,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
+	"github.com/yigitcittan/mongorescue/internal/keyrotation"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
@@ -207,11 +208,17 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("load secret key: %w", err)
 	}
-	box, err := secretbox.New(key.Key)
-	if err != nil {
-		return nil, fmt.Errorf("load secret key: %w", err)
+	// keyrotation.Open settles a secret key rotation that a crash interrupted; the
+	// key it returns is the one the database is sealed with (secret.key again).
+	keyFiles := keyrotation.FilesIn(cfg.DataDir)
+	opened, err := keyrotation.Open(ctx, keyFiles, key.Key, key.FromEnv,
+		func(ctx context.Context, box *secretbox.Box) (*store.SQLiteStore, error) {
+			return store.OpenSQLite(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
+		}, logger)
+	var metaStore *store.SQLiteStore
+	if opened != nil {
+		metaStore, key.Key = opened.Store, opened.Key
 	}
-	metaStore, err := store.OpenSQLite(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
 	if err != nil {
 		if key.Created && errors.Is(err, secretbox.ErrSecretKeyMismatch) {
 			// Do not leave a useless new key next to a database it cannot open.
@@ -263,6 +270,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("initialize single sign-on: %w", err)
 	}
+	oidcFlowRef := secretbox.NewRef(oidcFlowBox)
 	settingsSvc.SetOIDCGuard(&oidcGuard{auth: authSvc, client: oidcClient, desktop: o.desktop})
 
 	imp := &legacyImport{logger: logger, legacy: legacy, settings: settingsSvc, targets: targetSvc,
@@ -444,6 +452,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Targets:          targetSvc,
 		LatestSnapshot:   metaBackupSvc.Latest,
 		MetadataPrefix:   metaBackupSvc.Prefix(),
+		PreviousKeyFile:  keyFiles.Previous,
 		Version:          o.version,
 	})
 	if err != nil {
@@ -452,6 +461,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err = kitSvc.Refresh(ctx); err != nil {
 		logger.Warn("could not check whether the recovery kit is current", logsafe.Error(err))
 	}
+	// secret.key rotation re-seals the store, then hands the new key to every
+	// component holding it or one of its subkeys.
+	holders := &keyHolders{auth: authSvc, oidcFlow: oidcFlowRef, metaBackup: metaBackupSvc, kit: kitSvc, logger: logger}
+	keyRotator := keyrotation.New(keyrotation.Config{
+		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv,
+		RetiredMAC: func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
+		Apply:      holders.apply,
+		Logger:     logger,
+	})
 
 	// Recovery readiness: the RPO checker (job.rpo_missed / job.rpo_recovered, the
 	// job_rpo_* gauges) and the per-database readiness report. A finished backup
@@ -562,6 +580,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		SettingsUpdater:     settingsSvc,
 		SecondApproverCheck: authSvc.CheckSecondApproverPossible,
 		Users:               authSvc,
+		KeyRotator:          keyRotator,
 		Publisher:           bus,
 		Verifier:            integritySvc,
 		Inspector:           prober,
@@ -672,6 +691,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithIntegrity(integritySvc),
 		server.WithMetadataBackup(metaBackupSvc),
 		server.WithRecoveryKit(kitSvc),
+		server.WithKeyRotation(keyRotator),
 		server.WithReadiness(readinessSvc),
 		server.WithPITR(pitrSvc),
 		server.WithHeartbeat(heartbeatSvc),
@@ -679,7 +699,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
 	} else {
-		serverOpts = append(serverOpts, server.WithOIDC(oidcClient, oidcFlowBox))
+		serverOpts = append(serverOpts, server.WithOIDCRef(oidcClient, oidcFlowRef))
 	}
 	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger, serverOpts...)
 

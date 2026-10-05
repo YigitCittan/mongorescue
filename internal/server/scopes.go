@@ -145,6 +145,10 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/recovery-kit":         auth.ScopeRead,
 	"POST /api/v1/recovery-kit":        auth.ScopeAdmin,
 
+	// Key rotation: secret.key additionally needs a session and the password.
+	"GET /api/v1/security/key-rotation":       auth.ScopeRead,
+	"POST /api/v1/security/rotate-secret-key": auth.ScopeAdmin,
+
 	// Bulk endpoints need the lowest scope of their actions (operator: running jobs
 	// now; verifying, pinning and cancelling plug in here too). The operations service
 	// then requires the scope of the requested action, mirroring its single-item
