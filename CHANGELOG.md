@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-05
+
+### Fixed
+- Dashboard database selector (*Back up now* and the job form): in **All** a checked database is excluded, so the list starts with nothing checked and never takes over what **Selected** checked (each mode keeps its own checks), the count and size cover the databases that will be backed up, and the dialog is only blocked when every database is excluded, with its own message ("All databases are excluded") instead of "Check at least one database".
+
 ## [0.19.0] - 2026-10-05
 
 ### Added
