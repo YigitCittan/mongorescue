@@ -346,6 +346,17 @@ func TestPITRRestoreRefusals(t *testing.T) {
 		if _, err := e.ExecutePITR(context.Background(), req, f.run(), rec); !errors.Is(err, ErrNoServerVersion) {
 			t.Fatalf("err = %v, want ErrNoServerVersion", err)
 		}
+		// The target's version stands in for the base's.
+		r := &pitrRunner{applied: "applied 3 oplog entries"}
+		e = f.engine(r, &pitrAdmin{})
+		WithServerVersion(func(context.Context, string) (string, error) { return "7.0.12", nil })(e)
+		rec, _ = e.PreparePITR(req, f.run())
+		if _, err := e.ExecutePITR(context.Background(), req, f.run(), rec); err != nil {
+			t.Fatalf("with the target's version: %v", err)
+		}
+		if !strings.Contains(string(r.stdins[1]), "7.0.12") {
+			t.Fatal("the synthetic archive does not record the target's version")
+		}
 	})
 	t.Run("prepare", func(t *testing.T) {
 		f := newPITRFixture(t)

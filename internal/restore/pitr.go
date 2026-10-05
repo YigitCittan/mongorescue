@@ -188,7 +188,11 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 		return e.failRun(ctx, record, fmt.Errorf("restore: %w: %s", encryption.ErrEncryptionKeyRequired, KeyRequiredHint),
 			"the base backup or the oplog is encrypted but no decryption key is configured: "+KeyRequiredHint)
 	}
-	if err := e.checkPITRClones(ctx, uri, info); err != nil {
+	version, err := e.pitrServerVersion(ctx, uri, base)
+	if err != nil {
+		return e.failRun(ctx, record, err, err.Error()+"; the target is untouched")
+	}
+	if err = e.checkPITRClones(ctx, uri, info); err != nil {
 		return e.failRun(ctx, record, err, fmt.Sprintf("%v; nothing was written, retry the restore", err))
 	}
 
@@ -225,7 +229,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 
 	// Pass 2: the oplog.
 	tracker.Printf("pass 2 of 2: replaying %d oplog chunk(s) up to %d:%d", info.Chunks, info.Limit.T, info.Limit.I)
-	ops, applied, err := e.replayPITROplog(ctx, uri, run, info)
+	ops, applied, err := e.replayPITROplog(ctx, uri, version, run, info)
 	info.OpsReplayed, info.OpsApplied = ops, applied
 	if err != nil {
 		return failAfterStart(err, false)
@@ -253,6 +257,34 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 		slog.Float64("duration_sec", record.DurationSeconds),
 	)
 	return record, nil
+}
+
+// ServerVersionFunc returns the MongoDB version of the server at uri.
+type ServerVersionFunc func(ctx context.Context, uri string) (string, error)
+
+// WithServerVersion sets how a point-in-time restore learns the MongoDB version its
+// synthetic oplog archive records when the base backup records none (base backups
+// of a whole instance have no manifest): the target server's version.
+func WithServerVersion(fn ServerVersionFunc) Option {
+	return func(e *Engine) {
+		e.serverVersion = fn
+	}
+}
+
+// pitrServerVersion returns the version the synthetic oplog archive records: the
+// base's, or else the target's. It fails with ErrNoServerVersion without either.
+func (e *Engine) pitrServerVersion(ctx context.Context, uri string, base *models.BackupRecord) (string, error) {
+	if v := strings.TrimSpace(base.ServerVersion); v != "" {
+		return v, nil
+	}
+	if e.serverVersion == nil {
+		return "", fmt.Errorf("%w (base %s)", ErrNoServerVersion, base.ID)
+	}
+	v, err := e.serverVersion(ctx, uri)
+	if err != nil || strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("%w (base %s) and the target's version cannot be read: %v", ErrNoServerVersion, base.ID, redact.Text(fmt.Sprint(err)))
+	}
+	return strings.TrimSpace(v), nil
 }
 
 // pitrEncrypted reports whether the base or a chunk of run is encrypted.
@@ -471,7 +503,7 @@ var errReplayExited = errors.New("restore: mongorestore stopped reading the oplo
 
 // replayPITROplog runs pass 2 and returns the operations the filter wrote and the
 // count mongorestore reported applying (nil when it printed none).
-func (e *Engine) replayPITROplog(ctx context.Context, uri string, run PITRRun, info *models.PITRRestore) (int64, *int64, error) {
+func (e *Engine) replayPITROplog(ctx context.Context, uri, version string, run PITRRun, info *models.PITRRestore) (int64, *int64, error) {
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(info.OplogBytes)
 	configArg, cleanup, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(uri))
@@ -488,7 +520,7 @@ func (e *Engine) replayPITROplog(ctx context.Context, uri string, run PITRRun, i
 	pr, pw := io.Pipe()
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		werr := e.writeOplogArchive(gctx, pw, run, filter)
+		werr := e.writeOplogArchive(gctx, pw, version, run, filter)
 		_ = pw.CloseWithError(werr)
 		return werr
 	})
@@ -516,11 +548,7 @@ func (e *Engine) replayPITROplog(ctx context.Context, uri string, run PITRRun, i
 
 // writeOplogArchive writes the synthetic oplog archive of run to w: every chunk in
 // order through the filter, until the filter reaches its limit.
-func (e *Engine) writeOplogArchive(ctx context.Context, w io.Writer, run PITRRun, filter *oplog.Filter) error {
-	version := strings.TrimSpace(run.Base.ServerVersion)
-	if version == "" {
-		return fmt.Errorf("%w (base %s)", ErrNoServerVersion, run.Base.ID)
-	}
+func (e *Engine) writeOplogArchive(ctx context.Context, w io.Writer, version string, run PITRRun, filter *oplog.Filter) error {
 	aw, err := oplog.NewArchiveWriter(w, oplog.ArchiveOptions{ServerVersion: version})
 	if err != nil {
 		return err
@@ -584,11 +612,9 @@ func (e *Engine) copyChunk(ctx context.Context, st storage.Storage, c *pitr.Chun
 	if err := filter.Copy(ctx, aw, gz); err != nil {
 		return err
 	}
-	// Drain what the filter did not read: the rest of the entries, the end of the
-	// age stream (its last authentication) and any trailing stored bytes.
-	if _, err := io.Copy(io.Discard, gz); err != nil {
-		return fmt.Errorf("read: %w", err)
-	}
+	// Drain what the filter did not read, still compressed (it is never inflated):
+	// the end of the age stream (its last authentication) and any trailing stored
+	// bytes, so the whole object is hashed.
 	if _, err := io.Copy(io.Discard, plain); err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
