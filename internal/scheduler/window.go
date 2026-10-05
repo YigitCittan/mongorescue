@@ -17,31 +17,42 @@ const WindowEndReason = "the backup window ended"
 
 // checkWindow applies job's backup window to a scheduled run firing now. It
 // reports false when the run must not start, after recording and publishing it
-// as skipped (outside window); otherwise it returns a stop function (never nil)
-// for the cancellation at the window's end, armed only with
-// cancel_at_window_end.
-func (s *Scheduler) checkWindow(ctx context.Context, job *models.Job) (stop func(), start bool) {
+// as skipped (outside window). Otherwise cancelAt is when the window closes if
+// cancel_at_window_end is set (zero when nothing is cancelled).
+func (s *Scheduler) checkWindow(ctx context.Context, job *models.Job) (cancelAt time.Time, start bool) {
 	w := job.BackupWindow
 	if w == nil {
-		return func() {}, true
+		return time.Time{}, true
 	}
 	now := s.clock()
 	_, end, open := w.Open(now)
 	if !open {
 		s.skipRun(ctx, job, models.SkipOutsideWindow, now)
-		return nil, false
+		return time.Time{}, false
 	}
 	if !w.CancelAtWindowEnd {
-		return func() {}, true
+		return time.Time{}, true
 	}
-	timer := time.AfterFunc(end.Sub(now), func() {
-		ids := s.registry.CancelJob(job.ID, runs.Cancellation{By: runs.SystemActor, Kind: runs.ActorSystem, Reason: WindowEndReason, At: s.clock().UTC()})
+	return end, true
+}
+
+// cancelRunAt cancels the scheduled run runID of job at at (cancel_at_window_end)
+// through the run registry: only the backups of that run (its group), never a
+// manual or on-demand run of the same job. A zero at arms nothing. The returned
+// stop function disarms it and is never nil.
+func (s *Scheduler) cancelRunAt(job *models.Job, runID string, at time.Time) (stop func()) {
+	if at.IsZero() || runID == "" {
+		return func() {}
+	}
+	timer := time.AfterFunc(at.Sub(s.clock()), func() {
+		ids := s.registry.CancelGroup(runID, runs.Cancellation{By: runs.SystemActor, Kind: runs.ActorSystem, Reason: WindowEndReason, At: s.clock().UTC()})
 		if len(ids) > 0 {
 			s.logger.Warn("cancelled a scheduled backup at the end of its window",
-				logsafe.Attr("job_id", job.ID), slog.Any("backup_ids", ids), slog.String("window", w.String()))
+				logsafe.Attr("job_id", job.ID), slog.String("run_id", runID), slog.Any("backup_ids", ids),
+				slog.String("window", job.BackupWindow.String()))
 		}
 	})
-	return func() { timer.Stop() }, true
+	return func() { timer.Stop() }
 }
 
 // skipRun records a scheduled run of job that did not start for reason and
