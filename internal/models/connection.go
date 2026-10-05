@@ -39,6 +39,21 @@ type Connection struct {
 
 	// ServerVersion is the MongoDB version reported by the last successful test.
 	ServerVersion string `json:"server_version,omitempty"`
+
+	// ReadPreference is the read preference of backups from this connection (a
+	// job may override it); "" keeps the URI's own. ReadPreferenceTags are its tag
+	// sets.
+	ReadPreference     string              `json:"read_preference,omitempty"`
+	ReadPreferenceTags []map[string]string `json:"read_preference_tags,omitempty"`
+
+	// MaxConcurrentBackups limits how many backups read from this connection at
+	// the same time (0 = unlimited). Further backups wait, shown as "waiting".
+	MaxConcurrentBackups int `json:"max_concurrent_backups,omitempty"`
+}
+
+// ReadPref returns the connection's read preference.
+func (c *Connection) ReadPref() ReadPreference {
+	return ReadPreference{Mode: c.ReadPreference, Tags: CloneTagSets(c.ReadPreferenceTags)}
 }
 
 // Redacted returns a copy that is safe to serialize to API clients or logs: the URI
@@ -53,5 +68,6 @@ func (c *Connection) Redacted() *Connection {
 		t := *c.LastTestAt
 		clone.LastTestAt = &t
 	}
+	clone.ReadPreferenceTags = CloneTagSets(c.ReadPreferenceTags)
 	return &clone
 }

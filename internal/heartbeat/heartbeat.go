@@ -284,7 +284,7 @@ func (s *Service) JobRunFinished(job *models.Job, run *models.JobRun, interrupte
 // one interrupted by a shutdown or its caller, which send no ping.
 func SignalOf(status models.JobRunStatus, interrupted bool) (sig Signal, ok bool) {
 	switch {
-	case status == models.JobRunCancelled, interrupted:
+	case status == models.JobRunCancelled, status == models.JobRunSkipped, interrupted:
 		return "", false
 	case status == models.JobRunOK:
 		return SignalSuccess, true

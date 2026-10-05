@@ -214,6 +214,13 @@ type BackupRecord struct {
 	// and when it could not be read. Restore preflights compare it with the target.
 	ServerVersion string `json:"server_version,omitempty"`
 
+	// ReadPreference is the read preference the backup was taken with ("" for the
+	// connection string's own), and SourceMember the member that served it (asked
+	// with hello under that read preference before mongodump started); nil when it
+	// could not be determined.
+	ReadPreference string        `json:"read_preference,omitempty"`
+	SourceMember   *SourceMember `json:"source_member,omitempty"`
+
 	// Pinned puts the backup on legal hold: retention never deletes it, and it can
 	// only be deleted after it is unpinned.
 	Pinned bool `json:"pinned,omitempty"`
@@ -389,6 +396,23 @@ type BackupOptions struct {
 	// Verify is the job's post-backup verification override (VerifyInherit for
 	// manual backups). It is set by the application, never read from clients.
 	Verify VerifyOverride `json:"-"`
+
+	// ReadPreference is the effective read preference of the backup (the job's,
+	// else its connection's); the engine adds it to the connection string of
+	// mongodump and of the manifest capture.
+	ReadPreference ReadPreference `json:"-"`
+
+	// MaxUploadMbps caps the upload stream in megabits per second; 0 uses the
+	// engine's default (the general.max_upload_mbps setting).
+	MaxUploadMbps float64 `json:"-"`
+
+	// NumParallelCollections is passed to mongodump as --numParallelCollections
+	// when positive.
+	NumParallelCollections int `json:"-"`
+
+	// MaxConcurrentBackups is the connection's limit of concurrent backups (0 =
+	// unlimited); the engine waits for a slot before mongodump starts.
+	MaxConcurrentBackups int `json:"-"`
 }
 
 // Redacted returns a copy of the options with the MongoURI password masked, suitable

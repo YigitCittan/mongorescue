@@ -22,6 +22,9 @@ const (
 	// JobRunCancelled is a run that was stopped before any database failed; databases
 	// finished before the cancellation keep their backups.
 	JobRunCancelled JobRunStatus = "cancelled"
+	// JobRunSkipped is a scheduled run that did not start (see JobRun.SkipReason,
+	// such as SkipOutsideWindow). It is neither a success nor a failure.
+	JobRunSkipped JobRunStatus = "skipped"
 )
 
 // ErrorDatabaseNotFound is the error recorded for a named database the server does
@@ -71,6 +74,14 @@ type JobRun struct {
 	// Error is a failure of the run as a whole (such as a connection whose databases
 	// cannot be listed), redacted.
 	Error string `json:"error,omitempty"`
+	// SkipReason explains a JobRunSkipped run (SkipOutsideWindow).
+	SkipReason string `json:"skip_reason,omitempty"`
+}
+
+// Skip marks r as a run that did not start for reason, finished at at.
+func (r *JobRun) Skip(reason string, at time.Time) {
+	done := at.UTC()
+	r.Status, r.SkipReason, r.CompletedAt = JobRunSkipped, reason, &done
 }
 
 // Counts returns how many of the run's databases succeeded, failed, were cancelled
