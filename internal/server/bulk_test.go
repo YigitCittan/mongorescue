@@ -117,8 +117,14 @@ func TestBulkDeleteOverHTTP(t *testing.T) {
 	if rec = serve(f.h, "POST", "/api/v1/backups/bulk", run, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"succeeded":12`) {
 		t.Fatalf("run: %d %s", rec.Code, rec.Body)
 	}
-	if list, _ := f.store.ListBackupRecords(ctx, ""); len(list) != 0 {
-		t.Fatalf("%d backups left", len(list))
+	list, _ := f.store.ListBackupRecords(ctx, "")
+	for _, b := range list {
+		if b.Status != models.StatusDeleted {
+			t.Fatalf("%s = %s; want deleted (soft, waiting for its purge)", b.ID, b.Status)
+		}
+	}
+	if len(list) != 12 {
+		t.Fatalf("%d backup records; want the 12 deleted ones kept until their purge", len(list))
 	}
 
 	rec = serve(f.h, "GET", "/api/v1/bulk/actions", nil, map[string]string{"X-API-Key": f.keys[auth.ScopeRead]})
@@ -127,29 +133,50 @@ func TestBulkDeleteOverHTTP(t *testing.T) {
 	}
 }
 
-func TestSingleDeleteKeepsSharedArchives(t *testing.T) {
+// TestSingleDeleteIsSoftOverHTTP checks DELETE /api/v1/backups/{id}: the answer
+// carries the purge time, the archive stays, the list hides the backup unless asked
+// for deleted ones, a second delete is refused, a restore is refused and the
+// undelete endpoint brings it back.
+func TestSingleDeleteIsSoftOverHTTP(t *testing.T) {
 	srv, st, mock := setupTestServer(t)
 	ctx := context.Background()
-	for _, id := range []string{"sh_1", "sh_2"} {
-		if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: id, Database: "shop", Status: models.StatusCompleted, StorageKey: "shop/shared.archive.gz"}); err != nil {
-			t.Fatal(err)
-		}
+	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "sd_1", Database: "shop", Status: models.StatusCompleted,
+		StorageKey: "shop/sd_1.archive.gz", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := mock.Save(ctx, "shop/shared.archive.gz", strings.NewReader("x")); err != nil {
+	if _, err := mock.Save(ctx, "shop/sd_1.archive.gz", strings.NewReader("x")); err != nil {
 		t.Fatal(err)
 	}
 	h := asPrincipal(srv.mux, auth.SystemPrincipal())
-	rec := serve(h, "DELETE", "/api/v1/backups/sh_1", nil, nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "archive_kept") {
-		t.Fatalf("delete sharer: %d %s", rec.Code, rec.Body)
+	rec := serve(h, "DELETE", "/api/v1/backups/sd_1?reason=cleanup", nil, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"deleted"`) || !strings.Contains(rec.Body.String(), `"purge_after":"`) {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
 	}
-	if _, err := mock.Stat(ctx, "shop/shared.archive.gz"); err != nil {
-		t.Fatal("the shared archive was deleted")
+	if _, err := mock.Stat(ctx, "shop/sd_1.archive.gz"); err != nil {
+		t.Fatal("a delete removed the archive before the grace period")
 	}
-	if rec = serve(h, "DELETE", "/api/v1/backups/sh_2", nil, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"archive_deleted":true`) {
-		t.Fatalf("delete last sharer: %d %s", rec.Code, rec.Body)
+	if rec = serve(h, "DELETE", "/api/v1/backups/sd_1", nil, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("delete again: %d %s; want 409", rec.Code, rec.Body)
 	}
-	if rec = serve(h, "DELETE", "/api/v1/backups/sh_2", nil, nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("delete again: %d %s", rec.Code, rec.Body)
+	if rec = serve(h, "GET", "/api/v1/backups", nil, nil); strings.Contains(rec.Body.String(), "sd_1") {
+		t.Fatalf("default list shows a deleted backup: %s", rec.Body)
+	}
+	for _, q := range []string{"?deleted=true", "?status=deleted"} {
+		if rec = serve(h, "GET", "/api/v1/backups"+q, nil, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "sd_1") {
+			t.Fatalf("list %s: %d %s; want the deleted backup", q, rec.Code, rec.Body)
+		}
+	}
+	if rec = serve(h, "GET", "/api/v1/backups?deleted=true&status=completed", nil, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("deleted with another status: %d; want 400", rec.Code)
+	}
+	body := []byte(`{"backup_id":"sd_1","target_connection_id":"conn_x"}`)
+	if rec = serve(h, "POST", "/api/v1/restore", body, map[string]string{"Content-Type": "application/json"}); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "undelete") {
+		t.Fatalf("restore of a deleted backup: %d %s; want 409", rec.Code, rec.Body)
+	}
+	if rec = serve(h, "POST", "/api/v1/backups/sd_1/undelete", nil, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"completed"`) {
+		t.Fatalf("undelete: %d %s", rec.Code, rec.Body)
+	}
+	if rec = serve(h, "POST", "/api/v1/backups/sd_1/undelete", nil, nil); rec.Code != http.StatusConflict {
+		t.Fatalf("undelete again: %d %s; want 409", rec.Code, rec.Body)
 	}
 }

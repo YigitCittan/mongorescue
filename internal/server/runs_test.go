@@ -168,12 +168,17 @@ func TestCancelBackupEndpoint(t *testing.T) {
 		}
 	}
 
-	// Deleting the backup deletes its log.
+	// Deleting the backup keeps its log until the purge (the deletion can be undone).
 	if rec := serve(f.h, "DELETE", "/api/v1/backups/"+id, nil, f.as(auth.ScopeAdmin)); rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
 	}
-	if _, err := f.registry.Logs().Open(id); !errors.Is(err, runlog.ErrNotFound) {
-		t.Fatalf("log after the backup was deleted: %v", err)
+	lf, err := f.registry.Logs().Open(id)
+	if err != nil {
+		t.Fatalf("log after the backup was deleted: %v; want kept until the purge", err)
+	}
+	_ = lf.Close()
+	if _, err = f.registry.Logs().Open("bkp_unknown"); !errors.Is(err, runlog.ErrNotFound) {
+		t.Fatalf("log of an unknown backup: %v", err)
 	}
 }
 

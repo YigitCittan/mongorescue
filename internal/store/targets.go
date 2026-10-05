@@ -42,9 +42,11 @@ func revision(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// liveBackupStatuses are the backup states whose artifact may exist in storage; a
-// target they reference cannot be deleted.
-var liveBackupStatuses = []any{string(models.StatusCompleted), string(models.StatusInProgress), string(models.StatusPending)}
+// goneBackupStatuses are the backup states whose archive is gone for good: purged
+// after a deletion's grace period, or pruned by a release before soft deletes. Every
+// other backup (deleted ones waiting for their purge included) keeps its storage
+// target from being deleted or moved.
+var goneBackupStatuses = []any{string(models.StatusPurged), string(models.StatusPruned)}
 
 // ListStorageTargets returns all storage targets sorted by name, secrets decrypted.
 func (s *SQLiteStore) ListStorageTargets(ctx context.Context) ([]*models.StorageTarget, error) {
@@ -100,7 +102,7 @@ func (s *SQLiteStore) UpdateStorageTarget(ctx context.Context, t *models.Storage
 				return countErr
 			}
 			if n > 0 {
-				return fmt.Errorf("%w: %d backups are stored on it, so its type, path, endpoint, bucket and prefix cannot change; create a new target instead",
+				return fmt.Errorf("%w: %d backup records (deleted ones waiting for their purge included) reference it, so its type, path, endpoint, bucket and prefix cannot change; create a new target instead",
 					targets.ErrLocationInUse, n)
 			}
 		}
@@ -144,14 +146,22 @@ func missingOrChanged(ctx context.Context, tx *sql.Tx, id string) error {
 	return targets.ErrConflict
 }
 
-// countLiveBackups counts completed or running backups stored on target id.
-func countLiveBackups(ctx context.Context, tx *sql.Tx, id string) (int, error) {
+// countLiveBackups counts the backups stored on target id whose archive is not gone
+// for good (see goneBackupStatuses), whatever their state: completed, running,
+// failed, missing or deleted and waiting for their purge.
+func countLiveBackups(ctx context.Context, q queryer, id string) (int, error) {
 	var n int
-	args := append([]any{id}, liveBackupStatuses...)
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM backups WHERE storage_target_id = ? AND status IN (?, ?, ?)", args...).Scan(&n); err != nil {
+	args := append([]any{id}, goneBackupStatuses...)
+	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM backups WHERE storage_target_id = ? AND status NOT IN (?, ?)", args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("store: count backups of storage target: %w", err)
 	}
 	return n, nil
+}
+
+// CountStorageTargetBackups counts the backup records that keep storage target id in
+// use: every record except purged (and pruned) ones.
+func (s *SQLiteStore) CountStorageTargetBackups(ctx context.Context, id string) (int, error) {
+	return countLiveBackups(ctx, s.db, id)
 }
 
 // SetDefaultStorageTarget makes id the only default target in one transaction.
@@ -201,7 +211,7 @@ func (s *SQLiteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 			return err
 		}
 		if jobs > 0 || backups > 0 {
-			return fmt.Errorf("%w by %d jobs and %d backups; reassign the jobs and delete those backups first", targets.ErrInUse, jobs, backups)
+			return fmt.Errorf("%w by %d jobs and %d backup records; reassign the jobs, delete those backups and wait for their purge (the delete grace period) first", targets.ErrInUse, jobs, backups)
 		}
 		return execOne(ctx, tx, targets.ErrNotFound, "DELETE FROM storage_targets WHERE id = ?", id)
 	})

@@ -123,6 +123,17 @@ type JobDetails struct {
 	// hour, at least six hours). RPODefault reports that the default applies.
 	EffectiveRPOMinutes int  `json:"effective_rpo_minutes"`
 	RPODefault          bool `json:"rpo_default"`
+	// PendingRetention is a shortening of the job's retention that takes effect
+	// later (after the delete grace period), if any.
+	PendingRetention *models.PendingChange `json:"pending_retention,omitempty"`
+}
+
+// JobSaveResult is a stored job and what its edit deferred: a shortened retention
+// waits for the delete grace period (and, with the two-person rule, for a second
+// administrator first).
+type JobSaveResult struct {
+	*models.Job
+	JobProtection
 }
 
 // ValidateJob checks and normalises a job before it is created or updated: an empty
@@ -283,9 +294,11 @@ func (s *Service) ValidatePausedUntil(until *time.Time) error {
 // UpdateJob replaces the editable fields of job id with u, validates the result like
 // a new job (see ValidateJob), stores it and reschedules it at once: the new schedule,
 // or a pause, takes effect without a restart. The job keeps its id, creation time,
-// last run and backups. Expected failures: ErrNotFound, ErrJobChanged,
-// ErrPausedUntilPast (for a paused_until sent in the past) and those of ValidateJob.
-func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*models.Job, error) {
+// last run and backups. A shorter retention is not stored now: it takes effect after
+// the delete grace period (see HoldRetention), reported in the result. Expected
+// failures: ErrNotFound, ErrJobChanged, ErrPausedUntilPast (for a paused_until sent
+// in the past) and those of ValidateJob.
+func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSaveResult, error) {
 	existing, err := s.cfg.Store.GetJob(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "job not found")
@@ -342,6 +355,10 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}
+	hold, err := s.HoldRetention(ctx, existing, job)
+	if err != nil {
+		return nil, err
+	}
 	// The next run belongs to the old schedule until the scheduler computes the new one.
 	job.NextRun = nil
 	if job.Enabled && s.cfg.Scheduler == nil {
@@ -371,7 +388,12 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	if err != nil {
 		return nil, err
 	}
-	return job, nil
+	changed := job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount
+	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
+	if err != nil {
+		return nil, err
+	}
+	return &JobSaveResult{Job: job, JobProtection: *prot}, nil
 }
 
 // GetJobDetails returns job id with its next JobDetailsNextRuns activations, or an
@@ -381,7 +403,7 @@ func (s *Service) GetJobDetails(ctx context.Context, id string) (*JobDetails, er
 	if err != nil {
 		return nil, err
 	}
-	details := &JobDetails{Job: job, NextRuns: []time.Time{}}
+	details := &JobDetails{Job: job, NextRuns: []time.Time{}, PendingRetention: s.pendingRetention(ctx, job.ID)}
 	rpo, isDefault := scheduler.EffectiveRPO(job, s.now())
 	details.EffectiveRPOMinutes, details.RPODefault = int(rpo/time.Minute), isDefault
 	if job.Enabled {

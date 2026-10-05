@@ -326,6 +326,10 @@
           <p class="section-desc" data-i18n="tables.backups_desc">Archives in storage, newest first. Restores go to an isolated clone by default.</p>
         </div>
         <div class="section-actions">
+          <button type="button" class="btn btn-secondary" id="backups-show-deleted" data-action="backups-show-deleted" aria-pressed="false" title="Show deleted backups that can still be undone" data-i18n-title="protection.show_deleted_title">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.75 9h6.5l.75-9"/></svg>
+            <span data-i18n="protection.show_deleted">Deleted</span>
+          </button>
           <button type="button" class="btn btn-secondary" data-action="refresh">
             <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M13.5 2.5v3h-3"/></svg>
             <span data-i18n="tables.refresh">Refresh</span>
@@ -1147,6 +1151,25 @@
                 <span class="form-hint" data-i18n="settings.mcp_enabled_hint">Serve the Model Context Protocol at /mcp so assistants such as Claude, Copilot or Cursor can use MongoRescue with an API key. Browser sessions are never accepted there.</span>
               </span>
             </label>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="protection.group_title">Delete protection</legend>
+            <div class="form-group">
+              <label class="form-label" for="set-delete-grace" data-i18n="protection.grace_label">Delete grace period (days)</label>
+              <input type="number" id="set-delete-grace" class="form-input" min="1" max="90" step="1" inputmode="numeric" aria-describedby="set-delete-grace-hint">
+              <span class="form-hint" id="set-delete-grace-hint">Deleted backups keep their archive this long and the deletion can be undone (1–90 days). A shorter period takes effect only after the current one.</span>
+            </div>
+            <label class="check" for="set-require-second-approver">
+              <input type="checkbox" id="set-require-second-approver">
+              <span class="check-text">
+                <span class="check-title" data-i18n="protection.second_approver">Require a second administrator</span>
+                <span class="form-hint" data-i18n="protection.second_approver_hint">Deleting backups or storage targets, shortening retention, unpinning and lowering these protections wait for another administrator's approval. Needs at least two administrators; turning it off needs an approval too.</span>
+              </span>
+            </label>
+            <div class="form-group">
+              <span class="form-label" data-i18n="protection.pending_title">Pending changes</span>
+              <div id="protection-pending" aria-live="polite"></div>
+            </div>
           </fieldset>
           <p class="form-error" id="security-error" role="alert" hidden></p>
           <div class="settings-footer">
@@ -2862,6 +2885,7 @@
   <script src="/roles.js"></script>
   <script src="/sso.js"></script>
   <script src="/monitoring.js"></script>
+  <script src="/protection.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

@@ -20,7 +20,8 @@ Lists records of the server, newest first for backups and restores (50 by defaul
 use --limit and --offset, --limit 0 for all). --json prints the server's array as is.
 Filters (each applies to the resources in brackets):
   --id ID,...          [backups, restores] exactly these IDs
-  --status S           [backups, restores] pending, in_progress, completed, failed, cancelled (backups: pruned, missing)
+  --status S           [backups, restores] pending, in_progress, completed, failed, cancelled (backups: pruned, missing, deleted, purged)
+  --deleted            [backups] only deleted backups that can still be undone
   --database NAME      [backups, restores, jobs] the backed-up (restores: target) database
   --connection ID      [backups, jobs] the connection
   --job ID             [backups] the job
@@ -37,7 +38,7 @@ Filters (each applies to the resources in brackets):
 
 // listResources maps each resource to the filter flags it takes.
 var listResources = map[string][]string{
-	"backups":     {"id", "status", "database", "connection", "job", "run", "trigger", "from", "to", "search", "sort", "limit", "offset"},
+	"backups":     {"id", "status", "deleted", "database", "connection", "job", "run", "trigger", "from", "to", "search", "sort", "limit", "offset"},
 	"restores":    {"id", "status", "database", "backup", "from", "to", "search", "sort", "limit", "offset"},
 	"jobs":        {"search", "enabled", "connection", "database", "schedule", "last-status"},
 	"connections": {},
@@ -49,6 +50,7 @@ var listQueryParam = map[string]string{
 	"id": "id", "status": "status", "database": "database", "connection": "connection_id", "job": "job_id", "run": "run_id",
 	"trigger": "trigger", "backup": "backup_id", "from": "from", "to": "to", "search": "q", "sort": "sort",
 	"limit": "limit", "offset": "offset", "enabled": "enabled", "schedule": "schedule", "last-status": "last_status",
+	"deleted": "deleted",
 }
 
 // defaultListLimit is the page size of list backups and list restores.
@@ -61,6 +63,7 @@ func runList(ctx context.Context, s *session, args []string) error {
 	for _, name := range []string{"id", "status", "database", "connection", "job", "run", "trigger", "backup", "from", "to", "search", "sort", "enabled", "schedule", "last-status"} {
 		values[name] = fs.String(name, "", "Filter (see above)")
 	}
+	deleted := fs.Bool("deleted", false, "[backups] only deleted backups that can still be undone")
 	limit := fs.Int("limit", defaultListLimit, "[backups, restores] page size, 1 to 200; 0 lists every match")
 	offset := fs.Int("offset", 0, "[backups, restores] matches to skip")
 	pos, err := s.parse(fs, args)
@@ -94,6 +97,9 @@ func runList(ctx context.Context, s *session, args []string) error {
 		if s.set[name] && strings.TrimSpace(*v) != "" {
 			q.Set(listQueryParam[name], strings.TrimSpace(*v))
 		}
+	}
+	if *deleted {
+		q.Set("deleted", "true")
 	}
 	if slices.Contains(allowed, "limit") {
 		if *limit > 0 {

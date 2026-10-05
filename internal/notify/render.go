@@ -35,6 +35,8 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.RestoreVerificationFailed: {"⚠️", "Restore verification failed"},
 	events.JobRPOMissed:              {"⏰", "Recovery point objective missed"},
 	events.JobRPORecovered:           {"✅", "Recovery point objective met again"},
+	events.SecurityDestructiveAction: {"🛡️", "Destructive action"},
+	events.SecurityApprovalRequested: {"🛡️", "Approval requested"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -89,6 +91,10 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("storage target %s: %d orphan archive(s), %d missing archive(s)", name, e.Orphans, e.Missing)
 	case events.RetentionDeleted:
 		target = fmt.Sprintf("job %s (db %s), backup %s", e.JobID, e.Database, e.BackupID)
+	case events.SecurityDestructiveAction:
+		target = fmt.Sprintf("%s by %s", e.Detail, e.Actor)
+	case events.SecurityApprovalRequested:
+		target = fmt.Sprintf("%s requested by %s; another administrator must approve it (request %s)", e.Detail, e.Actor, e.ApprovalID)
 	case events.MetadataBackupFailed:
 		name := e.TargetName
 		if name == "" {

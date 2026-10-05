@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +23,7 @@ func TestRetentionRechecksLastVerifiedAtDeletion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, mock, nil)
+	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, 7*24*time.Hour, nil)
 	if err != nil || !slices.Equal(pruned, []string{"bkp_01"}) {
 		t.Fatalf("pruned = %v, %v", pruned, err)
 	}
@@ -41,22 +40,44 @@ func TestRetentionKeepsSharedArchives(t *testing.T) {
 		Status: models.StatusCompleted, StorageKey: "shop/02.archive", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	grace := 7 * 24 * time.Hour
 	var entries []models.RetentionLogEntry
-	_, err := prune(context.Background(), time.Now().UTC(), 0, 1, records, st,
-		func(context.Context, string) (storage.Storage, error) { return mock, nil }, nil,
+	_, err := prune(context.Background(), now, grace, 0, 1, records, st, nil,
 		func(_ context.Context, e models.RetentionLogEntry) { entries = append(entries, e) })
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("entries = %+v, %v", entries, err)
+	}
+	for _, e := range entries {
+		if e.PurgeAfter == nil || !e.PurgeAfter.Equal(now.Add(grace)) {
+			t.Fatalf("the log must say until when the backup is recoverable: %+v", e)
+		}
+	}
+	// Retention deletes softly: both archives stay for the grace period.
+	for _, key := range []string{"shop/01.archive", "shop/02.archive"} {
+		if _, statErr := mock.Stat(context.Background(), key); statErr != nil {
+			t.Fatalf("retention must not delete %s before the grace period: %v", key, statErr)
+		}
+	}
+	storages := func(context.Context, string) (storage.Storage, error) { return mock, nil }
+	var kept []PurgeOutcome
+	purged, err := PurgeDeleted(context.Background(), now.Add(grace), grace, st, storages, nil,
+		func(_ context.Context, o PurgeOutcome) { kept = append(kept, o) })
+	if err != nil || len(purged) != 2 {
+		t.Fatalf("purged = %v, %v", purged, err)
 	}
 	if _, err := mock.Stat(context.Background(), "shop/02.archive"); err != nil {
 		t.Fatalf("an archive another record names must stay: %v", err)
 	}
 	if _, err := mock.Stat(context.Background(), "shop/01.archive"); err == nil {
-		t.Fatal("an unshared archive must be deleted")
+		t.Fatal("an unshared archive must be deleted by the purge")
 	}
-	for _, e := range entries {
-		if e.BackupID == "bkp_02" && !strings.Contains(e.Detail, "bkp_twin") {
-			t.Fatalf("the log must say why the archive was kept: %+v", e)
+	for _, o := range kept {
+		if o.Backup.ID == "bkp_02" && (o.ArchiveKept != "bkp_twin" || o.ArchiveDeleted) {
+			t.Fatalf("the purge must say why the archive was kept: %+v", o)
+		}
+		if o.Backup.Status != models.StatusPurged {
+			t.Fatalf("%s = %s; want purged", o.Backup.ID, o.Backup.Status)
 		}
 	}
 }

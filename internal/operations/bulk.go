@@ -62,7 +62,8 @@ const (
 
 // Bulk action names.
 const (
-	// BulkDelete deletes backups (with their archives), restore history records or jobs.
+	// BulkDelete deletes backups (softly: their archives stay for the delete grace
+	// period and they can be undeleted until then), restore history records or jobs.
 	BulkDelete = "delete"
 	// BulkEnable schedules jobs.
 	BulkEnable = "enable"
@@ -107,6 +108,8 @@ const (
 	SkipNotPinned = "not_pinned"
 	// SkipNotRunning marks a backup or restore that is not running.
 	SkipNotRunning = "not_running"
+	// SkipAlreadyDeleted marks a backup that is already deleted (or purged).
+	SkipAlreadyDeleted = "already_deleted"
 )
 
 // BulkFilter selects every record matching the list filters, with the names and
@@ -161,6 +164,8 @@ type BulkRequest struct {
 	ConfirmCount *int `json:"confirm_count,omitempty"`
 	// Note is the reason of the legal hold (pin only).
 	Note string `json:"note,omitempty"`
+	// Reason is the optional reason of a deletion of backups (delete only).
+	Reason string `json:"reason,omitempty"`
 }
 
 // BulkSkip is an item the action does not apply to. Reason is a stable code that
@@ -252,6 +257,8 @@ type BulkRun struct {
 	lastVerified map[string]string
 	// note is the request's pin note.
 	note string
+	// reason is the request's deletion reason.
+	reason string
 	// jobNames maps job IDs to their names.
 	jobNames map[string]string
 }
@@ -267,9 +274,12 @@ type BulkAction struct {
 	// Scope is what the caller needs, also for dry runs; it mirrors the scope of
 	// the single-item route.
 	Scope auth.Scope
-	// Destructive marks actions that cannot be undone (the dashboard asks to type
-	// the count).
+	// Destructive marks actions that destroy or lift a protection (the dashboard asks
+	// to type the count).
 	Destructive bool
+	// NeedsApproval marks actions that wait for a second administrator while the
+	// two-person rule (security.require_second_approver) is on.
+	NeedsApproval bool
 	// Available reports whether the configured dependencies support the action;
 	// nil means always.
 	Available func(s *Service) bool
@@ -363,7 +373,14 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 	if req.Note != "" && action.Name != BulkPin {
 		return nil, public("note only applies to pin", ErrInvalid)
 	}
-	run := &BulkRun{note: req.Note}
+	if req.Reason != "" && (action.Name != BulkDelete || resource != BulkBackups) {
+		return nil, public("reason only applies to deleting backups", ErrInvalid)
+	}
+	reason, err := checkReason(req.Reason)
+	if err != nil {
+		return nil, err
+	}
+	run := &BulkRun{note: req.Note, reason: reason}
 	if action.Prepare != nil {
 		if err = action.Prepare(ctx, s, run, items); err != nil {
 			return nil, err
@@ -398,8 +415,24 @@ func (s *Service) Bulk(ctx context.Context, resource BulkResource, req BulkReque
 		}
 		return res, nil
 	}
-	if err = checkConfirm(req.ConfirmCount, res.Actionable); err != nil {
-		return nil, err
+	// An approved action runs the IDs its request listed, re-checked one by one; the
+	// confirmation belonged to the request.
+	if approvalOf(ctx) == nil {
+		if err = checkConfirm(req.ConfirmCount, res.Actionable); err != nil {
+			return nil, err
+		}
+	}
+	if action.NeedsApproval && s.needsApproval(ctx) && len(actionable) > 0 {
+		ids := make([]string, len(actionable))
+		for i, it := range actionable {
+			ids[i] = it.ID
+		}
+		kind, verb := models.ApprovalBulkDeleteBackups, "delete"
+		if action.Name == BulkUnpin {
+			kind, verb = models.ApprovalBulkUnpinBackups, "unpin"
+		}
+		return nil, s.requestApproval(ctx, &models.Approval{Action: kind, IDs: ids, Reason: reason,
+			Summary: fmt.Sprintf("%s %d backups", verb, len(ids))})
 	}
 
 	res.Results = make([]BulkItemResult, 0, len(actionable))
@@ -468,6 +501,13 @@ func (s *Service) finishBulk(ctx context.Context, res *BulkResult, started time.
 			Succeeded: res.Succeeded, Skipped: len(res.Skipped), Failed: res.Failed, Actor: actor,
 		},
 	})
+	if res.Resource == BulkBackups && (res.Action == BulkDelete || res.Action == BulkUnpin) && res.Succeeded > 0 {
+		detail := fmt.Sprintf("%d backups unpinned in bulk", res.Succeeded)
+		if res.Action == BulkDelete {
+			detail = fmt.Sprintf("%d backups deleted in bulk; recoverable for %d days", res.Succeeded, s.settings().Security.DeleteGraceDays)
+		}
+		s.destructive(ctx, "bulk_"+res.Action+"_backups", detail, nil)
+	}
 }
 
 // auditBulk writes the audit entry of a real run: who ran which action on how many
@@ -788,7 +828,8 @@ func (s *Service) failed(err error) BulkItemResult {
 	if errors.As(err, &pe) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBusy) ||
 		errors.Is(err, ErrShuttingDown) || errors.Is(err, ErrConnectionRequired) || errors.Is(err, ErrUnknownConnection) ||
 		errors.Is(err, ErrUnknownStorageTarget) || errors.Is(err, auth.ErrForbidden) || errors.Is(err, ErrPinned) ||
-		errors.Is(err, ErrNotRunning) || errors.Is(err, ErrUnavailable) {
+		errors.Is(err, ErrNotRunning) || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrAlreadyDeleted) ||
+		errors.Is(err, ErrBackupRunning) || errors.Is(err, ErrBackupDeleted) || errors.Is(err, ErrNotDeleted) {
 		return BulkItemResult{Error: redact.Text(err.Error())}
 	}
 	s.logger.Error("bulk item failed", slog.Any("error", err))
@@ -876,11 +917,12 @@ func (s *Service) deleteProtection(ctx context.Context, b *models.BackupRecord, 
 // registerBulkActions registers the built-in bulk actions. Scopes mirror the
 // single-item routes (see internal/server/scopes.go).
 func (s *Service) registerBulkActions() {
-	// Backups: delete, like DELETE /api/v1/backups/{id} (admin). Running and pinned
-	// backups, the newest completed backup of every database of every job and its
-	// last verified backup (retention's floor) are never deleted in bulk.
+	// Backups: delete, like DELETE /api/v1/backups/{id} (admin): softly, the archives
+	// stay for the grace period. Running, pinned and deleted backups, the newest
+	// completed backup of every database of every job and its last verified backup
+	// (retention's floor) are never deleted in bulk.
 	s.RegisterBulkAction(BulkAction{
-		Resource: BulkBackups, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true,
+		Resource: BulkBackups, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true, NeedsApproval: true,
 		Prepare: func(ctx context.Context, s *Service, run *BulkRun, items []BulkItem) error {
 			var err error
 			if run.lastGood, run.lastVerified, err = s.protectedBackups(ctx, items); err != nil {
@@ -898,6 +940,9 @@ func (s *Service) registerBulkActions() {
 		},
 		Check: func(_ context.Context, _ *Service, run *BulkRun, it BulkItem) *BulkSkip {
 			b := it.Backup
+			if b.Status.Deleted() {
+				return &BulkSkip{Reason: SkipAlreadyDeleted, Params: map[string]string{"status": string(b.Status)}, Detail: "the backup is already " + string(b.Status)}
+			}
 			if b.Status == models.StatusInProgress || b.Status == models.StatusPending {
 				return &BulkSkip{Reason: SkipInProgress, Params: map[string]string{"status": string(b.Status)}, Detail: "the backup is still " + string(b.Status)}
 			}
@@ -932,6 +977,9 @@ func (s *Service) registerBulkActions() {
 			if err != nil {
 				return s.failed(err)
 			}
+			if current.Status.Deleted() {
+				return BulkItemResult{Skip: &BulkSkip{Reason: SkipAlreadyDeleted, Params: map[string]string{"status": string(current.Status)}, Detail: "deleted meanwhile"}}
+			}
 			skip, err := s.deleteProtection(ctx, current, run.jobNames[current.JobID])
 			if err != nil {
 				return s.failed(err)
@@ -939,11 +987,11 @@ func (s *Service) registerBulkActions() {
 			if skip != nil {
 				return BulkItemResult{Skip: skip}
 			}
-			res, err := s.deleteBackup(ctx, current)
+			updated, err := s.softDelete(ctx, current.ID, run.reason)
 			if err != nil {
 				return s.failed(err)
 			}
-			return BulkItemResult{OK: true, Warning: res.ArchiveError, Detail: res.ArchiveKept}
+			return BulkItemResult{OK: true, Detail: "recoverable until " + updated.PurgeAfter.Format(time.RFC3339)}
 		},
 	})
 
@@ -984,7 +1032,7 @@ func (s *Service) registerBulkActions() {
 		},
 	})
 	s.RegisterBulkAction(BulkAction{
-		Resource: BulkBackups, Name: BulkUnpin, Scope: auth.ScopeAdmin,
+		Resource: BulkBackups, Name: BulkUnpin, Scope: auth.ScopeAdmin, NeedsApproval: true,
 		Available: func(s *Service) bool { _, ok := s.cfg.Store.(backupUpdater); return ok },
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if !it.Backup.Pinned {

@@ -71,7 +71,7 @@ func TestRetentionPreviewEqualsDeletion(t *testing.T) {
 				}
 			})
 			plan := PlanRetention(time.Now().UTC(), tc.days, tc.count, records)
-			pruned, err := PruneBackups(context.Background(), tc.days, tc.count, records, st, mock, nil)
+			pruned, err := PruneBackups(context.Background(), tc.days, tc.count, records, st, 7*24*time.Hour, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,7 +125,7 @@ func TestRetentionSkipsPinnedAndLastVerified(t *testing.T) {
 	if !slices.Equal(plan.Protected, wantProtected) {
 		t.Fatalf("protected = %+v", plan.Protected)
 	}
-	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, mock, nil)
+	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, 7*24*time.Hour, nil)
 	if err != nil || len(pruned) != 3 {
 		t.Fatalf("pruned = %v, %v", pruned, err)
 	}
@@ -148,7 +148,7 @@ func TestRetentionRechecksPinBeforeDeleting(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, mock, nil)
+	pruned, err := PruneBackups(context.Background(), 0, 1, records, st, 7*24*time.Hour, nil)
 	if err != nil || !slices.Equal(pruned, []string{"bkp_01"}) {
 		t.Fatalf("pruned = %v, %v", pruned, err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 // waitUsers waits until n callers hold or wait for the deletion lock key.
@@ -150,7 +151,7 @@ func TestBulkDeleteRacingRetention(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, pruneErr = scheduler.PruneBackups(context.Background(), 0, 1, records, env.st, env.mock, nil)
+		_, pruneErr = scheduler.PruneBackups(context.Background(), 0, 1, records, env.st, 7*24*time.Hour, nil)
 	}()
 	waitUsers(t, key, 3)
 	unlock()
@@ -165,8 +166,9 @@ func TestBulkDeleteRacingRetention(t *testing.T) {
 }
 
 // TestConcurrentDeletesOfSharedArchive: two records of different jobs share one
-// archive and are deleted at the same time. The archive's lock makes the second
-// deletion see that no record names the archive any more, so it is removed.
+// archive and are deleted at the same time. Both deletions are soft (the archive
+// stays for the grace period); the purge afterwards sees that no live record names
+// the archive any more, so it is removed.
 func TestConcurrentDeletesOfSharedArchive(t *testing.T) {
 	env := newBulkEnv(t)
 	ctx := admin()
@@ -199,11 +201,19 @@ func TestConcurrentDeletesOfSharedArchive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if env.hasBackup("job_x_old") || env.hasBackup("job_y_old") {
-		t.Fatal("records left")
+	if !env.isDeleted("job_x_old") || !env.isDeleted("job_y_old") {
+		t.Fatal("records not deleted")
+	}
+	if !env.hasObject("shop/shared") {
+		t.Fatal("the shared archive was removed before the grace period")
+	}
+	storages := func(context.Context, string) (storage.Storage, error) { return env.mock, nil }
+	grace := models.GraceDuration(models.DefaultDeleteGraceDays)
+	if _, err := scheduler.PurgeDeleted(context.Background(), now.Add(grace+time.Hour), grace, env.st, storages, nil, nil); err != nil {
+		t.Fatal(err)
 	}
 	if env.hasObject("shop/shared") {
-		t.Fatal("the shared archive outlived both of its records")
+		t.Fatal("the shared archive outlived both of its records' purge")
 	}
 }
 

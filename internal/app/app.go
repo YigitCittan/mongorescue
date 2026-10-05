@@ -455,8 +455,17 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Logger:  logger,
 	})
 
-	// 5. Initialize scheduler
+	// 5. Initialize scheduler. Its maintenance (every ten minutes) purges deleted
+	// backups once their grace period ends and applies the due pending changes of the
+	// operations service, which is built below.
+	var ops *operations.Service
 	sched = scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
+		scheduler.WithDeleteGrace(func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() }),
+		scheduler.WithMaintenance(func(ctx context.Context) {
+			if ops != nil {
+				ops.ApplyDueChanges(ctx)
+			}
+		}),
 		scheduler.WithPublisher(bus),
 		scheduler.WithRunObserver(heartbeatSvc),
 		scheduler.WithConnectionResolver(connSvc),
@@ -503,7 +512,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	// 7. The backup, job and restore use cases are shared by the REST API and the MCP
 	// server, so both adapters apply exactly the same rules.
-	ops := operations.New(operations.Config{
+	ops = operations.New(operations.Config{
 		Store:       metaStore,
 		Backup:      backupEngine,
 		Restore:     restoreEngine,
@@ -515,12 +524,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Targets:     targetSvc,
 		Storage:     targetSvc.Storage,
 		Settings:    settingsSvc.Current,
-		Publisher:   bus,
-		Verifier:    integritySvc,
-		Inspector:   prober,
-		Audit:       auditSvc,
-		Logger:      logger,
-		Version:     o.version,
+		// The delete protection: delayed and approved settings changes, and the
+		// two-person rule needing two administrators.
+		SettingsUpdater:     settingsSvc,
+		SecondApproverCheck: authSvc.CheckSecondApproverPossible,
+		Publisher:           bus,
+		Verifier:            integritySvc,
+		Inspector:           prober,
+		Audit:               auditSvc,
+		Logger:              logger,
+		Version:             o.version,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {

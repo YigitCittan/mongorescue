@@ -131,13 +131,14 @@ func (s *SQLiteStore) ArchiveReferenceIDs(ctx context.Context, targetID, key str
 // ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
 var ErrPruneRefused = errors.New("store: retention must keep this backup")
 
-// PruneBackupRecord marks completed backup id pruned, in one transaction that
+// PruneBackupRecord applies mark (retention's soft delete, see
+// models.BackupRecord.MarkDeleted) to completed backup id, in one transaction that
 // re-checks what retention must keep: a pinned backup, a backup that is no longer
 // completed, and the newest backup of its job and database (same connection, storage target and
 // scheduled trigger) whose verification is ok, so a verification recorded after
-// retention planned cannot be overtaken. A refusal wraps ErrPruneRefused; an unknown
-// id returns ErrNotFound.
-func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error) {
+// retention planned cannot be overtaken. A nil mark marks the record pruned. A
+// refusal wraps ErrPruneRefused; an unknown id returns ErrNotFound.
+func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string, mark func(*models.BackupRecord)) (*models.BackupRecord, error) {
 	var out *models.BackupRecord
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		rec, err := getRecord[models.BackupRecord](ctx, tx, ErrNotFound, "SELECT data FROM backups WHERE id = ?", id)
@@ -171,7 +172,14 @@ func (s *SQLiteStore) PruneBackupRecord(ctx context.Context, id string) (*models
 				return fmt.Errorf("%w: backup %s is the newest verified backup of its job and database", ErrPruneRefused, id)
 			}
 		}
-		rec.Status = models.StatusPruned
+		if mark == nil {
+			rec.Status = models.StatusPruned
+		} else {
+			mark(rec)
+		}
+		if rec.ID != id {
+			return fmt.Errorf("%w: backup record id must not change", ErrInvalidRecord)
+		}
 		out = rec
 		return putBackup(ctx, tx, rec)
 	})

@@ -86,6 +86,9 @@ type BackupFilter struct {
 	IDs []string
 	// Status keeps backups in this state.
 	Status models.BackupStatus
+	// ExcludeStatuses drops backups in these states (the backup lists hide deleted
+	// and purged backups unless asked for them).
+	ExcludeStatuses []models.BackupStatus
 	// Database keeps backups of exactly this database.
 	Database string
 	// ConnectionID keeps backups taken from this connection.
@@ -288,6 +291,9 @@ func backupConditions(f BackupFilter) conditions {
 	c.addIDs("b.", f.IDs)
 	if f.Status != "" {
 		c.add("b.status = ?", string(f.Status))
+	}
+	for _, st := range f.ExcludeStatuses {
+		c.add("b.status != ?", string(st))
 	}
 	if f.Database != "" {
 		c.add("b.database_name = ?", f.Database)

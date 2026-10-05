@@ -451,7 +451,12 @@ type RetentionLogEntry struct {
 	// Reason says which rule deleted it; Detail explains it ("older than 30 days").
 	Reason RetentionReason `json:"reason"`
 	Detail string          `json:"detail,omitempty"`
+	// PurgeAfter is the end of the deletion's grace period: until then the backup
+	// can be undeleted, afterwards the purge removes its archive. Entries written
+	// before soft deletes have none (their archive was deleted at once).
+	PurgeAfter *time.Time `json:"purge_after,omitempty"`
 	// Error is set when the archive could not be deleted from storage (the record
-	// is pruned anyway; a storage scan reports the leftover object).
+	// is pruned anyway; a storage scan reports the leftover object). Only entries
+	// written before soft deletes carry it.
 	Error string `json:"error,omitempty"`
 }

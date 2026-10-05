@@ -84,7 +84,7 @@ func TestOnDemandRunsNeverPrune(t *testing.T) {
 			t.Fatalf("ExecuteJobRun: %v", err)
 		}
 	}
-	if n := countStatus(t, st, job.Database, models.StatusPruned); n != 0 {
+	if n := countStatus(t, st, job.Database, models.StatusDeleted); n != 0 {
 		t.Fatalf("on-demand runs pruned %d backup(s); want none", n)
 	}
 	if n := countStatus(t, st, job.Database, models.StatusCompleted); n != 12 {
@@ -97,7 +97,7 @@ func TestScheduledRunPrunes(t *testing.T) {
 	s, st, job := retentionFixture(t)
 	s.executeJob(context.Background(), job.ID)
 	// 6 completed: the new one and the two newest seeded ones are kept.
-	if n := countStatus(t, st, job.Database, models.StatusPruned); n != 3 {
+	if n := countStatus(t, st, job.Database, models.StatusDeleted); n != 3 {
 		t.Fatalf("scheduled run pruned %d backup(s); want 3", n)
 	}
 	for _, id := range []string{"bkp_old_1", "bkp_old_2"} {
@@ -112,7 +112,6 @@ func TestScheduledRunPrunes(t *testing.T) {
 // backup younger than MinCountPruneAge.
 func TestCountRetentionKeepsRecentBackups(t *testing.T) {
 	st := storetest.New(t)
-	mock := storage.NewMockStorage()
 	now := time.Now().UTC()
 	var records []*models.BackupRecord
 	for i := range 7 {
@@ -123,7 +122,7 @@ func TestCountRetentionKeepsRecentBackups(t *testing.T) {
 		records = append(records, r)
 		_ = st.SaveBackupRecord(context.Background(), r)
 	}
-	pruned, err := PruneBackups(context.Background(), 0, 3, records, st, mock, nil)
+	pruned, err := PruneBackups(context.Background(), 0, 3, records, st, 7*24*time.Hour, nil)
 	if err != nil || len(pruned) != 0 {
 		t.Fatalf("pruned %v, %v; want nothing under a day old", pruned, err)
 	}
@@ -153,7 +152,7 @@ func TestRetentionFloor(t *testing.T) {
 				records = append(records, r)
 				_ = st.SaveBackupRecord(context.Background(), r)
 			}
-			pruned, err := PruneBackups(context.Background(), tc.days, tc.count, records, st, storage.NewMockStorage(), nil)
+			pruned, err := PruneBackups(context.Background(), tc.days, tc.count, records, st, 7*24*time.Hour, nil)
 			if err != nil || len(pruned) != tc.wantPruned {
 				t.Fatalf("pruned %v, %v; want %d", pruned, err, tc.wantPruned)
 			}
@@ -208,7 +207,7 @@ func TestOnDemandRunsDoNotShieldGarbageFromRetention(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"bkp_old_3", "bkp_old_4", "bkp_old_5"} {
-		if got := status(id); got != models.StatusPruned {
+		if got := status(id); got != models.StatusDeleted {
 			t.Errorf("%s = %s; want pruned (scheduled, beyond retention_count)", id, got)
 		}
 	}

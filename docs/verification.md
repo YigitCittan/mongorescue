@@ -76,19 +76,19 @@ Any restore can be compared with its backup's manifest too: `"verify_restore": t
 
 ### Pins (legal hold)
 
-`POST /api/v1/backups/{id}/pin` with an optional `{"note": "..."}` (operator) puts a backup on legal hold: retention never deletes it and `DELETE /api/v1/backups/{id}` answers `409` until `POST /api/v1/backups/{id}/unpin`, which needs the admin scope because it makes the backup deletable again. The record keeps who pinned it, when and why; the dashboard shows a pin icon. Retention re-checks the pin, and whether the backup has meanwhile become the job's newest verified backup, in the same transaction that marks it pruned, so neither a pin nor a verification recorded while retention runs is overridden. The MCP tool `pin_backup` pins; unpinning is only offered in the dashboard and the REST API.
+`POST /api/v1/backups/{id}/pin` with an optional `{"note": "..."}` (operator) puts a backup on legal hold: retention never deletes it and `DELETE /api/v1/backups/{id}` answers `409` until `POST /api/v1/backups/{id}/unpin`, which needs the admin scope because it makes the backup deletable again. The record keeps who pinned it, when and why; the dashboard shows a pin icon. Retention re-checks the pin, and whether the backup has meanwhile become the job's newest verified backup, in the same transaction that marks it deleted, so neither a pin nor a verification recorded while retention runs is overridden. The MCP tool `pin_backup` pins; unpinning is only offered in the dashboard and the REST API.
 
 ### Never the last verified backup
 
 Retention keeps its existing floors (the `max(retention_count, 1)` newest scheduled backups, and no count-based pruning of backups younger than a day) and never deletes the job's newest backup whose archive passed verification, whatever the policy says. Until a job has a verified backup, the floors alone apply.
 
-### Shared archives
+### Soft deletes and shared archives
 
-Deleting a backup (`DELETE /api/v1/backups/{id}` or retention) removes its archive from storage only when no other record, in any status, names the same key on the same target; otherwise only the record goes and the response (`archive_kept`) or the retention history says which record keeps the archive, a pinned one in particular.
+Deleting a backup (`DELETE /api/v1/backups/{id}`, a bulk delete or retention) never touches storage: the backup becomes `deleted` and keeps its archive for the delete grace period ([security.md](security.md#delete-protection)). The purge afterwards removes the archive only when no other record that still holds it (completed, missing, running or deleted and waiting for its purge, or a row that cannot be read) names the same key on the same target; otherwise only the record becomes `purged` and the audit entry of the purge says which record keeps the archive.
 
 ### Retention history
 
-Every deletion by retention is recorded three times: in the retention log (`GET /api/v1/jobs/{id}/retention/log`, shown as *Saklama geçmişi* in the job details), in the audit log (tool `retention.delete`, transport `system`) and as a `retention.deleted` event. An archive that could not be deleted from storage is recorded with the error; the record is pruned anyway and the next storage scan lists the leftover object as an orphan.
+Every deletion by retention is recorded three times: in the retention log (`GET /api/v1/jobs/{id}/retention/log`, shown as *Saklama geçmişi* in the job details, with `purge_after`, until when the backup can be undone), in the audit log (tool `retention.delete`, transport `system`) and as a `retention.deleted` event. The purge is recorded separately (`backup.purge`); an archive the purge could not delete keeps its backup `deleted`, and the purge retries. Entries written before soft deletes may carry an `error`: their archive could not be deleted and their record was pruned anyway.
 
 ## Storage scans
 

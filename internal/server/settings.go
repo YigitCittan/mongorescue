@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
@@ -31,6 +34,27 @@ type settingsResponse struct {
 	settings.Settings
 	RestartRequired []string           `json:"restart_required"`
 	Warnings        []settings.Warning `json:"warnings"`
+	// PendingChanges lists the lowered protections (a shorter grace period or job
+	// retention) that take effect later.
+	PendingChanges []*models.PendingChange `json:"pending_changes"`
+	// ApprovalsRequested lists the requests a PUT created for a second
+	// administrator (turning the two-person rule off, or a lower grace period with it
+	// on).
+	ApprovalsRequested []*models.Approval `json:"approvals_requested,omitempty"`
+}
+
+// pendingChanges returns the pending changes for a settings response ([] when they
+// cannot be listed, which is logged).
+func (s *Server) pendingChanges(r *http.Request) []*models.PendingChange {
+	if s.ops == nil {
+		return []*models.PendingChange{}
+	}
+	list, err := s.ops.PendingChanges(r.Context())
+	if err != nil {
+		s.logger.Warn("cannot list pending protection changes", logsafe.Error(err))
+		return []*models.PendingChange{}
+	}
+	return list
 }
 
 // requireSettings returns the settings service, answering 503 when absent.
@@ -48,7 +72,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.refreshRecoveryKit(r.Context())
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}, Warnings: svc.Warnings()})
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: svc.Masked(), RestartRequired: []string{}, Warnings: svc.Warnings(),
+		PendingChanges: s.pendingChanges(r)})
 }
 
 // handleDismissWarning dismisses a persistent warning for good.
@@ -85,14 +110,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request json: "+jsonProblem(err))
 		return
 	}
-	updated, changed, err := svc.UpdateChanged(r.Context(), patch)
-	if err != nil {
-		s.writeSettingsError(w, err)
-		return
+	// Through the operations service: lowering a delete protection is delayed or
+	// waits for a second administrator.
+	var res *operations.SettingsUpdate
+	if s.ops != nil && s.ops.ManagesSettings() {
+		var err error
+		if res, err = s.ops.UpdateSettings(r.Context(), patch); err != nil {
+			if errors.Is(err, operations.ErrTooFewAdmins) || errors.Is(err, operations.ErrUnavailable) {
+				s.writeOperationError(w, err)
+				return
+			}
+			s.writeSettingsError(w, err)
+			return
+		}
+	} else {
+		// Without the operations service nothing can count the administrators, so
+		// the two-person rule cannot be turned on; lowering a protection is refused
+		// by the settings service itself.
+		if patch.Security != nil && patch.Security.RequireSecondApprover != nil && *patch.Security.RequireSecondApprover {
+			writeError(w, http.StatusServiceUnavailable, "the two-person rule cannot be turned on in this configuration")
+			return
+		}
+		updated, changed, err := svc.UpdateChanged(r.Context(), patch)
+		if err != nil {
+			s.writeSettingsError(w, err)
+			return
+		}
+		res = &operations.SettingsUpdate{Settings: updated, Changed: changed}
 	}
-	annotateSettings(r.Context(), changed)
+	annotateSettings(r.Context(), res.Changed)
 	s.refreshRecoveryKit(r.Context())
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: updated, RestartRequired: []string{}, Warnings: svc.Warnings()})
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: res.Settings, RestartRequired: []string{}, Warnings: svc.Warnings(),
+		PendingChanges: s.pendingChanges(r), ApprovalsRequested: res.Approvals})
 }
 
 func (s *Server) handleGenerateKey(w http.ResponseWriter, _ *http.Request) {

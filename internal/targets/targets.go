@@ -52,7 +52,17 @@ var (
 	// local path, S3 endpoint, bucket or prefix) while backups are stored on it: their
 	// records would point to a place that does not hold them.
 	ErrLocationInUse = errors.New("targets: the location of a storage target that holds backups cannot change")
+	// ErrUnverifiedChange is returned when new credentials (or region or path style)
+	// of a target that holds backups fail a connection test: saving them would cut
+	// those backups off.
+	ErrUnverifiedChange = errors.New("targets: the changed settings of a storage target that holds backups failed a connection test")
 )
+
+// usageCounter counts the backup records that keep a target in use, deleted ones
+// waiting for their purge included (implemented by *store.SQLiteStore).
+type usageCounter interface {
+	CountStorageTargetBackups(ctx context.Context, id string) (int, error)
+}
 
 // DefaultTestTimeout bounds storage target tests.
 const DefaultTestTimeout = 15 * time.Second
@@ -329,6 +339,11 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 			return nil, err
 		}
 	}
+	if !moved && !sameConfig(existing, t) {
+		if err = s.verifyInUseChange(ctx, existing, t); err != nil {
+			return nil, err
+		}
+	}
 	t.ID, t.CreatedAt, t.IsDefault = existing.ID, existing.CreatedAt, existing.IsDefault
 	t.UpdatedAt = s.now().UTC()
 	if !t.UpdatedAt.After(existing.UpdatedAt) {
@@ -347,6 +362,28 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 	return t.Redacted(), nil
 }
 
+// verifyInUseChange tests t, the new credentials, region or path style of existing,
+// when backup records reference existing: a change that fails the test is refused
+// (ErrUnverifiedChange), so wrong credentials can never cut off stored backups. An
+// unused target is not tested.
+func (s *Service) verifyInUseChange(ctx context.Context, existing, t *models.StorageTarget) error {
+	if c, ok := s.repo.(usageCounter); ok {
+		n, err := c.CountStorageTargetBackups(ctx, existing.ID)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+	}
+	probe := *t
+	probe.ID = existing.ID
+	if res := s.probe(ctx, &probe); !res.OK {
+		return fmt.Errorf("%w (%s); the target keeps its current settings", ErrUnverifiedChange, res.Error)
+	}
+	return nil
+}
+
 // SetDefault makes id the default target.
 func (s *Service) SetDefault(ctx context.Context, id string) (*models.StorageTarget, error) {
 	s.mu.Lock()
@@ -363,7 +400,8 @@ func (s *Service) SetDefault(ctx context.Context, id string) (*models.StorageTar
 }
 
 // Delete removes a target. The default target and targets still used by jobs or by
-// restorable backups cannot be deleted.
+// backup records (any but purged ones, so deleted backups waiting for their purge
+// too) cannot be deleted.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

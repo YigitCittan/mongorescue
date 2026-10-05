@@ -109,10 +109,12 @@ var idTimestamp = regexp.MustCompile(`_(\d{8}_\d{6})(?:_|$)`)
 func IsArchiveKey(key string) bool { return archiveKey.MatchString(key) }
 
 // liveStatus reports whether a record with status st owns its storage key: its
-// object is expected to exist (or to be written right now).
+// object is expected to exist (or to be written right now). A deleted backup owns
+// its archive until the purge: it is never an orphan and never imported as a new
+// backup during its grace period.
 func liveStatus(st models.BackupStatus) bool {
 	switch st {
-	case models.StatusCompleted, models.StatusMissing, models.StatusInProgress, models.StatusPending:
+	case models.StatusCompleted, models.StatusMissing, models.StatusInProgress, models.StatusPending, models.StatusDeleted:
 		return true
 	default:
 		return false

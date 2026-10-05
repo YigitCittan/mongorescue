@@ -122,6 +122,26 @@ func TestActionToolsRejectUnknownArguments(t *testing.T) {
 	}
 }
 
+// TestNoToolLowersADeleteProtection checks that MCP offers no tool that approves or
+// rejects a request of the two-person rule, deletes, undeletes or unpins backups, or
+// deletes storage targets: an assistant (with any key) can never finish or lower a
+// delete protection.
+func TestNoToolLowersADeleteProtection(t *testing.T) {
+	f := newFixture(t, nil)
+	cs := f.session(t, principal(auth.ScopeAdmin))
+	for tool, err := range cs.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := strings.ToLower(tool.Name)
+		for _, word := range []string{"approv", "reject", "delete", "unpin", "purge", "grace", "retention_set"} {
+			if strings.Contains(name, word) {
+				t.Errorf("MCP tool %s may act on a delete protection (%q)", tool.Name, word)
+			}
+		}
+	}
+}
+
 // TestSafeCloneToolNeverTouchesExistingData runs the restore tool and checks the
 // record: a fresh _rescue_ database, never dropped, even for an admin key.
 func TestSafeCloneToolNeverTouchesExistingData(t *testing.T) {

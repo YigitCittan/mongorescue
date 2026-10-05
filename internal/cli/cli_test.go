@@ -222,10 +222,18 @@ func TestListFiltersAndFlagOrder(t *testing.T) {
 	if got := api.sent("GET /restores"); len(got) != 1 || got[0].query != "id=rst_1%2Crst_2" {
 		t.Fatalf("restores query = %+v", got)
 	}
+	before := len(api.sent("GET /backups"))
+	if code, _, stderr := runCLI(context.Background(), t, api, nil, "list", "backups", "--deleted", "--limit", "0"); code != ExitOK {
+		t.Fatalf("list backups --deleted: exit %d: %s", code, stderr)
+	}
+	if got := api.sent("GET /backups"); len(got) != before+1 || got[len(got)-1].query != "deleted=true" {
+		t.Fatalf("deleted backups query = %+v", got)
+	}
 	for _, args := range [][]string{
 		{"list"},
 		{"list", "things"},
 		{"list", "jobs", "--status", "failed"},
+		{"list", "restores", "--deleted"},
 		{"list", "backups", "extra"},
 		{"list", "connections", "--limit", "5"},
 		{"list", "backups", "--json", "--quiet"},

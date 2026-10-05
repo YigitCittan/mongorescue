@@ -611,10 +611,11 @@ const BULK_DETAIL_KEYS = {
   last_good_backup: "bulk.detail_job_last_good",
   last_verified: "bulk.detail_job_last_verified",
   in_progress: "bulk.detail_status",
-  not_running: "bulk.detail_status"
+  not_running: "bulk.detail_status",
+  already_deleted: "bulk.detail_status"
 };
 const BULK_SKIP_REASONS = ["not_found", "in_progress", "last_good_backup", "last_verified", "pinned", "not_verifiable",
-  "already_pinned", "not_pinned", "not_running", "already_enabled", "already_disabled"];
+  "already_pinned", "not_pinned", "not_running", "already_enabled", "already_disabled", "already_deleted"];
 
 const bulkState = {
   // Available actions from GET /api/v1/bulk/actions (null until loaded).
@@ -1078,9 +1079,11 @@ function confirmDialog(opts) {
       body.appendChild(p);
     });
     if (o.danger) {
+      // undoNote replaces "This cannot be undone" for actions that can be undone for
+      // a while (soft deletes, protection.js).
       const p = document.createElement("p");
-      p.className = "notice notice-danger";
-      p.textContent = t("dialog.cannot_undo");
+      p.className = o.undoNote ? "notice notice-warn" : "notice notice-danger";
+      p.textContent = o.undoNote ? String(o.undoNote) : t("dialog.cannot_undo");
       body.appendChild(p);
     }
     const require = document.getElementById("confirm-require");
@@ -1260,6 +1263,9 @@ function renderBulkReview() {
   const parts = [`<dl class="bulk-stats" id="bulk-status">${stats.join("")}</dl>`];
   if (actionable === 0) {
     parts.push(`<p class="notice notice-warn">${escapeHtml(t("bulk.nothing_to_do"))}</p>`);
+  } else if (kind === "backups" && bulkRun.action.name === "delete" && typeof protectionBulkNote === "function") {
+    // Deleting backups is soft: the archives stay for the grace period (protection.js).
+    parts.push(`<p class="notice notice-warn">${escapeHtml(protectionBulkNote())}</p>`);
   } else if (bulkRun.action.destructive) {
     parts.push(`<p class="notice notice-danger">${escapeHtml(t(`bulk.no_undo_${kind}`))}</p>`);
   }
@@ -1341,7 +1347,11 @@ async function executeBulk() {
           json = again;
         }
       }
-      if (json.success && json.data) {
+      if (json.success && json.httpStatus === 202 && json.data && json.data.approval_required) {
+        // The two-person rule: the chunk waits for a second administrator.
+        results.approvals = (results.approvals || []).concat(json.data.approval ? [json.data.approval] : []);
+        if (typeof loadApprovals === "function") loadApprovals();
+      } else if (json.success && json.data) {
         (json.data.results || []).forEach(r => results.items.push(r));
         // Items that became protected after the check (a pin, a newer verification).
         (json.data.skipped || []).forEach(sk => results.skipped.push(sk));
@@ -1389,6 +1399,9 @@ function renderBulkResults() {
   const more = shown.length > BULK_RESULTS_MAX ? `<li class="muted">${escapeHtml(tf("bulk.more", { n: formatCount(shown.length - BULK_RESULTS_MAX) }))}</li>` : "";
   const empty = shown.length === 0 ? `<li class="muted">${escapeHtml(t("bulk.no_failures"))}</li>` : "";
   const parts = [`<p class="bulk-summary" id="bulk-status" role="status">${escapeHtml(summary)}</p>`];
+  (r.approvals || []).forEach(a => {
+    parts.push(`<p class="notice notice-warn">${escapeHtml(tf("protection.approval_waiting", { summary: String(a.summary || "") }))}</p>`);
+  });
   if (r.stopped) parts.push(`<p class="form-error" role="alert">${escapeHtml(tf("bulk.stopped", { error: r.stopped }))}</p>`);
   if (failed > 0) parts.push(`<p class="muted">${escapeHtml(t("bulk.failed_kept"))}</p>`);
   parts.push(`<ul class="bulk-list bulk-results">${lines}${more}${empty}</ul>`);

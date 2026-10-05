@@ -3408,3 +3408,76 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
 .role-readonly-note {
   margin-bottom: 12px;
 }
+
+/* --------------------------------------------------------------------------
+   Delete protection (protection.js): the header's Approvals button, the
+   approvals dialog and the pending changes in Settings → Security.
+   -------------------------------------------------------------------------- */
+.approvals-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approvals-btn[hidden] {
+  display: none;
+}
+
+.approvals-btn .badge {
+  height: 18px;
+  padding: 0 6px;
+  background: var(--warn-subtle);
+  color: var(--warn);
+}
+
+.approvals-btn .badge[hidden] {
+  display: none;
+}
+
+.approvals-list,
+.pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.approval-item p {
+  margin: 0 0 4px;
+}
+
+.approval-summary {
+  font-weight: 500;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pending-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pending-item .btn {
+  margin-left: auto;
+}
+
+#backups-show-deleted[aria-pressed="true"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}

@@ -121,7 +121,8 @@ Backups and restores are listed newest first, 50 at a time: `--limit` (1 to 200,
 | Flag | Applies to | Parameter |
 | :--- | :--- | :--- |
 | `--id ID,…` | backups, restores | `id` |
-| `--status S` | backups, restores | `status` |
+| `--status S` | backups, restores | `status` (deleted and purged backups are listed only when asked for) |
+| `--deleted` | backups | `deleted=true`: the deleted backups that can still be undone |
 | `--database NAME` | backups, restores (target), jobs | `database` |
 | `--connection ID` | backups, jobs | `connection_id` |
 | `--job ID` | backups | `job_id` |

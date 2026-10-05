@@ -355,6 +355,47 @@ func TestLocationOfATargetWithBackupsIsLocked(t *testing.T) {
 	}
 }
 
+// TestCredentialsOfATargetInUseAreTested proves that new credentials of a target that
+// backups (deleted ones included) reference must pass a connection test, so wrong
+// credentials can never cut those backups off, while an unused target is not tested.
+func TestCredentialsOfATargetInUseAreTested(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	used, err := f.svc.Create(ctx, s3Input("used", "bucket-a", "s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unused, err := f.svc.Create(ctx, s3Input("unused", "bucket-b", "s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	rec := &models.BackupRecord{ID: "b", Status: models.StatusCompleted, StorageTargetID: used.ID, StartedAt: now}
+	rec.MarkDeleted(models.SoftDelete{At: now, PurgeAfter: now.Add(time.Hour), By: "admin"})
+	if err = f.store.SaveBackupRecord(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	f.failS3.Store(true)
+	in := s3Input("used", "bucket-a", "wrong-secret")
+	if _, err = f.svc.Update(ctx, used.ID, in); !errors.Is(err, targets.ErrUnverifiedChange) || strings.Contains(err.Error(), "wrong-secret") {
+		t.Fatalf("unverified credentials of a target in use = %v; want ErrUnverifiedChange without the secret", err)
+	}
+	if full, _ := f.svc.Resolve(ctx, used.ID); full.S3.SecretAccessKey != "s3cret" {
+		t.Fatalf("the refused change was stored: %+v", full.S3)
+	}
+	// The name alone needs no test; an unused target is not tested either.
+	if _, err = f.svc.Update(ctx, used.ID, s3Input("renamed", "bucket-a", models.SecretMask)); err != nil {
+		t.Fatalf("renaming a target in use = %v", err)
+	}
+	if _, err = f.svc.Update(ctx, unused.ID, s3Input("unused", "bucket-b", "other-secret")); err != nil {
+		t.Fatalf("new credentials of an unused target = %v", err)
+	}
+	f.failS3.Store(false)
+	if _, err = f.svc.Update(ctx, used.ID, s3Input("renamed", "bucket-a", "new-secret")); err != nil {
+		t.Fatalf("verified credentials of a target in use = %v", err)
+	}
+}
+
 func TestKeepSecretRule(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

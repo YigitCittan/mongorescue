@@ -33,15 +33,15 @@ func TestPruneBackupRecordRechecksProtection(t *testing.T) {
 	save("other_target_verified", time.Hour, func(r *models.BackupRecord) { r.Verification, r.StorageTargetID = models.VerificationOK, "tgt2" })
 
 	for _, id := range []string{"new_verified", "pinned", "failed"} {
-		if _, err := s.PruneBackupRecord(ctx, id); !errors.Is(err, store.ErrPruneRefused) {
+		if _, err := s.PruneBackupRecord(ctx, id, nil); !errors.Is(err, store.ErrPruneRefused) {
 			t.Errorf("prune %s = %v, want ErrPruneRefused", id, err)
 		}
 	}
 	// A verified backup with a newer verified one (same target) may go.
-	if rec, err := s.PruneBackupRecord(ctx, "old_verified"); err != nil || rec.Status != models.StatusPruned {
+	if rec, err := s.PruneBackupRecord(ctx, "old_verified", nil); err != nil || rec.Status != models.StatusPruned {
 		t.Fatalf("prune old_verified = %+v, %v", rec, err)
 	}
-	if _, err := s.PruneBackupRecord(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.PruneBackupRecord(ctx, "nope", nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown = %v", err)
 	}
 	if rec, _ := s.GetBackupRecord(ctx, "new_verified"); rec.Status != models.StatusCompleted {

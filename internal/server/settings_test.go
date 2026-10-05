@@ -252,8 +252,13 @@ func TestStorageTargetEndpointsAndPerTargetBackups(t *testing.T) {
 	if rec := f.do("DELETE", "/api/v1/backups/"+id, nil); rec.Code != http.StatusOK {
 		t.Fatalf("delete backup: %d", rec.Code)
 	}
-	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
-		t.Fatalf("artifact not deleted from target b: %v", err)
+	// The delete is soft: the artifact stays on target b for the grace period, and
+	// the target stays in use (it can neither be deleted nor moved).
+	if _, err := os.Stat(artifact); err != nil {
+		t.Fatalf("artifact removed from target b before the grace period: %v", err)
+	}
+	if rec := f.do("PUT", "/api/v1/storage-targets/"+b.ID, moved); rec.Code != http.StatusConflict {
+		t.Fatalf("moving a target with a deleted backup: %d %s", rec.Code, rec.Body)
 	}
 
 	var stats map[string]any

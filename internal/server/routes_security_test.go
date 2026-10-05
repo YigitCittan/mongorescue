@@ -140,7 +140,14 @@ func TestRouteSecurityMatrix(t *testing.T) {
 				key = f.keys[auth.ScopeAdmin]
 			}
 			rec = serve(f.h, method, path, []byte(`{}`), with(map[string]string{"Authorization": "Bearer " + key}))
-			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+			switch {
+			case p == approveRoute:
+				// The middleware lets the admin key through; the two-person rule then
+				// refuses every API key: approvals need a signed-in administrator.
+				if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "never approve") {
+					t.Errorf("%s key: %d %s; want the approval refused to API keys", need, rec.Code, rec.Body)
+				}
+			case rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden:
 				t.Errorf("%s key: %d %s; want the handler's answer", need, rec.Code, rec.Body)
 			}
 		})

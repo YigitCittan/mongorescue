@@ -142,6 +142,19 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/restores/bulk": auth.ScopeOperator,
 	"POST /api/v1/jobs/bulk":     auth.ScopeOperator,
 
+	// Delete protection: undeleting a backup, deciding approval requests and
+	// cancelling a pending change (which keeps a protection) are admin; approving
+	// also needs a signed-in administrator other than the requester (enforced by the
+	// auth rules the operations service applies), so admin API keys can request and
+	// reject but never approve. The pending changes are readable, like the settings.
+	undeleteRoute:      auth.ScopeAdmin,
+	listApprovalsRoute: auth.ScopeAdmin,
+	getApprovalRoute:   auth.ScopeAdmin,
+	approveRoute:       auth.ScopeAdmin,
+	rejectRoute:        auth.ScopeAdmin,
+	listPendingRoute:   auth.ScopeRead,
+	cancelPendingRoute: auth.ScopeAdmin,
+
 	"GET /api/v1/notifications/channels":            auth.ScopeRead,
 	"POST /api/v1/notifications/channels":           auth.ScopeAdmin,
 	"PUT /api/v1/notifications/channels/{id}":       auth.ScopeAdmin,
