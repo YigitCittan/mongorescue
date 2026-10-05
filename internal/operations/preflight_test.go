@@ -27,6 +27,7 @@ type fakeInspector struct {
 	pingErr     error
 	version     string
 	exists      map[string]bool
+	takenPrefix string // every database name with this prefix exists
 	collections []connections.Collection
 	missing     []string
 	uncertain   bool
@@ -67,6 +68,9 @@ func (f *fakeInspector) Ping(context.Context) (connections.ServerInfo, error) {
 }
 
 func (f *fakeInspector) DatabaseExists(_ context.Context, database string) (bool, error) {
+	if f.takenPrefix != "" && strings.HasPrefix(database, f.takenPrefix) {
+		return true, nil
+	}
 	return f.exists[database], nil
 }
 
@@ -245,7 +249,9 @@ func TestPreflightCheckMatrix(t *testing.T) {
 		{
 			name: "a taken clone name fails",
 			ins: func(f *fakeInspector) {
-				f.exists = map[string]bool{models.RescueDatabaseName("shop", time.Now()): true, models.RescueDatabaseName("shop", time.Now().Add(time.Second)): true}
+				// The clone name carries a timestamp to the second; taking every
+				// shop_rescue_ name keeps the case independent of the clock.
+				f.takenPrefix = "shop_rescue_"
 			},
 			want: want{"target_database": "fail"},
 		},
