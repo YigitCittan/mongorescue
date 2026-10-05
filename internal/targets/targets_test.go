@@ -396,6 +396,96 @@ func TestCredentialsOfATargetInUseAreTested(t *testing.T) {
 	}
 }
 
+// TestAliasedLocationsAreRefused proves that no target may store archives where
+// another one does (T2 aliasing T1): the same or a nested local directory, or the
+// same endpoint and bucket with an equal or nested prefix.
+func TestAliasedLocationsAreRefused(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	t1, err := f.svc.Create(ctx, s3Input("t1", "bucket-a", "s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*targets.Input){
+		"same prefix":       func(*targets.Input) {},
+		"nested prefix":     func(in *targets.Input) { in.S3.Prefix = "/team/inner/" },
+		"parent prefix":     func(in *targets.Input) { in.S3.Prefix = "" },
+		"endpoint spelling": func(in *targets.Input) { in.S3.Endpoint = "HTTPS://S3.EXAMPLE.COM" },
+	} {
+		in := s3Input("t2", "bucket-a", "s3cret")
+		mutate(&in)
+		if _, cErr := f.svc.Create(ctx, in); !errors.Is(cErr, targets.ErrLocationOverlap) {
+			t.Errorf("%s: create = %v; want ErrLocationOverlap", name, cErr)
+		}
+	}
+	other := s3Input("t2", "bucket-a", "s3cret")
+	other.S3.Prefix = "/teams/"
+	t2, err := f.svc.Create(ctx, other)
+	if err != nil {
+		t.Fatalf("a sibling prefix = %v", err)
+	}
+	moved := s3Input("t2", "bucket-a", "s3cret")
+	if _, err = f.svc.Update(ctx, t2.ID, moved); !errors.Is(err, targets.ErrLocationOverlap) {
+		t.Fatalf("moving t2 onto t1 = %v; want ErrLocationOverlap", err)
+	}
+	a, b := filepath.Join(f.base, "a"), filepath.Join(f.base, "a", "nested")
+	if _, err = f.svc.Create(ctx, targets.Input{Name: "la", Type: models.StorageLocal, Local: &models.LocalTarget{Path: a}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.svc.Create(ctx, targets.Input{Name: "lb", Type: models.StorageLocal, Local: &models.LocalTarget{Path: b}}); !errors.Is(err, targets.ErrLocationOverlap) {
+		t.Fatalf("nested local path = %v; want ErrLocationOverlap", err)
+	}
+	loc1, err := f.svc.ObjectLocation(ctx, t1.ID, "inner/x.archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc2, _ := f.svc.ObjectLocation(ctx, t2.ID, "x.archive")
+	if loc1 == loc2 || !strings.HasSuffix(loc1, "team/inner/x.archive") {
+		t.Fatalf("locations %q and %q", loc1, loc2)
+	}
+}
+
+// TestFailedBackupsWithoutObjectsDoNotBlockDeletion proves that a failed backup that
+// never stored an object (no key, or the target says the object is missing) does
+// not keep a target in use, while one whose object exists does.
+func TestFailedBackupsWithoutObjectsDoNotBlockDeletion(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.Create(ctx, s3Input("default", "bucket-d", "s3cret")); err != nil {
+		t.Fatal(err)
+	}
+	tg, err := f.svc.Create(ctx, s3Input("t", "bucket-a", "s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, r := range []*models.BackupRecord{
+		{ID: "f_nokey", Database: "shop", Status: models.StatusFailed, StorageTargetID: tg.ID, StartedAt: now},
+		{ID: "f_gone", Database: "shop", Status: models.StatusFailed, StorageTargetID: tg.ID, StorageKey: "shop/gone.archive", StartedAt: now},
+		{ID: "f_kept", Database: "shop", Status: models.StatusCancelled, StorageTargetID: tg.ID, StorageKey: "shop/kept.archive", StartedAt: now},
+	} {
+		if err = f.store.SaveBackupRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	driver, err := f.svc.Storage(ctx, tg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = driver.Save(ctx, "shop/kept.archive", strings.NewReader("partial")); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.svc.Delete(ctx, tg.ID); !errors.Is(err, targets.ErrInUse) || !strings.Contains(err.Error(), "1 backup records") {
+		t.Fatalf("delete with a failed backup whose object exists = %v; want ErrInUse by one record", err)
+	}
+	if err = driver.Delete(ctx, "shop/kept.archive"); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.svc.Delete(ctx, tg.ID); err != nil {
+		t.Fatalf("delete once no failed backup holds an object = %v", err)
+	}
+}
+
 func TestKeepSecretRule(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

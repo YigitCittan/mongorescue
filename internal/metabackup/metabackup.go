@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -236,6 +237,33 @@ func (s *Service) settings() settings.MetadataBackup {
 
 // now returns the current time in UTC.
 func (s *Service) now() time.Time { return s.cfg.Now().UTC() }
+
+// deleteGrace returns the delete grace period in force (security.delete_grace_days):
+// retention never deletes a snapshot younger than it.
+func (s *Service) deleteGrace() time.Duration {
+	if s.cfg.Settings == nil {
+		return settings.Defaults().Security.DeleteGrace()
+	}
+	return s.cfg.Settings().Security.DeleteGrace()
+}
+
+// snapshotTime returns when the snapshot named key (under the prefix) was taken,
+// from its name; ok is false when the name holds no time.
+func snapshotTime(name string) (time.Time, bool) {
+	stamp, _, found := strings.Cut(strings.TrimPrefix(name, "mongorescue-"), "Z.db")
+	if !found || len(stamp) != len("20060102T150405")+3 {
+		return time.Time{}, false
+	}
+	at, err := time.ParseInLocation("20060102T150405", stamp[:len(stamp)-3], time.UTC)
+	if err != nil {
+		return time.Time{}, false
+	}
+	ms, err := strconv.Atoi(stamp[len(stamp)-3:])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at.Add(time.Duration(ms) * time.Millisecond), true
+}
 
 // Start removes temporary snapshots left by a crash and runs the background loop
 // that takes due snapshots, until Stop or ctx ends. It is a no-op when already
@@ -506,8 +534,11 @@ func encryptTo(pw *io.PipeWriter, src io.Reader, enc *encryption.Encryptor) erro
 }
 
 // prune deletes all but the newest retention-count snapshots on driver; keep is the
-// snapshot just stored, which is never deleted.
+// snapshot just stored, which is never deleted, and neither is a snapshot younger
+// than the delete grace period (or one whose age is unknown): like a deleted
+// backup, a metadata snapshot stays recoverable for at least the grace period.
 func (s *Service) prune(ctx context.Context, driver storage.Storage, keep string) error {
+	cutoff := s.now().Add(-s.deleteGrace())
 	limit := s.settings().RetentionCount
 	if limit < 1 {
 		limit = 1
@@ -536,6 +567,9 @@ func (s *Service) prune(ctx context.Context, driver storage.Storage, keep string
 			if k != keep {
 				kept++
 			}
+			continue
+		}
+		if at, ok := snapshotTime(strings.TrimPrefix(k, prefix)); !ok || at.After(cutoff) {
 			continue
 		}
 		if err := driver.Delete(ctx, k); err != nil && !errors.Is(err, storage.ErrNotFound) {

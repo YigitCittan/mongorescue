@@ -68,7 +68,10 @@ func newRunFixture(t *testing.T) *runFixture {
 }
 
 func asUser(name string, scope auth.Scope) context.Context {
-	p := &auth.Principal{User: &auth.User{ID: "usr_" + name, Username: name}, Method: auth.MethodSession, Scope: scope}
+	// Administrators of long standing: they may approve requests of the two-person
+	// rule (see auth.CheckApprover).
+	p := &auth.Principal{User: &auth.User{ID: "usr_" + name, Username: name, RoleChangedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		Method: auth.MethodSession, Scope: scope}
 	return auth.WithPrincipal(context.Background(), p)
 }
 

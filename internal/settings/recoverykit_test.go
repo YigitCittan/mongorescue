@@ -103,7 +103,12 @@ func TestMetadataBackupSettings(t *testing.T) {
 	repo := &memRepo{}
 	svc := newSvc(t, repo)
 	on, every, keep, target := true, Duration(6*time.Hour), 3, " stg_1 "
-	if _, err := svc.Update(ctx, Patch{MetadataBackup: &MetadataBackupPatch{Enabled: &on, Interval: &every, RetentionCount: &keep, TargetID: &target}}); err != nil {
+	// A lower snapshot count is a lowered protection: set directly it is refused, the
+	// operations service applies it after the grace period.
+	if _, err := svc.Update(ctx, Patch{MetadataBackup: &MetadataBackupPatch{RetentionCount: &keep}}); !errors.Is(err, ErrProtectionLowered) {
+		t.Fatalf("lower retention_count directly = %v; want ErrProtectionLowered", err)
+	}
+	if _, err := svc.Update(WithLoweredProtection(ctx), Patch{MetadataBackup: &MetadataBackupPatch{Enabled: &on, Interval: &every, RetentionCount: &keep, TargetID: &target}}); err != nil {
 		t.Fatal(err)
 	}
 	got := newSvc(t, repo).Current().MetadataBackup

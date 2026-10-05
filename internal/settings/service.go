@@ -160,6 +160,12 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 	if err = validate(&next, next.Encryption.Passphrase != cur.Encryption.Passphrase); err != nil {
 		return Settings{}, nil, err
 	}
+	if err = checkAdminGrant(ctx, cur, next); err != nil {
+		return Settings{}, nil, err
+	}
+	if err = checkMetadataRetention(ctx, cur, next); err != nil {
+		return Settings{}, nil, err
+	}
 	oidcChanged := !cur.OIDC.Equal(next.OIDC)
 	var pre []Precondition
 	if oidcChanged && s.oidcGuard != nil {

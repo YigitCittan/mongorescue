@@ -15,7 +15,7 @@ import (
 // Compile-time check that SQLiteStore serves the auth port.
 var _ auth.Repository = (*SQLiteStore)(nil)
 
-const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject"
+const userColumns = "id, username, password_hash, created_at, updated_at, last_login_at, role, auth_provider, subject, role_changed_at"
 
 // errInconsistentIdentity is returned when a user's provider, subject and password
 // hash disagree: an OIDC user has a subject and an empty hash, a local user neither
@@ -81,9 +81,13 @@ func insertUser(ctx context.Context, e execer, u *auth.User) error {
 	if u.Subject != "" {
 		subject = u.Subject
 	}
-	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	// A new user got their role when they were created.
+	if u.RoleChangedAt.IsZero() {
+		u.RoleChangedAt = u.CreatedAt
+	}
+	_, err := e.ExecContext(ctx, "INSERT INTO users ("+userColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.Username, u.PasswordHash, timeKey(u.CreatedAt), timeKey(u.UpdatedAt), nullTime(u.LastLoginAt), string(u.Role),
-		string(u.AuthProvider), subject)
+		string(u.AuthProvider), subject, timeKey(u.RoleChangedAt))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return auth.ErrUserExists
@@ -150,6 +154,32 @@ func (s *SQLiteStore) UpdatePassword(ctx context.Context, userID, hash string, u
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", userID, keepSessionHash); err != nil {
+			return fmt.Errorf("store: revoke sessions: %w", err)
+		}
+		return nil
+	})
+}
+
+// ResetPassword stores another user's new password hash, revokes all of the user's
+// sessions and sets their role_changed_at: credentials someone else chose make the
+// user a fresh administrator for the two-person rule.
+func (s *SQLiteStore) ResetPassword(ctx context.Context, userID, hash string, at time.Time) error {
+	if hash == "" {
+		return fmt.Errorf("store: reset password: %w", errInconsistentIdentity)
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		provider, err := userProvider(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if provider != auth.ProviderLocal {
+			return auth.ErrNoPassword
+		}
+		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET password_hash = ?, updated_at = ?, role_changed_at = ? WHERE id = ?",
+			hash, timeKey(at), timeKey(at), userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
 			return fmt.Errorf("store: revoke sessions: %w", err)
 		}
 		return nil
@@ -242,11 +272,11 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, actorID, userID string
 	return previous, nil
 }
 
-// setRole stores the role of userID and revokes the user's sessions, so they sign in
-// again under the new role.
+// setRole stores the role of userID, with updatedAt as its role_changed_at, and
+// revokes the user's sessions, so they sign in again under the new role.
 func setRole(ctx context.Context, tx *sql.Tx, userID string, role auth.Role, updatedAt time.Time) error {
-	if err := execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
-		string(role), timeKey(updatedAt), userID); err != nil {
+	if err := execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET role = ?, updated_at = ?, role_changed_at = ? WHERE id = ?",
+		string(role), timeKey(updatedAt), timeKey(updatedAt), userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id = ?", userID); err != nil {
@@ -614,6 +644,14 @@ func (s *SQLiteStore) GetAPIKeyByPrefix(ctx context.Context, prefix string) (*au
 	return scanAPIKey(s.db.QueryRowContext(ctx, "SELECT "+apiKeyColumns+" FROM api_keys WHERE prefix = ?", prefix))
 }
 
+// UpdateAPIKeyScope sets the scope of key id or returns auth.ErrAPIKeyNotFound.
+func (s *SQLiteStore) UpdateAPIKeyScope(ctx context.Context, id string, scope auth.Scope) error {
+	if _, err := auth.ParseScope(string(scope)); err != nil || scope == "" {
+		return fmt.Errorf("store: update api key scope: %w: %q", auth.ErrInvalidScope, scope)
+	}
+	return execOne(ctx, s.db, auth.ErrAPIKeyNotFound, "UPDATE api_keys SET scope = ? WHERE id = ?", string(scope), id)
+}
+
 // TouchAPIKey records the last use of a key.
 func (s *SQLiteStore) TouchAPIKey(ctx context.Context, id string, at time.Time) error {
 	if _, err := s.db.ExecContext(ctx, "UPDATE api_keys SET last_used_at = ? WHERE id = ?", timeKey(at), id); err != nil {
@@ -646,14 +684,15 @@ func scanUser(r rowScanner) (*auth.User, error) {
 // scanUserInto scans a users row into u. It returns sql.ErrNoRows unwrapped, and an
 // error wrapping ErrCorruptRecord when a column does not convert.
 func scanUserInto(r rowScanner, u *auth.User) error {
-	var created, updated int64
+	var created, updated, roleChanged int64
 	var lastLogin sql.NullInt64
 	var role, provider string
 	var subject sql.NullString
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &created, &updated, &lastLogin, &role, &provider, &subject, &roleChanged); err != nil {
 		return scanRowError("user", err)
 	}
 	u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.Role = fromKey(created), fromKey(updated), nullableKey(lastLogin), auth.Role(role)
+	u.RoleChangedAt = fromKey(roleChanged)
 	u.AuthProvider, u.Subject = auth.Provider(provider), subject.String
 	return nil
 }

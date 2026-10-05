@@ -34,6 +34,15 @@ func TestTwoPersonRuleOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	alice := sessionHeaders(t, f, "admin")
+	// An admin key created by alice before the rule is on.
+	p, err := f.auth.AuthenticateSession(ctx, strings.TrimPrefix(alice["Cookie"], SessionCookieName+"="))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, aliceKey, err := f.auth.CreateAPIKey(ctx, p, "alice admin", auth.ScopeAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	on := []byte(`{"security":{"require_second_approver":true}}`)
 	if rec := serve(f.h, "PUT", "/api/v1/settings", on, alice); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "two administrators") {
 		t.Fatalf("enable with one admin: %d %s; want 409", rec.Code, rec.Body)
@@ -45,15 +54,7 @@ func TestTwoPersonRuleOverHTTP(t *testing.T) {
 		t.Fatalf("enable with two admins: %d %s", rec.Code, rec.Body)
 	}
 
-	// An admin key created by alice requests a deletion.
-	p, err := f.auth.AuthenticateSession(ctx, strings.TrimPrefix(alice["Cookie"], SessionCookieName+"="))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, aliceKey, err := f.auth.CreateAPIKey(ctx, p, "alice admin", auth.ScopeAdmin)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// alice's admin key requests a deletion.
 	if err = f.store.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_tp", Database: "shop", Status: models.StatusCompleted, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +92,39 @@ func TestTwoPersonRuleOverHTTP(t *testing.T) {
 	}
 	if b, _ := f.store.GetBackupRecord(ctx, "bkp_tp"); b.Status != models.StatusDeleted || b.DeleteApprovedBy != "bob" {
 		t.Fatalf("backup after approval = %+v", b)
+	}
+
+	// The key cannot make a second administrator to approve its own requests: the
+	// new user is a viewer until approved, and resetting bob's password needs a
+	// session (from one it would wait for approval too).
+	rec = serve(f.h, "POST", "/api/v1/users", []byte(`{"username":"mallory","password":"`+testPassword+`","role":"admin"}`), key)
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"role":"viewer"`) || !strings.Contains(rec.Body.String(), "grant_admin_role") {
+		t.Fatalf("admin user with the rule on: %d %s; want 202, a viewer and an approval request", rec.Code, rec.Body)
+	}
+	bob, err := f.store.GetUserByUsername(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := []byte(`{"new_password":"another long password 123"}`)
+	if rec = serve(f.h, "PUT", "/api/v1/users/"+bob.ID+"/password", reset, key); rec.Code != http.StatusForbidden {
+		t.Fatalf("password reset with a key: %d %s; want 403", rec.Code, rec.Body)
+	}
+	if rec = serve(f.h, "PUT", "/api/v1/users/"+bob.ID+"/password", reset, alice); rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), "reset_password") {
+		t.Fatalf("password reset from a session: %d %s; want 202", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "$2a$") {
+		t.Fatalf("the answer shows the new password hash: %s", rec.Body)
+	}
+	if _, err = f.auth.Login(ctx, "192.0.2.1", "bob", testPassword); err != nil {
+		t.Fatalf("bob's password changed before approval: %v", err)
+	}
+	// An API key without a creator cannot request anything.
+	legacy := map[string]string{"Authorization": "Bearer " + f.keys[auth.ScopeAdmin], "Content-Type": "application/json"}
+	if err = f.store.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_tp2", Database: "shop", Status: models.StatusCompleted, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if rec = serve(f.h, "DELETE", "/api/v1/backups/bkp_tp2", nil, legacy); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "no creator") {
+		t.Fatalf("request with a key without creator: %d %s; want 403", rec.Code, rec.Body)
 	}
 
 	// Turning the rule off waits for a second administrator too.

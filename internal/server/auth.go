@@ -16,6 +16,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
@@ -367,6 +368,15 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // writeAuthError maps auth errors to HTTP responses without leaking internals.
 func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
+	// The two-person rule: a held change answers 202, a requester that cannot be
+	// identified 403 (see writeOperationError).
+	if writeApprovalPending(w, err) {
+		return
+	}
+	if errors.Is(err, operations.ErrRequesterUnknown) || errors.Is(err, operations.ErrUnavailable) {
+		s.writeOperationError(w, err)
+		return
+	}
 	var throttled *auth.ThrottledError
 	switch {
 	case errors.As(err, &throttled):
@@ -664,6 +674,11 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := svc.CreateUser(r.Context(), p, req.Username, req.Password, req.Role)
+	if user != nil && writeApprovalPendingWith(w, err, approvalRequired{User: user}) {
+		// The two-person rule: the user exists as a viewer, the admin role waits.
+		auditlog.Annotate(r.Context(), targetRole, string(user.Role))
+		return
+	}
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
@@ -691,6 +706,9 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	change, err := svc.SetUserRole(r.Context(), p, r.PathValue("id"), req.Role)
+	if writeApprovalPending(w, err) {
+		return
+	}
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
@@ -782,6 +800,15 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, plain, err := svc.CreateAPIKey(r.Context(), p, req.Name, req.Scope)
+	if k != nil && err != nil {
+		// The two-person rule: the key works with the operator scope, the admin scope
+		// waits. Its plaintext is shown here, once, like for any new key.
+		w.Header().Set("Cache-Control", "no-store")
+		if writeApprovalPendingWith(w, err, approvalRequired{APIKey: k, Key: plain}) {
+			auditlog.Annotate(r.Context(), targetScope, string(k.Scope))
+			return
+		}
+	}
 	if err != nil {
 		s.writeAuthError(w, err)
 		return

@@ -528,6 +528,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		// two-person rule needing two administrators.
 		SettingsUpdater:     settingsSvc,
 		SecondApproverCheck: authSvc.CheckSecondApproverPossible,
+		Users:               authSvc,
 		Publisher:           bus,
 		Verifier:            integritySvc,
 		Inspector:           prober,
@@ -541,6 +542,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// With the two-person rule, admin users, promotions and admin API keys wait for a
+	// second administrator too.
+	authSvc.SetAdminGrantGate(ops)
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
 		Connections: connSvc,

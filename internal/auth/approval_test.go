@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 )
 
 func TestCheckApprover(t *testing.T) {
-	alice := &auth.User{ID: "usr_alice", Username: "alice", Role: auth.RoleAdmin}
-	bob := &auth.User{ID: "usr_bob", Username: "bob", Role: auth.RoleAdmin}
+	requested := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	before := requested.Add(-time.Hour)
+	alice := &auth.User{ID: "usr_alice", Username: "alice", Role: auth.RoleAdmin, RoleChangedAt: before}
+	bob := &auth.User{ID: "usr_bob", Username: "bob", Role: auth.RoleAdmin, RoleChangedAt: before}
+	fresh := &auth.User{ID: "usr_fresh", Username: "fresh", Role: auth.RoleAdmin, RoleChangedAt: requested.Add(time.Minute)}
+	sameInstant := &auth.User{ID: "usr_same", Username: "same", Role: auth.RoleAdmin, RoleChangedAt: requested}
 	session := func(u *auth.User, scope auth.Scope) *auth.Principal {
 		return &auth.Principal{User: u, Method: auth.MethodSession, Scope: scope, Role: u.Role}
 	}
@@ -27,8 +32,10 @@ func TestCheckApprover(t *testing.T) {
 		{"operator", session(&auth.User{ID: "usr_op", Role: auth.RoleOperator}, auth.ScopeOperator), "usr_alice", auth.ErrForbidden},
 		{"another admin", session(bob, auth.ScopeAdmin), "usr_alice", nil},
 		{"any admin for a key without a user", session(alice, auth.ScopeAdmin), "", nil},
+		{"an admin since after the request", session(fresh, auth.ScopeAdmin), "usr_alice", auth.ErrApproverTooRecent},
+		{"an admin since the instant of the request", session(sameInstant, auth.ScopeAdmin), "usr_alice", auth.ErrApproverTooRecent},
 	} {
-		if err := auth.CheckApprover(c.p, c.requester); !errors.Is(err, c.want) || (c.want == nil && err != nil) {
+		if err := auth.CheckApprover(c.p, c.requester, requested); !errors.Is(err, c.want) || (c.want == nil && err != nil) {
 			t.Errorf("%s: %v; want %v", c.name, err, c.want)
 		}
 	}
