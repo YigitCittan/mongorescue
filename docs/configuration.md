@@ -187,6 +187,7 @@ A storage target is where backup archives are written: a directory on the MongoR
 | `s3.prefix` | Optional key prefix, e.g. `mongorescue/` |
 | `s3.access_key_id`, `s3.secret_access_key` | Static credentials. Leave both empty to use the AWS default credential chain (instance role, `AWS_*` variables of the container). The secret key is encrypted in the database and shown as `******`; sending `******` back keeps it only while endpoint, bucket and access key are unchanged |
 | `s3.use_path_style` | Path-style URLs (required by MinIO and some gateways) |
+| `s3.part_size_mb` | Multipart upload part size in MiB, 5 to 512 (default 16). S3 allows 10,000 parts, so it caps one archive: 16 MiB allows about 156 GiB, 64 MiB about 625 GiB. Each running upload buffers part size × 2. Backups warn when a database's expected archive exceeds 80% of that limit; see [S3 multipart limits](production.md#s3-multipart-limits). Changing it needs no connection test and applies to the next backup |
 
 Each target gets its own driver, built on first use and rebuilt after the target changes.
 
