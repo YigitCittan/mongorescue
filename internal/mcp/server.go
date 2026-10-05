@@ -9,9 +9,9 @@
 // (RunBridge, the "mongorescue mcp" subcommand) that forwards to a running instance.
 //
 // Safety model: callers authenticate with an API key (never a browser session); each
-// tool requires a scope (read or operator) and tools/list only shows the tools the
-// key may call; nothing can be deleted and restores always go into a fresh
-// <db>_rescue_<timestamp> clone; every tool call is audited, counted in
+// tool requires a scope (read or operator; admin for pitr_restore) and tools/list
+// only shows the tools the key may call; nothing can be deleted and restores always
+// go into fresh <db>_rescue_<timestamp> clones; every tool call is audited, counted in
 // mongorescue_mcp_calls_total and rate limited per API key.
 package mcp
 
