@@ -1883,7 +1883,7 @@ function jobLastRun(job) {
 
 // Badge kind and label of a job run status.
 function jobRunKind(status) {
-  const kinds = { ok: "success", partial: "warn", failed: "danger", cancelled: "warn", running: "running" };
+  const kinds = { ok: "success", partial: "warn", failed: "danger", cancelled: "warn", running: "running", skipped: "neutral" };
   return [kinds[status] || "neutral", t(`jobdb.run_status_${status}`) || status];
 }
 
@@ -1995,7 +1995,10 @@ function jobDbsRunNode(run) {
   const summary = document.createElement("summary");
   const d = parseDate(run.started_at);
   const when = d ? formatAbsolute(d) : "";
-  summary.innerHTML = `${jobRunBadge(run.status)} <span class="jobrun-line">${escapeHtml(tf("jobdb.run_line", { time: when, ok, n: dbs.length }))}</span>`;
+  const line = run.status === "skipped"
+    ? tf("jobdb.run_skipped_line", { time: when, reason: run.skip_reason || "" })
+    : tf("jobdb.run_line", { time: when, ok, n: dbs.length });
+  summary.innerHTML = `${jobRunBadge(run.status)} <span class="jobrun-line">${escapeHtml(line)}</span>`;
   const extras = [];
   if ((run.new_databases || []).length > 0) extras.push(tf("jobdb.run_new_n", { n: run.new_databases.length }));
   if ((run.added_databases || []).length > 0) extras.push(tf("jobdb.run_added_n", { n: run.added_databases.length }));
