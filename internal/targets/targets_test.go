@@ -506,7 +506,7 @@ func TestConcurrentCreatesCannotAlias(t *testing.T) {
 		inputs = append(inputs, in)
 		dir := f.abs("race")
 		if i%2 == 1 {
-			dir = filepath.Join(dir, fmt.Sprintf("nested-%d", i))
+			dir = filepath.Join(dir, "nested")
 		}
 		inputs = append(inputs, targets.Input{Name: fmt.Sprintf("local-%d", i), Type: models.StorageLocal, Local: &models.LocalTarget{Path: dir}})
 	}
