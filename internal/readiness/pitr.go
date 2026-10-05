@@ -23,6 +23,9 @@ const (
 	// chain yet (a new stream, failing base backups, or oplog_max_days removed the
 	// chunks a base needs), so nothing can be restored from it.
 	ReasonPITRNoWindow = "pitr_no_window"
+	// ReasonPITRChainTestFailed: the newest chain test of the stream failed, or its
+	// restore did not match the manifest of the newer base.
+	ReasonPITRChainTestFailed = "pitr_chain_test_failed"
 )
 
 // RPO sources of a row.
@@ -60,6 +63,8 @@ type StreamInfo struct {
 	// Broken reports that the current chain started after a gap, a replica set
 	// change or a divergence.
 	Broken bool `json:"broken"`
+	// ChainTestFailed reports that the newest chain test failed.
+	ChainTestFailed bool `json:"chain_test_failed,omitempty"`
 }
 
 // StreamRow is the readiness of one PITR stream.
@@ -91,6 +96,9 @@ func streamReasons(st StreamInfo) (fail, warn []string) {
 	}
 	if st.LagHigh {
 		warn = append(warn, ReasonPITRLagHigh)
+	}
+	if st.ChainTestFailed {
+		warn = append(warn, ReasonPITRChainTestFailed)
 	}
 	if st.WindowLow {
 		warn = append(warn, ReasonPITRWindowLow)

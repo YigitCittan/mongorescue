@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -141,6 +142,154 @@ type RestoreRequest struct {
 	// <db>_rescue_verify_<timestamp>). It only applies to safe-clone restores and is
 	// set by code, never read from clients.
 	CloneDatabase string `json:"-"`
+
+	// PITR makes the request a point-in-time restore of a PITR stream: a base
+	// backup is restored into safe clones and the stream's oplog is replayed up to
+	// the target. BackupID is then left empty (the base is chosen by the plan), and
+	// in-place restores, dry runs, collection selections, drop_target and users and
+	// roles are refused (see ValidatePITR).
+	PITR *PITRTarget `json:"pitr,omitempty"`
+
+	// Databases restricts a point-in-time restore to these databases; empty
+	// restores every database of the instance except admin, config and local.
+	Databases []string `json:"databases,omitempty"`
+
+	// PITRCloneSuffix, when set, replaces the "_rescue_<timestamp>" suffix of the
+	// databases of a point-in-time restore (chain tests use
+	// "_rescue_verify_<timestamp>_<hex>"). It is set by code, never read from
+	// clients.
+	PITRCloneSuffix string `json:"-"`
+}
+
+// ErrPITRInPlace is returned for a point-in-time restore that asks to write into
+// existing databases: this release restores to a point in time into safe clones only.
+var ErrPITRInPlace = errors.New("point-in-time restores go into safe clones only; in-place point-in-time restores are not offered")
+
+// PITRTarget is the stream and the moment of a point-in-time restore. Exactly one of
+// At and TS is set.
+type PITRTarget struct {
+	// StreamID is the PITR stream to restore from.
+	StreamID string `json:"stream_id"`
+	// At restores every write up to and including this second (RFC 3339; the
+	// primary's clock).
+	At *time.Time `json:"at,omitempty"`
+	// TS restores every write before this exact oplog position, which is not
+	// applied.
+	TS *pitr.Timestamp `json:"ts,omitempty"`
+}
+
+// Target returns the plan target of t.
+func (t PITRTarget) Target() pitr.Target {
+	var out pitr.Target
+	if t.At != nil {
+		out.At = *t.At
+	}
+	if t.TS != nil {
+		ts := *t.TS
+		out.TS = &ts
+	}
+	return out
+}
+
+// ValidatePITR checks a point-in-time request: a stream, exactly one of a time and a
+// timestamp, valid database names other than admin, config and local, and none of
+// the options a point-in-time restore does not offer (an in-place restore wraps
+// ErrPITRInPlace). It returns nil for a request without PITR.
+func (r RestoreRequest) ValidatePITR() error {
+	if r.PITR == nil {
+		if len(r.Databases) > 0 {
+			return errors.New(`"databases" is only used by point-in-time restores ("pitr")`)
+		}
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(r.PITR.StreamID) == "":
+		return errors.New("pitr.stream_id is required")
+	case (r.PITR.At == nil) == (r.PITR.TS == nil):
+		return errors.New("set exactly one of pitr.at and pitr.ts")
+	case r.InPlace() || r.ConfirmInPlace:
+		return ErrPITRInPlace
+	case strings.TrimSpace(r.BackupID) != "":
+		return errors.New("a point-in-time restore chooses its base backup itself; omit backup_id")
+	case r.DryRun:
+		return errors.New("dry runs are not offered for point-in-time restores; run the preflight instead")
+	case r.DropTarget:
+		return errors.New("drop_target does not apply to point-in-time restores, which create new databases")
+	case len(r.SelectedCollections) > 0:
+		return errors.New("selected_collections is not offered for point-in-time restores; use databases")
+	case r.RestoreUsersAndRoles:
+		return errors.New("restore_users_and_roles is not offered for point-in-time restores")
+	}
+	if _, err := r.PITR.Target().Limit(); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, db := range r.Databases {
+		db = strings.TrimSpace(db)
+		if err := ValidateDatabaseName(db); err != nil {
+			return fmt.Errorf("databases: %w", err)
+		}
+		if db == AdminDatabase || db == "config" || db == "local" {
+			return fmt.Errorf("databases: %s is never restored to a point in time", db)
+		}
+		if IsRescueClone(db) {
+			return fmt.Errorf("databases: %s is a database MongoRescue restored into; point-in-time restores leave clones out", db)
+		}
+		if seen[db] {
+			return fmt.Errorf("databases: %s is listed twice", db)
+		}
+		seen[db] = true
+	}
+	return nil
+}
+
+// PITRDatabases returns the trimmed database selection of a point-in-time request.
+func (r RestoreRequest) PITRDatabases() []string {
+	var out []string
+	for _, db := range r.Databases {
+		if db = strings.TrimSpace(db); db != "" {
+			out = append(out, db)
+		}
+	}
+	return out
+}
+
+// PITRRestore records what a point-in-time restore replayed (RestoreRecord.PITR).
+type PITRRestore struct {
+	// StreamID, ChainID and BaseID are the stream, the chain and the base backup
+	// the plan chose.
+	StreamID string `json:"stream_id"`
+	ChainID  string `json:"chain_id"`
+	BaseID   string `json:"base_id"`
+	// TargetTime is the moment restored to and Limit the exclusive end of the
+	// replay (--oplogLimit).
+	TargetTime time.Time      `json:"target_time"`
+	Limit      pitr.Timestamp `json:"limit"`
+	// Chunks and OplogBytes count the oplog chunks replayed and their stored size;
+	// BaseBytes is the stored size of the base.
+	Chunks     int   `json:"chunks"`
+	OplogBytes int64 `json:"oplog_bytes"`
+	BaseBytes  int64 `json:"base_bytes"`
+	// Databases is the database selection; empty means the whole instance (every
+	// database but admin, config and local).
+	Databases []string `json:"databases,omitempty"`
+	// CloneSuffix is appended to the name of every restored database
+	// ("_rescue_<YYYYMMDD_HHMMSS>").
+	CloneSuffix string `json:"clone_suffix"`
+	// Clones are the databases this restore creates, recorded before it writes
+	// anything and extended as it goes. Clean-up after a failure, a cancellation or
+	// an interruption drops exactly these names, never a pattern.
+	Clones []string `json:"clones,omitempty"`
+	// OpsReplayed counts the operations the oplog filter wrote and OpsApplied the
+	// ones mongorestore reported ("applied N oplog entries"; nil when it printed no
+	// count).
+	OpsReplayed int64  `json:"ops_replayed"`
+	OpsApplied  *int64 `json:"ops_applied,omitempty"`
+	// OpsUnverified is set when mongorestore printed no applied count, so the
+	// replay could not be cross-checked (the record also carries a warning).
+	OpsUnverified bool `json:"ops_unverified,omitempty"`
+	// ChainTest marks the restore of a scheduled chain test.
+	ChainTest bool `json:"chain_test,omitempty"`
 }
 
 // IsSafeClone reports whether the restore targets a fresh clone namespace. An omitted
@@ -306,6 +455,10 @@ type RestoreRecord struct {
 	// Progress is the live progress of a running restore. It is filled in API
 	// responses only and never stored.
 	Progress *RunProgress `json:"progress,omitempty"`
+
+	// PITR describes a point-in-time restore: the base, the chain and the oplog it
+	// replayed. Nil for the restore of a backup.
+	PITR *PITRRestore `json:"pitr,omitempty"`
 }
 
 // Redacted returns a copy of the request with the MongoURI password masked, suitable

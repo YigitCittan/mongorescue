@@ -8,11 +8,12 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
+	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
 // pitrStreams returns the PITR streams for the readiness report, from the
 // collector's status (*svc is set once the collector is built).
-func pitrStreams(svc **collector.Service) readiness.StreamLister {
+func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Context, streamID string) bool) readiness.StreamLister {
 	return func(ctx context.Context) ([]readiness.StreamInfo, error) {
 		if *svc == nil {
 			return nil, nil
@@ -23,7 +24,11 @@ func pitrStreams(svc **collector.Service) readiness.StreamLister {
 		}
 		out := make([]readiness.StreamInfo, 0, len(list))
 		for _, st := range list {
-			out = append(out, streamInfo(st))
+			info := streamInfo(st)
+			if *chainTestFailed != nil {
+				info.ChainTestFailed = (*chainTestFailed)(ctx, info.ID)
+			}
+			out = append(out, info)
 		}
 		return out, nil
 	}
@@ -90,4 +95,20 @@ func openOplogSession(ctx context.Context, prober *mongoconn.Prober, uri, readPr
 		return nil, err
 	}
 	return oplogSession{s}, nil
+}
+
+// databaseNames lists the database names on a server, for whole-instance
+// point-in-time restores (their clone checks and clean-up).
+func databaseNames(prober *mongoconn.Prober) restore.DatabaseLister {
+	return func(ctx context.Context, uri string) ([]string, error) {
+		dbs, err := prober.ListDatabases(ctx, uri)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(dbs))
+		for _, d := range dbs {
+			out = append(out, d.Name)
+		}
+		return out, nil
+	}
 }

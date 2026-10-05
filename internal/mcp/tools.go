@@ -79,6 +79,8 @@ const (
 	ToolRetentionPreview      = "retention_preview"
 	ToolPreviewJobDatabases   = "preview_job_databases"
 	ToolListJobRuns           = "list_job_runs"
+	ToolPITRStatus            = "pitr_status"
+	ToolPITRRestore           = "pitr_restore"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
@@ -105,6 +107,10 @@ var ToolScopes = map[string]auth.Scope{
 	ToolRetentionPreview:      auth.ScopeRead,
 	ToolPreviewJobDatabases:   auth.ScopeRead,
 	ToolListJobRuns:           auth.ScopeRead,
+	ToolPITRStatus:            auth.ScopeRead,
+	// Point-in-time restores are admin only in this release (docs/design/pitr.md,
+	// decision 8); they still only add safe clones.
+	ToolPITRRestore: auth.ScopeAdmin,
 }
 
 // ptr returns a pointer to v.
@@ -172,7 +178,8 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrNotRunning),
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
 		errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
-		errors.Is(err, operations.ErrPreflightFailed),
+		errors.Is(err, operations.ErrPreflightFailed), errors.Is(err, operations.ErrPITRNotRestorable),
+		errors.Is(err, operations.ErrPITRUnavailable),
 		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),
 		errors.Is(err, operations.ErrUnavailable), errors.Is(err, integrity.ErrNotFound),
 		errors.Is(err, integrity.ErrNotVerifiable):
@@ -570,6 +577,7 @@ func (s *Server) registerTools() {
 	}, s.cancelRun)
 	s.registerTrustTools()
 	s.registerJobDatabaseTools()
+	s.registerPITRTools()
 }
 
 func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled, string, error) {

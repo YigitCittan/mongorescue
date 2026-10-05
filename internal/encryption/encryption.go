@@ -231,6 +231,28 @@ func NewDecryptor(cfg DecryptorConfig) (*Decryptor, error) {
 	return &Decryptor{identities: ids}, nil
 }
 
+// HasMode reports whether d holds key material of encryption mode m: an X25519
+// identity for ModeX25519, a passphrase for ModeScrypt. It does not tell whether the
+// key matches a given ciphertext. A nil Decryptor has none.
+func (d *Decryptor) HasMode(m Mode) bool {
+	if d == nil {
+		return false
+	}
+	for _, id := range d.identities {
+		switch id.(type) {
+		case *age.X25519Identity:
+			if m == ModeX25519 {
+				return true
+			}
+		case *age.ScryptIdentity:
+			if m == ModeScrypt {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Decrypt parses the age header from src and returns a Reader yielding plaintext.
 // Header failures (no matching identity, wrong passphrase, corrupt header) are
 // returned immediately; authentication failures later in the stream are returned by

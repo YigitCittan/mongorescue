@@ -38,6 +38,79 @@ func WithManifestCapturer(fn ManifestFunc) Option {
 	}
 }
 
+// DatabaseListFunc returns the database names on the server at uri.
+type DatabaseListFunc func(ctx context.Context, uri string) ([]string, error)
+
+// WithDatabaseLister makes PITR base backups (a whole instance) capture an instance
+// manifest: every database but admin, config, local and MongoRescue's own clones
+// (models.IsRescueClone), with collections named
+// "<database>.<collection>". PITR chain tests compare their restores with it.
+func WithDatabaseLister(fn DatabaseListFunc) Option {
+	return func(e *Engine) {
+		e.listDatabases = fn
+	}
+}
+
+// captureInstanceManifest returns the manifest of every database but admin, config,
+// local and the clones, with collections named "<database>.<collection>", or nil.
+func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *models.Manifest {
+	if e.manifest == nil || e.listDatabases == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	defer cancel()
+	names, err := e.listDatabases(ctx, uri)
+	if err != nil {
+		e.logger.Warn("could not list the databases for the manifest of a PITR base; chain tests of it will not compare counts and indexes",
+			slog.String("error", redact.Text(err.Error())))
+		return nil
+	}
+	out := &models.Manifest{CapturedAt: time.Now().UTC(), Collections: []models.CollectionManifest{}}
+	for _, db := range names {
+		if db == models.AdminDatabase || db == "config" || db == "local" || models.IsRescueClone(db) {
+			continue
+		}
+		m, err := e.manifest(ctx, uri, db)
+		if err != nil || m == nil {
+			if err != nil {
+				e.logger.Warn("could not capture the manifest of a PITR base; chain tests of it will not compare counts and indexes",
+					logsafe.Attr("database", db), slog.String("error", redact.Text(err.Error())))
+			}
+			return nil
+		}
+		for _, c := range m.Collections {
+			c.Name = db + "." + c.Name
+			out.Collections = append(out.Collections, c)
+		}
+		if out.ServerVersion == "" {
+			out.ServerVersion = m.ServerVersion
+		}
+	}
+	out.Normalize()
+	return out
+}
+
+// instanceDatabases lists the databases of the instance at uri except admin, config
+// and local (clones included), or nil when the listing fails.
+func (e *Engine) instanceDatabases(ctx context.Context, uri string) []string {
+	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	defer cancel()
+	names, err := e.listDatabases(ctx, uri)
+	if err != nil {
+		e.logger.Warn("could not list the databases of a PITR base; point-in-time restores of it cannot plan their clone names",
+			slog.String("error", redact.Text(err.Error())))
+		return nil
+	}
+	out := []string{}
+	for _, db := range names {
+		if db != models.AdminDatabase && db != "config" && db != "local" {
+			out = append(out, db)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // WithVerifyAfterUpload makes every backup re-read its stored archive after the
 // upload and compare it with the checksum computed while it was written (see
 // RunConfig.Verify). It applies when no WithRunConfig is set.
@@ -50,8 +123,10 @@ func WithVerifyAfterUpload(on bool) Option {
 // captureManifest returns the manifest of the collections opts dumps, or nil when
 // no capturer is configured or the capture failed.
 func (e *Engine) captureManifest(ctx context.Context, uri string, opts models.BackupOptions) *models.Manifest {
-	// A manifest describes one database; a PITR base dumps a whole instance.
-	if e.manifest == nil || opts.Scope == models.ScopeInstance {
+	if opts.Scope == models.ScopeInstance {
+		return e.captureInstanceManifest(ctx, uri)
+	}
+	if e.manifest == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
@@ -82,6 +157,9 @@ func dumped(name string, opts models.BackupOptions) bool {
 // finishManifest widens the manifest captured before the dump with the counts after
 // it and attaches it to record.
 func (e *Engine) finishManifest(ctx context.Context, uri string, opts models.BackupOptions, before *models.Manifest, record *models.BackupRecord) {
+	if opts.Scope == models.ScopeInstance && e.listDatabases != nil {
+		record.InstanceDatabases = e.instanceDatabases(ctx, uri)
+	}
 	if before == nil {
 		return
 	}

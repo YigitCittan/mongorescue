@@ -87,6 +87,10 @@ type Engine struct {
 	timeout      time.Duration
 	canBypass    BypassCheck
 	admin        DatabaseAdmin
+	// listDatabases lists the databases of a whole-instance PITR target.
+	listDatabases DatabaseLister
+	// serverVersion reads the target version for PITR archives (WithServerVersion).
+	serverVersion ServerVersionFunc
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.

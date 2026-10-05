@@ -233,6 +233,13 @@ type Config struct {
 	// PITR holds the PITR streams StartBaseBackup reads; nil makes it fail with
 	// ErrPITRUnavailable.
 	PITR pitr.Repository
+	// PITRRestore runs point-in-time restores and PITRBases lists the base backups
+	// of a stream; nil makes point-in-time restores fail with ErrPITRUnavailable.
+	PITRRestore PITRRestorer
+	PITRBases   func(ctx context.Context, streamID string) ([]*models.BackupRecord, error)
+	// ToolsVersion returns the version of mongorestore for the preflight of
+	// point-in-time restores; nil reports the check as not checked.
+	ToolsVersion func(ctx context.Context) (string, error)
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Version is the build version reported by Status.
@@ -628,7 +635,19 @@ func runError(err error, busyMessage string) error {
 // ErrBusy. Other expected
 // failures: ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired,
 // ErrBusy and ErrShuttingDown.
+//
+// A request with PITR is a point-in-time restore of a PITR stream (by stream or
+// connection ID): admin only, into safe clones only (an in-place request is an
+// ErrInvalid wrapping models.ErrPITRInPlace), refused with ErrPITRNotRestorable when
+// no base and unbroken chain reach the target and with ErrPITRUnavailable without
+// PITR support.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
+	if req.PITR != nil || len(req.Databases) > 0 {
+		if req.PITR == nil {
+			return nil, invalid(req.ValidatePITR())
+		}
+		return s.startPITRRestore(ctx, req)
+	}
 	asked := req
 	plan, err := s.planRestore(ctx, req, false)
 	if err != nil {

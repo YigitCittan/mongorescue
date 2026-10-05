@@ -30,7 +30,7 @@ The key is sent as `Authorization: Bearer` to the URL's origin only. Redirects a
 
 `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honoured; with an `http://` URL the request, API key included, reaches the proxy in clear text (with `https://` the proxy only tunnels it).
 
-Use the smallest scope that does the job ([scopes](api.md#api-key-scopes)): `read` for `list` and `status`, `operator` for `backup`, `verify` and restores into a safe clone, `admin` only for in-place and cross-connection restores.
+Use the smallest scope that does the job ([scopes](api.md#api-key-scopes)): `read` for `list` and `status`, `operator` for `backup`, `verify` and restores into a safe clone, `admin` only for in-place, cross-connection and point-in-time restores.
 
 ## Shared flags
 
@@ -118,6 +118,22 @@ A restore goes into a new safe clone database (`<db>_rescue_<timestamp>`) unless
 The [restore preflight](api.md#restore-preflight) runs first (`POST /api/v1/restores/preflight`). Warnings are printed to stderr and do not stop the restore. A failed check prints the checks (a table on stderr, or the preflight's JSON on stdout with `--json`) and exits `1` without starting the restore, unless `--force` is given. `--skip-preflight` skips this first call; the server still runs the checks when the restore starts and refuses it in the same way (exit `1` with the checks), unless `--force`.
 
 With `--wait` it exits `1` when the restore failed or was cancelled, and also when `--verify-restore` found a mismatch (the data is restored, but it does not match what the backup recorded).
+
+#### Point in time (experimental)
+
+```bash
+mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database a,b]
+                    [--target-connection ID] [--skip-preflight] [--force] [--wait]
+mongorescue restore --pitr conn_rs0 --at 2026-10-05T14:29:59Z --wait
+```
+
+Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time) from its PITR stream (a stream ID or the ID of its connection), with an **admin** key. Every database, or those given with `--database`, goes into a new database `<db>_rescue_<timestamp>`; writes up to and including the second `--at` (the primary's clock) are replayed. Point-in-time restores are never in place: `--in-place`, `--confirm`, `--target-database`, `--drop`, `--collections`, `--dry-run` and the verify flags are refused with exit `2`, as is a backup ID next to `--pitr`. The preflight runs first like for every restore and also checks the oplog chain, the replay privileges, the disk space for the base and the oplog and the `mongorestore` version; a time outside every window is refused by the server (exit `1`, `422`).
+
+| Flag | Request field |
+| :--- | :--- |
+| `--pitr ID` | `pitr.stream_id` |
+| `--at TIME` | `pitr.at` (RFC 3339, such as `2026-10-05T14:30:00Z`) |
+| `--database a,b` | `databases` |
 
 ### list
 

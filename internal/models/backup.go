@@ -287,6 +287,11 @@ type BackupRecord struct {
 	// only if an oplog chain covers [TBefore, TAfter] without a break.
 	TBefore *pitr.OpTime `json:"t_before,omitempty"`
 	TAfter  *pitr.OpTime `json:"t_after,omitempty"`
+
+	// InstanceDatabases lists the databases of the instance after the dump of a base
+	// backup (admin, config and local left out, MongoRescue's own clones kept):
+	// point-in-time restores plan their clone names from it and leave the clones out.
+	InstanceDatabases []string `json:"instance_databases,omitempty"`
 }
 
 // SoftDelete describes a deletion: when, by whom and why, and the end of its grace

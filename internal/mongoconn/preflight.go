@@ -79,6 +79,35 @@ func (t *Target) ListCollections(ctx context.Context, database string) ([]connec
 	return out, nil
 }
 
+// Compile-time check that Target reports its user's roles.
+var _ connections.RoleReporter = (*Target)(nil)
+
+// UserRoles returns the roles of the connection's user (connectionStatus) and
+// whether a privilege grants anyAction on any resource.
+func (t *Target) UserRoles(ctx context.Context) (connections.UserRoles, error) {
+	var res struct {
+		AuthInfo struct {
+			Users      []bson.Raw  `bson:"authenticatedUsers"`
+			Roles      []roleRef   `bson:"authenticatedUserRoles"`
+			Privileges []privilege `bson:"authenticatedUserPrivileges"`
+		} `bson:"authInfo"`
+	}
+	cmd := bson.D{{Key: "connectionStatus", Value: 1}, {Key: "showPrivileges", Value: true}}
+	if err := t.client.Database("admin").RunCommand(ctx, cmd).Decode(&res); err != nil {
+		return connections.UserRoles{}, fmt.Errorf("connectionStatus: %w", err)
+	}
+	out := connections.UserRoles{AuthEnabled: len(res.AuthInfo.Users) > 0}
+	for _, r := range res.AuthInfo.Roles {
+		out.Roles = append(out.Roles, connections.Role{Role: r.Role, DB: r.DB})
+	}
+	for _, p := range res.AuthInfo.Privileges {
+		if p.Resource.AnyResource && slices.Contains(p.Actions, "anyAction") {
+			out.AnyAction = true
+		}
+	}
+	return out, nil
+}
+
 // roleRef is one entry of connectionStatus' authenticatedUserRoles.
 type roleRef struct {
 	Role string `bson:"role"`

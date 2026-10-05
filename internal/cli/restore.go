@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/apiclient"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 const restoreUsage = `Usage: mongorescue restore BACKUP_ID [flags]
+       mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database DB] [flags]
 
 Restores a backup. By default it restores into a new safe clone database
 (<db>_rescue_<timestamp>) and never touches existing data. Restoring into the
@@ -17,6 +19,12 @@ backup's own database (or --target-database) needs both --in-place and --confirm
 the CLI never prompts. The restore preflight runs first: a failed check prints the
 checks and exits 1 unless --force is given. Safe clones need an operator key;
 in-place and cross-connection restores need an admin key.
+
+With --pitr (experimental, admin key) it restores a replica set to a point in
+time from its PITR stream (a stream or connection ID): every database, or those
+given with --database, goes into a new <db>_rescue_<timestamp> database, and
+writes up to and including the second --at are replayed. Point-in-time restores
+are never in place.
 `
 
 // runRestore implements "mongorescue restore".
@@ -34,9 +42,20 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 	verifyRestore := fs.Bool("verify-restore", false, "Compare the restored database with the backup's manifest afterwards")
 	skipPreflight := fs.Bool("skip-preflight", false, "Do not run the preflight first (the server still checks; --force overrides it)")
 	force := fs.Bool("force", false, "Restore although a preflight check failed")
+	stream := fs.String("pitr", "", "Restore to a point in time from this PITR stream or connection (admin; experimental)")
+	at := fs.String("at", "", "With --pitr: the RFC 3339 time to restore to, e.g. 2026-10-05T14:30:00Z")
+	databases := fs.String("database", "", "With --pitr: restore only these databases, comma-separated (default: all but admin, config and local)")
 	pos, err := s.parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if s.set["pitr"] || s.set["at"] || s.set["database"] {
+		req, pitrErr := s.pitrRequest(pos, *stream, *at, *databases)
+		if pitrErr != nil {
+			return pitrErr
+		}
+		req.TargetConnectionID = strings.TrimSpace(*targetConn)
+		return s.startRestore(ctx, req, *skipPreflight, *force, "restores")
 	}
 	id, err := onlyOneID(pos, "backup")
 	if err != nil {
@@ -67,20 +86,50 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 		req.SafeClone, req.ConfirmInPlace = &safeClone, true
 		req.TargetDatabase, req.DropTarget = strings.TrimSpace(*targetDB), *drop
 	}
+	return s.startRestore(ctx, req, *skipPreflight, *force, "restores --backup "+id)
+}
+
+// pitrOnlyFlags are the restore flags that do not apply to --pitr.
+var pitrOnlyFlags = []string{"in-place", "confirm", "target-database", "drop", "collections", "dry-run", "verify-archive", "no-verify-archive", "verify-restore"}
+
+// pitrRequest builds the request of "restore --pitr".
+func (s *session) pitrRequest(pos []string, stream, at, databases string) (models.RestoreRequest, error) {
+	switch {
+	case len(pos) > 0:
+		return models.RestoreRequest{}, usageErrorf("--pitr chooses its base backup itself; drop the backup ID %s", pos[0])
+	case strings.TrimSpace(stream) == "":
+		return models.RestoreRequest{}, usageErrorf("--at and --database need --pitr STREAM_OR_CONNECTION")
+	case strings.TrimSpace(at) == "":
+		return models.RestoreRequest{}, usageErrorf("--pitr needs --at, the RFC 3339 time to restore to")
+	}
+	for _, f := range pitrOnlyFlags {
+		if s.set[f] {
+			return models.RestoreRequest{}, usageErrorf("--%s does not apply to --pitr (point-in-time restores always go into new databases)", f)
+		}
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(at))
+	if err != nil {
+		return models.RestoreRequest{}, usageErrorf("--at %q is not an RFC 3339 time such as 2026-10-05T14:30:00Z", at)
+	}
+	return models.RestoreRequest{PITR: &models.PITRTarget{StreamID: strings.TrimSpace(stream), At: &t}, Databases: csv(databases)}, nil
+}
+
+// startRestore runs the preflight (unless skipped) and starts req.
+func (s *session) startRestore(ctx context.Context, req models.RestoreRequest, skipPreflight, force bool, listHint string) error {
 	client, err := s.connect()
 	if err != nil {
 		return err
 	}
-	if !*skipPreflight {
+	if !skipPreflight {
 		pre, preErr := client.Preflight(ctx, req)
 		if preErr != nil {
 			return preErr
 		}
-		if preErr = s.checkPreflight(pre.Value, pre.Raw, *force); preErr != nil {
+		if preErr = s.checkPreflight(pre.Value, pre.Raw, force); preErr != nil {
 			return preErr
 		}
 	}
-	req.Force = *force
+	req.Force = force
 	res, err := client.StartRestore(ctx, req)
 	if err != nil {
 		if apiErr, ok := apiclient.AsAPIError(err); ok {
@@ -88,7 +137,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 				return s.preflightFailed(p, apiErr.Data)
 			}
 		}
-		return startError(err, "restores --backup "+id)
+		return startError(err, listHint)
 	}
 	return s.finishRestore(ctx, client, res)
 }
@@ -182,6 +231,9 @@ func (s *session) printRestore(res *apiclient.Result[models.RestoreRecord], star
 	mode := "safe clone"
 	if r.InPlace {
 		mode = "in place"
+	}
+	if r.PITR != nil {
+		mode = "safe clones, point in time " + r.PITR.TargetTime.Format(time.RFC3339)
 	}
 	if r.DryRun {
 		mode += ", dry run"

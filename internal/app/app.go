@@ -103,10 +103,13 @@ type App struct {
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
 	pitr          *collector.Service
-	readiness     *readiness.Service
-	auditLog      *auditlog.Service
-	auditForward  *auditlog.Forwarder
-	heartbeat     *heartbeat.Service
+	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
+	// or chain test (operations.Service.CleanupInterruptedPITR).
+	cleanupPITR  func(ctx context.Context, rec *models.RestoreRecord) string
+	readiness    *readiness.Service
+	auditLog     *auditlog.Service
+	auditForward *auditlog.Forwarder
+	heartbeat    *heartbeat.Service
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -307,6 +310,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithManifestCapturer(prober.Manifest),
+		backup.WithDatabaseLister(backup.DatabaseListFunc(databaseNames(prober))),
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
 		backup.WithOpTimeReader(prober.WriteOpTimes),
@@ -327,6 +331,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
+		restore.WithDatabaseLister(databaseNames(prober)),
+		restore.WithServerVersion(func(ctx context.Context, uri string) (string, error) {
+			info, pingErr := prober.Ping(ctx, uri)
+			return info.Version, pingErr
+		}),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
 			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std()}
@@ -383,6 +392,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
 	// The PITR collector is built below; the sweep's chunk item calls it.
+	// chainTestFailed reports failed PITR chain tests to readiness once the
+	// operations service is built.
+	var chainTestFailed func(ctx context.Context, streamID string) bool
 	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
 		ChunkKeys: metaStore.ChunkKeys,
@@ -446,7 +458,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
-		Streams:      pitrStreams(&pitrSvc),
+		Streams:      pitrStreams(&pitrSvc, &chainTestFailed),
 		Publisher:    bus,
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
@@ -552,8 +564,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Inspector:           prober,
 		Audit:               auditSvc,
 		PITR:                metaStore,
-		Logger:              logger,
-		Version:             o.version,
+		PITRRestore:         restoreEngine,
+		PITRBases:           metaStore.ListBaseBackups,
+		ToolsVersion: func(ctx context.Context) (string, error) {
+			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
+		},
+		Logger:  logger,
+		Version: o.version,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {
@@ -575,7 +592,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,
 		StartBase: ops.StartBaseBackup,
-		Bases:     metaStore.ListBaseBackups,
+		// Scheduled chain tests run as the application itself (admin).
+		StartChainTest: func(ctx context.Context, id string) error {
+			_, chainErr := ops.StartChainTest(auth.WithPrincipal(ctx, auth.SystemPrincipal()), id)
+			return chainErr
+		},
+		LastChainTest: ops.LastChainTestStart,
+		Bases:         metaStore.ListBaseBackups,
 		NextRun: func(expr string, from time.Time) (time.Time, bool) {
 			next := scheduler.NextRuns(expr, from, 1)
 			if len(next) == 0 {
@@ -613,10 +636,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// With the two-person rule, admin users, promotions and admin API keys wait for a
 	// second administrator too.
 	authSvc.SetAdminGrantGate(ops)
+	chainTestFailed = func(ctx context.Context, streamID string) bool {
+		r := ops.LastChainTest(ctx, streamID)
+		return r != nil && r.Failed
+	}
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
 		Connections: connSvc,
 		Targets:     targetSvc,
+		PITR:        pitrSvc,
 		Audit:       auditSvc,
 		ObserveCall: metricSet.ObserveMCPCall,
 		Version:     o.version,
@@ -670,6 +698,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
 		pitr:          pitrSvc,
+		cleanupPITR:   ops.CleanupInterruptedPITR,
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
@@ -1187,7 +1216,13 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 	if restores, err := a.metaStore.ListRestoreRecords(ctx); err == nil {
 		for _, r := range restores {
 			if r.Status == models.RestoreStatusInProgress {
-				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg
+				// An interrupted point-in-time restore or chain test drops the clones
+				// it recorded, and says so.
+				note := ""
+				if a.cleanupPITR != nil && r.PITR != nil {
+					note = a.cleanupPITR(ctx, r)
+				}
+				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg+note
 				if err := a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
 					a.logger.Warn("failed to mark interrupted restore", slog.String("restore_id", r.ID), logsafe.Error(err))
 				}

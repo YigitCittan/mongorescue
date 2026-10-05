@@ -747,7 +747,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, operations.ErrJobRecreated):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, operations.ErrUnavailable):
+	case errors.Is(err, operations.ErrUnavailable), errors.Is(err, operations.ErrPITRUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -755,7 +755,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		s.writeTargetError(w, err)
 	case errors.Is(err, operations.ErrBulkTooLarge):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
-	case errors.Is(err, operations.ErrRetryUnavailable):
+	case errors.Is(err, operations.ErrRetryUnavailable), errors.Is(err, operations.ErrPITRNotRestorable):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrConnectionRequired),
 		errors.Is(err, operations.ErrUnknownConnection), errors.Is(err, operations.ErrUnknownStorageTarget):

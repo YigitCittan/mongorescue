@@ -566,8 +566,8 @@ function readinessRpoCell(row) {
   const text = rpo.age_seconds === undefined || rpo.age_seconds === null
     ? tf("readiness.rpo_no_backup", { target })
     : tf("readiness.rpo_age", { age: readinessDuration(rpo.age_seconds), target });
-  // A PITR RPO only says the oplog is captured: point-in-time restores are not
-  // available yet (#57).
+  // A PITR RPO comes from the oplog the stream captured, restorable to a point in
+  // time (experimental).
   const pitrNote = rpo.source === "pitr"
     ? `<div class="cell-sub" title="${escapeHtml(t("readiness.rpo_pitr_note"))}">${escapeHtml(t("readiness.rpo_pitr"))}</div>`
     : "";

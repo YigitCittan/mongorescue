@@ -31,6 +31,14 @@ var toolRoutes = map[string]string{
 	mcp.ToolRetentionPreview:      "GET /api/v1/jobs/{id}/retention/preview",
 	mcp.ToolPreviewJobDatabases:   "GET /api/v1/jobs/{id}/databases/preview",
 	mcp.ToolListJobRuns:           "GET /api/v1/jobs/{id}/runs",
+	mcp.ToolPITRStatus:            pitrStreamsRoute,
+	mcp.ToolPITRRestore:           "POST /api/v1/restore",
+}
+
+// stricterTools need more than the scope of their route because the operation
+// checks it: a "pitr" body of POST /api/v1/restore needs admin (operations).
+var stricterTools = map[string]bool{
+	mcp.ToolPITRRestore: true,
 }
 
 // TestMCPToolsNeedTheScopeOfTheirRESTRoute checks that no tool is easier to reach
@@ -48,7 +56,7 @@ func TestMCPToolsNeedTheScopeOfTheirRESTRoute(t *testing.T) {
 			t.Errorf("tool %s maps to %q, which is not in routeScopes", tool, route)
 			continue
 		}
-		if scope != want {
+		if scope != want && (!stricterTools[tool] || scope != "admin") {
 			t.Errorf("tool %s needs %q; its REST route %s needs %q", tool, scope, route, want)
 		}
 	}

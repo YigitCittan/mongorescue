@@ -71,6 +71,10 @@ type StreamRequest struct {
 	ChunkSeconds   *int    `json:"chunk_seconds,omitempty"`
 	BaseOnGap      *bool   `json:"base_on_gap,omitempty"`
 	ReadPreference *string `json:"read_preference,omitempty"`
+	// ChainTestCron schedules chain tests; "" turns them off.
+	ChainTestCron *string `json:"chain_test_cron,omitempty"`
+	// ChainTestConnectionID is where chain tests restore; "" means the stream's own.
+	ChainTestConnectionID *string `json:"chain_test_connection_id,omitempty"`
 }
 
 // invalidf returns an ErrInvalid error with a message.
@@ -104,6 +108,12 @@ func (req StreamRequest) apply(st *pitr.Stream) {
 	if req.ReadPreference != nil {
 		st.ReadPreference = strings.TrimSpace(*req.ReadPreference)
 	}
+	if req.ChainTestCron != nil {
+		st.ChainTestCron = strings.TrimSpace(*req.ChainTestCron)
+	}
+	if req.ChainTestConnectionID != nil {
+		st.ChainTestConnectionID = strings.TrimSpace(*req.ChainTestConnectionID)
+	}
 }
 
 // validate checks the settings of st.
@@ -125,6 +135,9 @@ func (s *Service) validate(st *pitr.Stream) error {
 	if s.cfg.NextRun != nil {
 		if _, ok := s.cfg.NextRun(st.BaseCron, s.now()); !ok {
 			return invalidf("base_cron %q is not a valid cron schedule", st.BaseCron)
+		}
+		if _, ok := s.cfg.NextRun(st.ChainTestCron, s.now()); st.ChainTestCron != "" && !ok {
+			return invalidf("chain_test_cron %q is not a valid cron schedule", st.ChainTestCron)
 		}
 	}
 	return nil

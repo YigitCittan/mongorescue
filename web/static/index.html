@@ -607,7 +607,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title"><span data-i18n="pitr.title">Point-in-time recovery</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span></h3>
-            <p class="section-desc" data-i18n="pitr.desc">Collects the oplog of a replica set connection into encrypted chunks and takes base backups of the whole instance, so it can later be restored to any moment within its window. Point-in-time restores come in a later release.</p>
+            <p class="section-desc" data-i18n="pitr.desc">Collects the oplog of a replica set connection into encrypted chunks and takes base backups of the whole instance, so it can be restored to any moment within its window, into new databases.</p>
           </div>
         </div>
         <div class="table-wrap">
@@ -628,6 +628,31 @@
             </tbody>
           </table>
         </div>
+        <!-- Point-in-time restore wizard: time, preflight, confirm (pitr.js) -->
+        <form id="form-pitr-restore" class="pitr-form pitr-restore" novalidate hidden>
+          <h4><span data-i18n="pitr.restore_title">Restore to a point in time</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span> <span class="cell-sub" id="pitr-restore-conn"></span></h4>
+          <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;; existing data is never touched. Times are UTC on the primary's clock.</p>
+          <div class="form-group">
+            <label class="form-label" for="pitr-restore-window" data-i18n="pitr.restore_window">Window</label>
+            <select class="form-select" id="pitr-restore-window"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-restore-at" data-i18n="pitr.restore_at">Restore to (UTC)</label>
+            <input type="datetime-local" class="form-input mono" id="pitr-restore-at" step="1" required>
+            <p class="form-hint" id="pitr-restore-range"></p>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-restore-databases" data-i18n="pitr.restore_databases">Databases (optional, comma-separated)</label>
+            <input type="text" class="form-input mono" id="pitr-restore-databases" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="all databases" data-i18n-placeholder="pitr.restore_all">
+          </div>
+          <div class="pitr-plan" id="pitr-restore-plan" hidden></div>
+          <p class="form-error" id="pitr-restore-error" role="alert" hidden></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="pitr-restore-cancel" data-i18n="pitr.restore_cancel">Cancel</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="pitr-restore-check" data-requires="admin" data-i18n="pitr.restore_check">Check</button>
+            <button type="submit" class="btn btn-primary btn-sm" id="pitr-restore-submit" data-requires="admin" data-i18n="pitr.restore_start" disabled>Restore</button>
+          </div>
+        </form>
         <form id="form-pitr" class="pitr-form" data-requires="admin" novalidate>
           <h4 data-i18n="pitr.enable_title">Enable point-in-time recovery</h4>
           <p class="form-hint" data-i18n="pitr.enable_hint">Needs a replica set whose user may read local.oplog.rs (the backup role, or read on local) and backup encryption with age keys: the oplog keeps deleted data.</p>
@@ -653,6 +678,11 @@
           </div>
           <div class="form-group">
             <label class="check" for="pitr-base-on-gap"><input type="checkbox" id="pitr-base-on-gap" checked> <span data-i18n="pitr.base_on_gap">Take a base backup when a gap breaks the chain</span></label>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-chain-test-cron" data-i18n="pitr.chain_test_cron">Chain test schedule (cron, optional)</label>
+            <input type="text" class="form-input mono" id="pitr-chain-test-cron" value="" maxlength="128" autocomplete="off" spellcheck="false" placeholder="0 4 * * 0">
+            <p class="form-hint" data-i18n="pitr.chain_test_hint">Restores one base to the consistent point of the next into temporary databases, compares them with that base's manifest and drops them. Empty turns chain tests off.</p>
           </div>
           <p class="form-error" id="pitr-error" role="alert" hidden></p>
           <div class="form-actions">

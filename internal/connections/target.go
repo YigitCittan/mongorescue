@@ -51,3 +51,28 @@ type DiskSpace struct {
 	// Source is DiskSpaceDBStats or DiskSpaceLocal.
 	Source string
 }
+
+// Role is a role granted to a user: its name and the database it is defined in.
+type Role struct {
+	Role string `json:"role"`
+	DB   string `json:"db"`
+}
+
+// UserRoles describes the authenticated user of a connection.
+type UserRoles struct {
+	// AuthEnabled is false on a server without access control, which allows
+	// everything.
+	AuthEnabled bool
+	// Roles are the user's roles, including inherited ones.
+	Roles []Role
+	// AnyAction reports a grant of the anyAction action on any resource.
+	AnyAction bool
+}
+
+// RoleReporter is implemented by restore targets that can report the roles of their
+// user; point-in-time restores check them, since replaying the oplog checks
+// privileges per operation.
+type RoleReporter interface {
+	// UserRoles returns the roles of the connection's user.
+	UserRoles(ctx context.Context) (UserRoles, error)
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 )
@@ -21,6 +22,7 @@ const (
 	pitrDeleteStreamRoute = "DELETE /api/v1/pitr/streams/{id}"
 	pitrChunksRoute       = "GET /api/v1/pitr/streams/{id}/chunks"
 	pitrBaseRoute         = "POST /api/v1/pitr/streams/{id}/base"
+	pitrChainTestRoute    = "POST /api/v1/pitr/streams/{id}/chain-test"
 )
 
 // Audit log targets of the stream routes.
@@ -29,6 +31,7 @@ const (
 	targetPITRConnection = "connection"
 	targetPITREnabled    = "enabled"
 	targetPITRBackup     = "backup"
+	targetPITRRestore    = "restore"
 )
 
 // maxPITRBody bounds the JSON body of the stream routes.
@@ -48,6 +51,7 @@ func (s *Server) registerPITRRoutes(mux *router) {
 	mux.HandleFunc(pitrDeleteStreamRoute, s.handleDeletePITRStream)
 	mux.HandleFunc(pitrChunksRoute, s.handleListPITRChunks)
 	mux.HandleFunc(pitrBaseRoute, s.handlePITRBase)
+	mux.HandleFunc(pitrChainTestRoute, s.handlePITRChainTest)
 }
 
 // pitrReady answers 503 without the collector.
@@ -209,5 +213,21 @@ func (s *Server) handlePITRBase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditlog.Annotate(r.Context(), targetPITRBackup, rec.ID)
+	writeJSON(w, http.StatusAccepted, rec)
+}
+
+// handlePITRChainTest starts a chain test of a stream now (see
+// operations.Service.StartChainTest) and answers its in-progress restore.
+func (s *Server) handlePITRChainTest(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.ops.StartChainTest(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, operations.ErrNoChainTest) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.writeOperationError(w, err)
+		return
+	}
+	auditlog.Annotate(r.Context(), targetPITRRestore, rec.ID)
 	writeJSON(w, http.StatusAccepted, rec)
 }
