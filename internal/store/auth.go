@@ -466,6 +466,9 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 			at := in.At
 			u = &auth.User{ID: in.NewUserID, Username: in.Username, Role: in.Role, AuthProvider: auth.ProviderOIDC,
 				Subject: in.Subject, CreatedAt: at, UpdatedAt: at, LastLoginAt: &at}
+			if in.Role != auth.RoleAdmin {
+				u.ConnectionIDs = in.ConnectionIDs
+			}
 			if err = insertUser(ctx, tx, u); err != nil {
 				if errors.Is(err, auth.ErrUserExists) {
 					return auth.ErrAccountConflict
@@ -507,6 +510,18 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 		if err = execOne(ctx, tx, auth.ErrUserNotFound, "UPDATE users SET updated_at = ?, last_login_at = ? WHERE id = ?",
 			timeKey(in.At), timeKey(in.At), u.ID); err != nil {
 			return err
+		}
+		// The group mappings decide the connections with the role; an administrator
+		// (also one whose demotion was kept or held) reaches every connection.
+		if !in.RoleOnCreate {
+			ids := in.ConnectionIDs
+			if u.Role == auth.RoleAdmin {
+				ids = nil
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE users SET connection_ids = ? WHERE id = ?", connectionIDsJSON(ids), u.ID); err != nil {
+				return fmt.Errorf("store: external sign-in: connections: %w", err)
+			}
+			u.ConnectionIDs = ids
 		}
 		at := in.At
 		u.UpdatedAt, u.LastLoginAt = at, &at

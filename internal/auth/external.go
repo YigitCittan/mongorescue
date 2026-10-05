@@ -109,6 +109,9 @@ type RoleMapping struct {
 	Group string
 	// Role is the dashboard role its members get.
 	Role Role
+	// ConnectionIDs limits its members to these connections; empty means every
+	// connection (see OIDCPolicy.MapConnections).
+	ConnectionIDs []string
 }
 
 // OIDCPolicy is the part of the single sign-on settings the sign-in rules depend
@@ -163,6 +166,33 @@ func (p OIDCPolicy) MapRole(groups []string) Role {
 		best = p.DefaultRole
 	}
 	return best
+}
+
+// MapConnections returns the connections a member of groups may touch: the union of
+// the connections of every mapping whose group is in groups, or nil (every
+// connection) when one of them has none, when none matches (the default role) or
+// when role, the mapped role, is admin.
+func (p OIDCPolicy) MapConnections(groups []string, role Role) []string {
+	if role == RoleAdmin {
+		return nil
+	}
+	var union []string
+	matched := false
+	for _, m := range p.RoleMappings {
+		if m.Group == "" || !slices.Contains(groups, m.Group) {
+			continue
+		}
+		if len(m.ConnectionIDs) == 0 {
+			return nil
+		}
+		matched = true
+		union = append(union, m.ConnectionIDs...)
+	}
+	if !matched {
+		return nil
+	}
+	slices.Sort(union)
+	return slices.Compact(union)
 }
 
 // EmailDomainAllowed reports whether the email domain filter lets email through.
@@ -252,6 +282,10 @@ type ExternalSignIn struct {
 	// keeps the stored role, such as one an administrator set by hand. A new user
 	// without a Role is refused with ErrNoRole.
 	RoleOnCreate bool
+	// ConnectionIDs are the connections the identity may touch now (empty: every
+	// connection). They are applied with Role, unless RoleOnCreate is set (then only
+	// to a new user); an administrator is never limited.
+	ConnectionIDs []string
 	// AutoCreate creates the user when no user has Subject.
 	AutoCreate bool
 	// KeepAdmin keeps the admin role of an administrator whom Role would demote
@@ -339,7 +373,8 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 	gate := s.holdsAdminGrant(ctx)
 	res, err := s.repo.SignInExternalUser(ctx, &ExternalSignIn{
 		Subject: ExternalSubject(id.Issuer, id.Subject), NewUserID: userID, Username: username,
-		Role: role, RoleOnCreate: onCreate, AutoCreate: policy.AutoCreateUsers, KeepAdmin: gate != nil, At: now,
+		Role: role, RoleOnCreate: onCreate, ConnectionIDs: policy.MapConnections(id.Groups, role),
+		AutoCreate: policy.AutoCreateUsers, KeepAdmin: gate != nil, At: now,
 	})
 	if err != nil {
 		return nil, err

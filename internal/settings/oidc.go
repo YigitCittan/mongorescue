@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/yigitcittan/mongorescue/internal/auth"
 )
 
 // OIDCCallbackPath is the only path a redirect URL may have: the callback route of
@@ -53,6 +55,16 @@ type OIDCRoleMapping struct {
 	Group string `json:"group"`
 	// Role is viewer, operator or admin.
 	Role string `json:"role"`
+	// ConnectionIDs limits the members to these connections; empty means every
+	// connection. A user matching several mappings gets the union of their
+	// connections, or every connection when one of them has none. Admin mappings
+	// cannot be limited.
+	ConnectionIDs []string `json:"connection_ids,omitempty"`
+}
+
+// equal reports whether m and o are the same mapping.
+func (m OIDCRoleMapping) equal(o OIDCRoleMapping) bool {
+	return m.Group == o.Group && m.Role == o.Role && slices.Equal(m.ConnectionIDs, o.ConnectionIDs)
 }
 
 // OIDC configures single sign-on through an OpenID Connect provider. Local
@@ -117,6 +129,9 @@ func defaultOIDC() OIDC {
 func (o OIDC) clone() OIDC {
 	o.Scopes = slices.Clone(o.Scopes)
 	o.RoleMappings = slices.Clone(o.RoleMappings)
+	for i := range o.RoleMappings {
+		o.RoleMappings[i].ConnectionIDs = slices.Clone(o.RoleMappings[i].ConnectionIDs)
+	}
 	o.AllowedEmailDomains = slices.Clone(o.AllowedEmailDomains)
 	return o
 }
@@ -145,7 +160,7 @@ func (o OIDC) Equal(other OIDC) bool {
 	return o.Enabled == other.Enabled && o.DisplayName == other.DisplayName && o.Issuer == other.Issuer &&
 		o.ClientID == other.ClientID && o.ClientSecret == other.ClientSecret && slices.Equal(o.Scopes, other.Scopes) &&
 		o.RedirectURL == other.RedirectURL && o.UsernameClaim == other.UsernameClaim && o.GroupsClaim == other.GroupsClaim &&
-		slices.Equal(o.RoleMappings, other.RoleMappings) && o.DefaultRole == other.DefaultRole &&
+		slices.EqualFunc(o.RoleMappings, other.RoleMappings, OIDCRoleMapping.equal) && o.DefaultRole == other.DefaultRole &&
 		slices.Equal(o.AllowedEmailDomains, other.AllowedEmailDomains) && o.AutoCreateUsers == other.AutoCreateUsers &&
 		o.LocalLogin == other.LocalLogin && o.RPLogout == other.RPLogout
 }
@@ -403,7 +418,15 @@ func validateOIDC(o *OIDC) error {
 		default:
 			return fmt.Errorf("%w: oidc.role_mappings: the role of %q must be viewer, operator or admin", ErrInvalid, truncate(m.Group, 40))
 		}
-		if !slices.Contains(mappings, m) {
+		ids, err := auth.NormalizeConnectionIDs(m.ConnectionIDs)
+		if err != nil {
+			return fmt.Errorf("%w: oidc.role_mappings: the connections of %q: %w", ErrInvalid, truncate(m.Group, 40), err)
+		}
+		if m.Role == "admin" && len(ids) > 0 {
+			return fmt.Errorf("%w: oidc.role_mappings: %q maps to admin, and administrators always have access to every connection", ErrInvalid, truncate(m.Group, 40))
+		}
+		m.ConnectionIDs = ids
+		if !slices.ContainsFunc(mappings, m.equal) {
 			mappings = append(mappings, m)
 		}
 	}
