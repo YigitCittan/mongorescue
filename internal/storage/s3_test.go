@@ -26,6 +26,8 @@ import (
 const (
 	fakeBucket   = "mongo-backups"
 	fakePageSize = 2
+	// defaultPartSize is the part size of a target that sets none.
+	defaultPartSize = models.DefaultS3PartSizeMB << 20
 )
 
 // fakeModTime is the Last-Modified value reported for every fake object.
@@ -237,9 +239,13 @@ func TestNewS3StorageConfig(t *testing.T) {
 	if !opts.UsePathStyle {
 		t.Error("path-style addressing not applied")
 	}
-	if store.bucket != "b" || store.uploader.PartSize != s3PartSize || store.uploader.Concurrency != 2 {
+	if store.bucket != "b" || store.uploader.PartSize != defaultPartSize || store.uploader.Concurrency != 2 {
 		t.Errorf("unexpected uploader settings: bucket=%q part=%d conc=%d",
 			store.bucket, store.uploader.PartSize, store.uploader.Concurrency)
+	}
+
+	if got, want := store.MaxArchiveSize(), int64(defaultPartSize)*models.S3MaxUploadParts; got != want || got < 150<<30 {
+		t.Errorf("max archive size = %d; want %d (above 150 GiB)", got, want)
 	}
 
 	awsStore, err := NewS3Storage(context.Background(), S3Config{Bucket: "b", Region: "eu-central-1"})
@@ -476,5 +482,29 @@ func TestS3PrefixIsAppliedAndStripped(t *testing.T) {
 		if got := NormalizePrefix(in); got != want {
 			t.Errorf("NormalizePrefix(%q) = %q; want %q", in, got, want)
 		}
+	}
+}
+
+// TestS3PartSizeReachesUploader proves a target's part_size_mb sets the uploader's
+// part size and the largest archive, and that sizes out of range are refused.
+func TestS3PartSizeReachesUploader(t *testing.T) {
+	isolateAWSEnv(t)
+	st, err := NewS3Storage(context.Background(), S3Config{Bucket: "b", PartSizeMB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.uploader.PartSize != 64<<20 || st.uploader.Concurrency != models.S3UploadConcurrency {
+		t.Fatalf("uploader part=%d conc=%d; want 64 MiB and %d", st.uploader.PartSize, st.uploader.Concurrency, models.S3UploadConcurrency)
+	}
+	if got := MaxArchiveSize(st); got != 64<<20*models.S3MaxUploadParts {
+		t.Fatalf("MaxArchiveSize = %d", got)
+	}
+	for _, size := range []int{4, 513} {
+		if _, sizeErr := NewS3Storage(context.Background(), S3Config{Bucket: "b", PartSizeMB: size}); !errors.Is(sizeErr, ErrInvalidConfig) {
+			t.Errorf("part size %d MiB = %v; want ErrInvalidConfig", size, sizeErr)
+		}
+	}
+	if MaxArchiveSize(NewMockStorage()) != 0 {
+		t.Fatal("a driver without a limit must report 0")
 	}
 }

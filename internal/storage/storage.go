@@ -20,7 +20,26 @@ var (
 
 	// ErrPathTraversal indicates an attempt to escape the designated storage root.
 	ErrPathTraversal = errors.New("storage: path traversal detected")
+
+	// ErrInvalidConfig indicates driver settings out of their allowed range.
+	ErrInvalidConfig = errors.New("storage: invalid configuration")
 )
+
+// ArchiveLimiter is implemented by drivers that cannot store archives above a size,
+// such as S3, whose multipart uploads have at most 10,000 parts.
+type ArchiveLimiter interface {
+	// MaxArchiveSize returns the largest archive in bytes.
+	MaxArchiveSize() int64
+}
+
+// MaxArchiveSize returns the largest archive s can store, or 0 when it has no limit
+// of its own.
+func MaxArchiveSize(s Storage) int64 {
+	if l, ok := s.(ArchiveLimiter); ok {
+		return l.MaxArchiveSize()
+	}
+	return 0
+}
 
 // Storage defines the pluggable persistence contract for backup archives.
 // All storage implementations (Local filesystem, S3, MinIO) must be thread-safe.

@@ -46,6 +46,11 @@ type S3Config struct {
 	// UsePathStyle enables path-style URLs (e.g. http://s3.host/bucket), required for MinIO.
 	UsePathStyle bool
 
+	// PartSizeMB is the multipart part size in MiB; 0 means
+	// models.DefaultS3PartSizeMB. It bounds the largest archive (see MaxArchiveSize)
+	// and the upload buffers (part size × models.S3UploadConcurrency).
+	PartSizeMB int
+
 	// Logger receives warnings the driver cannot return (a failed cleanup of an
 	// aborted upload); nil means slog.Default().
 	Logger *slog.Logger
@@ -60,7 +65,12 @@ type S3Storage struct {
 	// prefix is prepended to every key ("" or ending in "/"); List strips it again.
 	prefix string
 	logger *slog.Logger
+	// partSize is the multipart part size in bytes.
+	partSize int64
 }
+
+// Compile-time check that S3Storage reports its archive size limit.
+var _ ArchiveLimiter = (*S3Storage)(nil)
 
 // NormalizePrefix trims surrounding whitespace and slashes from prefix and appends a
 // single "/" unless it is empty.
@@ -130,11 +140,16 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 	})
 
 	// 3. Configure memory-efficient streaming uploader. S3 allows at most 10,000 parts,
-	// so the part size bounds the largest archive: 16 MiB parts allow about 156 GiB, and
-	// with a concurrency of 2 the uploader holds about 32 MiB in memory.
+	// so the part size bounds the largest archive: the default 16 MiB parts allow about
+	// 156 GiB, and with a concurrency of 2 the uploader holds about 32 MiB in memory.
+	partSizeMB := (&models.S3Target{PartSizeMB: cfg.PartSizeMB}).EffectivePartSizeMB()
+	if partSizeMB < models.MinS3PartSizeMB || partSizeMB > models.MaxS3PartSizeMB {
+		return nil, fmt.Errorf("%w: s3 part size must be %d to %d MiB", ErrInvalidConfig, models.MinS3PartSizeMB, models.MaxS3PartSizeMB)
+	}
+	partSize := int64(partSizeMB) << 20
 	uploader := manager.NewUploader(client, func(u *manager.Uploader) { //nolint:staticcheck // SA1019: see S3Storage.uploader.
-		u.PartSize = s3PartSize
-		u.Concurrency = 2
+		u.PartSize = partSize
+		u.Concurrency = models.S3UploadConcurrency
 	})
 
 	return &S3Storage{
@@ -143,12 +158,15 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		bucket:   cfg.Bucket,
 		prefix:   NormalizePrefix(cfg.Prefix),
 		logger:   logger,
+		partSize: partSize,
 	}, nil
 }
 
-// s3PartSize is the multipart part size of uploads. With S3's limit of
-// manager.MaxUploadParts (10,000) parts it caps one archive at about 156 GiB.
-const s3PartSize = 16 * 1024 * 1024
+// MaxArchiveSize returns the largest archive one upload can store: the part size
+// times manager.MaxUploadParts.
+func (s *S3Storage) MaxArchiveSize() int64 {
+	return s.partSize * int64(manager.MaxUploadParts)
+}
 
 // Save streams data from the reader directly to S3 using multipart upload without buffering into memory.
 func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
@@ -167,8 +185,8 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 	if err != nil {
 		s.abortFailedUpload(ctx, objKey, err)
 		if strings.Contains(err.Error(), "MaxUploadParts") {
-			return nil, fmt.Errorf("s3 multipart upload failed: the archive is larger than %d GiB, the most %d parts of %d MiB can hold: %w",
-				int64(s3PartSize)*int64(manager.MaxUploadParts)>>30, manager.MaxUploadParts, s3PartSize>>20, err)
+			return nil, fmt.Errorf("s3 multipart upload failed: the archive is larger than %d GiB, the most %d parts of %d MiB can hold; raise the storage target's part_size_mb (up to %d): %w",
+				s.MaxArchiveSize()>>30, manager.MaxUploadParts, s.partSize>>20, models.MaxS3PartSizeMB, err)
 		}
 		return nil, fmt.Errorf("s3 multipart upload failed: %w", err)
 	}

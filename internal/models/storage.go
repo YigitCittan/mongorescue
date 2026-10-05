@@ -2,7 +2,10 @@
 // These models are shared across the application without coupling to external frameworks.
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // StorageType represents the storage backend provider identifier.
 type StorageType string
@@ -102,6 +105,80 @@ type S3Target struct {
 
 	// UsePathStyle selects path-style URLs (required by MinIO and some gateways).
 	UsePathStyle bool `json:"use_path_style"`
+
+	// PartSizeMB is the multipart upload part size in MiB (MinS3PartSizeMB to
+	// MaxS3PartSizeMB). S3 allows at most S3MaxUploadParts parts, so it bounds the
+	// largest archive (see MaxArchiveBytes); the uploader holds part size × 2 bytes
+	// in memory per running upload. Zero means DefaultS3PartSizeMB.
+	PartSizeMB int `json:"part_size_mb,omitempty"`
+}
+
+// S3 multipart upload limits.
+const (
+	// DefaultS3PartSizeMB is the part size of a target that sets none: 16 MiB parts
+	// allow archives of about 156 GiB.
+	DefaultS3PartSizeMB = 16
+	// MinS3PartSizeMB is the smallest part size S3 accepts.
+	MinS3PartSizeMB = 5
+	// MaxS3PartSizeMB is the largest part size a target may set (about 4.9 TiB per
+	// archive, 1 GiB of upload buffers).
+	MaxS3PartSizeMB = 512
+	// S3MaxUploadParts is the most parts one S3 multipart upload may have.
+	S3MaxUploadParts = 10000
+	// S3UploadConcurrency is the number of parts uploaded in parallel; the uploader
+	// buffers one part per concurrent upload.
+	S3UploadConcurrency = 2
+	// ArchiveSizeWarnPercent is the share of a target's largest archive above which
+	// a backup's expected size is warned about.
+	ArchiveSizeWarnPercent = 80
+)
+
+// EffectivePartSizeMB returns PartSizeMB, or DefaultS3PartSizeMB when it is unset.
+func (t *S3Target) EffectivePartSizeMB() int {
+	if t == nil || t.PartSizeMB <= 0 {
+		return DefaultS3PartSizeMB
+	}
+	return t.PartSizeMB
+}
+
+// MaxArchiveBytes is the largest archive the target can store: its part size times
+// S3MaxUploadParts.
+func (t *S3Target) MaxArchiveBytes() int64 {
+	return int64(t.EffectivePartSizeMB()) << 20 * S3MaxUploadParts
+}
+
+// MaxArchiveBytes is the largest archive the target can store, or 0 when it has no
+// limit of its own (a local directory).
+func (t *StorageTarget) MaxArchiveBytes() int64 {
+	if t == nil || t.Type != StorageS3 || t.S3 == nil {
+		return 0
+	}
+	return t.S3.MaxArchiveBytes()
+}
+
+// ArchiveSizeWarning returns a warning when an archive of about estimate bytes
+// exceeds ArchiveSizeWarnPercent of limit, the largest archive of a storage target
+// (0 for no limit), and "" otherwise. source says where the estimate comes from.
+func ArchiveSizeWarning(database string, estimate int64, source string, limit int64) string {
+	if limit <= 0 || estimate <= 0 || estimate*100 <= limit*ArchiveSizeWarnPercent {
+		return ""
+	}
+	return fmt.Sprintf("database %s is about %s (%s), %d%% of the %s the storage target can hold in one archive; raise the target's part_size_mb before the upload runs out of parts",
+		database, formatBytes(estimate), source, estimate*100/limit, formatBytes(limit))
+}
+
+// formatBytes formats a byte count with binary units.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // SecretMask replaces stored secrets in API responses. Sending it back unchanged on an
@@ -130,11 +207,15 @@ func (t *StorageTarget) Clone() *StorageTarget {
 }
 
 // Redacted returns a copy that is safe to serialize to API clients or logs: the S3
-// secret access key is replaced by SecretMask.
+// secret access key is replaced by SecretMask, and an unset S3 part size shows the
+// default.
 func (t *StorageTarget) Redacted() *StorageTarget {
 	clone := t.Clone()
 	if clone != nil && clone.S3 != nil && clone.S3.SecretAccessKey != "" {
 		clone.S3.SecretAccessKey = SecretMask
+	}
+	if clone != nil && clone.S3 != nil {
+		clone.S3.PartSizeMB = clone.S3.EffectivePartSizeMB()
 	}
 	return clone
 }
