@@ -39,7 +39,7 @@ test("saves read preference, throttling and a backup window, and warns on a manu
   // A manual run says that it ignores the window; cancelling starts nothing.
   const row = page.getByRole("tabpanel", { name: "Jobs" }).getByRole("row").filter({ hasText: "e2e-window" });
   await row.getByRole("button", { name: "Run now" }).click();
-  const confirm = page.getByRole("dialog", { name: "Run outside the backup window?" });
+  const confirm = page.getByRole("alertdialog", { name: "Run outside the backup window?" });
   await expect(confirm).toBeVisible();
   await expect(confirm).toContainText("22:00–02:00 (Europe/Istanbul)");
   await confirm.getByRole("button", { name: "Cancel" }).click();
