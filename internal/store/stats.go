@@ -55,7 +55,8 @@ func (s *SQLiteStore) BackupStatsIn(ctx context.Context, since time.Time, set au
 	st := &BackupStats{ByStatus: map[models.BackupStatus]int{}}
 	var c conditions
 	c.addConnections("connection_id", set)
-	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*), coalesce(sum(size_bytes), 0) FROM backups`+c.where()+` GROUP BY status`, c.args...)
+	query := `SELECT status, count(*), coalesce(sum(size_bytes), 0) FROM backups` + c.where() + ` GROUP BY status` //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
+	rows, err := s.db.QueryContext(ctx, query, c.args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: backup stats: %w", err)
 	}
@@ -177,7 +178,8 @@ func (s *SQLiteStore) RestoreStatsIn(ctx context.Context, set auth.ConnectionSet
 	var c conditions
 	c.addConnections(restoreSourceSQL, set)
 	c.addConnections(restoreTargetSQL, set)
-	rows, err := s.db.QueryContext(ctx, `SELECT r.status, count(*) FROM restores r`+c.where()+` GROUP BY r.status`, c.args...)
+	query := `SELECT r.status, count(*) FROM restores r` + c.where() + ` GROUP BY r.status` //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
+	rows, err := s.db.QueryContext(ctx, query, c.args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: restore stats: %w", err)
 	}

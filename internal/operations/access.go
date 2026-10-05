@@ -129,7 +129,7 @@ func (a accessStore) QueryRestoreRecords(ctx context.Context, f store.RestoreFil
 // ListBackupDatabases lists the databases of the backups the caller may touch.
 func (a accessStore) ListBackupDatabases(ctx context.Context) ([]string, error) {
 	if set := auth.ConnectionFilter(ctx); set.Limited() {
-		return a.Store.ListBackupDatabasesIn(ctx, set)
+		return a.ListBackupDatabasesIn(ctx, set)
 	}
 	return a.Store.ListBackupDatabases(ctx)
 }
@@ -138,7 +138,7 @@ func (a accessStore) ListBackupDatabases(ctx context.Context) ([]string, error) 
 // touch.
 func (a accessStore) ListRestoreDatabases(ctx context.Context) ([]string, error) {
 	if set := auth.ConnectionFilter(ctx); set.Limited() {
-		return a.Store.ListRestoreDatabasesIn(ctx, set)
+		return a.ListRestoreDatabasesIn(ctx, set)
 	}
 	return a.Store.ListRestoreDatabases(ctx)
 }
@@ -146,7 +146,7 @@ func (a accessStore) ListRestoreDatabases(ctx context.Context) ([]string, error)
 // BackupStats aggregates the backups the caller may touch.
 func (a accessStore) BackupStats(ctx context.Context, since time.Time) (*store.BackupStats, error) {
 	if set := auth.ConnectionFilter(ctx); set.Limited() {
-		return a.Store.BackupStatsIn(ctx, since, set)
+		return a.BackupStatsIn(ctx, since, set)
 	}
 	return a.Store.BackupStats(ctx, since)
 }
@@ -154,7 +154,7 @@ func (a accessStore) BackupStats(ctx context.Context, since time.Time) (*store.B
 // RestoreStats aggregates the restores the caller may touch.
 func (a accessStore) RestoreStats(ctx context.Context) (*store.RestoreStats, error) {
 	if set := auth.ConnectionFilter(ctx); set.Limited() {
-		return a.Store.RestoreStatsIn(ctx, set)
+		return a.RestoreStatsIn(ctx, set)
 	}
 	return a.Store.RestoreStats(ctx)
 }
