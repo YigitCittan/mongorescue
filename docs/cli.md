@@ -74,9 +74,17 @@ Results go to stdout; progress, warnings and errors to stderr. Connection string
 mongorescue backup --job ID [--wait]
 mongorescue backup --connection ID --database NAME [--collections a,b | --exclude-collections a,b]
                    [--storage-target ID] [--gzip=false] [--users-and-roles] [--wait]
+mongorescue backup --connection ID --database NAME --database NAME… [--parallelism N] [flags]
+mongorescue backup --connection ID --databases NAME,NAME… [--parallelism N] [flags]
 ```
 
 `--job` runs a scheduled job now (`POST /api/v1/jobs/{id}/run`) with its own settings; the other flags cannot be combined with it. For a job with several databases it waits for the whole run and prints each database's outcome. Otherwise it starts an on-demand backup of one database (`POST /api/v1/backups`): `--storage-target` defaults to the default target and `--gzip` to the server's setting. Without `--wait` it prints the new backup (or run) and returns at once. With `--wait` it exits `1` when the backup failed or was cancelled, or when any database of a job run did not complete.
+
+`--database` repeated, or `--databases` with a comma-separated list, backs up several databases of the connection in one run ([details](api.md#backing-up-several-databases-now)): each into its own backup, `--parallelism` (1 to 4, default 1) at a time. `--collections` and `--exclude-collections` apply to one database only. A database another backup is running is skipped and named on stderr. Without `--wait` it prints the run's ID and its backups (`--quiet`: the run ID; `--json`: the server's answer). With `--wait` it waits for all of them, prints a summary per database and exits `0` only when every database was backed up, `1` otherwise (a skipped database counts as not backed up); `--json` then prints `{run_id, backups, busy}` with the final records. Follow a run later with `mongorescue list backups --run RUN_ID`.
+
+```bash
+mongorescue backup --connection conn_prod --databases shop,crm,billing --parallelism 2 --wait
+```
 
 ### restore
 
@@ -117,6 +125,7 @@ Backups and restores are listed newest first, 50 at a time: `--limit` (1 to 200,
 | `--database NAME` | backups, restores (target), jobs | `database` |
 | `--connection ID` | backups, jobs | `connection_id` |
 | `--job ID` | backups | `job_id` |
+| `--run ID` | backups | `run_id`: the backups of one run (a job run or a backup of several databases) |
 | `--trigger T` | backups | `trigger` |
 | `--backup ID` | restores | `backup_id` |
 | `--from`, `--to` | backups, restores | `from`, `to` (RFC 3339) |

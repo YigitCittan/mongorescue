@@ -827,6 +827,8 @@ function listStatuses(kind) {
   return LIST_STATUSES.filter(s => !s.kinds || s.kinds.includes(kind));
 }
 const LIST_RANGES = ["today", "7d", "30d", "custom"];
+// The ID of a run of several backups (?run= of the Backups list).
+const RUN_ID_RE = /^run_[A-Za-z0-9_]{1,120}$/;
 const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Newest records fetched to report operations started here that are not on the page.
 const TRACK_LOOKUP_LIMIT = 50;
@@ -836,7 +838,7 @@ const BACKUP_CACHE_MAX = 2000;
 
 // Filters each list keeps in the URL hash, in display order.
 const LIST_FILTERS = {
-  backups: ["q", "status", "database", "trigger", "range", "from", "to"],
+  backups: ["q", "status", "database", "trigger", "range", "from", "to", "run"],
   restores: ["q", "status", "database", "range", "from", "to"]
 };
 
@@ -950,6 +952,7 @@ function applyListParams(kind, params) {
   next.database = get("database");
   if (listStatuses(kind).some(s => s.value === get("status"))) next.status = get("status");
   if (kind === "backups" && BACKUP_TRIGGERS.includes(get("trigger"))) next.trigger = get("trigger");
+  if (kind === "backups" && RUN_ID_RE.test(get("run"))) next.run = get("run");
   if (LIST_RANGES.includes(get("range"))) next.range = get("range");
   if (next.range === "custom") {
     if (DATE_INPUT_RE.test(get("from"))) next.from = get("from");
@@ -1032,6 +1035,7 @@ function listParams(kind) {
   if (f.status) p.set("status", f.status);
   if (f.database) p.set("database", f.database);
   if (kind === "backups" && f.trigger) p.set("trigger", f.trigger);
+  if (kind === "backups" && f.run) p.set("run_id", f.run);
   const { from, to } = rangeBounds(f);
   if (from) p.set("from", from.toISOString());
   if (to) p.set("to", to.toISOString());
@@ -1048,6 +1052,7 @@ function activeFilterCount(kind) {
   if (f.status) n++;
   if (f.database) n++;
   if (kind === "backups" && f.trigger) n++;
+  if (kind === "backups" && f.run) n++;
   if (f.range && (f.range !== "custom" || f.from || f.to)) n++;
   return n;
 }
@@ -1349,7 +1354,27 @@ function renderListControls(kind, force) {
   }
   const clear = document.getElementById(`${kind}-filter-clear`);
   if (clear) clear.hidden = n === 0;
+  const run = document.getElementById(`${kind}-filter-run-chip`);
+  if (run) {
+    run.hidden = !f.run;
+    run.textContent = f.run ? tf("filters.run_filter", { id: f.run }) : "";
+  }
   renderPager(kind);
+}
+
+// Shows the Backups list filtered to the backups of run runId (a Backup now of
+// several databases or a job run).
+function showRunBackups(runId) {
+  const id = String(runId || "");
+  if (!RUN_ID_RE.test(id)) return;
+  const L = lists.backups;
+  L.filters = emptyFilters("backups");
+  L.filters.run = id;
+  L.page = 1;
+  activateTab("tab-backups", false);
+  writeHash(true);
+  renderListControls("backups", true);
+  loadList("backups");
 }
 
 function formatCount(n) {
@@ -2405,7 +2430,8 @@ function setupForms() {
 
   document.getElementById("form-instant-backup").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const source = pickerValue("instant");
+    // One database comes from the shared picker, several from jobdbs.js.
+    const source = typeof instantDbsSource === "function" ? instantDbsSource() : pickerValue("instant");
     if (!source) return;
     try {
       closeModal("modal-instant-backup");
@@ -2414,7 +2440,10 @@ function setupForms() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...source, ...storageSelection("instant-storage") })
       });
-      if (json.success) {
+      if (json.success && source.databases) {
+        // Several databases: one run, one toast that opens its backups.
+        instantDbsStarted(json.data);
+      } else if (json.success) {
         showToast(t("toasts.backup_started"), "info");
         trackBackup(json.data);
       } else {
@@ -2863,6 +2892,7 @@ function presetPicker(prefix, job) {
 function openBackupNowModal() {
   const form = document.getElementById("form-instant-backup");
   if (form) form.reset();
+  if (typeof instantDbsReset === "function") instantDbsReset();
   resetPicker("instant", "");
   fillStorageSelect(document.getElementById("instant-storage"));
   openModal("modal-instant-backup");
@@ -4517,6 +4547,7 @@ function setPickerManual(p, manual) {
   input.required = manual;
   // A job covering several databases needs neither field (jobdbs.js).
   if (p.prefix === "job" && typeof jobDbsApplyRequired === "function") jobDbsApplyRequired();
+  if (p.prefix === "instant" && typeof instantDbsApplyRequired === "function") instantDbsApplyRequired();
   pickerEl(p, "database-label").htmlFor = manual ? input.id : select.id;
   const fromList = document.querySelector(`[data-action="picker-from-list"][data-picker="${p.prefix}"]`);
   if (fromList) fromList.hidden = !manual || !p.dbs || p.dbs.length === 0;

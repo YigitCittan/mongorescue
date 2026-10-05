@@ -8,6 +8,8 @@ import { STATE_FILE, type ServerState } from "../paths.js";
 export interface Services {
   mongoURI: string;
   database: string;
+  /** database2 is a second seeded database, for backups of several at once. */
+  database2: string;
   s3Endpoint: string;
   s3Bucket: string;
   s3AccessKey: string;
@@ -31,6 +33,7 @@ export const test = base.extend<{ server: ServerState; services: Services }>({
     await use({
       mongoURI: required("MONGORESCUE_E2E_MONGO_URI"),
       database: process.env.MONGORESCUE_E2E_DATABASE || "e2e_shop",
+      database2: process.env.MONGORESCUE_E2E_DATABASE2 || "e2e_crm",
       s3Endpoint: required("MONGORESCUE_E2E_S3_ENDPOINT"),
       s3Bucket: required("MONGORESCUE_E2E_S3_BUCKET"),
       s3AccessKey: required("MONGORESCUE_E2E_S3_ACCESS_KEY"),

@@ -637,6 +637,16 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request json")
 		return
 	}
+	// databases backs up several databases in one run, answered with the run.
+	if req.Databases != nil {
+		run, err := s.ops.StartBackups(r.Context(), req)
+		if err != nil {
+			s.writeOperationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, run)
+		return
+	}
 	record, err := s.ops.StartBackup(r.Context(), req)
 	if err != nil {
 		s.writeOperationError(w, err)

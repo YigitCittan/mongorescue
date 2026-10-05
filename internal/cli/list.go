@@ -24,6 +24,7 @@ Filters (each applies to the resources in brackets):
   --database NAME      [backups, restores, jobs] the backed-up (restores: target) database
   --connection ID      [backups, jobs] the connection
   --job ID             [backups] the job
+  --run ID             [backups] the backups of one run (a multi-database job run or backup)
   --trigger T          [backups] scheduled, on_demand, manual or mcp
   --backup ID          [restores] restores of this backup
   --from, --to TIME    [backups, restores] started_at range (RFC 3339)
@@ -36,7 +37,7 @@ Filters (each applies to the resources in brackets):
 
 // listResources maps each resource to the filter flags it takes.
 var listResources = map[string][]string{
-	"backups":     {"id", "status", "database", "connection", "job", "trigger", "from", "to", "search", "sort", "limit", "offset"},
+	"backups":     {"id", "status", "database", "connection", "job", "run", "trigger", "from", "to", "search", "sort", "limit", "offset"},
 	"restores":    {"id", "status", "database", "backup", "from", "to", "search", "sort", "limit", "offset"},
 	"jobs":        {"search", "enabled", "connection", "database", "schedule", "last-status"},
 	"connections": {},
@@ -45,7 +46,7 @@ var listResources = map[string][]string{
 
 // listQueryParam maps filter flags to the query parameters of the API.
 var listQueryParam = map[string]string{
-	"id": "id", "status": "status", "database": "database", "connection": "connection_id", "job": "job_id",
+	"id": "id", "status": "status", "database": "database", "connection": "connection_id", "job": "job_id", "run": "run_id",
 	"trigger": "trigger", "backup": "backup_id", "from": "from", "to": "to", "search": "q", "sort": "sort",
 	"limit": "limit", "offset": "offset", "enabled": "enabled", "schedule": "schedule", "last-status": "last_status",
 }
@@ -57,7 +58,7 @@ const defaultListLimit = 50
 func runList(ctx context.Context, s *session, args []string) error {
 	fs := s.newFlagSet("list", listUsage, false)
 	values := map[string]*string{}
-	for _, name := range []string{"id", "status", "database", "connection", "job", "trigger", "backup", "from", "to", "search", "sort", "enabled", "schedule", "last-status"} {
+	for _, name := range []string{"id", "status", "database", "connection", "job", "run", "trigger", "backup", "from", "to", "search", "sort", "enabled", "schedule", "last-status"} {
 		values[name] = fs.String(name, "", "Filter (see above)")
 	}
 	limit := fs.Int("limit", defaultListLimit, "[backups, restores] page size, 1 to 200; 0 lists every match")

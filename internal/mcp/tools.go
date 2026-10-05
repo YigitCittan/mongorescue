@@ -231,10 +231,12 @@ type backupIDInput struct {
 
 type startBackupInput struct {
 	ConnectionID       string   `json:"connection_id" jsonschema:"ID of the connection to back up from (see list_connections)"`
-	Database           string   `json:"database" jsonschema:"database to back up (see list_databases)"`
+	Database           string   `json:"database,omitempty" jsonschema:"database to back up (see list_databases); give database or databases"`
+	Databases          []string `json:"databases,omitempty" jsonschema:"several databases to back up in one run, each into its own backup (instead of database)"`
+	Parallelism        int      `json:"parallelism,omitempty" jsonschema:"with databases: how many are backed up at once (default 1)"`
 	StorageTargetID    string   `json:"storage_target_id,omitempty" jsonschema:"storage target to write to (default: the default target)"`
-	Collections        []string `json:"collections,omitempty" jsonschema:"only these collections"`
-	ExcludeCollections []string `json:"exclude_collections,omitempty" jsonschema:"skip these collections"`
+	Collections        []string `json:"collections,omitempty" jsonschema:"only these collections (one database only)"`
+	ExcludeCollections []string `json:"exclude_collections,omitempty" jsonschema:"skip these collections (one database only)"`
 	Gzip               *bool    `json:"gzip,omitempty" jsonschema:"compress the archive (default: the server setting)"`
 }
 
@@ -323,9 +325,13 @@ type targetList struct {
 }
 
 type backupStarted struct {
-	Backup   *models.BackupRecord `json:"backup,omitempty"`
-	Run      *models.JobRun       `json:"run,omitempty"`
-	NextStep string               `json:"next_step"`
+	Backup *models.BackupRecord `json:"backup,omitempty"`
+	Run    *models.JobRun       `json:"run,omitempty"`
+	// RunID, Backups and Busy are set by start_backup with databases.
+	RunID    string                    `json:"run_id,omitempty"`
+	Backups  []*models.BackupRecord    `json:"backups,omitempty"`
+	Busy     []operations.BusyDatabase `json:"busy,omitempty"`
+	NextStep string                    `json:"next_step"`
 }
 
 type restoreStarted struct {
@@ -488,11 +494,20 @@ func (s *Server) registerTools() {
 	addTool(s, &sdk.Tool{
 		Name: ToolStartBackup,
 		Description: "Start a backup of a database now. Returns immediately with the new backup record (status in_progress); " +
-			"poll get_backup with its id until the status is completed or failed. Only one backup of a database runs at a time.",
+			"poll get_backup with its id until the status is completed or failed. Only one backup of a database runs at a time. " +
+			"With databases instead of database, every one of them is backed up into its own backup in one run: the result has the " +
+			"run_id and the backups; a database another backup is running comes back in busy and is skipped. Poll list_backups with run_id.",
 		Annotations: additive("Start backup"),
 		InputSchema: schemaFor[startBackupInput](func(p map[string]*jsonschema.Schema) {
 			limitIDs(p, "connection_id", "storage_target_id")
 			p["database"].MinLength, p["database"].MaxLength = ptr(1), ptr(maxNameLength)
+			if d := p["databases"]; d != nil {
+				d.MinItems, d.MaxItems = ptr(1), ptr(operations.MaxBackupDatabases)
+				if d.Items != nil {
+					d.Items.MinLength, d.Items.MaxLength = ptr(1), ptr(maxNameLength)
+				}
+			}
+			p["parallelism"].Minimum, p["parallelism"].Maximum = ptr(1.0), ptr(float64(models.MaxJobParallelism))
 			collectionProps(p, "collections", "exclude_collections")
 		}),
 	}, s.startBackup)
@@ -854,19 +869,46 @@ func (s *Server) startBackup(ctx context.Context, in startBackupInput) (backupSt
 	if err := requireID("connection_id", in.ConnectionID); err != nil {
 		return backupStarted{}, "", err
 	}
-	rec, err := s.cfg.Operations.StartBackup(ctx, operations.BackupRequest{
+	req := operations.BackupRequest{
 		BackupOptions: models.BackupOptions{
 			ConnectionID: in.ConnectionID, Database: in.Database, StorageTargetID: in.StorageTargetID,
 			Collections: in.Collections, ExcludeCollections: in.ExcludeCollections,
 		},
 		Gzip:    in.Gzip,
 		Trigger: models.TriggerMCP,
-	})
+	}
+	if in.Databases != nil {
+		return s.startBackups(ctx, req, in)
+	}
+	rec, err := s.cfg.Operations.StartBackup(ctx, req)
 	if err != nil {
 		return backupStarted{}, "", err
 	}
 	next := fmt.Sprintf("poll get_backup with id %q until status is completed or failed", rec.ID)
 	return backupStarted{Backup: rec, NextStep: next}, fmt.Sprintf("Backup %s of database %s started; %s.", idText(rec.ID), quoted(rec.Database), next), nil
+}
+
+// startBackups implements start_backup with databases: one run of several backups.
+func (s *Server) startBackups(ctx context.Context, req operations.BackupRequest, in startBackupInput) (backupStarted, string, error) {
+	req.Databases = in.Databases
+	if in.Parallelism != 0 {
+		req.Parallelism = &in.Parallelism
+	}
+	run, err := s.cfg.Operations.StartBackups(ctx, req)
+	if err != nil {
+		return backupStarted{}, "", err
+	}
+	next := fmt.Sprintf("poll list_backups with run_id %q until none of its backups is in_progress", run.RunID)
+	out := backupStarted{RunID: run.RunID, Backups: run.Backups, Busy: run.Busy, NextStep: next}
+	text := fmt.Sprintf("Run %s started %d backups", idText(run.RunID), len(run.Backups))
+	if len(run.Busy) > 0 {
+		names := make([]string, len(run.Busy))
+		for i, b := range run.Busy {
+			names[i] = quoted(b.Database)
+		}
+		text += fmt.Sprintf(" (skipped, already being backed up: %s)", strings.Join(names, ", "))
+	}
+	return out, text + "; " + next + ".", nil
 }
 
 func (s *Server) runJob(ctx context.Context, in runJobInput) (backupStarted, string, error) {

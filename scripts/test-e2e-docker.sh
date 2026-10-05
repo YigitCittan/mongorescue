@@ -3,7 +3,7 @@
 # Runs the Playwright browser suite (e2e/) against the real MongoRescue binary and
 # disposable containers:
 #   - MongoDB (MONGO_IMAGE, default mongo:7) with a random root password, seeded
-#     with a small "e2e_shop" database to back up
+#     with small "e2e_shop" and "e2e_crm" databases to back up
 #   - MinIO as the S3-compatible storage target, with the bucket created up front
 # Containers bind to random loopback ports and are always removed on exit. The
 # server itself is built here (make build) and started by the suite's globalSetup
@@ -93,15 +93,18 @@ mongo_ready() {
 wait_for "mongodb" 180 mongo_ready
 mongo_port="$(host_port "$PREFIX-mongo" 27017)"
 
-log "seeding the e2e_shop database"
+log "seeding the e2e_shop and e2e_crm databases"
 mongo_eval '
   const shop = db.getSiblingDB("e2e_shop");
   shop.orders.insertMany(Array.from({length: 50}, (_, i) => ({n: i, item: "item-" + i, qty: i % 7})));
   shop.customers.insertMany([{name: "Ada"}, {name: "Grace"}, {name: "Linus"}]);
   shop.orders.createIndex({item: 1});
+  const crm = db.getSiblingDB("e2e_crm");
+  crm.contacts.insertMany(Array.from({length: 20}, (_, i) => ({n: i, name: "contact-" + i})));
 ' >/dev/null
 export MONGORESCUE_E2E_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?authSource=admin"
 export MONGORESCUE_E2E_DATABASE="e2e_shop"
+export MONGORESCUE_E2E_DATABASE2="e2e_crm"
 
 # --- MinIO ---------------------------------------------------------------------
 log "starting $MINIO_IMAGE"

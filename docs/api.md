@@ -106,7 +106,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/jobs/databases/preview` | The same for an unsaved job (`connection_id`, `mode`, `databases`, `include`, `exclude`, `auto_include_new`) | 200 | 400, 404, 502 |
 | `GET` | `/api/v1/backups` | List backups, newest first; filters, sorting and pagination ([details](#listing-backups-and-restores)) | 200 | 400 |
 | `GET` | `/api/v1/backups/databases` | Distinct database names of all backups, sorted (for filters) | 200 | |
-| `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip, include_users_and_roles}` ([users and roles](#users-and-roles)) | 202 | 400, 409 |
+| `POST` | `/api/v1/backups` | Start a backup `{connection_id, database, collections \| exclude_collections, storage_target_id, gzip, include_users_and_roles}` ([users and roles](#users-and-roles)), or one run of several with `databases` and `parallelism` instead of `database` ([details](#backing-up-several-databases-now)) | 202 | 400, 409 |
 | `DELETE` | `/api/v1/backups/{id}` | Delete a backup and its artifact on the backup's storage target → `{deleted_id, archive_deleted, archive_kept}`. The archive is kept when another record (in any status) names it; `archive_kept` says which, a pinned one included | 200 | 404, 409 pinned |
 | `POST` | `/api/v1/backups/bulk` | Run one action on many backups (`delete`, `verify`, `pin`, `unpin`, `cancel`), with a dry run ([details](#bulk-actions)) | 200 | 400, 403, 409 confirm_count, 422 too many |
 | `POST` | `/api/v1/restores/bulk` | Delete restore history records or cancel restores in bulk ([details](#bulk-actions)) | 200 | 400, 403, 409, 422 |
@@ -385,6 +385,41 @@ curl -X POST http://localhost:8080/api/v1/jobs \
   -d '{"name":"all prod","cron_expression":"0 2 * * *","connection_id":"conn_prod",
        "database_selection":{"mode":"pattern","include":["prod_*"],"exclude":["prod_tmp*"]},"parallelism":2}'
 ```
+
+## Backing up several databases now
+
+`POST /api/v1/backups` with `databases` instead of `database` backs up several databases of one connection in one run, as the dashboard's *Back up now* does with *Selected* or *All*:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/backups \
+  -H "X-API-Key: $MONGORESCUE_KEY" -H "Content-Type: application/json" \
+  -d '{"connection_id":"conn_prod","databases":["shop","crm","billing"],"parallelism":2}'
+```
+
+- `databases` names 1 to 200 databases, each a valid database name, none twice. It cannot be combined with `database` (`400`).
+- `parallelism` is how many of them are backed up at once: 1 to 4, default 1, as for jobs. Every database keeps its own run lock.
+- `collections` and `exclude_collections` apply only to a run of one database; with several they are refused with `400`.
+- `include_users_and_roles` applies to each database, as for a job with several databases; `admin` is backed up without it (its dumps already contain every user and role). A run of `admin` alone with the option is refused with `400`.
+- `storage_target_id` and `gzip` apply to every database.
+
+Each database gets its own backup record and archive, with `"trigger": "manual"` (`mcp` from MCP) and the same `run_id`. The databases are backed up exactly like those of a [job with several databases](#jobs-with-several-databases): they show up as queued at once, cancelling any one of them (`POST /api/v1/backups/{id}/cancel`) stops the whole run, and notifications get one summary for the run instead of one per database. The run belongs to no job, so it is not listed under `GET /api/v1/jobs/{id}/runs`; list its backups with `GET /api/v1/backups?run_id=...`.
+
+The response is `202` with the run:
+
+```json
+{
+  "run_id": "run_20261005_101500_3f9a1c2e",
+  "backups": [
+    {"id": "bkp_shop_20261005_101500_a1b2c3d4", "database": "shop", "status": "in_progress", "run_id": "run_20261005_101500_3f9a1c2e", "...": "..."},
+    {"id": "bkp_billing_20261005_101500_e5f6a7b8", "database": "billing", "status": "in_progress", "run_id": "run_20261005_101500_3f9a1c2e", "...": "..."}
+  ],
+  "busy": [
+    {"database": "crm", "busy": true, "error": "another backup of database crm is already running"}
+  ]
+}
+```
+
+`backups` are the in-progress records, in the order they run. A database another backup is running when the request arrives is not backed up: it comes back in `busy` (an empty array when none is) and the others start. When every database is busy the request is refused with `409`. A request with `database` is answered exactly as before: the one backup record, without `run_id`.
 
 ## Retrying a failed backup
 
