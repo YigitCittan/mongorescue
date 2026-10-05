@@ -704,11 +704,10 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	}
 	// Only scheduled runs honour the backup window: outside it the run is recorded
 	// as skipped; inside it, cancel_at_window_end stops the run when it closes.
-	stopWindow, start := s.checkWindow(ctx, job)
+	cancelAt, start := s.checkWindow(ctx, job)
 	if !start {
 		return
 	}
-	defer stopWindow()
 
 	// A multi-database run takes the run lock of each database itself.
 	if s.guard != nil && !job.MultiDatabase() {
@@ -724,7 +723,7 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 		defer release()
 	}
 
-	_, _ = s.runBackupForJob(ctx, job)
+	_, _ = s.runScheduledBackup(ctx, job, cancelAt)
 }
 
 // jobOptions derives the backup options of a job run started by trigger, resolving its
@@ -777,11 +776,18 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 // returns the record of a single-database job, or the first record of a
 // multi-database run.
 func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*models.BackupRecord, error) {
+	return s.runScheduledBackup(ctx, job, time.Time{})
+}
+
+// runScheduledBackup is runBackupForJob; a non-zero cancelAt cancels the run (and
+// only it, by its run ID) when the job's backup window closes.
+func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, cancelAt time.Time) (*models.BackupRecord, error) {
 	s.logger.Info("running backup job",
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
 	run := s.newScheduledRun(job)
+	defer s.cancelRunAt(job, run.ID, cancelAt)()
 	if job.MultiDatabase() {
 		if current := s.ActiveJobRun(job.ID); current != "" {
 			s.logger.Warn("skipping scheduled backup: the previous run of this job is still running",
