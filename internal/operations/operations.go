@@ -313,8 +313,9 @@ type BackupRequest struct {
 	// Gzip overrides the default compression when set.
 	Gzip *bool `json:"gzip"`
 	// Databases names the databases of a run of several (StartBackups); it cannot be
-	// combined with Database.
-	Databases []string `json:"databases,omitempty"`
+	// combined with Database. An entry is a database name or an object with its own
+	// collection filter (see models.DatabaseFilter), so ["a", "b"] stays valid.
+	Databases []models.DatabaseFilter `json:"databases,omitempty"`
 	// Parallelism is how many of Databases are backed up at once (0 or omitted
 	// means 1, as for jobs; at most models.MaxJobParallelism). A single backup
 	// (Database) ignores it.

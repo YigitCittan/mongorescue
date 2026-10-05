@@ -64,9 +64,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "{n} new database(s) will be added: {list}",
       preview_missing: "Not found on the server: {list}",
       preview_more: "+{n} more",
-      colls_single_only: "Collection filters only apply to a single database. Choose Single to back up only some collections.",
       need_selection: "Check at least one database.",
       all_excluded: "All databases are excluded. Uncheck at least one to back it up.",
+      colls_toggle: "Collections of {db}",
+      colls_loading: "Loading collections…",
+      colls_failed: "The collections could not be listed; enter their names, separated by commas.",
+      colls_none: "This database has no collections.",
+      colls_manual_include: "Only these collections of {db} (empty: all)",
+      colls_manual_exclude: "Collections of {db} to skip",
+      colls_all_except: "all except {list}",
+      tree_hint_list: "Expand a database to back up only some of its collections: checked collections are backed up.",
+      tree_hint_all: "Expand a database to skip some of its collections: checked collections are excluded. Databases found later are backed up whole.",
+      summary_colls: "{db}: {colls}",
       need_pattern: "Enter at least one include pattern.",
       cell_n: "{n} databases",
       cell_all: "All",
@@ -165,9 +174,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "{n} yeni veritabanı eklenecek: {list}",
       preview_missing: "Sunucuda bulunamadı: {list}",
       preview_more: "+{n} daha",
-      colls_single_only: "Koleksiyon filtreleri yalnızca tek veritabanında geçerlidir. Yalnızca bazı koleksiyonları yedeklemek için Tek'i seçin.",
       need_selection: "En az bir veritabanı işaretleyin.",
       all_excluded: "Tüm veritabanları hariç tutuldu. Yedeklemek için en az birinin işaretini kaldırın.",
+      colls_toggle: "{db} koleksiyonları",
+      colls_loading: "Koleksiyonlar yükleniyor…",
+      colls_failed: "Koleksiyonlar listelenemedi; adlarını virgülle ayırarak girin.",
+      colls_none: "Bu veritabanında koleksiyon yok.",
+      colls_manual_include: "{db} veritabanının yalnızca bu koleksiyonları (boş: tümü)",
+      colls_manual_exclude: "{db} veritabanında atlanacak koleksiyonlar",
+      colls_all_except: "{list} dışındaki tümü",
+      tree_hint_list: "Bir veritabanının yalnızca bazı koleksiyonlarını yedeklemek için onu genişletin: işaretli koleksiyonlar yedeklenir.",
+      tree_hint_all: "Bir veritabanının bazı koleksiyonlarını atlamak için onu genişletin: işaretli koleksiyonlar hariç tutulur. Sonradan bulunan veritabanları tümüyle yedeklenir.",
+      summary_colls: "{db}: {colls}",
       need_pattern: "En az bir dahil deseni girin.",
       cell_n: "{n} veritabanı",
       cell_all: "Tümü",
@@ -266,9 +284,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "{n} neue Datenbank(en) werden hinzugefügt: {list}",
       preview_missing: "Auf dem Server nicht gefunden: {list}",
       preview_more: "+{n} weitere",
-      colls_single_only: "Collection-Filter gelten nur für eine einzelne Datenbank. Wählen Sie „Eine“, um nur einige Collections zu sichern.",
       need_selection: "Markieren Sie mindestens eine Datenbank.",
       all_excluded: "Alle Datenbanken sind ausgeschlossen. Entfernen Sie bei mindestens einer das Häkchen, um sie zu sichern.",
+      colls_toggle: "Collections von {db}",
+      colls_loading: "Collections werden geladen…",
+      colls_failed: "Die Collections konnten nicht aufgelistet werden; geben Sie ihre Namen durch Kommas getrennt ein.",
+      colls_none: "Diese Datenbank hat keine Collections.",
+      colls_manual_include: "Nur diese Collections von {db} (leer: alle)",
+      colls_manual_exclude: "Zu überspringende Collections von {db}",
+      colls_all_except: "alle außer {list}",
+      tree_hint_list: "Klappen Sie eine Datenbank auf, um nur einige ihrer Collections zu sichern: markierte Collections werden gesichert.",
+      tree_hint_all: "Klappen Sie eine Datenbank auf, um einige ihrer Collections zu überspringen: markierte Collections werden ausgeschlossen. Später gefundene Datenbanken werden vollständig gesichert.",
+      summary_colls: "{db}: {colls}",
       need_pattern: "Geben Sie mindestens ein Einschlussmuster ein.",
       cell_n: "{n} Datenbanken",
       cell_all: "Alle",
@@ -367,9 +394,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "Se añadirán {n} base(s) de datos nueva(s): {list}",
       preview_missing: "No encontradas en el servidor: {list}",
       preview_more: "+{n} más",
-      colls_single_only: "Los filtros de colecciones solo se aplican a una única base de datos. Elija «Una» para respaldar solo algunas colecciones.",
       need_selection: "Marque al menos una base de datos.",
       all_excluded: "Todas las bases de datos están excluidas. Desmarque al menos una para respaldarla.",
+      colls_toggle: "Colecciones de {db}",
+      colls_loading: "Cargando colecciones…",
+      colls_failed: "No se pudieron listar las colecciones; escriba sus nombres separados por comas.",
+      colls_none: "Esta base de datos no tiene colecciones.",
+      colls_manual_include: "Solo estas colecciones de {db} (vacío: todas)",
+      colls_manual_exclude: "Colecciones de {db} que se omiten",
+      colls_all_except: "todas excepto {list}",
+      tree_hint_list: "Despliegue una base de datos para respaldar solo algunas de sus colecciones: se respaldan las colecciones marcadas.",
+      tree_hint_all: "Despliegue una base de datos para omitir algunas de sus colecciones: las colecciones marcadas se excluyen. Las bases de datos que aparezcan después se respaldan enteras.",
+      summary_colls: "{db}: {colls}",
       need_pattern: "Introduzca al menos un patrón de inclusión.",
       cell_n: "{n} bases de datos",
       cell_all: "Todas",
@@ -468,9 +504,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "{n} nouvelle(s) base(s) seront ajoutée(s) : {list}",
       preview_missing: "Introuvable(s) sur le serveur : {list}",
       preview_more: "+{n} de plus",
-      colls_single_only: "Les filtres de collections ne s'appliquent qu'à une seule base. Choisissez « Une » pour ne sauvegarder que certaines collections.",
       need_selection: "Cochez au moins une base.",
       all_excluded: "Toutes les bases sont exclues. Décochez-en au moins une pour la sauvegarder.",
+      colls_toggle: "Collections de {db}",
+      colls_loading: "Chargement des collections…",
+      colls_failed: "Les collections n'ont pas pu être listées ; saisissez leurs noms séparés par des virgules.",
+      colls_none: "Cette base n'a aucune collection.",
+      colls_manual_include: "Seulement ces collections de {db} (vide : toutes)",
+      colls_manual_exclude: "Collections de {db} à ignorer",
+      colls_all_except: "toutes sauf {list}",
+      tree_hint_list: "Dépliez une base pour ne sauvegarder que certaines de ses collections : les collections cochées sont sauvegardées.",
+      tree_hint_all: "Dépliez une base pour ignorer certaines de ses collections : les collections cochées sont exclues. Les bases trouvées plus tard sont sauvegardées entières.",
+      summary_colls: "{db} : {colls}",
       need_pattern: "Saisissez au moins un motif d'inclusion.",
       cell_n: "{n} bases",
       cell_all: "Toutes",
@@ -569,9 +614,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "将添加 {n} 个新数据库：{list}",
       preview_missing: "服务器上未找到：{list}",
       preview_more: "另外 {n} 个",
-      colls_single_only: "集合筛选仅适用于单个数据库。如需只备份部分集合，请选择“单个”。",
       need_selection: "请至少勾选一个数据库。",
       all_excluded: "所有数据库均已排除。请至少取消勾选一个以进行备份。",
+      colls_toggle: "{db} 的集合",
+      colls_loading: "正在加载集合…",
+      colls_failed: "无法列出集合；请输入集合名称，用逗号分隔。",
+      colls_none: "此数据库没有集合。",
+      colls_manual_include: "仅 {db} 的这些集合（留空：全部）",
+      colls_manual_exclude: "{db} 中要跳过的集合",
+      colls_all_except: "除 {list} 外的全部",
+      tree_hint_list: "展开数据库可只备份其中部分集合：勾选的集合会被备份。",
+      tree_hint_all: "展开数据库可跳过其中部分集合：勾选的集合会被排除。之后发现的数据库将整体备份。",
+      summary_colls: "{db}：{colls}",
       need_pattern: "请至少输入一个包含模式。",
       cell_n: "{n} 个数据库",
       cell_all: "全部",
@@ -670,9 +724,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "追加される新しいデータベース {n} 個: {list}",
       preview_missing: "サーバーに見つかりません: {list}",
       preview_more: "ほか {n} 個",
-      colls_single_only: "コレクションのフィルターは単一のデータベースにのみ適用されます。一部のコレクションだけをバックアップするには「単一」を選んでください。",
       need_selection: "少なくとも 1 つのデータベースをチェックしてください。",
       all_excluded: "すべてのデータベースが除外されています。バックアップするには少なくとも 1 つのチェックを外してください。",
+      colls_toggle: "{db} のコレクション",
+      colls_loading: "コレクションを読み込んでいます…",
+      colls_failed: "コレクションを一覧表示できませんでした。名前をカンマ区切りで入力してください。",
+      colls_none: "このデータベースにはコレクションがありません。",
+      colls_manual_include: "{db} のこれらのコレクションのみ (空: すべて)",
+      colls_manual_exclude: "{db} でスキップするコレクション",
+      colls_all_except: "{list} 以外のすべて",
+      tree_hint_list: "データベースを展開すると、一部のコレクションだけをバックアップできます。チェックしたコレクションがバックアップされます。",
+      tree_hint_all: "データベースを展開すると、一部のコレクションをスキップできます。チェックしたコレクションは除外されます。後から見つかったデータベースは丸ごとバックアップされます。",
+      summary_colls: "{db}: {colls}",
       need_pattern: "含めるパターンを少なくとも 1 つ入力してください。",
       cell_n: "{n} 個のデータベース",
       cell_all: "すべて",
@@ -771,9 +834,18 @@ const JOBDB_TRANSLATIONS = {
       preview_new_included: "Будут добавлены новые базы данных ({n}): {list}",
       preview_missing: "Не найдены на сервере: {list}",
       preview_more: "ещё {n}",
-      colls_single_only: "Фильтры коллекций применяются только к одной базе данных. Выберите «Одна», чтобы копировать лишь некоторые коллекции.",
       need_selection: "Отметьте хотя бы одну базу данных.",
       all_excluded: "Все базы данных исключены. Снимите отметку хотя бы с одной, чтобы создать её резервную копию.",
+      colls_toggle: "Коллекции {db}",
+      colls_loading: "Загрузка коллекций…",
+      colls_failed: "Не удалось получить список коллекций; введите их имена через запятую.",
+      colls_none: "В этой базе данных нет коллекций.",
+      colls_manual_include: "Только эти коллекции {db} (пусто: все)",
+      colls_manual_exclude: "Пропускаемые коллекции {db}",
+      colls_all_except: "все, кроме {list}",
+      tree_hint_list: "Раскройте базу данных, чтобы копировать лишь некоторые её коллекции: отмеченные коллекции копируются.",
+      tree_hint_all: "Раскройте базу данных, чтобы пропустить некоторые её коллекции: отмеченные коллекции исключаются. Базы данных, найденные позже, копируются целиком.",
+      summary_colls: "{db}: {colls}",
       need_pattern: "Введите хотя бы один шаблон включения.",
       cell_n: "Баз данных: {n}",
       cell_all: "Все",
@@ -857,6 +929,8 @@ const jobDbs = {
   // Databases an edited all or pattern job names explicitly ("Add to job").
   extraDatabases: [],
   search: "",
+  // Collection filters per database (see dbSelFilterState).
+  ...dbSelFilterState(),
   preview: { timer: null, seq: 0 },
   runs: { jobId: "", list: null, failed: false, seq: 0 },
   adding: new Set(),
@@ -928,16 +1002,302 @@ function dbSelBind(prefix, modes, state, hooks) {
   [`${prefix}-dbs-list`, `${prefix}-dbs-exclude-list`].forEach(id => {
     const list = document.getElementById(id);
     if (!list) return;
+    // Each list writes only its own mode's sets (see dbSelIncluded).
+    const mode = id === `${prefix}-dbs-list` ? "list" : "all";
     list.addEventListener("change", (e) => {
       const box = e.target;
-      if (!box || box.type !== "checkbox") return;
-      // Each list writes only its own mode's set (see dbSelIncluded).
-      const set = id === `${prefix}-dbs-list` ? state.selected : state.excluded;
-      if (box.checked) set.add(box.value); else set.delete(box.value);
+      if (!(box instanceof HTMLInputElement) || box.type !== "checkbox") return;
+      if (box.dataset.collDb !== undefined) {
+        dbSelToggleColl(state, mode, box.dataset.collDb, box.value, box.checked);
+      } else {
+        const set = dbSelDbSet(state, mode);
+        if (box.checked) set.add(box.value); else set.delete(box.value);
+        // Checking or unchecking a database covers all of its collections.
+        dbSelFilters(state, mode).delete(box.value);
+      }
+      hooks.render();
       hooks.changed();
     });
+    list.addEventListener("input", (e) => {
+      const input = e.target;
+      if (!(input instanceof HTMLInputElement) || input.dataset.manualDb === undefined) return;
+      const db = input.dataset.manualDb;
+      dbSelSetManual(state, mode, db, parseList(input.value));
+      dbSelRefreshItem(list, state, mode, db);
+      hooks.changed();
+    });
+    list.addEventListener("click", (e) => {
+      const btn = e.target instanceof Element ? e.target.closest("[data-db-toggle]") : null;
+      if (btn) dbSelToggleExpanded(prefix, state, btn.dataset.dbToggle, hooks.render);
+    });
+    list.addEventListener("keydown", (e) => dbSelTreeKey(e, list, prefix, state, hooks.render));
   });
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Shared selector parts: databases as a tree with their collections
+// ---------------------------------------------------------------------------
+
+// Like the database checks, the collection filters are kept per mode: listColls
+// (Selected) and allColls (All) map a database to its filter {kind, names}, kind
+// "include" (names are the collections backed up) or "exclude" (the ones skipped).
+// A database without an entry is backed up whole. A check means the mode's meaning:
+// in Selected a checked collection is backed up, in All a checked one is excluded.
+// The editor writes entries of its mode's kind ("include" in Selected, "exclude" in
+// All); an entry of the other kind (a job saved through the API) is shown as it is
+// until a collection of it is (un)checked. colls caches the collections of each
+// database of connection collsConn ({loading, items, failed}); expanded holds the
+// databases shown open.
+function dbSelFilterState() {
+  return { listColls: new Map(), allColls: new Map(), colls: new Map(), expanded: new Set(), collsConn: "" };
+}
+
+// The filter kind the editor writes in mode.
+function dbSelModeKind(mode) {
+  return mode === "all" ? "exclude" : "include";
+}
+
+// The database set of mode: the selected databases (Selected) or the excluded ones (All).
+function dbSelDbSet(state, mode) {
+  return mode === "all" ? state.excluded : state.selected;
+}
+
+// The collection filters of mode.
+function dbSelFilters(state, mode) {
+  return mode === "all" ? state.allColls : state.listColls;
+}
+
+// The filter of db that applies in mode, or null: Selected only filters selected
+// databases, All only those it does not exclude.
+function dbSelActiveFilter(state, mode, db) {
+  const e = dbSelFilters(state, mode).get(db);
+  if (!e || e.names.size === 0) return null;
+  const counts = mode === "all" ? !state.excluded.has(db) : state.selected.has(db);
+  return counts ? e : null;
+}
+
+// Whether the box of collection coll of db is checked in mode.
+function dbSelCollChecked(state, mode, db, coll) {
+  const whole = dbSelDbSet(state, mode).has(db);
+  if (mode === "all" && whole) return true;
+  if (mode === "list" && !whole) return false;
+  const e = dbSelActiveFilter(state, mode, db);
+  if (!e) return mode === "list";
+  return e.kind === dbSelModeKind(mode) ? e.names.has(coll) : !e.names.has(coll);
+}
+
+// The state of the box of db in mode: "on", "partial" (a collection filter) or "off".
+function dbSelDbCheck(state, mode, db) {
+  if (dbSelActiveFilter(state, mode, db)) return "partial";
+  return dbSelDbSet(state, mode).has(db) ? "on" : "off";
+}
+
+// Makes marked the checked collections of db in mode (all: every collection of db,
+// when known): none clears the database, all of them checks it whole, and anything
+// in between becomes a filter of the mode's kind.
+function dbSelSetMarked(state, mode, db, marked, all) {
+  const set = dbSelDbSet(state, mode);
+  const filters = dbSelFilters(state, mode);
+  filters.delete(db);
+  if (marked.size === 0) {
+    set.delete(db);
+    return;
+  }
+  if (all && all.length > 0 && all.every(c => marked.has(c))) {
+    set.add(db);
+    return;
+  }
+  if (mode === "list") set.add(db); else set.delete(db);
+  filters.set(db, { kind: dbSelModeKind(mode), names: marked });
+}
+
+// (Un)checks collection coll of db in mode; needs the database's collection list.
+function dbSelToggleColl(state, mode, db, coll, checked) {
+  const info = state.colls.get(db);
+  const all = info && Array.isArray(info.items) ? info.items.map(c => c.name) : null;
+  if (!all) return;
+  const marked = new Set(all.filter(c => dbSelCollChecked(state, mode, db, c)));
+  if (checked) marked.add(coll); else marked.delete(coll);
+  dbSelSetMarked(state, mode, db, marked, all);
+}
+
+// Sets the collections typed for db in mode when its collections could not be
+// listed: the ones backed up (Selected; none means all) or skipped (All).
+function dbSelSetManual(state, mode, db, names) {
+  const filters = dbSelFilters(state, mode);
+  filters.delete(db);
+  if (names.length === 0) return;
+  if (mode === "list") state.selected.add(db); else state.excluded.delete(db);
+  filters.set(db, { kind: dbSelModeKind(mode), names: new Set(names) });
+}
+
+// The collections of db that mode backs up, in words ("orders, customers" or "all
+// except logs"), or "" for the whole database.
+function dbSelFilterSummary(state, mode, db) {
+  const e = dbSelActiveFilter(state, mode, db);
+  if (!e) return "";
+  const names = jobDbsNameList(Array.from(e.names).sort(), 4);
+  return e.kind === "include" ? names : tf("jobdb.colls_all_except", { list: names });
+}
+
+// The filter of db in mode as the API takes it ({collections} or
+// {exclude_collections}), or null.
+function dbSelFilterOf(state, mode, db) {
+  const e = dbSelActiveFilter(state, mode, db);
+  if (!e) return null;
+  const names = Array.from(e.names).sort();
+  return e.kind === "include" ? { collections: names } : { exclude_collections: names };
+}
+
+// The databases entry of db for POST /api/v1/backups: its name, or an object with
+// its collection filter.
+function dbSelEntry(state, mode, db) {
+  const f = dbSelFilterOf(state, mode, db);
+  return f ? { name: db, ...f } : db;
+}
+
+// The collection filters of the databases of a job selection in mode, sorted
+// (database_selection.collection_filters).
+function dbSelJobFilters(state, mode) {
+  return Array.from(dbSelFilters(state, mode).keys()).sort()
+    .map(db => { const f = dbSelFilterOf(state, mode, db); return f ? { name: db, ...f } : null; })
+    .filter(Boolean);
+}
+
+// Loads filters (database_selection.collection_filters of a saved job) into mode.
+function dbSelLoadFilters(state, mode, filters) {
+  const map = dbSelFilters(state, mode);
+  map.clear();
+  (filters || []).forEach(f => {
+    if (!f || !f.name) return;
+    const include = f.collections || [];
+    const exclude = f.exclude_collections || [];
+    // A filter with both backs up the included collections that are not excluded.
+    const entry = include.length > 0
+      ? { kind: "include", names: new Set(include.filter(c => !exclude.includes(c))) }
+      : { kind: "exclude", names: new Set(exclude) };
+    if (entry.names.size > 0) map.set(f.name, entry);
+  });
+}
+
+// Forgets the collections, open rows and filters of databases that are not in
+// names, and the collection cache when the connection changed.
+function dbSelKeepFilters(state, names, connId) {
+  if (state.collsConn !== connId) {
+    state.colls = new Map();
+    state.expanded = new Set();
+    state.collsConn = connId;
+  }
+  [state.listColls, state.allColls].forEach(map => {
+    Array.from(map.keys()).forEach(db => { if (!names.includes(db)) map.delete(db); });
+  });
+}
+
+// Opens or closes the collections of db, loading them the first time.
+function dbSelToggleExpanded(prefix, state, db, render, open) {
+  const want = open === undefined ? !state.expanded.has(db) : open;
+  if (want) state.expanded.add(db); else state.expanded.delete(db);
+  render();
+  if (want) dbSelLoadColls(prefix, state, db, render);
+}
+
+// Loads the collections of db from the selector's connection
+// (GET /api/v1/connections/{id}/databases/{db}/collections) unless they are known.
+async function dbSelLoadColls(prefix, state, db, render) {
+  const conn = document.getElementById(`${prefix}-connection`);
+  const connId = conn ? conn.value : "";
+  if (state.collsConn !== connId) {
+    state.colls = new Map();
+    state.collsConn = connId;
+  }
+  const known = state.colls.get(db);
+  if (known && (known.loading || known.items)) return;
+  const info = { loading: true, items: null, failed: false };
+  state.colls.set(db, info);
+  render();
+  try {
+    if (!connId) throw new Error("no connection");
+    const json = await apiJSON(`/api/v1/connections/${encodeURIComponent(connId)}/databases/${encodeURIComponent(db)}/collections`);
+    if (state.colls.get(db) !== info) return;
+    if (!json.success) throw new Error(json.error || "");
+    info.items = (json.data || []).map(c => ({ name: c.name, type: c.type }));
+  } catch (err) {
+    if (state.colls.get(db) !== info) return;
+    info.failed = true;
+  }
+  info.loading = false;
+  render();
+}
+
+// Updates the box and the summary of db's row in list after its typed collections
+// changed (the text field keeps its focus and caret).
+function dbSelRefreshItem(list, state, mode, db) {
+  const item = Array.from(list.querySelectorAll(".db-tree-item")).find(el => el.dataset.db === db);
+  if (!item) return;
+  const box = item.querySelector("input[data-db-box]");
+  if (box) dbSelApplyCheck(box, dbSelDbCheck(state, mode, db));
+  const sum = item.querySelector(".db-tree-summary");
+  if (sum) sum.textContent = dbSelFilterSummary(state, mode, db);
+}
+
+// Shows check ("on", "partial", "off") in box.
+function dbSelApplyCheck(box, check) {
+  box.checked = check === "on";
+  // A native checkbox reports an indeterminate box as "mixed" by itself.
+  box.indeterminate = check === "partial";
+}
+
+// Keyboard of a database tree: Up and Down (Home, End) move between the visible
+// boxes, Right opens a database or moves to its first collection, Left closes it or
+// moves from a collection to its database. Space (un)checks, as for any checkbox.
+function dbSelTreeKey(e, list, prefix, state, render) {
+  if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) return;
+  const box = e.target;
+  if (!(box instanceof HTMLInputElement) || box.type !== "checkbox") return;
+  const boxes = Array.from(list.querySelectorAll('input[type="checkbox"]'));
+  const i = boxes.indexOf(box);
+  const item = box.closest(".db-tree-item");
+  const db = item ? item.dataset.db : "";
+  const isColl = box.dataset.collDb !== undefined;
+  const dbBox = item ? item.querySelector("input[data-db-box]") : null;
+  let next = null;
+  switch (e.key) {
+    case "ArrowDown": next = boxes[i + 1]; break;
+    case "ArrowUp": next = boxes[i - 1]; break;
+    case "Home": next = boxes[0]; break;
+    case "End": next = boxes[boxes.length - 1]; break;
+    case "ArrowRight":
+      if (isColl || !db) break;
+      e.preventDefault();
+      if (!state.expanded.has(db)) {
+        dbSelToggleExpanded(prefix, state, db, render, true);
+        dbSelFocus(list, db, "");
+        return;
+      }
+      next = item.querySelector("input[data-coll-db]");
+      break;
+    case "ArrowLeft":
+      if (isColl) { next = dbBox; break; }
+      if (db && state.expanded.has(db)) {
+        e.preventDefault();
+        dbSelToggleExpanded(prefix, state, db, render, false);
+        dbSelFocus(list, db, "");
+        return;
+      }
+      break;
+  }
+  if (next) {
+    e.preventDefault();
+    next.focus();
+  }
+}
+
+// Focuses the box of db (coll "") or of its collection coll in list.
+function dbSelFocus(list, db, coll) {
+  const boxes = Array.from(list.querySelectorAll('input[type="checkbox"]'));
+  const box = boxes.find(b => coll ? b.dataset.collDb === db && b.value === coll : b.dataset.dbBox !== undefined && b.value === db);
+  if (box) box.focus();
 }
 
 // Shows mode in the segmented control and the panels of the selector with prefix,
@@ -956,28 +1316,58 @@ function dbSelShowMode(prefix, modes, mode) {
   if (search && host && search.nextElementSibling !== host) host.parentNode.insertBefore(search, host);
 }
 
-// Renders the checkbox list listId from names (plus checked names the server does
-// not list, so nothing is dropped silently), filtered by search. detail(name)
-// returns an optional note shown after a listed name (such as its size).
-function dbSelRenderChecks(listId, emptyId, names, set, search, listFailed, detail) {
+// Renders the database tree listId of mode ("list" for Selected, "all" for All)
+// from names (plus checked names the server does not list, so nothing is dropped
+// silently), filtered by state.search: a row per database with its box (tri-state:
+// a collection filter shows as mixed), a caret that opens its collections and the
+// summary of its filter. detail(name) returns an optional note shown after a listed
+// name (such as its size). The focused box keeps the focus.
+function dbSelRenderTree(listId, emptyId, mode, state, names, listFailed, detail) {
   const list = document.getElementById(listId);
   if (!list) return;
+  const active = document.activeElement;
+  const focus = active instanceof HTMLInputElement && active.type === "checkbox" && list.contains(active)
+    ? { db: active.dataset.collDb !== undefined ? active.dataset.collDb : active.value, coll: active.dataset.collDb !== undefined ? active.value : "" }
+    : null;
   list.textContent = "";
+  const set = dbSelDbSet(state, mode);
   const all = names.slice();
   set.forEach(n => { if (!all.includes(n)) all.push(n); });
+  dbSelFilters(state, mode).forEach((_, n) => { if (!all.includes(n) && set.has(n)) all.push(n); });
   all.sort();
+  const search = state.search;
   const shown = all.filter(n => !search || n.toLowerCase().includes(search));
-  shown.forEach(name => {
+  shown.forEach((name, i) => {
+    const open = state.expanded.has(name);
+    const item = document.createElement("div");
+    item.className = "db-tree-item";
+    item.dataset.db = name;
+    item.setAttribute("role", "treeitem");
+    item.setAttribute("aria-level", "1");
+    item.setAttribute("aria-expanded", String(open));
+    const row = document.createElement("div");
+    row.className = "db-tree-row";
+    const groupId = `${listId}-colls-${i}`;
+    const caret = document.createElement("button");
+    caret.type = "button";
+    caret.className = "db-tree-caret";
+    caret.tabIndex = -1;
+    caret.dataset.dbToggle = name;
+    caret.setAttribute("aria-expanded", String(open));
+    caret.setAttribute("aria-controls", groupId);
+    caret.setAttribute("aria-label", tf("jobdb.colls_toggle", { db: name }));
+    caret.title = tf("jobdb.colls_toggle", { db: name });
     const label = document.createElement("label");
     label.className = "check-inline db-check";
+    label.title = name;
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = name;
-    box.checked = set.has(name);
+    box.dataset.dbBox = "";
+    dbSelApplyCheck(box, dbSelDbCheck(state, mode, name));
     const text = document.createElement("span");
     text.className = "mono";
     text.textContent = name;
-    label.title = name;
     label.append(box, text);
     const note = names.includes(name) ? (detail ? detail(name) : "") : t("jobdb.reason_not_found");
     if (note) {
@@ -986,13 +1376,86 @@ function dbSelRenderChecks(listId, emptyId, names, set, search, listFailed, deta
       sub.textContent = ` (${note})`;
       label.appendChild(sub);
     }
-    list.appendChild(label);
+    const summary = document.createElement("span");
+    summary.className = "db-tree-summary cell-sub mono";
+    summary.textContent = dbSelFilterSummary(state, mode, name);
+    row.append(caret, label, summary);
+    item.appendChild(row);
+    if (open) item.appendChild(dbSelRenderColls(groupId, mode, state, name));
+    list.appendChild(item);
   });
   const empty = document.getElementById(emptyId);
   if (empty) {
     empty.hidden = all.length > 0;
     empty.textContent = listFailed ? t(listFailed) : t("jobdb.list_none");
   }
+  if (focus) dbSelFocus(list, focus.db, focus.coll);
+}
+
+// The open part of db's row: its collections as boxes, or a note while they load,
+// or a text field for their names when they could not be listed.
+function dbSelRenderColls(id, mode, state, db) {
+  const group = document.createElement("div");
+  group.className = "db-tree-colls";
+  group.id = id;
+  group.setAttribute("role", "group");
+  const info = state.colls.get(db);
+  const hint = key => {
+    const p = document.createElement("p");
+    p.className = "form-hint";
+    p.textContent = t(key);
+    group.appendChild(p);
+  };
+  if (!info || info.loading) {
+    hint("jobdb.colls_loading");
+    return group;
+  }
+  if (info.failed) {
+    hint("jobdb.colls_failed");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "form-input mono";
+    input.dataset.manualDb = db;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = "orders, customers";
+    input.setAttribute("aria-label", tf(mode === "list" ? "jobdb.colls_manual_include" : "jobdb.colls_manual_exclude", { db }));
+    const e = dbSelActiveFilter(state, mode, db);
+    input.value = e && e.kind === dbSelModeKind(mode) ? Array.from(e.names).join(", ") : "";
+    group.appendChild(input);
+    return group;
+  }
+  if (info.items.length === 0) {
+    hint("jobdb.colls_none");
+    return group;
+  }
+  info.items.forEach(c => {
+    const item = document.createElement("div");
+    item.className = "db-tree-coll";
+    item.setAttribute("role", "treeitem");
+    item.setAttribute("aria-level", "2");
+    const label = document.createElement("label");
+    label.className = "check-inline db-check";
+    label.title = c.name;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = c.name;
+    box.dataset.collDb = db;
+    box.checked = dbSelCollChecked(state, mode, db, c.name);
+    const text = document.createElement("span");
+    text.className = "mono";
+    text.textContent = c.name;
+    label.append(box, text);
+    if (c.type === "view") {
+      const sub = document.createElement("span");
+      sub.className = "cell-sub";
+      sub.textContent = ` (${t("picker.view")})`;
+      label.appendChild(sub);
+    }
+    item.appendChild(label);
+    group.appendChild(item);
+  });
+  return group;
 }
 
 function setupJobDatabases() {
@@ -1021,13 +1484,12 @@ function jobDbsSetMode(mode, user) {
   const par = document.getElementById("job-db-parallel-group");
   if (par) par.hidden = !multi;
   jobDbsApplyRequired();
+  // Several databases choose their collections in the tree (Selected, All).
   const colls = document.getElementById("job-collections-fieldset");
   if (colls) {
     colls.disabled = multi;
-    colls.classList.toggle("is-disabled", multi);
+    colls.hidden = multi;
   }
-  const note = document.getElementById("job-colls-note");
-  if (note) note.hidden = !multi;
   const rtScope = document.getElementById("job-rt-databases-group");
   if (rtScope) rtScope.hidden = !multi;
   // The boxes always show the set of the mode now shown.
@@ -1055,6 +1517,15 @@ function jobDbsOnDatabases(p) {
   jobDbsApplyRequired();
   jobDbs.names = Array.isArray(p.dbs) ? p.dbs.map(db => db.name) : null;
   jobDbs.listFailed = !Array.isArray(p.dbs) && !!p.dbError;
+  // The collections listed for another connection are not reused; the filters of
+  // an edited job stay (its databases may not be listed).
+  const conn = document.getElementById("job-connection");
+  const connId = conn ? conn.value : "";
+  if (jobDbs.collsConn !== connId) {
+    jobDbs.colls = new Map();
+    jobDbs.expanded = new Set();
+    jobDbs.collsConn = connId;
+  }
   jobDbsRenderLists();
   jobDbsSchedulePreview();
 }
@@ -1070,8 +1541,8 @@ function jobDbsPatterns(id) {
 function jobDbsRenderLists() {
   const names = jobDbs.names || [];
   const failed = jobDbs.listFailed ? "jobdb.list_failed" : "";
-  dbSelRenderChecks("job-dbs-list", "job-dbs-list-empty", names, jobDbs.selected, jobDbs.search, failed);
-  dbSelRenderChecks("job-dbs-exclude-list", "job-dbs-exclude-empty", names, jobDbs.excluded, jobDbs.search, failed);
+  dbSelRenderTree("job-dbs-list", "job-dbs-list-empty", "list", jobDbs, names, failed);
+  dbSelRenderTree("job-dbs-exclude-list", "job-dbs-exclude-empty", "all", jobDbs, names, failed);
 }
 
 // Prefills the selector from job (null for a new job).
@@ -1087,6 +1558,9 @@ function jobDbsFill(job) {
     });
   }
   jobDbs.search = "";
+  jobDbs.expanded = new Set();
+  dbSelLoadFilters(jobDbs, "list", mode === "list" ? sel.collection_filters : []);
+  dbSelLoadFilters(jobDbs, "all", mode === "all" ? sel.collection_filters : []);
   setValue("job-dbs-search", "");
   setValue("job-db-include", mode === "pattern" ? (sel.include || []).join(", ") : "");
   setValue("job-db-exclude", mode === "pattern" ? (sel.exclude || []).join(", ") : "");
@@ -1107,7 +1581,11 @@ function jobDbsSelection() {
         showToast(t(problem), "error");
         return null;
       }
-      return { mode: "list", databases: dbSelIncluded("list", jobDbs.names, jobDbs.selected, jobDbs.excluded) };
+      return {
+        mode: "list",
+        databases: dbSelIncluded("list", jobDbs.names, jobDbs.selected, jobDbs.excluded),
+        collection_filters: dbSelJobFilters(jobDbs, "list")
+      };
     }
     case "all": {
       // Databases the job names explicitly are backed up whatever is excluded.
@@ -1120,6 +1598,7 @@ function jobDbsSelection() {
         mode: "all",
         databases: (jobDbs.extraDatabases || []).slice(),
         exclude: Array.from(jobDbs.excluded).sort().concat(jobDbs.extraExcludes),
+        collection_filters: dbSelJobFilters(jobDbs, "all"),
         auto_include_new: !!(document.getElementById("job-db-auto") || {}).checked
       };
     }
@@ -1342,7 +1821,7 @@ function jobDatabaseSummary(job) {
   let text;
   switch (sel.mode) {
     case "list":
-      return tf("jobdb.summary_list", { list: list(sel.databases) });
+      return tf("jobdb.summary_list", { list: list(sel.databases) }) + jobDbsFiltersSummary(sel);
     case "all":
       text = (sel.exclude || []).length > 0 ? tf("jobdb.summary_all_except", { list: list(sel.exclude) }) : t("jobdb.summary_all");
       break;
@@ -1356,7 +1835,19 @@ function jobDatabaseSummary(job) {
   }
   if ((sel.databases || []).length > 0) text += `, ${tf("jobdb.summary_plus", { list: list(sel.databases) })}`;
   text += `; ${t(sel.auto_include_new ? "jobdb.summary_auto" : "jobdb.summary_frozen")}`;
-  return text;
+  return text + jobDbsFiltersSummary(sel);
+}
+
+// "; shop: orders · crm: all except logs" for the collection filters of sel, or "".
+function jobDbsFiltersSummary(sel) {
+  const filters = sel.collection_filters || [];
+  if (filters.length === 0) return "";
+  const tmp = { ...dbSelFilterState(), selected: new Set(), excluded: new Set() };
+  const mode = sel.mode === "all" ? "all" : "list";
+  dbSelLoadFilters(tmp, mode, filters);
+  if (mode === "list") filters.forEach(f => tmp.selected.add(f.name));
+  const parts = filters.map(f => tf("jobdb.summary_colls", { db: f.name, colls: dbSelFilterSummary(tmp, mode, f.name) }));
+  return `; ${parts.join(" · ")}`;
 }
 
 // The newest run of multi-database job job (GET /api/v1/stats job_last_runs), or null.
@@ -1644,6 +2135,8 @@ const instantDbs = {
   selected: new Set(),
   excluded: new Set(),
   search: "",
+  // Collection filters per database (see dbSelFilterState).
+  ...dbSelFilterState(),
 };
 
 function setupInstantDatabases() {
@@ -1663,13 +2156,12 @@ function instantDbsSetMode(mode) {
   const multi = mode !== "single";
   const par = document.getElementById("instant-db-parallel-group");
   if (par) par.hidden = !multi;
+  // Several databases choose their collections in the tree (Selected, All).
   const colls = document.getElementById("instant-collections-fieldset");
   if (colls) {
     colls.disabled = multi;
-    colls.classList.toggle("is-disabled", multi);
+    colls.hidden = multi;
   }
-  const note = document.getElementById("instant-colls-note");
-  if (note) note.hidden = !multi;
   instantDbsApplyRequired();
   // The boxes always show the set of the mode now shown.
   if (multi) instantDbsRenderLists();
@@ -1693,6 +2185,8 @@ function instantDbsOnDatabases(p) {
   const names = instantDbsListed();
   instantDbs.selected = new Set(Array.from(instantDbs.selected).filter(n => names.includes(n)));
   instantDbs.excluded = new Set(Array.from(instantDbs.excluded).filter(n => names.includes(n)));
+  const conn = document.getElementById("instant-connection");
+  dbSelKeepFilters(instantDbs, names, conn ? conn.value : "");
   instantDbsApplyRequired();
   instantDbsRenderLists();
   instantDbsRenderSummary();
@@ -1712,8 +2206,8 @@ function instantDbsRenderLists() {
     return db.empty ? t("picker.empty_db") : formatBytes(db.size_bytes);
   };
   const failed = instantDbs.listFailed ? "instantdb.list_failed" : "";
-  dbSelRenderChecks("instant-dbs-list", "instant-dbs-list-empty", names, instantDbs.selected, instantDbs.search, failed, detail);
-  dbSelRenderChecks("instant-dbs-exclude-list", "instant-dbs-exclude-empty", names, instantDbs.excluded, instantDbs.search, failed, detail);
+  dbSelRenderTree("instant-dbs-list", "instant-dbs-list-empty", "list", instantDbs, names, failed, detail);
+  dbSelRenderTree("instant-dbs-exclude-list", "instant-dbs-exclude-empty", "all", instantDbs, names, failed, detail);
 }
 
 // Resets the dialog to a single database (openBackupNowModal).
@@ -1723,6 +2217,7 @@ function instantDbsReset() {
   instantDbs.selected = new Set();
   instantDbs.excluded = new Set();
   instantDbs.search = "";
+  Object.assign(instantDbs, dbSelFilterState());
   setValue("instant-dbs-search", "");
   setValue("instant-db-parallelism", "1");
   instantDbsSetMode("single");
@@ -1796,7 +2291,8 @@ function instantDbsSource() {
   }
   return {
     connection_id: conn.value,
-    databases,
+    // A database with a collection filter is sent as {name, collections | exclude_collections}.
+    databases: databases.map(db => dbSelEntry(instantDbs, instantDbs.mode, db)),
     parallelism: parseInt(getValue("instant-db-parallelism"), 10) || 1
   };
 }

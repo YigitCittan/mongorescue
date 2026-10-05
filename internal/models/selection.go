@@ -54,8 +54,16 @@ type DatabaseSelection struct {
 	Mode SelectionMode `json:"mode"`
 	// Databases names the database of a single selection, the databases of a list
 	// selection, and databases always backed up in addition to what an all or
-	// pattern selection matches.
+	// pattern selection matches. Clients may send an entry as an object with a
+	// collection filter (see DatabaseFilter and UnmarshalJSON); the filter then goes
+	// to CollectionFilters and the entry stays a name here.
 	Databases []string `json:"databases,omitempty"`
+	// CollectionFilters restrict the backups of some databases of a list or all
+	// selection to some of their collections, one filter per database (sorted by
+	// name). A database without one is backed up whole. Single selections use the
+	// job's own collection filters instead; pattern selections, and databases an all
+	// selection discovers later, have none.
+	CollectionFilters []DatabaseFilter `json:"collection_filters,omitempty"`
 	// Include lists the glob patterns of a pattern selection ("*" matches any run of
 	// characters, "?" one character; case-sensitive).
 	Include []string `json:"include,omitempty"`
@@ -83,6 +91,13 @@ func (s DatabaseSelection) Clone() DatabaseSelection {
 	s.Databases = slices.Clone(s.Databases)
 	s.Include = slices.Clone(s.Include)
 	s.Exclude = slices.Clone(s.Exclude)
+	if s.CollectionFilters != nil {
+		filters := make([]DatabaseFilter, len(s.CollectionFilters))
+		for i, f := range s.CollectionFilters {
+			filters[i] = f.Clone()
+		}
+		s.CollectionFilters = filters
+	}
 	return s
 }
 
@@ -99,7 +114,9 @@ func (s DatabaseSelection) SameMatch(o DatabaseSelection) bool {
 // selection names exactly one database; a list selection at least one, none of them
 // a system database; a pattern selection at least one include pattern. Include is
 // only used by pattern selections and AutoIncludeNew only by all and pattern ones.
-// Errors wrap ErrInvalidSelection (and ErrInvalidNamespace for bad names).
+// CollectionFilters are checked as described at normalizeFilters (list and all
+// selections only). Errors wrap ErrInvalidSelection (and ErrInvalidNamespace for bad
+// names).
 func (s *DatabaseSelection) Normalize() error {
 	s.Databases = cleanList(s.Databases)
 	s.Include = cleanList(s.Include)
@@ -158,7 +175,7 @@ func (s *DatabaseSelection) Normalize() error {
 			}
 		}
 	}
-	return nil
+	return s.normalizeFilters()
 }
 
 // cleanList trims the entries of list and drops empty and repeated ones.

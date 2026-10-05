@@ -355,7 +355,7 @@ A job backs up one database or several. Its `database_selection` says which:
 
 - `admin`, `config` and `local` are never backed up by `list`, `all` or `pattern` jobs, and naming one in a `list` is refused with `400`.
 - Patterns use `*` (any run of characters, also none) and `?` (exactly one character); every other character matches itself and matching is case-sensitive, like MongoDB database names. They follow the rules for database names (1 to 63 bytes, none of `/ \ . " $`, a space or a control character, not starting with `-`), with `*` and `?` as the only wildcards. A pattern that matches no database is allowed; the preview and the run report it as a warning.
-- Collection filters (`collections`, `exclude_collections`) only apply to `single` jobs; a multi-database job that sends them is refused with `400`.
+- The job's own collection filters (`collections`, `exclude_collections`) only apply to `single` jobs; a multi-database job that sends them is refused with `400`. `list` and `all` jobs filter collections per database instead, see [Collection filters per database](#collection-filters-per-database).
 - `parallelism` (1 to 4, default 1) is how many databases a run backs up at the same time. Each database keeps its own run lock: a database another backup is running for (a manual backup, another job) waits until it finished, up to 30 minutes, and is recorded as failed in this run after that (the others still run).
 - Clients that predate selections keep working: a job created or updated with `database` and no `database_selection` is a `single` job of that database, an update that sends neither keeps the job's selection, and responses still carry `database` for single-database jobs (`""` for the others). Every job stored by an earlier release was migrated to a `single` selection (migration 0013).
 
@@ -370,6 +370,34 @@ Notifications send one message per run, not one per database: the run's `backup.
 **Retention** stays per job and database: the job's `retention_days` and `retention_count` apply to each of its databases separately, and so do the protections. The newest completed backup of every database is kept (so a database whose backup failed today keeps its last good one), and so is the newest verified one of every database. A scheduled run prunes only the databases it backed up successfully. `GET /api/v1/jobs/{id}/retention/preview` adds `databases`, the per-database breakdown (`database`, `considered`, `delete`, `protected`, `kept`, `last_good`).
 
 **Restore tests** of a multi-database job test one database per run, taking turns in name order (`restore_test.databases: "rotate"`, the default), or every database of the run (`"all"`).
+
+### Collection filters per database
+
+A `list` or `all` job can back up only some collections of some of its databases. An entry of `databases` may be an object with a filter instead of a name, and the filters are stored and returned in `collection_filters`, one per database, sorted by name:
+
+```json
+{
+  "mode": "list",
+  "databases": ["a", {"name": "b", "exclude_collections": ["logs", "tmp"]}, {"name": "c", "collections": ["orders"]}]
+}
+```
+
+is stored, and returned, as
+
+```json
+{
+  "mode": "list",
+  "databases": ["a", "b", "c"],
+  "collection_filters": [{"name": "b", "exclude_collections": ["logs", "tmp"]}, {"name": "c", "collections": ["orders"]}]
+}
+```
+
+- `collection_filters` may also be sent directly; a database must not have a filter both there and in its `databases` entry.
+- Each database's filter works exactly like the collection filter of a single-database backup: `collections` backs up only those collections (several of them become exclusions of every other collection, and a collection that does not exist fails that database's backup), `exclude_collections` backs up everything else. Names match literally, so `tmp_*` excludes a collection named `tmp_*`, not every collection starting with `tmp_`. Names follow the collection name rules (no `$`, no control characters), at most 1000 per list. With `include_users_and_roles` a `collections` filter becomes exclusions, as for one database.
+- A `list` job's filters must name databases of its `databases`. An `all` job's filters name databases it backs up: not `admin`, `config` or `local`, and none its `exclude` patterns skip unless they are also in `databases`. A filter on a database that does not exist yet applies once it does.
+- `pattern` jobs have no per-database filters (`400`), and databases an `all` job discovers later are backed up whole until a filter is added for them.
+- The manifest, verification and restore tests of a filtered backup cover only the collections it backed up, as for a filtered single-database backup; the backup record's `collections` names the included collections of a `collections` filter.
+- Jobs stored before filters existed have no `collection_filters` and are unchanged; a `databases` array of names stays valid everywhere. The filters live in the job's JSON data, so no migration is needed.
 
 ### Previewing a selection
 
@@ -408,7 +436,8 @@ curl -s -X POST http://localhost:8080/api/v1/backups \
 
 - `databases` names 1 to 200 databases, each a valid database name, none twice. It cannot be combined with `database` (`400`).
 - `parallelism` is how many of them are backed up at once: 0 to 4, where 0 or omitted means 1, as for jobs. Every database keeps its own run lock.
-- `collections` and `exclude_collections` apply only to a run of one database; with several they are refused with `400`.
+- An entry of `databases` is a name or an object `{"name", "collections" | "exclude_collections"}` with a [collection filter](#collection-filters-per-database) of its own for that database, such as `["shop", {"name": "crm", "exclude_collections": ["logs", "tmp"]}, {"name": "billing", "collections": ["invoices"]}]`. Entries without a filter behave exactly as before.
+- The top-level `collections` and `exclude_collections` apply only to a run of one database (and not together with a filter in its entry); with several databases they are refused with `400`; give each database its own filter instead.
 - `include_users_and_roles` applies to each database, as for a job with several databases; `admin` is backed up without it (its dumps already contain every user and role). A run of `admin` alone with the option is refused with `400`.
 - `storage_target_id` and `gzip` apply to every database.
 

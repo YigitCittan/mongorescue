@@ -43,15 +43,28 @@ type multiFixture struct {
 	server  []string
 	failing map[string]bool
 	dumped  []string
+	// args are the mongodump arguments of each dumped database.
+	args map[string][]string
+	// collections, when set, is the fake collection listing (backup.WithCollectionLister).
+	collections map[string][]string
 }
 
 func newMultiFixture(t *testing.T, server ...string) *multiFixture {
 	t.Helper()
-	f := &multiFixture{store: storetest.New(t), pub: &recordingPublisher{}, server: server, failing: map[string]bool{}}
+	return newMultiFixtureWith(t, nil, server...)
+}
+
+// newMultiFixtureWith is newMultiFixture whose engine lists the collections of a
+// database from collections (nil: no collection lister).
+func newMultiFixtureWith(t *testing.T, collections map[string][]string, server ...string) *multiFixture {
+	t.Helper()
+	f := &multiFixture{store: storetest.New(t), pub: &recordingPublisher{}, server: server, failing: map[string]bool{},
+		args: map[string][]string{}, collections: collections}
 	runner := func(_ context.Context, _ string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
 		db := dumpedDatabase(args)
 		f.mu.Lock()
 		f.dumped = append(f.dumped, db)
+		f.args[db] = slices.Clone(args)
 		fail := f.failing[db]
 		f.mu.Unlock()
 		wait := func() error { return nil }
@@ -62,7 +75,13 @@ func newMultiFixture(t *testing.T, server ...string) *multiFixture {
 	}
 	mock := storage.NewMockStorage()
 	f.reg = runs.NewRegistry(runs.WithLogs(runlog.NewDir(t.TempDir())))
-	f.sched = NewScheduler(f.store, backup.NewEngine(mock, "mongodb://localhost:27017", backup.WithRunner(runner)), mock, nil,
+	engineOpts := []backup.Option{backup.WithRunner(runner)}
+	if collections != nil {
+		engineOpts = append(engineOpts, backup.WithCollectionLister(func(_ context.Context, _, db string) ([]string, error) {
+			return slices.Clone(collections[db]), nil
+		}))
+	}
+	f.sched = NewScheduler(f.store, backup.NewEngine(mock, "mongodb://localhost:27017", engineOpts...), mock, nil,
 		WithPublisher(f.pub), WithRunRegistry(f.reg),
 		WithDatabaseLister(func(context.Context, string) ([]string, error) {
 			f.mu.Lock()
