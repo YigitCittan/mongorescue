@@ -157,6 +157,13 @@ type Config struct {
 	Decryptor func() *encryption.Decryptor
 	// Publisher receives verification, restore test and drift events.
 	Publisher events.Publisher
+	// VerifyChunks is the chunk item of sweeps: it verifies the PITR oplog chunks
+	// (implemented by collector.Service.VerifyChunks); nil skips them.
+	VerifyChunks func(ctx context.Context) (ChunkSweep, error)
+	// ChunkKeys returns the storage keys of the PITR oplog chunks recorded on a
+	// target (implemented by store.SQLiteStore.ChunkKeys); nil means none, and
+	// chunk objects are then never reported as orphans.
+	ChunkKeys func(ctx context.Context, targetID string) (map[string]bool, error)
 	// ObserveScan receives the outcome of every storage scan (metrics).
 	ObserveScan func(targetID string, orphans, missing int, at time.Time)
 	// Logger receives operational logs; nil means slog.Default().

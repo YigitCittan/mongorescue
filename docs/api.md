@@ -79,6 +79,13 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/readiness` | One row per database a job backs up: last good, verified and restore-tested backups, RPO, estimated RTO, escrowed keys and an `ok` / `warn` / `fail` status ([details](#recovery-readiness)) | 200 | |
+| `GET` | `/api/v1/pitr/streams` | **Experimental.** Every PITR stream with its status ([details](#point-in-time-recovery-streams-experimental)) | 200 | 503 |
+| `POST` | `/api/v1/pitr/streams` | **Experimental, admin.** Create the stream of a replica set connection | 201 | 400, 409 |
+| `GET` | `/api/v1/pitr/streams/{id}` | **Experimental.** State, windows, lag, headroom, chains and base backups of a stream | 200 | 404 |
+| `PATCH` | `/api/v1/pitr/streams/{id}` | **Experimental, admin.** Change a stream: enable, disable, schedule, retention | 200 | 400, 404 |
+| `DELETE` | `/api/v1/pitr/streams/{id}` | **Experimental, admin.** Delete a disabled stream (see below) | 200 | 404, 409 |
+| `GET` | `/api/v1/pitr/streams/{id}/chunks` | **Experimental.** Oplog chunk metadata, newest first (`?limit=` 1-500, default 100; `?offset=`) | 200 | 400, 404 |
+| `POST` | `/api/v1/pitr/streams/{id}/base` | **Experimental, operator.** Take a base backup now | 202 | 404, 409 busy |
 | `GET` | `/api/v1/settings` | All settings, secrets masked: `{general, security, encryption, integrity, metadata_backup, restart_required, warnings, pending_changes}` | 200 | |
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings, the `pending_changes` and, when a change waits for a second administrator, `approvals_requested` ([delete protection](#delete-protection)) | 200 | 400, 409 two-person rule with fewer than two admins |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
@@ -614,6 +621,34 @@ Every 5 minutes, right after a job's backup finished and right after a job is cr
 | `status`, `reasons` | `fail` for `rpo_missed`, `restore_test_failed` (the newest test failed) or `verification_failed` (the newest good backup failed verification); `warn` for `no_backup`, `paused`, `not_verified`, `no_restore_test` or `keys_not_escrowed` (an encrypted backup without an escrowed key); `ok` otherwise |
 
 The report reads each kind of record (jobs, newest and verified backups, restore tests, restores, breaches, join times) with one query, whatever the number of jobs. The dashboard's *Overview* shows it as the *Recovery readiness* table, and its *Attention needed* list reports the jobs whose objective is missed from the same data.
+
+## Point-in-time recovery streams (experimental)
+
+> **Experimental.** The stream API may change in a later release without a deprecation period. Point-in-time *restores* are not available yet (#57). See [Point-in-time recovery](pitr.md).
+
+A PITR stream collects the oplog of one replica set connection into encrypted chunks and takes base backups of the whole instance. Reading streams needs the read scope; creating, changing and deleting them needs admin; `POST /api/v1/pitr/streams/{id}/base` needs operator. The answers carry chunk metadata only, never oplog contents.
+
+`POST /api/v1/pitr/streams` and `PATCH /api/v1/pitr/streams/{id}` take:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `connection_id` | (required) | The replica set connection; one stream per connection, and it cannot change |
+| `target_id` | the default target | Storage target of chunks and base backups |
+| `enabled` | `true` | Run the collector |
+| `base_cron` | `0 2 * * *` | Schedule of base backups (five fields or a descriptor such as `@daily`) |
+| `base_keep_count`, `base_keep_days` | `7`, `14` | Keep this many bases, or bases this many days old; pinned bases and the newest eligible one are always kept |
+| `oplog_max_days` | `0` (unset) | Delete chunks older than this many days even when that shortens the window (privacy) |
+| `chunk_seconds` | `60` | Chunk interval, 15-900 seconds |
+| `base_on_gap` | `true` | Take a base backup as soon as a gap breaks the chain |
+| `read_preference` | `secondaryPreferred` | Read preference of oplog reads |
+
+Creating or enabling a stream is refused with 400 unless the connection is a replica set, its user may read `local.oplog.rs` (`backup`, `read` on `local` or a custom role) and backup encryption is on with age keys: the oplog keeps deleted data, so PITR data is always encrypted.
+
+A database row's `rpo.source` is `pitr` when the stream's durable lag is the better recovery point; until point-in-time restores exist (#57) that only means the oplog is captured.
+
+`GET /api/v1/pitr/streams/{id}` returns `{stream, state, running, live, lag_seconds, headroom_seconds, durable_rpo_seconds, windows, chains, bases, chain_breaks, experimental}`. `windows` lists `[{chain_id, open, start, end, start_time, end_time, bases}]`, one per chain with an eligible base: a gap or a divergence splits them. `state.status` is `running`, `failed` (with `last_error`) or `stopped`.
+
+`DELETE` refuses an enabled stream (409). For a disabled stream with chunks it ends the open chain, deletes every chunk with the [delete grace period](#delete-protection) and answers 409 until the purge removed them; delete it again then. Base backups stay as backups.
 
 ## Bulk actions
 

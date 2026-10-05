@@ -39,6 +39,8 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
+	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -100,6 +102,7 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	pitr          *collector.Service
 	readiness     *readiness.Service
 	auditLog      *auditlog.Service
 	auditForward  *auditlog.Forwarder
@@ -306,6 +309,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithManifestCapturer(prober.Manifest),
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
+		backup.WithOpTimeReader(prober.WriteOpTimes),
 		backup.WithRunConfig(func() backup.RunConfig {
 			cur := settingsSvc.Current()
 			g := cur.General
@@ -378,7 +382,17 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	})
 	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
+	// The PITR collector is built below; the sweep's chunk item calls it.
+	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
+		ChunkKeys: metaStore.ChunkKeys,
+		VerifyChunks: func(ctx context.Context) (integrity.ChunkSweep, error) {
+			if pitrSvc == nil {
+				return integrity.ChunkSweep{}, nil
+			}
+			r, verifyErr := pitrSvc.VerifyChunks(ctx)
+			return integrity.ChunkSweep{Verified: r.Verified, Failed: r.Failed, Breaks: r.Breaks}, verifyErr
+		},
 		Store:       metaStore,
 		Targets:     targetSvc,
 		Runs:        runManager,
@@ -432,6 +446,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
+		Streams:      pitrStreams(&pitrSvc),
 		Publisher:    bus,
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
@@ -536,6 +551,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Verifier:            integritySvc,
 		Inspector:           prober,
 		Audit:               auditSvc,
+		PITR:                metaStore,
 		Logger:              logger,
 		Version:             o.version,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
@@ -545,6 +561,55 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// The PITR oplog collector: one goroutine and session per enabled stream, off
+	// while no stream is enabled. Base backups go through the operations service.
+	pitrSvc = collector.New(collector.Config{
+		Repo: metaStore,
+		Open: func(ctx context.Context, st *pitr.Stream) (collector.Session, error) {
+			conn, err := connSvc.Resolve(ctx, st.ConnectionID)
+			if err != nil {
+				return nil, err
+			}
+			return openOplogSession(ctx, prober, conn.URI, st.ReadPreference)
+		},
+		Storage:   targetSvc.Storage,
+		Encryptor: settingsSvc.Encryptor,
+		StartBase: ops.StartBaseBackup,
+		Bases:     metaStore.ListBaseBackups,
+		NextRun: func(expr string, from time.Time) (time.Time, bool) {
+			next := scheduler.NextRuns(expr, from, 1)
+			if len(next) == 0 {
+				return time.Time{}, false
+			}
+			return next[0], true
+		},
+		Inspect: func(ctx context.Context, connectionID string) (collector.Inspection, error) {
+			conn, err := connSvc.Resolve(ctx, connectionID)
+			if err != nil {
+				return collector.Inspection{}, err
+			}
+			// The oplog's ends are read only once the user may read it.
+			if ok, accessErr := prober.CanReadOplog(ctx, conn.URI); accessErr != nil || !ok {
+				return collector.Inspection{}, accessErr
+			}
+			win, err := prober.OplogWindow(ctx, conn.URI)
+			return collector.Inspection{Window: win, CanReadOplog: err == nil}, err
+		},
+		ResolveTarget: func(ctx context.Context, id string) (string, error) {
+			t, err := targetSvc.Resolve(ctx, id)
+			if err != nil {
+				return "", err
+			}
+			return t.ID, nil
+		},
+		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
+		UpdateBase:  metaStore.UpdateBackupRecord,
+		Decryptor:   settingsSvc.Decryptor,
+		Publisher:   bus,
+		Observer:    metricSet,
+		Logger:      logger,
+	})
+
 	// With the two-person rule, admin users, promotions and admin API keys wait for a
 	// second administrator too.
 	authSvc.SetAdminGrantGate(ops)
@@ -577,6 +642,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithMetadataBackup(metaBackupSvc),
 		server.WithRecoveryKit(kitSvc),
 		server.WithReadiness(readinessSvc),
+		server.WithPITR(pitrSvc),
 		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.desktop {
@@ -603,6 +669,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		pitr:          pitrSvc,
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
@@ -928,6 +995,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.metaBackup != nil {
 		a.metaBackup.Start(context.WithoutCancel(ctx))
 	}
+	// The PITR oplog collector; stopped by shutdownRuns.
+	if a.pitr != nil {
+		a.pitr.Start(context.WithoutCancel(ctx))
+	}
 	// The RPO checker; stopped by shutdownRuns.
 	if a.readiness != nil {
 		a.readiness.Start(context.WithoutCancel(ctx))
@@ -1038,7 +1109,7 @@ func (a *App) shutdownRuns() {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(5)
+		wg.Add(6)
 		go func() {
 			defer wg.Done()
 			if err := a.runs.Shutdown(context.Background()); err != nil {
@@ -1059,6 +1130,12 @@ func (a *App) shutdownRuns() {
 			defer wg.Done()
 			if a.metaBackup != nil {
 				a.metaBackup.Stop()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if a.pitr != nil {
+				a.pitr.Stop()
 			}
 		}()
 		go func() {

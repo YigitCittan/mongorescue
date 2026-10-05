@@ -98,6 +98,29 @@ const (
 	// SecurityApprovalRequested is emitted when a destructive action waits for a
 	// second administrator (security.require_second_approver; Event.ApprovalID).
 	SecurityApprovalRequested EventType = "security.approval_requested"
+	// PITRChainBroken is emitted when a gap ends the oplog chain of a PITR stream:
+	// the oplog window was overrun or the replica set changed (Event.Stream,
+	// Event.Detail). It is a critical alert: point-in-time recovery cannot cross it.
+	PITRChainBroken EventType = "pitr.chain_broken"
+	// PITRDiverged is emitted when the entry at the collector's position vanished or
+	// changed term (forced reconfiguration, majority data loss): the chain ends and
+	// the later chunks are superseded. It is a critical alert.
+	PITRDiverged EventType = "pitr.diverged"
+	// PITRLagHigh is emitted once when the collector of a stream falls behind the
+	// replica set by more than its lag threshold (Event.Detail). It is not emitted
+	// again for the same episode, also not after a restart.
+	PITRLagHigh EventType = "pitr.lag_high"
+	// PITRLagRecovered is emitted when a stream whose lag was reported
+	// (PITRLagHigh) has caught up again.
+	PITRLagRecovered EventType = "pitr.lag_recovered"
+	// PITRWindowLow is emitted when the oplog headroom of a stream (how long the
+	// collector may stop before entries are lost) drops below max(6h, 3 x lag).
+	PITRWindowLow EventType = "pitr.window_low"
+	// PITRCollectorFailed is emitted when the collector of a stream starts failing
+	// (Event.Error).
+	PITRCollectorFailed EventType = "pitr.collector_failed"
+	// PITRCollectorRecovered is emitted when a failing collector stores chunks again.
+	PITRCollectorRecovered EventType = "pitr.collector_recovered"
 )
 
 // Sources of verification events.
@@ -153,6 +176,7 @@ var ruleTypes = []EventType{
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested,
+	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -174,7 +198,8 @@ func (t EventType) Subscribable() bool {
 func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
-		RestoreVerificationFailed, JobRPOMissed:
+		RestoreVerificationFailed, JobRPOMissed,
+		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed:
 		return true
 	default:
 		return false
@@ -241,6 +266,10 @@ type Event struct {
 	Actor string `json:"actor,omitempty"`
 	// ApprovalID is the approval request of security events, if any.
 	ApprovalID string `json:"approval_id,omitempty"`
+
+	// Stream is the PITR stream of pitr.* events, and ConnectionID its connection.
+	Stream       string `json:"stream,omitempty"`
+	ConnectionID string `json:"connection_id,omitempty"`
 }
 
 // SecurityEvent returns a SecurityDestructiveAction event (or, with approvalID and

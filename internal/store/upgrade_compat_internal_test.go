@@ -935,6 +935,53 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 23,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO oplog_chunks (id, stream_id, chain_id, target_id, storage_key, from_t, from_i, to_t, to_i,
+					first_term, last_term, entries, size_bytes, sha256, encrypted, encryption_mode, status, created_at,
+					verified_at, verify_error, deleted_at, purge_after)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"chk_v23", "pst_v21", "chain_old", "tgt_local",
+				"_mongorescue/oplog/conn_v2/rs0/chain_old/1790000000.0000000001-1790000300.0000000002.bson.gz.age",
+				1790000000, 1, 1790000300, 2, 3, 3, 12, 512, "cafe", 1, "x25519", "committed", ns(28*time.Hour),
+				nil, "", ns(35*time.Hour), ns(35*time.Hour+7*24*time.Hour))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			chunks, err := s.ListChunks(ctx, pitr.ChunkQuery{StreamID: "pst_v21", ChainID: "chain_old"})
+			if err != nil || len(chunks) != 1 || chunks[0].DeletedAt == nil || chunks[0].PurgeAfter == nil || chunks[0].Live() {
+				t.Errorf("chunks of chain_old = %+v, %v; want one deleted chunk", chunks, err)
+			}
+			live, err := s.ListChunks(ctx, pitr.ChunkQuery{StreamID: "pst_v21", ChainID: "chain_old", Live: true})
+			if err != nil || len(live) != 0 {
+				t.Errorf("live chunks of chain_old = %d, %v; want none", len(live), err)
+			}
+			due, err := s.ListPurgeableChunks(ctx, "pst_v21", compatT0.Add(36*time.Hour+7*24*time.Hour), 10)
+			if err != nil || len(due) != 1 || due[0].ID != "chk_v23" {
+				t.Errorf("purgeable chunks = %+v, %v", due, err)
+			}
+			// States written before 0023 have no replica set ID and no headroom alert.
+			state, err := s.LoadState(ctx, "pst_v21")
+			if err != nil || state.ReplicaSetID != "" || state.WindowLowSince != nil {
+				t.Errorf("state of pst_v21 = %+v, %v", state, err)
+			}
+			since := compatT0.Add(36 * time.Hour)
+			if err = s.SetReplicaSetID(ctx, "pst_v21", "64b0c0ffee"); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.SetWindowLow(ctx, "pst_v21", &since); err != nil {
+				t.Fatal(err)
+			}
+			if state, err = s.LoadState(ctx, "pst_v21"); err != nil || state.ReplicaSetID != "64b0c0ffee" ||
+				state.WindowLowSince == nil || !state.WindowLowSince.Equal(since) {
+				t.Errorf("state after the updates = %+v, %v", state, err)
+			}
+			if err = s.SetWindowLow(ctx, "pst_unknown", nil); !errors.Is(err, pitr.ErrNotFound) {
+				t.Errorf("SetWindowLow of an unknown stream = %v", err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

@@ -3581,3 +3581,13 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
 .throttle-warning {
   color: var(--warn);
 }
+
+/* Point-in-time recovery panel of the Connections tab (pitr.js). */
+.pitr-panel {
+  margin-top: 2rem;
+}
+
+.pitr-form {
+  margin-top: 1rem;
+  max-width: 36rem;
+}

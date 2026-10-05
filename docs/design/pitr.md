@@ -26,7 +26,7 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
 - **PITR stream.** One per connection, which must be a replica set. It holds the storage target, the base schedule (cron), base retention, the chunk interval and an enabled flag. It is configured separately from jobs.
 - **Base backups.**
   - Scheduled `mongodump --oplog --archive` runs of the whole instance, through the backup engine with a new `Scope=instance`: `database_name` is empty and `--oplog` replaces `--db`.
-  - The engine records `T_before` and `T_after` from `hello.lastWrite.opTime` before and after the dump. `T_after` is the base's consistent point.
+  - The engine records `T_before` from `hello.lastWrite.opTime` before the dump and `T_after` from `hello.lastWrite.majorityOpTime` (with its term) once the majority has reached the newest write after the dump, so the consistent point cannot be rolled back. `T_after` is the base's consistent point, and the chain must hold the entry at `T_after` in that term.
   - A base is PITR-eligible only if the chain covers `[T_before, T_after]` without a break.
   - Key: `_mongorescue/base/<conn_id>/<rs>/<yyyy>/<mm>/<id>.archive.gz.age`.
   - Run key: `pitr-base:<conn>`, so per-database jobs keep running.

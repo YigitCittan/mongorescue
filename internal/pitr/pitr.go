@@ -6,7 +6,7 @@
 // The package is the domain core and imports no MongoDB driver: persistence
 // (Repository) is a port implemented by internal/store, and oplog reads are served
 // by internal/mongoconn, which returns the OplogWindow and OplogStats defined here.
-// The collector service is not part of this package yet.
+// The collector service is internal/pitr/collector.
 package pitr
 
 import (
@@ -248,6 +248,26 @@ type Chunk struct {
 	// VerifiedAt and VerifyError are the outcome of the last verification.
 	VerifiedAt  *time.Time `json:"verified_at,omitempty"`
 	VerifyError string     `json:"verify_error,omitempty"`
+	// DeletedAt and PurgeAfter are set once retention deleted the chunk: it is no
+	// longer part of any window, and its object stays until PurgeAfter.
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	PurgeAfter *time.Time `json:"purge_after,omitempty"`
+}
+
+// Live reports whether the chunk is part of its chain: committed and not deleted.
+func (c *Chunk) Live() bool { return c.Status == ChunkCommitted && c.DeletedAt == nil }
+
+// ChainSpan is the span of the live committed chunks of one chain.
+type ChainSpan struct {
+	// ChainID identifies the chain.
+	ChainID string `json:"chain_id"`
+	// From is the start of the oldest live chunk and To the end of the newest; both
+	// are zero without chunks.
+	From Timestamp `json:"from"`
+	To   Timestamp `json:"to"`
+	// Chunks and SizeBytes count the live chunks and their stored bytes.
+	Chunks    int64 `json:"chunks"`
+	SizeBytes int64 `json:"size_bytes"`
 }
 
 // CollectorStatus is the state of a stream's collector.
@@ -278,6 +298,12 @@ type State struct {
 	LastError string          `json:"last_error,omitempty"`
 	// LagSince is when the lag first exceeded its threshold; nil while it does not.
 	LagSince *time.Time `json:"lag_since,omitempty"`
+	// WindowLowSince is when the oplog headroom dropped below its threshold; nil
+	// while it does not.
+	WindowLowSince *time.Time `json:"window_low_since,omitempty"`
+	// ReplicaSetID is the replica set ID the collector first saw (see
+	// OplogWindow.ReplicaSetID); empty until then or when it cannot be read.
+	ReplicaSetID string `json:"replica_set_id,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -293,6 +319,8 @@ type ChunkQuery struct {
 	Until Timestamp
 	// Status keeps only chunks in this status; empty keeps every status.
 	Status ChunkStatus
+	// Live drops deleted and pruned chunks.
+	Live bool
 }
 
 // Repository is the persistence port of PITR streams, chains, chunks and collector
@@ -336,6 +364,27 @@ type Repository interface {
 	CommitChunk(ctx context.Context, c *Chunk) error
 	// ListChunks returns the chunks selected by q ordered by From.
 	ListChunks(ctx context.Context, q ChunkQuery) ([]*Chunk, error)
+	// ListStreamChunks returns a page of the chunks of a stream, newest first, and
+	// how many there are.
+	ListStreamChunks(ctx context.Context, streamID string, limit, offset int) ([]*Chunk, int, error)
+	// ChainSpans returns the span of the live committed chunks of every chain of a
+	// stream, ordered by chain start.
+	ChainSpans(ctx context.Context, streamID string) ([]ChainSpan, error)
+	// ChunkKeys returns the storage keys of the chunks on a target whose object
+	// is expected to exist (every status but pruned).
+	ChunkKeys(ctx context.Context, targetID string) (map[string]bool, error)
+	// MarkChunkVerified records the outcome of a chunk's verification.
+	MarkChunkVerified(ctx context.Context, id string, at time.Time, verifyError string) error
+	// DeleteChunks soft-deletes chunks (see Chunk.DeletedAt) and returns how many.
+	DeleteChunks(ctx context.Context, ids []string, at, purgeAfter time.Time) (int64, error)
+	// ListPurgeableChunks returns up to limit deleted chunks of a stream whose
+	// grace period ended at now.
+	ListPurgeableChunks(ctx context.Context, streamID string, now time.Time, limit int) ([]*Chunk, error)
+	// MarkChunkPruned records that a deleted chunk's object was removed.
+	MarkChunkPruned(ctx context.Context, id string) error
+	// ListChunksToVerify returns up to limit live chunks last verified before
+	// before, never verified ones first.
+	ListChunksToVerify(ctx context.Context, before time.Time, limit int) ([]*Chunk, error)
 	// SupersedeChunks marks the committed chunks of a chain whose To is after
 	// after as superseded and returns how many it marked.
 	SupersedeChunks(ctx context.Context, streamID, chainID string, after Timestamp) (int64, error)
@@ -345,4 +394,10 @@ type Repository interface {
 	// SetCollectorStatus records the collector's status, last error and lag start
 	// without moving its position. It returns ErrNotFound without a state.
 	SetCollectorStatus(ctx context.Context, streamID string, status CollectorStatus, lastError string, lagSince *time.Time, at time.Time) error
+	// SetWindowLow records when the headroom of a stream dropped below its
+	// threshold (nil: it is back above). It returns ErrNotFound without a state.
+	SetWindowLow(ctx context.Context, streamID string, since *time.Time) error
+	// SetReplicaSetID records the replica set ID the collector of a stream reads
+	// from. It returns ErrNotFound without a state.
+	SetReplicaSetID(ctx context.Context, streamID, replicaSetID string) error
 }

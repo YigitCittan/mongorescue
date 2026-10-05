@@ -33,6 +33,19 @@ func BackupKey(connectionID, database string) string {
 	return "backup:" + connectionID + "/" + database
 }
 
+// PITRBaseKey is the concurrency key of a PITR base backup (a dump of the whole
+// instance) of connection connectionID: at most one runs at a time, while the
+// per-database backups of the connection keep running.
+func PITRBaseKey(connectionID string) string {
+	return "pitr-base:" + connectionID
+}
+
+// PITRDeletionKey is the deletion lock (see LockDeletion) of a PITR stream's
+// retention: base backups and oplog chunks of streamID are deleted under it.
+func PITRDeletionKey(streamID string) string {
+	return "pitr:" + streamID
+}
+
 // RestoreKey is the concurrency key of a restore into database on connection connectionID.
 func RestoreKey(connectionID, database string) string {
 	return "restore:" + connectionID + "/" + database

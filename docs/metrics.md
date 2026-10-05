@@ -46,6 +46,14 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_rpo_target_seconds` | gauge | `job`, `database` | The job's recovery point objective (`rpo_minutes`, or the default from its schedule) |
 | `mongorescue_scheduler_last_tick_timestamp_seconds` | gauge | | Unix time of the scheduler's last liveness tick (every 30s while it runs; `0` before it starts). Older than 90 seconds means the scheduler is hung; see [health](api.md#health) |
 | `mongorescue_heartbeat_dropped_total` | counter | | Job heartbeat pings dropped because 32 were already queued or in flight (see [monitoring.md](monitoring.md#how-pings-are-sent)) |
+| `mongorescue_pitr_collector_up` | gauge | `stream` | 1 while the [PITR](pitr.md) collector of the stream stores chunks, 0 while it fails or is stopped |
+| `mongorescue_pitr_lag_seconds` | gauge | `stream` | Seconds between the replica set's newest write and the end of the last stored chunk |
+| `mongorescue_pitr_last_chunk_timestamp_seconds` | gauge | `stream` | Oplog time (seconds) of the end of the last stored chunk |
+| `mongorescue_pitr_chunks_total` | counter | `stream`, `result` | Oplog chunks (`ok`, `error`) |
+| `mongorescue_pitr_chunk_bytes_total` | counter | `stream` | Stored bytes of oplog chunks (compressed and encrypted) |
+| `mongorescue_pitr_oplog_headroom_seconds` | gauge | `stream` | Seconds between the oldest oplog entry and the collector's position: how long it may stop before entries are lost |
+| `mongorescue_pitr_window_start_timestamp_seconds`, `mongorescue_pitr_window_end_timestamp_seconds` | gauge | `stream` | Bounds of the newest point-in-time window (absent without an eligible base) |
+| `mongorescue_pitr_chain_breaks_total` | counter | `stream`, `reason` | Chains ended by `gap`, `replica_set_changed` or `diverged` |
 | `mongorescue_settings_warnings` | gauge | | Active settings warnings shown in the dashboard banner (encryption off, metadata backups unencrypted, recovery kit missing or outdated, a kept administrator role) |
 
 The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. With a default scrape configuration Prometheus keeps its own `job` label (the scrape job) and renames MongoRescue's to `exported_job`; with `honor_labels: true` the job ID stays in `job`. The [shipped alert rules](monitoring.md#prometheus-alert-rules) work either way. `mongorescue_backups_total` and `mongorescue_job_runs_total` exist at `0` for every enabled job (and `job="manual"`) from the first RPO check after the start, so `increase()` also sees a job's first failure. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.

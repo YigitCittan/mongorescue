@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
@@ -21,7 +22,7 @@ const (
 
 	chunkColumns = `id, stream_id, chain_id, target_id, storage_key, from_t, from_i, to_t, to_i,
 		first_term, last_term, entries, size_bytes, sha256, encrypted, encryption_mode, status,
-		created_at, verified_at, verify_error`
+		created_at, verified_at, verify_error, deleted_at, purge_after`
 )
 
 // streamData is the JSON data column of pitr_streams: the options without a column.
@@ -343,7 +344,7 @@ func (s *SQLiteStore) CommitChunk(ctx context.Context, c *pitr.Chunk) error {
 			return fmt.Errorf("%w: chunk %s starts at %s, the chain is at %s", pitr.ErrDiscontinuous, c.ID, c.From, last)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO oplog_chunks ("+chunkColumns+`)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
 			c.ID, c.StreamID, c.ChainID, c.TargetID, c.StorageKey, c.From.T, c.From.I, c.To.T, c.To.I,
 			c.FirstTerm, c.LastTerm, c.Entries, c.SizeBytes, c.SHA256, c.Encrypted, c.EncryptionMode,
 			string(pitr.ChunkCommitted), timeKey(created), nullTime(c.VerifiedAt), c.VerifyError); err != nil {
@@ -385,10 +386,18 @@ func (s *SQLiteStore) ListChunks(ctx context.Context, q pitr.ChunkQuery) ([]*pit
 		query += " AND status = ?"
 		args = append(args, string(q.Status))
 	}
+	if q.Live {
+		query += " AND deleted_at IS NULL AND status != 'pruned'"
+	}
 	query += " ORDER BY from_t, from_i, to_t, to_i, id"
+	return s.queryChunks(ctx, query, args...)
+}
+
+// queryChunks runs query, which selects chunkColumns, and scans the chunks.
+func (s *SQLiteStore) queryChunks(ctx context.Context, query string, args ...any) ([]*pitr.Chunk, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list chunks of chain %s: %w", q.ChainID, err)
+		return nil, fmt.Errorf("store: list oplog chunks: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	out := []*pitr.Chunk{}
@@ -398,22 +407,126 @@ func (s *SQLiteStore) ListChunks(ctx context.Context, q pitr.ChunkQuery) ([]*pit
 			fromT, fromI, toT, toI int64
 			status                 string
 			created                int64
-			verified               sql.NullInt64
+			verified, deleted, pa  sql.NullInt64
 		)
 		if err = rows.Scan(&c.ID, &c.StreamID, &c.ChainID, &c.TargetID, &c.StorageKey, &fromT, &fromI, &toT, &toI,
 			&c.FirstTerm, &c.LastTerm, &c.Entries, &c.SizeBytes, &c.SHA256, &c.Encrypted, &c.EncryptionMode,
-			&status, &created, &verified, &c.VerifyError); err != nil {
-			return nil, fmt.Errorf("store: read chunk of chain %s: %w", q.ChainID, err)
+			&status, &created, &verified, &c.VerifyError, &deleted, &pa); err != nil {
+			return nil, fmt.Errorf("store: read oplog chunk: %w", err)
 		}
 		c.From, c.To = oplogTS(fromT, fromI), oplogTS(toT, toI)
 		c.Status = pitr.ChunkStatus(status)
 		c.CreatedAt, c.VerifiedAt = fromKey(created), nullableKey(verified)
+		c.DeletedAt, c.PurgeAfter = nullableKey(deleted), nullableKey(pa)
 		out = append(out, &c)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list chunks of chain %s: %w", q.ChainID, err)
+		return nil, fmt.Errorf("store: list oplog chunks: %w", err)
 	}
 	return out, nil
+}
+
+// ListStreamChunks returns a page of the chunks of a stream, newest first, and
+// how many there are.
+func (s *SQLiteStore) ListStreamChunks(ctx context.Context, streamID string, limit, offset int) ([]*pitr.Chunk, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM oplog_chunks WHERE stream_id = ?", streamID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count chunks of PITR stream %s: %w", streamID, err)
+	}
+	chunks, err := s.queryChunks(ctx, "SELECT "+chunkColumns+` FROM oplog_chunks WHERE stream_id = ?
+		ORDER BY to_t DESC, to_i DESC, id DESC LIMIT ? OFFSET ?`, streamID, limit, offset)
+	return chunks, total, err
+}
+
+// liveChunk selects the live committed chunks of the chain of row c.
+const liveChunk = `stream_id = c.stream_id AND chain_id = c.chain_id AND status = 'committed' AND deleted_at IS NULL`
+
+// ChainSpans returns, per chain of a stream, the span of its live committed chunks
+// (not deleted, superseded or pruned).
+func (s *SQLiteStore) ChainSpans(ctx context.Context, streamID string) ([]pitr.ChainSpan, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT c.chain_id,
+			(SELECT from_t FROM oplog_chunks WHERE `+liveChunk+` ORDER BY from_t, from_i LIMIT 1),
+			(SELECT from_i FROM oplog_chunks WHERE `+liveChunk+` ORDER BY from_t, from_i LIMIT 1),
+			(SELECT to_t FROM oplog_chunks WHERE `+liveChunk+` ORDER BY to_t DESC, to_i DESC LIMIT 1),
+			(SELECT to_i FROM oplog_chunks WHERE `+liveChunk+` ORDER BY to_t DESC, to_i DESC LIMIT 1),
+			(SELECT COUNT(*) FROM oplog_chunks WHERE `+liveChunk+`),
+			(SELECT COALESCE(SUM(size_bytes), 0) FROM oplog_chunks WHERE `+liveChunk+`)
+		FROM pitr_chains c WHERE c.stream_id = ? ORDER BY c.start_t, c.start_i, c.chain_id`, streamID)
+	if err != nil {
+		return nil, fmt.Errorf("store: chain spans of PITR stream %s: %w", streamID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []pitr.ChainSpan{}
+	for rows.Next() {
+		var (
+			sp                     pitr.ChainSpan
+			fromT, fromI, toT, toI sql.NullInt64
+		)
+		if err = rows.Scan(&sp.ChainID, &fromT, &fromI, &toT, &toI, &sp.Chunks, &sp.SizeBytes); err != nil {
+			return nil, fmt.Errorf("store: read a chain span: %w", err)
+		}
+		if sp.Chunks > 0 {
+			sp.From, sp.To = oplogTS(fromT.Int64, fromI.Int64), oplogTS(toT.Int64, toI.Int64)
+		}
+		out = append(out, sp)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: chain spans of PITR stream %s: %w", streamID, err)
+	}
+	return out, nil
+}
+
+// MarkChunkVerified records the outcome of a chunk's verification; verifyError is
+// empty when it passed.
+func (s *SQLiteStore) MarkChunkVerified(ctx context.Context, id string, at time.Time, verifyError string) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE oplog_chunks SET verified_at = ?, verify_error = ? WHERE id = ?",
+		timeKey(at), verifyError, id)
+}
+
+// DeleteChunks soft-deletes the chunks ids that are neither deleted nor pruned:
+// they leave every window, and their objects stay until purgeAfter. It returns
+// how many it deleted.
+func (s *SQLiteStore) DeleteChunks(ctx context.Context, ids []string, at, purgeAfter time.Time) (int64, error) {
+	var n int64
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			res, err := tx.ExecContext(ctx, `UPDATE oplog_chunks SET deleted_at = ?, purge_after = ?
+				WHERE id = ? AND deleted_at IS NULL AND status != 'pruned'`, timeKey(at), timeKey(purgeAfter), id)
+			if err != nil {
+				return fmt.Errorf("store: delete oplog chunk %s: %w", id, err)
+			}
+			k, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("store: delete oplog chunk %s: %w", id, err)
+			}
+			n += k
+		}
+		return nil
+	})
+	return n, err
+}
+
+// ListPurgeableChunks returns up to limit deleted chunks of a stream whose grace
+// period ended at now and whose object is still there, oldest first.
+func (s *SQLiteStore) ListPurgeableChunks(ctx context.Context, streamID string, now time.Time, limit int) ([]*pitr.Chunk, error) {
+	return s.queryChunks(ctx, "SELECT "+chunkColumns+` FROM oplog_chunks
+		WHERE stream_id = ? AND purge_after IS NOT NULL AND purge_after <= ? AND status != 'pruned'
+		ORDER BY purge_after, id LIMIT ?`, streamID, timeKey(now), limit)
+}
+
+// MarkChunkPruned records that the object of deleted chunk id was removed. It
+// returns pitr.ErrNotFound unless the chunk is deleted and not pruned yet.
+func (s *SQLiteStore) MarkChunkPruned(ctx context.Context, id string) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, `UPDATE oplog_chunks SET status = 'pruned'
+		WHERE id = ? AND deleted_at IS NOT NULL AND status != 'pruned'`, id)
+}
+
+// ListChunksToVerify returns up to limit live committed chunks last verified
+// before before, those never verified first.
+func (s *SQLiteStore) ListChunksToVerify(ctx context.Context, before time.Time, limit int) ([]*pitr.Chunk, error) {
+	return s.queryChunks(ctx, "SELECT "+chunkColumns+` FROM oplog_chunks
+		WHERE status = 'committed' AND deleted_at IS NULL AND (verified_at IS NULL OR verified_at < ?)
+		ORDER BY verified_at IS NOT NULL, verified_at, created_at, id LIMIT ?`, timeKey(before), limit)
 }
 
 // SupersedeChunks marks the committed chunks of a chain whose To is after after as
@@ -439,12 +552,13 @@ func (s *SQLiteStore) LoadState(ctx context.Context, streamID string) (*pitr.Sta
 		lastT, lastI int64
 		status       string
 		lagSince     sql.NullInt64
+		windowLow    sql.NullInt64
 		updated      int64
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT stream_id, chain_id, last_t, last_i, last_term, status, last_error,
-			lag_since, updated_at
+			lag_since, updated_at, window_low_since, replica_set_id
 		FROM pitr_state WHERE stream_id = ?`, streamID).Scan(&st.StreamID, &st.ChainID, &lastT, &lastI,
-		&st.Last.Term, &status, &st.LastError, &lagSince, &updated)
+		&st.Last.Term, &status, &st.LastError, &lagSince, &updated, &windowLow, &st.ReplicaSetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, pitr.ErrNotFound
 	}
@@ -454,6 +568,7 @@ func (s *SQLiteStore) LoadState(ctx context.Context, streamID string) (*pitr.Sta
 	st.Last.TS = oplogTS(lastT, lastI)
 	st.Status = pitr.CollectorStatus(status)
 	st.LagSince, st.UpdatedAt = nullableKey(lagSince), fromKey(updated)
+	st.WindowLowSince = nullableKey(windowLow)
 	return &st, nil
 }
 
@@ -476,4 +591,48 @@ func (s *SQLiteStore) SetCollectorStatus(ctx context.Context, streamID string, s
 		return pitr.ErrNotFound
 	}
 	return nil
+}
+
+// ListBaseBackups returns the PITR base backups (instance scope) of stream
+// streamID, newest first.
+func (s *SQLiteStore) ListBaseBackups(ctx context.Context, streamID string) ([]*models.BackupRecord, error) {
+	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		`SELECT id, data FROM backups WHERE database_name = '' AND json_extract(data, '$.scope') = 'instance'
+			AND json_extract(data, '$.pitr_stream_id') = ? ORDER BY started_at DESC, id DESC`, streamID)
+}
+
+// SetWindowLow records when the oplog headroom of a stream dropped below its
+// threshold (nil: it is back above). It returns pitr.ErrNotFound without a state.
+func (s *SQLiteStore) SetWindowLow(ctx context.Context, streamID string, since *time.Time) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE pitr_state SET window_low_since = ? WHERE stream_id = ?",
+		nullTime(since), streamID)
+}
+
+// SetReplicaSetID records the replica set ID the collector of a stream reads from.
+// It returns pitr.ErrNotFound without a state.
+func (s *SQLiteStore) SetReplicaSetID(ctx context.Context, streamID, replicaSetID string) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE pitr_state SET replica_set_id = ? WHERE stream_id = ?",
+		replicaSetID, streamID)
+}
+
+// ChunkKeys returns the storage keys of the oplog chunks on target targetID whose
+// object is expected to exist: every chunk that is not pruned.
+func (s *SQLiteStore) ChunkKeys(ctx context.Context, targetID string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT storage_key FROM oplog_chunks WHERE target_id = ? AND status != 'pruned'", targetID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the chunk keys of target %s: %w", targetID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]bool{}
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("store: read a chunk key: %w", err)
+		}
+		out[key] = true
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list the chunk keys of target %s: %w", targetID, err)
+	}
+	return out, nil
 }

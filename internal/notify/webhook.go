@@ -36,7 +36,7 @@ const (
 //	                                     // restore.failed|restore.cancelled|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
 //	                                     // restore.verification_failed|job.rpo_missed|job.rpo_recovered|
-//	                                     // storage.drift_detected|retention.deleted|notification.test
+//	                                     // storage.drift_detected|retention.deleted|pitr.*|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs
 //	  "backup_id": "bkp_shop_...",       // omitted when unknown
@@ -97,6 +97,9 @@ type WebhookPayload struct {
 	Action     string `json:"action,omitempty"`
 	Actor      string `json:"actor,omitempty"`
 	ApprovalID string `json:"approval_id,omitempty"`
+	// Stream and ConnectionID name the PITR stream of pitr.* events.
+	Stream       string `json:"stream,omitempty"`
+	ConnectionID string `json:"connection_id,omitempty"`
 	// Subject is the rendered one-line summary.
 	Subject string `json:"subject"`
 	// Text is the rendered human-readable body.
@@ -130,6 +133,8 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 		Action:          e.Action,
 		Actor:           e.Actor,
 		ApprovalID:      e.ApprovalID,
+		Stream:          e.Stream,
+		ConnectionID:    e.ConnectionID,
 		Subject:         msg.Subject,
 		Text:            msg.Body,
 	}
