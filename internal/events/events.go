@@ -30,6 +30,10 @@ const (
 	// BackupCancelled is emitted when a backup was cancelled (models.StatusCancelled);
 	// it is not a failure.
 	BackupCancelled EventType = "backup.cancelled"
+	// BackupSkipped is emitted when a scheduled run did not start, such as one
+	// outside its job's backup window (Detail names the reason); it is not a
+	// failure.
+	BackupSkipped EventType = "backup.skipped"
 	// RestoreSucceeded is emitted when a restore (or dry-run) completes successfully.
 	RestoreSucceeded EventType = "restore.succeeded"
 	// RestoreFailed is emitted when a restore run ends in failure.
@@ -133,7 +137,7 @@ func (t EventType) Broadcast() bool {
 
 // ruleTypes lists the event types that notification rules may subscribe to.
 var ruleTypes = []EventType{
-	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
+	BackupSucceeded, BackupFailed, BackupCancelled, BackupSkipped, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested,
@@ -308,6 +312,19 @@ func JobRunEvent(run *models.JobRun) Event {
 			e.Error = "no database was backed up"
 		}
 	}
+	return e
+}
+
+// SkippedRunEvent builds the BackupSkipped event of a run that did not start
+// (models.JobRunSkipped): Status is "skipped" and Detail the skip reason, such as
+// "skipped (outside window)".
+func SkippedRunEvent(run *models.JobRun, database string) Event {
+	e := Event{Type: BackupSkipped, Time: time.Now().UTC(), JobID: run.JobID, RunID: run.ID, Database: database,
+		Status: string(run.Status), Detail: "skipped (" + run.SkipReason + ")"}
+	if run.CompletedAt != nil {
+		e.Time = run.CompletedAt.UTC()
+	}
+	e.Run = RunSummaryOf(run, false)
 	return e
 }
 

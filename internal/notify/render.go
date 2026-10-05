@@ -20,6 +20,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.BackupSucceeded:           {"✅", "Backup succeeded"},
 	events.BackupFailed:              {"❌", "Backup failed"},
 	events.BackupCancelled:           {"⏹️", "Backup cancelled"},
+	events.BackupSkipped:             {"⏭️", "Backup skipped"},
 	events.RestoreSucceeded:          {"✅", "Restore succeeded"},
 	events.RestoreFailed:             {"❌", "Restore failed"},
 	events.RestoreCancelled:          {"⏹️", "Restore cancelled"},
@@ -60,7 +61,7 @@ func Render(e events.Event) Message {
 
 	var target string
 	switch e.Type {
-	case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled:
+	case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled, events.BackupSkipped:
 		job := e.JobID
 		if job == "" {
 			job = "manual"

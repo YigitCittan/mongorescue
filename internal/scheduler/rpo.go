@@ -26,6 +26,14 @@ const (
 // on every day of the week: "0 9 * * 1-5" is 72 hours (Friday to Monday) also on a
 // Tuesday, and "0 9,17 * * *" is 16 hours also at noon.
 func Interval(expr string, from time.Time) time.Duration {
+	return WindowedInterval(expr, nil, from)
+}
+
+// WindowedInterval is Interval counting only the activations window lets start
+// (see models.BackupWindow.Contains; a nil window allows all): the runs a window
+// skips do not back anything up, so the largest gap between allowed runs is the
+// interval. A schedule whose activations all fall outside the window has none (0).
+func WindowedInterval(expr string, window *models.BackupWindow, from time.Time) time.Duration {
 	schedule, err := cronParser.Parse(expr)
 	if err != nil {
 		return 0
@@ -34,24 +42,37 @@ func Interval(expr string, from time.Time) time.Duration {
 	// own are read in the zone of the time they are asked about.
 	start := from.In(time.Local).Add(-intervalWindow)
 	end := start.Add(intervalWindow)
-	prev := schedule.Next(start)
+	// next returns the first allowed activation after t (zero for none within
+	// maxIntervalRuns activations).
+	reads := 0
+	next := func(t time.Time) time.Time {
+		for reads < maxIntervalRuns {
+			reads++
+			t = schedule.Next(t)
+			if t.IsZero() || window.Contains(t) {
+				return t
+			}
+		}
+		return time.Time{}
+	}
+	prev := next(start)
 	if prev.IsZero() {
 		return 0
 	}
 	var gap time.Duration
-	for range maxIntervalRuns {
-		next := schedule.Next(prev)
-		if next.IsZero() {
+	for reads < maxIntervalRuns {
+		n := next(prev)
+		if n.IsZero() {
 			break
 		}
-		gap = max(gap, next.Sub(prev))
-		if next.After(end) {
+		gap = max(gap, n.Sub(prev))
+		if n.After(end) {
 			if gap <= intervalWindow || end.Sub(start) >= intervalLongWindow {
 				break
 			}
 			end = start.Add(intervalLongWindow)
 		}
-		prev = next
+		prev = n
 	}
 	return gap
 }
@@ -66,11 +87,15 @@ func DefaultRPO(expr string, from time.Time) time.Duration {
 // EffectiveRPO returns job's recovery point objective at from: its RPOMinutes when
 // set, else DefaultRPO of its schedule. The second result reports whether the
 // default applies.
+//
+// A job with a backup window counts only the runs the window allows (see
+// WindowedInterval): a schedule every hour with a window of 01:00 to 05:00 is a
+// 21-hour interval, not one hour.
 func EffectiveRPO(job *models.Job, from time.Time) (time.Duration, bool) {
 	if job.RPOMinutes > 0 {
 		return job.RPO(0)
 	}
-	return job.RPO(Interval(job.CronExpression, from))
+	return job.RPO(WindowedInterval(job.CronExpression, job.BackupWindow, from))
 }
 
 // WithJobChanged runs fn with a job's ID after every job write that went through
