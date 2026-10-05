@@ -146,6 +146,12 @@ type Config struct {
 	// DeleteGrace returns the delete grace period of retention; nil means
 	// models.DefaultDeleteGraceDays.
 	DeleteGrace func() time.Duration
+	// UpdateBase updates a base backup record atomically; nil disables base
+	// retention (chunks are still retained).
+	UpdateBase BaseUpdater
+	// Decryptor returns the decryption keys the chunk verification uses; nil (or a
+	// nil result) checks the checksum only.
+	Decryptor func() *encryption.Decryptor
 	// Inspect inspects the replica set of a connection when a stream is created
 	// or enabled; nil refuses them.
 	Inspect Inspector

@@ -153,6 +153,22 @@ type SweepStatus struct {
 	Interrupted string `json:"interrupted,omitempty"`
 	// NextRunAt is when the next scheduled sweep starts (nil when off).
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	// Chunks is the outcome of the PITR oplog chunk item (nil without streams or
+	// when the sweep stopped before it).
+	Chunks *ChunkSweep `json:"chunks,omitempty"`
+}
+
+// ChunkSweep is the outcome of the PITR chunk item of a sweep: the hash, the
+// decrypted and gunzipped entries (count, first and last positions and terms) and
+// the continuity of every chain are checked.
+type ChunkSweep struct {
+	// Verified counts the chunks checked and Failed those that did not match.
+	Verified int `json:"verified"`
+	Failed   int `json:"failed"`
+	// Breaks counts the chunks that do not start where the previous one ends.
+	Breaks int `json:"breaks"`
+	// Error is why the chunk item stopped, if it did.
+	Error string `json:"error,omitempty"`
 }
 
 // SweepOrder returns the backups a sweep verifies, in the order it verifies them:
@@ -244,6 +260,22 @@ func (s *Service) Sweep(ctx context.Context, trigger string) (SweepStatus, error
 		}
 		s.mu.Unlock()
 		s.saveSweep(ctx, st)
+	}
+
+	if s.cfg.VerifyChunks != nil && ctx.Err() == nil {
+		s.mu.Lock()
+		st.Current = "oplog chunks"
+		s.mu.Unlock()
+		chunks, err := s.cfg.VerifyChunks(ctx)
+		if err != nil && ctx.Err() == nil {
+			chunks.Error = redact.Text(err.Error())
+			s.logger.Warn("the oplog chunk item of the integrity sweep failed", slog.String("error", chunks.Error))
+		}
+		if ctx.Err() == nil {
+			s.mu.Lock()
+			st.Chunks = &chunks
+			s.mu.Unlock()
+		}
 	}
 
 	finished := s.now()

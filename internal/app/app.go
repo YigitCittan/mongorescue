@@ -382,7 +382,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	})
 	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
+	// The PITR collector is built below; the sweep's chunk item calls it.
+	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
+		VerifyChunks: func(ctx context.Context) (integrity.ChunkSweep, error) {
+			if pitrSvc == nil {
+				return integrity.ChunkSweep{}, nil
+			}
+			r, err := pitrSvc.VerifyChunks(ctx)
+			return integrity.ChunkSweep{Verified: r.Verified, Failed: r.Failed, Breaks: r.Breaks}, err
+		},
 		Store:       metaStore,
 		Targets:     targetSvc,
 		Runs:        runManager,
@@ -552,7 +561,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	})
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
-	pitrSvc := collector.New(collector.Config{
+	pitrSvc = collector.New(collector.Config{
 		Repo: metaStore,
 		Open: func(ctx context.Context, st *pitr.Stream) (collector.Session, error) {
 			conn, err := connSvc.Resolve(ctx, st.ConnectionID)
@@ -592,6 +601,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return t.ID, nil
 		},
 		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
+		UpdateBase:  metaStore.UpdateBackupRecord,
+		Decryptor:   settingsSvc.Decryptor,
 		Publisher:   bus,
 		Observer:    metricSet,
 		Logger:      logger,
