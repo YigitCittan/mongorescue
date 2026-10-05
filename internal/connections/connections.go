@@ -183,7 +183,7 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 // NewService returns a Service. prober may be nil, in which case tests and discovery
 // report ErrUnavailable.
 func NewService(repo Repository, prober Prober, opts ...Option) *Service {
-	s := &Service{repo: repo, prober: prober, logger: slog.Default(), testTimeout: DefaultTestTimeout, now: time.Now}
+	s := &Service{repo: accessRepo{repo}, prober: prober, logger: slog.Default(), testTimeout: DefaultTestTimeout, now: time.Now}
 	for _, opt := range opts {
 		opt(s)
 	}

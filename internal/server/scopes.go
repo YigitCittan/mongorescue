@@ -34,6 +34,7 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/users":        auth.ScopeAdmin,
 	"DELETE /api/v1/users/{id}": auth.ScopeAdmin,
 	userRoleRoute:               auth.ScopeAdmin,
+	userConnectionsRoute:        auth.ScopeAdmin,
 	changePasswordRoute:         auth.ScopeRead,
 	listAPIKeysRoute:            auth.ScopeRead,
 	createAPIKeyRoute:           auth.ScopeRead,
@@ -205,6 +206,8 @@ const (
 const (
 	userNamesRoute = "GET /api/v1/users/names"
 	userRoleRoute  = "PUT /api/v1/users/{id}/role"
+	// userConnectionsRoute limits a user to some connections (admin).
+	userConnectionsRoute = "PUT /api/v1/users/{id}/connections"
 )
 
 // selfServiceRoutes need only the read scope in routeScopes, because every role
