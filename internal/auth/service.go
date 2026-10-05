@@ -57,6 +57,9 @@ type Service struct {
 
 	mu        sync.Mutex
 	setupCode string
+	// grantGate holds back admin grants while the two-person rule is on (guarded
+	// by mu; see SetAdminGrantGate).
+	grantGate AdminGrantGate
 }
 
 // Option customises a Service.
@@ -512,6 +515,13 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	if err != nil {
 		return nil, err
 	}
+	// With the two-person rule an administrator is created as a viewer, and the
+	// admin role waits for a second administrator.
+	gate := s.holdsAdminGrant(ctx)
+	held := role == RoleAdmin && gate != nil
+	if held {
+		role = RoleViewer
+	}
 	user, err := s.newUser(username, password, role)
 	if err != nil {
 		return nil, err
@@ -521,6 +531,9 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	}
 	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
 		logsafe.Attr("role", string(user.Role)), slog.String("by", actor.UserID()))
+	if held {
+		return user, gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminRole, UserID: user.ID, Username: user.Username, Created: true})
+	}
 	return user, nil
 }
 
@@ -534,6 +547,16 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) e
 	}
 	if actor.UserID() == id {
 		return ErrDeleteSelf
+	}
+	// With the two-person rule, deleting an administrator waits for a second one.
+	if gate := s.holdsAdminGrant(ctx); gate != nil {
+		target, err := s.repo.GetUser(ctx, id)
+		if err != nil {
+			return err
+		}
+		if target.Role == RoleAdmin {
+			return gate.RequestAdminGrant(ctx, AdminGrant{Kind: DeleteAdmin, UserID: target.ID, Username: target.Username})
+		}
 	}
 	if err := s.repo.DeleteUser(ctx, actor.UserID(), id, s.OIDC().Enabled); err != nil {
 		return err
@@ -580,6 +603,20 @@ func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, 
 			return nil, ErrRoleManagedByProvider
 		}
 	}
+	// With the two-person rule a promotion to admin, and demoting an administrator,
+	// wait for a second administrator.
+	if gate := s.holdsAdminGrant(ctx); gate != nil {
+		target, getErr := s.repo.GetUser(ctx, id)
+		if getErr != nil {
+			return nil, getErr
+		}
+		switch {
+		case role == RoleAdmin && target.Role != RoleAdmin:
+			return nil, gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminRole, UserID: target.ID, Username: target.Username})
+		case role != RoleAdmin && target.Role == RoleAdmin:
+			return nil, gate.RequestAdminGrant(ctx, AdminGrant{Kind: DemoteAdmin, UserID: target.ID, Username: target.Username, Role: role})
+		}
+	}
 	from, err := s.repo.UpdateUserRole(ctx, actor.UserID(), id, role, s.now().UTC(), policy.Enabled)
 	if err != nil {
 		return nil, err
@@ -605,12 +642,18 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 		return ErrUnauthenticated
 	}
 	self := actor.UserID() != "" && actor.UserID() == userID
+	// With the two-person rule, resetting another user's password needs a session and
+	// waits for a second administrator: whoever chooses it could sign in as them.
+	gate := s.holdsAdminGrant(ctx)
 	switch {
 	case self && actor.Method != MethodSession:
 		return ErrSessionRequired
 	case !self:
 		if err := actor.Require(ScopeAdmin); err != nil {
 			return err
+		}
+		if gate != nil && actor.Method != MethodSession {
+			return ErrSessionRequired
 		}
 	}
 	user, err := s.repo.GetUser(ctx, userID)
@@ -647,11 +690,19 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 	if err != nil {
 		return fmt.Errorf("auth: hash password: %w", err)
 	}
-	keep := ""
-	if self {
-		keep = actor.SessionHash
+	if !self {
+		if gate != nil {
+			return gate.RequestAdminGrant(ctx, AdminGrant{Kind: ResetUserPassword, UserID: user.ID, Username: user.Username, PasswordHash: string(hash)})
+		}
+		// Another user's password: their sessions end and they count as a fresh
+		// administrator for the two-person rule (RoleChangedAt).
+		if err := s.repo.ResetPassword(ctx, userID, string(hash), s.now().UTC()); err != nil {
+			return err
+		}
+		s.logger.Info("password reset", slog.String("user_id", userID), slog.String("by", actor.UserID()))
+		return nil
 	}
-	if err := s.repo.UpdatePassword(ctx, userID, string(hash), s.now().UTC(), keep); err != nil {
+	if err := s.repo.UpdatePassword(ctx, userID, string(hash), s.now().UTC(), actor.SessionHash); err != nil {
 		return err
 	}
 	s.logger.Info("password changed", slog.String("user_id", userID), slog.String("by", actor.UserID()))
@@ -762,6 +813,13 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	if !actor.Allows(scope) {
 		return nil, "", fmt.Errorf("%w: the %q scope is above yours (%q)", ErrScopeExceedsRole, scope, actor.Scope)
 	}
+	// With the two-person rule an admin key is created with the operator scope, and
+	// the admin scope waits for a second administrator.
+	gate := s.holdsAdminGrant(ctx)
+	held := scope == ScopeAdmin && gate != nil
+	if held {
+		scope = ScopeOperator
+	}
 	plain, prefix, err := newGeneratedKey()
 	if err != nil {
 		return nil, "", err
@@ -776,6 +834,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	}
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
 		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()))
+	if held {
+		return k, plain, gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminKey, KeyID: k.ID, KeyName: k.Name, Created: true})
+	}
 	return k, plain, nil
 }
 

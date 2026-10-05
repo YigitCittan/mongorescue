@@ -52,6 +52,7 @@ type protEnv struct {
 	clock    *fakeClock
 	pub      *recordingPublisher
 	admins   int
+	cfg      operations.Config
 }
 
 func newProtEnv(t *testing.T) *protEnv {
@@ -72,7 +73,7 @@ func newProtEnv(t *testing.T) *protEnv {
 	bRunner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
 		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
 	}
-	env.svc = operations.New(operations.Config{
+	env.cfg = operations.Config{
 		Store:           env.st,
 		Backup:          backup.NewEngine(env.mock, "", backup.WithRunner(bRunner)),
 		Restore:         restore.NewEngine(env.mock, ""),
@@ -89,7 +90,8 @@ func newProtEnv(t *testing.T) *protEnv {
 			}
 			return nil
 		},
-	})
+	}
+	env.svc = operations.New(env.cfg)
 	operations.SetNow(env.svc, env.clock.Now)
 	return env
 }

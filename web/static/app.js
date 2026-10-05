@@ -2526,7 +2526,9 @@ function setupForms() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
-      if (json.success) {
+      if (json.success && typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) {
+        // An in-place restore that drops the target waits for a second administrator.
+      } else if (json.success) {
         const target = json.data && json.data.target_database ? json.data.target_database : "";
         showToast(tf("toasts.restore_started", { db: target }), "info");
         trackRestore(json.data);
@@ -6079,6 +6081,13 @@ async function saveUser(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, role })
     });
+    // With the two-person rule an administrator is created as a viewer and the role
+    // waits for approval (protection.js).
+    if (json.success && typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) {
+      closeModal("modal-user");
+      loadUsers();
+      return;
+    }
     if (json.success) {
       showToast(t("settings.user_created"), "success");
       closeModal("modal-user");
@@ -6095,6 +6104,7 @@ async function deleteUser(id) {
   if (!(await confirmDialog({ title: t("dialog.delete_title"), body: tf("settings.confirm_delete_user", { name: userName(id) }), danger: true, confirmLabel: t("actions.delete") }))) return;
   try {
     const json = await apiJSON(`/api/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (json.success && typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) return;
     if (json.success) {
       showToast(t("settings.user_deleted"), "success");
       loadUsers();
@@ -6145,6 +6155,8 @@ async function savePassword(e) {
       return;
     }
     closeModal("modal-password");
+    // Another user's password waits for a second administrator (protection.js).
+    if (typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) return;
     if (self && !(await loadMe())) {
       // Changing your own password may end every session, including this one.
       sessionExpiredShown = true;
@@ -6206,6 +6218,9 @@ async function createApiKey(e) {
       showToast(json.error || t("notify.toast_save_failed"), "error");
       return;
     }
+    // An admin key starts with the operator scope while the admin scope waits for a
+    // second administrator; its plaintext is shown now all the same (protection.js).
+    if (typeof protectionApprovalPending === "function") protectionApprovalPending(json);
     const data = json.data || {};
     setValue("api-key-secret", data.key || data.plaintext || data.token || "");
     showApiKeyStep("secret");

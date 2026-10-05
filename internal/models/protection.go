@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Delete protection: soft deletes with a grace period, delayed lowering of
 // protections and the optional two-person rule (see docs/security.md).
@@ -33,6 +36,11 @@ const (
 	PendingRetention PendingChangeKind = "retention"
 	// PendingDeleteGrace lowers security.delete_grace_days.
 	PendingDeleteGrace PendingChangeKind = "delete_grace_days"
+	// PendingMetadataRetention lowers metadata_backup.retention_count.
+	PendingMetadataRetention PendingChangeKind = "metadata_backup_retention"
+	// PendingDisableSecondApprover turns security.require_second_approver off when
+	// fewer than two administrators could approve it (a lockout).
+	PendingDisableSecondApprover PendingChangeKind = "disable_second_approver"
 )
 
 // PendingChange is a lowered protection that takes effect only at EffectiveAt (the
@@ -45,12 +53,18 @@ type PendingChange struct {
 	Kind PendingChangeKind `json:"kind"`
 	// JobID is the job whose retention is shortened (PendingRetention).
 	JobID string `json:"job_id,omitempty"`
+	// JobCreatedAt binds the change to that job: a job deleted and recreated under
+	// the same ID is a different job, and the change is dropped.
+	JobCreatedAt *time.Time `json:"job_created_at,omitempty"`
 	// RetentionDays and RetentionCount are the new retention values; nil keeps the
 	// job's current one (PendingRetention).
 	RetentionDays  *int `json:"retention_days,omitempty"`
 	RetentionCount *int `json:"retention_count,omitempty"`
 	// DeleteGraceDays is the new grace period (PendingDeleteGrace).
 	DeleteGraceDays *int `json:"delete_grace_days,omitempty"`
+	// MetadataRetentionCount is the new metadata snapshot count
+	// (PendingMetadataRetention).
+	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
 	// RequestedBy names who asked for the change.
 	RequestedBy string `json:"requested_by"`
 	// ApprovedBy names the second administrator who approved it, if any.
@@ -92,6 +106,28 @@ const (
 	ApprovalLowerGrace ApprovalAction = "lower_delete_grace"
 	// ApprovalDisableSecondApprover turns security.require_second_approver off.
 	ApprovalDisableSecondApprover ApprovalAction = "disable_second_approver"
+	// ApprovalGrantAdminRole gives user Subject the admin role (an administrator
+	// created as a viewer, or a promotion).
+	ApprovalGrantAdminRole ApprovalAction = "grant_admin_role"
+	// ApprovalGrantAdminKey gives API key Subject the admin scope (created with the
+	// operator scope).
+	ApprovalGrantAdminKey ApprovalAction = "grant_admin_api_key"
+	// ApprovalOIDCAdminMapping applies an oidc settings change (Settings) that can
+	// grant admin through single sign-on.
+	ApprovalOIDCAdminMapping ApprovalAction = "oidc_admin_mapping"
+	// ApprovalResetPassword sets the password of user Subject (another user's; the
+	// new bcrypt hash is kept apart from the request, never shown).
+	ApprovalResetPassword ApprovalAction = "reset_password"
+	// ApprovalChangeAdminRole demotes administrator Subject to Role.
+	ApprovalChangeAdminRole ApprovalAction = "demote_admin"
+	// ApprovalDeleteAdmin deletes administrator Subject.
+	ApprovalDeleteAdmin ApprovalAction = "delete_admin"
+	// ApprovalShortenMetadataRetention lowers metadata_backup.retention_count (then
+	// delayed by the grace period).
+	ApprovalShortenMetadataRetention ApprovalAction = "shorten_metadata_retention"
+	// ApprovalRestoreDropTarget runs the in-place restore Restore that drops the
+	// target database first.
+	ApprovalRestoreDropTarget ApprovalAction = "restore_drop_target"
 )
 
 // ApprovalStatus is the state of an approval request.
@@ -134,6 +170,22 @@ type Approval struct {
 	RetentionCount *int `json:"retention_count,omitempty"`
 	// DeleteGraceDays is the new grace period (ApprovalLowerGrace).
 	DeleteGraceDays *int `json:"delete_grace_days,omitempty"`
+	// Settings is the settings change of ApprovalOIDCAdminMapping (the oidc group,
+	// never a secret).
+	Settings json.RawMessage `json:"settings,omitempty"`
+	// SubjectCreatedAt binds the request to the creation time of its job (or user):
+	// a job deleted and recreated under the same ID is refused.
+	SubjectCreatedAt *time.Time `json:"subject_created_at,omitempty"`
+	// Role is the new role of ApprovalChangeAdminRole.
+	Role string `json:"role,omitempty"`
+	// MetadataRetentionCount is the new count of ApprovalShortenMetadataRetention.
+	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
+	// Restore is the in-place restore of ApprovalRestoreDropTarget.
+	Restore *RestoreRequest `json:"restore,omitempty"`
+	// Secret is kept apart from the request in the store (the new password hash of
+	// ApprovalResetPassword) and never serialized; it is cleared once the request is
+	// decided.
+	Secret string `json:"-"`
 	// RequestedBy names the requester; RequestedByUserID is their user ID ("" for an
 	// API key without a user); RequestedVia is "session", "api_key" or "system".
 	RequestedBy       string `json:"requested_by"`

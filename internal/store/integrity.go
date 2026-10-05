@@ -128,6 +128,36 @@ func (s *SQLiteStore) ArchiveReferenceIDs(ctx context.Context, targetID, key str
 	return ids, nil
 }
 
+// ArchiveRef is a backup row that names an archive: its ID, status, storage target
+// and key, read with SQL so rows that cannot be decoded are included.
+type ArchiveRef struct {
+	ID, Status, TargetID, Key string
+}
+
+// ArchiveRefs returns every backup row, on any target, that names a storage key and
+// is neither purged nor pruned (the purge checks them all before it deletes an
+// object two targets might share).
+func (s *SQLiteStore) ArchiveRefs(ctx context.Context) ([]ArchiveRef, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, status, storage_target_id, json_extract(data, '$.storage_key') FROM backups
+		WHERE status NOT IN ('purged', 'pruned') AND coalesce(json_extract(data, '$.storage_key'), '') != '' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list archive references: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ArchiveRef
+	for rows.Next() {
+		var r ArchiveRef
+		if err := rows.Scan(&r.ID, &r.Status, &r.TargetID, &r.Key); err != nil {
+			return nil, fmt.Errorf("store: scan archive reference: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list archive references: %w", err)
+	}
+	return out, nil
+}
+
 // ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
 var ErrPruneRefused = errors.New("store: retention must keep this backup")
 

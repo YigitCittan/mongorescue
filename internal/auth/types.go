@@ -103,6 +103,10 @@ type User struct {
 	UpdatedAt time.Time `json:"-"`
 	// LastLoginAt is the time of the last successful login.
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// RoleChangedAt is when the user got their current role (creation or the last
+	// role change). An approver of the two-person rule must have been an
+	// administrator before the request was made (see CheckApprover).
+	RoleChangedAt time.Time `json:"-"`
 }
 
 // Local reports whether u signs in with a password (an empty AuthProvider counts as
@@ -251,6 +255,11 @@ type Repository interface {
 	// unknown subject without AutoCreate and ErrAccountConflict when the name of a
 	// new user is taken: a user is never linked by username or email.
 	SignInExternalUser(ctx context.Context, in *ExternalSignIn) (*ExternalSignInResult, error)
+	// UpdateAPIKeyScope sets the scope of key id or returns ErrAPIKeyNotFound.
+	UpdateAPIKeyScope(ctx context.Context, id string, scope Scope) error
+	// ResetPassword stores another user's new password hash, revokes all their
+	// sessions and sets their RoleChangedAt to at, in one transaction.
+	ResetPassword(ctx context.Context, userID, hash string, at time.Time) error
 	// CountLocalAdmins returns the number of local users with the admin role.
 	CountLocalAdmins(ctx context.Context) (int, error)
 	// DeleteLocalNonAdminSessions removes the sessions of every local user without

@@ -145,7 +145,9 @@ func TestPurgeSkipsABackupUndeletedMeanwhile(t *testing.T) {
 	if _, err = st.UpdateBackupRecord(ctx, "bkp_a", func(r *models.BackupRecord) error { r.Undelete(); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = purgeOne(ctx, t0.Add(testGrace), testGrace, listed, st, fixedStorage(mock), slog.New(slog.DiscardHandler)); !errors.Is(err, errPurgeSkip) {
+	run := purgeRun{now: t0.Add(testGrace), grace: func() time.Duration { return testGrace }, store: st, storages: fixedStorage(mock),
+		logger: slog.New(slog.DiscardHandler)}
+	if _, err = run.purgeOne(ctx, listed); !errors.Is(err, errPurgeSkip) {
 		t.Fatalf("purge of an undeleted backup = %v; want skipped", err)
 	}
 	if _, err = mock.Stat(ctx, "shop/bkp_a.archive"); err != nil {
@@ -153,6 +155,65 @@ func TestPurgeSkipsABackupUndeletedMeanwhile(t *testing.T) {
 	}
 	if rec, _ := st.GetBackupRecord(ctx, "bkp_a"); rec.Status != models.StatusCompleted {
 		t.Fatalf("bkp_a = %s; want completed again", rec.Status)
+	}
+}
+
+// TestPurgeReadsTheGracePeriodUnderTheLock proves that a grace period raised after
+// the purge listed a backup protects it: the value is read again per backup.
+func TestPurgeReadsTheGracePeriodUnderTheLock(t *testing.T) {
+	ctx := context.Background()
+	st, mock := storetest.New(t), storage.NewMockStorage()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	saveDeleted(t, st, mock, "bkp_a", t0, testGrace, nil)
+	reads := 0
+	run := purgeRun{now: t0.Add(testGrace), store: st, storages: fixedStorage(mock), logger: slog.New(slog.DiscardHandler),
+		grace: func() time.Duration {
+			// The listing sees 7 days, the locked re-check 30.
+			if reads++; reads == 1 {
+				return testGrace
+			}
+			return 30 * 24 * time.Hour
+		}}
+	purged, err := run.run(ctx)
+	if err != nil || len(purged) != 0 {
+		t.Fatalf("purge = %v, %v; want nothing under the raised grace period", purged, err)
+	}
+	if _, err = mock.Stat(ctx, "shop/bkp_a.archive"); err != nil {
+		t.Fatalf("archive removed: %v", err)
+	}
+}
+
+// aliasLocator maps two targets onto one place, like two storage targets naming the
+// same bucket and prefix.
+func aliasLocator(_ context.Context, _, key string) (string, error) { return "s3:bucket|" + key, nil }
+
+// TestPurgeKeepsAnObjectAnotherTargetAliases proves the purge checks every target:
+// target T2 aliases T1, so a deleted backup on T1 must not take the object a live
+// backup on T2 resolves to.
+func TestPurgeKeepsAnObjectAnotherTargetAliases(t *testing.T) {
+	ctx := context.Background()
+	st, mock := storetest.New(t), storage.NewMockStorage()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	saveDeleted(t, st, mock, "bkp_t1", t0, testGrace, func(r *models.BackupRecord) {
+		r.StorageTargetID, r.StorageKey = "tgt_1", "shop/same.archive"
+	})
+	alias := &models.BackupRecord{ID: "bkp_t2", Database: "shop", Status: models.StatusCompleted, StorageTargetID: "tgt_2",
+		StorageKey: "shop/same.archive", StartedAt: t0}
+	if err := st.SaveBackupRecord(ctx, alias); err != nil {
+		t.Fatal(err)
+	}
+	run := purgeRun{now: t0.Add(testGrace), grace: func() time.Duration { return testGrace }, store: st, storages: fixedStorage(mock),
+		locate: aliasLocator, logger: slog.New(slog.DiscardHandler)}
+	var outcomes []PurgeOutcome
+	run.onPurged = func(_ context.Context, o PurgeOutcome) { outcomes = append(outcomes, o) }
+	if purged, err := run.run(ctx); err != nil || len(purged) != 1 {
+		t.Fatalf("purge = %v, %v", purged, err)
+	}
+	if len(outcomes) != 1 || outcomes[0].ArchiveDeleted || outcomes[0].ArchiveKept != "bkp_t2" {
+		t.Fatalf("outcome = %+v; want the archive kept for bkp_t2 on the other target", outcomes)
+	}
+	if _, err := mock.Stat(ctx, "shop/same.archive"); err != nil {
+		t.Fatalf("the aliased object was deleted: %v", err)
 	}
 }
 

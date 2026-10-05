@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -52,6 +53,11 @@ var (
 	// local path, S3 endpoint, bucket or prefix) while backups are stored on it: their
 	// records would point to a place that does not hold them.
 	ErrLocationInUse = errors.New("targets: the location of a storage target that holds backups cannot change")
+	// ErrLocationOverlap is returned when a target would store archives where another
+	// target does: the same or a nested local directory, or the same S3 endpoint and
+	// bucket with an equal or nested prefix. Two targets naming one object would let a
+	// purge on one delete an archive the other still holds.
+	ErrLocationOverlap = errors.New("targets: the location equals or overlaps the location of another storage target")
 	// ErrUnverifiedChange is returned when new credentials (or region or path style)
 	// of a target that holds backups fail a connection test: saving them would cut
 	// those backups off.
@@ -62,6 +68,14 @@ var (
 // waiting for their purge included (implemented by *store.SQLiteStore).
 type usageCounter interface {
 	CountStorageTargetBackups(ctx context.Context, id string) (int, error)
+}
+
+// failedRecords lists the failed and cancelled records of a target that name a
+// storage key, and deletes a target without counting the ones listed (implemented
+// by *store.SQLiteStore).
+type failedRecords interface {
+	FailedBackupKeys(ctx context.Context, id string) (map[string]string, error)
+	DeleteStorageTargetIgnoring(ctx context.Context, id string, ignore []string) error
 }
 
 // DefaultTestTimeout bounds storage target tests.
@@ -286,6 +300,9 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 	if err != nil {
 		return nil, err
 	}
+	if err = s.checkOverlap(ctx, t, ""); err != nil {
+		return nil, err
+	}
 	if t.Type == models.StorageLocal {
 		if err = s.checkWritable(ctx, t); err != nil {
 			return nil, err
@@ -334,6 +351,11 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 		return nil, err
 	}
 	moved := !sameLocation(existing, t)
+	if moved {
+		if err = s.checkOverlap(ctx, t, existing.ID); err != nil {
+			return nil, err
+		}
+	}
 	if t.Type == models.StorageLocal && moved {
 		if err = s.checkWritable(ctx, t); err != nil {
 			return nil, err
@@ -360,6 +382,57 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 	}
 	delete(s.drivers, t.ID)
 	return t.Redacted(), nil
+}
+
+// baseLocation is where target t stores its objects, in a form that compares equal
+// for every way of naming the same place: "local:" and the resolved directory with a
+// trailing separator, or "s3:" and the endpoint, bucket and prefix.
+func (s *Service) baseLocation(t *models.StorageTarget) string {
+	switch {
+	case t.Type == models.StorageLocal && t.Local != nil:
+		dir := realPath(s.LocalPath(t.Local.Path))
+		return "local:" + strings.TrimSuffix(filepath.ToSlash(dir), "/") + "/"
+	case t.Type == models.StorageS3 && t.S3 != nil:
+		endpoint := strings.ToLower(strings.TrimRight(strings.TrimSpace(t.S3.Endpoint), "/"))
+		if endpoint == "" {
+			endpoint = "aws"
+		}
+		return "s3:" + endpoint + "|" + strings.ToLower(t.S3.Bucket) + "|" + storage.NormalizePrefix(t.S3.Prefix)
+	}
+	return "unknown:" + t.ID
+}
+
+// checkOverlap refuses t when its location equals or overlaps that of another target
+// (any but selfID): one location is a prefix of the other.
+func (s *Service) checkOverlap(ctx context.Context, t *models.StorageTarget, selfID string) error {
+	list, err := s.repo.ListStorageTargets(ctx)
+	if err != nil {
+		return err
+	}
+	mine := s.baseLocation(t)
+	for _, o := range list {
+		if o.ID == selfID {
+			continue
+		}
+		theirs := s.baseLocation(o)
+		if strings.HasPrefix(mine, theirs) || strings.HasPrefix(theirs, mine) {
+			return fmt.Errorf("%w: %s stores archives in the same place or one inside the other; choose a separate directory, bucket or prefix",
+				ErrLocationOverlap, o.Name)
+		}
+	}
+	return nil
+}
+
+// ObjectLocation returns where key on target id is stored, so two records on
+// different targets that name the same physical object compare equal (the purge
+// checks every target before it deletes an archive). It returns ErrNotFound for an
+// unknown target.
+func (s *Service) ObjectLocation(ctx context.Context, id, key string) (string, error) {
+	t, err := s.Resolve(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return s.baseLocation(t) + strings.TrimPrefix(path.Clean("/"+filepath.ToSlash(key)), "/"), nil
 }
 
 // verifyInUseChange tests t, the new credentials, region or path style of existing,
@@ -402,15 +475,52 @@ func (s *Service) SetDefault(ctx context.Context, id string) (*models.StorageTar
 // Delete removes a target. The default target and targets still used by jobs or by
 // backup records (any but purged ones, so deleted backups waiting for their purge
 // too) cannot be deleted.
+//
+// A failed or cancelled backup only blocks the deletion while its object may exist:
+// one that never named an object does not count, and one whose object the target
+// reports missing (Stat) is not counted either. An object that cannot be checked
+// (an unreachable target) keeps blocking.
 func (s *Service) Delete(ctx context.Context, id string) error {
+	ignore := s.missingFailedObjects(ctx, id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.repo.DeleteStorageTarget(ctx, id); err != nil {
+	var err error
+	if fr, ok := s.repo.(failedRecords); ok {
+		err = fr.DeleteStorageTargetIgnoring(ctx, id, ignore)
+	} else {
+		err = s.repo.DeleteStorageTarget(ctx, id)
+	}
+	if err != nil {
 		return err
 	}
 	delete(s.drivers, id)
 	s.logger.Info("storage target deleted", slog.String("storage_target_id", id))
 	return nil
+}
+
+// missingFailedObjects returns the failed and cancelled records of target id whose
+// object the target reports missing; on any doubt a record is left out (so it keeps
+// blocking).
+func (s *Service) missingFailedObjects(ctx context.Context, id string) []string {
+	fr, ok := s.repo.(failedRecords)
+	if !ok || id == "" {
+		return nil
+	}
+	keys, err := fr.FailedBackupKeys(ctx, id)
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	driver, err := s.Storage(ctx, id)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for rid, key := range keys {
+		if _, statErr := driver.Stat(ctx, key); errors.Is(statErr, storage.ErrNotFound) {
+			out = append(out, rid)
+		}
+	}
+	return out
 }
 
 // Test probes stored target id and records the outcome on it.

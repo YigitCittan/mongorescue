@@ -242,6 +242,10 @@ func NewServer(
 	}
 	if s.ops == nil {
 		s.ops = operations.New(s.operationsConfig())
+		// The two-person rule holds back admin grants of the auth service too.
+		if s.auth != nil {
+			s.auth.SetAdminGrantGate(s.ops)
+		}
 	}
 	if s.readiness == nil {
 		s.readiness = s.defaultReadiness()
@@ -614,7 +618,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The redacted job with what the edit deferred (a shorter retention).
-	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Job.Redacted(), JobProtection: res.JobProtection})
+	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection})
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target
@@ -733,8 +737,11 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		errors.Is(err, operations.ErrAlreadyDeleted), errors.Is(err, operations.ErrNotDeleted), errors.Is(err, operations.ErrBackupDeleted),
 		errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval):
+	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval),
+		errors.Is(err, auth.ErrApproverTooRecent), errors.Is(err, operations.ErrRequesterUnknown):
 		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, operations.ErrJobRecreated):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
@@ -874,6 +881,7 @@ func (s *Server) operationsConfig() operations.Config {
 	}
 	if s.auth != nil {
 		cfg.SecondApproverCheck = s.auth.CheckSecondApproverPossible
+		cfg.Users = s.auth
 	}
 	return cfg
 }

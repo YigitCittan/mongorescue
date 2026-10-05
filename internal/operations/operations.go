@@ -215,6 +215,11 @@ type Config struct {
 	// two-person rule can be turned on (implemented by
 	// auth.Service.CheckSecondApproverPossible); nil refuses turning it on.
 	SecondApproverCheck func(ctx context.Context) error
+	// Users grants the admin rights that the two-person rule held back once they are
+	// approved (implemented by *auth.Service, which calls HoldsAdminGrants and
+	// RequestAdminGrant through auth.Service.SetAdminGrantGate); nil makes such
+	// approvals fail.
+	Users UserAdmin
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
@@ -606,11 +611,23 @@ func runError(err error, busyMessage string) error {
 // failures: ErrNotFound, ErrConnectionRequired, ErrUnknownConnection, ErrKeyRequired,
 // ErrBusy and ErrShuttingDown.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
+	asked := req
 	plan, err := s.planRestore(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
 	req, source := plan.req, plan.source
+	// An in-place restore that drops the target first overwrites live data: with the
+	// two-person rule it waits for a second administrator.
+	if req.InPlace() && req.DropTarget && !req.DryRun && s.needsApproval(ctx) {
+		held := asked
+		target := strings.TrimSpace(req.TargetDatabase)
+		if target == "" {
+			target = source.Database
+		}
+		return nil, s.requestApproval(ctx, &models.Approval{Action: models.ApprovalRestoreDropTarget, Subject: source.ID, Restore: &held,
+			Summary: fmt.Sprintf("restore backup %s in place into database %s, dropping it first", source.ID, target)})
+	}
 
 	record, err := s.cfg.Restore.Prepare(req, source)
 	if err != nil {

@@ -116,7 +116,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if s.ops != nil && s.ops.ManagesSettings() {
 		var err error
 		if res, err = s.ops.UpdateSettings(r.Context(), patch); err != nil {
-			if errors.Is(err, operations.ErrTooFewAdmins) || errors.Is(err, operations.ErrUnavailable) {
+			if errors.Is(err, operations.ErrTooFewAdmins) || errors.Is(err, operations.ErrUnavailable) ||
+				errors.Is(err, operations.ErrRequesterUnknown) || errors.Is(err, operations.ErrInvalid) {
 				s.writeOperationError(w, err)
 				return
 			}

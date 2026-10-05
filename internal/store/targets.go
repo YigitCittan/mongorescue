@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -146,22 +147,60 @@ func missingOrChanged(ctx context.Context, tx *sql.Tx, id string) error {
 	return targets.ErrConflict
 }
 
-// countLiveBackups counts the backups stored on target id whose archive is not gone
-// for good (see goneBackupStatuses), whatever their state: completed, running,
-// failed, missing or deleted and waiting for their purge.
-func countLiveBackups(ctx context.Context, q queryer, id string) (int, error) {
-	var n int
+// liveBackupsSQL counts the backups stored on a target whose object may exist: every
+// record but purged and pruned ones (see goneBackupStatuses), except failed and
+// cancelled records that never named an object (no storage key) and the records
+// listed in an exclusion (failed ones whose object a check found missing).
+const liveBackupsSQL = `SELECT COUNT(*) FROM backups WHERE storage_target_id = ? AND status NOT IN (?, ?)
+	AND NOT (status IN ('failed', 'cancelled') AND coalesce(json_extract(data, '$.storage_key'), '') = '')`
+
+// countLiveBackups counts the backups stored on target id whose object may exist
+// (see liveBackupsSQL), whatever their state: completed, running, failed, missing or
+// deleted and waiting for their purge. The records ignore names are not counted.
+func countLiveBackups(ctx context.Context, q queryer, id string, ignore ...string) (int, error) {
+	query := liveBackupsSQL
 	args := append([]any{id}, goneBackupStatuses...)
-	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM backups WHERE storage_target_id = ? AND status NOT IN (?, ?)", args...).Scan(&n); err != nil {
+	if len(ignore) > 0 {
+		query += " AND id NOT IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(ignore)), ", ") + ")"
+		for _, v := range ignore {
+			args = append(args, v)
+		}
+	}
+	var n int
+	if err := q.QueryRowContext(ctx, query, args...).Scan(&n); err != nil { //nolint:gosec // G202: only placeholders are joined.
 		return 0, fmt.Errorf("store: count backups of storage target: %w", err)
 	}
 	return n, nil
 }
 
 // CountStorageTargetBackups counts the backup records that keep storage target id in
-// use: every record except purged (and pruned) ones.
+// use: every record whose object may exist (see liveBackupsSQL).
 func (s *SQLiteStore) CountStorageTargetBackups(ctx context.Context, id string) (int, error) {
 	return countLiveBackups(ctx, s.db, id)
+}
+
+// FailedBackupKeys maps the failed and cancelled backup records on target id that
+// name a storage key to that key: their object may or may not have been stored, so
+// targets.Service.Delete checks whether it exists.
+func (s *SQLiteStore) FailedBackupKeys(ctx context.Context, id string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, json_extract(data, '$.storage_key') FROM backups
+		WHERE storage_target_id = ? AND status IN ('failed', 'cancelled') AND coalesce(json_extract(data, '$.storage_key'), '') != ''`, id)
+	if err != nil {
+		return nil, fmt.Errorf("store: list failed backups of storage target: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var rid, key string
+		if err := rows.Scan(&rid, &key); err != nil {
+			return nil, fmt.Errorf("store: scan failed backup: %w", err)
+		}
+		out[rid] = key
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list failed backups of storage target: %w", err)
+	}
+	return out, nil
 }
 
 // SetDefaultStorageTarget makes id the only default target in one transaction.
@@ -191,6 +230,12 @@ func (s *SQLiteStore) SetDefaultStorageTarget(ctx context.Context, id string) er
 // or a completed or running backup references it, so every restorable backup keeps
 // its target.
 func (s *SQLiteStore) DeleteStorageTarget(ctx context.Context, id string) error {
+	return s.DeleteStorageTargetIgnoring(ctx, id, nil)
+}
+
+// DeleteStorageTargetIgnoring is DeleteStorageTarget that does not count the backup
+// records ignore names (failed records whose object a check found missing).
+func (s *SQLiteStore) DeleteStorageTargetIgnoring(ctx context.Context, id string, ignore []string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var isDefault int
 		err := tx.QueryRowContext(ctx, "SELECT is_default FROM storage_targets WHERE id = ?", id).Scan(&isDefault)
@@ -206,7 +251,7 @@ func (s *SQLiteStore) DeleteStorageTarget(ctx context.Context, id string) error 
 		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE storage_target_id = ?", id).Scan(&jobs); err != nil {
 			return fmt.Errorf("store: count jobs of storage target: %w", err)
 		}
-		backups, err := countLiveBackups(ctx, tx, id)
+		backups, err := countLiveBackups(ctx, tx, id, ignore...)
 		if err != nil {
 			return err
 		}

@@ -103,12 +103,23 @@ func TestDeletedBackupsKeepTargetInUse(t *testing.T) {
 	if err := s.UpdateStorageTarget(ctx, &moved, tgt.UpdatedAt, true); !errors.Is(err, targets.ErrLocationInUse) {
 		t.Fatalf("move with a deleted backup = %v; want ErrLocationInUse", err)
 	}
-	failed := &models.BackupRecord{ID: "bkp_2", Database: "shop", Status: models.StatusFailed, StorageTargetID: "tgt_x", StartedAt: now}
+	failed := &models.BackupRecord{ID: "bkp_2", Database: "shop", Status: models.StatusFailed, StorageTargetID: "tgt_x", StorageKey: "shop/f", StartedAt: now}
 	if err := s.SaveBackupRecord(ctx, failed); err != nil {
 		t.Fatal(err)
 	}
+	// A failed backup that never named an object cannot hold one: it does not count.
+	keyless := &models.BackupRecord{ID: "bkp_3", Database: "shop", Status: models.StatusFailed, StorageTargetID: "tgt_x", StartedAt: now}
+	if err := s.SaveBackupRecord(ctx, keyless); err != nil {
+		t.Fatal(err)
+	}
 	if n, err := s.CountStorageTargetBackups(ctx, "tgt_x"); err != nil || n != 2 {
-		t.Fatalf("count = %d, %v; want 2 (any status but purged)", n, err)
+		t.Fatalf("count = %d, %v; want 2 (any status but purged, keyless failed ones aside)", n, err)
+	}
+	if keys, err := s.FailedBackupKeys(ctx, "tgt_x"); err != nil || len(keys) != 1 || keys["bkp_2"] != "shop/f" {
+		t.Fatalf("failed keys = %v, %v", keys, err)
+	}
+	if err := s.DeleteStorageTargetIgnoring(ctx, "tgt_x", []string{"bkp_2"}); !errors.Is(err, targets.ErrInUse) {
+		t.Fatalf("delete ignoring the failed one = %v; want ErrInUse (the deleted backup)", err)
 	}
 	for _, r := range []*models.BackupRecord{rec, failed} {
 		r.Status = models.StatusPurged

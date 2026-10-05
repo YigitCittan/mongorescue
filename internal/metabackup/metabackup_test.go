@@ -243,7 +243,8 @@ func TestRetentionKeepsTheNewestSnapshots(t *testing.T) {
 	}
 	var keys []string
 	for i := range 4 {
-		f.clock = f.clock.Add(time.Duration(i+1) * time.Hour)
+		// A week and a day apart: older snapshots are past the delete grace period.
+		f.clock = f.clock.Add(time.Duration(i+1) * 8 * 24 * time.Hour)
 		snap, err := f.svc.Run(ctx, metabackup.TriggerScheduled)
 		if err != nil {
 			t.Fatal(err)
@@ -265,6 +266,30 @@ func TestRetentionKeepsTheNewestSnapshots(t *testing.T) {
 	}
 }
 
+// TestRetentionKeepsSnapshotsWithinTheGracePeriod checks that retention never deletes
+// a metadata snapshot younger than the delete grace period, whatever the count.
+func TestRetentionKeepsSnapshotsWithinTheGracePeriod(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.cfg.MetadataBackup.RetentionCount = 1
+	for range 3 {
+		f.clock = f.clock.Add(24 * time.Hour)
+		if _, err := f.svc.Run(ctx, metabackup.TriggerScheduled); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.snapshotKeys(t); len(got) != 3 {
+		t.Fatalf("kept %v; want all three (each younger than the 7-day grace period)", got)
+	}
+	f.clock = f.clock.Add(8 * 24 * time.Hour)
+	if _, err := f.svc.Run(ctx, metabackup.TriggerScheduled); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.snapshotKeys(t); len(got) != 1 {
+		t.Fatalf("kept %v; want only the newest once the others are past the grace period", got)
+	}
+}
+
 // TestInstallsSharingAStorageKeepTheirSnapshots checks that two installations
 // writing to the same bucket and prefix use their own sub-prefix and that
 // retention of one never deletes the other's snapshots.
@@ -279,7 +304,7 @@ func TestInstallsSharingAStorageKeepTheirSnapshots(t *testing.T) {
 	a.cfg.MetadataBackup.RetentionCount, b.cfg.MetadataBackup.RetentionCount = 1, 1
 	for i := range 3 {
 		for _, f := range []*fixture{a, b} {
-			f.clock = f.clock.Add(time.Duration(i+1) * time.Hour)
+			f.clock = f.clock.Add(time.Duration(i+1) * 8 * 24 * time.Hour)
 			if _, err := f.svc.Run(ctx, metabackup.TriggerScheduled); err != nil {
 				t.Fatal(err)
 			}

@@ -102,8 +102,8 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, a *models.Approval) er
 		if n > 0 {
 			return ErrAlreadyExists
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO approvals (id, status, created_at, expires_at, data) VALUES (?, ?, ?, ?, ?)",
-			a.ID, string(a.Status), timeKey(a.CreatedAt), timeKey(a.ExpiresAt), data); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO approvals (id, status, created_at, expires_at, data, secret) VALUES (?, ?, ?, ?, ?, ?)",
+			a.ID, string(a.Status), timeKey(a.CreatedAt), timeKey(a.ExpiresAt), data, a.Secret); err != nil {
 			return fmt.Errorf("store: create approval %s: %w", a.ID, err)
 		}
 		return nil
@@ -129,9 +129,24 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, status models.ApprovalS
 		"SELECT id, data FROM approvals WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT ?", string(status), limit)
 }
 
+// ApprovalSecret returns the secret kept apart from pending approval id (empty once
+// it was decided), or ErrNotFound.
+func (s *SQLiteStore) ApprovalSecret(ctx context.Context, id string) (string, error) {
+	var secret string
+	err := s.db.QueryRowContext(ctx, "SELECT secret FROM approvals WHERE id = ?", id).Scan(&secret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read approval secret: %w", err)
+	}
+	return secret, nil
+}
+
 // UpdateApproval applies fn to approval id and saves the result in one transaction,
 // so two administrators deciding at once never both succeed. When fn returns an
-// error nothing is written and the error is returned unchanged.
+// error nothing is written and the error is returned unchanged. The secret of a
+// request is cleared once it is no longer pending.
 func (s *SQLiteStore) UpdateApproval(ctx context.Context, id string, fn func(*models.Approval) error) (*models.Approval, error) {
 	var out *models.Approval
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
@@ -150,8 +165,9 @@ func (s *SQLiteStore) UpdateApproval(ctx context.Context, id string, fn func(*mo
 			return err
 		}
 		out = a
-		return execOne(ctx, tx, ErrNotFound, "UPDATE approvals SET status = ?, expires_at = ?, data = ? WHERE id = ?",
-			string(a.Status), timeKey(a.ExpiresAt), data, id)
+		return execOne(ctx, tx, ErrNotFound, `UPDATE approvals SET status = ?, expires_at = ?, data = ?,
+			secret = CASE WHEN ? = 'pending' THEN secret ELSE '' END WHERE id = ?`,
+			string(a.Status), timeKey(a.ExpiresAt), data, string(a.Status), id)
 	})
 	if err != nil {
 		return nil, err

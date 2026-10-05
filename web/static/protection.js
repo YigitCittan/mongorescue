@@ -68,6 +68,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "No lowered protection is waiting.",
       pending_grace: "Grace period lowered to {days} days, effective {when}",
       pending_retention: "Retention of job {job} shortened to {value}, effective {when}",
+      pending_metadata: "Metadata snapshots kept lowered to {n}, effective {when}",
+      pending_disable: "Two-person rule turned off, effective {when} (no second administrator can approve)",
       pending_by: "requested by {who}",
       pending_cancel: "Cancel",
       pending_cancel_confirm: "Cancel this pending change? The current protection stays.",
@@ -126,6 +128,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "Bekleyen düşürülmüş koruma yok.",
       pending_grace: "Bekleme süresi {days} güne düşürüldü, geçerlilik {when}",
       pending_retention: "{job} görevinin saklama süresi {value} olarak kısaltıldı, geçerlilik {when}",
+      pending_metadata: "Saklanan meta veri anlık görüntüsü sayısı {n} olarak düşürüldü, geçerlilik {when}",
+      pending_disable: "İki kişi kuralı kapatıldı, geçerlilik {when} (onaylayabilecek ikinci bir yönetici yok)",
       pending_by: "isteyen: {who}",
       pending_cancel: "İptal et",
       pending_cancel_confirm: "Bu bekleyen değişiklik iptal edilsin mi? Mevcut koruma kalır.",
@@ -184,6 +188,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "Keine gesenkte Schutzmaßnahme wartet.",
       pending_grace: "Karenzzeit auf {days} Tage gesenkt, wirksam {when}",
       pending_retention: "Aufbewahrung von Job {job} auf {value} verkürzt, wirksam {when}",
+      pending_metadata: "Aufbewahrte Metadaten-Snapshots auf {n} gesenkt, wirksam {when}",
+      pending_disable: "Vier-Augen-Prinzip ausgeschaltet, wirksam {when} (kein zweiter Administrator kann freigeben)",
       pending_by: "angefordert von {who}",
       pending_cancel: "Abbrechen",
       pending_cancel_confirm: "Diese ausstehende Änderung abbrechen? Der aktuelle Schutz bleibt.",
@@ -242,6 +248,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "No hay ninguna protección reducida en espera.",
       pending_grace: "Periodo de gracia reducido a {days} días, efectivo {when}",
       pending_retention: "Retención de la tarea {job} acortada a {value}, efectiva {when}",
+      pending_metadata: "Instantáneas de metadatos conservadas reducidas a {n}, efectivo {when}",
+      pending_disable: "Regla de dos personas desactivada, efectiva {when} (ningún segundo administrador puede aprobar)",
       pending_by: "solicitado por {who}",
       pending_cancel: "Cancelar",
       pending_cancel_confirm: "¿Cancelar este cambio pendiente? La protección actual se mantiene.",
@@ -300,6 +308,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "Aucune protection abaissée en attente.",
       pending_grace: "Délai de grâce ramené à {days} jours, effectif {when}",
       pending_retention: "Rétention de la tâche {job} raccourcie à {value}, effective {when}",
+      pending_metadata: "Instantanés de métadonnées conservés ramenés à {n}, effectif {when}",
+      pending_disable: "Règle des deux personnes désactivée, effective {when} (aucun second administrateur ne peut approuver)",
       pending_by: "demandé par {who}",
       pending_cancel: "Annuler",
       pending_cancel_confirm: "Annuler ce changement en attente ? La protection actuelle reste.",
@@ -358,6 +368,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "没有等待生效的降低保护。",
       pending_grace: "宽限期降低为 {days} 天，于 {when} 生效",
       pending_retention: "任务 {job} 的保留期缩短为 {value}，于 {when} 生效",
+      pending_metadata: "保留的元数据快照数降为 {n}，于 {when} 生效",
+      pending_disable: "双人规则关闭，于 {when} 生效（没有第二位管理员可以审批）",
       pending_by: "请求者：{who}",
       pending_cancel: "取消",
       pending_cancel_confirm: "取消这项待生效的更改？当前保护保持不变。",
@@ -416,6 +428,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "待機中の保護の引き下げはありません。",
       pending_grace: "猶予期間を {days} 日に短縮、{when} に有効",
       pending_retention: "ジョブ {job} の保持期間を {value} に短縮、{when} に有効",
+      pending_metadata: "保持するメタデータスナップショット数を {n} に削減、{when} に有効",
+      pending_disable: "2 人ルールを無効化、{when} に有効（承認できる 2 人目の管理者がいません）",
       pending_by: "依頼者: {who}",
       pending_cancel: "キャンセル",
       pending_cancel_confirm: "この保留中の変更をキャンセルしますか？現在の保護はそのままです。",
@@ -474,6 +488,8 @@ const PROTECTION_TRANSLATIONS = {
       pending_none: "Нет ожидающих ослаблений защиты.",
       pending_grace: "Отсрочка сокращена до {days} дн., вступает в силу {when}",
       pending_retention: "Хранение задания {job} сокращено до {value}, вступает в силу {when}",
+      pending_metadata: "Число хранимых снимков метаданных сокращено до {n}, вступает в силу {when}",
+      pending_disable: "Правило двух лиц отключено, вступает в силу {when} (нет второго администратора для одобрения)",
       pending_by: "запросил {who}",
       pending_cancel: "Отменить",
       pending_cancel_confirm: "Отменить это ожидающее изменение? Текущая защита сохранится.",
@@ -864,9 +880,10 @@ function renderPendingChanges() {
   }
   el.innerHTML = `<ul class="pending-list">${list.map(c => {
     const when = protectionWhen(c.effective_at);
-    const text = c.kind === "retention"
-      ? tf("protection.pending_retention", { job: String(c.job_id || ""), value: pendingRetentionText(c), when })
-      : tf("protection.pending_grace", { days: formatCount(Number(c.delete_grace_days) || 0), when });
+    let text = tf("protection.pending_grace", { days: formatCount(Number(c.delete_grace_days) || 0), when });
+    if (c.kind === "retention") text = tf("protection.pending_retention", { job: String(c.job_id || ""), value: pendingRetentionText(c), when });
+    if (c.kind === "metadata_backup_retention") text = tf("protection.pending_metadata", { n: formatCount(Number(c.metadata_retention_count) || 0), when });
+    if (c.kind === "disable_second_approver") text = tf("protection.pending_disable", { when });
     const by = c.requested_by ? ` <span class="muted">(${escapeHtml(tf("protection.pending_by", { who: String(c.requested_by) }))})</span>` : "";
     return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}
       <button type="button" class="btn btn-secondary btn-sm" data-action="pending-cancel" data-id="${escapeHtml(c.id)}">${escapeHtml(t("protection.pending_cancel"))}</button></li>`;

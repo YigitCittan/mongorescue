@@ -86,7 +86,7 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `enabled` | `false` | Take a snapshot of `mongorescue.db` on a schedule |
 | `interval` | `24h` | Time between snapshots (1h to 720h); a failed snapshot is retried after at most an hour |
 | `target_id` | empty | Storage target the snapshots are written to, under `_mongorescue/metadata/<install_id>/`, an ID derived from `secret.key` (empty = the default target) |
-| `retention_count` | `14` | Snapshots kept on the target (1 to 1000); older ones are deleted after each snapshot |
+| `retention_count` | `14` | Snapshots kept on the target (1 to 1000); older ones are deleted after each snapshot, but never one younger than `security.delete_grace_days`. A lower value takes effect only after the current grace period (with the two-person rule, after an approval first); see [security.md](security.md#metadata-snapshots) |
 
 ### Security
 
@@ -100,7 +100,7 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `metrics_public` | `false` | Serve `/metrics` without an API key |
 | `mcp_enabled` | `true` | Serve the [MCP endpoint](mcp.md) `/mcp` for AI assistants (API keys only). When off it answers `403` and the stdio bridge cannot connect |
 | `delete_grace_days` | `7` | Delete grace period, 1 to 90 days: a deleted backup (by a user, an API key or retention) keeps its archive this long and can be undone; the purge removes it afterwards. A higher value applies at once (also to deletions made before); a lower one takes effect only after the current grace period (and, with `require_second_approver`, after a second administrator's approval). See [security.md](security.md#delete-protection) |
-| `require_second_approver` | `false` | Two-person rule: deleting backups or storage targets, shortening retention, unpinning, lowering `delete_grace_days` and turning this off wait for the approval of another administrator, signed in to the dashboard (API keys can request but never approve). It can only be turned on while at least two administrators exist |
+| `require_second_approver` | `false` | Two-person rule: deleting backups or storage targets, shortening retention, unpinning, lowering `delete_grace_days` or `metadata_backup.retention_count`, in-place restores that drop the target, making, demoting or deleting administrators (users, admin API keys, single sign-on admin mappings), resetting another user's password and turning this off wait for the approval of another administrator who was one before the request, signed in to the dashboard (API keys can request but never approve). It can only be turned on while at least two administrators exist; see [security.md](security.md#the-two-person-rule) |
 
 ### Monitoring
 

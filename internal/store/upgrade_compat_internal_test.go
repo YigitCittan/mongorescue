@@ -920,6 +920,13 @@ var compatSteps = []compatStep{
 			if err != nil || a.Action != models.ApprovalDeleteBackup || a.Status != models.ApprovalPending || a.RequestedByUserID != "usr_v1" {
 				t.Errorf("apr_v22 = %+v, %v", a, err)
 			}
+			if secret, secretErr := s.ApprovalSecret(ctx, "apr_v22"); secretErr != nil || secret != "" {
+				t.Errorf("secret of apr_v22 = %q, %v; want none", secret, secretErr)
+			}
+			// Users stored before 0022 got their role no later than their updated_at.
+			if u, userErr := s.GetUser(ctx, "usr_v1"); userErr != nil || u.RoleChangedAt.IsZero() || !u.RoleChangedAt.Equal(u.UpdatedAt) {
+				t.Errorf("usr_v1 = %+v, %v; want role_changed_at = updated_at", u, userErr)
+			}
 			if _, err = s.db.Exec(`UPDATE approvals SET status = 'maybe' WHERE id = 'apr_v22'`); err == nil {
 				t.Error("an unknown approval status was stored")
 			}

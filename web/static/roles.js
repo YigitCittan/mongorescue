@@ -493,7 +493,9 @@ async function changeUserRole(select) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: to })
     });
-    if (json.success) {
+    if (json.success && typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) {
+      // The two-person rule: the role change waits for a second administrator.
+    } else if (json.success) {
       showToast(tf("settings.user_role_changed", { name, role: roleLabel(to) }), "success");
     } else {
       showToast(json.error || t("toasts.request_failed"), "error");

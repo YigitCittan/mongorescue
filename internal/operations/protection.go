@@ -47,6 +47,12 @@ var (
 	// ErrApprovalClosed is returned when deciding an approval request that was
 	// already decided or has expired.
 	ErrApprovalClosed = errors.New("operations: the approval request is no longer open")
+	// ErrJobRecreated is returned when an approved retention change applies to a job
+	// that was deleted and created again under the same ID since the request.
+	ErrJobRecreated = errors.New("operations: the job was recreated since the request")
+	// ErrRequesterUnknown is returned when an API key without a creator requests a
+	// destructive action while the two-person rule is on (adapters answer 403).
+	ErrRequesterUnknown = errors.New("operations: the requester cannot be identified")
 	// ErrApprovalNeedsSession aliases auth.ErrApprovalNeedsSession.
 	ErrApprovalNeedsSession = auth.ErrApprovalNeedsSession
 	// ErrSelfApproval aliases auth.ErrSelfApproval.
@@ -97,6 +103,12 @@ type pendingStore interface {
 	GetPendingChange(ctx context.Context, id string) (*models.PendingChange, error)
 	DeletePendingChange(ctx context.Context, id string) error
 	DeletePendingChangesOf(ctx context.Context, kind models.PendingChangeKind, subject string) (bool, error)
+}
+
+// approvalSecrets reads the secret kept apart from a request (implemented by
+// *store.SQLiteStore).
+type approvalSecrets interface {
+	ApprovalSecret(ctx context.Context, id string) (string, error)
 }
 
 // targetDeleter deletes storage targets (implemented by *targets.Service).
@@ -196,8 +208,14 @@ func (s *Service) requestApproval(ctx context.Context, a *models.Approval) error
 }
 
 // storeApproval stores a as a new approval request of the caller in ctx, announces
-// it (security.approval_requested) and returns it.
+// it (security.approval_requested) and returns it. An API key without a creator
+// cannot request anything (ErrRequesterUnknown): nobody could tell whether its
+// approver is a different person.
 func (s *Service) storeApproval(ctx context.Context, a *models.Approval) (*models.Approval, error) {
+	if p := auth.PrincipalFrom(ctx); p != nil && p.Method == auth.MethodAPIKey && p.User == nil {
+		return nil, public("the two-person rule is on and this API key has no creator (it was imported or created before users existed), "+
+			"so its requests cannot be told apart from an approver's: use a key created by a user, or the dashboard", ErrRequesterUnknown)
+	}
 	st, ok := s.cfg.Store.(approvalStore)
 	if !ok {
 		return nil, public("the two-person rule is on but approval requests cannot be stored", ErrUnavailable)
@@ -216,6 +234,8 @@ func (s *Service) storeApproval(ctx context.Context, a *models.Approval) (*model
 	if err := st.CreateApproval(ctx, a); err != nil {
 		return nil, fmt.Errorf("store approval request: %w", err)
 	}
+	// The secret stays in the store only.
+	a.Secret = ""
 	auditlog.Annotate(ctx, "approval_id", a.ID)
 	auditlog.Annotate(ctx, "protection", "approval_requested")
 	e := events.SecurityEvent(events.SecurityApprovalRequested, now, string(a.Action), a.RequestedBy, a.ID, a.Summary)
@@ -333,15 +353,23 @@ func (s *Service) decide(ctx context.Context, id string, status models.ApprovalS
 // failures: ErrNotFound, ErrApprovalClosed, ErrApprovalNeedsSession, ErrSelfApproval
 // and auth.ErrForbidden.
 func (s *Service) Approve(ctx context.Context, id string) (*models.Approval, error) {
-	if err := auth.CheckApprover(auth.PrincipalFrom(ctx), ""); err != nil {
+	if err := auth.CheckApprover(auth.PrincipalFrom(ctx), "", time.Time{}); err != nil {
 		return nil, err
 	}
+	// The secret (a new password hash) is read first: deciding clears it.
+	secret := ""
+	if sr, ok := s.cfg.Store.(approvalSecrets); ok {
+		if v, err := sr.ApprovalSecret(ctx, id); err == nil {
+			secret = v
+		}
+	}
 	a, err := s.decide(ctx, id, models.ApprovalApproved, func(a *models.Approval) error {
-		return auth.CheckApprover(auth.PrincipalFrom(ctx), a.RequestedByUserID)
+		return auth.CheckApprover(auth.PrincipalFrom(ctx), a.RequestedByUserID, a.CreatedAt)
 	}, "")
 	if err != nil {
 		return a, err
 	}
+	a.Secret = secret
 	auditlog.Annotate(ctx, "protection", "approved")
 	auditlog.Annotate(ctx, "approval_action", string(a.Action))
 	result, execErr := s.executeApproval(withApproval(ctx, a, principalName(ctx)), a)
@@ -414,7 +442,10 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 		}
 		return "storage target " + a.Subject + " deleted", nil
 	case models.ApprovalShortenRetention:
-		c, err := s.scheduleRetention(ctx, a.Subject, a.RetentionDays, a.RetentionCount)
+		if a.SubjectCreatedAt == nil {
+			return "", public("the request is not bound to a job; request it again", ErrInvalid)
+		}
+		c, err := s.scheduleRetention(ctx, a.Subject, a.RetentionDays, a.RetentionCount, a.SubjectCreatedAt)
 		if err != nil {
 			return "", err
 		}
@@ -433,9 +464,182 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "the two-person rule is off", nil
+	case models.ApprovalGrantAdminRole:
+		if s.cfg.Users == nil {
+			return "", public("users are not available", ErrUnavailable)
+		}
+		if _, err := s.cfg.Users.SetUserRole(ctx, auth.PrincipalFrom(ctx), a.Subject, auth.RoleAdmin); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "grant_admin_role", "user "+a.Subject+" is now an administrator", nil)
+		return "user " + a.Subject + " is now an administrator", nil
+	case models.ApprovalGrantAdminKey:
+		if s.cfg.Users == nil {
+			return "", public("API keys are not available", ErrUnavailable)
+		}
+		if _, err := s.cfg.Users.GrantAPIKeyAdmin(ctx, auth.PrincipalFrom(ctx), a.Subject); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "grant_admin_api_key", "API key "+a.Subject+" has the admin scope", nil)
+		return "API key " + a.Subject + " has the admin scope", nil
+	case models.ApprovalOIDCAdminMapping:
+		if err := s.applyOIDCGrant(ctx, a); err != nil {
+			return "", err
+		}
+		return "the single sign-on settings that can grant admin are applied", nil
+	case models.ApprovalResetPassword:
+		if s.cfg.Users == nil {
+			return "", public("users are not available", ErrUnavailable)
+		}
+		if a.Secret == "" {
+			return "", public("the request carries no password; request it again", ErrInvalid)
+		}
+		if err := s.cfg.Users.ApplyPasswordReset(ctx, auth.PrincipalFrom(ctx), a.Subject, a.Secret); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "reset_password", "the password of user "+a.Subject+" was reset", nil)
+		return "the password of user " + a.Subject + " is reset", nil
+	case models.ApprovalChangeAdminRole:
+		if s.cfg.Users == nil {
+			return "", public("users are not available", ErrUnavailable)
+		}
+		if _, err := s.cfg.Users.SetUserRole(ctx, auth.PrincipalFrom(ctx), a.Subject, auth.Role(a.Role)); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "demote_admin", "administrator "+a.Subject+" is now "+a.Role, nil)
+		return "user " + a.Subject + " is now " + a.Role, nil
+	case models.ApprovalDeleteAdmin:
+		if s.cfg.Users == nil {
+			return "", public("users are not available", ErrUnavailable)
+		}
+		if err := s.cfg.Users.DeleteUser(ctx, auth.PrincipalFrom(ctx), a.Subject); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "delete_admin", "administrator "+a.Subject+" was deleted", nil)
+		return "user " + a.Subject + " is deleted", nil
+	case models.ApprovalShortenMetadataRetention:
+		if a.MetadataRetentionCount == nil {
+			return "", public("the request names no count", ErrInvalid)
+		}
+		c, err := s.scheduleMetadataRetention(ctx, *a.MetadataRetentionCount)
+		if err != nil {
+			return "", err
+		}
+		return "metadata snapshot retention change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalRestoreDropTarget:
+		if a.Restore == nil {
+			return "", public("the request names no restore", ErrInvalid)
+		}
+		rec, err := s.StartRestore(ctx, *a.Restore)
+		if err != nil {
+			return "", err
+		}
+		return "restore " + rec.ID + " started", nil
 	default:
 		return "", public("unknown approval action "+string(a.Action), ErrInvalid)
 	}
+}
+
+// UserAdmin applies the account changes that the two-person rule held back once they
+// are approved (implemented by *auth.Service).
+type UserAdmin interface {
+	// SetUserRole changes the role of user id.
+	SetUserRole(ctx context.Context, actor *auth.Principal, id string, role auth.Role) (*auth.RoleChange, error)
+	// GrantAPIKeyAdmin raises key id to the admin scope.
+	GrantAPIKeyAdmin(ctx context.Context, actor *auth.Principal, id string) (*auth.APIKey, error)
+	// ApplyPasswordReset sets the password hash of user id.
+	ApplyPasswordReset(ctx context.Context, actor *auth.Principal, id, hash string) error
+	// DeleteUser deletes user id.
+	DeleteUser(ctx context.Context, actor *auth.Principal, id string) error
+}
+
+// HoldsAdminGrants reports whether a grant of admin rights in ctx must wait for a
+// second administrator (auth.AdminGrantGate): the two-person rule is on and ctx is
+// not an approved action.
+func (s *Service) HoldsAdminGrants(ctx context.Context) bool {
+	return s.needsApproval(ctx)
+}
+
+// RequestAdminGrant asks a second administrator to approve g (auth.AdminGrantGate)
+// and returns the *ApprovalPendingError the auth service returns to its caller.
+func (s *Service) RequestAdminGrant(ctx context.Context, g auth.AdminGrant) error {
+	switch g.Kind {
+	case auth.GrantAdminRole:
+		summary := fmt.Sprintf("give user %s (%s) the admin role", g.Username, g.UserID)
+		if g.Created {
+			summary = fmt.Sprintf("give the new user %s (%s, created as a viewer) the admin role", g.Username, g.UserID)
+		}
+		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalGrantAdminRole, Subject: g.UserID, Summary: summary})
+	case auth.GrantAdminKey:
+		summary := fmt.Sprintf("give API key %s (%s) the admin scope", g.KeyName, g.KeyID)
+		if g.Created {
+			summary = fmt.Sprintf("give the new API key %s (%s, created with the operator scope) the admin scope", g.KeyName, g.KeyID)
+		}
+		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalGrantAdminKey, Subject: g.KeyID, Summary: summary})
+	case auth.ResetUserPassword:
+		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalResetPassword, Subject: g.UserID, Secret: g.PasswordHash,
+			Summary: fmt.Sprintf("reset the password of user %s (%s)", g.Username, g.UserID)})
+	case auth.DemoteAdmin:
+		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalChangeAdminRole, Subject: g.UserID, Role: string(g.Role),
+			Summary: fmt.Sprintf("change administrator %s (%s) to %s", g.Username, g.UserID, g.Role)})
+	case auth.DeleteAdmin:
+		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalDeleteAdmin, Subject: g.UserID,
+			Summary: fmt.Sprintf("delete administrator %s (%s)", g.Username, g.UserID)})
+	default:
+		return public("unknown admin grant "+string(g.Kind), ErrInvalid)
+	}
+}
+
+// holdOIDCGrant takes an oidc settings change that can grant admin through single
+// sign-on out of p while the two-person rule is on, and asks a second administrator
+// to approve it; it returns the request (nil when nothing was held). A change that
+// carries a new client secret is refused: secrets are never kept in requests.
+func (s *Service) holdOIDCGrant(ctx context.Context, p *settings.Patch) (*models.Approval, error) {
+	if p.OIDC == nil || !s.needsApproval(ctx) {
+		return nil, nil
+	}
+	cur := s.settings()
+	next, err := settings.Preview(cur, settings.Patch{OIDC: p.OIDC})
+	if err != nil {
+		return nil, err
+	}
+	if !settings.OIDCGrantsAdmin(cur.OIDC, next.OIDC) {
+		return nil, nil
+	}
+	if sec := p.OIDC.ClientSecret; sec != nil && *sec != settings.SecretMask {
+		return nil, public("this single sign-on change can grant the admin role and needs a second administrator, "+
+			"but requests never keep secrets: save oidc.client_secret without admin role mappings first, then add them", ErrInvalid)
+	}
+	held := *p.OIDC
+	held.ClientSecret = nil
+	raw, err := json.Marshal(held) //nolint:gosec // G117: ClientSecret was cleared above; requests never keep secrets.
+	if err != nil {
+		return nil, fmt.Errorf("encode the oidc change: %w", err)
+	}
+	a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalOIDCAdminMapping, Settings: raw,
+		Summary: "change the single sign-on settings so that identity provider groups can get the admin role"})
+	if err != nil {
+		return nil, err
+	}
+	p.OIDC = nil
+	return a, nil
+}
+
+// applyOIDCGrant applies the oidc change of approved request a.
+func (s *Service) applyOIDCGrant(ctx context.Context, a *models.Approval) error {
+	if s.cfg.SettingsUpdater == nil {
+		return public("settings are not available", ErrUnavailable)
+	}
+	var p settings.OIDCPatch
+	if err := json.Unmarshal(a.Settings, &p); err != nil {
+		return public("the request carries no valid oidc change", ErrInvalid)
+	}
+	p.ClientSecret = nil
+	if _, _, err := s.cfg.SettingsUpdater.UpdateChanged(settings.WithLoweredProtection(ctx), settings.Patch{OIDC: &p}); err != nil {
+		return err
+	}
+	s.destructive(ctx, "oidc_admin_mapping", "single sign-on settings that can grant the admin role were applied", nil)
+	return nil
 }
 
 // ExpireApprovals stores every pending request past its expiry as expired.
@@ -548,11 +752,19 @@ func (s *Service) schedulePending(ctx context.Context, c *models.PendingChange) 
 
 // scheduleRetention schedules the shortening of job jobID's retention to days and
 // count (nil keeps a value) after the grace period.
-func (s *Service) scheduleRetention(ctx context.Context, jobID string, days, count *int) (*models.PendingChange, error) {
-	if _, err := s.cfg.Store.GetJob(ctx, jobID); err != nil {
+//
+// bound, when set, is the creation time of the job the request was made for: a job
+// deleted and recreated under the same ID since is refused (ErrJobRecreated).
+func (s *Service) scheduleRetention(ctx context.Context, jobID string, days, count *int, bound *time.Time) (*models.PendingChange, error) {
+	job, err := s.cfg.Store.GetJob(ctx, jobID)
+	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
-	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingRetention, JobID: jobID, RetentionDays: days, RetentionCount: count})
+	if bound != nil && !job.CreatedAt.Equal(*bound) {
+		return nil, public(fmt.Sprintf("job %s was deleted and created again since the request; the request does not apply to the new job", jobID), ErrJobRecreated)
+	}
+	created := job.CreatedAt
+	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingRetention, JobID: jobID, RetentionDays: days, RetentionCount: count, JobCreatedAt: &created})
 	if err != nil {
 		return nil, err
 	}
@@ -614,6 +826,17 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			applyErr = s.applyRetentionChange(ctx, c)
 		case models.PendingDeleteGrace:
 			applyErr = s.applyGraceChange(ctx, c)
+		case models.PendingMetadataRetention:
+			applyErr = s.applyMetadataRetentionChange(ctx, c)
+		case models.PendingDisableSecondApprover:
+			// Only while the lockout lasts: with two administrators again, turning the
+			// rule off needs an approval like before.
+			if s.cfg.SecondApproverCheck != nil && s.cfg.SecondApproverCheck(ctx) == nil {
+				s.logger.Warn("dropping the pending change that turns the two-person rule off: two administrators can approve again",
+					logsafe.Attr("change_id", c.ID))
+				continue
+			}
+			applyErr = s.disableSecondApprover(withApproval(ctx, &models.Approval{RequestedBy: c.RequestedBy}, "the grace period (no second administrator could approve)"))
 		}
 		if applyErr != nil {
 			s.logger.Error("could not apply a pending protection change; the current protection stays",
@@ -638,11 +861,18 @@ func (s *Service) applyRetentionChange(ctx context.Context, c *models.PendingCha
 		}
 		return err
 	}
+	if c.JobCreatedAt != nil && !existing.CreatedAt.Equal(*c.JobCreatedAt) {
+		// The job was deleted and created again: the change was for the old one.
+		return nil
+	}
 	job := existing.Clone()
 	persist := func() error {
 		current, getErr := s.cfg.Store.GetJob(ctx, c.JobID)
 		if getErr != nil {
 			return getErr
+		}
+		if c.JobCreatedAt != nil && !current.CreatedAt.Equal(*c.JobCreatedAt) {
+			return errNotDueYet
 		}
 		*job = *current.Clone()
 		if c.RetentionDays != nil {
@@ -753,11 +983,29 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		}
 		p.Security = &sec
 	}
+	var lowerMeta *int
+	curMeta := s.settings().MetadataBackup.RetentionCount
+	if p.MetadataBackup != nil && p.MetadataBackup.RetentionCount != nil && *p.MetadataBackup.RetentionCount < curMeta {
+		v := *p.MetadataBackup.RetentionCount
+		if v < 1 || v > settings.MaxMetadataBackupRetention {
+			return nil, fmt.Errorf("%w: metadata_backup.retention_count must be between 1 and %d", settings.ErrInvalid, settings.MaxMetadataBackupRetention)
+		}
+		mb := *p.MetadataBackup
+		mb.RetentionCount, lowerMeta = nil, &v
+		p.MetadataBackup = &mb
+	}
+	oidcHeld, err := s.holdOIDCGrant(ctx, &p)
+	if err != nil {
+		return nil, err
+	}
 	next, changed, err := s.cfg.SettingsUpdater.UpdateChanged(ctx, p)
 	if err != nil {
 		return nil, err
 	}
 	out := &SettingsUpdate{Settings: next, Changed: changed, Pending: []*models.PendingChange{}, Approvals: []*models.Approval{}}
+	if oidcHeld != nil {
+		out.Approvals = append(out.Approvals, oidcHeld)
+	}
 	if next.Security.DeleteGraceDays > cur.DeleteGraceDays {
 		if st, ok := s.cfg.Store.(pendingStore); ok {
 			if _, err := st.DeletePendingChangesOf(ctx, models.PendingDeleteGrace, ""); err != nil {
@@ -781,7 +1029,42 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 			out.Pending = append(out.Pending, c)
 		}
 	}
+	if next.MetadataBackup.RetentionCount > curMeta {
+		if st, ok := s.cfg.Store.(pendingStore); ok {
+			if _, err := st.DeletePendingChangesOf(ctx, models.PendingMetadataRetention, ""); err != nil {
+				return nil, fmt.Errorf("cancel the pending metadata retention change: %w", err)
+			}
+		}
+	}
+	if lowerMeta != nil {
+		if s.needsApproval(ctx) {
+			a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalShortenMetadataRetention, MetadataRetentionCount: lowerMeta,
+				Summary: fmt.Sprintf("keep %d metadata snapshots instead of %d", *lowerMeta, curMeta)})
+			if err != nil {
+				return nil, err
+			}
+			out.Approvals = append(out.Approvals, a)
+		} else {
+			c, err := s.scheduleMetadataRetention(ctx, *lowerMeta)
+			if err != nil {
+				return nil, err
+			}
+			out.Pending = append(out.Pending, c)
+		}
+	}
 	if disable {
+		// Without two administrators nobody could approve: turning the rule off then
+		// waits for the grace period instead, so a lockout always ends.
+		if s.cfg.SecondApproverCheck != nil && errors.Is(s.cfg.SecondApproverCheck(ctx), ErrTooFewAdmins) {
+			c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingDisableSecondApprover})
+			if err != nil {
+				return nil, err
+			}
+			s.destructive(ctx, "disable_second_approver", "the two-person rule is turned off at "+c.EffectiveAt.Format(time.RFC3339)+
+				" (fewer than two administrators could approve it)", nil)
+			out.Pending = append(out.Pending, c)
+			return out, nil
+		}
 		a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalDisableSecondApprover,
 			Summary: "turn the two-person rule (security.require_second_approver) off"})
 		if err != nil {
@@ -790,6 +1073,35 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		out.Approvals = append(out.Approvals, a)
 	}
 	return out, nil
+}
+
+// scheduleMetadataRetention schedules lowering metadata_backup.retention_count to n
+// after the grace period in force.
+func (s *Service) scheduleMetadataRetention(ctx context.Context, n int) (*models.PendingChange, error) {
+	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingMetadataRetention, MetadataRetentionCount: &n})
+	if err != nil {
+		return nil, err
+	}
+	s.destructive(ctx, "shorten_metadata_retention", fmt.Sprintf("metadata snapshots kept lowered to %d, effective %s", n, c.EffectiveAt.Format(time.RFC3339)), nil)
+	return c, nil
+}
+
+// applyMetadataRetentionChange lowers metadata_backup.retention_count to the value
+// of c, unless it is already at most that.
+func (s *Service) applyMetadataRetentionChange(ctx context.Context, c *models.PendingChange) error {
+	if c.MetadataRetentionCount == nil || s.cfg.SettingsUpdater == nil {
+		return nil
+	}
+	n := *c.MetadataRetentionCount
+	if n >= s.settings().MetadataBackup.RetentionCount {
+		return nil
+	}
+	if _, _, err := s.cfg.SettingsUpdater.UpdateChanged(settings.WithLoweredProtection(ctx), settings.Patch{MetadataBackup: &settings.MetadataBackupPatch{RetentionCount: &n}}); err != nil {
+		return err
+	}
+	ctx = withApproval(ctx, &models.Approval{RequestedBy: c.RequestedBy}, c.ApprovedBy)
+	s.destructive(ctx, "apply_metadata_retention", fmt.Sprintf("metadata snapshots kept: %d", n), nil)
+	return nil
 }
 
 // DeleteTarget deletes storage target id. A target still used by a job or by any
@@ -901,8 +1213,13 @@ func (s *Service) ApplyRetentionHold(ctx context.Context, jobID string, h *Reten
 		return out, nil
 	}
 	if s.needsApproval(ctx) {
+		var bound *time.Time
+		if job, err := s.cfg.Store.GetJob(ctx, jobID); err == nil {
+			created := job.CreatedAt
+			bound = &created
+		}
 		a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalShortenRetention, Subject: jobID,
-			RetentionDays: h.Days, RetentionCount: h.Count,
+			RetentionDays: h.Days, RetentionCount: h.Count, SubjectCreatedAt: bound,
 			Summary: fmt.Sprintf("shorten the retention of job %s from %s to %s", jobID, h.From, retentionText(h.Days, h.Count))})
 		if err != nil {
 			return nil, err
@@ -911,7 +1228,7 @@ func (s *Service) ApplyRetentionHold(ctx context.Context, jobID string, h *Reten
 		out.PendingRetention = s.pendingRetention(ctx, jobID)
 		return out, nil
 	}
-	c, err := s.scheduleRetention(ctx, jobID, h.Days, h.Count)
+	c, err := s.scheduleRetention(ctx, jobID, h.Days, h.Count, nil)
 	if err != nil {
 		return nil, err
 	}

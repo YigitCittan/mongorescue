@@ -10,18 +10,27 @@
 --
 -- pending_changes holds lowered protections that take effect only at effective_at
 -- (Unix nanoseconds, UTC): a shortened job retention (kind 'retention', subject the
--- job ID) or a lowered security.delete_grace_days (kind 'delete_grace_days', subject
--- ''). There is at most one change per kind and subject; a newer one replaces it.
+-- job ID), a lowered security.delete_grace_days (kind 'delete_grace_days', subject
+-- ''), a lowered metadata_backup.retention_count ('metadata_backup_retention') or the
+-- two-person rule turned off without approvers ('disable_second_approver'). There is
+-- at most one change per kind and subject; a newer one replaces it.
 --
 -- approvals holds destructive actions that wait for a second administrator
 -- (security.require_second_approver): status pending until approved, rejected or
--- expired at expires_at (Unix nanoseconds, UTC). data is the whole request as JSON.
+-- expired at expires_at (Unix nanoseconds, UTC). data is the whole request as JSON;
+-- secret holds what must never be shown (the bcrypt hash of a password reset) and is
+-- cleared once the request is decided.
+--
+-- users.role_changed_at is when the user got their current role (Unix nanoseconds,
+-- UTC): an approver must have been an administrator before the request was made.
+-- Existing users get their updated_at, which is never earlier than their last role
+-- change.
 --
 -- Releases before this one refuse a database at this version.
 
 CREATE TABLE pending_changes (
     id           TEXT    PRIMARY KEY NOT NULL,
-    kind         TEXT    NOT NULL CHECK (kind IN ('retention', 'delete_grace_days')),
+    kind         TEXT    NOT NULL CHECK (kind IN ('retention', 'delete_grace_days', 'metadata_backup_retention', 'disable_second_approver')),
     subject      TEXT    NOT NULL,
     effective_at INTEGER NOT NULL,
     data         TEXT    NOT NULL CHECK (json_valid(data)),
@@ -33,7 +42,11 @@ CREATE TABLE approvals (
     status     TEXT    NOT NULL CHECK (status IN ('pending', 'approved', 'failed', 'rejected', 'expired')),
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
-    data       TEXT    NOT NULL CHECK (json_valid(data))
+    data       TEXT    NOT NULL CHECK (json_valid(data)),
+    secret     TEXT    NOT NULL DEFAULT ''
 ) STRICT;
 
 CREATE INDEX approvals_by_created ON approvals (created_at DESC, id DESC);
+
+ALTER TABLE users ADD COLUMN role_changed_at INTEGER NOT NULL DEFAULT 0;
+UPDATE users SET role_changed_at = updated_at;

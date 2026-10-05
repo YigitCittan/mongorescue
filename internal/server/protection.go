@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 )
@@ -42,20 +43,32 @@ type approvalRequired struct {
 	ApprovalRequired bool `json:"approval_required"`
 	// Approval is the stored request.
 	Approval *models.Approval `json:"approval"`
+	// User is the user a held admin grant created (as a viewer until approved).
+	User *auth.User `json:"user,omitempty"`
+	// APIKey and Key are the key a held admin grant created (with the operator scope
+	// until approved) and its plaintext, shown only here.
+	APIKey *auth.APIKey `json:"api_key,omitempty"`
+	Key    string       `json:"key,omitempty"`
 }
 
 // writeApprovalPending answers 202 Accepted with the approval request err carries, and
 // reports whether err was one.
 func writeApprovalPending(w http.ResponseWriter, err error) bool {
+	return writeApprovalPendingWith(w, err, approvalRequired{})
+}
+
+// writeApprovalPendingWith is writeApprovalPending with what the request created.
+func writeApprovalPendingWith(w http.ResponseWriter, err error, body approvalRequired) bool {
 	var pending *operations.ApprovalPendingError
 	if !errors.As(err, &pending) {
 		return false
 	}
+	body.ApprovalRequired, body.Approval = true, pending.Approval
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(apiResponse{
 		Success: true,
-		Data:    approvalRequired{ApprovalRequired: true, Approval: pending.Approval},
+		Data:    body,
 		Message: approvalRequiredMsg + ": " + pending.Approval.Summary,
 	})
 	return true

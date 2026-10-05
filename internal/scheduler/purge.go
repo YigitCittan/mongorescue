@@ -66,48 +66,88 @@ func PurgeDeleted(
 	logger *slog.Logger,
 	onPurged func(ctx context.Context, o PurgeOutcome),
 ) ([]string, error) {
-	if logger == nil {
-		logger = slog.Default()
+	return purgeRun{now: now, grace: func() time.Duration { return grace }, store: metadataStore, storages: storages,
+		logger: logger, onPurged: onPurged}.run(ctx)
+}
+
+// LocateFunc returns where key on storage target targetID is physically stored, in
+// a form that compares equal for two targets naming the same object (implemented by
+// targets.Service.ObjectLocation).
+type LocateFunc func(ctx context.Context, targetID, key string) (string, error)
+
+// objectLocator locates objects across storage targets (implemented by
+// *targets.Service).
+type objectLocator interface {
+	ObjectLocation(ctx context.Context, targetID, key string) (string, error)
+}
+
+// allArchiveRefs lists every live backup row on every target that names an archive
+// (implemented by *store.SQLiteStore).
+type allArchiveRefs interface {
+	ArchiveRefs(ctx context.Context) ([]store.ArchiveRef, error)
+}
+
+// purgeRun is one purge (see PurgeDeleted). grace is read again for every backup,
+// under its deletion lock, so a grace period raised while the purge runs is
+// honoured. locate (optional) makes the shared-archive check physical: no live
+// record on any target may resolve to the object about to be deleted.
+type purgeRun struct {
+	now      time.Time
+	grace    func() time.Duration
+	store    store.Store
+	storages StorageFunc
+	locate   LocateFunc
+	logger   *slog.Logger
+	onPurged func(ctx context.Context, o PurgeOutcome)
+}
+
+// run purges every due deleted backup.
+func (p purgeRun) run(ctx context.Context) ([]string, error) {
+	if p.logger == nil {
+		p.logger = slog.Default()
 	}
-	page, err := metadataStore.QueryBackupRecords(ctx, store.BackupFilter{Status: models.StatusDeleted, Sort: store.SortOldest})
+	page, err := p.store.QueryBackupRecords(ctx, store.BackupFilter{Status: models.StatusDeleted, Sort: store.SortOldest})
 	if err != nil {
 		return nil, fmt.Errorf("list deleted backups: %w", err)
 	}
 	var purged []string
 	var errs []error
 	for _, row := range page.Rows {
-		if !row.Record.PurgeDue(now, grace) {
+		// A first look without the lock; purgeOne decides again under it.
+		if !row.Record.PurgeDue(p.now, p.grace()) {
 			continue
 		}
 		if ctx.Err() != nil {
 			return purged, ctx.Err()
 		}
-		o, err := purgeOne(ctx, now, grace, row.Record, metadataStore, storages, logger)
+		o, err := p.purgeOne(ctx, row.Record)
 		switch {
 		case errors.Is(err, errPurgeSkip):
 		case err != nil:
 			errs = append(errs, err)
 		default:
 			purged = append(purged, o.Backup.ID)
-			if onPurged != nil {
-				onPurged(ctx, o)
+			if p.onPurged != nil {
+				p.onPurged(ctx, o)
 			}
 		}
 	}
 	if len(purged) > 0 || len(errs) > 0 {
-		logger.Info("purge of deleted backups finished", slog.Int("purged", len(purged)), slog.Int("failed", len(errs)))
+		p.logger.Info("purge of deleted backups finished", slog.Int("purged", len(purged)), slog.Int("failed", len(errs)))
 	}
 	return purged, errors.Join(errs...)
 }
 
-// purgeOne purges the deleted backup listed as rec (see PurgeDeleted).
-func purgeOne(ctx context.Context, now time.Time, grace time.Duration, rec *models.BackupRecord,
-	metadataStore store.Store, storages StorageFunc, logger *slog.Logger) (PurgeOutcome, error) {
+// purgeOne purges the deleted backup listed as rec.
+func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (PurgeOutcome, error) {
+	now, metadataStore, storages, logger := p.now, p.store, p.storages, p.logger
 	unlock, err := runs.LockDeletion(ctx, runs.DeletionKey(rec.JobID, rec.ConnectionID, rec.Database))
 	if err != nil {
 		return PurgeOutcome{}, err
 	}
 	defer unlock()
+	// The grace period in force is read under the lock.
+	grace := p.grace()
 	current, err := metadataStore.GetBackupRecord(ctx, rec.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -125,6 +165,9 @@ func purgeOne(ctx context.Context, now time.Time, grace time.Duration, rec *mode
 		}
 		defer unlockArchive()
 		holder, refErr := archiveHolder(ctx, metadataStore, current)
+		if refErr == nil && holder == "" && p.locate != nil {
+			holder, refErr = physicalHolder(ctx, metadataStore, p.locate, current)
+		}
 		if refErr != nil {
 			logger.Warn("purge cannot check for shared archives; keeping the backup deleted", logsafe.Attr("backup_id", current.ID), logsafe.Error(refErr))
 			return PurgeOutcome{}, fmt.Errorf("check the archive references of %s: %w", current.ID, refErr)
@@ -173,6 +216,34 @@ func purgeOne(ctx context.Context, now time.Time, grace time.Duration, rec *mode
 		logsafe.Attr("backup_id", current.ID), logsafe.Attr("database", current.Database),
 		slog.Bool("archive_deleted", out.ArchiveDeleted))
 	return out, nil
+}
+
+// physicalHolder returns the ID of a live record on any storage target whose object
+// is the same physical object as rec's (two targets naming one place), or "". An
+// object that cannot be located counts as held.
+func physicalHolder(ctx context.Context, metadataStore store.Store, locate LocateFunc, rec *models.BackupRecord) (string, error) {
+	lister, ok := metadataStore.(allArchiveRefs)
+	if !ok {
+		return "", nil
+	}
+	mine, err := locate(ctx, rec.StorageTargetID, rec.StorageKey)
+	if err != nil {
+		return "", fmt.Errorf("locate the archive: %w", err)
+	}
+	refs, err := lister.ArchiveRefs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range refs {
+		if r.ID == rec.ID || !holdsArchive(models.BackupStatus(r.Status)) {
+			continue
+		}
+		theirs, locErr := locate(ctx, r.TargetID, r.Key)
+		if locErr != nil || theirs == mine {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // archiveHolder returns the ID of another record that still holds rec's archive (see
@@ -230,7 +301,11 @@ func (s *Scheduler) runMaintenance() {
 // and runs the maintenance hooks (WithMaintenance). The scheduler calls it every ten
 // minutes; tests call it directly.
 func (s *Scheduler) Maintain(ctx context.Context) {
-	if _, err := PurgeDeleted(ctx, s.clock(), s.deleteGrace(), s.metadataStore, s.storageFor, s.logger, s.purged); err != nil {
+	run := purgeRun{now: s.clock(), grace: s.deleteGrace, store: s.metadataStore, storages: s.storageFor, logger: s.logger, onPurged: s.purged}
+	if l, ok := s.targets.(objectLocator); ok {
+		run.locate = l.ObjectLocation
+	}
+	if _, err := run.run(ctx); err != nil {
 		s.logger.Warn("purge of deleted backups incomplete", logsafe.Error(err))
 	}
 	for _, fn := range s.maintenance {
