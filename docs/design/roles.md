@@ -124,8 +124,10 @@ is read, so every adapter inherits it:
   default target;
 - the PITR collector reads streams through the same kind of view (`accessRepo` in
   `internal/pitr/collector`): a stream belongs to its connection, so the stream list,
-  a stream's status and chunks, and taking a base backup follow the caller's
-  connections, and so do the readiness report's `streams` and the dashboard's PITR
+  a stream's status and chunks, taking a base backup, chain tests and
+  point-in-time restores and their preflight (checked before the admin scope, so a
+  limited caller gets 404 rather than learning the stream exists) follow the
+  caller's connections, and so do the readiness report's `streams` and the dashboard's PITR
   panel, which shows what the API returns. The collector's own work runs without a
   principal and sees every stream.
 

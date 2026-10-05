@@ -18,6 +18,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -133,6 +134,7 @@ var accessPathRoutes = map[string]accessKind{
 	pitrDeleteStreamRoute: kindStream,
 	pitrChunksRoute:       kindStream,
 	pitrBaseRoute:         kindStream,
+	pitrChainTestRoute:    kindStream,
 }
 
 // accessLimitedNotFound are path routes a limited caller is refused for every
@@ -276,6 +278,10 @@ func newAccessFixture(t *testing.T) *accessFixture {
 		WithIntegrity(integrity.New(integrity.Config{Store: st, Targets: tg, Runs: manager})),
 		WithSettings(newTestSettings(t, st, newTestConfig().Security)),
 		WithMetricsHandler(ok), WithMCPHandler(ok), WithAudit(audit.NewService(st, nil)), withTestOIDC(t))
+	// Point-in-time restores read the streams like the application wires them.
+	opsCfg := srv.operationsConfig()
+	opsCfg.PITR, opsCfg.PITRRestore, opsCfg.PITRBases = st, rEngine, st.ListBaseBackups
+	srv.ops = operations.New(opsCfg)
 	f := &accessFixture{srv: srv, h: srv.Handler(), st: st, auth: svc}
 
 	res, err := svc.Setup(ctx, "192.0.2.1", svc.SetupCode(), "admin", testPassword)

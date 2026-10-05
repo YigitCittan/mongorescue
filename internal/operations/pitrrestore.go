@@ -52,7 +52,9 @@ type pitrPlan struct {
 	chainTest bool
 }
 
-// resolveStream returns the PITR stream id, or the stream of connection id.
+// resolveStream returns the PITR stream id, or the stream of connection id. A
+// stream belongs to its connection: one the caller in ctx may not touch is not
+// found, exactly like one that does not exist.
 func (s *Service) resolveStream(ctx context.Context, id string) (*pitr.Stream, error) {
 	st, err := s.cfg.PITR.GetStream(ctx, id)
 	if errors.Is(err, pitr.ErrNotFound) {
@@ -63,8 +65,22 @@ func (s *Service) resolveStream(ctx context.Context, id string) (*pitr.Stream, e
 		return nil, public("PITR stream not found", ErrNotFound, err)
 	case err != nil:
 		return nil, fmt.Errorf("load PITR stream: %w", err)
+	case !auth.ConnectionAllowed(ctx, st.ConnectionID):
+		return nil, public("PITR stream not found", ErrNotFound)
 	}
 	return st, nil
+}
+
+// visibleStreamFirst answers a caller limited to some connections ErrNotFound for
+// a stream outside them before any other check, so it learns nothing about the
+// stream (not even that restoring it needs the admin role). Callers that may touch
+// every connection get nil: their checks run in the usual order.
+func (s *Service) visibleStreamFirst(ctx context.Context, id string) error {
+	if !auth.ConnectionFilter(ctx).Limited() || s.cfg.PITR == nil {
+		return nil
+	}
+	_, err := s.resolveStream(ctx, strings.TrimSpace(id))
+	return err
 }
 
 // pitrBases returns the bases of records that can start a point-in-time restore
@@ -103,6 +119,11 @@ func pitrPlanError(err error) error {
 // target connection (the stream's unless req names another). A preflight
 // (forPreflight) keeps a plan refusal in planErr instead of failing.
 func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPreflight bool) (*pitrPlan, error) {
+	if req.PITR != nil {
+		if err := s.visibleStreamFirst(ctx, req.PITR.StreamID); err != nil {
+			return nil, err
+		}
+	}
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("point-in-time restores need the admin role or an admin API key: %w", err)
 	}
@@ -295,7 +316,7 @@ func (s *Service) estimatePITR(ctx context.Context, streamID string, baseBytes, 
 // lastChainTest returns the newest chain test restore of streamID that accept takes
 // (every one when accept is nil), or nil.
 func (s *Service) lastChainTest(ctx context.Context, streamID string, accept func(*models.RestoreRecord) bool) *models.RestoreRecord {
-	recs, err := s.cfg.Store.ListRestoreRecords(ctx)
+	recs, err := s.store.ListRestoreRecords(ctx)
 	if err != nil {
 		return nil
 	}
