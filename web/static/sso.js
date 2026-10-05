@@ -727,12 +727,13 @@ function ssoRenderMappings() {
   const tbody = document.getElementById("sso-mappings-tbody");
   if (!tbody) return;
   if (sso.mappings.length === 0) {
-    setTbody(tbody, `<tr class="empty-row"><td colspan="3"><span class="muted">${escapeHtml(t("sso.mappings_empty"))}</span></td></tr>`);
+    setTbody(tbody, `<tr class="empty-row"><td colspan="4"><span class="muted">${escapeHtml(t("sso.mappings_empty"))}</span></td></tr>`);
   } else {
     setTbody(tbody, sso.mappings.map((m, i) => `<tr>
       <td><input type="text" class="form-input mono sso-mapping-group" data-index="${i}" maxlength="256" spellcheck="false" autocomplete="off"
         value="${escapeHtml(m.group)}" aria-label="${escapeHtml(t("sso.mapping_group"))}"></td>
       <td><select class="form-select sso-mapping-role" data-index="${i}" aria-label="${escapeHtml(t("sso.mapping_role"))}">${ssoRoleOptions(m.role)}</select></td>
+      <td>${typeof mappingConnectionsSelect === "function" ? mappingConnectionsSelect(m, i) : ""}</td>
       <td class="col-actions"><button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="sso-remove-mapping" data-index="${i}">${escapeHtml(t("sso.mapping_remove"))}</button></td>
     </tr>`).join(""));
   }
@@ -765,7 +766,8 @@ function ssoFillSettings(force) {
   setValue("sso-local-login", o.local_login === "admins_only" ? "admins_only" : "all");
   document.getElementById("sso-rp-logout").checked = !!o.rp_logout;
   sso.mappings = (Array.isArray(o.role_mappings) ? o.role_mappings : []).map(m => ({
-    group: String((m && m.group) || ""), role: USER_ROLES.includes(m && m.role) ? m.role : "viewer"
+    group: String((m && m.group) || ""), role: USER_ROLES.includes(m && m.role) ? m.role : "viewer",
+    connection_ids: Array.isArray(m && m.connection_ids) ? m.connection_ids.map(String) : []
   }));
   ssoRenderMappings();
   hideFormError("sso-error");
@@ -811,6 +813,10 @@ function ssoReadMappings() {
     const i = Number(el.dataset.index);
     if (sso.mappings[i]) sso.mappings[i].role = el.value;
   });
+  document.querySelectorAll(".sso-mapping-connections").forEach(el => {
+    const i = Number(el.dataset.index);
+    if (sso.mappings[i]) sso.mappings[i].connection_ids = Array.from(el.selectedOptions).map(o => o.value);
+  });
 }
 
 function ssoLines(id) {
@@ -820,7 +826,11 @@ function ssoLines(id) {
 async function ssoSaveSettings(e) {
   e.preventDefault();
   ssoReadMappings();
-  const mappings = sso.mappings.map(m => ({ group: String(m.group || "").trim(), role: m.role }));
+  // An admin mapping always reaches every connection.
+  const mappings = sso.mappings.map(m => ({
+    group: String(m.group || "").trim(), role: m.role,
+    connection_ids: m.role === "admin" ? [] : (m.connection_ids || [])
+  }));
   if (mappings.some(m => !m.group)) {
     showFormError("sso-error", t("sso.mapping_invalid"));
     return;

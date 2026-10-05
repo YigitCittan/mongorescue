@@ -3956,6 +3956,8 @@ function setAuth(data) {
   auth.role = data.role || (auth.user && auth.user.role) || "";
   auth.scope = data.scope || ROLE_SCOPES[auth.role] || "read";
   auth.keyScope = data.key_scope || "";
+  // The connections the caller may touch (access.js); null means every connection.
+  auth.connections = Array.isArray(data.connection_ids) ? data.connection_ids : null;
   renderUserMenu();
   if (typeof applyRole === "function") applyRole();
 }
@@ -3967,6 +3969,7 @@ function clearAuth() {
   auth.role = "";
   auth.scope = "";
   auth.keyScope = "";
+  auth.connections = null;
   if (typeof applyRole === "function") applyRole();
 }
 
@@ -4234,6 +4237,7 @@ function renderUserMenu() {
   // Single sign-on users have no password to change.
   const pw = document.querySelector("#user-menu-list [data-action='change-own-password']");
   if (pw) pw.hidden = !!(auth.user && auth.user.auth_provider === "oidc");
+  if (typeof renderAccessNote === "function") renderAccessNote();
 }
 
 function toggleUserMenu(force) {
@@ -6028,6 +6032,7 @@ function renderUsers() {
     return `<tr>
       <td class="cell-primary"><span class="user-cell">${escapeHtml(u.username)}${self ? `<span class="chip">${escapeHtml(t("settings.you"))}</span>` : ""}${badge}</span></td>
       <td>${userRoleSelect(u, self, lastAdmin, managed)}</td>
+      <td>${typeof userConnectionsCell === "function" ? userConnectionsCell(u, managed) : ""}</td>
       <td>${timeCell(u.created_at)}</td>
       <td>${parseDate(u.last_login_at) ? timeCell(u.last_login_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
       <td class="col-actions"><div class="row-actions">
@@ -6063,7 +6068,7 @@ function renderApiKeys() {
   setTbody(tbody, state.apikeys.map(k => `<tr>
       <td class="cell-primary">${escapeHtml(k.name)}</td>
       <td><span class="mono muted">${escapeHtml(apiKeyDisplay(k))}</span></td>
-      <td>${scopeChip(k.scope)}${keyCapNote(k)}</td>
+      <td>${scopeChip(k.scope)}${keyCapNote(k)}${typeof keyConnectionsNote === "function" ? keyConnectionsNote(k) : ""}</td>
       <td>${k.created_by ? escapeHtml(userName(k.created_by)) : mutedDash()}</td>
       <td>${timeCell(k.created_at)}</td>
       <td>${parseDate(k.last_used_at) ? timeCell(k.last_used_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
@@ -6079,6 +6084,7 @@ function openUserModal() {
   // New users are viewers unless an administrator picks more.
   setValue("user-role", "viewer");
   hideFormError("user-error");
+  if (typeof fillConnectionChecklist === "function") fillConnectionChecklist("user-connections", []);
   openModal("modal-user");
 }
 
@@ -6098,7 +6104,10 @@ async function saveUser(e) {
     const json = await apiJSON("/api/v1/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, role })
+      body: JSON.stringify({
+        username, password, role,
+        connection_ids: typeof checkedConnections === "function" && role !== "admin" ? checkedConnections("user-connections") : []
+      })
     });
     // With the two-person rule an administrator is created as a viewer and the role
     // waits for approval (protection.js).
@@ -6208,6 +6217,10 @@ function openApiKeyModal() {
   });
   const hint = document.getElementById("api-key-scope-limit");
   if (hint) hint.hidden = can("admin");
+  // Administrators may limit a key to some connections (access.js).
+  const conns = document.getElementById("api-key-connections-group");
+  if (conns) conns.hidden = !can("admin");
+  if (can("admin") && typeof fillConnectionChecklist === "function") fillConnectionChecklist("api-key-connections", []);
   showApiKeyStep("name");
   openModal("modal-api-key");
 }
@@ -6237,7 +6250,10 @@ async function createApiKey(e) {
     const json = await apiJSON("/api/v1/api-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, scope })
+      body: JSON.stringify({
+        name, scope,
+        connection_ids: can("admin") && scope !== "admin" && typeof checkedConnections === "function" ? checkedConnections("api-key-connections") : []
+      })
     });
     if (!json.success) {
       showToast(json.error || t("notify.toast_save_failed"), "error");
