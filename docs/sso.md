@@ -161,4 +161,7 @@ A failed sign-in returns to the sign-in page with a message; the audit log
 
 If an identity provider sign-in would have demoted the last administrator, the
 stored role is kept and Settings → Single sign-on shows a warning: map a group to
-admin or keep a second administrator.
+admin or keep a second administrator. With the [two-person rule](security.md#the-two-person-rule)
+on, a sign-in never demotes an administrator: the admin role stays, the same
+warning appears and an approval request asks a second administrator to apply the
+role the groups give.

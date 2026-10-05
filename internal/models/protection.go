@@ -65,6 +65,10 @@ type PendingChange struct {
 	// MetadataRetentionCount is the new metadata snapshot count
 	// (PendingMetadataRetention).
 	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
+	// Admins are the IDs of the administrators when the two-person rule was asked
+	// to turn off (PendingDisableSecondApprover): the change is dropped when one of
+	// them lost the admin role or was deleted by then without an approval.
+	Admins []string `json:"admins,omitempty"`
 	// RequestedBy names who asked for the change.
 	RequestedBy string `json:"requested_by"`
 	// ApprovedBy names the second administrator who approved it, if any.
@@ -113,7 +117,7 @@ const (
 	// operator scope).
 	ApprovalGrantAdminKey ApprovalAction = "grant_admin_api_key"
 	// ApprovalOIDCAdminMapping applies an oidc settings change (Settings) that can
-	// grant admin through single sign-on.
+	// grant or take away admin through single sign-on.
 	ApprovalOIDCAdminMapping ApprovalAction = "oidc_admin_mapping"
 	// ApprovalResetPassword sets the password of user Subject (another user's; the
 	// new bcrypt hash is kept apart from the request, never shown).
@@ -122,6 +126,10 @@ const (
 	ApprovalChangeAdminRole ApprovalAction = "demote_admin"
 	// ApprovalDeleteAdmin deletes administrator Subject.
 	ApprovalDeleteAdmin ApprovalAction = "delete_admin"
+	// ApprovalSSODemoteAdmin applies the role Role that the identity provider's
+	// groups gave administrator Subject at a single sign-on: the sign-in kept the
+	// admin role while the two-person rule is on.
+	ApprovalSSODemoteAdmin ApprovalAction = "sso_demote_admin"
 	// ApprovalShortenMetadataRetention lowers metadata_backup.retention_count (then
 	// delayed by the grace period).
 	ApprovalShortenMetadataRetention ApprovalAction = "shorten_metadata_retention"

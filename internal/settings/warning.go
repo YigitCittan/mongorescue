@@ -66,11 +66,13 @@ func (s *Service) Warnings() []Warning {
 }
 
 // WarningOIDCRoleKept identifies the warning raised when a single sign-on would have
-// demoted the last administrator: the stored role was kept and the sign-in went on.
+// demoted the last administrator, or an administrator while the two-person rule is
+// on: the stored role was kept and the sign-in went on.
 const WarningOIDCRoleKept = "oidc_role_kept"
 
 // oidcRoleKeptMessage is the text of the WarningOIDCRoleKept warning.
-const oidcRoleKeptMessage = "A single sign-on would have demoted the last administrator, so the stored admin role was kept. " +
+const oidcRoleKeptMessage = "A single sign-on would have demoted the last administrator, or an administrator while the two-person rule is on, " +
+	"so the stored admin role was kept (a demotion under the two-person rule waits in Approvals). " +
 	"Map an identity provider group to admin or keep a second administrator. See Settings → Single sign-on."
 
 // oidcRoleKeptKey stores the state of the WarningOIDCRoleKept warning.

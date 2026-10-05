@@ -11,7 +11,7 @@ import (
 // ErrProtectionLowered is returned by Update for a change that lowers a delete
 // protection directly: security.delete_grace_days lowered,
 // security.require_second_approver turned off, or (with it on) an oidc change that
-// can grant admin. Those changes go through the
+// can grant or take away admin. Those changes go through the
 // operations service, which delays them by the current grace period or asks a second
 // administrator (see operations.UpdateSettings); it applies them with
 // WithLoweredProtection once they are due or approved. It wraps ErrInvalid.
@@ -59,6 +59,27 @@ func OIDCGrantsAdmin(cur, next OIDC) bool {
 	return false
 }
 
+// OIDCRevokesAdmin reports whether next can take the admin role away from someone
+// who has it through single sign-on under cur: a group cur maps to admin is no
+// longer mapped to admin (removed or lowered), or cur maps groups to admin and next
+// trusts another issuer, client or groups claim. With oidcAdmins (users who sign in
+// with single sign-on hold the admin role) it is also true when cur has no role
+// mappings, so roles are only set at a user's first sign-in, and next has some, so
+// every sign-in recomputes the role from the groups and can demote them.
+func OIDCRevokesAdmin(cur, next OIDC, oidcAdmins bool) bool {
+	old := oidcAdminGroups(cur)
+	if len(old) > 0 && (cur.Issuer != next.Issuer || cur.ClientID != next.ClientID || cur.GroupsClaim != next.GroupsClaim) {
+		return true
+	}
+	groups := oidcAdminGroups(next)
+	for g := range old {
+		if !groups[g] {
+			return true
+		}
+	}
+	return oidcAdmins && len(cur.RoleMappings) == 0 && len(next.RoleMappings) > 0
+}
+
 // oidcAdminGroups returns the groups o maps to admin.
 func oidcAdminGroups(o OIDC) map[string]bool {
 	out := map[string]bool{}
@@ -82,11 +103,17 @@ func checkMetadataRetention(ctx context.Context, cur, next Settings) error {
 }
 
 // checkAdminGrant refuses, while the two-person rule is on, an oidc change that can
-// grant admin (OIDCGrantsAdmin) outside WithLoweredProtection: the operations
-// service asks a second administrator first.
+// grant or take away admin (OIDCGrantsAdmin, OIDCRevokesAdmin) outside
+// WithLoweredProtection: the operations service asks a second administrator first.
 func checkAdminGrant(ctx context.Context, cur, next Settings) error {
-	if cur.Security.RequireSecondApprover && OIDCGrantsAdmin(cur.OIDC, next.OIDC) && !loweringAllowed(ctx) {
+	if !cur.Security.RequireSecondApprover || loweringAllowed(ctx) {
+		return nil
+	}
+	if OIDCGrantsAdmin(cur.OIDC, next.OIDC) {
 		return fmt.Errorf("%w: the oidc change can grant the admin role through single sign-on", ErrProtectionLowered)
+	}
+	if OIDCRevokesAdmin(cur.OIDC, next.OIDC, false) {
+		return fmt.Errorf("%w: the oidc change can take the admin role away through single sign-on", ErrProtectionLowered)
 	}
 	return nil
 }

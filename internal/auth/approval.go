@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 )
 
 // Errors of the two-person rule (security.require_second_approver).
@@ -88,6 +90,46 @@ type AdminGrantGate interface {
 	// RequestAdminGrant records the request for g and returns the error the caller
 	// returns (the operations service's *ApprovalPendingError).
 	RequestAdminGrant(ctx context.Context, g AdminGrant) error
+	// RequestSignInDemotion asks a second administrator to apply g.Role, the role a
+	// single sign-on gave administrator g.UserID, who kept the admin role (at most
+	// one open request per user and role). It returns nil once the request exists.
+	RequestSignInDemotion(ctx context.Context, g AdminGrant) error
+}
+
+// ApplyProviderRole sets the role of single sign-on user id to role, the role the
+// identity provider's groups gave them: the approved half of a demotion that a
+// sign-in held back while the two-person rule is on. It needs the admin scope; it
+// refuses local users (ErrInvalidRole) and follows the last-admin rules of
+// SetUserRole, and the user's sessions end.
+func (s *Service) ApplyProviderRole(ctx context.Context, actor *Principal, id string, role Role) (*RoleChange, error) {
+	if err := actor.Require(ScopeAdmin); err != nil {
+		return nil, err
+	}
+	role, err := ParseRole(string(role))
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.repo.GetUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if target.Local() {
+		return nil, fmt.Errorf("%w: %s is not a single sign-on user", ErrInvalidRole, target.Username)
+	}
+	if g := s.holdsAdminGrant(ctx); g != nil && target.Role == RoleAdmin && role != RoleAdmin {
+		return nil, g.RequestAdminGrant(ctx, AdminGrant{Kind: DemoteAdmin, UserID: target.ID, Username: target.Username, Role: role})
+	}
+	from, err := s.repo.UpdateUserRole(ctx, actor.UserID(), id, role, s.now().UTC(), s.OIDC().Enabled)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.repo.GetUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info("single sign-on role applied", slog.String("user_id", user.ID), logsafe.Attr("role_from", string(from)),
+		logsafe.Attr("role_to", string(role)), slog.String("by", actor.UserID()))
+	return &RoleChange{User: user, From: from}, nil
 }
 
 // SetAdminGrantGate makes CreateUser, SetUserRole and CreateAPIKey hold back admin
