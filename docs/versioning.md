@@ -31,7 +31,8 @@ Rules that follow from the table:
 
 - backups are verified after upload and restorable backups are proven by scheduled restore tests;
 - running backups and restores can be cancelled, and every run keeps its log;
-- the desktop app has updated itself in place on Windows, macOS and Linux in real use;
+- the desktop app's updates have worked in real use: in place on Windows; on macOS and Linux the app downloads, verifies and reveals the new build (see [desktop.md](desktop.md#updates)), and an automated update test passes on all three;
+- the macOS app is signed with an Apple Developer ID and notarized, so Gatekeeper opens it without a warning;
 - the API has had one minor release without breaking changes;
 - phases 1 and 2 of the [roadmap](roadmap.md) are done: recovery you can prove (self-backup, recovery kit, users and roles, restore preflight and verification, RPO/RTO, a full audit log) and roles with single sign-on.
 
