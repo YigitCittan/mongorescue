@@ -596,7 +596,12 @@ func (w *worker) baseAfterBreak(ctx context.Context) {
 	}
 	rec, err := w.svc.cfg.StartBase(ctx, w.stream.ID, models.TriggerScheduled)
 	if err != nil {
-		w.svc.logger.Warn("cannot start the base backup of a new PITR chain", logsafe.Attr("stream_id", w.stream.ID), logsafe.Error(err))
+		// Typically a base of the connection is already running (busy). The new
+		// chain has no window, so the base schedule (Service.baseDue) starts one as
+		// soon as that base has finished.
+		w.svc.logger.Warn("cannot start the base backup of a new PITR chain now; the base schedule retries it",
+			logsafe.Attr("stream_id", w.stream.ID), logsafe.Error(err))
+		w.svc.Reload()
 		return
 	}
 	w.svc.logger.Info("base backup of a new PITR chain started", logsafe.Attr("stream_id", w.stream.ID), logsafe.Attr("backup_id", rec.ID))
