@@ -49,12 +49,17 @@ func streamInfo(st *collector.StreamStatus) readiness.StreamInfo {
 		switch {
 		case c.Open():
 			current = c.ChainID
+			// A chunk of the current chain that failed verification breaks it
+			// like a gap until a newer base covers what follows.
+			if c.Corrupt > 0 {
+				info.Broken = true
+			}
 		case c.EndReason == pitr.EndGap, c.EndReason == pitr.EndDiverged, c.EndReason == pitr.EndReplicaSetChanged:
 			info.Broken = true
 		}
 	}
 	for _, w := range st.Windows {
-		if w.ChainID == current {
+		if w.ChainID == current && w.Open {
 			info.WindowOpen = true
 		}
 		start, end := w.StartTime, w.EndTime

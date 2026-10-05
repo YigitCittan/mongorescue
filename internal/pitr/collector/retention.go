@@ -49,13 +49,13 @@ type RetentionPlan struct {
 // set, also deletes the chunks that end more than that many days ago.
 func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord, chains []*pitr.Chain, chunks map[string][]*pitr.Chunk) RetentionPlan {
 	plan := RetentionPlan{DeleteBases: []string{}, DeleteChunks: []string{}}
-	spans := map[string]pitr.ChainSpan{}
+	segs := map[string][]Segment{}
 	for _, c := range chains {
-		spans[c.ChainID] = liveSpan(c.ChainID, chunks[c.ChainID])
+		segs[c.ChainID], _ = segments(chunks[c.ChainID])
 	}
 	chainOf := func(b *models.BackupRecord) string {
 		for _, c := range chains {
-			if covers(spans[c.ChainID], b) {
+			if _, ok := coveringSegment(segs[c.ChainID], b); ok {
 				return c.ChainID
 			}
 		}
@@ -109,25 +109,6 @@ func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord,
 		}
 	}
 	return plan
-}
-
-// liveSpan returns the span of the live chunks of a chain.
-func liveSpan(chainID string, chunks []*pitr.Chunk) pitr.ChainSpan {
-	sp := pitr.ChainSpan{ChainID: chainID}
-	for _, c := range chunks {
-		if !c.Live() {
-			continue
-		}
-		if sp.Chunks == 0 || c.From.Compare(sp.From) < 0 {
-			sp.From = c.From
-		}
-		if sp.Chunks == 0 || c.To.Compare(sp.To) > 0 {
-			sp.To = c.To
-		}
-		sp.Chunks++
-		sp.SizeBytes += c.SizeBytes
-	}
-	return sp
 }
 
 // applyRetention applies the retention of every stream and purges the chunks whose

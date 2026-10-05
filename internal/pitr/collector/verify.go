@@ -15,6 +15,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/oplog"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 // Chunk verification limits.
@@ -183,6 +184,13 @@ func (s *Service) VerifyChunks(ctx context.Context) (ChunkSweep, error) {
 			if ctx.Err() != nil {
 				return out, ctx.Err()
 			}
+			if !errors.Is(err, ErrChunkMismatch) && !errors.Is(err, storage.ErrNotFound) {
+				// The storage could not be read: no verdict, the next sweep tries again.
+				s.logger.Warn("cannot verify an oplog chunk", logsafe.Attr("chunk_id", c.ID), logsafe.Error(err))
+				out.Verified--
+				continue
+			}
+			// A missing or mismatching object splits the chain's windows.
 			out.Failed++
 			msg = redact.Text(err.Error())
 		}

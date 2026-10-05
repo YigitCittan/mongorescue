@@ -26,10 +26,17 @@ type Window struct {
 	Bases int `json:"bases"`
 }
 
-// ChainStatus is a chain with the span of its live chunks.
+// ChainStatus is a chain with the span of its live chunks and its usable
+// segments.
 type ChainStatus struct {
 	pitr.Chain
 	Span pitr.ChainSpan `json:"span"`
+	// Segments are the runs of usable chunks (see Segment); Corrupt counts the live
+	// chunks that failed verification and split the chain.
+	Segments []Segment `json:"segments"`
+	Corrupt  int       `json:"corrupt_chunks"`
+	// lastTo is the end of the chain's newest live chunk.
+	lastTo pitr.Timestamp
 }
 
 // BaseStatus summarises a base backup of a stream.
@@ -45,6 +52,8 @@ type BaseStatus struct {
 	// they cover [T_before, T_after].
 	ChainID  string `json:"chain_id,omitempty"`
 	Eligible bool   `json:"eligible"`
+	// segmentTo is the end of the segment that covers the base.
+	segmentTo pitr.Timestamp
 }
 
 // StreamStatus is everything the dashboard shows about a stream.
@@ -71,12 +80,6 @@ type StreamStatus struct {
 	ChainBreaks int `json:"chain_breaks"`
 	// Experimental is always true: the stream API may still change.
 	Experimental bool `json:"experimental"`
-}
-
-// covers reports whether span covers the base's [T_before, T_after].
-func covers(span pitr.ChainSpan, b *models.BackupRecord) bool {
-	return span.Chunks > 0 && b.TBefore != nil && b.TAfter != nil &&
-		span.From.Compare(b.TBefore.TS) <= 0 && span.To.Compare(b.TAfter.TS) >= 0
 }
 
 // eligibleBase reports whether b can start a point-in-time restore.
@@ -127,7 +130,19 @@ func (s *Service) Status(ctx context.Context, id string) (*StreamStatus, error) 
 		byID[sp.ChainID] = sp
 	}
 	for _, c := range chains {
-		out.Chains = append(out.Chains, ChainStatus{Chain: *c, Span: byID[c.ChainID]})
+		chunks, listErr := s.cfg.Repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: id, ChainID: c.ChainID, Status: pitr.ChunkCommitted, Live: true})
+		if listErr != nil {
+			return nil, listErr
+		}
+		segs, corrupt := segments(chunks)
+		cs := ChainStatus{Chain: *c, Span: byID[c.ChainID], Segments: segs, Corrupt: corrupt}
+		if cs.Segments == nil {
+			cs.Segments = []Segment{}
+		}
+		if n := len(chunks); n > 0 {
+			cs.lastTo = chunks[n-1].To
+		}
+		out.Chains = append(out.Chains, cs)
 		if c.EndReason == pitr.EndGap || c.EndReason == pitr.EndDiverged || c.EndReason == pitr.EndReplicaSetChanged {
 			out.ChainBreaks++
 		}
@@ -144,8 +159,8 @@ func (s *Service) Status(ctx context.Context, id string) (*StreamStatus, error) 
 		}
 		bs := BaseStatus{ID: b.ID, Status: b.Status, StartedAt: b.StartedAt, SizeBytes: b.SizeBytes, TBefore: b.TBefore, TAfter: b.TAfter, Pinned: b.Pinned}
 		for _, c := range out.Chains {
-			if covers(c.Span, b) {
-				bs.ChainID, bs.Eligible = c.ChainID, eligibleBase(b)
+			if seg, ok := coveringSegment(c.Segments, b); ok {
+				bs.ChainID, bs.Eligible, bs.segmentTo = c.ChainID, eligibleBase(b), seg.To
 				break
 			}
 		}
@@ -155,26 +170,30 @@ func (s *Service) Status(ctx context.Context, id string) (*StreamStatus, error) 
 	return out, nil
 }
 
-// windows returns the point-in-time window of every chain with an eligible base,
-// oldest first.
+// windows returns the point-in-time window of every segment with an eligible
+// base, oldest first: a gap, a divergence or a chunk that failed verification
+// splits the windows. A window is open while it grows: its chain is open and its
+// segment ends at the chain's newest chunk.
 func windows(chains []ChainStatus, bases []BaseStatus) []Window {
 	out := []Window{}
 	for _, c := range chains {
-		w := Window{ChainID: c.ChainID, Open: c.Open(), End: c.Span.To}
-		for _, b := range bases {
-			if b.ChainID != c.ChainID || !b.Eligible {
+		for _, seg := range c.Segments {
+			w := Window{ChainID: c.ChainID, Open: c.Open() && seg.To == c.lastTo, End: seg.To}
+			for _, b := range bases {
+				if b.ChainID != c.ChainID || !b.Eligible || b.segmentTo != seg.To {
+					continue
+				}
+				if w.Bases == 0 || b.TAfter.TS.Compare(w.Start) < 0 {
+					w.Start = b.TAfter.TS
+				}
+				w.Bases++
+			}
+			if w.Bases == 0 {
 				continue
 			}
-			if w.Bases == 0 || b.TAfter.TS.Compare(w.Start) < 0 {
-				w.Start = b.TAfter.TS
-			}
-			w.Bases++
+			w.StartTime, w.EndTime = w.Start.Time(), w.End.Time()
+			out = append(out, w)
 		}
-		if w.Bases == 0 {
-			continue
-		}
-		w.StartTime, w.EndTime = w.Start.Time(), w.End.Time()
-		out = append(out, w)
 	}
 	return out
 }
