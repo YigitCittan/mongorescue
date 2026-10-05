@@ -601,6 +601,65 @@
           </tbody>
         </table>
       </div>
+
+      <!-- Point-in-time recovery streams per connection (pitr.js, experimental) -->
+      <div class="pitr-panel" id="pitr-panel">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title"><span data-i18n="pitr.title">Point-in-time recovery</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span></h3>
+            <p class="section-desc" data-i18n="pitr.desc">Collects the oplog of a replica set connection into encrypted chunks and takes base backups of the whole instance, so it can later be restored to any moment within its window. Point-in-time restores come in a later release.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" aria-label="Point-in-time recovery streams" data-i18n-aria-label="pitr.table_label">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="pitr.col_connection">Connection</th>
+                <th scope="col" data-i18n="pitr.col_status">Collector</th>
+                <th scope="col" data-i18n="pitr.col_window">Window</th>
+                <th scope="col" data-i18n="pitr.col_lag">Lag</th>
+                <th scope="col" data-i18n="pitr.col_headroom">Headroom</th>
+                <th scope="col" data-i18n="pitr.col_breaks">Chain breaks</th>
+                <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="pitr-tbody">
+              <tr class="empty-row"><td colspan="7"><div class="empty-state"><p data-i18n="pitr.empty">No connection collects its oplog yet.</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <form id="form-pitr" class="pitr-form" data-requires="admin" novalidate>
+          <h4 data-i18n="pitr.enable_title">Enable point-in-time recovery</h4>
+          <p class="form-hint" data-i18n="pitr.enable_hint">Needs a replica set whose user may read local.oplog.rs (the backup role, or read on local) and backup encryption with age keys: the oplog keeps deleted data.</p>
+          <div class="form-group">
+            <label class="form-label" for="pitr-connection" data-i18n="pitr.connection">Connection</label>
+            <select class="form-select" id="pitr-connection" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-base-cron" data-i18n="pitr.base_cron">Base backup schedule (cron)</label>
+            <input type="text" class="form-input mono" id="pitr-base-cron" value="0 2 * * *" maxlength="128" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-chunk-seconds" data-i18n="pitr.chunk_seconds">Chunk interval (seconds)</label>
+            <input type="number" class="form-input" id="pitr-chunk-seconds" value="60" min="15" max="900" step="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-keep-count" data-i18n="pitr.keep_count">Keep base backups</label>
+            <input type="number" class="form-input" id="pitr-keep-count" value="7" min="0" max="3650" step="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-keep-days" data-i18n="pitr.keep_days">or days</label>
+            <input type="number" class="form-input" id="pitr-keep-days" value="14" min="0" max="3650" step="1">
+          </div>
+          <div class="form-group">
+            <label class="check" for="pitr-base-on-gap"><input type="checkbox" id="pitr-base-on-gap" checked> <span data-i18n="pitr.base_on_gap">Take a base backup when a gap breaks the chain</span></label>
+          </div>
+          <p class="form-error" id="pitr-error" role="alert" hidden></p>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-sm" data-requires="admin" data-i18n="pitr.enable">Enable</button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <!-- Notifications -->
@@ -2982,6 +3041,7 @@
   <script src="/roles.js"></script>
   <script src="/sso.js"></script>
   <script src="/monitoring.js"></script>
+  <script src="/pitr.js"></script>
   <script src="/protection.js"></script>
   <script src="/throttle.js"></script>
   <script src="/widgets.js"></script>
