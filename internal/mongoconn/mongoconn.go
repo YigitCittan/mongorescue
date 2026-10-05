@@ -143,6 +143,25 @@ func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]c
 	return out, err
 }
 
+// DatabaseSize returns the uncompressed data size of database from dbStats
+// (dataSize), close to the size of an uncompressed mongodump archive of it.
+func (p *Prober) DatabaseSize(ctx context.Context, uri, database string) (int64, error) {
+	var size int64
+	err := withClient(ctx, uri, func(c *mongo.Client) error {
+		var stats struct {
+			DataSize bson.RawValue `bson:"dataSize"`
+		}
+		if err := c.Database(database).RunCommand(ctx, bson.D{{Key: "dbStats", Value: 1}}).Decode(&stats); err != nil {
+			return fmt.Errorf("dbStats: %w", err)
+		}
+		if n, ok := numberOf(stats.DataSize); ok && n > 0 && n < 1<<62 {
+			size = int64(n)
+		}
+		return nil
+	})
+	return size, err
+}
+
 // privilege is one entry of connectionStatus' authenticatedUserPrivileges.
 type privilege struct {
 	Resource struct {

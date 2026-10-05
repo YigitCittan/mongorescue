@@ -174,6 +174,11 @@ type BackupRecord struct {
 	// ErrorMessage contains error details if Status is StatusFailed.
 	ErrorMessage string `json:"error_message,omitempty"`
 
+	// Warnings are notes found before or during the backup that did not fail it,
+	// such as an expected archive close to the largest one its storage target can
+	// hold.
+	Warnings []string `json:"warnings,omitempty"`
+
 	// RetryOf is the ID of the failed backup this one retries, empty (omitted) for
 	// backups that are not retries. The original record is never modified by a retry.
 	RetryOf string `json:"retry_of,omitempty"`

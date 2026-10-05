@@ -1489,7 +1489,7 @@ function setupJobDatabases() {
     render: () => jobDbsRenderLists(),
     changed: () => jobDbsSchedulePreview()
   })) return;
-  ["job-db-include", "job-db-exclude", "job-db-auto", "job-connection", "job-database-select", "job-database"].forEach(id => {
+  ["job-db-include", "job-db-exclude", "job-db-auto", "job-connection", "job-storage", "job-database-select", "job-database"].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener(el.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input", () => jobDbsSchedulePreview());
@@ -1693,6 +1693,9 @@ function jobDbsPreviewQuery() {
   if (!conn) return null;
   const q = new URLSearchParams();
   q.set("connection_id", conn);
+  // The preview warns about archives close to the target's largest one (S3).
+  const target = getValue("job-storage");
+  if (target) q.set("storage_target_id", target);
   q.set("mode", jobDbs.mode);
   const add = (key, list) => list.forEach(v => q.append(key, v));
   const auto = !!(document.getElementById("job-db-auto") || {}).checked;

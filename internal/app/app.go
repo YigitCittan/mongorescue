@@ -304,6 +304,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// lifecycle, and share per-database concurrency keys with scheduled runs; its
 	// slots hold every connection's max_concurrent_backups.
 	runManager := runs.NewManager(logger)
+	sizeEstimator := archiveSizeEstimator(metaStore, prober.DatabaseSize)
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
 		backup.WithToolsDir(cfg.ToolsDir),
@@ -314,6 +315,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
 		backup.WithOpTimeReader(prober.WriteOpTimes),
+		backup.WithSizeEstimator(sizeEstimator),
 		backup.WithRunConfig(func() backup.RunConfig {
 			cur := settingsSvc.Current()
 			g := cur.General
@@ -553,6 +555,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Connections: connSvc,
 		Targets:     targetSvc,
 		Storage:     targetSvc.Storage,
+		ArchiveSize: sizeEstimator,
 		Settings:    settingsSvc.Current,
 		// The delete protection: delayed and approved settings changes, and the
 		// two-person rule needing two administrators.

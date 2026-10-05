@@ -24,6 +24,9 @@ type DatabasePreviewRequest struct {
 	ConnectionID string
 	// Selection replaces the job's database selection when set.
 	Selection *models.DatabaseSelection
+	// StorageTargetID replaces the job's storage target when set; the size warnings
+	// of the preview are checked against it.
+	StorageTargetID string
 }
 
 // DatabasePreview is what a job's database selection backs up on its connection now
@@ -62,16 +65,20 @@ func (s *Service) PreviewJobDatabases(ctx context.Context, jobID string, req Dat
 	if req.ConnectionID != "" {
 		job.ConnectionID = req.ConnectionID
 	}
+	if req.StorageTargetID != "" {
+		job.StorageTargetID = req.StorageTargetID
+	}
 	if req.Selection != nil {
 		job.DatabaseSelection = req.Selection.Clone()
 		job.Database = ""
 	} else if existing == nil {
 		return nil, public("database_selection is required to preview an unsaved job", ErrInvalid)
 	}
-	if _, err := s.ResolveConnection(ctx, job.ConnectionID); err != nil {
+	conn, err := s.ResolveConnection(ctx, job.ConnectionID)
+	if err != nil {
 		return nil, err
 	}
-	if err := normalizeSelection(job); err != nil {
+	if err = normalizeSelection(job); err != nil {
 		if !errors.Is(err, ErrCollectionsNeedSingle) {
 			return nil, err
 		}
@@ -86,7 +93,40 @@ func (s *Service) PreviewJobDatabases(ctx context.Context, jobID string, req Dat
 	if err != nil {
 		return nil, jobRunError(err)
 	}
+	res.Warnings = append(res.Warnings, s.archiveSizeWarnings(ctx, job.StorageTargetID, conn, res.Included)...)
 	return &DatabasePreview{JobID: jobID, Selection: job.DatabaseSelection, DatabaseResolution: *res}, nil
+}
+
+// maxSizeChecks caps the databases a preview estimates the archive size of.
+const maxSizeChecks = 50
+
+// archiveSizeWarnings returns a warning for every database (up to maxSizeChecks)
+// whose expected archive exceeds models.ArchiveSizeWarnPercent of the largest
+// archive storage target targetID (the default for "") can hold. Without a limit or
+// an estimator there is none; estimates that fail are skipped.
+func (s *Service) archiveSizeWarnings(ctx context.Context, targetID string, conn *models.Connection, databases []string) []string {
+	if s.cfg.ArchiveSize == nil || s.cfg.Targets == nil || conn == nil {
+		return nil
+	}
+	target, err := s.ResolveTarget(ctx, targetID)
+	if err != nil {
+		return nil
+	}
+	limit := target.MaxArchiveBytes()
+	if limit <= 0 {
+		return nil
+	}
+	var out []string
+	for _, db := range databases[:min(len(databases), maxSizeChecks)] {
+		size, source, estErr := s.cfg.ArchiveSize(ctx, conn.ID, conn.URI, db)
+		if estErr != nil {
+			continue
+		}
+		if msg := models.ArchiveSizeWarning(db, size, source, limit); msg != "" {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 // ListJobRuns returns up to limit (at most MaxJobRunList) runs of job jobID, newest

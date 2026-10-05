@@ -237,6 +237,10 @@ type Config struct {
 	// of a stream; nil makes point-in-time restores fail with ErrPITRUnavailable.
 	PITRRestore PITRRestorer
 	PITRBases   func(ctx context.Context, streamID string) ([]*models.BackupRecord, error)
+	// ArchiveSize estimates the archive size of a backup of database (from its last
+	// backup or the server's dbStats), for the size warnings of job previews; nil
+	// disables them. The backup engine's backup.SizeEstimator fits.
+	ArchiveSize func(ctx context.Context, connectionID, uri, database string) (size int64, source string, err error)
 	// ToolsVersion returns the version of mongorestore for the preflight of
 	// point-in-time restores; nil reports the check as not checked.
 	ToolsVersion func(ctx context.Context) (string, error)

@@ -146,6 +146,10 @@ type Engine struct {
 	// each run instead of the static values above.
 	config     func() RunConfig
 	storageFor StorageFunc
+
+	// estimateSize, when set, estimates a backup's archive size before it runs, to
+	// warn about archives close to the storage target's limit (see capacity.go).
+	estimateSize SizeEstimator
 }
 
 // RunConfig holds the settings a run uses. They are read when a run is prepared and
@@ -505,6 +509,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	tracker.Printf("backup %s of %s started (connection %s, storage key %s, encrypted %v)",
 		backupID, what, redact.URI(mongoURI), targetKey, record.Encrypted)
+	e.warnArchiveSize(ctx, mongoURI, opts, record)
 	tracker.Phase(models.PhaseDumping, record.Phases)
 	tracker.StartTransfer(0)
 
