@@ -155,7 +155,22 @@ A job's **backup window** (`backup_window`: a time zone, the days it opens on an
 
 ### S3 multipart limits
 
-Archives are uploaded to S3-compatible storage with multipart uploads of 16 MiB parts, two at a time (about 32 MiB of memory), so the archive is never buffered. S3 allows at most 10,000 parts per object, which caps one archive at about **156 GiB** (16 MiB × 10,000) after compression and encryption; a larger upload fails with an error that names the limit (releases before 0.20.1 used 5 MiB parts, about 48.8 GiB). Single objects are limited to 5 TiB by S3 anyway, and some S3-compatible services have lower limits. Compress (`gzip`), back up large databases per collection with several jobs, or use a local or file-system target (for example a mounted volume) for archives near that size, and see [Large databases](#large-databases) for when a logical dump is no longer the right tool.
+Archives are uploaded to S3-compatible storage with multipart uploads, two parts at a time, so the archive is never buffered. S3 allows at most 10,000 parts per object, so the part size caps one archive (after compression and encryption). Each S3 target sets its part size (`s3.part_size_mb`, Settings → Storage → *Upload part size*), from 5 to 512 MiB:
+
+| Part size | Largest archive | Upload memory (part size × 2) |
+| :--- | :--- | :--- |
+| 5 MiB | about 48.8 GiB | 10 MiB |
+| 16 MiB (default) | about 156 GiB | 32 MiB |
+| 64 MiB | about 625 GiB | 128 MiB |
+| 128 MiB | about 1.2 TiB | 256 MiB |
+| 512 MiB | about 4.9 TiB | 1 GiB |
+
+The memory is per running upload, so multiply it by the number of backups that can run at once (jobs, and each connection's `max_concurrent_backups`) and leave room for it in the container's memory limit. The dashboard shows the largest archive next to the field. Raise the part size before a database grows into the limit:
+
+- Before each backup to an S3 target, MongoRescue estimates the archive from the size of the database's last completed backup on the same connection, or from the server's `dbStats` data size (uncompressed) when there is none. Above **80%** of the target's largest archive the backup is recorded with a warning (`warnings` on the backup, shown in the backups list and the run log) and logged; it still runs. The job form's database preview shows the same warning for the selected target.
+- An upload that still runs out of parts fails with an error that names the limit and the `part_size_mb` setting, not a raw SDK error.
+
+Single objects are limited to 5 TiB by S3 anyway, and some S3-compatible services have lower limits on parts or objects. Compress (`gzip`), back up large databases per collection with several jobs, or use a local or file-system target (for example a mounted volume) for archives near that size, and see [Large databases](#large-databases) for when a logical dump is no longer the right tool.
 
 ## Encryption
 
