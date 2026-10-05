@@ -248,7 +248,9 @@ func (r *Rule) Clone() *Rule {
 	return &out
 }
 
-// Matches reports whether the rule is enabled and selects e.
+// Matches reports whether the rule is enabled and selects e. A rule selects only
+// the event types it lists, so opt-in types (events.EventType.OptIn, such as
+// backup.skipped) reach only rules that name them.
 func (r *Rule) Matches(e events.Event) bool {
 	if r == nil || !r.Enabled || !slices.Contains(r.Events, e.Type) {
 		return false

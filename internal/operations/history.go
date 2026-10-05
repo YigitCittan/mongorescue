@@ -296,7 +296,9 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 // runs (one entry per run, however many databases it backed up) and reports its
 // stalest database as its last success.
 func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History) error {
-	list, err := s.cfg.Store.ListJobRuns(ctx, j.ID, HistoryRunsPerJob)
+	// Skipped runs (outside the backup window) backed nothing up; they are left
+	// out before the limit, so they never push real runs out of the history.
+	list, err := s.cfg.Store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
 	if err != nil {
 		return fmt.Errorf("runs of job %s: %w", j.ID, err)
 	}
@@ -304,10 +306,6 @@ func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History
 	hj.Runs = make([]HistoryRun, 0, len(list))
 	for i := len(list) - 1; i >= 0; i-- { // oldest first
 		run := list[i]
-		if run.Status == models.JobRunSkipped {
-			// A run outside the backup window backed nothing up.
-			continue
-		}
 		ok, _, _, _ := run.Counts()
 		hj.Runs = append(hj.Runs, HistoryRun{
 			ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,

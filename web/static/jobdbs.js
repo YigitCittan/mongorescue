@@ -1996,7 +1996,7 @@ function jobDbsRunNode(run) {
   const d = parseDate(run.started_at);
   const when = d ? formatAbsolute(d) : "";
   const line = run.status === "skipped"
-    ? tf("jobdb.run_skipped_line", { time: when, reason: run.skip_reason || "" })
+    ? tf("jobdb.run_skipped_line", { time: when, n: run.skipped_runs || 1 })
     : tf("jobdb.run_line", { time: when, ok, n: dbs.length });
   summary.innerHTML = `${jobRunBadge(run.status)} <span class="jobrun-line">${escapeHtml(line)}</span>`;
   const extras = [];

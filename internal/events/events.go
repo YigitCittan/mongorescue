@@ -135,30 +135,39 @@ func (t EventType) Broadcast() bool {
 	return t == EncryptionOffAfterUpgrade
 }
 
-// ruleTypes lists the event types that notification rules may subscribe to.
+// optInTypes lists the event types a notification rule receives only when it
+// names them itself: they are never part of RuleTypes, the list a client offers
+// as "all events". backup.skipped is routine for a job with a backup window.
+var optInTypes = []EventType{BackupSkipped}
+
+// OptIn reports whether t is delivered only to rules that name it explicitly and
+// is left out of RuleTypes.
+func (t EventType) OptIn() bool {
+	return slices.Contains(optInTypes, t)
+}
+
+// ruleTypes lists the event types that notification rules may subscribe to, apart
+// from optInTypes.
 var ruleTypes = []EventType{
-	BackupSucceeded, BackupFailed, BackupCancelled, BackupSkipped, RestoreSucceeded, RestoreFailed, RestoreCancelled,
+	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
-// stable display order. The returned slice is a fresh copy.
+// stable display order, without the opt-in types (see OptIn), so a rule built from
+// it ("all events") never receives them. The returned slice is a fresh copy.
 func RuleTypes() []EventType {
 	out := make([]EventType, len(ruleTypes))
 	copy(out, ruleTypes)
 	return out
 }
 
-// Subscribable reports whether t can be selected by a notification rule.
+// Subscribable reports whether t can be selected by a notification rule: one of
+// RuleTypes, or an opt-in type the rule names explicitly.
 func (t EventType) Subscribable() bool {
-	for _, rt := range ruleTypes {
-		if t == rt {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ruleTypes, t) || t.OptIn()
 }
 
 // Failed reports whether t describes a failed operation.
