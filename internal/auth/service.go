@@ -526,7 +526,7 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.CreateUser(ctx, user); err != nil {
+	if err = s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
 	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
@@ -838,7 +838,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 		return nil, "", err
 	}
 	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC()}
-	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
+	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return nil, "", err
 	}
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
@@ -959,7 +959,7 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	// rather than a plain digest.
 	hash := importedKeyMACScheme + importedKeyMAC(s.importedKeyMACKey, key)
 	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC()}
-	if err := s.repo.CreateAPIKey(ctx, k); err != nil {
+	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}
 	s.logger.Info("api key imported", slog.String("api_key_id", k.ID))
