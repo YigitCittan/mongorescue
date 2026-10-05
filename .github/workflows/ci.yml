@@ -56,6 +56,8 @@ jobs:
           # Production code may import the driver only through the mongoconn adapter;
           # internal/oplog may import the bson codec and nothing else from the driver.
           # One "<package> <import>" line per import, so each import is judged alone.
+          # The template is a go list format string, not shell: keep it single-quoted.
+          # shellcheck disable=SC2016
           offenders=$(go list -f '{{$p := .ImportPath}}{{range .Imports}}{{$p}} {{.}}{{"\n"}}{{end}}' ./... \
             | grep ' go\.mongodb\.org/mongo-driver' \
             | grep -v '^github\.com/yigitcittan/mongorescue/internal/mongoconn ' \
