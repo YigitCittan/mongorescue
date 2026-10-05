@@ -57,6 +57,7 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
 - Prometheus metrics, including the time of the last successful backup per job, and [alert rules](deploy/prometheus/alerts.yml) tested with `promtool`
+- Gentle on production: backups [read from a secondary](docs/production.md#reading-from-a-secondary) (read preference and tag sets per connection or job), cap their upload rate, limit concurrent backups per connection and start only within a [backup window](docs/production.md#backup-windows)
 - An outbound [heartbeat](docs/monitoring.md) to a dead-man's switch such as healthchecks.io, globally and per job (`/start`, success, `/fail`), so a crashed instance or a hung scheduler raises an alert too
 - User accounts with sessions (listed and revocable one by one) and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
 - [Single sign-on](docs/sso.md) through an OpenID Connect provider (Entra ID, Google, Okta, Keycloak) with group-to-role mappings, a domain filter and a local administrator as the break-glass way in

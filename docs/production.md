@@ -15,6 +15,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] Container image pinned to a release tag.
 - [ ] An alert on stale backups ([metrics.md](metrics.md#alerting)) and a `backup.failed` notification rule ([notifications.md](notifications.md)).
 - [ ] An [RPO](#rpo-and-rto) set on every job whose default does not match what you promised, a `job.rpo_missed` notification rule, and no `fail` row under Overview → *Recovery readiness*.
+- [ ] Busy replica sets backed up from a secondary, with an upload cap and a backup window where the dump competes with production traffic; databases past the [practical limits of mongodump](#large-databases) covered by snapshots or your cloud provider's backups instead.
 
 ## TLS and the reverse proxy
 
@@ -115,6 +116,46 @@ The recovery time objective (RTO) is how long a restore may take. MongoRescue es
 Overview → *Recovery readiness* (and `GET /api/v1/readiness`, [api.md](api.md#recovery-readiness)) brings this together per database: the last good, verified and restore-tested backups, the RPO with its current age, the estimated RTO, and whether the keys are in a recovery kit. A row is *Not ready* when an RPO is missed or the newest restore test or verification failed, and shows a *Warning* when it was never verified or restore-tested, its jobs are paused, or its encrypted backups have no escrowed key.
 
 **Filtered backups and the RPO.** A backup with a [collection filter](api.md#collection-filters-per-database) (only some collections, or all but some) counts towards its database's RPO like any successful backup: the database is "fresh" as soon as the filtered backup completes. It does not cover the collections it left out: their newest backup may be much older, or there may be none, and neither the RPO check nor the restore tests notice. Such backups carry `filtered: true` with the collections they kept (`collections`) or skipped (`exclude_collections`), show a *Filtered* badge in the Backups list and details, and the readiness row says *Covered partially: N collections excluded* (or *only N collections*). If the excluded collections matter, back them up with a job of their own and give it its own RPO.
+
+## Large databases
+
+MongoRescue streams `mongodump --archive`: a logical copy that reads every document through the query layer of the member it connects to. That is simple, portable across versions and restorable into any database, but its cost grows with the data:
+
+- **Load.** A dump scans every collection, pulls the whole data set through the member's cache (evicting the working set your application relies on) and competes for disk and network. On a busy primary that shows as latency.
+- **Time.** Expect roughly the read throughput of the member's disks, often 50 to 200 MB/s before compression; a restore is slower, since `mongorestore` rewrites every document and rebuilds every index. Measure both with a [restore test](verification.md#automated-restore-tests): its duration is the RTO MongoRescue reports.
+- **Consistency.** A dump without the oplog is consistent per document, not across collections: writes during a long dump land in some collections and not in others. Use [point-in-time recovery](design/pitr.md) when that matters.
+
+As a rule of thumb, `mongodump` is comfortable up to a few hundred GB per database and a dump window of a few hours. Beyond about 1 TB, when the restore must finish in less time than a logical restore takes, or when the dump cannot fit into a quiet window even from a secondary, use a physical backup instead: filesystem or volume snapshots (LVM, ZFS, EBS, persistent disk snapshots) of a secondary with journaling on the same volume, your cloud provider's backups (MongoDB Atlas cloud backups, Ops Manager or Cloud Manager), or Percona Backup for MongoDB. Keep MongoRescue for the databases that fit, for portable copies, and for restore tests of what you can restore logically.
+
+### Reading from a secondary
+
+Each connection may set a **read preference** (`primary`, `primaryPreferred`, `secondary`, `secondaryPreferred` or `nearest`, with optional tag sets such as `dc=east,use=backup`), and each job may override it. Empty keeps whatever the connection string says, which is the primary unless it sets `readPreference` itself. MongoRescue adds the preference to the connection string it hands `mongodump` (through the private tools config file, never on the command line) and to the driver that captures the [manifest](verification.md), so both read from the same kind of member.
+
+- `secondaryPreferred` reads from a secondary and falls back to the primary when none is available; it is the usual choice.
+- `secondary` never reads from the primary: a backup fails before `mongodump` starts when no secondary is reachable, also on a standalone server or a single-member replica set.
+- Tag sets pick dedicated members, such as a hidden or delayed member tagged for backups; they are tried in order.
+- A `directConnection=true` URI talks to one member only and ignores read preferences: list the replica set members (or use `mongodb+srv://`) with `replicaSet=` instead.
+
+Before `mongodump` starts, MongoRescue asks the member the preference selects (`hello`) and records it on the backup (`source_member`: host, `primary` or `secondary`, and the replica set); the run log names it too, and *Test connection* reports which member a backup would read from. With several eligible secondaries `mongodump` may choose another one of them; it still satisfies the same preference. Remember that a secondary may lag: a backup from it is as old as its replication lag.
+
+### Throttling
+
+- **Upload cap.** `max_upload_mbps` (megabits per second) caps the stream to storage with a token bucket: per job, or for every job without one under Settings → General (`general.max_upload_mbps`). The dump slows down with it, since `mongodump` writes into the same pipe, so it also lowers the read rate on the member.
+- **Parallel collections.** `num_parallel_collections` (1 to 16) is `mongodump --numParallelCollections`; `mongodump` dumps 4 collections at once by default, and 1 is the gentlest.
+- **Concurrent backups per connection.** `max_concurrent_backups` on a connection limits how many backups (from all of its jobs, scheduled, on demand or manual) read from it at once; `0` is unlimited. Further backups wait in arrival order, shown as *Waiting for a slot* (`phase: "waiting"` in the active runs), and start as soon as one ends. Waiting does not count against the backup timeout, and a waiting backup can be cancelled.
+
+### Backup windows
+
+A job's **backup window** (`backup_window`: a time zone, the days it opens on and a start and end time) lets its scheduled runs start only within those hours; an end before the start closes the window the next day, so `22:00` to `02:00` on `sat` covers Saturday night into Sunday. Times follow the zone's daylight saving changes: a window opening at a time that the clock skips opens when the clock jumps.
+
+- A scheduled run outside the window does not start. It is recorded as a *skipped* job run (`status: "skipped"`, `skip_reason: "outside window"`), emits `backup.skipped`, and is neither a success nor a failure: it does not count in the failure counters, the heartbeat or the job's last status.
+- With `cancel_at_window_end` a scheduled run still going when the window closes is cancelled (recorded as cancelled by `system`, "the backup window ended"). Without it, the run finishes.
+- Manual and on-demand runs ignore the window; the dashboard warns before starting one.
+- The default RPO counts only the runs the window allows: an hourly job with a window of 01:00 to 05:00 runs at 01, 02, 03 and 04 o'clock, so its longest gap is 21 hours and its default RPO 43 hours.
+
+### S3 multipart limits
+
+Archives are uploaded to S3-compatible storage with multipart uploads of 16 MiB parts, two at a time (about 32 MiB of memory), so the archive is never buffered. S3 allows at most 10,000 parts per object, which caps one archive at about **156 GiB** (16 MiB × 10,000) after compression and encryption; a larger upload fails with an error that names the limit (releases before 0.20.1 used 5 MiB parts, about 48.8 GiB). Single objects are limited to 5 TiB by S3 anyway, and some S3-compatible services have lower limits. Compress (`gzip`), back up large databases per collection with several jobs, or use a local or file-system target (for example a mounted volume) for archives near that size, and see [Large databases](#large-databases) for when a logical dump is no longer the right tool.
 
 ## Encryption
 

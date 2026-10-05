@@ -32,7 +32,7 @@ const (
 //
 //	{
 //	  "version": 1,
-//	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|restore.succeeded|
+//	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|backup.skipped|restore.succeeded|
 //	                                     // restore.failed|restore.cancelled|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
 //	                                     // restore.verification_failed|job.rpo_missed|job.rpo_recovered|

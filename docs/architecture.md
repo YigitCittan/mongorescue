@@ -98,6 +98,7 @@ flowchart TB
 | `internal/store` | Metadata persistence (jobs, history, users, sessions, API keys, connections, notification settings) in an embedded SQLite database; data directory lock |
 | `internal/encryption` | Streaming age encryption and decryption (X25519 and scrypt), key generation, identity hygiene |
 | `internal/events` | Domain events emitted when backups and restores finish, and the in-process event bus |
+| `internal/throttle` | A context-aware token-bucket reader with an injectable clock; the backup engine caps the upload stream with it (`max_upload_mbps`, [production.md](production.md#throttling)) |
 | `internal/heartbeat` | Outbound heartbeat pings to a dead-man's switch ([monitoring.md](monitoring.md)): the global ping every `monitoring.heartbeat_interval` while the scheduler is healthy, and per job `<url>/start`, `<url>` and `<url>/fail` (nothing after the start of a cancelled or interrupted run) as a `scheduler.RunObserver`; fire-and-forget, retried, in order per job, through the guarded notification HTTP client, never logging a URL |
 | `internal/notify` | Notification channels (webhook, Telegram, SMTP, Twilio), rules, and the asynchronous delivery dispatcher |
 | `internal/metrics` | Prometheus metrics on a dedicated registry |
