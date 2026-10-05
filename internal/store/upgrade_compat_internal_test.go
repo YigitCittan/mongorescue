@@ -961,19 +961,24 @@ var compatSteps = []compatStep{
 			if err != nil || len(due) != 1 || due[0].ID != "chk_v23" {
 				t.Errorf("purgeable chunks = %+v, %v", due, err)
 			}
-			// States written before 0023 have no replica set ID.
+			// States written before 0023 have no replica set ID and no headroom alert.
 			state, err := s.LoadState(ctx, "pst_v21")
-			if err != nil || state.ReplicaSetID != "" {
+			if err != nil || state.ReplicaSetID != "" || state.WindowLowSince != nil {
 				t.Errorf("state of pst_v21 = %+v, %v", state, err)
 			}
+			since := compatT0.Add(36 * time.Hour)
 			if err = s.SetReplicaSetID(ctx, "pst_v21", "64b0c0ffee"); err != nil {
 				t.Fatal(err)
 			}
-			if state, err = s.LoadState(ctx, "pst_v21"); err != nil || state.ReplicaSetID != "64b0c0ffee" {
-				t.Errorf("state after the update = %+v, %v", state, err)
+			if err = s.SetWindowLow(ctx, "pst_v21", &since); err != nil {
+				t.Fatal(err)
 			}
-			if err = s.SetReplicaSetID(ctx, "pst_unknown", "x"); !errors.Is(err, pitr.ErrNotFound) {
-				t.Errorf("SetReplicaSetID of an unknown stream = %v", err)
+			if state, err = s.LoadState(ctx, "pst_v21"); err != nil || state.ReplicaSetID != "64b0c0ffee" ||
+				state.WindowLowSince == nil || !state.WindowLowSince.Equal(since) {
+				t.Errorf("state after the updates = %+v, %v", state, err)
+			}
+			if err = s.SetWindowLow(ctx, "pst_unknown", nil); !errors.Is(err, pitr.ErrNotFound) {
+				t.Errorf("SetWindowLow of an unknown stream = %v", err)
 			}
 		},
 	},

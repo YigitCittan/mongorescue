@@ -232,6 +232,7 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		// The alerts already raised and the replica set first seen survive a
 		// restart.
 		w.lagSince = st.LagSince
+		w.windowLow = st.WindowLowSince != nil
 		w.failing = w.failing || st.Status == pitr.CollectorFailed
 		w.rsID = st.ReplicaSetID
 	}
@@ -601,10 +602,21 @@ func (w *worker) observeLag(ctx context.Context, st *pitr.State, win pitr.OplogW
 	switch {
 	case low && !w.windowLow:
 		w.windowLow = true
+		since := now
+		w.setWindowLow(ctx, &since)
 		w.svc.publish(ctx, w.event(events.PITRWindowLow, "window_low", "",
 			fmt.Sprintf("the oplog holds %s before the collector's position (threshold %s)", headroom, HeadroomThreshold(lag))))
-	case !low:
+	case !low && w.windowLow:
 		w.windowLow = false
+		w.setWindowLow(ctx, nil)
+	}
+}
+
+// setWindowLow persists the headroom episode, so a restart does not raise
+// pitr.window_low again.
+func (w *worker) setWindowLow(ctx context.Context, since *time.Time) {
+	if err := w.svc.cfg.Repo.SetWindowLow(ctx, w.stream.ID, since); err != nil && !errors.Is(err, pitr.ErrNotFound) {
+		w.svc.logger.Warn("cannot record the PITR headroom alert", logsafe.Attr("stream_id", w.stream.ID), logsafe.Error(err))
 	}
 }
 

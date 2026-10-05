@@ -552,12 +552,13 @@ func (s *SQLiteStore) LoadState(ctx context.Context, streamID string) (*pitr.Sta
 		lastT, lastI int64
 		status       string
 		lagSince     sql.NullInt64
+		windowLow    sql.NullInt64
 		updated      int64
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT stream_id, chain_id, last_t, last_i, last_term, status, last_error,
-			lag_since, updated_at, replica_set_id
+			lag_since, updated_at, window_low_since, replica_set_id
 		FROM pitr_state WHERE stream_id = ?`, streamID).Scan(&st.StreamID, &st.ChainID, &lastT, &lastI,
-		&st.Last.Term, &status, &st.LastError, &lagSince, &updated, &st.ReplicaSetID)
+		&st.Last.Term, &status, &st.LastError, &lagSince, &updated, &windowLow, &st.ReplicaSetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, pitr.ErrNotFound
 	}
@@ -567,6 +568,7 @@ func (s *SQLiteStore) LoadState(ctx context.Context, streamID string) (*pitr.Sta
 	st.Last.TS = oplogTS(lastT, lastI)
 	st.Status = pitr.CollectorStatus(status)
 	st.LagSince, st.UpdatedAt = nullableKey(lagSince), fromKey(updated)
+	st.WindowLowSince = nullableKey(windowLow)
 	return &st, nil
 }
 
@@ -597,6 +599,13 @@ func (s *SQLiteStore) ListBaseBackups(ctx context.Context, streamID string) ([]*
 	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
 		`SELECT id, data FROM backups WHERE database_name = '' AND json_extract(data, '$.scope') = 'instance'
 			AND json_extract(data, '$.pitr_stream_id') = ? ORDER BY started_at DESC, id DESC`, streamID)
+}
+
+// SetWindowLow records when the oplog headroom of a stream dropped below its
+// threshold (nil: it is back above). It returns pitr.ErrNotFound without a state.
+func (s *SQLiteStore) SetWindowLow(ctx context.Context, streamID string, since *time.Time) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE pitr_state SET window_low_since = ? WHERE stream_id = ?",
+		nullTime(since), streamID)
 }
 
 // SetReplicaSetID records the replica set ID the collector of a stream reads from.

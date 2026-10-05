@@ -411,3 +411,27 @@ func TestReplicaSetIDChangeAcrossARestartIsAGap(t *testing.T) {
 		t.Fatalf("%d chains after a second restart", len(fx.chains()))
 	}
 }
+
+func TestWindowLowIsNotRaisedAgainAfterARestart(t *testing.T) {
+	fx := newFixture(t)
+	w := fx.worker()
+	fx.step(w)
+	fx.step(w) // the fake oplog holds seconds, far below six hours of headroom
+	if fx.events.count(events.PITRWindowLow) != 1 || fx.state().WindowLowSince == nil {
+		t.Fatalf("window_low %d, window_low_since %v", fx.events.count(events.PITRWindowLow), fx.state().WindowLowSince)
+	}
+	restarted := fx.worker()
+	fx.step(restarted)
+	fx.step(restarted)
+	if n := fx.events.count(events.PITRWindowLow); n != 1 {
+		t.Fatalf("window_low raised %d times across a restart", n)
+	}
+	// Plenty of headroom again clears the stored episode.
+	st := fx.state()
+	st.Last.TS = pitr.Timestamp{T: 100_000, I: 1} // a day ahead of the oldest entry
+	restarted.observeLag(context.Background(), st, pitr.OplogWindow{Oldest: pitr.Timestamp{T: 1}, Newest: st.Last.TS,
+		MajorityOpTime: pitr.OpTime{TS: st.Last.TS}}, fx.svc.now())
+	if fx.state().WindowLowSince != nil {
+		t.Fatal("window_low_since stays after the headroom recovered")
+	}
+}

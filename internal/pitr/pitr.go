@@ -298,6 +298,9 @@ type State struct {
 	LastError string          `json:"last_error,omitempty"`
 	// LagSince is when the lag first exceeded its threshold; nil while it does not.
 	LagSince *time.Time `json:"lag_since,omitempty"`
+	// WindowLowSince is when the oplog headroom dropped below its threshold; nil
+	// while it does not.
+	WindowLowSince *time.Time `json:"window_low_since,omitempty"`
 	// ReplicaSetID is the replica set ID the collector first saw (see
 	// OplogWindow.ReplicaSetID); empty until then or when it cannot be read.
 	ReplicaSetID string `json:"replica_set_id,omitempty"`
@@ -388,6 +391,9 @@ type Repository interface {
 	// SetCollectorStatus records the collector's status, last error and lag start
 	// without moving its position. It returns ErrNotFound without a state.
 	SetCollectorStatus(ctx context.Context, streamID string, status CollectorStatus, lastError string, lagSince *time.Time, at time.Time) error
+	// SetWindowLow records when the headroom of a stream dropped below its
+	// threshold (nil: it is back above). It returns ErrNotFound without a state.
+	SetWindowLow(ctx context.Context, streamID string, since *time.Time) error
 	// SetReplicaSetID records the replica set ID the collector of a stream reads
 	// from. It returns ErrNotFound without a state.
 	SetReplicaSetID(ctx context.Context, streamID, replicaSetID string) error
