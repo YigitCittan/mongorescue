@@ -377,6 +377,7 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 		s.logger.Warn("failed to record the job run as running",
 			slog.String("job_id", jobID), slog.String("run_id", plan.Run.ID), slog.Any("error", err))
 	}
+	s.runStarted(plan.Job, plan.Run)
 	plan.trackers = make([]*runs.Run, len(plan.Records))
 	for i, rec := range plan.Records {
 		if err := s.metadataStore.SaveBackupRecord(ctx, rec); err != nil {
@@ -423,6 +424,7 @@ func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause e
 	if !plan.adhoc {
 		s.releaseJobRun(plan.Job.ID, plan.Run.ID)
 	}
+	s.runFinished(plan.Job, plan.Run)
 }
 
 // cancellation returns the Cancellation of a database of the run, or nil when none
@@ -653,6 +655,7 @@ func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan) (*models.
 	if err := s.saveRunOf(persistCtx, plan); err != nil {
 		s.logger.Error("failed to persist the job run", slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
+	s.runFinished(plan.Job, run)
 	if s.publisher != nil {
 		if len(run.AddedDatabases) > 0 {
 			s.publisher.Publish(persistCtx, events.DatabasesAddedEvent(plan.jobID(), run.ID, run.AddedDatabases))
@@ -800,6 +803,7 @@ func (s *Scheduler) StartJobRun(ctx context.Context, jobID string, trigger model
 		run.Error = "run not started: " + redact.Text(err.Error())
 		run.Finish(time.Now())
 		s.saveRun(context.WithoutCancel(ctx), run)
+		s.runFinished(job, run)
 		return nil, err
 	}
 	return snapshot, nil
@@ -817,6 +821,7 @@ func (s *Scheduler) failRun(ctx context.Context, job *models.Job, run *models.Jo
 	if err := s.metadataStore.SaveJobRun(persistCtx, run); err != nil {
 		s.logger.Error("failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
+	s.runFinished(job, run)
 	if s.publisher != nil {
 		s.publisher.Publish(persistCtx, events.JobRunEvent(run))
 	}

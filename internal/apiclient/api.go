@@ -21,6 +21,11 @@ type Health struct {
 	Version string `json:"version"`
 	// Time is the server's clock.
 	Time time.Time `json:"time"`
+	// Scheduler is "ok", "stale" (the server answers 503 then) or "not_started";
+	// empty for servers that predate it.
+	Scheduler string `json:"scheduler,omitempty"`
+	// SchedulerLastTick is the scheduler's last liveness tick.
+	SchedulerLastTick *time.Time `json:"scheduler_last_tick,omitempty"`
 }
 
 // MeUser is the user behind a session or an API key.

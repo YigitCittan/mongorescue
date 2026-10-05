@@ -55,7 +55,8 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unl
 - Restore the whole database or only selected collections, picked from a list read from the backup's archive header
 - Optional [age](https://age-encryption.org) encryption, so the bucket only ever stores ciphertext
 - Notifications on success or failure via webhook, Telegram, email or SMS, with simple routing rules
-- Prometheus metrics, including the time of the last successful backup per job
+- Prometheus metrics, including the time of the last successful backup per job, and [alert rules](deploy/prometheus/alerts.yml) tested with `promtool`
+- An outbound [heartbeat](docs/monitoring.md) to a dead-man's switch such as healthchecks.io, globally and per job (`/start`, success, `/fail`), so a crashed instance or a hung scheduler raises an alert too
 - User accounts with sessions (listed and revocable one by one) and CSRF protection, scoped API keys (read, operator, admin) for automation, and a first-run setup with a one-time code
 - [Single sign-on](docs/sso.md) through an OpenID Connect provider (Entra ID, Google, Okta, Keycloak) with group-to-role mappings, a domain filter and a local administrator as the break-glass way in
 - A hash-chained [audit log](docs/audit.md) of every action (who, what, target, result, source address) with chain verification, retention, JSON Lines export and webhook forwarding
@@ -179,6 +180,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Verification, restore tests and retention safety](docs/verification.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
+- [Monitoring: heartbeats, health check and alert rules](docs/monitoring.md)
 - [Running in production](docs/production.md)
 - [Troubleshooting: unreadable records](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)

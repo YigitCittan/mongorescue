@@ -521,6 +521,7 @@ func TestPlantedSecretsAreRefusedAtStartupOnceUpgraded(t *testing.T) {
 		"plaintext s3 key": {`UPDATE storage_targets SET data = json_set(data, '$.s3.secret_access_key', ?)`, []any{"planted"},
 			"storage_targets|stg|s3.secret_access_key"},
 		"plaintext legacy job uri": {`UPDATE jobs SET data = json_set(data, '$.mongo_uri', ?)`, []any{"mongodb://evil/"}, "jobs|j|mongo_uri"},
+		"plaintext job heartbeat":  {`UPDATE jobs SET data = json_set(data, '$.heartbeat_url', ?)`, []any{"https://planted.example/x"}, "jobs|j|heartbeat_url"},
 		"sb1 key check": {`UPDATE settings SET value = ? WHERE key = 'secret_key_check'`, []any{sealLegacy(t, "mongorescue-secret-key-check-v1")},
 			"settings|secret_key_check|value"},
 		"plaintext passphrase": {`INSERT INTO settings (key, value) VALUES ('encryption.passphrase', ?)`, []any{`"planted passphrase"`},

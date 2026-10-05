@@ -87,6 +87,8 @@ type Metrics struct {
 	auditQueueSource atomic.Pointer[func() int]
 	// Recovery point objective gauges (see rpo.go).
 	rpo *rpoCollector
+	// Scheduler tick and settings warning sources (see liveness.go).
+	liveness livenessSources
 }
 
 // New creates a Metrics instance with its own registry.
@@ -237,11 +239,13 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(activeRuns...)
 	m.registry.MustRegister(m.newMetaBackupSeries()...)
 	m.registry.MustRegister(m.newAuditSeries()...)
+	m.registry.MustRegister(m.newLivenessSeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
 	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)
+		m.backupsTotal.WithLabelValues(ManualJobLabel, s)
 	}
 	return m
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -95,6 +96,82 @@ type Scheduler struct {
 	// changes counts job registrations and removals (guarded by mu), so a job listing
 	// taken without the lock can tell whether it is still current.
 	changes uint64
+
+	// lastTick is the Unix time in nanoseconds of the latest liveness tick (0 before
+	// Start); see LastTick.
+	lastTick atomic.Int64
+	// observer is told when job runs start and finish (see RunObserver).
+	observer RunObserver
+}
+
+// TickInterval is how often a running scheduler records a liveness tick (see
+// LastTick). The tick runs on the cron runner and takes the scheduler's lock, so a
+// hung runner or a deadlocked scheduler stops it.
+const TickInterval = 30 * time.Second
+
+// StaleAfter is how old the last tick may be before the scheduler counts as stale
+// (three missed ticks).
+const StaleAfter = 3 * TickInterval
+
+// tickSchedule is the cron schedule of the liveness tick (TickInterval).
+const tickSchedule = "@every 30s"
+
+// RunObserver is told when a job run starts and when it finishes (the run's status
+// is final then: ok, partial, failed or cancelled). It sees the job as the run read
+// it, secrets included. Its methods are called on the run's goroutine and must
+// return at once.
+type RunObserver interface {
+	// JobRunStarted is called when the backups of a run start.
+	JobRunStarted(job *models.Job, run *models.JobRun)
+	// JobRunFinished is called once the run's outcome is recorded.
+	JobRunFinished(job *models.Job, run *models.JobRun)
+}
+
+// WithRunObserver tells o about every job run, scheduled or on demand.
+func WithRunObserver(o RunObserver) Option {
+	return func(s *Scheduler) { s.observer = o }
+}
+
+// runStarted tells the observer that run of job started.
+func (s *Scheduler) runStarted(job *models.Job, run *models.JobRun) {
+	if s.observer != nil && job != nil && run != nil {
+		s.observer.JobRunStarted(job, run)
+	}
+}
+
+// runFinished tells the observer that run of job finished.
+func (s *Scheduler) runFinished(job *models.Job, run *models.JobRun) {
+	if s.observer != nil && job != nil && run != nil {
+		s.observer.JobRunFinished(job, run)
+	}
+}
+
+// LastTick returns when the scheduler last recorded a liveness tick, or the zero
+// time before Start. A running scheduler ticks every TickInterval.
+func (s *Scheduler) LastTick() time.Time {
+	ns := s.lastTick.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// Stale reports whether the scheduler was started and its last tick is older than
+// StaleAfter at now: its cron runner is hung, it is deadlocked or it was stopped.
+func (s *Scheduler) Stale(now time.Time) bool {
+	last := s.LastTick()
+	return !last.IsZero() && now.Sub(last) > StaleAfter
+}
+
+// tick records a liveness tick. It takes s.mu, so a scheduler whose lock is held
+// forever stops ticking; a stopped scheduler does not tick.
+func (s *Scheduler) tick() {
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if !stopped {
+		s.lastTick.Store(time.Now().UnixNano())
+	}
 }
 
 // Option customises a Scheduler.
@@ -235,6 +312,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// check lists the jobs itself, so it also covers jobs a late retry loads.
 	if _, err := s.cron.AddFunc(resumeCheckSchedule, s.resumeDueJobs); err != nil {
 		s.logger.Error("failed to schedule the resumption of paused jobs", slog.Any("error", err))
+	}
+	// The liveness tick read by the health check and the heartbeat.
+	s.lastTick.Store(time.Now().UnixNano())
+	if _, err := s.cron.AddFunc(tickSchedule, s.tick); err != nil {
+		s.logger.Error("failed to schedule the scheduler liveness tick", slog.Any("error", err))
 	}
 
 	s.cron.Start()
@@ -543,6 +625,7 @@ func (s *Scheduler) ExecuteJobRun(ctx context.Context, plan *JobRunPlan) (*model
 		slog.String("database", job.Database),
 	)
 	s.saveRun(ctx, plan.Run)
+	s.runStarted(job, plan.Run)
 	opts, err := s.jobOptions(ctx, job, record.Trigger)
 	if err != nil {
 		record.Status, record.ErrorMessage = models.StatusFailed, err.Error()
@@ -684,6 +767,7 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
 	}
 	s.saveRun(ctx, run)
+	s.runStarted(job, run)
 	tracked, regErr := s.registry.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID, JobID: job.ID, Database: job.Database, Group: run.ID})
 	if regErr != nil {
 		s.logger.Warn("scheduled backup is not tracked", slog.String("backup_id", record.ID), slog.Any("error", regErr))
@@ -728,6 +812,7 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 		}
 		run.Finish(time.Now())
 		s.saveRun(persistCtx, run)
+		s.runFinished(job, run)
 	}
 
 	// Persist the backup record last: once a client sees the final status, the

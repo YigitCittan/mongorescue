@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
 
 const (
@@ -33,8 +34,38 @@ const (
 			data = excluded.data`
 )
 
+// fieldJobHeartbeatURL is the sealed heartbeat URL of a job.
+const fieldJobHeartbeatURL = "heartbeat_url"
+
+// sealJob returns job with its heartbeat URL sealed for storage (job itself when it
+// has none). A value that is sealed already is kept, so a job read raw from the
+// database is never sealed twice.
+func (s *SQLiteStore) sealJob(job *models.Job) (*models.Job, error) {
+	if job.HeartbeatURL == "" || secretbox.IsSealed(job.HeartbeatURL) {
+		return job, nil
+	}
+	v, err := s.seal(secretbox.At(tableJobs, job.ID, fieldJobHeartbeatURL), job.HeartbeatURL)
+	if err != nil {
+		return nil, err
+	}
+	sealed := *job
+	sealed.HeartbeatURL = v
+	return &sealed, nil
+}
+
+// openJob decrypts job.HeartbeatURL in place. Plaintext values are refused (see
+// open): a job whose heartbeat cannot be opened is reported as corrupt.
+func (s *SQLiteStore) openJob(job *models.Job) error {
+	v, err := s.open(secretbox.At(tableJobs, job.ID, fieldJobHeartbeatURL), job.HeartbeatURL)
+	if err != nil {
+		return err
+	}
+	job.HeartbeatURL = v
+	return nil
+}
+
 // SaveJob creates or updates a scheduled backup job. It sets CreatedAt (when zero) and
-// UpdatedAt on job before persisting it.
+// UpdatedAt on job before persisting it; its heartbeat URL is sealed.
 func (s *SQLiteStore) SaveJob(ctx context.Context, job *models.Job) error {
 	if job == nil || job.ID == "" {
 		return fmt.Errorf("%w: job with ID is required", ErrInvalidRecord)
@@ -44,7 +75,11 @@ func (s *SQLiteStore) SaveJob(ctx context.Context, job *models.Job) error {
 		job.CreatedAt = now
 	}
 	job.UpdatedAt = now
-	return putJob(ctx, s.db, job)
+	sealed, err := s.sealJob(job)
+	if err != nil {
+		return err
+	}
+	return putJob(ctx, s.db, sealed)
 }
 
 // CreateJob inserts a new job; it returns ErrAlreadyExists when the ID is taken.
@@ -57,7 +92,11 @@ func (s *SQLiteStore) CreateJob(ctx context.Context, job *models.Job) error {
 		job.CreatedAt = now
 	}
 	job.UpdatedAt = now
-	data, err := encode(job)
+	sealed, err := s.sealJob(job)
+	if err != nil {
+		return err
+	}
+	data, err := encode(sealed)
 	if err != nil {
 		return err
 	}
@@ -80,7 +119,11 @@ func (s *SQLiteStore) UpdateJob(ctx context.Context, job *models.Job) error {
 		return fmt.Errorf("%w: job with ID is required", ErrInvalidRecord)
 	}
 	job.UpdatedAt = time.Now().UTC()
-	data, err := encode(job)
+	sealed, err := s.sealJob(job)
+	if err != nil {
+		return err
+	}
+	data, err := encode(sealed)
 	if err != nil {
 		return err
 	}
@@ -115,14 +158,23 @@ func (s *SQLiteStore) UpdateJobRunTimes(ctx context.Context, id string, lastRun,
 	})
 }
 
-// GetJob returns a job by ID or ErrNotFound.
+// GetJob returns a job by ID (its heartbeat URL decrypted) or ErrNotFound.
 func (s *SQLiteStore) GetJob(ctx context.Context, id string) (*models.Job, error) {
-	return getRecord[models.Job](ctx, s.db, ErrNotFound, "SELECT data FROM jobs WHERE id = ?", id)
+	job, err := getRecord[models.Job](ctx, s.db, ErrNotFound, "SELECT data FROM jobs WHERE id = ?", id)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.openJob(job); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
-// ListJobs returns all registered backup jobs sorted by name.
+// ListJobs returns all registered backup jobs sorted by name, their heartbeat URLs
+// decrypted. A job whose heartbeat URL cannot be opened is skipped and reported
+// through CorruptRecords.
 func (s *SQLiteStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
-	return listRecords[models.Job](ctx, s, tableJobs, nil, "SELECT id, data FROM jobs ORDER BY name, id")
+	return listRecords(ctx, s, tableJobs, s.openJob, "SELECT id, data FROM jobs ORDER BY name, id")
 }
 
 // DeleteJob removes a job or returns ErrNotFound. Its backup records are kept; its

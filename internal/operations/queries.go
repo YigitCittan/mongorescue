@@ -14,22 +14,24 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
-// ListJobs returns every scheduled job sorted by name.
+// ListJobs returns every scheduled job sorted by name, heartbeat URLs masked (see
+// models.Job.Redacted).
 func (s *Service) ListJobs(ctx context.Context) ([]*models.Job, error) {
 	jobs, err := s.cfg.Store.ListJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
-	return jobs, nil
+	return models.RedactJobs(jobs), nil
 }
 
-// GetJob returns job id or an ErrNotFound error.
+// GetJob returns job id or an ErrNotFound error. Its heartbeat URL is masked (see
+// models.Job.Redacted), so the job is safe to return to clients.
 func (s *Service) GetJob(ctx context.Context, id string) (*models.Job, error) {
 	job, err := s.cfg.Store.GetJob(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "job not found")
 	}
-	return job, nil
+	return job.Redacted(), nil
 }
 
 // BackupFilter selects, orders and pages backups; zero fields match everything. See

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 // RPOSample is the recovery point of one database of an enabled job, as the RPO
@@ -98,6 +100,16 @@ func (m *Metrics) SetRPOSamples(started time.Time, samples []RPOSample) {
 		kept = append(kept, s)
 	}
 	m.rpo.samples = kept
+	// The backup and run counters of every enabled job exist from the start at 0, so
+	// an alert on increase() also sees a job's first failure.
+	for _, s := range kept {
+		for _, st := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
+			m.backupsTotal.WithLabelValues(s.JobID, st)
+		}
+		for _, st := range []models.JobRunStatus{models.JobRunOK, models.JobRunPartial, models.JobRunFailed, models.JobRunCancelled} {
+			m.jobRuns.WithLabelValues(s.JobID, string(st))
+		}
+	}
 }
 
 // forgetRPOJob drops the RPO samples of jobID and refuses them from checks that

@@ -44,14 +44,19 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_rpo_seconds` | gauge | `job`, `database` | Age of the newest successful backup of each database of an enabled job (since the job's creation when it has none); see [recovery point objectives](#recovery-point-objectives) |
 | `mongorescue_job_rpo_met` | gauge | `job`, `database` | 1 while that age is within the job's recovery point objective, 0 when it is missed |
 | `mongorescue_job_rpo_target_seconds` | gauge | `job`, `database` | The job's recovery point objective (`rpo_minutes`, or the default from its schedule) |
+| `mongorescue_scheduler_last_tick_timestamp_seconds` | gauge | | Unix time of the scheduler's last liveness tick (every 30s while it runs; `0` before it starts). Older than 90 seconds means the scheduler is hung; see [health](api.md#health) |
+| `mongorescue_settings_warnings` | gauge | | Active settings warnings shown in the dashboard banner (encryption off, metadata backups unencrypted, recovery kit missing or outdated, a kept administrator role) |
 
-The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
+The `job` label is the scheduled job ID; on-demand backups use `job="manual"`. `mongorescue_backups_total` and `mongorescue_job_runs_total` exist at `0` for every enabled job (and `job="manual"`) from the first RPO check after the start, so `increase()` also sees a job's first failure. The standard Go runtime and process collectors (`go_*`, `process_*`) are exported as well.
 
 ## Scrape configuration
 
 ```yaml
 scrape_configs:
   - job_name: mongorescue
+    # Keep the job label of per-job series (the MongoRescue job ID) instead of
+    # renaming it to exported_job; `up` keeps job="mongorescue".
+    honor_labels: true
     scheme: https
     metrics_path: /metrics
     authorization:
@@ -62,6 +67,8 @@ scrape_configs:
 ```
 
 ## Alerting
+
+Ready-made rules, unit-tested with `promtool test rules`, ship in [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml): instance down, scheduler stale, backup failures, RPO missed, archive verification failures, missing archives, restore test failures, metadata backup failures and active settings warnings. See [monitoring.md](monitoring.md#prometheus-alert-rules). The examples below show the pattern.
 
 Alert when a job has had no successful backup for 26 hours (a daily schedule plus two hours of slack):
 

@@ -339,7 +339,10 @@ func TestKeysAndSecrets(t *testing.T) {
 			t.Errorf("IsSecret(%s) = %v; only the OIDC client secret is secret", k, IsSecret(k))
 		}
 	}
-	if len(Keys()) != 48 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if !IsSecret(KeyHeartbeatURL) || IsSecret(KeyHeartbeatInterval) {
+		t.Fatal("monitoring secret classification is wrong")
+	}
+	if len(Keys()) != 50 || IsSecret(KeyMCPEnabled) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

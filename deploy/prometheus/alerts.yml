@@ -1,0 +1,114 @@
+# Prometheus alerting rules for MongoRescue (see docs/monitoring.md).
+#
+# Load this file with `rule_files:` in prometheus.yml. The rules assume the scrape
+# job is called "mongorescue" and scrapes with `honor_labels: true`, so the `job`
+# label of per-job series is the MongoRescue job ID (`up` keeps the scrape job).
+# Adjust `up{job="mongorescue"}` if your scrape job has another name.
+#
+# Check and test them with:
+#   promtool check rules deploy/prometheus/alerts.yml
+#   promtool test rules deploy/prometheus/alerts_test.yml
+groups:
+  - name: mongorescue
+    rules:
+      # The process is down or unreachable: no backups run, and MongoRescue cannot
+      # alert about it itself. Pair this with the external heartbeat.
+      - alert: MongoRescueDown
+        expr: up{job="mongorescue"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MongoRescue on {{ $labels.instance }} is down"
+          description: "Prometheus has not been able to scrape MongoRescue on {{ $labels.instance }} for 5 minutes. No backups run while it is down."
+
+      # The scheduler ticks every 30s; three missed ticks mean it is hung,
+      # deadlocked or stopped (GET /api/v1/health answers 503 then).
+      - alert: MongoRescueSchedulerStale
+        expr: time() - mongorescue_scheduler_last_tick_timestamp_seconds > 90
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The MongoRescue scheduler on {{ $labels.instance }} is stale"
+          description: "The scheduler has not ticked for {{ $value | humanizeDuration }}. Scheduled backups do not start; restart MongoRescue."
+
+      # A backup of the job failed in the last hour, or a run failed before any
+      # backup started (its databases could not be listed, its connection is gone).
+      # job="manual" covers on-demand backups outside jobs.
+      - alert: MongoRescueBackupFailed
+        expr: |
+          sum by (instance, job) (increase(mongorescue_backups_total{status="failed"}[1h])) > 0
+          or
+          sum by (instance, job) (increase(mongorescue_job_runs_total{status="failed"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A backup of MongoRescue job {{ $labels.job }} failed"
+          description: "Job {{ $labels.job }} on {{ $labels.instance }} had a failed backup or run in the last hour. See its run log in the dashboard."
+
+      # The newest successful backup of a database is older than the job's
+      # recovery point objective (rpo_minutes, or the default from its schedule).
+      - alert: MongoRescueRPOMissed
+        expr: mongorescue_job_rpo_met == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Job {{ $labels.job }}: {{ $labels.database }} is past its recovery point objective"
+          description: "The newest successful backup of {{ $labels.database }} (job {{ $labels.job }} on {{ $labels.instance }}) is older than the job's recovery point objective."
+
+      # A stored archive no longer matches its checksum or could not be read
+      # (after upload, in the integrity sweep or on demand).
+      - alert: MongoRescueVerificationFailed
+        expr: sum by (instance, source, result) (increase(mongorescue_verifications_total{result=~"mismatch|error"}[1h])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A MongoRescue archive verification failed ({{ $labels.source }}: {{ $labels.result }})"
+          description: "A {{ $labels.source }} verification on {{ $labels.instance }} found an archive that does not match its checksum or cannot be read. Check the integrity page of the dashboard."
+
+      # A storage scan found backup records whose archive is gone.
+      - alert: MongoRescueArchivesMissing
+        expr: mongorescue_storage_missing_archives > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} backup archives are missing from storage target {{ $labels.target }}"
+          description: "The last storage scan of target {{ $labels.target }} on {{ $labels.instance }} did not find the archives of {{ $value }} backup records."
+
+      # An automated restore test failed or found differences. The second branch
+      # catches the first result of a job, whose series starts at 1.
+      - alert: MongoRescueRestoreTestFailed
+        expr: |
+          sum by (instance, job, result) (increase(mongorescue_restore_tests_total{result=~"mismatch|error"}[24h])) > 0
+          or
+          sum by (instance, job, result) (
+            mongorescue_restore_tests_total{result=~"mismatch|error"}
+            unless mongorescue_restore_tests_total{result=~"mismatch|error"} offset 24h
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A restore test of MongoRescue job {{ $labels.job }} failed ({{ $labels.result }})"
+          description: "An automated restore test of job {{ $labels.job }} on {{ $labels.instance }} ended with {{ $labels.result }} in the last 24 hours."
+
+      # A snapshot of MongoRescue's own metadata database could not be stored.
+      - alert: MongoRescueMetadataBackupFailed
+        expr: increase(mongorescue_metadata_backups_total{result="error"}[24h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A MongoRescue metadata backup failed on {{ $labels.instance }}"
+          description: "A scheduled snapshot of the metadata database (jobs, backup records, users, settings) could not be written to its storage target in the last 24 hours."
+
+      # The dashboard shows a settings warning (encryption off, recovery kit
+      # missing or outdated, ...) that nobody has resolved for an hour.
+      - alert: MongoRescueSettingsWarning
+        expr: mongorescue_settings_warnings > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoRescue on {{ $labels.instance }} has {{ $value }} active settings warnings"
+          description: "Open the dashboard: the warning banner names the setting that resolves each warning."

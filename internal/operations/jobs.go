@@ -104,6 +104,9 @@ type JobUpdate struct {
 	// RPOMinutes, when set, replaces the job's recovery point objective in minutes
 	// (0 restores the default from the schedule).
 	RPOMinutes *int `json:"rpo_minutes"`
+	// HeartbeatURL, when set, replaces the job's heartbeat URL: the masked value (as
+	// responses show it) or models.SecretMask keeps the stored URL, "" removes it.
+	HeartbeatURL *string `json:"heartbeat_url"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -151,6 +154,10 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if job.IncludeUsersAndRoles && !job.MultiDatabase() && job.Database == models.AdminDatabase {
 		return invalid(ErrUsersAndRolesAdmin)
+	}
+	job.HeartbeatURL = strings.TrimSpace(job.HeartbeatURL)
+	if err := models.ValidateHeartbeatURL(job.HeartbeatURL); err != nil {
+		return invalid(err)
 	}
 	if job.Enabled {
 		job.PausedUntil = nil
@@ -323,6 +330,11 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*model
 	}
 	job.VerifyAfterBackup = derefOr(u.VerifyAfterBackup, existing.VerifyAfterBackup)
 	job.RPOMinutes = derefOr(u.RPOMinutes, existing.RPOMinutes)
+	if u.HeartbeatURL != nil {
+		if job.HeartbeatURL, err = models.ResolveHeartbeatURL(*u.HeartbeatURL, existing.HeartbeatURL); err != nil {
+			return nil, invalid(err)
+		}
+	}
 	if u.RestoreTest != nil {
 		rt := *u.RestoreTest
 		job.RestoreTest = &rt

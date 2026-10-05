@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 // Limits of the audit log settings.
@@ -51,17 +53,7 @@ func (a Audit) masked() Audit {
 // notify.RedactEndpoint: webhook URLs often carry their credential in the path or
 // query. A bare origin is returned unchanged, an unparsable value is SecretMask.
 func maskEndpoint(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return SecretMask
-	}
-	if u.User == nil && (u.Path == "" || u.Path == "/") && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" {
-		return raw
-	}
-	return u.Scheme + "://" + u.Host + "/" + SecretMask
+	return models.MaskEndpoint(raw)
 }
 
 // AuditPatch updates Audit. WebhookURL keeps the stored URL when it is sent back

@@ -130,6 +130,8 @@ type Settings struct {
 	// OIDC configures single sign-on through an OpenID Connect provider (see
 	// oidc.go).
 	OIDC OIDC `json:"oidc"`
+	// Monitoring configures the outbound heartbeat (see monitoring.go).
+	Monitoring Monitoring `json:"monitoring"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -231,6 +233,7 @@ func Defaults() Settings {
 		MetadataBackup: defaultMetadataBackup(),
 		Audit:          defaultAudit(),
 		OIDC:           defaultOIDC(),
+		Monitoring:     defaultMonitoring(),
 	}
 }
 
@@ -245,8 +248,8 @@ func (s Settings) Clone() Settings {
 
 // Masked returns a copy that is safe to serialize to API clients: the identity,
 // passphrase, audit webhook secret and OIDC client secret are replaced by
-// SecretMask when set, the audit webhook URL is reduced to its origin (retired
-// secrets are never serialized). Nil slices become empty ones.
+// SecretMask when set, the audit webhook and heartbeat URLs are reduced to their
+// origin (retired secrets are never serialized). Nil slices become empty ones.
 func (s Settings) Masked() Settings {
 	out := s.Clone()
 	if out.Encryption.Identity != "" {
@@ -269,6 +272,7 @@ func (s Settings) Masked() Settings {
 	}
 	out.Audit = out.Audit.masked()
 	out.OIDC = out.OIDC.masked()
+	out.Monitoring = out.Monitoring.masked()
 	return out
 }
 
@@ -288,6 +292,8 @@ type Patch struct {
 	Audit *AuditPatch `json:"audit,omitempty"`
 	// OIDC updates the single sign-on settings.
 	OIDC *OIDCPatch `json:"oidc,omitempty"`
+	// Monitoring updates the heartbeat settings.
+	Monitoring *MonitoringPatch `json:"monitoring,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -377,6 +383,9 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		return cur, err
 	}
 	if err := p.OIDC.apply(&next.OIDC); err != nil {
+		return cur, err
+	}
+	if err := p.Monitoring.apply(&next.Monitoring); err != nil {
 		return cur, err
 	}
 	return next, nil
@@ -469,6 +478,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return err
 	}
 	if err := validateOIDC(&s.OIDC); err != nil {
+		return err
+	}
+	if err := validateMonitoring(&s.Monitoring); err != nil {
 		return err
 	}
 	return validateEncryption(&s.Encryption, strictPassphrase)

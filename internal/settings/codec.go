@@ -58,6 +58,8 @@ const (
 	KeyOIDCAutoCreateUsers    = "oidc.auto_create_users"
 	KeyOIDCLocalLogin         = "oidc.local_login"
 	KeyOIDCRPLogout           = "oidc.rp_logout"
+	KeyHeartbeatURL           = "monitoring.heartbeat_url"
+	KeyHeartbeatInterval      = "monitoring.heartbeat_interval"
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -139,6 +141,8 @@ var keyDefs = []keyDef{
 	field(KeyOIDCAutoCreateUsers, false, func(s *Settings) *bool { return &s.OIDC.AutoCreateUsers }),
 	field(KeyOIDCLocalLogin, false, func(s *Settings) *string { return &s.OIDC.LocalLogin }),
 	field(KeyOIDCRPLogout, false, func(s *Settings) *bool { return &s.OIDC.RPLogout }),
+	field(KeyHeartbeatURL, true, func(s *Settings) *string { return &s.Monitoring.HeartbeatURL }),
+	field(KeyHeartbeatInterval, false, func(s *Settings) *Duration { return &s.Monitoring.HeartbeatInterval }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,
