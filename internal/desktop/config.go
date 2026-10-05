@@ -38,6 +38,15 @@ func DefaultDataDir() (string, error) {
 	return filepath.Join(dir, AppDirName, dataDirName), nil
 }
 
+// VersionFlag is the hidden flag (also written -version) that prints the app's
+// version and commit and exits, without opening the data directory or a window.
+const VersionFlag = "--version"
+
+// IsVersionFlag reports whether args is VersionFlag alone (also -version).
+func IsVersionFlag(args []string) bool {
+	return len(args) == 1 && (args[0] == VersionFlag || args[0] == "-version")
+}
+
 // ParseConfig returns the bootstrap configuration of the desktop app: the dashboard
 // is always on, the data directory is -data-dir, else MONGORESCUE_DATA_DIR, else
 // DefaultDataDir, and MONGORESCUE_SECRET_KEY is honoured. The listen address and

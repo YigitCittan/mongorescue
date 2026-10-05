@@ -80,3 +80,22 @@ func TestNewLogger(t *testing.T) {
 		t.Fatalf("log file %q, stderr %q, %v", b, stderr.String(), err)
 	}
 }
+
+func TestIsVersionFlag(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--version"}, true},
+		{[]string{"-version"}, true},
+		{nil, false},
+		{[]string{"--version", "--hidden"}, false},
+		{[]string{"-data-dir", "--version"}, false},
+		{[]string{"--versions"}, false},
+	}
+	for _, tt := range tests {
+		if got := IsVersionFlag(tt.args); got != tt.want {
+			t.Errorf("IsVersionFlag(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}

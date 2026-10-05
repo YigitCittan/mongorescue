@@ -1,0 +1,82 @@
+name: Desktop update E2E
+
+# The desktop app's in-app update, end to end (scripts/test-desktop-update-e2e.sh,
+# docs/desktop.md#how-the-update-is-tested): the app is built twice with the Wails
+# CLI, stamped 0.0.1 and 0.0.2, packaged as release.yml does, and the installed old
+# version updates itself from a fake GitHub release on a loopback port. Windows
+# swaps itself in place and restarts on the new version; macOS and Linux download,
+# verify and show the archive. A tampered archive must fail and leave the old
+# version intact. Runs on pull requests that touch the updater and on main; it is
+# not a required check.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - 'cmd/mongorescue-desktop/**'
+      - 'internal/desktop/**'
+      - 'internal/update/**'
+      - 'scripts/test-desktop-update-e2e.sh'
+      - '.github/workflows/desktop-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs of the same pull request; runs on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: '1.26'
+  WAILS_VERSION: v2.16.0 # keep in sync with github.com/wailsapp/wails/v2 in go.mod and release.yml
+
+jobs:
+  desktop-update-e2e:
+    name: Desktop update E2E (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+          - name: linux
+            os: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+
+      # The same dependencies as the release's desktop job.
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        run: go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
+
+      - name: Test the update source hook (desktop_e2e tag)
+        run: go test -tags desktop_e2e -count=1 -run 'E2E' ./internal/desktop/
+
+      - name: Run the desktop update E2E
+        env:
+          E2E_OUT: ${{ runner.temp }}/desktop-e2e
+        run: ./scripts/test-desktop-update-e2e.sh

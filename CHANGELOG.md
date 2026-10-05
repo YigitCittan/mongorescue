@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Groundwork for point-in-time recovery (no user-visible change yet).
+- Desktop update end-to-end test (`make test-desktop-update-e2e`, the non-required **Desktop update E2E** workflow): two Wails builds packaged as the release does are updated from a fake GitHub release on Windows (in place, with a restart), macOS and Linux (download, verify, reveal), and a tampered archive must fail and leave the installed app unchanged. The desktop app takes `--version`; builds with the `desktop_e2e` tag (never released) read `MONGORESCUE_E2E_UPDATE_BASE_URL`, which only accepts a loopback address
 
 ## [0.18.0] - 2026-10-03
 
