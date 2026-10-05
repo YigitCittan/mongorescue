@@ -3605,7 +3605,7 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
 }
 
 .pitr-plan-list dt {
-  color: var(--text-muted, inherit);
+  color: var(--muted);
 }
 
 .pitr-plan-list dd {
