@@ -2,6 +2,7 @@ package operations_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
@@ -190,6 +192,44 @@ func TestAnApprovedSSODemotionApplies(t *testing.T) {
 	}
 	if got := env.role(t, "bob"); got != auth.RoleOperator {
 		t.Fatalf("bob = %s after the approval; want operator", got)
+	}
+}
+
+// TestAFailedAdminGrantRequestLeavesNothingBehind proves that when the approval
+// request of an admin grant cannot be stored (here: an imported API key without a
+// creator, ErrRequesterUnknown), neither the viewer account nor the operator key
+// created for it stays.
+func TestAFailedAdminGrantRequestLeavesNothingBehind(t *testing.T) {
+	env := newAdminEnv(t)
+	ctx := context.Background()
+	const imported = "imported-legacy-key-0123456789"
+	if _, err := env.auth.ImportAPIKey(ctx, imported); err != nil {
+		t.Fatal(err)
+	}
+	p, err := env.auth.AuthenticateAPIKey(ctx, imported)
+	if err != nil || p.User != nil {
+		t.Fatalf("imported key = %+v, %v; want a key without a creator", p, err)
+	}
+	keyCtx := auth.WithPrincipal(ctx, p)
+	keysBefore, err := env.st.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := env.auth.CreateUser(keyCtx, p, "mallory", adminTestPassword, auth.RoleAdmin)
+	if !errors.Is(err, operations.ErrRequesterUnknown) || u != nil {
+		t.Fatalf("admin user from a key without a creator = %+v, %v; want ErrRequesterUnknown", u, err)
+	}
+	if _, err = env.st.GetUserByUsername(ctx, "mallory"); !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatalf("mallory after the failed request: %v; want ErrUserNotFound", err)
+	}
+
+	k, plain, err := env.auth.CreateAPIKey(keyCtx, p, "sneaky", auth.ScopeAdmin)
+	if !errors.Is(err, operations.ErrRequesterUnknown) || k != nil || plain != "" {
+		t.Fatalf("admin key from a key without a creator = %+v, %v; want ErrRequesterUnknown", k, err)
+	}
+	if keysAfter, _ := env.st.ListAPIKeys(ctx); len(keysAfter) != len(keysBefore) {
+		t.Fatalf("API keys after the failed request: %d; want %d", len(keysAfter), len(keysBefore))
 	}
 }
 

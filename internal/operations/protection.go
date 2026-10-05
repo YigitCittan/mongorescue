@@ -79,8 +79,10 @@ func (e *ApprovalPendingError) Error() string {
 		e.Approval.ID, e.Approval.Summary, e.Approval.ExpiresAt.UTC().Format(time.RFC3339))
 }
 
-// Unwrap returns ErrApprovalRequired.
-func (e *ApprovalPendingError) Unwrap() error { return ErrApprovalRequired }
+// Unwrap returns ErrApprovalRequired and auth.ErrAwaitingApproval.
+func (e *ApprovalPendingError) Unwrap() []error {
+	return []error{ErrApprovalRequired, auth.ErrAwaitingApproval}
+}
 
 // SettingsUpdater applies settings changes (implemented by *settings.Service).
 type SettingsUpdater interface {

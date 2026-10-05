@@ -532,7 +532,13 @@ func (s *Service) CreateUser(ctx context.Context, actor *Principal, username, pa
 	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
 		logsafe.Attr("role", string(user.Role)), slog.String("by", actor.UserID()))
 	if held {
-		return user, gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminRole, UserID: user.ID, Username: user.Username, Created: true})
+		err = gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminRole, UserID: user.ID, Username: user.Username, Created: true})
+		if err = s.rollbackUnrequested(ctx, err, "user", func(c context.Context) error {
+			return s.repo.DeleteUser(c, "", user.ID, false)
+		}); err != nil && !errors.Is(err, ErrAwaitingApproval) {
+			return nil, err
+		}
+		return user, err
 	}
 	return user, nil
 }
@@ -838,7 +844,13 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
 		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()))
 	if held {
-		return k, plain, gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminKey, KeyID: k.ID, KeyName: k.Name, Created: true})
+		err = gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminKey, KeyID: k.ID, KeyName: k.Name, Created: true})
+		if err = s.rollbackUnrequested(ctx, err, "API key", func(c context.Context) error {
+			return s.repo.DeleteAPIKey(c, k.ID)
+		}); err != nil && !errors.Is(err, ErrAwaitingApproval) {
+			return nil, "", err
+		}
+		return k, plain, err
 	}
 	return k, plain, nil
 }
