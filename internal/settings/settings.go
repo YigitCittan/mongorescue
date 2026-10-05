@@ -153,6 +153,9 @@ type General struct {
 	// LogRetentionDays keeps the log file of every backup and restore run for this
 	// many days (0 keeps them until their record is deleted).
 	LogRetentionDays int `json:"log_retention_days"`
+	// MaxUploadMbps caps the upload of every backup whose job sets no cap of its
+	// own, in megabits per second (0 = unlimited).
+	MaxUploadMbps float64 `json:"max_upload_mbps"`
 }
 
 // Security holds session, cookie, proxy, CORS and metrics options.
@@ -321,6 +324,7 @@ type GeneralPatch struct {
 	RestoreTimeout        *Duration            `json:"restore_timeout,omitempty"`
 	RestoreVerifyPolicy   *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
 	LogRetentionDays      *int                 `json:"log_retention_days,omitempty"`
+	MaxUploadMbps         *float64             `json:"max_upload_mbps,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -360,6 +364,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.RestoreTimeout, g.RestoreTimeout)
 		setIf(&next.General.RestoreVerifyPolicy, g.RestoreVerifyPolicy)
 		setIf(&next.General.LogRetentionDays, g.LogRetentionDays)
+		setIf(&next.General.MaxUploadMbps, g.MaxUploadMbps)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -465,6 +470,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.restore_verify_policy must be always, auto or never", ErrInvalid)
 	case g.LogRetentionDays < 0 || g.LogRetentionDays > maxRetentionDays:
 		return fmt.Errorf("%w: general.log_retention_days must be between 0 and %d", ErrInvalid, maxRetentionDays)
+	case models.ValidateUploadMbps(g.MaxUploadMbps) != nil:
+		return fmt.Errorf("%w: general.%w", ErrInvalid, models.ErrInvalidUploadRate)
 	}
 
 	sec := &s.Security

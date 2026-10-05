@@ -18,6 +18,7 @@ const (
 	KeyRestoreTimeout         = "general.restore_timeout"
 	KeyRestoreVerifyPolicy    = "general.restore_verify_policy"
 	KeyLogRetentionDays       = "general.log_retention_days"
+	KeyMaxUploadMbps          = "general.max_upload_mbps"
 	KeySessionIdleTimeout     = "security.session_idle_timeout"
 	KeySessionAbsoluteTimeout = "security.session_absolute_timeout"
 	KeySecureCookies          = "security.secure_cookies"
@@ -104,6 +105,7 @@ var keyDefs = []keyDef{
 	field(KeyRestoreTimeout, false, func(s *Settings) *Duration { return &s.General.RestoreTimeout }),
 	field(KeyRestoreVerifyPolicy, false, func(s *Settings) *string { return (*string)(&s.General.RestoreVerifyPolicy) }),
 	field(KeyLogRetentionDays, false, func(s *Settings) *int { return &s.General.LogRetentionDays }),
+	field(KeyMaxUploadMbps, false, func(s *Settings) *float64 { return &s.General.MaxUploadMbps }),
 	field(KeySessionIdleTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionIdleTimeout }),
 	field(KeySessionAbsoluteTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionAbsoluteTimeout }),
 	field(KeySecureCookies, false, func(s *Settings) *CookiePolicy { return &s.Security.SecureCookies }),

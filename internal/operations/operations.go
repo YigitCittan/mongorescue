@@ -413,6 +413,8 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 				req.ExcludeCollections = slices.Clone(job.ExcludeCollections)
 			}
 			req.IncludeUsersAndRoles = job.IncludeUsersAndRoles
+			req.ReadPreference = job.ReadPref()
+			req.MaxUploadMbps, req.NumParallelCollections = job.MaxUploadMbps, job.NumParallelCollections
 			gzip := job.Gzip
 			req.Gzip = &gzip
 		}
@@ -451,6 +453,8 @@ func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.
 		return opts, err
 	}
 	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
+	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())
+	opts.MaxConcurrentBackups = conn.MaxConcurrentBackups
 	target, err := s.ResolveTarget(ctx, opts.StorageTargetID)
 	if err != nil {
 		return opts, err

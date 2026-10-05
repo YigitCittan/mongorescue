@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -20,11 +21,16 @@ import (
 // collections excluded) with its estimated document count and index specifications,
 // and the server's version (buildInfo). The count is metadata-based (estimatedDocumentCount), so it is
 // cheap on large collections.
+//
+// Every read follows uri's read preference (the driver's listCollections and
+// listIndexes helpers always ask the primary, so both run as commands with it): a
+// backup that reads from a secondary captures its manifest there too.
 func (p *Prober) Manifest(ctx context.Context, uri, database string) (*models.Manifest, error) {
 	var out *models.Manifest
+	rp := readPreferenceOf(ctx, uri)
 	err := withClient(ctx, uri, func(c *mongo.Client) error {
 		db := c.Database(database)
-		specs, err := db.ListCollectionSpecifications(ctx, bson.D{}, options.ListCollections().SetAuthorizedCollections(true))
+		specs, err := listCollectionSpecs(ctx, db, rp)
 		if err != nil {
 			return fmt.Errorf("listCollections: %w", err)
 		}
@@ -38,7 +44,7 @@ func (p *Prober) Manifest(ctx context.Context, uri, database string) (*models.Ma
 			if err != nil {
 				return fmt.Errorf("count %s: %w", s.Name, err)
 			}
-			indexes, err := indexSpecs(ctx, coll)
+			indexes, err := indexSpecs(ctx, db, s.Name, rp)
 			if err != nil {
 				return fmt.Errorf("listIndexes %s: %w", s.Name, err)
 			}
@@ -72,9 +78,29 @@ type indexDoc struct {
 	ExpireAfterSeconds bson.RawValue `bson:"expireAfterSeconds"`
 }
 
-// indexSpecs lists the index specifications of coll.
-func indexSpecs(ctx context.Context, coll *mongo.Collection) ([]models.IndexSpec, error) {
-	cur, err := coll.Indexes().List(ctx)
+// collectionSpec is the part of a listCollections document a manifest reads.
+type collectionSpec struct {
+	Name string `bson:"name"`
+	Type string `bson:"type"`
+}
+
+// listCollectionSpecs lists the collections of db the user may read, with rp.
+func listCollectionSpecs(ctx context.Context, db *mongo.Database, rp *readpref.ReadPref) ([]collectionSpec, error) {
+	cur, err := db.RunCommandCursor(ctx, bson.D{{Key: "listCollections", Value: 1}, {Key: "authorizedCollections", Value: true}},
+		options.RunCmd().SetReadPreference(rp))
+	if err != nil {
+		return nil, err
+	}
+	var specs []collectionSpec
+	if err := cur.All(ctx, &specs); err != nil {
+		return nil, err
+	}
+	return specs, nil
+}
+
+// indexSpecs lists the index specifications of collection name of db, with rp.
+func indexSpecs(ctx context.Context, db *mongo.Database, name string, rp *readpref.ReadPref) ([]models.IndexSpec, error) {
+	cur, err := db.RunCommandCursor(ctx, bson.D{{Key: "listIndexes", Value: name}}, options.RunCmd().SetReadPreference(rp))
 	if err != nil {
 		return nil, err
 	}

@@ -47,6 +47,8 @@ type Manager struct {
 
 	mu     sync.Mutex
 	active map[string]struct{}
+	// slots holds the counted slots of AcquireSlot (per-connection backup limits).
+	slots  map[string]*slotQueue
 	closed bool
 	// refusing makes Acquire and Go return ErrShuttingDown until Accept.
 	refusing bool

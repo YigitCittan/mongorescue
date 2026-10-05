@@ -734,6 +734,10 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 		ConnectionID:         job.ConnectionID,
 		IncludeUsersAndRoles: job.IncludeUsersAndRoles,
 		Verify:               job.VerifyAfterBackup,
+
+		ReadPreference:         job.ReadPref(),
+		MaxUploadMbps:          job.MaxUploadMbps,
+		NumParallelCollections: job.NumParallelCollections,
 	}
 	if s.targets != nil {
 		target, err := s.targets.Resolve(ctx, job.StorageTargetID)
@@ -753,6 +757,10 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 		return opts, fmt.Errorf("resolve connection %s: %w", job.ConnectionID, err)
 	}
 	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
+	// The job's read preference overrides its connection's; the connection's
+	// limit of concurrent backups applies to every job that reads from it.
+	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())
+	opts.MaxConcurrentBackups = conn.MaxConcurrentBackups
 	return opts, nil
 }
 
