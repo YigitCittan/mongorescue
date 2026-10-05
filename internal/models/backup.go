@@ -156,6 +156,11 @@ type BackupRecord struct {
 	// derived from an include filter are not listed.
 	ExcludedCollections []string `json:"exclude_collections,omitempty"`
 
+	// Filtered reports that the backup holds only some collections of its database
+	// (Collections or ExcludedCollections is set). Such a backup still counts
+	// towards the database's recovery point objective.
+	Filtered bool `json:"filtered,omitempty"`
+
 	// StartedAt is the timestamp when the dump process initiated.
 	StartedAt time.Time `json:"started_at"`
 

@@ -291,7 +291,8 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 		Collections:    opts.Collections,
 		UsersAndRoles:  opts.UsersAndRolesApply(),
 
-		ExcludedCollections: trimmedNames(opts.ExcludeCollections),
+		ExcludedCollections: nilIfEmpty(trimmedNames(opts.ExcludeCollections)),
+		Filtered:            len(trimmedNames(opts.Collections)) > 0 || len(trimmedNames(opts.ExcludeCollections)) > 0,
 		StartedAt:           startTime,
 		Phases:              models.RunPhases{Queued: models.Stamp(startTime)},
 
@@ -402,6 +403,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	// The record names what the filter resolved to, patterns expanded, so the
 	// manifest and every later check describe the same collections.
 	record.Collections, record.ExcludedCollections = applied.include, applied.exclude
+	record.Filtered = len(applied.include) > 0 || len(applied.exclude) > 0
 	if applied.expanded {
 		tracker.Printf("collection filter resolved: include %q, exclude %q", applied.include, applied.exclude)
 	}

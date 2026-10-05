@@ -31,13 +31,44 @@ type multiEnv struct {
 	runs   *runs.Manager
 	mu     sync.Mutex
 	server []string
+	// failing makes mongodump fail for these databases; args are the arguments of
+	// each database's latest dump.
+	failing map[string]bool
+	args    map[string][]string
+}
+
+// dumpArgs returns the arguments of db's latest mongodump that start with prefix.
+func (e *multiEnv) dumpArgs(db, prefix string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, a := range e.args[db] {
+		if strings.HasPrefix(a, prefix) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 func newMultiEnv(t *testing.T, server ...string) *multiEnv {
 	t.Helper()
-	e := &multiEnv{st: storetest.New(t), server: server}
-	runner := func(context.Context, string, ...string) (io.ReadCloser, io.Reader, func() error, error) {
-		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
+	e := &multiEnv{st: storetest.New(t), server: server, failing: map[string]bool{}, args: map[string][]string{}}
+	runner := func(_ context.Context, _ string, args ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		db := ""
+		for _, a := range args {
+			if v, ok := strings.CutPrefix(a, "--db="); ok {
+				db = v
+			}
+		}
+		e.mu.Lock()
+		e.args[db] = slices.Clone(args)
+		fail := e.failing[db]
+		e.mu.Unlock()
+		wait := func() error { return nil }
+		if fail {
+			wait = func() error { return errors.New("exit status 1") }
+		}
+		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), wait, nil
 	}
 	mock := storage.NewMockStorage()
 	engine := backup.NewEngine(mock, "", backup.WithRunner(runner))

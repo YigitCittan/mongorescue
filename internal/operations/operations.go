@@ -362,9 +362,12 @@ func validateNamespaces(database string, collections, excluded []string) error {
 }
 
 // RetryBackup starts a new backup with the parameters of the failed backup id: the
-// same connection, database, collections and storage target, the job's excluded
-// collections and compression when the backup belongs to a job that still exists, and
-// otherwise the compression recorded in its storage key. It runs exactly like
+// same connection, database, storage target and collection filter (the one recorded
+// on the failed backup: its collections and excluded collections, as applied or as
+// requested when the backup failed before applying it), the job's compression when
+// the backup belongs to a job that still exists, and otherwise the compression
+// recorded in its storage key. Only a record written before backups recorded their
+// exclusions falls back to the excluded collections of its single-database job. It runs exactly like
 // StartBackup (same concurrency keys, events and bookkeeping) and returns a snapshot
 // of the new in-progress record, whose RetryOf is id. The failed record is never
 // modified. trigger is models.TriggerMCP for MCP and otherwise recorded as
@@ -396,13 +399,19 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 		},
 		Trigger: trigger,
 	}
+	// The backup's own filter, so a database of a multi-database run (whose filter
+	// is per database) is retried with it.
+	req.ExcludeCollections = slices.Clone(original.ExcludedCollections)
 	if gzip, ok := gzipFromKey(original.StorageKey); ok {
 		req.Gzip = &gzip
 	}
 	if original.JobID != "" {
 		if job, jobErr := s.cfg.Store.GetJob(ctx, original.JobID); jobErr == nil {
 			req.JobID = job.ID
-			req.ExcludeCollections = slices.Clone(job.ExcludeCollections)
+			if original.ExcludedCollections == nil && !job.MultiDatabase() {
+				// Records written before exclusions were recorded.
+				req.ExcludeCollections = slices.Clone(job.ExcludeCollections)
+			}
 			req.IncludeUsersAndRoles = job.IncludeUsersAndRoles
 			gzip := job.Gzip
 			req.Gzip = &gzip
