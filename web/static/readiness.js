@@ -29,6 +29,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "Database",
       col_jobs: "Jobs",
       col_last_good: "Last good backup",
+      partial_excluded: "Covered partially: {n} collections excluded",
+      partial_included: "Covered partially: only {n} collections",
       col_verified: "Last verified",
       col_restore_test: "Restore test",
       col_rpo: "RPO",
@@ -86,6 +88,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "Veritabanı",
       col_jobs: "Görevler",
       col_last_good: "Son başarılı yedek",
+      partial_excluded: "Kısmen kapsanıyor: {n} koleksiyon hariç",
+      partial_included: "Kısmen kapsanıyor: yalnızca {n} koleksiyon",
       col_verified: "Son doğrulanan",
       col_restore_test: "Geri yükleme testi",
       col_rpo: "RPO",
@@ -143,6 +147,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "Datenbank",
       col_jobs: "Jobs",
       col_last_good: "Letzte gute Sicherung",
+      partial_excluded: "Teilweise abgedeckt: {n} Collections ausgeschlossen",
+      partial_included: "Teilweise abgedeckt: nur {n} Collections",
       col_verified: "Zuletzt geprüft",
       col_restore_test: "Wiederherstellungstest",
       col_rpo: "RPO",
@@ -200,6 +206,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "Base de datos",
       col_jobs: "Trabajos",
       col_last_good: "Última copia correcta",
+      partial_excluded: "Cubierta en parte: {n} colecciones excluidas",
+      partial_included: "Cubierta en parte: solo {n} colecciones",
       col_verified: "Última verificada",
       col_restore_test: "Prueba de restauración",
       col_rpo: "RPO",
@@ -257,6 +265,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "Base",
       col_jobs: "Tâches",
       col_last_good: "Dernière sauvegarde réussie",
+      partial_excluded: "Couverte en partie : {n} collections exclues",
+      partial_included: "Couverte en partie : seulement {n} collections",
       col_verified: "Dernière vérifiée",
       col_restore_test: "Test de restauration",
       col_rpo: "RPO",
@@ -314,6 +324,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "数据库",
       col_jobs: "任务",
       col_last_good: "最近成功备份",
+      partial_excluded: "部分覆盖：排除了 {n} 个集合",
+      partial_included: "部分覆盖：仅 {n} 个集合",
       col_verified: "最近验证",
       col_restore_test: "恢复测试",
       col_rpo: "RPO",
@@ -371,6 +383,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "データベース",
       col_jobs: "ジョブ",
       col_last_good: "最新の成功バックアップ",
+      partial_excluded: "一部のみ対象: {n} 個のコレクションを除外",
+      partial_included: "一部のみ対象: {n} 個のコレクションのみ",
       col_verified: "最新の検証済み",
       col_restore_test: "復元テスト",
       col_rpo: "RPO",
@@ -428,6 +442,8 @@ const READINESS_TRANSLATIONS = {
       col_database: "База данных",
       col_jobs: "Задания",
       col_last_good: "Последняя успешная копия",
+      partial_excluded: "Покрыта частично: исключено коллекций: {n}",
+      partial_included: "Покрыта частично: только коллекций: {n}",
       col_verified: "Последняя проверенная",
       col_restore_test: "Тест восстановления",
       col_rpo: "RPO",
@@ -567,6 +583,20 @@ function readinessRestoreTestCell(row) {
   return escapeHtml(tf(key, { when: ovWhen(rt.at) }));
 }
 
+// The note of a last good backup that holds only some collections of its database
+// ("Covered partially: 2 collections excluded"), or "". It still counts towards the
+// RPO; the collections it left out are not covered.
+function readinessPartialCell(ref) {
+  if (!ref || !ref.filtered) return "";
+  const inc = ref.collections || [];
+  const exc = ref.exclude_collections || [];
+  const text = inc.length > 0
+    ? tf("readiness.partial_included", { n: inc.length })
+    : tf("readiness.partial_excluded", { n: exc.length });
+  const title = typeof backupFilterText === "function" ? backupFilterText(ref) : "";
+  return `<span class="rd-sub" title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
+}
+
 function readinessJobsCell(row) {
   return (row.jobs || []).map(j => `<button type="button" class="link-btn" data-action="rd-open-job" data-id="${escapeHtml(j.id)}">${escapeHtml(j.name || j.id)}</button>`).join(", ");
 }
@@ -606,7 +636,7 @@ function readinessRender() {
       return `<tr>
         <th scope="row"><span class="mono">${escapeHtml(r.database)}</span>${where ? `<span class="rd-sub">${escapeHtml(where)}</span>` : ""}</th>
         <td>${readinessJobsCell(r)}</td>
-        <td>${escapeHtml(readinessWhen(r.last_good_backup && r.last_good_backup.at))}</td>
+        <td>${escapeHtml(readinessWhen(r.last_good_backup && r.last_good_backup.at))}${readinessPartialCell(r.last_good_backup)}</td>
         <td>${escapeHtml(readinessWhen(r.last_verified_backup && r.last_verified_backup.at))}</td>
         <td>${readinessRestoreTestCell(r)}</td>
         <td>${readinessRpoCell(r)}</td>

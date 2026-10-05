@@ -56,7 +56,8 @@ func TestBackupNowWithCollectionFiltersPerDatabase(t *testing.T) {
 	run, err := svc.StartBackups(ctx, operations.BackupRequest{
 		BackupOptions: models.BackupOptions{ConnectionID: conn.ID},
 		Databases: []models.DatabaseFilter{
-			{Name: first, ExcludeCollections: []string{"logs", "tmp"}},
+			// "tm?" is a pattern, expanded into tmp.
+			{Name: first, ExcludeCollections: []string{"logs", "tm?"}},
 			{Name: second, Collections: []string{"orders", "logs"}},
 		},
 	})

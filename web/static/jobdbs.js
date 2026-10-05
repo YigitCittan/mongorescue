@@ -76,6 +76,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Expand a database to back up only some of its collections: checked collections are backed up.",
       tree_hint_all: "Expand a database to skip some of its collections: checked collections are excluded. Databases found later are backed up whole.",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "Filtered",
+      filtered_only: "Only these collections: {list}",
+      filtered_without: "Without these collections: {list}",
       need_pattern: "Enter at least one include pattern.",
       cell_n: "{n} databases",
       cell_all: "All",
@@ -186,6 +189,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Bir veritabanının yalnızca bazı koleksiyonlarını yedeklemek için onu genişletin: işaretli koleksiyonlar yedeklenir.",
       tree_hint_all: "Bir veritabanının bazı koleksiyonlarını atlamak için onu genişletin: işaretli koleksiyonlar hariç tutulur. Sonradan bulunan veritabanları tümüyle yedeklenir.",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "Filtreli",
+      filtered_only: "Yalnızca bu koleksiyonlar: {list}",
+      filtered_without: "Bu koleksiyonlar hariç: {list}",
       need_pattern: "En az bir dahil deseni girin.",
       cell_n: "{n} veritabanı",
       cell_all: "Tümü",
@@ -296,6 +302,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Klappen Sie eine Datenbank auf, um nur einige ihrer Collections zu sichern: markierte Collections werden gesichert.",
       tree_hint_all: "Klappen Sie eine Datenbank auf, um einige ihrer Collections zu überspringen: markierte Collections werden ausgeschlossen. Später gefundene Datenbanken werden vollständig gesichert.",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "Gefiltert",
+      filtered_only: "Nur diese Collections: {list}",
+      filtered_without: "Ohne diese Collections: {list}",
       need_pattern: "Geben Sie mindestens ein Einschlussmuster ein.",
       cell_n: "{n} Datenbanken",
       cell_all: "Alle",
@@ -406,6 +415,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Despliegue una base de datos para respaldar solo algunas de sus colecciones: se respaldan las colecciones marcadas.",
       tree_hint_all: "Despliegue una base de datos para omitir algunas de sus colecciones: las colecciones marcadas se excluyen. Las bases de datos que aparezcan después se respaldan enteras.",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "Filtrada",
+      filtered_only: "Solo estas colecciones: {list}",
+      filtered_without: "Sin estas colecciones: {list}",
       need_pattern: "Introduzca al menos un patrón de inclusión.",
       cell_n: "{n} bases de datos",
       cell_all: "Todas",
@@ -516,6 +528,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Dépliez une base pour ne sauvegarder que certaines de ses collections : les collections cochées sont sauvegardées.",
       tree_hint_all: "Dépliez une base pour ignorer certaines de ses collections : les collections cochées sont exclues. Les bases trouvées plus tard sont sauvegardées entières.",
       summary_colls: "{db} : {colls}",
+      filtered_badge: "Filtrée",
+      filtered_only: "Seulement ces collections : {list}",
+      filtered_without: "Sans ces collections : {list}",
       need_pattern: "Saisissez au moins un motif d'inclusion.",
       cell_n: "{n} bases",
       cell_all: "Toutes",
@@ -626,6 +641,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "展开数据库可只备份其中部分集合：勾选的集合会被备份。",
       tree_hint_all: "展开数据库可跳过其中部分集合：勾选的集合会被排除。之后发现的数据库将整体备份。",
       summary_colls: "{db}：{colls}",
+      filtered_badge: "已筛选",
+      filtered_only: "仅这些集合：{list}",
+      filtered_without: "不含这些集合：{list}",
       need_pattern: "请至少输入一个包含模式。",
       cell_n: "{n} 个数据库",
       cell_all: "全部",
@@ -736,6 +754,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "データベースを展開すると、一部のコレクションだけをバックアップできます。チェックしたコレクションがバックアップされます。",
       tree_hint_all: "データベースを展開すると、一部のコレクションをスキップできます。チェックしたコレクションは除外されます。後から見つかったデータベースは丸ごとバックアップされます。",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "フィルター済み",
+      filtered_only: "これらのコレクションのみ: {list}",
+      filtered_without: "これらのコレクションを除く: {list}",
       need_pattern: "含めるパターンを少なくとも 1 つ入力してください。",
       cell_n: "{n} 個のデータベース",
       cell_all: "すべて",
@@ -846,6 +867,9 @@ const JOBDB_TRANSLATIONS = {
       tree_hint_list: "Раскройте базу данных, чтобы копировать лишь некоторые её коллекции: отмеченные коллекции копируются.",
       tree_hint_all: "Раскройте базу данных, чтобы пропустить некоторые её коллекции: отмеченные коллекции исключаются. Базы данных, найденные позже, копируются целиком.",
       summary_colls: "{db}: {colls}",
+      filtered_badge: "С фильтром",
+      filtered_only: "Только эти коллекции: {list}",
+      filtered_without: "Без этих коллекций: {list}",
       need_pattern: "Введите хотя бы один шаблон включения.",
       cell_n: "Баз данных: {n}",
       cell_all: "Все",
@@ -2308,6 +2332,28 @@ function instantDbsStarted(run) {
   const opts = id && typeof showRunBackups === "function"
     ? { action: { label: t("instantdb.view_run"), run: () => showRunBackups(id) } } : undefined;
   showToast(text, "info", opts);
+}
+
+// Whether backup record b holds only some collections of its database.
+function backupIsFiltered(b) {
+  return !!b && (!!b.filtered || (b.collections || []).length > 0 || (b.exclude_collections || []).length > 0);
+}
+
+// What the collection filter of backup b kept, in words ("Only these collections:
+// orders" or "Without these collections: logs, tmp"), or "".
+function backupFilterText(b) {
+  const inc = (b && b.collections) || [];
+  const exc = (b && b.exclude_collections) || [];
+  const parts = [];
+  if (inc.length > 0) parts.push(tf("jobdb.filtered_only", { list: jobDbsNameList(inc, 8) }));
+  if (exc.length > 0) parts.push(tf("jobdb.filtered_without", { list: jobDbsNameList(exc, 8) }));
+  return parts.join("; ");
+}
+
+// The "Filtered" chip of a backup that holds only some collections, or "".
+function backupFilterBadge(b) {
+  if (!backupIsFiltered(b)) return "";
+  return `<span class="trust-chip trust-warn" title="${escapeHtml(backupFilterText(b))}">${escapeHtml(t("jobdb.filtered_badge"))}</span>`;
 }
 
 // Delegated actions of this module (called by runs.js for actions it does not

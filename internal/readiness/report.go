@@ -135,6 +135,12 @@ type BackupRef struct {
 	At time.Time `json:"at"`
 	// JobID is the job that took it.
 	JobID string `json:"job_id,omitempty"`
+	// Filtered reports that the backup holds only some collections of the database:
+	// only Collections, or all but ExcludedCollections. It still counts towards the
+	// RPO; the collections it left out are not covered by it.
+	Filtered            bool     `json:"filtered,omitempty"`
+	Collections         []string `json:"collections,omitempty"`
+	ExcludedCollections []string `json:"exclude_collections,omitempty"`
 }
 
 // RestoreTestRef is the newest restore test of a database.
@@ -290,7 +296,8 @@ func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time
 	}
 	at := finishedAt(p.last)
 	if cur := acc.row.LastGoodBackup; cur == nil || at.After(cur.At) {
-		acc.row.LastGoodBackup = &BackupRef{ID: p.last.ID, At: at, JobID: p.job.ID}
+		acc.row.LastGoodBackup = &BackupRef{ID: p.last.ID, At: at, JobID: p.job.ID,
+			Filtered: p.last.Filtered, Collections: slices.Clone(p.last.Collections), ExcludedCollections: slices.Clone(p.last.ExcludedCollections)}
 		acc.row.Encrypted = p.last.Encrypted
 		acc.verifyKO = p.last.Verification == models.VerificationMismatch || p.last.Verification == models.VerificationError
 	}
