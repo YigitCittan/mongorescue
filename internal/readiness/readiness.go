@@ -94,6 +94,9 @@ type Config struct {
 	// KeysEscrowed reports whether a recovery kit was downloaded for the current
 	// secret.key, encryption keys and storage targets; nil means false.
 	KeysEscrowed func() bool
+	// Streams lists the PITR streams: they appear in the report, and a stream's
+	// durable lag is the PITR RPO of the rows of its connection; nil means none.
+	Streams StreamLister
 	// Publisher receives job.rpo_missed and job.rpo_recovered.
 	Publisher events.Publisher
 	// Observe receives the samples of every check (metrics) with the time the check

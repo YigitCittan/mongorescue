@@ -445,6 +445,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
+		Streams:      pitrStreams(&pitrSvc),
 		Publisher:    bus,
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))

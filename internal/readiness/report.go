@@ -66,6 +66,8 @@ type Report struct {
 	// Rows has one entry per connection and database, ordered by status (fail
 	// first), then connection and database.
 	Rows []Row `json:"rows"`
+	// Streams has one entry per PITR stream, ordered like Rows.
+	Streams []StreamRow `json:"streams"`
 }
 
 // Summary counts rows by status.
@@ -160,9 +162,15 @@ type RestoreTestRef struct {
 type RPOStatus struct {
 	// TargetSeconds is the strictest objective of the enabled jobs (0 without one).
 	TargetSeconds float64 `json:"target_seconds"`
-	// AgeSeconds is the age of the newest successful backup by any job; nil without
-	// one.
+	// AgeSeconds is the effective RPO: the age of the newest successful backup by
+	// any job, or the durable lag of the connection's PITR stream when that is
+	// smaller (Source); nil without either.
 	AgeSeconds *float64 `json:"age_seconds,omitempty"`
+	// Source is RPOSourceJob or RPOSourcePITR; JobAgeSeconds and PITRAgeSeconds are
+	// the two candidates.
+	Source         string   `json:"source,omitempty"`
+	JobAgeSeconds  *float64 `json:"job_age_seconds,omitempty"`
+	PITRAgeSeconds *float64 `json:"pitr_age_seconds,omitempty"`
 	// Met reports whether every enabled job meets its objective; nil when no
 	// enabled job covers the database.
 	Met *bool `json:"met,omitempty"`
@@ -248,9 +256,20 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		byDB[rowKey{r.SourceConnectionID, r.SourceDatabase}] = r
 	}
 
-	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows))}
+	var streams []StreamInfo
+	if s.cfg.Streams != nil {
+		if streams, err = s.cfg.Streams(ctx); err != nil {
+			return nil, fmt.Errorf("%w: PITR streams: %w", ErrUnavailable, err)
+		}
+	}
+	byConn := make(map[string]*StreamInfo, len(streams))
+	for i := range streams {
+		byConn[streams[i].ConnectionID] = &streams[i]
+	}
+
+	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names)}
 	for rk, acc := range rows {
-		finishRow(acc, byDB[rk], now)
+		finishRow(acc, byDB[rk], now, byConn[rk.connection])
 		switch acc.row.Status {
 		case StatusOK:
 			report.Summary.OK++
@@ -266,6 +285,10 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		return cmp.Or(cmp.Compare(rank[a.Status], rank[b.Status]),
 			cmp.Compare(a.ConnectionName, b.ConnectionName), cmp.Compare(a.ConnectionID, b.ConnectionID),
 			cmp.Compare(a.Database, b.Database))
+	})
+	slices.SortFunc(report.Streams, func(a, b StreamRow) int {
+		return cmp.Or(cmp.Compare(rank[a.Status], rank[b.Status]),
+			cmp.Compare(a.ConnectionName, b.ConnectionName), cmp.Compare(a.ConnectionID, b.ConnectionID))
 	})
 	return report, nil
 }
@@ -337,12 +360,24 @@ func addEvidence(acc *rowAcc, p point, verified map[string]*models.BackupRecord,
 }
 
 // finishRow sets acc's RPO summary, RTO estimate (restore is the newest completed
-// real restore of the database, or nil) and status.
-func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time) {
+// real restore of the database, or nil) and status. stream is the PITR stream of
+// the row's connection, or nil: its durable lag is the row's effective RPO when it
+// is better than the jobs', and its reasons apply to the row.
+func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream *StreamInfo) {
 	r := &acc.row
 	if b := r.LastGoodBackup; b != nil {
 		age := max(now.Sub(b.At), 0).Seconds()
-		r.RPO.AgeSeconds = &age
+		r.RPO.AgeSeconds, r.RPO.JobAgeSeconds, r.RPO.Source = &age, &age, RPOSourceJob
+	}
+	if pAge, ok := pitrAge(stream); ok {
+		r.RPO.PITRAgeSeconds = &pAge
+		if r.RPO.AgeSeconds == nil || pAge < *r.RPO.AgeSeconds {
+			r.RPO.AgeSeconds, r.RPO.Source = &pAge, RPOSourcePITR
+		}
+		// The point-in-time window recovers the database within its objective.
+		if acc.missed && r.RPO.TargetSeconds > 0 && pAge <= r.RPO.TargetSeconds {
+			acc.missed = false
+		}
 	}
 	if acc.enabled > 0 {
 		met := !acc.missed
@@ -383,6 +418,10 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time) {
 	}
 	if r.Encrypted && !r.KeysEscrowed {
 		warn = append(warn, ReasonKeysNotEscrowed)
+	}
+	if stream != nil {
+		sf, sw := streamReasons(*stream)
+		fail, warn = append(fail, sf...), append(warn, sw...)
 	}
 	r.Reasons = append(fail, warn...)
 	if r.Reasons == nil {
