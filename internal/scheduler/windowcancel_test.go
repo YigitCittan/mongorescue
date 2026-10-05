@@ -87,12 +87,12 @@ func TestWindowEndCancelsOnlyTheScheduledRun(t *testing.T) {
 		t.Fatal("the scheduled run was not cancelled when its window closed")
 	}
 	select {
-	case err := <-manualDone:
-		t.Fatalf("the manual run ended with the window: %v", err)
+	case runErr := <-manualDone:
+		t.Fatalf("the manual run ended with the window: %v", runErr)
 	default:
 	}
 	close(release)
-	if err := <-manualDone; err != nil {
+	if err = <-manualDone; err != nil {
 		t.Fatalf("manual run: %v", err)
 	}
 
