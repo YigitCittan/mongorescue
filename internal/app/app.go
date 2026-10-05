@@ -28,6 +28,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
@@ -102,6 +103,7 @@ type App struct {
 	readiness     *readiness.Service
 	auditLog      *auditlog.Service
 	auditForward  *auditlog.Forwarder
+	heartbeat     *heartbeat.Service
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -439,9 +441,23 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	})
 	bus.Subscribe(readinessSvc.HandleEvent)
 
+	// The outbound heartbeat: the global ping while the scheduler is healthy and the
+	// per-job start/success/fail pings. sched is assigned below, before Start runs
+	// the service.
+	var sched *scheduler.Scheduler
+	heartbeatSvc := heartbeat.New(heartbeat.Config{
+		Global: func() (string, time.Duration) {
+			m := settingsSvc.Current().Monitoring
+			return m.HeartbeatURL, m.HeartbeatInterval.Std()
+		},
+		Healthy: func() bool { return !sched.Stale(time.Now()) },
+		Logger:  logger,
+	})
+
 	// 5. Initialize scheduler
-	sched := scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
+	sched = scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
 		scheduler.WithPublisher(bus),
+		scheduler.WithRunObserver(heartbeatSvc),
 		scheduler.WithConnectionResolver(connSvc),
 		scheduler.WithStorageTargets(targetSvc),
 		scheduler.WithRunRegistry(registry),
@@ -469,6 +485,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 	)
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
+	metricSet.SetSchedulerTickSource(sched.LastTick)
+	metricSet.SetSettingsWarningsSource(func() int { return len(settingsSvc.Warnings()) })
 
 	// 6. Initialize the embedded web dashboard (only with cfg.Dashboard) & HTTP API.
 	// Without it the server has no "/" route and serves only the API, MCP and metrics.
@@ -538,6 +556,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithMetadataBackup(metaBackupSvc),
 		server.WithRecoveryKit(kitSvc),
 		server.WithReadiness(readinessSvc),
+		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
@@ -566,6 +585,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
+		heartbeat:     heartbeatSvc,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 	}, nil
@@ -657,8 +677,17 @@ func (a *App) startBackground() (stop func()) {
 	var auditWG, forwardWG sync.WaitGroup
 	auditWG.Go(func() { a.auditLog.Run(auditCtx) })
 	forwardWG.Go(func() { a.auditForward.Run(forwardCtx) })
+	// The heartbeat stops after the runs (Stop calls this after shutdownRuns), so the
+	// /fail pings of runs cancelled by the shutdown are still sent.
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	var heartbeatWG sync.WaitGroup
+	if a.heartbeat != nil {
+		heartbeatWG.Go(func() { a.heartbeat.Run(heartbeatCtx) })
+	}
 
 	return func() {
+		cancelHeartbeat()
+		heartbeatWG.Wait()
 		cancelPrune()
 		pruneWG.Wait()
 		cancelAudit()

@@ -103,6 +103,12 @@ type Job struct {
 	// default from the schedule applies (see DefaultRPO). When set it is between
 	// MinRPOMinutes and MaxRPOMinutes.
 	RPOMinutes int `json:"rpo_minutes,omitempty"`
+
+	// HeartbeatURL is an optional dead-man's-switch URL (healthchecks.io
+	// compatible) pinged at "<url>/start" when a run starts, "<url>" when it
+	// succeeds and "<url>/fail" when it fails, is partial or is cancelled. Secret:
+	// the store seals it and API responses show only its origin (see Redacted).
+	HeartbeatURL string `json:"heartbeat_url,omitempty"`
 }
 
 // Clone returns a deep copy of the job.

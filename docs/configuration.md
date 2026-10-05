@@ -46,7 +46,7 @@ The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secr
 
 Only administrators (the `admin` dashboard role, or an `admin` API key of an administrator) can change settings and storage targets and use the test endpoints, which make outbound connections to the hosts they name. Give other people the `viewer` or `operator` role; see [design/roles.md](design/roles.md).
 
-**Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Recovery, Security, Audit log, Users, Single sign-on, API keys and Sessions. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
+**Settings** in the dashboard has the sections General, Storage, Integrity, Encryption, Recovery, Security, Monitoring, Audit log, Users, Single sign-on, API keys and Sessions. Changes apply to the next backup, restore or request without a restart. The same settings are available through `GET` and `PUT /api/v1/settings` ([API](api.md#settings)); durations are Go duration strings such as `90m` or `6h` (`0s` disables a limit), and secrets come back as `******`.
 
 ### General
 
@@ -97,6 +97,17 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `cors_origins` | empty | Exact origins (`https://ops.example.com`) allowed to call the API cross-origin; no wildcards. Empty disables CORS |
 | `metrics_public` | `false` | Serve `/metrics` without an API key |
 | `mcp_enabled` | `true` | Serve the [MCP endpoint](mcp.md) `/mcp` for AI assistants (API keys only). When off it answers `403` and the stdio bridge cannot connect |
+
+### Monitoring
+
+The outbound heartbeat to an external dead-man's switch (Settings → Monitoring); see [monitoring.md](monitoring.md).
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `heartbeat_url` | empty | `http` or `https` URL (healthchecks.io compatible) pinged with `GET` every interval while the scheduler is healthy (empty = off). Secret: stored encrypted, shown only up to its host. Sending the masked value back keeps it; a masked value for another host is refused, so a new host needs the full URL |
+| `heartbeat_interval` | `5m` | Time between pings (1m to 1h) |
+
+Jobs have their own optional `heartbeat_url`, pinged at `<url>/start`, `<url>` and `<url>/fail` (see [monitoring.md](monitoring.md#job-heartbeats)).
 
 ### Audit log
 

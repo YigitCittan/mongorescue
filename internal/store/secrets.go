@@ -56,6 +56,7 @@ var unsealedSecretQueries = []struct {
 }{
 	{tableConnections, `SELECT id, 'uri' FROM connections WHERE ` + unsealedSQL(`json_extract(data, '$.uri')`)},
 	{tableJobs, `SELECT id, 'mongo_uri' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.mongo_uri')`)},
+	{tableJobs, `SELECT id, 'heartbeat_url' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.heartbeat_url')`)},
 	{tableChannels, `SELECT id, 'webhook.url' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.webhook.url')`)},
 	{tableChannels, `SELECT id, 'webhook.secret' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.webhook.secret')`)},
 	{tableChannels, `SELECT id, 'telegram.bot_token' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.telegram.bot_token')`)},
@@ -106,7 +107,8 @@ const (
 // description containing "sb1:" is not mistaken for a secret.
 var sealedSecretQueries = []string{
 	`SELECT COUNT(*) FROM connections WHERE ` + sealedSQL(`json_extract(data, '$.uri')`),
-	`SELECT COUNT(*) FROM jobs WHERE ` + sealedSQL(`json_extract(data, '$.mongo_uri')`),
+	`SELECT COUNT(*) FROM jobs WHERE ` + sealedSQL(`json_extract(data, '$.mongo_uri')`) +
+		` OR ` + sealedSQL(`json_extract(data, '$.heartbeat_url')`),
 	`SELECT COUNT(*) FROM notification_channels WHERE ` + strings.Join([]string{
 		sealedSQL(`json_extract(data, '$.webhook.url')`),
 		sealedSQL(`json_extract(data, '$.webhook.secret')`),

@@ -125,6 +125,26 @@ jobs:
           name: code-coverage-report
           path: coverage.out
 
+  # Shipped Prometheus alert rules: syntax and unit tests (deploy/prometheus).
+  prometheus-rules:
+    name: Prometheus rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # promtool from the official image, pinned by digest.
+      PROMETHEUS_IMAGE: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the alert rules
+        run: docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool "$PROMETHEUS_IMAGE" check rules alerts.yml
+
+      - name: Unit test the alert rules
+        run: docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool "$PROMETHEUS_IMAGE" test rules alerts_test.yml
+
   # 3. Cross-Platform Compilation Check
   build-check:
     name: Cross-Compilation Verification

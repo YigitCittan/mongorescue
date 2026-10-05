@@ -162,7 +162,9 @@ type recordChecker func(ctx context.Context, s *SQLiteStore, id string) error
 
 // recordCheckers maps every table reported in CorruptRecord to its checker.
 var recordCheckers = map[string]recordChecker{
-	tableJobs:     checkJSON[models.Job](tableJobs, nil),
+	tableJobs: checkJSON(tableJobs, func(s *SQLiteStore, j *models.Job) error {
+		return s.openJob(j)
+	}),
 	tableBackups:  checkJSON[models.BackupRecord](tableBackups, nil),
 	tableRestores: checkJSON[models.RestoreRecord](tableRestores, nil),
 	tableJobRuns:  checkJSON[models.JobRun](tableJobRuns, nil),

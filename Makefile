@@ -24,6 +24,8 @@ COVERAGE_MIN?=60
 COVERAGE_FILE?=coverage.out
 # Extra flags for integration runs (e.g. INTEGRATION_FLAGS="-coverprofile=integration-coverage.out").
 INTEGRATION_FLAGS?=
+# promtool image of test-prometheus-rules (the version CI pins).
+PROMETHEUS_IMAGE?=prom/prometheus:v3.15.0
 
 # Fuzzing: time per fuzz target, and the <package>:<FuzzFunc> targets make fuzz runs
 # (override FUZZ_TARGETS to run a subset).
@@ -60,7 +62,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-e2e test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-e2e test-prometheus-rules test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -109,6 +111,11 @@ test-integration-docker:
 ## test-e2e: Runs the Playwright browser suite (e2e/) against the built binary, MongoDB and MinIO in Docker
 test-e2e:
 	./scripts/test-e2e-docker.sh
+
+## test-prometheus-rules: Checks and unit-tests the shipped alert rules (deploy/prometheus) with promtool in Docker
+test-prometheus-rules:
+	docker run --rm -v "$(CURDIR)/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool $(PROMETHEUS_IMAGE) check rules alerts.yml
+	docker run --rm -v "$(CURDIR)/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool $(PROMETHEUS_IMAGE) test rules alerts_test.yml
 
 ## test-desktop-update-e2e: Builds the desktop app in two versions with the Wails CLI and tests its in-app update against a fake release
 test-desktop-update-e2e:

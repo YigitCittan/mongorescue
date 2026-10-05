@@ -24,6 +24,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
@@ -108,6 +109,12 @@ type Server struct {
 
 	// readiness reports the RPO, RTO and evidence of every database a job backs up.
 	readiness *readiness.Service
+
+	// heartbeat sends the test pings of POST /api/v1/settings/monitoring/test.
+	heartbeat *heartbeat.Service
+	// livenessSource overrides the scheduler as the health check's liveness source
+	// (tests).
+	livenessSource schedulerLiveness
 
 	// version is reported by the health endpoint.
 	version string
@@ -299,6 +306,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Settings and storage targets
 	s.registerSettingsRoutes(mux)
+	s.registerMonitoringRoutes(mux)
 	s.registerStorageTargetRoutes(mux)
 
 	// API System & Stats
@@ -402,14 +410,6 @@ func writeErrorData(w http.ResponseWriter, status int, message string, data any)
 
 // Handlers
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "healthy",
-		"version": s.version,
-		"time":    time.Now().UTC(),
-	})
-}
-
 // handleStats serves the dashboard KPIs. Administrators also get the stored rows that
 // cannot be read (corrupt_records), for the dashboard's warning banner.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -506,6 +506,18 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The heartbeat URL is a secret: its masked form keeps the stored URL.
+	storedHeartbeat := ""
+	if existing != nil {
+		storedHeartbeat = existing.HeartbeatURL
+	}
+	heartbeatURL, hbErr := models.ResolveHeartbeatURL(job.HeartbeatURL, storedHeartbeat)
+	if hbErr != nil {
+		writeError(w, http.StatusBadRequest, hbErr.Error())
+		return
+	}
+	job.HeartbeatURL = heartbeatURL
+
 	if !job.Enabled {
 		if err := s.ops.ValidatePausedUntil(job.PausedUntil); err != nil {
 			s.writeJobError(w, err)
@@ -555,7 +567,7 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, job)
+	writeJSON(w, http.StatusCreated, job.Redacted())
 }
 
 // handleGetJob returns a job with its next activations.
@@ -581,7 +593,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		s.writeJobError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, job.Redacted())
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target

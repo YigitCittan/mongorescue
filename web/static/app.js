@@ -2394,6 +2394,7 @@ function setupForms() {
       ...trustJobPayload(),
       include_users_and_roles: document.getElementById("job-users-roles").checked,
       ...(typeof readinessJobPayload === "function" ? readinessJobPayload() : {}),
+      ...(typeof monitoringJobPayload === "function" ? monitoringJobPayload() : {}),
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2583,6 +2584,8 @@ function openJobModal(jobID) {
   trustFillJobForm(job);
   // The recovery point objective (readiness.js).
   if (typeof readinessFillJobForm === "function") readinessFillJobForm(job);
+  // The job's heartbeat URL (monitoring.js).
+  if (typeof monitoringFillJobForm === "function") monitoringFillJobForm(job);
   // Single / Selected / All / Pattern database selection (jobdbs.js).
   if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
@@ -4739,7 +4742,7 @@ function pickerValue(prefix) {
 // Settings: navigation between sub-sections
 // ---------------------------------------------------------------------------
 
-const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "audit", "users", "sso", "apikeys", "sessions"];
+const SETTINGS_SECTIONS = ["general", "storage", "integrity", "encryption", "recovery", "security", "monitoring", "audit", "users", "sso", "apikeys", "sessions"];
 const ADMIN_SETTINGS_SECTIONS = ["audit", "users", "sso"];
 
 function showSettingsSection(name, focus) {
@@ -4894,6 +4897,8 @@ function fillSettingsForms(force) {
   if (typeof auditlogFillSettings === "function") auditlogFillSettings(force);
   // Settings → Single sign-on (sso.js).
   if (typeof ssoFillSettings === "function") ssoFillSettings(force);
+  // Settings → Monitoring (monitoring.js).
+  if (typeof monitoringFillSettings === "function") monitoringFillSettings(force);
 }
 
 function fillGeneral(g) {

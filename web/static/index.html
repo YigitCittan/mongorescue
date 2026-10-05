@@ -693,6 +693,7 @@
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="encryption" data-i18n="settings.nav_encryption">Encryption</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="recovery" data-i18n="recovery.nav">Recovery</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="security" data-i18n="settings.nav_security">Security</button>
+        <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="monitoring" data-i18n="monitoring.nav">Monitoring</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="audit" data-i18n="auditlog.title" data-hide-unless="admin">Audit log</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="users" data-i18n="settings.users_title" data-hide-unless="admin">Users</button>
         <button type="button" class="settings-nav-btn" data-action="settings-section" data-section="sso" data-i18n="sso.nav" data-hide-unless="admin">Single sign-on</button>
@@ -1187,6 +1188,41 @@
         </div>
       </section>
 
+      <!-- Monitoring: the external heartbeat (monitoring.js) -->
+      <section class="settings-panel" id="settings-monitoring" aria-labelledby="settings-monitoring-title" hidden>
+        <div class="section-header">
+          <div>
+            <h2 class="section-title" id="settings-monitoring-title" data-i18n="monitoring.title">Monitoring</h2>
+            <p class="section-desc" data-i18n="monitoring.desc">An external dead-man's switch alerts you when MongoRescue itself stops: a crash, a host that is down, a hung scheduler or a full disk. MongoRescue pings the URL while it is healthy; the external service alerts when the pings stop.</p>
+          </div>
+        </div>
+        <form id="form-monitoring" class="settings-form" novalidate>
+          <fieldset class="settings-group">
+            <legend class="settings-group-title" data-i18n="monitoring.group">Heartbeat</legend>
+            <div class="form-group">
+              <label class="form-label" for="monitoring-heartbeat-url" data-i18n="monitoring.url">Heartbeat URL</label>
+              <input type="url" id="monitoring-heartbeat-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://hc-ping.com/your-check-uuid" aria-describedby="monitoring-heartbeat-url-hint">
+              <span class="form-hint" id="monitoring-heartbeat-url-hint" data-i18n="monitoring.url_hint">A healthchecks.io-compatible ping URL, such as https://hc-ping.com/&lt;uuid&gt;. Leave empty to turn the heartbeat off. The URL is stored encrypted and shown only up to its host.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="monitoring-heartbeat-interval" data-i18n="monitoring.interval">Ping every (minutes)</label>
+              <input type="number" id="monitoring-heartbeat-interval" class="form-input" min="1" max="60" value="5" aria-describedby="monitoring-heartbeat-interval-hint">
+              <span class="form-hint" id="monitoring-heartbeat-interval-hint" data-i18n="monitoring.interval_hint">1 to 60 minutes. Give the external check this period and a grace time of a few minutes.</span>
+            </div>
+            <div class="form-group">
+              <button type="button" class="btn btn-secondary btn-sm" data-action="monitoring-test" data-requires="admin" data-i18n="monitoring.test">Send test ping</button>
+              <p class="form-hint" id="monitoring-test-result" role="status" aria-live="polite"></p>
+            </div>
+            <p class="form-hint" data-i18n="monitoring.alerts_hint">Prometheus alert rules for these signals ship in deploy/prometheus/alerts.yml; see the monitoring guide.</p>
+          </fieldset>
+          <p class="form-error" id="monitoring-error" role="alert" hidden></p>
+          <div class="settings-footer">
+            <span class="save-status" id="monitoring-save-status" role="status" aria-live="polite"></span>
+            <button type="submit" class="btn btn-primary" data-i18n="notify.save">Save</button>
+          </div>
+        </form>
+      </section>
+
       <!-- Audit log: every action, hash-chained (auditlog.js) -->
       <section class="settings-panel" id="settings-audit" aria-labelledby="settings-audit-title" data-hide-unless="admin" hidden>
         <div class="section-header">
@@ -1647,6 +1683,11 @@
             <label class="form-label" for="job-rpo" data-i18n="readiness.rpo_label">Recovery point objective (hours)</label>
             <input type="number" id="job-rpo" class="form-input" min="0.25" max="2160" step="any" inputmode="decimal" aria-describedby="job-rpo-hint">
             <span class="form-hint" id="job-rpo-hint" aria-live="polite">How old the newest successful backup may be. Leave empty for the default: two schedule intervals plus an hour, at least 6 hours. 0.25 (15 minutes) to 2160 (90 days).</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="job-heartbeat-url" data-i18n="monitoring.job_url">Heartbeat URL</label>
+            <input type="url" id="job-heartbeat-url" class="form-input mono" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://hc-ping.com/your-check-uuid" aria-describedby="job-heartbeat-url-hint">
+            <span class="form-hint" id="job-heartbeat-url-hint" data-i18n="monitoring.job_url_hint">Optional. Pinged at &lt;url&gt;/start when a run starts, &lt;url&gt; when it succeeds and &lt;url&gt;/fail when it fails, is partial or is cancelled. Stored encrypted.</span>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -2820,6 +2861,7 @@
   <script src="/readiness.js"></script>
   <script src="/roles.js"></script>
   <script src="/sso.js"></script>
+  <script src="/monitoring.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

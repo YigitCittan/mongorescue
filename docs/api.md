@@ -48,7 +48,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 
 | Method | Endpoint | Description | Success | Errors |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`) | 200 | |
+| `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`, `scheduler`, `scheduler_last_tick`); see [health](#health) | 200 | 503 stale scheduler |
 | `GET` | `/api/v1/setup/status` | `{"setup_required": bool}` | 200 | |
 | `POST` | `/api/v1/setup` | `{setup_code, username, password}` → first user and session: `{user, csrf_token}` | 201 | 400, 403 wrong code, 409 already set up, 429 |
 | `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin or [password sign-in limited to local admins](#single-sign-on), 415, 429 |
@@ -83,6 +83,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `PUT` | `/api/v1/settings` | Partial update, e.g. `{"general": {...}}`; returns the full settings | 200 | 400 |
 | `POST` | `/api/v1/settings/encryption/generate-key` | New X25519 key pair `{identity, recipient}` (not stored) | 200 | |
 | `POST` | `/api/v1/settings/warnings/{id}/dismiss` | Dismiss a persistent warning for good; returns the remaining `{warnings}` | 200, 404 | |
+| `POST` | `/api/v1/settings/monitoring/test` | Send one test ping: `{heartbeat_url}` (optional; empty, `"******"` or the masked stored URL ping the stored `monitoring.heartbeat_url`) → `{ok, host}`; admin only | 200 | 400 invalid or masked URL, nothing configured; 502 the monitor was unreachable or did not answer 2xx (the error names the host only); 503 |
 | `POST` | `/api/v1/settings/oidc/test` | Fetch the provider's discovery document and keys: `{issuer}` (optional; the stored issuer when omitted) → `{issuer, authorization_endpoint, token_endpoint, jwks_uri, end_session_endpoint, signing_algorithms, usable_algorithms, pkce_methods, keys, key_types}`, never secrets; admin only | 200 | 400 invalid issuer, 404 desktop app, 502 provider unreachable or unusable |
 | `GET` | `/api/v1/metadata-backup` | Status of the [metadata backups](#metadata-backups-and-the-recovery-kit): last snapshot `{target_id, target_name, key, created_at, size_bytes, encrypted}`, last error, next run | 200 | 503 |
 | `POST` | `/api/v1/metadata-backup/run` | Take a metadata snapshot now, in the background (admin) | 202 | 409 already running, 503 |
@@ -165,6 +166,8 @@ curl -X PUT http://localhost:8080/api/v1/settings -H "Authorization: Bearer $KEY
 The `oidc` group configures [single sign-on](#single-sign-on) ([fields](configuration.md#single-sign-on)); `client_secret` is stored encrypted and shown as `"******"`. Turning `enabled` on, or `local_login` to `admins_only`, needs a local administrator, and turning single sign-on on (or changing the issuer while it is on) fetches the provider's discovery document and keys first; a failure answers `400` and changes nothing. Single sign-on adds the warning `oidc_role_kept` (a sign-in would have demoted the last administrator, so the stored role was kept).
 
 The `audit` group holds `retention_days` (default 365, 30 to 36500), `webhook_url` and `webhook_secret` ([audit.md](audit.md#forwarding)). Both are stored encrypted; `webhook_url` is shown only up to its host (`"https://siem.example.com/******"`, a bare origin unchanged) and `webhook_secret` as `"******"`. Sending either back as shown keeps the stored value, `""` removes it. A `webhook_url` with another host needs `webhook_secret` again (`400` when it is masked or omitted), like `oidc.client_secret` when `oidc.issuer` changes.
+
+The `monitoring` group holds `heartbeat_url` and `heartbeat_interval` (default `5m`, 1m to 1h; see [monitoring.md](monitoring.md)). `heartbeat_url` is stored encrypted and shown only up to its host (`"https://hc-ping.com/******"`); sending it back as shown, or `"******"`, keeps it, `""` turns the heartbeat off. A masked value with another host is refused with `400`: the full URL must be entered again. Test the URL with `POST /api/v1/settings/monitoring/test`.
 
 To encrypt new backups with a fresh key pair, call `POST /api/v1/settings/encryption/generate-key`, store the returned `identity` safely, and send `{"encryption": {"enabled": true, "mode": "x25519", "recipients": ["<recipient>"], "identity": "<identity>"}}`. The passphrase of `passphrase` mode needs at least 16 characters.
 
@@ -518,6 +521,14 @@ Every query is answered from an index on `backups`, never by scanning the table,
 - `server_time_zone`: `{name, offset_minutes}`, the time zone cron expressions are evaluated in.
 
 `GET /api/v1/schedule/preview?cron=0%202%20*%20*%20*&n=3` (read scope) parses a cron expression with the scheduler's own parser and returns `{valid, error, next_runs, server_time_zone, default_rpo_minutes}`: the expression's hours are read in the server's time zone, and `next_runs` are given in UTC. `default_rpo_minutes` is the [recovery point objective](#recovery-point-objectives) a job with this schedule has when it sets none. An expression the scheduler rejects is answered with `200` and `"valid": false` plus the reason; a missing or longer than 256 characters `cron`, or `n` outside 1-10, is a `400`. The dashboard's cron builder uses it for its *next runs* line and the job form's RPO hint.
+
+## Health
+
+`GET /api/v1/health` (public) answers `200` with `{status: "healthy", version, time, scheduler, scheduler_last_tick}`. `scheduler` is `ok` while the scheduler records its liveness tick (every 30 seconds) and `not_started` before it starts; `scheduler_last_tick` is the time of the last tick. When the last tick is older than three intervals (90 seconds: the cron runner is hung, the scheduler deadlocked or stopped), the answer is `503` with `success: false`, `status: "unhealthy"` and `scheduler: "stale"`, so the Docker `HEALTHCHECK`, a load balancer or an uptime monitor see the failure. The fields of earlier releases are unchanged. The tick time is also exported as `mongorescue_scheduler_last_tick_timestamp_seconds` ([metrics](metrics.md)).
+
+## Job heartbeats
+
+A job's optional `heartbeat_url` (`POST /api/v1/jobs`, `PUT /api/v1/jobs/{id}`) is pinged at `<url>/start` when a run starts, `<url>` when it succeeds and `<url>/fail` when it fails, is partial or is cancelled ([monitoring.md](monitoring.md#job-heartbeats)). It must be an `http` or `https` URL without user info (else `400`), is stored encrypted and is returned only up to its host (`"https://hc-ping.com/******"`) by every endpoint and MCP tool that returns jobs. Sending the masked value (or `"******"`) back keeps the stored URL, `""` removes it, and a masked value with another host is a `400`. `PUT` without `heartbeat_url` keeps it; `POST` with an existing `id` replaces the job, so send the masked value back to keep it.
 
 ## Recovery point objectives
 
