@@ -7,6 +7,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 )
 
@@ -153,11 +154,16 @@ func (s *Server) handleTestConnectionURI(w http.ResponseWriter, r *http.Request)
 		// ConnectionID lets an edit form test the stored credentials through the
 		// redacted URI it was given.
 		ConnectionID string `json:"connection_id"`
+		// ReadPreference and ReadPreferenceTags, when set, report the member a
+		// backup with them would read from.
+		ReadPreference     string              `json:"read_preference"`
+		ReadPreferenceTags []map[string]string `json:"read_preference_tags"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	res, err := svc.TestURI(r.Context(), req.URI, req.ConnectionID)
+	res, err := svc.TestURIWith(r.Context(), req.URI, req.ConnectionID,
+		models.ReadPreference{Mode: req.ReadPreference, Tags: req.ReadPreferenceTags})
 	if err != nil {
 		s.writeConnectionError(w, err)
 		return

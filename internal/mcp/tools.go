@@ -749,8 +749,15 @@ func (s *Server) getJob(ctx context.Context, in idInput) (*models.Job, string, e
 	if isDefault {
 		source = "default"
 	}
-	return job, fmt.Sprintf("Job %s (enabled: %v): last run %s, next run %s, RPO %s (%s).", idText(job.ID), job.Enabled,
-		timestamp(job.LastRun), timestamp(job.NextRun), readiness.FormatDuration(rpo), source), nil
+	summary := fmt.Sprintf("Job %s (enabled: %v): last run %s, next run %s, RPO %s (%s).", idText(job.ID), job.Enabled,
+		timestamp(job.LastRun), timestamp(job.NextRun), readiness.FormatDuration(rpo), source)
+	if rp := job.ReadPref(); rp.Mode != "" {
+		summary += " Reads with read preference " + quoted(rp.String()) + "."
+	}
+	if w := job.BackupWindow; w != nil {
+		summary += fmt.Sprintf(" Scheduled runs start only within %s (open now: %v; manual runs ignore it).", quoted(w.String()), w.Contains(time.Now()))
+	}
+	return job, summary, nil
 }
 
 func (s *Server) listBackups(ctx context.Context, in listBackupsInput) (backupList, string, error) {

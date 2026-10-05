@@ -107,6 +107,19 @@ type JobUpdate struct {
 	// HeartbeatURL, when set, replaces the job's heartbeat URL: the masked value (as
 	// responses show it) or models.SecretMask keeps the stored URL, "" removes it.
 	HeartbeatURL *string `json:"heartbeat_url"`
+	// ReadPreference, when set, replaces the job's read preference ("" uses the
+	// connection's) and its tag sets with ReadPreferenceTags.
+	ReadPreference     *string             `json:"read_preference"`
+	ReadPreferenceTags []map[string]string `json:"read_preference_tags"`
+	// MaxUploadMbps, when set, replaces the job's upload cap in megabits per
+	// second (0 uses the general.max_upload_mbps setting).
+	MaxUploadMbps *float64 `json:"max_upload_mbps"`
+	// NumParallelCollections, when set, replaces mongodump's
+	// --numParallelCollections (0 = mongodump's default).
+	NumParallelCollections *int `json:"num_parallel_collections"`
+	// BackupWindow, when set, replaces the job's backup window; an empty object
+	// ({}) removes it.
+	BackupWindow *models.BackupWindow `json:"backup_window"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -123,6 +136,9 @@ type JobDetails struct {
 	// hour, at least six hours). RPODefault reports that the default applies.
 	EffectiveRPOMinutes int  `json:"effective_rpo_minutes"`
 	RPODefault          bool `json:"rpo_default"`
+	// WindowOpen reports, for a job with a backup window, whether a scheduled run
+	// could start now. NextRuns then lists only the runs the window allows.
+	WindowOpen *bool `json:"window_open,omitempty"`
 	// PendingRetention is a shortening of the job's retention that takes effect
 	// later (after the delete grace period), if any.
 	PendingRetention *models.PendingChange `json:"pending_retention,omitempty"`
@@ -172,6 +188,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	job.HeartbeatURL = strings.TrimSpace(job.HeartbeatURL)
 	if err := models.ValidateHeartbeatURL(job.HeartbeatURL); err != nil {
 		return invalid(err)
+	}
+	if err := validateJobThrottling(job); err != nil {
+		return err
 	}
 	if job.Enabled {
 		job.PausedUntil = nil
@@ -383,6 +402,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		rt := *u.RestoreTest
 		job.RestoreTest = &rt
 	}
+	applyThrottlingUpdate(job, u)
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}
@@ -438,11 +458,36 @@ func (s *Service) GetJobDetails(ctx context.Context, id string) (*JobDetails, er
 	rpo, isDefault := scheduler.EffectiveRPO(job, s.now())
 	details.EffectiveRPOMinutes, details.RPODefault = int(rpo/time.Minute), isDefault
 	if job.Enabled {
-		if runs := scheduler.NextRuns(job.CronExpression, s.now(), JobDetailsNextRuns); runs != nil {
-			details.NextRuns = runs
-		}
+		details.NextRuns = allowedRuns(job, s.now())
+	}
+	if w := job.BackupWindow; w != nil {
+		open := w.Contains(s.now())
+		details.WindowOpen = &open
 	}
 	return details, nil
+}
+
+// windowLookahead bounds the activations allowedRuns reads to find the next
+// JobDetailsNextRuns runs a backup window allows.
+const windowLookahead = 2000
+
+// allowedRuns returns the next JobDetailsNextRuns activations of job after now
+// that its backup window lets start (all of them without a window).
+func allowedRuns(job *models.Job, now time.Time) []time.Time {
+	n := JobDetailsNextRuns
+	if job.BackupWindow != nil {
+		n = windowLookahead
+	}
+	out := []time.Time{}
+	for _, t := range scheduler.NextRuns(job.CronExpression, now, n) {
+		if job.BackupWindow.Contains(t) {
+			out = append(out, t)
+			if len(out) == JobDetailsNextRuns {
+				break
+			}
+		}
+	}
+	return out
 }
 
 // nextRunOf returns the first activation of expr after from, or nil.
