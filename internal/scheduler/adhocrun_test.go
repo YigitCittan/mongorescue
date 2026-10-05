@@ -57,12 +57,12 @@ func TestAdHocRunBacksUpEachDatabaseUnderOneRun(t *testing.T) {
 	}
 	run, err := f.sched.ExecuteJobRun(ctx, plan)
 	if !errors.Is(err, ErrRunFailed) {
-		t.Errorf("run error = %v; want ErrRunFailed (b failed, d was busy)", err)
+		t.Errorf("run error = %v; want ErrRunFailed (b failed)", err)
 	}
 	if run.Status != models.JobRunPartial || run.JobID != "" || len(run.Databases) != 4 {
 		t.Fatalf("run = %+v; want partial over 4 databases", run)
 	}
-	if d := run.Databases[3]; d.Database != "d" || d.BackupID != "" || d.Status != models.StatusFailed || d.Error != BusyError("d") {
+	if d := run.Databases[3]; d.Database != "d" || d.BackupID != "" || d.Status != models.StatusSkipped || d.Error != BusyError("d") {
 		t.Errorf("busy database = %+v", d)
 	}
 	if n := released.Load(); n != 3 {
@@ -87,6 +87,35 @@ func TestAdHocRunBacksUpEachDatabaseUnderOneRun(t *testing.T) {
 	sums := summaries(f.events())
 	if len(sums) != 1 || sums[0].Run == nil || sums[0].RunID != run.ID || sums[0].Type != events.BackupFailed {
 		t.Errorf("summary events = %+v; want one backup.failed for the run", sums)
+	}
+}
+
+func TestBusyDatabaseIsSkippedNotFailed(t *testing.T) {
+	f := newMultiFixture(t)
+	plan, err := f.sched.PrepareAdHocRun(AdHocRun{Options: adHocOptions(), Databases: []string{"a"}, Busy: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err = f.sched.BeginJobRun(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.sched.ExecuteJobRun(ctx, plan)
+	if err != nil || run.Status != models.JobRunOK {
+		t.Fatalf("run = %s, %v; want ok: a skipped database is not a failure", run.Status, err)
+	}
+	if ok, failed, cancelled, _ := run.Counts(); ok != 1 || failed != 0 || cancelled != 0 || len(run.FailedDatabases()) != 0 {
+		t.Errorf("counts = %d/%d/%d, failed %v; want 1 ok and no failure", ok, failed, cancelled, run.FailedDatabases())
+	}
+	sums := summaries(f.events())
+	if len(sums) != 1 || sums[0].Type != events.BackupSucceeded || sums[0].Run.Failed != 0 ||
+		!slices.Equal(sums[0].Run.SkippedDatabases, []string{"b"}) {
+		t.Fatalf("summary events = %+v; want one backup.succeeded naming b as skipped", sums)
+	}
+	for _, e := range f.events() {
+		if e.Type == events.BackupFailed {
+			t.Errorf("failure event %+v; a skipped database must not be reported as failed", e)
+		}
 	}
 }
 
@@ -169,7 +198,8 @@ func TestCancellingAnAdHocRunStopsAllItsDatabases(t *testing.T) {
 	sched := NewScheduler(metaStore, backup.NewEngine(mock, "mongodb://localhost:27017", backup.WithRunner(blocking)), mock, nil,
 		WithRunRegistry(reg), WithPublisher(pub))
 	var released atomic.Int32
-	plan, err := sched.PrepareAdHocRun(AdHocRun{Options: adHocOptions(), Databases: []string{"a", "b", "c"}, Locks: countingLocks(3, &released)})
+	// A database skipped as busy does not turn the cancelled run into a failed one.
+	plan, err := sched.PrepareAdHocRun(AdHocRun{Options: adHocOptions(), Databases: []string{"a", "b", "c"}, Locks: countingLocks(3, &released), Busy: []string{"d"}})
 	if err != nil {
 		t.Fatal(err)
 	}

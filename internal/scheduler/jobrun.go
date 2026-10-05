@@ -276,7 +276,8 @@ type AdHocRun struct {
 	// it fails the caller still owns them.
 	Locks []func()
 	// Busy are databases the run does not back up because another backup of them is
-	// running; they are recorded in the run as failed with BusyError.
+	// running; they are recorded in the run as skipped (models.StatusSkipped) with
+	// BusyError, which changes neither the run's outcome nor its failure counts.
 	Busy []string
 	// Parallelism is how many databases run at once (1 to models.MaxJobParallelism;
 	// 0 means 1, as for jobs).
@@ -310,7 +311,7 @@ func (s *Scheduler) PrepareAdHocRun(req AdHocRun) (*JobRunPlan, error) {
 		return nil, err
 	}
 	for _, db := range req.Busy {
-		plan.Run.Databases = append(plan.Run.Databases, models.JobRunDatabase{Database: db, Status: models.StatusFailed, Error: BusyError(db)})
+		plan.Run.Databases = append(plan.Run.Databases, models.JobRunDatabase{Database: db, Status: models.StatusSkipped, Error: BusyError(db)})
 	}
 	plan.held = slices.Clone(req.Locks)
 	return plan, nil

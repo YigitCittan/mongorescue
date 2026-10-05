@@ -74,7 +74,7 @@ type JobRun struct {
 }
 
 // Counts returns how many of the run's databases succeeded, failed, were cancelled
-// and are still running.
+// and are still running. Skipped databases (StatusSkipped) count as none of them.
 func (r *JobRun) Counts() (succeeded, failed, cancelled, running int) {
 	for _, d := range r.Databases {
 		switch d.Status {
@@ -84,6 +84,7 @@ func (r *JobRun) Counts() (succeeded, failed, cancelled, running int) {
 			cancelled++
 		case StatusInProgress, StatusPending:
 			running++
+		case StatusSkipped:
 		default:
 			failed++
 		}
@@ -121,8 +122,19 @@ func (r *JobRun) FailedDatabases() []string {
 	var out []string
 	for _, d := range r.Databases {
 		switch d.Status {
-		case StatusCompleted, StatusCancelled, StatusInProgress, StatusPending:
+		case StatusCompleted, StatusCancelled, StatusInProgress, StatusPending, StatusSkipped:
 		default:
+			out = append(out, d.Database)
+		}
+	}
+	return out
+}
+
+// SkippedDatabases returns the names of the run's skipped databases (StatusSkipped).
+func (r *JobRun) SkippedDatabases() []string {
+	var out []string
+	for _, d := range r.Databases {
+		if d.Status == StatusSkipped {
 			out = append(out, d.Database)
 		}
 	}

@@ -303,7 +303,8 @@ type BackupRequest struct {
 	// combined with Database.
 	Databases []string `json:"databases,omitempty"`
 	// Parallelism is how many of Databases are backed up at once (0 or omitted
-	// means 1, as for jobs; at most models.MaxJobParallelism).
+	// means 1, as for jobs; at most models.MaxJobParallelism). A single backup
+	// (Database) ignores it.
 	Parallelism *int `json:"parallelism,omitempty"`
 	// Trigger is set by the adapter: models.TriggerMCP for MCP, anything else is
 	// recorded as models.TriggerManual. It is never read from clients.
@@ -318,9 +319,8 @@ func (s *Service) StartBackup(ctx context.Context, req BackupRequest) (*models.B
 	if req.Databases != nil {
 		return nil, invalid(fmt.Errorf("databases: %w", ErrDatabasesConflict))
 	}
-	if err := validateParallelism(req.Parallelism); err != nil {
-		return nil, err
-	}
+	// Parallelism only applies to several databases: a single backup ignores it, as
+	// it always did.
 	if strings.TrimSpace(req.Database) != "" {
 		if err := validateNamespaces(req.Database, req.Collections, req.ExcludeCollections); err != nil {
 			return nil, err

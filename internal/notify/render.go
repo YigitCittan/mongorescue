@@ -129,6 +129,9 @@ func Render(e events.Event) Message {
 		if len(r.FailedDatabases) > 0 {
 			fmt.Fprintf(&body, "\nFailed databases: %s", truncate(singleLine(strings.Join(r.FailedDatabases, ", ")), maxErrorLength))
 		}
+		if len(r.SkippedDatabases) > 0 {
+			fmt.Fprintf(&body, "\nSkipped (already running): %s", truncate(singleLine(strings.Join(r.SkippedDatabases, ", ")), maxErrorLength))
+		}
 		if len(r.NewDatabases) > 0 {
 			fmt.Fprintf(&body, "\n%d new database(s) not included: %s", len(r.NewDatabases),
 				truncate(singleLine(strings.Join(r.NewDatabases, ", ")), maxErrorLength))
