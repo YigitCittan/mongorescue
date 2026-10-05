@@ -192,6 +192,11 @@ func backupDatabases(flags, list []string, file string) ([]models.DatabaseFilter
 		if len(entries) == 0 {
 			return nil, usageErrorf("--databases-file %s names no database", file)
 		}
+		for _, entry := range entries {
+			if len(entry.Collections) > 0 && len(entry.ExcludeCollections) > 0 {
+				return nil, usageErrorf("--databases-file %s: database %s: give collections or exclude_collections, not both", file, entry.Name)
+			}
+		}
 		out = append(out, entries...)
 	}
 	return out, nil
