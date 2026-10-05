@@ -33,18 +33,19 @@ func testEncryptor(t *testing.T) *encryption.Encryptor {
 	return enc
 }
 
-// opTimes returns an OpTimeReader that hands out the given optimes in order.
+// opTimes returns an OpTimeReader that hands out the given optimes in order, as
+// both the newest and the majority-committed write.
 func opTimes(ops ...pitr.OpTime) (OpTimeReader, *int) {
 	var mu sync.Mutex
 	calls := 0
-	return func(context.Context, string) (pitr.OpTime, error) {
+	return func(context.Context, string) (pitr.OpTime, pitr.OpTime, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if calls >= len(ops) {
-			return pitr.OpTime{}, errors.New("no more optimes")
+			return pitr.OpTime{}, pitr.OpTime{}, errors.New("no more optimes")
 		}
 		calls++
-		return ops[calls-1], nil
+		return ops[calls-1], ops[calls-1], nil
 	}, &calls
 }
 

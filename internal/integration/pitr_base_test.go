@@ -44,7 +44,7 @@ func TestPITRBaseBackupOfTheWholeInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	prober := mongoconn.New()
-	engine := newBackupEngine(env, st, backup.WithEncryptor(enc), backup.WithOpTimeReader(prober.LastWrite))
+	engine := newBackupEngine(env, st, backup.WithEncryptor(enc), backup.WithOpTimeReader(prober.WriteOpTimes))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

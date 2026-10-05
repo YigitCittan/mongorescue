@@ -43,11 +43,12 @@ func TestStartBaseBackupDumpsTheInstanceUnderItsOwnKey(t *testing.T) {
 		return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
 	}
 	tick := uint32(100)
-	opTime := func(context.Context, string) (pitr.OpTime, error) {
+	opTime := func(context.Context, string) (pitr.OpTime, pitr.OpTime, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		tick++
-		return pitr.OpTime{TS: pitr.Timestamp{T: tick, I: 1}, Term: 2}, nil
+		op := pitr.OpTime{TS: pitr.Timestamp{T: tick, I: 1}, Term: 2}
+		return op, op, nil
 	}
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })

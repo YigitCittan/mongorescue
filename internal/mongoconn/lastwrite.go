@@ -13,19 +13,24 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
-// LastWrite opens a short-lived session for uri and returns
-// hello.lastWrite.opTime of the primary: the position of the newest write. Base
-// backups record it before and after the dump (T_before, T_after). It returns
-// pitr.ErrNotReplicaSet for a server that is not a replica set member. Errors are
-// redacted.
-func (p *Prober) LastWrite(ctx context.Context, uri string) (pitr.OpTime, error) {
+// WriteOpTimes opens a short-lived session for uri and returns
+// hello.lastWrite.opTime and hello.lastWrite.majorityOpTime of the primary: the
+// newest write and the newest majority-committed one. Base backups record T_before
+// from the first and T_after from the second. It returns pitr.ErrNotReplicaSet
+// for a server that is not a replica set member. Errors are redacted.
+func (p *Prober) WriteOpTimes(ctx context.Context, uri string) (lastWrite, majority pitr.OpTime, err error) {
 	s, err := p.OpenOplogSession(ctx, uri, readpref.PrimaryMode.String())
 	if err != nil {
-		return pitr.OpTime{}, err
+		return pitr.OpTime{}, pitr.OpTime{}, err
 	}
 	defer s.Close()
-	op, err := s.LastWrite(ctx)
-	return op, redactErr(err)
+	h, err := s.hello(ctx, readpref.Primary())
+	if err != nil {
+		return pitr.OpTime{}, pitr.OpTime{}, err
+	}
+	lw, mj := h.LastWrite.OpTime, h.LastWrite.MajorityOpTime
+	return pitr.OpTime{TS: pitr.Timestamp{T: lw.TS.T, I: lw.TS.I}, Term: lw.T},
+		pitr.OpTime{TS: pitr.Timestamp{T: mj.TS.T, I: mj.TS.I}, Term: mj.T}, nil
 }
 
 // LastWrite returns hello.lastWrite.opTime of the member the session's read

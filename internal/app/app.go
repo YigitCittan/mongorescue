@@ -309,7 +309,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithManifestCapturer(prober.Manifest),
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
-		backup.WithOpTimeReader(prober.LastWrite),
+		backup.WithOpTimeReader(prober.WriteOpTimes),
 		backup.WithRunConfig(func() backup.RunConfig {
 			cur := settingsSvc.Current()
 			g := cur.General

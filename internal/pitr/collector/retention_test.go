@@ -195,3 +195,23 @@ func TestDeleteStreamWaitsForThePurge(t *testing.T) {
 		t.Fatalf("%d objects left", fx.objects())
 	}
 }
+
+func TestCoverageComparesTheTermAtTAfter(t *testing.T) {
+	chunks := []*pitr.Chunk{
+		{ID: "c1", ChainID: "ch", From: ts(100), To: ts(160), FirstTerm: 1, LastTerm: 1, Status: pitr.ChunkCommitted},
+		{ID: "c2", ChainID: "ch", From: ts(160), To: ts(220), FirstTerm: 1, LastTerm: 2, Status: pitr.ChunkCommitted},
+	}
+	segs, _ := segments(chunks)
+	ok := base("b_ok", time.Now(), 110, 200)
+	ok.TAfter.Term = 2
+	if _, covered := coveringSegment(segs, ok); !covered {
+		t.Fatal("a base whose T_after term the chunk holds is not covered")
+	}
+	// T_after was read in a term that was rolled back: the chain holds another
+	// history there.
+	rolled := base("b_rolled", time.Now(), 110, 200)
+	rolled.TAfter.Term = 5
+	if _, covered := coveringSegment(segs, rolled); covered {
+		t.Fatal("a base whose T_after term the chain does not hold is covered")
+	}
+}

@@ -67,10 +67,11 @@ var (
 // BaseKeyPrefix + <conn_id>/<rs>/<yyyy>/<mm>/<id>.archive.gz.age.
 const BaseKeyPrefix = "_mongorescue/base/"
 
-// OpTimeReader returns hello.lastWrite.opTime of the primary of the replica set at
-// uri (implemented by mongoconn.Prober.LastWrite). Errors must never include the
-// URI's credentials.
-type OpTimeReader func(ctx context.Context, uri string) (pitr.OpTime, error)
+// OpTimeReader returns hello.lastWrite.opTime and hello.lastWrite.majorityOpTime
+// of the primary of the replica set at uri (implemented by
+// mongoconn.Prober.WriteOpTimes). Errors must never include the URI's
+// credentials.
+type OpTimeReader func(ctx context.Context, uri string) (lastWrite, majority pitr.OpTime, err error)
 
 // WithOpTimeReader lets the engine take instance-scope (PITR base) backups: fn
 // records T_before and T_after around the dump. Without it such backups fail with
@@ -80,6 +81,15 @@ func WithOpTimeReader(fn OpTimeReader) Option {
 		e.opTime = fn
 	}
 }
+
+// Waiting for the majority after a base dump (see readTAfter).
+const (
+	// MajorityWait bounds how long a base waits for its writes to be
+	// majority-committed before it fails.
+	MajorityWait = 2 * time.Minute
+	// majorityPoll is how often it asks.
+	majorityPoll = 250 * time.Millisecond
+)
 
 // CollectionLister returns the names of the collections and views of database on the
 // server at uri. Implementations must never include the URI's credentials in errors.
@@ -114,6 +124,8 @@ type Engine struct {
 
 	listCollections CollectionLister
 	opTime          OpTimeReader
+	// majorityWait bounds the wait for T_after (MajorityWait when zero).
+	majorityWait time.Duration
 
 	// manifest captures the manifest of every backup; verifyUpload and
 	// verifyDecryptor configure the post-upload verification (see integrity.go).
@@ -652,7 +664,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	failErr := e.classifyFailure(runCtx, saveErr, waitErr, stageErr, proc.stderrLogs)
 	if failErr == nil && record.InstanceScope() {
 		// T_after, the base's consistent point, is read once mongodump has exited.
-		after, opErr := e.readOpTime(runCtx, mongoURI)
+		after, opErr := e.readTAfter(runCtx, mongoURI)
 		if opErr != nil {
 			failErr = opErr
 		} else {
@@ -699,12 +711,12 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 }
 
 // readOpTime reads the lastWrite optime of the replica set at uri for an
-// instance-scope backup.
+// instance-scope backup (its T_before).
 func (e *Engine) readOpTime(ctx context.Context, uri string) (pitr.OpTime, error) {
 	if e.opTime == nil {
 		return pitr.OpTime{}, fmt.Errorf("%w: no optime reader is configured", ErrOpTime)
 	}
-	op, err := e.opTime(ctx, uri)
+	op, _, err := e.opTime(ctx, uri)
 	if err != nil {
 		return pitr.OpTime{}, fmt.Errorf("%w: %w", ErrOpTime, err)
 	}
@@ -712,6 +724,46 @@ func (e *Engine) readOpTime(ctx context.Context, uri string) (pitr.OpTime, error
 		return pitr.OpTime{}, fmt.Errorf("%w: the server reported no lastWrite optime", ErrOpTime)
 	}
 	return op, nil
+}
+
+// readTAfter returns the consistent point of a base whose dump just ended: the
+// majority-committed optime (with its term) once it has reached the newest write
+// after the dump. A write the dump may hold that is not yet majority-committed
+// could still be rolled back; the base's consistent point is therefore taken only
+// from the majority, and the chain must hold the entry there in that term to cover
+// the base. A base whose writes are not majority-committed within MajorityWait
+// fails.
+func (e *Engine) readTAfter(ctx context.Context, uri string) (pitr.OpTime, error) {
+	if e.opTime == nil {
+		return pitr.OpTime{}, fmt.Errorf("%w: no optime reader is configured", ErrOpTime)
+	}
+	wait := e.majorityWait
+	if wait <= 0 {
+		wait = MajorityWait
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	var target pitr.Timestamp
+	for {
+		last, majority, err := e.opTime(waitCtx, uri)
+		if err != nil {
+			return pitr.OpTime{}, fmt.Errorf("%w: %w", ErrOpTime, err)
+		}
+		if target.IsZero() {
+			if last.TS.IsZero() {
+				return pitr.OpTime{}, fmt.Errorf("%w: the server reported no lastWrite optime", ErrOpTime)
+			}
+			target = last.TS
+		}
+		if !majority.TS.IsZero() && majority.TS.Compare(target) >= 0 {
+			return majority, nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return pitr.OpTime{}, fmt.Errorf("%w: the writes up to %s were not majority-committed within %s", ErrOpTime, target, wait)
+		case <-time.After(majorityPoll):
+		}
+	}
 }
 
 // fail marks record as failed with a redacted message and returns it with err. When

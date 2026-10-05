@@ -147,8 +147,8 @@ func (s *OplogSession) primaryMember(ctx context.Context) (*OplogMember, error) 
 	return &OplogMember{client: s.client, rp: readpref.Primary(), host: h.Me}, nil
 }
 
-// helloReply is the part of hello the session uses.
-type helloReply struct {
+// oplogHello is the part of hello an oplog session uses.
+type oplogHello struct {
 	SetName           string `bson:"setName"`
 	Me                string `bson:"me"`
 	IsWritablePrimary bool   `bson:"isWritablePrimary"`
@@ -165,8 +165,8 @@ type helloReply struct {
 }
 
 // hello runs hello on the member rp selects.
-func (s *OplogSession) hello(ctx context.Context, rp *readpref.ReadPref) (helloReply, error) {
-	var h helloReply
+func (s *OplogSession) hello(ctx context.Context, rp *readpref.ReadPref) (oplogHello, error) {
+	var h oplogHello
 	if err := s.client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}},
 		options.RunCmd().SetReadPreference(rp)).Decode(&h); err != nil {
 		return h, redactErr(fmt.Errorf("hello: %w", err))
