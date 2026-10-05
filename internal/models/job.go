@@ -110,6 +110,24 @@ type Job struct {
 	// interrupted run sends nothing after its start. Secret:
 	// the store seals it and API responses show only its origin (see Redacted).
 	HeartbeatURL string `json:"heartbeat_url,omitempty"`
+
+	// ReadPreference overrides the read preference of the job's connection (the
+	// member mongodump and the manifest capture read from); "" uses the
+	// connection's. ReadPreferenceTags are its tag sets.
+	ReadPreference     string              `json:"read_preference,omitempty"`
+	ReadPreferenceTags []map[string]string `json:"read_preference_tags,omitempty"`
+
+	// MaxUploadMbps caps the upload of every backup of the job, in megabits per
+	// second; 0 uses the general.max_upload_mbps setting.
+	MaxUploadMbps float64 `json:"max_upload_mbps,omitempty"`
+
+	// NumParallelCollections is mongodump's --numParallelCollections (1 to
+	// MaxNumParallelCollections); 0 keeps mongodump's default of 4.
+	NumParallelCollections int `json:"num_parallel_collections,omitempty"`
+
+	// BackupWindow, when set, restricts when scheduled runs may start (see
+	// BackupWindow); manual runs ignore it.
+	BackupWindow *BackupWindow `json:"backup_window,omitempty"`
 }
 
 // Clone returns a deep copy of the job.
@@ -122,6 +140,8 @@ func (j *Job) Clone() *Job {
 	clone.DatabaseSelection = j.DatabaseSelection.Clone()
 	clone.KnownDatabases = slices.Clone(j.KnownDatabases)
 	clone.ExcludeCollections = slices.Clone(j.ExcludeCollections)
+	clone.ReadPreferenceTags = CloneTagSets(j.ReadPreferenceTags)
+	clone.BackupWindow = j.BackupWindow.Clone()
 	if j.PausedUntil != nil {
 		until := *j.PausedUntil
 		clone.PausedUntil = &until
@@ -135,6 +155,12 @@ func (j *Job) Clone() *Job {
 		clone.LastRestoreTest = &lt
 	}
 	return &clone
+}
+
+// ReadPref returns the job's own read preference (zero when it uses its
+// connection's).
+func (j *Job) ReadPref() ReadPreference {
+	return ReadPreference{Mode: j.ReadPreference, Tags: CloneTagSets(j.ReadPreferenceTags)}
 }
 
 // Selection returns the job's database selection: DatabaseSelection, or for jobs

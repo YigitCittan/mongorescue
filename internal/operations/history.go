@@ -329,6 +329,8 @@ func runBackupStatus(st models.JobRunStatus) models.BackupStatus {
 		return models.StatusCancelled
 	case models.JobRunRunning:
 		return models.StatusInProgress
+	case models.JobRunSkipped:
+		return models.StatusSkipped
 	default:
 		return models.StatusFailed
 	}

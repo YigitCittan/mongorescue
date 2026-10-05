@@ -106,7 +106,7 @@ func (m *Metrics) SetRPOSamples(started time.Time, samples []RPOSample) {
 		for _, st := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 			m.backupsTotal.WithLabelValues(s.JobID, st)
 		}
-		for _, st := range []models.JobRunStatus{models.JobRunOK, models.JobRunPartial, models.JobRunFailed, models.JobRunCancelled} {
+		for _, st := range []models.JobRunStatus{models.JobRunOK, models.JobRunPartial, models.JobRunFailed, models.JobRunCancelled, models.JobRunSkipped} {
 			m.jobRuns.WithLabelValues(s.JobID, string(st))
 		}
 	}

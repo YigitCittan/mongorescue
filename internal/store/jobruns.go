@@ -56,7 +56,9 @@ const latestJobRunsChunk = 500
 // LatestJobRuns maps each of jobIDs that has runs to its newest run (by start time,
 // then ID, like ListJobRuns(ctx, id, 1)), in one query per 500 IDs that reads the
 // job_runs_by_job index. A job whose newest run cannot be read is left out (and the
-// row reported), as ListJobRuns(ctx, id, 1) returns no run for it.
+// row reported), as ListJobRuns(ctx, id, 1) returns no run for it. Skipped runs
+// (models.JobRunSkipped, such as a scheduled run outside the job's backup window)
+// never started and are passed over: the newest run is the newest that ran.
 func (s *SQLiteStore) LatestJobRuns(ctx context.Context, jobIDs []string) (map[string]*models.JobRun, error) {
 	out := make(map[string]*models.JobRun, len(jobIDs))
 	for start := 0; start < len(jobIDs); start += latestJobRunsChunk {
@@ -68,7 +70,7 @@ func (s *SQLiteStore) LatestJobRuns(ctx context.Context, jobIDs []string) (map[s
 		// One constant "?" per ID; the IDs themselves are arguments.
 		query := `SELECT id, data FROM (
 				SELECT id, data, row_number() OVER (PARTITION BY job_id ORDER BY started_at DESC, id DESC) AS rn
-				FROM job_runs WHERE job_id IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)
+				FROM job_runs WHERE status != '` + string(models.JobRunSkipped) + `' AND job_id IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)
 			) WHERE rn = 1`
 		list, err := listRecords[models.JobRun](ctx, s, tableJobRuns, nil, query, args...)
 		if err != nil {

@@ -25,6 +25,9 @@ const (
 	PhaseRestoring = "restoring"
 	// PhaseFinishing is a run that wrote its data and is finalizing.
 	PhaseFinishing = "finishing"
+	// PhaseWaiting is a backup waiting for a slot of its connection's
+	// max_concurrent_backups.
+	PhaseWaiting = "waiting"
 	// PhaseCancelling is a run whose cancellation was requested.
 	PhaseCancelling = "cancelling"
 )
