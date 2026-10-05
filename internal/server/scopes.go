@@ -136,6 +136,8 @@ var routeScopes = map[string]auth.Scope{
 	pitrUpdateStreamRoute: auth.ScopeAdmin,
 	pitrDeleteStreamRoute: auth.ScopeAdmin,
 	pitrBaseRoute:         auth.ScopeOperator,
+	// A chain test restores into temporary clones: admin, like PITR restores.
+	pitrChainTestRoute: auth.ScopeAdmin,
 
 	"GET /api/v1/metadata-backup":      auth.ScopeRead,
 	"POST /api/v1/metadata-backup/run": auth.ScopeAdmin,

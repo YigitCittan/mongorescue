@@ -20,6 +20,7 @@ func (s *Service) maintain(ctx context.Context) {
 		return
 	}
 	s.runBaseSchedule(ctx)
+	s.runChainTests(ctx)
 	now := s.now()
 	s.mu.Lock()
 	due := now.Sub(s.lastRetention) >= s.cfg.RetentionInterval
@@ -72,6 +73,49 @@ func (s *Service) runBaseSchedule(ctx context.Context) {
 			continue
 		}
 		s.logger.Info("scheduled PITR base backup started", logsafe.Attr("stream_id", st.ID), logsafe.Attr("backup_id", rec.ID))
+	}
+}
+
+// runChainTests starts the chain tests that are due: one per activation of a
+// stream's chain_test_cron, counted from its newest chain test (or from the last
+// attempt, so a stream without two bases to test is not asked again every check).
+func (s *Service) runChainTests(ctx context.Context) {
+	if s.cfg.StartChainTest == nil || s.cfg.LastChainTest == nil || s.cfg.NextRun == nil {
+		return
+	}
+	streams, err := s.cfg.Repo.ListStreams(ctx)
+	if err != nil {
+		return
+	}
+	now := s.now()
+	for _, st := range streams {
+		if !st.Enabled || st.ChainTestCron == "" {
+			continue
+		}
+		from := s.cfg.LastChainTest(ctx, st.ID)
+		s.mu.Lock()
+		if s.chainTestTried == nil {
+			s.chainTestTried = map[string]time.Time{}
+		}
+		if tried := s.chainTestTried[st.ID]; tried.After(from) {
+			from = tried
+		}
+		s.mu.Unlock()
+		if from.IsZero() {
+			from = st.CreatedAt
+		}
+		next, ok := s.cfg.NextRun(st.ChainTestCron, from)
+		if !ok || now.Before(next) {
+			continue
+		}
+		s.mu.Lock()
+		s.chainTestTried[st.ID] = now
+		s.mu.Unlock()
+		if err := s.cfg.StartChainTest(ctx, st.ID); err != nil {
+			s.logger.Info("scheduled PITR chain test not started", logsafe.Attr("stream_id", st.ID), logsafe.Error(err))
+			continue
+		}
+		s.logger.Info("scheduled PITR chain test started", logsafe.Attr("stream_id", st.ID))
 	}
 }
 

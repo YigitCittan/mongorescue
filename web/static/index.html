@@ -679,6 +679,11 @@
           <div class="form-group">
             <label class="check" for="pitr-base-on-gap"><input type="checkbox" id="pitr-base-on-gap" checked> <span data-i18n="pitr.base_on_gap">Take a base backup when a gap breaks the chain</span></label>
           </div>
+          <div class="form-group">
+            <label class="form-label" for="pitr-chain-test-cron" data-i18n="pitr.chain_test_cron">Chain test schedule (cron, optional)</label>
+            <input type="text" class="form-input mono" id="pitr-chain-test-cron" value="" maxlength="128" autocomplete="off" spellcheck="false" placeholder="0 4 * * 0">
+            <p class="form-hint" data-i18n="pitr.chain_test_hint">Restores one base to the consistent point of the next into temporary databases, compares them with that base's manifest and drops them. Empty turns chain tests off.</p>
+          </div>
           <p class="form-error" id="pitr-error" role="alert" hidden></p>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary btn-sm" data-requires="admin" data-i18n="pitr.enable">Enable</button>

@@ -342,6 +342,16 @@ func (e *Engine) checkPITRClones(ctx context.Context, uri string, info *models.P
 	return nil
 }
 
+// DropPITRClones drops the clones of the point-in-time restore described by info on
+// the server at uri (PITR chain tests drop theirs once compared) and returns a note
+// for the record: what was dropped, or what to drop manually.
+func (e *Engine) DropPITRClones(ctx context.Context, uri string, info *models.PITRRestore) string {
+	if info == nil || info.CloneSuffix == "" {
+		return ""
+	}
+	return e.dropPITRClones(ctx, uri, info)
+}
+
 // dropPITRClones drops the clones of a failed restore and returns a note for the
 // record's message.
 func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PITRRestore) string {
@@ -377,7 +387,7 @@ func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PI
 	if len(failed) > 0 {
 		return fmt.Sprintf("; dropping the partially restored clones %s failed, drop them manually", strings.Join(failed, ", "))
 	}
-	return fmt.Sprintf("; the partially restored clones (databases ending in %s) were dropped", info.CloneSuffix)
+	return fmt.Sprintf("; the clones (databases ending in %s) were dropped", info.CloneSuffix)
 }
 
 // restorePITRBase runs pass 1: the base archive into the clones, without

@@ -173,6 +173,11 @@ type Config struct {
 	// NextRun returns the first activation of a cron expression after from
 	// (implemented with scheduler.NextRuns); nil disables the base schedule.
 	NextRun func(expr string, from time.Time) (time.Time, bool)
+	// StartChainTest starts a chain test of a stream (operations.Service
+	// .StartChainTest) and LastChainTest returns when its newest one started (zero
+	// without one); either nil disables the chain test schedule.
+	StartChainTest func(ctx context.Context, streamID string) error
+	LastChainTest  func(ctx context.Context, streamID string) time.Time
 }
 
 // Service runs the collectors of the enabled streams. It is safe for concurrent
@@ -192,6 +197,8 @@ type Service struct {
 	workers map[string]*runningWorker
 	// lastRetention is when retention last ran.
 	lastRetention time.Time
+	// chainTestTried is when the schedule last tried a chain test per stream.
+	chainTestTried map[string]time.Time
 }
 
 // runningWorker is the collector goroutine of one stream.

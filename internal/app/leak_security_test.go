@@ -341,6 +341,7 @@ func TestNoSecretLeavesTheServer(t *testing.T) {
 		mcp.ToolListBackupCollections: {"backup_id": backup.ID},
 		mcp.ToolRetentionPreview:      {"job_id": job.ID},
 		mcp.ToolListJobRuns:           {"job_id": job.ID},
+		mcp.ToolPITRStatus:            {},
 	}
 	for tool, args := range calls {
 		if _, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: tool, Arguments: args}); err != nil {

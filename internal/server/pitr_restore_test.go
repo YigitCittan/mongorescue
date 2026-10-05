@@ -28,4 +28,11 @@ func TestPITRRestoreAPI(t *testing.T) {
 			t.Fatalf("%s without PITR restores: %d %s", path, code, out)
 		}
 	}
+	chainTest := "/api/v1/pitr/streams/str_a/chain-test"
+	if code, out := f.do(auth.ScopeOperator, "POST", chainTest, ""); code != http.StatusForbidden {
+		t.Fatalf("chain test as operator: %d %s", code, out)
+	}
+	if code, out := f.do(auth.ScopeAdmin, "POST", chainTest, ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("chain test without PITR restores: %d %s", code, out)
+	}
 }

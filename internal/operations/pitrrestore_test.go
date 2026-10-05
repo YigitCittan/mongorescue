@@ -25,13 +25,22 @@ type fakePITR struct {
 	runs []restore.PITRRun
 	reqs []models.RestoreRequest
 	keys bool
-	done chan struct{}
+	// dropped lists the clone suffixes dropped.
+	dropped []string
+	done    chan struct{}
 }
 
 func (f *fakePITR) CanDecryptMode(string) bool { return f.keys }
 
 func (f *fakePITR) PreparePITR(req models.RestoreRequest, run restore.PITRRun) (*models.RestoreRecord, error) {
 	return restore.NewEngine(nil, "mongodb://x").PreparePITR(req, run)
+}
+
+func (f *fakePITR) DropPITRClones(_ context.Context, _ string, info *models.PITRRestore) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dropped = append(f.dropped, info.CloneSuffix)
+	return "; dropped"
 }
 
 func (f *fakePITR) ExecutePITR(_ context.Context, req models.RestoreRequest, run restore.PITRRun, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
@@ -47,7 +56,7 @@ func (f *fakePITR) ExecutePITR(_ context.Context, req models.RestoreRequest, run
 
 // pitrService returns a service with stream str_a on conn_a: one chain of chunks
 // (100, 110], (110, 120], (120, 130] and base b1 consistent at 108.
-func pitrService(t *testing.T) (*operations.Service, *fakePITR) {
+func pitrService(t *testing.T, inspector operations.RestoreInspector, bases ...*models.BackupRecord) (*operations.Service, *fakePITR) {
 	t.Helper()
 	ctx := context.Background()
 	st := storetest.New(t)
@@ -73,6 +82,11 @@ func pitrService(t *testing.T) (*operations.Service, *fakePITR) {
 		ServerVersion: "8.0.4", TBefore: &before, TAfter: &after}); err != nil {
 		t.Fatal(err)
 	}
+	for _, b := range bases {
+		if err := st.SaveBackupRecord(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	mock := storage.NewMockStorage()
@@ -86,6 +100,7 @@ func pitrService(t *testing.T) (*operations.Service, *fakePITR) {
 		PITR:        st,
 		PITRRestore: fake,
 		PITRBases:   st.ListBaseBackups,
+		Inspector:   inspector,
 	})
 	return svc, fake
 }
@@ -96,7 +111,7 @@ func pitrAt(sec int64, dbs ...string) models.RestoreRequest {
 }
 
 func TestStartPITRRestore(t *testing.T) {
-	svc, fake := pitrService(t)
+	svc, fake := pitrService(t, nil)
 	rec, err := svc.StartRestore(admin(), pitrAt(125, "shop"))
 	if err != nil {
 		t.Fatalf("StartRestore: %v", err)
@@ -121,7 +136,7 @@ func TestStartPITRRestore(t *testing.T) {
 }
 
 func TestStartPITRRestoreByConnectionID(t *testing.T) {
-	svc, _ := pitrService(t)
+	svc, _ := pitrService(t, nil)
 	req := pitrAt(125)
 	req.PITR.StreamID = "conn_a"
 	rec, err := svc.StartRestore(admin(), req)
@@ -131,7 +146,7 @@ func TestStartPITRRestoreByConnectionID(t *testing.T) {
 }
 
 func TestPITRRestoreRefusals(t *testing.T) {
-	svc, fake := pitrService(t)
+	svc, fake := pitrService(t, nil)
 	inPlace := pitrAt(125)
 	no := false
 	inPlace.SafeClone, inPlace.ConfirmInPlace = &no, true
@@ -160,7 +175,7 @@ func TestPITRRestoreRefusals(t *testing.T) {
 }
 
 func TestPreflightPITR(t *testing.T) {
-	svc, fake := pitrService(t)
+	svc, fake := pitrService(t, nil)
 	res, err := svc.PreflightRestore(admin(), pitrAt(125))
 	if err != nil {
 		t.Fatal(err)

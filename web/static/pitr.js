@@ -47,6 +47,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Keep base backups",
       keep_days: "or days",
       base_on_gap: "Take a base backup when a gap breaks the chain",
+      chain_test_cron: "Chain test schedule (cron, optional)",
+      chain_test_hint: "Restores one base to the consistent point of the next into temporary databases, compares them with that base's manifest and drops them. Empty turns chain tests off.",
       enable: "Enable",
       disable: "Disable",
       resume: "Enable",
@@ -104,6 +106,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "PITR lag high",
       reason_pitr_window_low: "PITR headroom low",
       reason_pitr_no_window: "No PITR window yet",
+      reason_pitr_chain_test_failed: "PITR chain test failed",
       rpo_pitr: "PITR: oplog captured",
       rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured and can be restored to a point in time (experimental)."
     }
@@ -134,6 +137,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Saklanacak temel yedek",
       keep_days: "veya gün",
       base_on_gap: "Bir boşluk zinciri koparınca temel yedek al",
+      chain_test_cron: "Zincir testi zamanlaması (cron, isteğe bağlı)",
+      chain_test_hint: "Bir temel yedeği, sonrakinin tutarlı noktasına geçici veritabanlarında geri yükler, o yedeğin manifestiyle karşılaştırır ve siler. Boş bırakılırsa zincir testleri kapalıdır.",
       enable: "Aç",
       disable: "Kapat",
       resume: "Aç",
@@ -191,6 +196,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "PITR gecikmesi yüksek",
       reason_pitr_window_low: "PITR payı düşük",
       reason_pitr_no_window: "Henüz PITR penceresi yok",
+      reason_pitr_chain_test_failed: "PITR zincir testi başarısız",
       rpo_pitr: "PITR: oplog kaydediliyor",
       rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi ve zamana noktasal olarak geri yüklenebilir (deneysel)."
     }
@@ -221,6 +227,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Basis-Backups behalten",
       keep_days: "oder Tage",
       base_on_gap: "Basis-Backup erstellen, wenn eine Lücke die Kette bricht",
+      chain_test_cron: "Zeitplan für Kettentests (Cron, optional)",
+      chain_test_hint: "Stellt ein Basis-Backup auf den konsistenten Punkt des nächsten in temporäre Datenbanken wieder her, vergleicht sie mit dessen Manifest und löscht sie. Leer schaltet Kettentests aus.",
       enable: "Aktivieren",
       disable: "Deaktivieren",
       resume: "Aktivieren",
@@ -278,6 +286,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "PITR-Verzögerung hoch",
       reason_pitr_window_low: "PITR-Reserve gering",
       reason_pitr_no_window: "Noch kein PITR-Fenster",
+      reason_pitr_chain_test_failed: "PITR-Kettentest fehlgeschlagen",
       rpo_pitr: "PITR: Oplog erfasst",
       rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst und kann auf einen Zeitpunkt wiederhergestellt werden (experimentell)."
     }
@@ -308,6 +317,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Conservar copias base",
       keep_days: "o días",
       base_on_gap: "Tomar una copia base cuando un hueco rompe la cadena",
+      chain_test_cron: "Programación de pruebas de cadena (cron, opcional)",
+      chain_test_hint: "Restaura una copia base al punto consistente de la siguiente en bases de datos temporales, las compara con el manifiesto de esa copia y las elimina. Vacío desactiva las pruebas de cadena.",
       enable: "Activar",
       disable: "Desactivar",
       resume: "Activar",
@@ -365,6 +376,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "Retraso PITR alto",
       reason_pitr_window_low: "Margen PITR bajo",
       reason_pitr_no_window: "Aún sin ventana PITR",
+      reason_pitr_chain_test_failed: "Prueba de cadena PITR fallida",
       rpo_pitr: "PITR: oplog capturado",
       rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él y se puede restaurar a un punto en el tiempo (experimental)."
     }
@@ -395,6 +407,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Conserver les sauvegardes de base",
       keep_days: "ou jours",
       base_on_gap: "Faire une sauvegarde de base quand un trou rompt la chaîne",
+      chain_test_cron: "Planification des tests de chaîne (cron, facultatif)",
+      chain_test_hint: "Restaure une sauvegarde de base au point cohérent de la suivante dans des bases temporaires, les compare au manifeste de celle-ci puis les supprime. Vide désactive les tests de chaîne.",
       enable: "Activer",
       disable: "Désactiver",
       resume: "Activer",
@@ -452,6 +466,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "Retard PITR élevé",
       reason_pitr_window_low: "Marge PITR faible",
       reason_pitr_no_window: "Pas encore de fenêtre PITR",
+      reason_pitr_chain_test_failed: "Test de chaîne PITR en échec",
       rpo_pitr: "PITR : oplog capturé",
       rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui et peut être restauré à un instant donné (expérimental)."
     }
@@ -482,6 +497,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "保留基础备份数",
       keep_days: "或天数",
       base_on_gap: "出现断档导致链中断时进行基础备份",
+      chain_test_cron: "链测试计划（cron，可选）",
+      chain_test_hint: "将一个基础备份恢复到下一个基础备份的一致点（写入临时数据库），与其清单比较后删除。留空则关闭链测试。",
       enable: "启用",
       disable: "禁用",
       resume: "启用",
@@ -539,6 +556,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "PITR 延迟过高",
       reason_pitr_window_low: "PITR 余量不足",
       reason_pitr_no_window: "尚无 PITR 窗口",
+      reason_pitr_chain_test_failed: "PITR 链测试失败",
       rpo_pitr: "PITR：oplog 已捕获",
       rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，可以进行时间点恢复（实验性）。"
     }
@@ -569,6 +587,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "保持するベースバックアップ数",
       keep_days: "または日数",
       base_on_gap: "ギャップでチェーンが切れたらベースバックアップを取得する",
+      chain_test_cron: "チェーンテストのスケジュール（cron、任意）",
+      chain_test_hint: "ベースバックアップを次のベースバックアップの整合点まで一時データベースに復元し、そのマニフェストと比較してから削除します。空にするとチェーンテストは無効です。",
       enable: "有効にする",
       disable: "無効にする",
       resume: "有効にする",
@@ -626,6 +646,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "PITR 遅延大",
       reason_pitr_window_low: "PITR 余裕不足",
       reason_pitr_no_window: "PITR ウィンドウがまだありません",
+      reason_pitr_chain_test_failed: "PITR チェーンテストが失敗",
       rpo_pitr: "PITR：oplog を取得済み",
       rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みで、ポイントインタイム復元が可能です（実験的）。"
     }
@@ -656,6 +677,8 @@ const PITR_TRANSLATIONS = {
       keep_count: "Хранить базовых копий",
       keep_days: "или дней",
       base_on_gap: "Делать базовую копию, когда разрыв обрывает цепочку",
+      chain_test_cron: "Расписание теста цепочки (cron, необязательно)",
+      chain_test_hint: "Восстанавливает базовую копию на согласованную точку следующей во временные базы данных, сравнивает их с её манифестом и удаляет. Пусто — тесты цепочки отключены.",
       enable: "Включить",
       disable: "Отключить",
       resume: "Включить",
@@ -713,6 +736,7 @@ const PITR_TRANSLATIONS = {
       reason_pitr_lag_high: "Большое отставание PITR",
       reason_pitr_window_low: "Мало запаса PITR",
       reason_pitr_no_window: "Окна PITR пока нет",
+      reason_pitr_chain_test_failed: "Тест цепочки PITR не пройден",
       rpo_pitr: "PITR: oplog сохраняется",
       rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, и возможно восстановление на момент времени (экспериментально)."
     }
@@ -863,7 +887,8 @@ async function pitrCreate(e) {
     chunk_seconds: num("pitr-chunk-seconds"),
     base_keep_count: num("pitr-keep-count"),
     base_keep_days: num("pitr-keep-days"),
-    base_on_gap: !!(document.getElementById("pitr-base-on-gap") || {}).checked
+    base_on_gap: !!(document.getElementById("pitr-base-on-gap") || {}).checked,
+    chain_test_cron: getValue("pitr-chain-test-cron").trim()
   };
   if (!body.base_cron || !(body.chunk_seconds >= 15 && body.chunk_seconds <= 900) || isNaN(body.base_keep_count) || isNaN(body.base_keep_days)) {
     showFormError("pitr-error", t("pitr.invalid"));

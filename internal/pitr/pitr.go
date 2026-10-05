@@ -161,6 +161,10 @@ type Stream struct {
 	// ReadPreference is the read preference of oplog reads; empty means
 	// secondaryPreferred.
 	ReadPreference string `json:"read_preference,omitempty"`
+	// ChainTestCron is the cron schedule of chain tests: a point-in-time restore
+	// from one base to the consistent point of the next into temporary clones,
+	// compared with that base's manifest. Empty turns chain tests off.
+	ChainTestCron string `json:"chain_test_cron,omitempty"`
 	// CreatedAt and UpdatedAt are set by the repository.
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

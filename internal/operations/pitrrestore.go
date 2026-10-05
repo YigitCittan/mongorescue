@@ -33,6 +33,9 @@ type PITRRestorer interface {
 	PreparePITR(req models.RestoreRequest, run restore.PITRRun) (*models.RestoreRecord, error)
 	// ExecutePITR runs the restore described by req, run and record.
 	ExecutePITR(ctx context.Context, req models.RestoreRequest, run restore.PITRRun, record *models.RestoreRecord) (*models.RestoreRecord, error)
+	// DropPITRClones drops the clones of a point-in-time restore and returns a note
+	// for its record.
+	DropPITRClones(ctx context.Context, uri string, info *models.PITRRestore) string
 }
 
 // pitrPlan is a validated point-in-time request, resolved to its stream and target
@@ -43,6 +46,8 @@ type pitrPlan struct {
 	run    restore.PITRRun
 	// planErr is why no plan was found (preflights only).
 	planErr error
+	// chainTest marks the restore of a chain test.
+	chainTest bool
 }
 
 // resolveStream returns the PITR stream id, or the stream of connection id.
@@ -149,18 +154,18 @@ func (s *Service) startPITRRestore(ctx context.Context, req models.RestoreReques
 	if err != nil {
 		return nil, err
 	}
-	return s.runPITRRestore(ctx, pp, func(*models.RestoreRecord) {})
+	return s.runPITRRestore(ctx, pp, func(context.Context, *models.RestoreRecord) {})
 }
 
 // runPITRRestore prepares, preflights, stores and starts the restore of pp in the
 // background; done is called with the final record before it is stored.
-func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(*models.RestoreRecord)) (*models.RestoreRecord, error) {
+func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(context.Context, *models.RestoreRecord)) (*models.RestoreRecord, error) {
 	req := pp.req
 	record, err := s.cfg.PITRRestore.PreparePITR(req, pp.run)
 	if err != nil {
 		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
 	}
-	record.PITR.BaseBytes = pp.run.Base.SizeBytes
+	record.PITR.BaseBytes, record.PITR.ChainTest = pp.run.Base.SizeBytes, pp.chainTest
 	if s.cfg.Inspector != nil {
 		pre := s.preflightPITR(ctx, pp, record)
 		if !pre.OK && !req.Force {
@@ -189,7 +194,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(*m
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.PITRRestore.ExecutePITR(runCtx, req, pp.run, record)
-		done(final)
+		done(runCtx, final)
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
 		s.publish(persistCtx, events.RestoreEvent(final, runErr, final.BackupID))

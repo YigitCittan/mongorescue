@@ -13,7 +13,7 @@ import (
 
 // pitrStreams returns the PITR streams for the readiness report, from the
 // collector's status (*svc is set once the collector is built).
-func pitrStreams(svc **collector.Service) readiness.StreamLister {
+func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Context, streamID string) bool) readiness.StreamLister {
 	return func(ctx context.Context) ([]readiness.StreamInfo, error) {
 		if *svc == nil {
 			return nil, nil
@@ -24,7 +24,11 @@ func pitrStreams(svc **collector.Service) readiness.StreamLister {
 		}
 		out := make([]readiness.StreamInfo, 0, len(list))
 		for _, st := range list {
-			out = append(out, streamInfo(st))
+			info := streamInfo(st)
+			if *chainTestFailed != nil {
+				info.ChainTestFailed = (*chainTestFailed)(ctx, info.ID)
+			}
+			out = append(out, info)
 		}
 		return out, nil
 	}

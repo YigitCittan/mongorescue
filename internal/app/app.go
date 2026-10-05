@@ -307,6 +307,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithManifestCapturer(prober.Manifest),
+		backup.WithDatabaseLister(backup.DatabaseListFunc(databaseNames(prober))),
 		backup.WithMemberProbe(prober.ServingMember),
 		backup.WithConnectionSlots(runManager),
 		backup.WithOpTimeReader(prober.WriteOpTimes),
@@ -388,6 +389,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
 	// The PITR collector is built below; the sweep's chunk item calls it.
+	// chainTestFailed reports failed PITR chain tests to readiness once the
+	// operations service is built.
+	var chainTestFailed func(ctx context.Context, streamID string) bool
 	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
 		ChunkKeys: metaStore.ChunkKeys,
@@ -451,7 +455,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
-		Streams:      pitrStreams(&pitrSvc),
+		Streams:      pitrStreams(&pitrSvc, &chainTestFailed),
 		Publisher:    bus,
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
@@ -585,7 +589,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,
 		StartBase: ops.StartBaseBackup,
-		Bases:     metaStore.ListBaseBackups,
+		// Scheduled chain tests run as the application itself (admin).
+		StartChainTest: func(ctx context.Context, id string) error {
+			_, chainErr := ops.StartChainTest(auth.WithPrincipal(ctx, auth.SystemPrincipal()), id)
+			return chainErr
+		},
+		LastChainTest: ops.LastChainTestStart,
+		Bases:         metaStore.ListBaseBackups,
 		NextRun: func(expr string, from time.Time) (time.Time, bool) {
 			next := scheduler.NextRuns(expr, from, 1)
 			if len(next) == 0 {
@@ -623,6 +633,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// With the two-person rule, admin users, promotions and admin API keys wait for a
 	// second administrator too.
 	authSvc.SetAdminGrantGate(ops)
+	chainTestFailed = func(ctx context.Context, streamID string) bool {
+		r := ops.LastChainTest(ctx, streamID)
+		return r != nil && r.Failed
+	}
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
 		Connections: connSvc,

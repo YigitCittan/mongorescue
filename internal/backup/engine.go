@@ -129,7 +129,9 @@ type Engine struct {
 
 	// manifest captures the manifest of every backup; verifyUpload and
 	// verifyDecryptor configure the post-upload verification (see integrity.go).
-	manifest        ManifestFunc
+	manifest ManifestFunc
+	// listDatabases lists the databases of an instance manifest (PITR bases).
+	listDatabases   DatabaseListFunc
 	verifyUpload    bool
 	verifyDecryptor *encryption.Decryptor
 
