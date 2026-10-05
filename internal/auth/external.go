@@ -254,6 +254,10 @@ type ExternalSignIn struct {
 	RoleOnCreate bool
 	// AutoCreate creates the user when no user has Subject.
 	AutoCreate bool
+	// KeepAdmin keeps the admin role of an administrator whom Role would demote
+	// (the two-person rule holds the demotion back for a second administrator); the
+	// result reports RoleKept and DemotionHeld.
+	KeepAdmin bool
 	// At is the time of the sign-in (created, updated and last login).
 	At time.Time
 }
@@ -267,8 +271,12 @@ type ExternalSignInResult struct {
 	// RoleFrom is the role before the sign-in ("" for a created user).
 	RoleFrom Role
 	// RoleKept reports that the new role was not applied because it would have
-	// demoted the last administrator.
+	// demoted the last administrator, or (DemotionHeld) an administrator while
+	// KeepAdmin was set.
 	RoleKept bool
+	// DemotionHeld reports that the demotion of an administrator was held back for
+	// KeepAdmin.
+	DemotionHeld bool
 }
 
 // OIDCLogin is the outcome of LoginOIDC: a new session and what changed.
@@ -279,8 +287,15 @@ type OIDCLogin struct {
 	// RoleFrom is the role before the sign-in ("" for a created user) and RoleTo the
 	// role after it.
 	RoleFrom, RoleTo Role
-	// RoleKept reports that a demotion was refused to keep the last administrator.
+	// RoleKept reports that a demotion was refused to keep the last administrator,
+	// or held back for a second administrator (DemotionHeld).
 	RoleKept bool
+	// DemotionHeld reports that the two-person rule held the demotion of an
+	// administrator back: the admin role stays, and an approval request asks a
+	// second administrator to apply MappedRole.
+	DemotionHeld bool
+	// MappedRole is the role the identity provider's groups gave the user.
+	MappedRole Role
 }
 
 // LoginOIDC signs in an identity the OIDC provider vouched for and starts a
@@ -319,12 +334,21 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 		return nil, err
 	}
 	now := s.now().UTC()
+	// With the two-person rule an administrator keeps the admin role, and the
+	// demotion waits for a second administrator.
+	gate := s.holdsAdminGrant(ctx)
 	res, err := s.repo.SignInExternalUser(ctx, &ExternalSignIn{
 		Subject: ExternalSubject(id.Issuer, id.Subject), NewUserID: userID, Username: username,
-		Role: role, RoleOnCreate: onCreate, AutoCreate: policy.AutoCreateUsers, At: now,
+		Role: role, RoleOnCreate: onCreate, AutoCreate: policy.AutoCreateUsers, KeepAdmin: gate != nil, At: now,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if res.DemotionHeld && gate != nil {
+		if reqErr := gate.RequestSignInDemotion(ctx, AdminGrant{Kind: DemoteAdmin, UserID: res.User.ID, Username: res.User.Username, Role: role}); reqErr != nil {
+			// The admin role stays either way; the warning tells the administrators.
+			s.logger.Warn("could not ask for approval of a single sign-on demotion", slog.String("user_id", res.User.ID), logsafe.Error(reqErr))
+		}
 	}
 	idle, _ := s.sessionTimeouts()
 	if n, purgeErr := s.repo.DeleteExpiredSessions(ctx, now, idle); purgeErr != nil {
@@ -336,10 +360,15 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 	if err != nil {
 		return nil, err
 	}
-	out := &OIDCLogin{LoginResult: session, Created: res.Created, RoleFrom: res.RoleFrom, RoleTo: res.User.Role, RoleKept: res.RoleKept}
+	out := &OIDCLogin{LoginResult: session, Created: res.Created, RoleFrom: res.RoleFrom, RoleTo: res.User.Role, RoleKept: res.RoleKept,
+		DemotionHeld: res.DemotionHeld, MappedRole: role}
 	s.logger.Info("single sign-on", slog.String("user_id", res.User.ID), logsafe.Attr("username", res.User.Username),
 		slog.Bool("created", res.Created), logsafe.Attr("role", string(res.User.Role)))
-	if res.RoleKept {
+	switch {
+	case res.DemotionHeld:
+		s.logger.Warn("single sign-on would demote an administrator; the admin role stays until a second administrator approves",
+			slog.String("user_id", res.User.ID), logsafe.Attr("mapped_role", string(role)))
+	case res.RoleKept:
 		s.logger.Warn("single sign-on would demote the last administrator; the stored role was kept",
 			slog.String("user_id", res.User.ID), logsafe.Attr("mapped_role", string(role)))
 	}

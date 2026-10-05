@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -507,6 +508,17 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		s.destructive(ctx, "demote_admin", "administrator "+a.Subject+" is now "+a.Role, nil)
+		s.forgetAdmin(ctx, a.Subject)
+		return "user " + a.Subject + " is now " + a.Role, nil
+	case models.ApprovalSSODemoteAdmin:
+		if s.cfg.Users == nil {
+			return "", public("users are not available", ErrUnavailable)
+		}
+		if _, err := s.cfg.Users.ApplyProviderRole(ctx, auth.PrincipalFrom(ctx), a.Subject, auth.Role(a.Role)); err != nil {
+			return "", err
+		}
+		s.destructive(ctx, "demote_admin", "administrator "+a.Subject+" is now "+a.Role+" (single sign-on)", nil)
+		s.forgetAdmin(ctx, a.Subject)
 		return "user " + a.Subject + " is now " + a.Role, nil
 	case models.ApprovalDeleteAdmin:
 		if s.cfg.Users == nil {
@@ -516,6 +528,7 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		s.destructive(ctx, "delete_admin", "administrator "+a.Subject+" was deleted", nil)
+		s.forgetAdmin(ctx, a.Subject)
 		return "user " + a.Subject + " is deleted", nil
 	case models.ApprovalShortenMetadataRetention:
 		if a.MetadataRetentionCount == nil {
@@ -551,6 +564,32 @@ type UserAdmin interface {
 	ApplyPasswordReset(ctx context.Context, actor *auth.Principal, id, hash string) error
 	// DeleteUser deletes user id.
 	DeleteUser(ctx context.Context, actor *auth.Principal, id string) error
+	// ApplyProviderRole sets the role a single sign-on gave user id.
+	ApplyProviderRole(ctx context.Context, actor *auth.Principal, id string, role auth.Role) (*auth.RoleChange, error)
+}
+
+// RequestSignInDemotion asks a second administrator to apply g.Role, the role a
+// single sign-on gave administrator g.UserID, who kept the admin role because the
+// two-person rule is on (auth.AdminGrantGate). An open request for the same user and
+// role is not repeated at every sign-in.
+func (s *Service) RequestSignInDemotion(ctx context.Context, g auth.AdminGrant) error {
+	st, err := s.approvals()
+	if err != nil {
+		return err
+	}
+	open, err := st.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
+	if err != nil {
+		return fmt.Errorf("list approval requests: %w", err)
+	}
+	now := s.now()
+	for _, a := range open {
+		if a.Action == models.ApprovalSSODemoteAdmin && a.Subject == g.UserID && a.Role == string(g.Role) && a.Open(now) {
+			return nil
+		}
+	}
+	_, err = s.storeApproval(ctx, &models.Approval{Action: models.ApprovalSSODemoteAdmin, Subject: g.UserID, Role: string(g.Role),
+		Summary: fmt.Sprintf("apply the role %s that single sign-on gave administrator %s (%s); the admin role stays until then", g.Role, g.Username, g.UserID)})
+	return err
 }
 
 // HoldsAdminGrants reports whether a grant of admin rights in ctx must wait for a
@@ -603,12 +642,17 @@ func (s *Service) holdOIDCGrant(ctx context.Context, p *settings.Patch) (*models
 	if err != nil {
 		return nil, err
 	}
-	if !settings.OIDCGrantsAdmin(cur.OIDC, next.OIDC) {
+	grants := settings.OIDCGrantsAdmin(cur.OIDC, next.OIDC)
+	if !grants && !settings.OIDCRevokesAdmin(cur.OIDC, next.OIDC, s.hasOIDCAdmins(ctx)) {
 		return nil, nil
 	}
+	summary := "change the single sign-on settings so that identity provider groups can get the admin role"
+	if !grants {
+		summary = "change the single sign-on settings so that administrators can lose the admin role at their next sign-in"
+	}
 	if sec := p.OIDC.ClientSecret; sec != nil && *sec != settings.SecretMask {
-		return nil, public("this single sign-on change can grant the admin role and needs a second administrator, "+
-			"but requests never keep secrets: save oidc.client_secret without admin role mappings first, then add them", ErrInvalid)
+		return nil, public("this single sign-on change can grant or take away the admin role and needs a second administrator, "+
+			"but requests never keep secrets: save oidc.client_secret on its own first, then the rest", ErrInvalid)
 	}
 	held := *p.OIDC
 	held.ClientSecret = nil
@@ -616,13 +660,97 @@ func (s *Service) holdOIDCGrant(ctx context.Context, p *settings.Patch) (*models
 	if err != nil {
 		return nil, fmt.Errorf("encode the oidc change: %w", err)
 	}
-	a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalOIDCAdminMapping, Settings: raw,
-		Summary: "change the single sign-on settings so that identity provider groups can get the admin role"})
+	a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalOIDCAdminMapping, Settings: raw, Summary: summary})
 	if err != nil {
 		return nil, err
 	}
 	p.OIDC = nil
 	return a, nil
+}
+
+// userLister lists the users (implemented by *store.SQLiteStore).
+type userLister interface {
+	ListUsers(ctx context.Context) ([]*auth.User, error)
+}
+
+// adminIDs returns the IDs of the users with the admin role, sorted by username.
+func (s *Service) adminIDs(ctx context.Context) ([]string, error) {
+	st, ok := s.cfg.Store.(userLister)
+	if !ok {
+		return nil, nil
+	}
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	var ids []string
+	for _, u := range users {
+		if u != nil && u.Role == auth.RoleAdmin {
+			ids = append(ids, u.ID)
+		}
+	}
+	return ids, nil
+}
+
+// adminLost returns the ID of an administrator recorded in pending change c
+// (PendingDisableSecondApprover) who is no longer an administrator, or "".
+func (s *Service) adminLost(ctx context.Context, c *models.PendingChange) (string, error) {
+	if len(c.Admins) == 0 {
+		return "", nil
+	}
+	now, err := s.adminIDs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, id := range c.Admins {
+		if !slices.Contains(now, id) {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// forgetAdmin removes administrator id, demoted or deleted by an approved request,
+// from the pending change that turns the two-person rule off: an approved loss of
+// the admin role does not cancel it (see adminLost).
+func (s *Service) forgetAdmin(ctx context.Context, id string) {
+	st, ok := s.cfg.Store.(pendingStore)
+	if !ok {
+		return
+	}
+	list, err := st.ListPendingChanges(ctx)
+	if err != nil {
+		s.logger.Warn("cannot list pending protection changes", logsafe.Error(err))
+		return
+	}
+	for _, c := range list {
+		if c.Kind != models.PendingDisableSecondApprover || !slices.Contains(c.Admins, id) {
+			continue
+		}
+		c.Admins = slices.DeleteFunc(c.Admins, func(v string) bool { return v == id })
+		if _, err = st.ReplacePendingChange(ctx, c); err != nil {
+			s.logger.Warn("cannot update the pending change that turns the two-person rule off", logsafe.Attr("change_id", c.ID), logsafe.Error(err))
+		}
+	}
+}
+
+// hasOIDCAdmins reports whether a user who signs in with single sign-on holds the
+// admin role; true when the users cannot be read.
+func (s *Service) hasOIDCAdmins(ctx context.Context) bool {
+	st, ok := s.cfg.Store.(userLister)
+	if !ok {
+		return false
+	}
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		return true
+	}
+	for _, u := range users {
+		if u != nil && u.Role == auth.RoleAdmin && u.AuthProvider == auth.ProviderOIDC {
+			return true
+		}
+	}
+	return false
 }
 
 // applyOIDCGrant applies the oidc change of approved request a.
@@ -834,6 +962,15 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			if s.cfg.SecondApproverCheck != nil && s.cfg.SecondApproverCheck(ctx) == nil {
 				s.logger.Warn("dropping the pending change that turns the two-person rule off: two administrators can approve again",
 					logsafe.Attr("change_id", c.ID))
+				continue
+			}
+			// An administrator demoted or deleted without an approval while the change
+			// waited is how one credential would make itself the last administrator.
+			if lost, lostErr := s.adminLost(ctx, c); lostErr != nil || lost != "" {
+				s.logger.Warn("dropping the pending change that turns the two-person rule off: an administrator lost the admin role without an approval while it waited",
+					logsafe.Attr("change_id", c.ID), logsafe.Attr("user_id", lost), logsafe.Error(lostErr))
+				s.destructive(ctx, "disable_second_approver_dropped", "the pending change that turns the two-person rule off was dropped: "+
+					"an administrator lost the admin role without an approval while it waited", nil)
 				continue
 			}
 			applyErr = s.disableSecondApprover(withApproval(ctx, &models.Approval{RequestedBy: c.RequestedBy}, "the grace period (no second administrator could approve)"))
@@ -1056,7 +1193,11 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		// Without two administrators nobody could approve: turning the rule off then
 		// waits for the grace period instead, so a lockout always ends.
 		if s.cfg.SecondApproverCheck != nil && errors.Is(s.cfg.SecondApproverCheck(ctx), ErrTooFewAdmins) {
-			c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingDisableSecondApprover})
+			admins, err := s.adminIDs(ctx)
+			if err != nil {
+				return nil, err
+			}
+			c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingDisableSecondApprover, Admins: admins})
 			if err != nil {
 				return nil, err
 			}

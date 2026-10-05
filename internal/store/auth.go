@@ -426,7 +426,9 @@ func (s *SQLiteStore) SignInExternalUser(ctx context.Context, in *auth.ExternalS
 		// With RoleOnCreate an existing user keeps the stored role.
 		if !in.RoleOnCreate && u.Role != in.Role {
 			kept := false
-			if u.Role == auth.RoleAdmin {
+			if u.Role == auth.RoleAdmin && in.KeepAdmin {
+				kept, out.DemotionHeld = true, true
+			} else if u.Role == auth.RoleAdmin {
 				switch err = refuseLastAdmin(ctx, tx); {
 				case errors.Is(err, auth.ErrLastAdmin):
 					kept = true

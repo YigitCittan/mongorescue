@@ -42,3 +42,36 @@ func TestProtectionsCannotBeLoweredDirectly(t *testing.T) {
 		t.Fatalf("security = %+v", s)
 	}
 }
+
+// TestOIDCRevokesAdmin covers the single sign-on changes that can take the admin
+// role away and therefore wait for a second administrator.
+func TestOIDCRevokesAdmin(t *testing.T) {
+	base := OIDC{Enabled: true, Issuer: "https://idp", ClientID: "c", GroupsClaim: "groups",
+		RoleMappings: []OIDCRoleMapping{{Group: "admins", Role: "admin"}, {Group: "ops", Role: "operator"}}}
+	with := func(fn func(*OIDC)) OIDC {
+		o := base
+		o.RoleMappings = append([]OIDCRoleMapping(nil), base.RoleMappings...)
+		fn(&o)
+		return o
+	}
+	for name, tc := range map[string]struct {
+		cur, next  OIDC
+		oidcAdmins bool
+		want       bool
+	}{
+		"unchanged":           {base, base, true, false},
+		"admin lowered":       {base, with(func(o *OIDC) { o.RoleMappings[0].Role = "viewer" }), false, true},
+		"admin removed":       {base, with(func(o *OIDC) { o.RoleMappings = o.RoleMappings[1:] }), false, true},
+		"all removed":         {base, with(func(o *OIDC) { o.RoleMappings = nil }), false, true},
+		"other issuer":        {base, with(func(o *OIDC) { o.Issuer = "https://other" }), false, true},
+		"other groups claim":  {base, with(func(o *OIDC) { o.GroupsClaim = "roles" }), false, true},
+		"operator lowered":    {base, with(func(o *OIDC) { o.RoleMappings[1].Role = "viewer" }), false, false},
+		"turned off":          {base, with(func(o *OIDC) { o.Enabled = false }), true, false},
+		"first mappings":      {OIDC{Enabled: true}, with(func(o *OIDC) { o.RoleMappings = o.RoleMappings[1:] }), true, true},
+		"first, no sso admin": {OIDC{Enabled: true}, with(func(o *OIDC) { o.RoleMappings = o.RoleMappings[1:] }), false, false},
+	} {
+		if got := OIDCRevokesAdmin(tc.cur, tc.next, tc.oidcAdmins); got != tc.want {
+			t.Errorf("%s: OIDCRevokesAdmin = %v; want %v", name, got, tc.want)
+		}
+	}
+}
