@@ -96,14 +96,14 @@ func pitrPlanError(err error) error {
 // target connection (the stream's unless req names another). A preflight
 // (forPreflight) keeps a plan refusal in planErr instead of failing.
 func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPreflight bool) (*pitrPlan, error) {
-	if s.cfg.PITR == nil || s.cfg.PITRRestore == nil || s.cfg.PITRBases == nil {
-		return nil, ErrPITRUnavailable
-	}
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("point-in-time restores need the admin role or an admin API key: %w", err)
 	}
 	if err := req.ValidatePITR(); err != nil {
 		return nil, invalid(err)
+	}
+	if s.cfg.PITR == nil || s.cfg.PITRRestore == nil || s.cfg.PITRBases == nil {
+		return nil, ErrPITRUnavailable
 	}
 	stream, err := s.resolveStream(ctx, strings.TrimSpace(req.PITR.StreamID))
 	if err != nil {

@@ -623,6 +623,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Operations:  ops,
 		Connections: connSvc,
 		Targets:     targetSvc,
+		PITR:        pitrSvc,
 		Audit:       auditSvc,
 		ObserveCall: metricSet.ObserveMCPCall,
 		Version:     o.version,

@@ -56,12 +56,15 @@ func TestToolsHaveScopesAndAnnotations(t *testing.T) {
 			if !a.ReadOnlyHint || !a.IdempotentHint {
 				t.Errorf("read tool %s must be readOnly and idempotent: %+v", tool.Name, a)
 			}
-		case auth.ScopeOperator:
+		case auth.ScopeOperator, auth.ScopeAdmin:
+			if scope == auth.ScopeAdmin && tool.Name != ToolPITRRestore {
+				t.Errorf("tool %s needs admin; only pitr_restore may", tool.Name)
+			}
 			if a.ReadOnlyHint || a.IdempotentHint {
 				t.Errorf("action tool %s must not claim readOnly or idempotent: %+v", tool.Name, a)
 			}
 		default:
-			t.Errorf("tool %s needs %q; MCP tools need read or operator", tool.Name, scope)
+			t.Errorf("tool %s needs %q; MCP tools need read or operator (admin: pitr_restore)", tool.Name, scope)
 		}
 		if tool.OutputSchema == nil || tool.Description == "" {
 			t.Errorf("tool %s lacks a description or an output schema", tool.Name)
@@ -87,12 +90,12 @@ func TestToolListIsFilteredByScope(t *testing.T) {
 	f := newFixture(t, nil)
 	read := toolNames(t, f.session(t, principal(auth.ScopeRead)))
 	op := toolNames(t, f.session(t, principal(auth.ScopeOperator)))
-	if len(read) != 15 || slices.Contains(read, ToolStartBackup) || slices.Contains(read, ToolRestoreSafeClone) || slices.Contains(read, ToolRunJob) ||
+	if len(read) != 16 || slices.Contains(read, ToolStartBackup) || slices.Contains(read, ToolRestoreSafeClone) || slices.Contains(read, ToolRunJob) ||
 		slices.Contains(read, ToolVerifyBackup) || slices.Contains(read, ToolPinBackup) {
-		t.Fatalf("read key sees %v; want only the 15 read tools", read)
+		t.Fatalf("read key sees %v; want only the 16 read tools", read)
 	}
-	if len(op) != len(ToolScopes) || !slices.Contains(op, ToolStartBackup) {
-		t.Fatalf("operator key sees %v; want all %d tools", op, len(ToolScopes))
+	if len(op) != len(ToolScopes)-1 || !slices.Contains(op, ToolStartBackup) || slices.Contains(op, ToolPITRRestore) {
+		t.Fatalf("operator key sees %v; want all %d tools but pitr_restore", op, len(ToolScopes)-1)
 	}
 }
 
