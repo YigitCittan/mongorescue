@@ -702,6 +702,13 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 		s.logger.Error("cron triggered for missing job", logsafe.Attr("job_id", jobID), slog.Any("error", err))
 		return
 	}
+	// Only scheduled runs honour the backup window: outside it the run is recorded
+	// as skipped; inside it, cancel_at_window_end stops the run when it closes.
+	stopWindow, start := s.checkWindow(ctx, job)
+	if !start {
+		return
+	}
+	defer stopWindow()
 
 	// A multi-database run takes the run lock of each database itself.
 	if s.guard != nil && !job.MultiDatabase() {

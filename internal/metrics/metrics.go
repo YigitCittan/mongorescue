@@ -284,6 +284,13 @@ func (m *Metrics) SetScheduledJobsSource(fn func() int) {
 // ObserveEvent is an events.Handler updating backup and restore series.
 func (m *Metrics) ObserveEvent(_ context.Context, e events.Event) {
 	switch e.Type {
+	case events.BackupSkipped:
+		// A skipped run is counted as a run, never as a backup.
+		job := e.JobID
+		if job == "" {
+			job = ManualJobLabel
+		}
+		m.jobRuns.WithLabelValues(job, "skipped").Inc()
 	case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled:
 		job := e.JobID
 		if job == "" {
