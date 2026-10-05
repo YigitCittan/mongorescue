@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -215,6 +216,45 @@ func TestPurgeKeepsAnObjectAnotherTargetAliases(t *testing.T) {
 	}
 	if _, err := mock.Stat(ctx, "shop/same.archive"); err != nil {
 		t.Fatalf("the aliased object was deleted: %v", err)
+	}
+}
+
+// TestPurgeLocatesEveryRecordOncePerRun proves the purge builds its index of
+// physical objects once per run: every record is located once (plus once per purged
+// backup), not once per purged backup and record, and the archives nobody else
+// holds are still deleted.
+func TestPurgeLocatesEveryRecordOncePerRun(t *testing.T) {
+	ctx := context.Background()
+	st, mock := storetest.New(t), storage.NewMockStorage()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	const deleted, live = 6, 20
+	for i := range deleted {
+		saveDeleted(t, st, mock, fmt.Sprintf("bkp_d%02d", i), t0, testGrace, func(r *models.BackupRecord) { r.StorageTargetID = "tgt_1" })
+	}
+	for i := range live {
+		r := &models.BackupRecord{ID: fmt.Sprintf("bkp_l%02d", i), Database: "shop", Status: models.StatusCompleted, StorageTargetID: "tgt_2",
+			StorageKey: fmt.Sprintf("shop/live-%02d.archive", i), StartedAt: t0}
+		if err := st.SaveBackupRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls atomic.Int64
+	locate := func(ctx context.Context, target, key string) (string, error) {
+		calls.Add(1)
+		return aliasLocator(ctx, target, key)
+	}
+	run := purgeRun{now: t0.Add(testGrace), grace: func() time.Duration { return testGrace }, store: st, storages: fixedStorage(mock),
+		locate: locate, logger: slog.New(slog.DiscardHandler)}
+	if purged, err := run.run(ctx); err != nil || len(purged) != deleted {
+		t.Fatalf("purge = %v, %v", purged, err)
+	}
+	if n := calls.Load(); n > deleted+live+deleted {
+		t.Fatalf("locate called %d times; want at most %d (one index per run)", n, deleted+live+deleted)
+	}
+	for i := range deleted {
+		if _, err := mock.Stat(ctx, fmt.Sprintf("shop/bkp_d%02d.archive", i)); !errors.Is(err, storage.ErrNotFound) {
+			t.Errorf("archive %d after the purge: %v; want deleted", i, err)
+		}
 	}
 }
 

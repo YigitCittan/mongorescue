@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The storage target overlap check runs under the same lock as the write, so two concurrent creates or moves cannot both claim one place.
 - Local storage target paths are compared case-insensitively on macOS and Windows and with their symbolic links resolved, in the overlap check and the purge's physical-object check; bind mounts of one host directory cannot be detected (see [docs/security.md](docs/security.md#storage-targets)).
 - When the approval request of an admin grant cannot be stored (for example an API key without a creator, `403`), creating an admin user or an admin-scope API key leaves nothing behind: the viewer account or the operator-scope key created for the request is removed again.
+- The purge locates every live record once per run (an index of physical objects to the records holding them) instead of once per purged backup.
 
 ### Changed
 - **Breaking:** `DELETE /api/v1/backups/{id}` no longer frees storage immediately: it answers `{deleted_id, status: "deleted", deleted_at, purge_after, archive_deleted: false}` (`archive_kept` and `archive_error` are gone), and the archive is removed by the purge after `purge_after`. Deleting a running backup answers `409` (cancel it first), and deleting a deleted one `409` instead of `404`.

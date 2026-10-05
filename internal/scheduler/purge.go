@@ -99,10 +99,13 @@ type purgeRun struct {
 	locate   LocateFunc
 	logger   *slog.Logger
 	onPurged func(ctx context.Context, o PurgeOutcome)
+	// holders is the location index of this run (see physicalHolder), set by run.
+	holders *holderIndex
 }
 
 // run purges every due deleted backup.
 func (p purgeRun) run(ctx context.Context) ([]string, error) {
+	p.holders = &holderIndex{}
 	if p.logger == nil {
 		p.logger = slog.Default()
 	}
@@ -166,7 +169,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		defer unlockArchive()
 		holder, refErr := archiveHolder(ctx, metadataStore, current)
 		if refErr == nil && holder == "" && p.locate != nil {
-			holder, refErr = physicalHolder(ctx, metadataStore, p.locate, current)
+			holder, refErr = physicalHolder(ctx, metadataStore, p.locate, p.holders, current)
 		}
 		if refErr != nil {
 			logger.Warn("purge cannot check for shared archives; keeping the backup deleted", logsafe.Attr("backup_id", current.ID), logsafe.Error(refErr))
@@ -212,16 +215,76 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		return PurgeOutcome{}, fmt.Errorf("mark %s purged: %w", rec.ID, err)
 	}
 	out.Backup = current
+	p.holders.forget(current.ID)
 	logger.Info("deleted backup purged after its grace period",
 		logsafe.Attr("backup_id", current.ID), logsafe.Attr("database", current.Database),
 		slog.Bool("archive_deleted", out.ArchiveDeleted))
 	return out, nil
 }
 
+// holderIndex maps physical object locations to the live records that name them,
+// built once per purge run (see physicalHolder) instead of locating every record
+// for every purged backup.
+type holderIndex struct {
+	built bool
+	// byLocation lists the IDs of the records holding each location.
+	byLocation map[string][]string
+	// unlocated lists the records whose object could not be located: they count as
+	// holding every object.
+	unlocated []string
+	// gone are the records purged by this run since the index was built.
+	gone map[string]bool
+}
+
+// build fills the index from every live archive reference (once).
+func (x *holderIndex) build(ctx context.Context, lister allArchiveRefs, locate LocateFunc) error {
+	if x.built {
+		return nil
+	}
+	refs, err := lister.ArchiveRefs(ctx)
+	if err != nil {
+		return err
+	}
+	x.byLocation, x.unlocated, x.gone = make(map[string][]string, len(refs)), nil, map[string]bool{}
+	for _, r := range refs {
+		if !holdsArchive(models.BackupStatus(r.Status)) {
+			continue
+		}
+		loc, locErr := locate(ctx, r.TargetID, r.Key)
+		if locErr != nil {
+			x.unlocated = append(x.unlocated, r.ID)
+			continue
+		}
+		x.byLocation[loc] = append(x.byLocation[loc], r.ID)
+	}
+	x.built = true
+	return nil
+}
+
+// holder returns a record other than self that holds location loc, or "".
+func (x *holderIndex) holder(loc, self string) string {
+	for _, list := range [][]string{x.byLocation[loc], x.unlocated} {
+		for _, id := range list {
+			if id != self && !x.gone[id] {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// forget drops record id, purged by this run, from the holders.
+func (x *holderIndex) forget(id string) {
+	if x != nil && x.built {
+		x.gone[id] = true
+	}
+}
+
 // physicalHolder returns the ID of a live record on any storage target whose object
 // is the same physical object as rec's (two targets naming one place), or "". An
-// object that cannot be located counts as held.
-func physicalHolder(ctx context.Context, metadataStore store.Store, locate LocateFunc, rec *models.BackupRecord) (string, error) {
+// object that cannot be located counts as held. index (nil: a fresh one) is built
+// on the first call of a run and reused for the others.
+func physicalHolder(ctx context.Context, metadataStore store.Store, locate LocateFunc, index *holderIndex, rec *models.BackupRecord) (string, error) {
 	lister, ok := metadataStore.(allArchiveRefs)
 	if !ok {
 		return "", nil
@@ -230,20 +293,13 @@ func physicalHolder(ctx context.Context, metadataStore store.Store, locate Locat
 	if err != nil {
 		return "", fmt.Errorf("locate the archive: %w", err)
 	}
-	refs, err := lister.ArchiveRefs(ctx)
-	if err != nil {
+	if index == nil {
+		index = &holderIndex{}
+	}
+	if err = index.build(ctx, lister, locate); err != nil {
 		return "", err
 	}
-	for _, r := range refs {
-		if r.ID == rec.ID || !holdsArchive(models.BackupStatus(r.Status)) {
-			continue
-		}
-		theirs, locErr := locate(ctx, r.TargetID, r.Key)
-		if locErr != nil || theirs == mine {
-			return r.ID, nil
-		}
-	}
-	return "", nil
+	return index.holder(mine, rec.ID), nil
 }
 
 // archiveHolder returns the ID of another record that still holds rec's archive (see
