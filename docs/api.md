@@ -644,6 +644,8 @@ A PITR stream collects the oplog of one replica set connection into encrypted ch
 
 Creating or enabling a stream is refused with 400 unless the connection is a replica set, its user may read `local.oplog.rs` (`backup`, `read` on `local` or a custom role) and backup encryption is on with age keys: the oplog keeps deleted data, so PITR data is always encrypted.
 
+A database row's `rpo.source` is `pitr` when the stream's durable lag is the better recovery point; until point-in-time restores exist (#57) that only means the oplog is captured.
+
 `GET /api/v1/pitr/streams/{id}` returns `{stream, state, running, live, lag_seconds, headroom_seconds, durable_rpo_seconds, windows, chains, bases, chain_breaks, experimental}`. `windows` lists `[{chain_id, open, start, end, start_time, end_time, bases}]`, one per chain with an eligible base: a gap or a divergence splits them. `state.status` is `running`, `failed` (with `last_error`) or `stopped`.
 
 `DELETE` refuses an enabled stream (409). For a disabled stream with chunks it ends the open chain, deletes every chunk with the [delete grace period](#delete-protection) and answers 409 until the purge removed them; delete it again then. Base backups stay as backups.

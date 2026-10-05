@@ -74,7 +74,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "PITR collector down",
       reason_pitr_lag_high: "PITR lag high",
       reason_pitr_window_low: "PITR headroom low",
-      reason_pitr_no_window: "No PITR window yet"
+      reason_pitr_no_window: "No PITR window yet",
+      rpo_pitr: "PITR: oplog captured",
+      rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured, but point-in-time restores are not available yet (#57)."
     }
   },
   tr: {
@@ -133,7 +135,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "PITR toplayıcısı çalışmıyor",
       reason_pitr_lag_high: "PITR gecikmesi yüksek",
       reason_pitr_window_low: "PITR payı düşük",
-      reason_pitr_no_window: "Henüz PITR penceresi yok"
+      reason_pitr_no_window: "Henüz PITR penceresi yok",
+      rpo_pitr: "PITR: oplog kaydediliyor",
+      rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi, ancak zamana noktasal geri yükleme henüz yok (#57)."
     }
   },
   de: {
@@ -192,7 +196,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "PITR-Collector ausgefallen",
       reason_pitr_lag_high: "PITR-Verzögerung hoch",
       reason_pitr_window_low: "PITR-Reserve gering",
-      reason_pitr_no_window: "Noch kein PITR-Fenster"
+      reason_pitr_no_window: "Noch kein PITR-Fenster",
+      rpo_pitr: "PITR: Oplog erfasst",
+      rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst, Point-in-Time-Wiederherstellungen gibt es aber noch nicht (#57)."
     }
   },
   es: {
@@ -251,7 +257,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "Recolector PITR caído",
       reason_pitr_lag_high: "Retraso PITR alto",
       reason_pitr_window_low: "Margen PITR bajo",
-      reason_pitr_no_window: "Aún sin ventana PITR"
+      reason_pitr_no_window: "Aún sin ventana PITR",
+      rpo_pitr: "PITR: oplog capturado",
+      rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él, pero las restauraciones a un punto en el tiempo aún no están disponibles (#57)."
     }
   },
   fr: {
@@ -310,7 +318,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "Collecteur PITR arrêté",
       reason_pitr_lag_high: "Retard PITR élevé",
       reason_pitr_window_low: "Marge PITR faible",
-      reason_pitr_no_window: "Pas encore de fenêtre PITR"
+      reason_pitr_no_window: "Pas encore de fenêtre PITR",
+      rpo_pitr: "PITR : oplog capturé",
+      rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui, mais les restaurations à un instant donné ne sont pas encore disponibles (#57)."
     }
   },
   zh: {
@@ -369,7 +379,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "PITR 收集器停止",
       reason_pitr_lag_high: "PITR 延迟过高",
       reason_pitr_window_low: "PITR 余量不足",
-      reason_pitr_no_window: "尚无 PITR 窗口"
+      reason_pitr_no_window: "尚无 PITR 窗口",
+      rpo_pitr: "PITR：oplog 已捕获",
+      rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，但时间点恢复尚不可用（#57）。"
     }
   },
   ja: {
@@ -428,7 +440,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "PITR コレクター停止",
       reason_pitr_lag_high: "PITR 遅延大",
       reason_pitr_window_low: "PITR 余裕不足",
-      reason_pitr_no_window: "PITR ウィンドウがまだありません"
+      reason_pitr_no_window: "PITR ウィンドウがまだありません",
+      rpo_pitr: "PITR：oplog を取得済み",
+      rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みですが、ポイントインタイム復元はまだ利用できません（#57）。"
     }
   },
   ru: {
@@ -487,7 +501,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_collector_down: "Сборщик PITR не работает",
       reason_pitr_lag_high: "Большое отставание PITR",
       reason_pitr_window_low: "Мало запаса PITR",
-      reason_pitr_no_window: "Окна PITR пока нет"
+      reason_pitr_no_window: "Окна PITR пока нет",
+      rpo_pitr: "PITR: oplog сохраняется",
+      rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, но восстановление на момент времени пока недоступно (#57)."
     }
   }
 };
