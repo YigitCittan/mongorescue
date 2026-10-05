@@ -144,7 +144,7 @@ type Server struct {
 	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
 	// usedStates remembers consumed states (see WithOIDC); nil in the desktop app.
 	oidc       *oidc.Client
-	oidcBox    *secretbox.Box
+	oidcBox    *secretbox.Ref
 	usedStates *stateSet
 }
 

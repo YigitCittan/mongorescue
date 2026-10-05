@@ -550,6 +550,12 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "restore " + rec.ID + " started", nil
+	case models.ApprovalRotateSecretKey:
+		res, err := s.RotateSecretKey(ctx)
+		if err != nil {
+			return "", err
+		}
+		return "secret.key rotated (new fingerprint " + res.NewFingerprint + "); every user has to sign in again", nil
 	default:
 		return "", public("unknown approval action "+string(a.Action), ErrInvalid)
 	}

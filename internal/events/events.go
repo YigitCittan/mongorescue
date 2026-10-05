@@ -98,6 +98,11 @@ const (
 	// SecurityApprovalRequested is emitted when a destructive action waits for a
 	// second administrator (security.require_second_approver; Event.ApprovalID).
 	SecurityApprovalRequested EventType = "security.approval_requested"
+	// SecurityKeyRotated is emitted when a key was rotated: Event.Action is the
+	// kind (secret_key, encryption or storage_credentials), Event.Actor who,
+	// Event.ApprovalID the approval if any and Event.Detail the old and new
+	// fingerprints (never key material).
+	SecurityKeyRotated EventType = "security.key_rotated"
 	// PITRChainBroken is emitted when a gap ends the oplog chain of a PITR stream:
 	// the oplog window was overrun or the replica set changed (Event.Stream,
 	// Event.Detail). It is a critical alert: point-in-time recovery cannot cross it.
@@ -175,7 +180,7 @@ var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
-	SecurityDestructiveAction, SecurityApprovalRequested,
+	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated,
 	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
 }
 
