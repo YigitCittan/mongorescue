@@ -1,7 +1,6 @@
 package operations_test
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -10,8 +9,6 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
-var sameSecondClone = regexp.MustCompile(`^shop_rescue_20261006_093005_[0-9a-f]{4}$`)
-
 // TestSameSecondRestoresBothSucceed starts two restores of one database with a
 // clock stopped in one second: both pass their preflight (the first clone exists by
 // then) and get clones of their own, and each preflight names its restore's clone.
@@ -19,7 +16,9 @@ func TestSameSecondRestoresBothSucceed(t *testing.T) {
 	ins := healthyInspector()
 	env := newPreflightEnv(t, ins, nil)
 	at := time.Date(2026, 10, 6, 9, 30, 5, 0, time.UTC)
-	env.engine.prep = restore.NewEngine(nil, "", restore.WithClock(func() time.Time { return at }))
+	ids := []string{"ab12", "cd34"}
+	env.engine.prep = restore.NewEngine(nil, "", restore.WithClock(func() time.Time { return at }),
+		restore.WithCloneID(func() (string, error) { id := ids[0]; ids = ids[1:]; return id, nil }))
 
 	first, err := env.svc.StartRestore(admin(), models.RestoreRequest{BackupID: env.backup.ID})
 	if err != nil {
@@ -32,13 +31,10 @@ func TestSameSecondRestoresBothSucceed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second restore in the same second: %v", err)
 	}
-	if first.TargetDatabase == second.TargetDatabase {
-		t.Fatalf("both restores target %s", first.TargetDatabase)
+	if first.TargetDatabase != "shop_rescue_20261006_093005_ab12" || second.TargetDatabase != "shop_rescue_20261006_093005_cd34" {
+		t.Fatalf("clones %s and %s", first.TargetDatabase, second.TargetDatabase)
 	}
 	for _, rec := range []*models.RestoreRecord{first, second} {
-		if !sameSecondClone.MatchString(rec.TargetDatabase) {
-			t.Fatalf("clone %q; want shop_rescue_20261006_093005_<4 hex>", rec.TargetDatabase)
-		}
 		// The preflight checked the very name the restore uses.
 		if c := rec.Preflight.Check(models.PreflightCheckTargetDatabase); c == nil || c.Status != models.PreflightPass ||
 			!strings.Contains(c.Message, rec.TargetDatabase) {

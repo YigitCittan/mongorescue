@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"regexp"
 	"testing"
 	"time"
 
@@ -38,11 +37,13 @@ func TestSameSecondSafeClonesBothSucceed(t *testing.T) {
 		_ = manager.Shutdown(sctx)
 	})
 	at := time.Now().UTC().Truncate(time.Second)
+	ids := []string{"ab12", "cd34"} // fixed and distinct: the test never depends on chance
 	conn := models.Connection{ID: "conn_it", Name: "integration", URI: env.URI}
 	svc := operations.New(operations.Config{
-		Store:       storetest.New(t),
-		Backup:      newBackupEngine(env, st),
-		Restore:     newRestoreEngine(env, st, restore.WithClock(func() time.Time { return at })),
+		Store:  storetest.New(t),
+		Backup: newBackupEngine(env, st),
+		Restore: newRestoreEngine(env, st, restore.WithClock(func() time.Time { return at }),
+			restore.WithCloneID(func() (string, error) { id := ids[0]; ids = ids[1:]; return id, nil })),
 		Runs:        manager,
 		Connections: staticConnections{conn: conn},
 		Inspector:   mongoconn.New(),
@@ -59,7 +60,8 @@ func TestSameSecondSafeClonesBothSucceed(t *testing.T) {
 	}
 	waitIdle(t, manager)
 
-	name := regexp.MustCompile("^" + regexp.QuoteMeta(db+"_rescue_"+at.Format("20060102_150405")+"_") + "[0-9a-f]{4}$")
+	stamp := db + "_rescue_" + at.Format("20060102_150405") + "_"
+	want := []string{stamp + "ab12", stamp + "cd34"}
 	var clones []string
 	for i := range 2 {
 		rst, startErr := svc.StartRestore(admin, models.RestoreRequest{BackupID: started.ID})
@@ -70,8 +72,8 @@ func TestSameSecondSafeClonesBothSucceed(t *testing.T) {
 		if done.Status != models.RestoreStatusCompleted || done.Preflight == nil || !done.Preflight.OK {
 			t.Fatalf("restore %d = %s (%s), preflight %+v", i+1, done.Status, done.ErrorMessage, done.Preflight)
 		}
-		if !name.MatchString(done.TargetDatabase) {
-			t.Fatalf("restore %d into %q; want %s", i+1, done.TargetDatabase, name)
+		if done.TargetDatabase != want[i] {
+			t.Fatalf("restore %d into %q; want %s", i+1, done.TargetDatabase, want[i])
 		}
 		if got := env.count(t, done.TargetDatabase, "orders"); got != 40 {
 			t.Fatalf("restore %d: %s holds %d orders; want 40", i+1, done.TargetDatabase, got)
