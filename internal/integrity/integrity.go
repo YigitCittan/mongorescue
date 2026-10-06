@@ -117,6 +117,9 @@ type Restorer interface {
 	Prepare(req models.RestoreRequest, source *models.BackupRecord) (*models.RestoreRecord, error)
 	// Execute runs the restore described by req and record.
 	Execute(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, record *models.RestoreRecord) (*models.RestoreRecord, error)
+	// RunPostRestore runs the post-restore commands Execute deferred
+	// (models.RestoreRequest.DeferPostRestore) against the restored database.
+	RunPostRestore(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord) (*models.RestoreRecord, error)
 }
 
 // Connections resolves managed connections (implemented by *connections.Service).

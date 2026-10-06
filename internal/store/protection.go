@@ -7,12 +7,16 @@ import (
 	"fmt"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
 
 // Tables of the delete protection (see migration 0022).
 const (
 	tablePendingChanges = "pending_changes"
 	tableApprovals      = "approvals"
+	// fieldApprovalSecret is the secret column of a sealed approval secret
+	// (models.ApprovalPostRestoreCommands).
+	fieldApprovalSecret = "secret"
 )
 
 // MaxApprovalList caps ListApprovals.
@@ -94,6 +98,13 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, a *models.Approval) er
 	if err != nil {
 		return err
 	}
+	secret := a.Secret
+	if a.Action == models.ApprovalPostRestoreCommands {
+		// The held commands are an erasure log: sealed like the connection's own.
+		if secret, err = s.seal(secretbox.At(tableApprovals, a.ID, fieldApprovalSecret), a.Secret); err != nil {
+			return err
+		}
+	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM approvals WHERE id = ?", a.ID).Scan(&n); err != nil {
@@ -103,7 +114,7 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, a *models.Approval) er
 			return ErrAlreadyExists
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO approvals (id, status, created_at, expires_at, data, secret) VALUES (?, ?, ?, ?, ?, ?)",
-			a.ID, string(a.Status), timeKey(a.CreatedAt), timeKey(a.ExpiresAt), data, a.Secret); err != nil {
+			a.ID, string(a.Status), timeKey(a.CreatedAt), timeKey(a.ExpiresAt), data, secret); err != nil {
 			return fmt.Errorf("store: create approval %s: %w", a.ID, err)
 		}
 		return nil
@@ -132,13 +143,16 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, status models.ApprovalS
 // ApprovalSecret returns the secret kept apart from pending approval id (empty once
 // it was decided), or ErrNotFound.
 func (s *SQLiteStore) ApprovalSecret(ctx context.Context, id string) (string, error) {
-	var secret string
-	err := s.db.QueryRowContext(ctx, "SELECT secret FROM approvals WHERE id = ?", id).Scan(&secret)
+	var secret, action string
+	err := s.db.QueryRowContext(ctx, "SELECT secret, coalesce(json_extract(data, '$.action'), '') FROM approvals WHERE id = ?", id).Scan(&secret, &action)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("store: read approval secret: %w", err)
+	}
+	if models.ApprovalAction(action) == models.ApprovalPostRestoreCommands {
+		return s.open(secretbox.At(tableApprovals, id, fieldApprovalSecret), secret)
 	}
 	return secret, nil
 }

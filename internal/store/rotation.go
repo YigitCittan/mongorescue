@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
@@ -151,6 +152,7 @@ type sealedJSONField struct {
 // notification channels (re-sealed through notify.Channel.TransformSecrets).
 var sealedJSONFields = []sealedJSONField{
 	{tableConnections, "$.uri", fieldConnectionURI},
+	{tableConnections, "$.post_restore_sealed", fieldConnectionPostRestore},
 	{tableJobs, "$.mongo_uri", fieldLegacyJobURI},
 	{tableJobs, "$.heartbeat_url", fieldJobHeartbeatURL},
 	{tableStorageTargets, "$.s3.secret_access_key", fieldS3SecretKey},
@@ -342,6 +344,10 @@ func (r resealer) resealAll(ctx context.Context, tx *sql.Tx, res *KeyRotationRes
 		return err
 	}
 	res.Resealed += n
+	if n, err = r.resealApprovalSecrets(ctx, tx); err != nil {
+		return err
+	}
+	res.Resealed += n
 	keys := append(secretSettingKeys(), keyCheckSetting, retiredMACKeysSetting)
 	n, err = r.resealSettings(ctx, tx, keys)
 	if err != nil {
@@ -433,6 +439,27 @@ func (r resealer) resealSettings(ctx context.Context, tx *sql.Tx, keys []string)
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE settings SET value = ? WHERE key = ?", v, row.id); err != nil {
 			return 0, fmt.Errorf("write setting %s: %w", row.id, err)
+		}
+	}
+	return len(list), nil
+}
+
+// resealApprovalSecrets re-seals the sealed secrets of approval requests: the
+// post-restore commands a models.ApprovalPostRestoreCommands holds. Other approval
+// secrets (password hashes) are not sealed and stay as they are.
+func (r resealer) resealApprovalSecrets(ctx context.Context, tx *sql.Tx) (int, error) {
+	list, err := collect(ctx, tx, "SELECT id, secret FROM approvals WHERE json_extract(data, '$.action') = ? AND secret != ''",
+		string(models.ApprovalPostRestoreCommands))
+	if err != nil {
+		return 0, fmt.Errorf("read approval secrets: %w", err)
+	}
+	for _, row := range list {
+		v, err := r.reseal(secretbox.At(tableApprovals, row.id, fieldApprovalSecret), row.value)
+		if err != nil {
+			return 0, err
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE approvals SET secret = ? WHERE id = ?", v, row.id); err != nil {
+			return 0, fmt.Errorf("write approval secret %s: %w", row.id, err)
 		}
 	}
 	return len(list), nil

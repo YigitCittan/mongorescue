@@ -363,6 +363,9 @@ type RestoreTestResult struct {
 	// says why it could not be (it must then be dropped by hand).
 	Dropped   bool   `json:"dropped"`
 	DropError string `json:"drop_error,omitempty"`
+	// PostRestore is what the connection's post-restore commands did on the
+	// temporary database, after it was compared with the manifest.
+	PostRestore *PostRestoreReport `json:"post_restore,omitempty"`
 }
 
 // Summary returns the compact form stored on the job and the backup.

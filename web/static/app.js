@@ -4385,6 +4385,7 @@ function openConnectionModal(id) {
   setValue("connection-uri", c ? c.uri : "");
   setValue("connection-description", c ? c.description : "");
   if (typeof throttleFillConnectionForm === "function") throttleFillConnectionForm(c);
+  if (typeof postRestoreFillConnectionForm === "function") postRestoreFillConnectionForm(c);
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
   // Paste URI or Build, as last used (forms.js).
@@ -4456,11 +4457,15 @@ async function saveConnection(e) {
   e.preventDefault();
   const id = getValue("connection-id");
   const uri = getValue("connection-uri");
+  // Post-restore commands (postrestore.js); null means the editor holds an error.
+  const postRestore = typeof postRestoreConnectionPayload === "function" ? postRestoreConnectionPayload() : {};
+  if (postRestore === null) return;
   const payload = {
     name: getValue("connection-name"),
     uri,
     description: getValue("connection-description"),
-    ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {})
+    ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {}),
+    ...postRestore
   };
 
   // Test before saving; a failing test must be overridden explicitly.
@@ -4913,6 +4918,8 @@ function renderWarnings() {
   if (typeof ssoRenderWarnings === "function") ssoRenderWarnings(list);
   // secret.key.previous is no longer needed (keyrotation.js).
   if (typeof keyrotRenderWarnings === "function") keyrotRenderWarnings(list);
+  // Clones kept after a failed post-restore command (postrestore.js).
+  if (typeof postRestoreRenderWarnings === "function") postRestoreRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {
@@ -4968,6 +4975,7 @@ function fillGeneral(g) {
   setValue("set-backup-timeout", g.backup_timeout || "");
   setValue("set-backup-stall-timeout", g.backup_stall_timeout || "");
   setValue("set-restore-timeout", g.restore_timeout || "");
+  setValue("set-post-restore-timeout", g.post_restore_command_timeout || "");
   setValue("set-verify-policy", ["always", "auto", "never"].includes(g.restore_verify_policy) ? g.restore_verify_policy : "auto");
   setValue("set-log-retention-days", g.log_retention_days ?? 30);
   setValue("set-max-upload-mbps", g.max_upload_mbps || 0);
@@ -5140,6 +5148,7 @@ function collectGeneral() {
     backup_timeout: durationSetting("set-backup-timeout").raw,
     backup_stall_timeout: durationSetting("set-backup-stall-timeout").raw,
     restore_timeout: durationSetting("set-restore-timeout").raw,
+    post_restore_command_timeout: durationSetting("set-post-restore-timeout", 1000).raw,
     restore_verify_policy: getValue("set-verify-policy"),
     log_retention_days: intSetting("set-log-retention-days"),
     max_upload_mbps: Math.max(parseFloat(String(getValue("set-max-upload-mbps")).replace(",", ".")) || 0, 0)

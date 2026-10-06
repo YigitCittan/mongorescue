@@ -342,7 +342,7 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyHeartbeatURL) || IsSecret(KeyHeartbeatInterval) {
 		t.Fatal("monitoring secret classification is wrong")
 	}
-	if len(Keys()) != 53 || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if len(Keys()) != 54 || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

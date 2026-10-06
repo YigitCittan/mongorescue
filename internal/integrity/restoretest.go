@@ -288,6 +288,9 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 	req := models.RestoreRequest{
 		BackupID: backup.ID, MongoURI: conn.URI, TargetConnectionID: conn.ID, TargetConnectionName: conn.Name,
 		CloneDatabase: temp, Verify: &noVerifyPass, // the streamed bytes are still checked against the checksum
+		// The connection's post-restore commands run once the copy was compared
+		// with the manifest: they change it on purpose.
+		PostRestoreCommands: models.ClonePostRestoreCommands(conn.PostRestoreCommands), DeferPostRestore: true,
 	}
 	record, err := s.cfg.Restore.Prepare(req, backup)
 	if err != nil {
@@ -317,6 +320,15 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 		return fmt.Errorf("load the backup manifest: %w", err)
 	default:
 		res.Mismatches, res.Notes = models.CompareManifests(expected, actual)
+	}
+	// A rehearsal of the post-restore commands (such as re-applied erasures): a
+	// failure fails the test. The temporary database is dropped either way.
+	record, err = s.cfg.Restore.RunPostRestore(ctx, req, record)
+	if record != nil {
+		res.PostRestore = record.PostRestore
+	}
+	if err != nil {
+		return fmt.Errorf("post-restore commands: %w", err)
 	}
 	res.Status = models.RestoreTestOK
 	if len(res.Mismatches) > 0 {

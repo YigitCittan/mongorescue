@@ -49,6 +49,11 @@ type Connection struct {
 	// MaxConcurrentBackups limits how many backups read from this connection at
 	// the same time (0 = unlimited). Further backups wait, shown as "waiting".
 	MaxConcurrentBackups int `json:"max_concurrent_backups,omitempty"`
+
+	// PostRestoreCommands run against the databases every safe-clone restore into
+	// this connection creates, before the restore is reported complete (e.g. to
+	// re-apply erasures). Only administrators may set and see them.
+	PostRestoreCommands []PostRestoreCommand `json:"post_restore_commands,omitempty"`
 }
 
 // ReadPref returns the connection's read preference.
@@ -69,5 +74,6 @@ func (c *Connection) Redacted() *Connection {
 		clone.LastTestAt = &t
 	}
 	clone.ReadPreferenceTags = CloneTagSets(c.ReadPreferenceTags)
+	clone.PostRestoreCommands = ClonePostRestoreCommands(c.PostRestoreCommands)
 	return &clone
 }

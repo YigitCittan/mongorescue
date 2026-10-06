@@ -81,7 +81,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			masked.OIDC.RoleMappings[i] = m.Redacted()
 		}
 	}
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: masked, RestartRequired: []string{}, Warnings: svc.Warnings(),
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: masked, RestartRequired: []string{}, Warnings: s.warnings(r.Context(), svc),
 		PendingChanges: s.pendingChanges(r)})
 }
 
@@ -100,7 +100,7 @@ func (s *Server) handleDismissWarning(w http.ResponseWriter, r *http.Request) {
 		s.writeSettingsError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"warnings": svc.Warnings()})
+	writeJSON(w, http.StatusOK, map[string]any{"warnings": s.warnings(r.Context(), svc)})
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +150,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	annotateSettings(r.Context(), res.Changed)
 	s.refreshRecoveryKit(r.Context())
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: res.Settings, RestartRequired: []string{}, Warnings: svc.Warnings(),
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: res.Settings, RestartRequired: []string{}, Warnings: s.warnings(r.Context(), svc),
 		PendingChanges: s.pendingChanges(r), ApprovalsRequested: res.Approvals})
 }
 

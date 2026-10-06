@@ -1,8 +1,9 @@
 // Package mongoconn is the adapter between the connections domain and the official
 // MongoDB Go driver. It is the only production package that imports the driver: it
 // tests connectivity, lists databases and collections (also for backups of several
-// collections) and checks the bypassDocumentValidation privilege for restores. Dumps
-// and restores still use mongodump/mongorestore.
+// collections), checks the bypassDocumentValidation privilege for restores and runs
+// the post-restore commands of a connection against restored clones. Dumps and
+// restores still use mongodump/mongorestore.
 package mongoconn
 
 import (

@@ -183,6 +183,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Encryption and verified restores](docs/encryption.md)
 - [Verification, restore tests and retention safety](docs/verification.md)
 - [Delete protection and its threat model](docs/security.md)
+- [Privacy, retention and erasure requests](docs/privacy.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
 - [Monitoring: heartbeats, health check and alert rules](docs/monitoring.md)
@@ -235,7 +236,7 @@ Only artifacts built by the [release workflow](.github/workflows/release.yml) fr
 
 ## Privacy
 
-MongoRescue does not collect telemetry or send data about you or your databases anywhere except to the MongoDB servers, storage targets and notification channels you configure. The desktop app checks GitHub Releases for updates. See [docs/privacy.md](docs/privacy.md).
+MongoRescue does not collect telemetry or send data about you or your databases anywhere except to the MongoDB servers, storage targets and notification channels you configure. The desktop app checks GitHub Releases for updates. See [docs/privacy.md](docs/privacy.md), which also covers what each backup artefact holds, how long it is kept, and erasure requests (such as GDPR Article 17) against backups.
 
 ## License
 

@@ -50,6 +50,8 @@ Before anything is written, a **checksum pre-pass** downloads every chunk of the
 
 Afterwards the number of operations the filter wrote is compared with the "applied N oplog entries" line of `mongorestore`. A mismatch fails the restore and keeps the clones for inspection; a missing line adds a warning and sets `pitr.ops_unverified: true` on the record. A restore that fails otherwise, or is cancelled, drops its clones.
 
+Last, the target connection's [post-restore commands](api.md#post-restore-commands) (such as re-applied erasures, see [privacy.md](privacy.md#re-applying-erasures-after-a-restore)) run against the clones; `"*"` covers every clone, those of databases first seen in the oplog included. A failing command fails the restore and keeps the clones. Chain tests run none.
+
 **Recorded clones.** The clone names are recorded on the restore (`pitr.clones`) before anything is written: the databases the base listed after its dump (`instance_databases`), and, while the restore runs, each database that first appears in the oplog, stored before its first entry is replayed. Clean-up drops exactly these names, never a pattern. When the server stops in the middle of a restore or a chain test, the next start marks the record failed, drops its recorded clones (temporary for a chain test, partial and untrustworthy for a restore) and says so in its message.
 
 **The target.** A time `S` (RFC 3339, on the primary's clock, UTC in the dashboard) restores every write up to and including the second `S`: the replay stops at `(S+1):0`. An exact oplog position `{t, i}` restores every write *before* it. The target must lie in a window: from the consistent point of its base to one second before the newest collected entry.

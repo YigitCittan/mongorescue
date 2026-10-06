@@ -136,6 +136,8 @@ type fakeRestorer struct {
 	requests   []models.RestoreRequest
 	canDecrypt bool
 	execute    func(ctx context.Context, req models.RestoreRequest) error
+	// postRestore, when set, runs the deferred post-restore commands.
+	postRestore func(ctx context.Context, req models.RestoreRequest, rec *models.RestoreRecord) (*models.RestoreRecord, error)
 }
 
 func (r *fakeRestorer) CanDecrypt() bool { return r.canDecrypt }
@@ -163,14 +165,31 @@ func (r *fakeRestorer) Execute(ctx context.Context, req models.RestoreRequest, _
 	return rec, nil
 }
 
-// fakeConnections resolves any id to a connection.
-type fakeConnections struct{}
+func (r *fakeRestorer) RunPostRestore(ctx context.Context, req models.RestoreRequest, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
+	r.mu.Lock()
+	post := r.postRestore
+	r.mu.Unlock()
+	if post == nil || len(req.PostRestoreCommands) == 0 {
+		return rec, nil
+	}
+	return post(ctx, req, rec)
+}
 
-func (fakeConnections) Resolve(_ context.Context, id string) (*models.Connection, error) {
+// fakeConnections resolves any id to a connection, with the post-restore commands
+// cmds returns (when set).
+type fakeConnections struct {
+	cmds func() []models.PostRestoreCommand
+}
+
+func (c fakeConnections) Resolve(_ context.Context, id string) (*models.Connection, error) {
 	if id == "missing" {
 		return nil, errors.New("connections: not found")
 	}
-	return &models.Connection{ID: id, Name: "conn " + id, URI: "mongodb://user:pass@" + id + ":27017"}, nil
+	conn := &models.Connection{ID: id, Name: "conn " + id, URI: "mongodb://user:pass@" + id + ":27017"}
+	if c.cmds != nil {
+		conn.PostRestoreCommands = c.cmds()
+	}
+	return conn, nil
 }
 
 // recordingPublisher captures events.
@@ -210,6 +229,8 @@ type fixture struct {
 	settings settings.Settings
 	now      time.Time
 	mu       sync.Mutex
+	// postRestore are the post-restore commands of every connection.
+	postRestore []models.PostRestoreCommand
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -229,10 +250,11 @@ func newFixture(t *testing.T) *fixture {
 		drivers: map[string]storage.Storage{"tgt_local": f.mem},
 	}
 	f.svc = New(Config{
-		Store: f.st, Targets: f.targets, Runs: f.runs, Restore: f.restorer, Admin: f.admin, Connections: fakeConnections{},
-		Settings:  func() settings.Settings { f.mu.Lock(); defer f.mu.Unlock(); return f.settings },
-		Publisher: f.pub,
-		Now:       func() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.now },
+		Store: f.st, Targets: f.targets, Runs: f.runs, Restore: f.restorer, Admin: f.admin,
+		Connections: fakeConnections{cmds: func() []models.PostRestoreCommand { f.mu.Lock(); defer f.mu.Unlock(); return f.postRestore }},
+		Settings:    func() settings.Settings { f.mu.Lock(); defer f.mu.Unlock(); return f.settings },
+		Publisher:   f.pub,
+		Now:         func() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.now },
 	})
 	t.Cleanup(func() { _ = f.runs.Shutdown(context.Background()) })
 	return f

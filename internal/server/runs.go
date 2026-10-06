@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
 // WithRunRegistry sets the registry of active runs (cancellation, live progress and
@@ -26,6 +28,36 @@ func (s *Server) registerRunRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/backups/{id}/log", s.handleBackupLog)
 	mux.HandleFunc("GET /api/v1/restores/{id}/log", s.handleRestoreLog)
 	mux.HandleFunc("GET /api/v1/runs/active", s.handleActiveRuns)
+	mux.HandleFunc("POST /api/v1/restores/{id}/drop-clones", s.handleDropKeptClones)
+}
+
+// handleDropKeptClones drops the clones a restore kept after a failed post-restore
+// command (admin) and answers the updated record.
+func (s *Server) handleDropKeptClones(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.ops.DropKeptClones(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// warnings returns the persistent warnings of svc and, from the restore records,
+// one per restore whose clones were kept after a failed post-restore command.
+func (s *Server) warnings(ctx context.Context, svc *settings.Service) []settings.Warning {
+	out := svc.Warnings()
+	if s.ops == nil {
+		return out
+	}
+	kept, err := s.ops.KeptClones(ctx)
+	if err != nil {
+		s.logger.Warn("could not list the clones kept after failed post-restore commands", logsafe.Error(err))
+		return out
+	}
+	for _, r := range kept {
+		out = append(out, settings.PostRestoreClonesKept(r.ID, r.PostRestore.ClonesKept))
+	}
+	return out
 }
 
 // handleCancelBackup cancels a running backup. It answers 200 with the final

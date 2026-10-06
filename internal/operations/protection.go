@@ -556,6 +556,8 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "secret.key rotated (new fingerprint " + res.NewFingerprint + "); every user has to sign in again", nil
+	case models.ApprovalPostRestoreCommands:
+		return s.applyPostRestoreChange(ctx, a)
 	default:
 		return "", public("unknown approval action "+string(a.Action), ErrInvalid)
 	}

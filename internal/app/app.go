@@ -337,6 +337,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return cfg
 		}),
 	)
+	// The audit log (built in step 4) records every post-restore command.
+	var auditLog *auditlog.Service
 	restoreEngine := restore.NewEngine(nil, "",
 		restore.WithLogger(logger),
 		restore.WithToolsDir(cfg.ToolsDir),
@@ -350,7 +352,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
-			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std()}
+			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std(),
+				CommandTimeout: g.PostRestoreCommandTimeout.Std()}
+		}),
+		restore.WithCommandRunner(commandRunner(prober)),
+		// auditLog is built below; restores only run once the app has started.
+		restore.WithCommandAudit(func(ctx context.Context, rec *models.RestoreRecord, res models.PostRestoreResult) {
+			auditLog.Record(ctx, postRestoreAuditEvent(rec, res))
 		}),
 	)
 
@@ -392,7 +400,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Observe: metricSet.ObserveAuditForward,
 		Logger:  logger,
 	})
-	auditLog := auditlog.New(auditlog.Config{
+	auditLog = auditlog.New(auditlog.Config{
 		Repo:           metaStore,
 		RetentionDays:  func() int { return settingsSvc.Current().Audit.RetentionDays },
 		Forwarder:      auditForwarder,
@@ -598,6 +606,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Publisher:           bus,
 		Verifier:            integritySvc,
 		Inspector:           prober,
+		Dropper:             prober,
 		Audit:               auditSvc,
 		PITR:                metaStore,
 		PITRRestore:         restoreEngine,
