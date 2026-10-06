@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -75,6 +76,8 @@ var (
 	ErrInvalidID = errors.New("runlog: invalid run id")
 	// ErrClosed is returned by writes after Close.
 	ErrClosed = errors.New("runlog: writer closed")
+	// ErrInvalidPath is returned for a log file path outside the log directory.
+	ErrInvalidPath = errors.New("runlog: log path outside the log directory")
 )
 
 // Dir is the directory holding the run logs. The zero value is not usable; call
@@ -84,9 +87,13 @@ type Dir struct {
 	now  func() time.Time
 }
 
-// NewDir returns the log directory at path; it is created on the first write.
+// NewDir returns the log directory at path, made absolute; it is created on the
+// first write.
 func NewDir(path string) *Dir {
-	return &Dir{path: path, now: time.Now}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return &Dir{path: filepath.Clean(path), now: time.Now}
 }
 
 // Path returns the directory.
@@ -97,14 +104,44 @@ func (d *Dir) file(id string) (string, error) {
 	if err := models.ValidateID(id); err != nil && !legacyID(id) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidID, id)
 	}
-	return filepath.Join(d.path, id+extension), nil
+	return checkedPath(d.path, filepath.Join(d.path, id+extension))
 }
 
-// legacyID accepts the IDs of older records, which may embed database names, as long
-// as they cannot leave the directory.
+// maxLegacyIDLength bounds a legacy run ID (a file name).
+const maxLegacyIDLength = 255
+
+// legacyIDPattern matches the IDs of older records, which may embed database names:
+// one file name element that does not start with a dot (so never "." or ".."), with
+// no path separator, drive colon or control character.
+var legacyIDPattern = regexp.MustCompile(`^[^./\\:\pC][^/\\:\pC]*$`)
+
+// legacyID accepts the IDs of older records as long as they cannot leave the
+// directory.
 func legacyID(id string) bool {
-	return id != "" && id != "." && id != ".." && len(id) <= 255 &&
-		!strings.ContainsAny(id, `/\:`+"\x00") && !strings.HasPrefix(id, ".")
+	return len(id) <= maxLegacyIDLength && utf8.ValidString(id) && legacyIDPattern.MatchString(id)
+}
+
+// dotDotElement matches a path with a ".." element (separated by / or \); names that
+// merely contain two dots, such as "v1..v2", are fine.
+var dotDotElement = regexp.MustCompile(`(?:^|[/\\])\.\.(?:[/\\]|$)`)
+
+// checkedPath is the last check of a log file path before it reaches the file
+// system: no control character, no ".." element, cleaned, absolute and inside dir
+// (the absolute log directory). Run IDs are validated when the path is built; this
+// makes sure the value handed to the file system is still what validation saw.
+func checkedPath(dir, p string) (string, error) {
+	if strings.ContainsFunc(p, unicode.IsControl) || dotDotElement.MatchString(p) {
+		return "", ErrInvalidPath
+	}
+	p = filepath.Clean(p)
+	prefix := dir
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	if !filepath.IsAbs(p) || !strings.HasPrefix(p, prefix) {
+		return "", ErrInvalidPath
+	}
+	return p, nil
 }
 
 // Remove deletes the log of run id (and any tail segment left by a crash). A missing
@@ -121,7 +158,11 @@ func (d *Dir) Remove(id string) error {
 	}
 	segs, _ := filepath.Glob(globEscape(path) + segmentInfix + "*")
 	for _, s := range segs {
-		if err := removeFile(s); err != nil {
+		seg, err := checkedPath(d.path, s)
+		if err == nil {
+			err = removeFile(seg)
+		}
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -179,7 +220,11 @@ func (d *Dir) Prune(keep time.Duration, skip func(id string) bool) (int, error) 
 		if err != nil || !info.ModTime().Before(cutoff) {
 			continue
 		}
-		if err := removeFile(filepath.Join(d.path, name)); err != nil {
+		path, err := checkedPath(d.path, filepath.Join(d.path, name))
+		if err == nil {
+			err = removeFile(path)
+		}
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -223,7 +268,7 @@ func (d *Dir) Create(id string) (*Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runlog: create log: %w", err)
 	}
-	return &Writer{path: path, head: f, now: d.now}, nil
+	return &Writer{dir: d.path, path: path, head: f, now: d.now}, nil
 }
 
 // Open returns a reader over the finished log of run id, or ErrNotFound.
@@ -258,6 +303,7 @@ type segment struct {
 // redacted and cut to ToolLineMax); Printf adds MongoRescue's own timestamped lines.
 // It is safe for concurrent use. The file is complete once Close returns.
 type Writer struct {
+	dir  string // the absolute log directory
 	path string
 	now  func() time.Time
 
@@ -363,13 +409,15 @@ func (w *Writer) current() *segment {
 		old := w.segs[0]
 		w.dropped += old.size
 		_ = old.f.Close()
-		if err := os.Remove(old.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			w.stale = append(w.stale, old.path)
-		}
+		w.removeSegment(old.path)
 		w.segs = w.segs[1:]
 	}
 	w.retryStale()
-	path := w.path + segmentInfix + strconv.Itoa(w.nextSeg)
+	path, err := checkedPath(w.dir, w.path+segmentInfix+strconv.Itoa(w.nextSeg))
+	if err != nil {
+		w.err = fmt.Errorf("runlog: create tail segment: %w", err)
+		return nil
+	}
 	w.nextSeg++
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, filePerm)
 	if err != nil {
@@ -380,11 +428,30 @@ func (w *Writer) current() *segment {
 	return &w.segs[len(w.segs)-1]
 }
 
+// removeSegment deletes a tail segment file, remembering it for retryStale when the
+// removal fails (the file is open elsewhere, on Windows). Caller holds w.mu.
+func (w *Writer) removeSegment(p string) {
+	if !w.removeChecked(p) {
+		w.stale = append(w.stale, p)
+	}
+}
+
+// removeChecked deletes the segment file at p, which must lie in the log directory,
+// and reports whether it is gone. Caller holds w.mu.
+func (w *Writer) removeChecked(p string) bool {
+	path, err := checkedPath(w.dir, p)
+	if err != nil {
+		return true // never a file of this writer: nothing to retry
+	}
+	err = os.Remove(path)
+	return err == nil || errors.Is(err, fs.ErrNotExist)
+}
+
 // retryStale removes segment files whose earlier removal failed. Caller holds w.mu.
 func (w *Writer) retryStale() {
 	kept := w.stale[:0]
 	for _, p := range w.stale {
-		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if !w.removeChecked(p) {
 			kept = append(kept, p)
 		}
 	}
@@ -424,11 +491,9 @@ func (w *Writer) Close() error {
 	for _, s := range w.segs {
 		_ = s.f.Close()
 		if w.err == nil {
-			w.err = copySegment(w.head, s.path)
+			w.err = copySegment(w.head, w.dir, s.path)
 		}
-		if err := os.Remove(s.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			w.stale = append(w.stale, s.path)
-		}
+		w.removeSegment(s.path)
 	}
 	w.segs = nil
 	w.retryStale()
@@ -438,8 +503,12 @@ func (w *Writer) Close() error {
 	return w.err
 }
 
-// copySegment appends the segment file at path to dst.
-func copySegment(dst io.Writer, path string) error {
+// copySegment appends the segment file at path, inside dir, to dst.
+func copySegment(dst io.Writer, dir, path string) error {
+	path, err := checkedPath(dir, path)
+	if err != nil {
+		return fmt.Errorf("runlog: read tail segment: %w", err)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("runlog: read tail segment: %w", err)
@@ -468,7 +537,12 @@ func (w *Writer) Reader() (*Reader, error) {
 		return nil, ErrClosed
 	}
 	r := &Reader{}
-	add := func(path string, size int64) error {
+	add := func(p string, size int64) error {
+		path, err := checkedPath(w.dir, p)
+		if err != nil {
+			_ = r.Close()
+			return fmt.Errorf("runlog: open log: %w", err)
+		}
 		f, err := os.Open(path)
 		if err != nil {
 			_ = r.Close()
