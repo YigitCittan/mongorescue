@@ -126,10 +126,16 @@ func CertPool(caPEM string) (*x509.CertPool, error) {
 }
 
 // ClientCertificate parses a client certificate chain and its private key, which
-// may be an encrypted PKCS#8 key opened with password.
+// may be an encrypted PKCS#8 key opened with password. Parsed certificates are
+// cached in memory (see certCache), so an encrypted key is derived once, not
+// for every client; failures are not cached.
 func ClientCertificate(certPEM, keyPEM, password string) (tls.Certificate, error) {
 	if certPEM == "" || keyPEM == "" {
 		return tls.Certificate{}, ErrIncompleteClientCert
+	}
+	id := cache.id(certPEM, keyPEM, password)
+	if cert, ok := cache.get(id); ok {
+		return cert, nil
 	}
 	key, err := DecryptKey(keyPEM, password)
 	if err != nil {
@@ -140,12 +146,15 @@ func ClientCertificate(certPEM, keyPEM, password string) (tls.Certificate, error
 		// The tls error does not quote key material, but keep it out anyway.
 		return tls.Certificate{}, ErrInvalidClientCert
 	}
+	cache.put(id, cert)
 	return cert, nil
 }
 
 // DecryptKey returns the first private key of keyPEM as an unencrypted PEM block: an
 // encrypted PKCS#8 key is opened with password and re-encoded as PKCS#8; any other
-// key is returned as it is, and must not come with a password.
+// key is returned as it is, and must not come with a password. An encrypted key
+// must use PBES2 with PBKDF2 or scrypt within the limits of checkKDF, checked
+// before anything is derived (ErrKDFTooExpensive, ErrUnsupportedKeyEncryption).
 func DecryptKey(keyPEM, password string) ([]byte, error) {
 	rest := []byte(keyPEM)
 	for {
@@ -169,6 +178,10 @@ func DecryptKey(keyPEM, password string) ([]byte, error) {
 		if password == "" {
 			return nil, ErrKeyPassword
 		}
+		if err := checkKDF(block.Bytes); err != nil {
+			return nil, err
+		}
+		kdfRuns.Add(1)
 		key, err := pkcs8.ParsePKCS8PrivateKey(block.Bytes, []byte(password))
 		if err != nil {
 			return nil, ErrKeyPassword

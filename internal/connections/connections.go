@@ -338,6 +338,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	if tlsChanged {
 		s.warnTLS(updated.ID, updated.ConnectionTLS)
 		auditTLS(ctx, existing.ConnectionTLS, updated.ConnectionTLS)
+		mongotls.Forget(&existing.ConnectionTLS)
 	}
 	return updated.Redacted(), nil
 }
@@ -383,9 +384,18 @@ func KeepSecret(incoming, stored string) (string, error) {
 	return stored, nil
 }
 
-// Delete removes a connection; it returns ErrInUse while jobs reference it.
+// Delete removes a connection; it returns ErrInUse while jobs reference it. Its
+// parsed client certificate is dropped from memory.
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.DeleteConnection(ctx, id)
+	existing, err := s.repo.GetConnection(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err = s.repo.DeleteConnection(ctx, id); err != nil {
+		return err
+	}
+	mongotls.Forget(&existing.ConnectionTLS)
+	return nil
 }
 
 // Test pings the stored connection and records the outcome on it.
