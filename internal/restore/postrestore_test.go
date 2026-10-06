@@ -143,6 +143,18 @@ func TestPostRestoreFailureFailsTheRestoreAndKeepsTheClone(t *testing.T) {
 	}
 }
 
+func TestPostRestoreCommandsOfOtherDatabasesDoNotRun(t *testing.T) {
+	cmds := &fakeCommands{fail: -1}
+	engine, src := postRestoreEngine(t, cmds, nil, &fakeAdmin{})
+	rec, err := engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID, PostRestoreCommands: erasures[2:]}, src)
+	if err != nil || rec.Status != models.RestoreStatusCompleted || cmds.calls != 0 {
+		t.Fatalf("restore: %v, %s, %d calls", err, rec.Status, cmds.calls)
+	}
+	if pr := rec.PostRestore; pr == nil || pr.Status != models.PostRestoreCompleted || len(pr.Commands) != 0 || !strings.Contains(pr.Note, "none of the 1") {
+		t.Fatalf("post_restore = %+v", pr)
+	}
+}
+
 func TestPostRestoreWithoutARunnerFails(t *testing.T) {
 	admin := &fakeAdmin{}
 	engine, src := postRestoreEngine(t, nil, nil, admin)

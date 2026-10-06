@@ -110,7 +110,12 @@ func (e *Engine) runPostRestore(ctx context.Context, uri string, cmds []models.P
 		return fmt.Errorf("%w: %w", ErrPostRestoreFailed, err)
 	}
 	report.Commands = postrestore.Planned(steps)
-	if len(steps) > 0 && e.commands == nil {
+	if len(steps) == 0 {
+		report.Status = models.PostRestoreCompleted
+		report.Note = fmt.Sprintf("none of the %d post-restore command(s) applies to the restored database(s)", len(cmds))
+		return nil
+	}
+	if e.commands == nil {
 		report.Note = "post-restore commands cannot run in this setup"
 		report.ClonesKept = sortedClones(clones)
 		return fmt.Errorf("%w: %s", ErrPostRestoreFailed, report.Note)
