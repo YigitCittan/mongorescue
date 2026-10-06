@@ -136,7 +136,7 @@ func runRoundTrip(t *testing.T, env *mongoEnv, st storage.Storage, gzip bool) {
 	db := seedSource(t, env, "rt")
 	bkp := runBackup(t, env, st, db, gzip)
 
-	// Default request (safe_clone omitted) routes into <db>_rescue_<timestamp>.
+	// Default request (safe_clone omitted) routes into <db>_rescue_<timestamp>_<id>.
 	rst := runRestore(t, env, st, models.RestoreRequest{BackupID: bkp.ID}, bkp)
 	if !strings.HasPrefix(rst.TargetDatabase, db+"_rescue_") {
 		t.Fatalf("restore target = %q; want %s_rescue_*", rst.TargetDatabase, db)

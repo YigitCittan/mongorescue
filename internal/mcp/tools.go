@@ -553,7 +553,7 @@ func (s *Server) registerTools() {
 	}, s.runJob)
 	addTool(s, &sdk.Tool{
 		Name: ToolRestoreSafeClone,
-		Description: "Restore a backup into a NEW database named <db>_rescue_<timestamp> (a safe clone); existing data is never overwritten. " +
+		Description: "Restore a backup into a NEW database named <db>_rescue_<timestamp>_<id> (a safe clone); existing data is never overwritten. " +
 			"Returns immediately with the restore record (status in_progress); poll get_restore until completed or failed. " +
 			"In-place restores are not available through MCP. Operator keys restore into the backup's own connection only; " +
 			"target_connection_id (another server) needs an admin key. A preflight checks the target first (connection, server " +

@@ -11,7 +11,7 @@ import (
 
 // FuzzPrepareNamespaces checks that Prepare never panics and never refuses a backup
 // for its database name (only client input is validated, by the operations layer),
-// that a restore goes into a "<db>_rescue_<timestamp>" clone of at most 63 bytes
+// that a restore goes into a "<db>_rescue_<timestamp>_<id>" clone of at most 63 bytes
 // unless it is confirmed in place, and that each name reaches mongorestore only inside
 // its own --nsFrom/--nsTo/--nsInclude element, with '*' and backslashes escaped.
 func FuzzPrepareNamespaces(f *testing.F) {

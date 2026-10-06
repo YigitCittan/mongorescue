@@ -15,7 +15,7 @@
 //
 // # Why the oplog is rewritten
 //
-// Restores go into a safe clone (<db>_rescue_<timestamp>) by default, so a restore
+// Restores go into a safe clone (<db>_rescue_<timestamp>_<id>) by default, so a restore
 // never overwrites the data it is meant to rescue. mongorestore refuses --nsFrom/--nsTo,
 // --nsInclude and --nsExclude together with --oplogReplay, so replaying an unmodified
 // oplog after a safe-clone restore would apply every write to the source databases,

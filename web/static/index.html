@@ -640,7 +640,7 @@
         <!-- Point-in-time restore wizard: time, preflight, confirm (pitr.js) -->
         <form id="form-pitr-restore" class="pitr-form pitr-restore" novalidate hidden>
           <h4><span data-i18n="pitr.restore_title">Restore to a point in time</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span> <span class="cell-sub" id="pitr-restore-conn"></span></h4>
-          <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;; existing data is never touched. Times are UTC on the primary's clock.</p>
+          <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;_&lt;id&gt;; existing data is never touched. Times are UTC on the primary's clock.</p>
           <div class="form-group">
             <label class="form-label" for="pitr-restore-window" data-i18n="pitr.restore_window">Window</label>
             <select class="form-select" id="pitr-restore-window"></select>
@@ -2155,7 +2155,7 @@
             <input type="checkbox" id="restore-safe-clone" checked>
             <span class="check-text">
               <span class="check-title" data-i18n="modal_restore.safe_clone_title">Restore into a safe clone (recommended)</span>
-              <span class="form-hint" data-i18n="modal_restore.safe_clone_hint">Writes to a new database named &lt;db&gt;_rescue_&lt;timestamp&gt; and leaves existing data untouched.</span>
+              <span class="form-hint" data-i18n="modal_restore.safe_clone_hint">Writes to a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;_&lt;id&gt; and leaves existing data untouched.</span>
             </span>
           </label>
 
