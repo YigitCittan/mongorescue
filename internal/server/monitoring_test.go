@@ -69,8 +69,14 @@ func TestHealthWithAStartedScheduler(t *testing.T) {
 	if err := srv.scheduler.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if code, data := getHealth(t, srv); code != http.StatusOK || data["scheduler"] != schedulerOK {
+	if code, data := getHealth(t, srv); code != http.StatusOK || data["scheduler"] != schedulerOK || data["draining"] != nil {
 		t.Fatalf("started scheduler: %d %v", code, data)
+	}
+	// A graceful shutdown pauses the scheduler while it waits for the running
+	// backups: the check reports it and stays healthy.
+	srv.scheduler.Pause()
+	if code, data := getHealth(t, srv); code != http.StatusOK || data["draining"] != true || data["scheduler"] != schedulerOK {
+		t.Fatalf("draining: %d %v", code, data)
 	}
 	srv.scheduler.Stop()
 }

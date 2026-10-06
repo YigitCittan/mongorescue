@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -41,6 +42,10 @@ const (
 	// EnvToolsDir sets a directory searched first for mongodump and mongorestore
 	// (before <executable dir>/tools and PATH; see mongotools.Resolver).
 	EnvToolsDir = mongotools.EnvToolsDir
+	// EnvShutdownGrace sets how long a shutdown (SIGTERM) waits for running backups
+	// and restores to finish before it cancels them: a Go duration such as "9m" or a
+	// number of seconds.
+	EnvShutdownGrace = "MONGORESCUE_SHUTDOWN_GRACE"
 )
 
 // Defaults.
@@ -56,6 +61,8 @@ const (
 	// DefaultBackupsDirName is the directory of the default "Local disk" storage
 	// target, next to the data directory (./backups, or /backups in the image).
 	DefaultBackupsDirName = "backups"
+	// MaxShutdownGrace is the longest shutdown grace period.
+	MaxShutdownGrace = 24 * time.Hour
 )
 
 // Sentinel errors.
@@ -74,6 +81,9 @@ var (
 	// ErrInvalidToolsDir is returned for a tools directory that is not an absolute
 	// path (a relative one would let the working directory supply the binaries).
 	ErrInvalidToolsDir = errors.New("config: tools directory must be an absolute path")
+	// ErrInvalidShutdownGrace is returned for a shutdown grace period that is not a
+	// duration from 0 to MaxShutdownGrace.
+	ErrInvalidShutdownGrace = errors.New("config: shutdown grace must be a duration from 0s to 24h (such as 9m) or a number of seconds")
 )
 
 // Config is the bootstrap configuration.
@@ -95,6 +105,12 @@ type Config struct {
 	// ToolsDir is the absolute directory searched first for mongodump and
 	// mongorestore. Empty means the bundled locations next to the executable, then PATH.
 	ToolsDir string
+	// ShutdownGrace is how long a shutdown waits for running backups and restores to
+	// finish (new ones are refused meanwhile) before it cancels them. Zero cancels
+	// them at once. Keep it below the time the process manager allows for the stop
+	// (Kubernetes terminationGracePeriodSeconds, docker stop -t), leaving about a
+	// minute for the cancellation.
+	ShutdownGrace time.Duration
 }
 
 // Default returns the defaults of the binary.
@@ -132,7 +148,32 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 		cfg.Dashboard = b
 	}
+	if v := strings.TrimSpace(getenv(EnvShutdownGrace)); v != "" {
+		d, err := ParseShutdownGrace(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvShutdownGrace, err)
+		}
+		cfg.ShutdownGrace = d
+	}
 	return cfg, nil
+}
+
+// ParseShutdownGrace parses a shutdown grace period: a Go duration ("9m", "540s")
+// or a whole number of seconds ("540"), from 0 to MaxShutdownGrace.
+func ParseShutdownGrace(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil {
+			return 0, ErrInvalidShutdownGrace
+		}
+		d = time.Duration(n) * time.Second
+	}
+	if d < 0 || d > MaxShutdownGrace {
+		return 0, ErrInvalidShutdownGrace
+	}
+	return d, nil
 }
 
 // Validate checks the configuration.
@@ -146,6 +187,8 @@ func (c *Config) Validate() error {
 		return ErrInvalidHost
 	case c.ToolsDir != "" && !filepath.IsAbs(c.ToolsDir):
 		return fmt.Errorf("%s: %w", EnvToolsDir, ErrInvalidToolsDir)
+	case c.ShutdownGrace < 0 || c.ShutdownGrace > MaxShutdownGrace:
+		return fmt.Errorf("%s: %w", EnvShutdownGrace, ErrInvalidShutdownGrace)
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {

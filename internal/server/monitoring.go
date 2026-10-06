@@ -72,12 +72,18 @@ func (s *Server) liveness() schedulerLiveness {
 // scheduler's last tick is older than scheduler.StaleAfter, so a hung scheduler
 // fails the health check; otherwise 200. status keeps its value ("healthy") either
 // way, for clients that read it; scheduler and scheduler_last_tick are additions.
+// While new runs are refused (a graceful shutdown waiting for the running ones, see
+// app.App.Drain) it adds "draining": true and still answers 200, so a liveness probe
+// does not restart the process during the wait.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now().UTC()
 	body := map[string]any{
 		"status":  "healthy",
 		"version": s.version,
 		"time":    now,
+	}
+	if s.scheduler != nil && s.scheduler.Paused() {
+		body["draining"] = true
 	}
 	live := s.liveness()
 	if live == nil {
