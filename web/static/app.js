@@ -5909,7 +5909,9 @@ async function saveStorageTarget(e) {
       if (!def.success) showToast(def.error || t("toasts.request_failed"), "error");
       defaultMoved = !!def.success;
     }
-    showToast(t("storage.saved"), "success");
+    // A lowered object lock waits for the grace period or an approval (objectlock.js).
+    const deferred = typeof objectLockTargetSaved === "function" && objectLockTargetSaved(json.data);
+    if (!deferred) showToast(t("storage.saved"), "success");
     // A target created from a dialog's "New" button is selected there once reloaded.
     const ret = storageReturn;
     storageReturn = null;
