@@ -110,11 +110,19 @@ func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreReques
 	if err != nil {
 		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
 	}
-	return s.preflight(ctx, plan.req, plan.source, record.TargetDatabase), nil
+	// A safe clone is named when its restore starts (with a random ID), so the
+	// messages show the name's pattern rather than this probe's name, which the
+	// restore will not use. The server checks still run against the probe name.
+	shown := record.TargetDatabase
+	if !plan.req.InPlace() && strings.TrimSpace(plan.req.CloneDatabase) == "" {
+		shown = models.RescueDatabasePattern(plan.source.Database)
+	}
+	return s.preflight(ctx, plan.req, plan.source, record.TargetDatabase, shown), nil
 }
 
 // preflight runs every check of a restore of source described by req into targetDB.
-// It never fails: what cannot be checked is a warning. The server checks share one
+// Messages and planned post-restore commands name the target shown (targetDB
+// itself when the restore uses that name). It never fails: what cannot be checked is a warning. The server checks share one
 // client, bounded by preflightTimeout and by ctx (so a shutdown or a client that
 // goes away ends them).
 //
@@ -122,10 +130,10 @@ func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreReques
 // safe clone name, privileges certainly missing, free space reported by the server
 // smaller than the archive, and a users-and-roles request the backup cannot satisfy.
 // Everything uncertain warns.
-func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB string) *models.PreflightResult {
+func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB, shown string) *models.PreflightResult {
 	ctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()
-	p := &preflightRun{svc: s, ctx: ctx, req: req, source: source, targetDB: targetDB, res: &models.PreflightResult{OK: true}}
+	p := &preflightRun{svc: s, ctx: ctx, req: req, source: source, targetDB: targetDB, shown: shown, res: &models.PreflightResult{OK: true}}
 	defer p.close()
 	p.connection()
 	p.encryption()
@@ -135,7 +143,7 @@ func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, sour
 	p.diskSpace()
 	p.collections()
 	p.usersAndRoles()
-	p.postRestore(map[string]string{source.Database: targetDB})
+	p.postRestore(map[string]string{source.Database: p.shownDB()})
 	return p.res
 }
 
@@ -167,7 +175,7 @@ func (p *preflightRun) postRestore(clones map[string]string) {
 	if p.req.InPlace() {
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the %d post-restore command(s) of connection %s run only against safe clones: this in-place restore runs none; re-apply them (such as erasures) to %s yourself",
-			len(cmds), p.connectionName(), p.targetDB))
+			len(cmds), p.connectionName(), p.shownDB()))
 		return
 	}
 	steps, err := postrestore.Plan(cmds, clones)
@@ -193,7 +201,10 @@ type preflightRun struct {
 	req      models.RestoreRequest
 	source   *models.BackupRecord
 	targetDB string
-	res      *models.PreflightResult
+	// shown is the target named in messages when it differs from targetDB (the
+	// pattern of a safe clone's name before its restore starts).
+	shown string
+	res   *models.PreflightResult
 
 	// target is the open client to the target server; reachable is set when it
 	// answered, version is its version.
@@ -204,6 +215,14 @@ type preflightRun struct {
 	// extraBytes is written on top of the archive: the oplog a point-in-time
 	// restore replays.
 	extraBytes int64
+}
+
+// shownDB returns the target database named in messages.
+func (p *preflightRun) shownDB() string {
+	if p.shown != "" {
+		return p.shown
+	}
+	return p.targetDB
 }
 
 // inspector returns the inspector, or nil.
@@ -316,20 +335,20 @@ func (p *preflightRun) targetDatabase() {
 	}
 	exists, err := p.target.DatabaseExists(p.ctx, p.targetDB)
 	if err != nil {
-		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not check whether database %s exists: %s", p.targetDB, errText(err)))
+		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not check whether database %s exists: %s", p.shownDB(), errText(err)))
 		return
 	}
 	switch {
 	case p.req.DryRun:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("dry run: nothing is written to %s", p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("dry run: nothing is written to %s", p.shownDB()))
 	case !p.req.InPlace() && exists:
-		p.res.Add(id, models.PreflightFail, fmt.Sprintf("the safe clone database %s already exists; retry in a moment", p.targetDB))
+		p.res.Add(id, models.PreflightFail, fmt.Sprintf("the safe clone database %s already exists; retry in a moment", p.shownDB()))
 	case !p.req.InPlace():
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("restores into the new database %s; existing data is untouched", p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("restores into the new database %s; existing data is untouched", p.shownDB()))
 	case exists:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("restores in place into the existing database %s", p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("restores in place into the existing database %s", p.shownDB()))
 	default:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("database %s does not exist yet and is created", p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("database %s does not exist yet and is created", p.shownDB()))
 	}
 }
 
@@ -369,17 +388,17 @@ func (p *preflightRun) privileges() {
 	case len(core) > 0 && report.Certain:
 		p.res.Add(id, models.PreflightFail, fmt.Sprintf(
 			"the user of connection %s may not %s on database %s; grant e.g. readWrite on it, readWriteAnyDatabase or restore",
-			p.connectionName(), strings.Join(core, ", "), p.targetDB))
+			p.connectionName(), strings.Join(core, ", "), p.shownDB()))
 	case len(core) > 0:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the user of connection %s was not found to hold %s on database %s; custom roles or collection-level grants may still allow it",
-			p.connectionName(), strings.Join(core, ", "), p.targetDB))
+			p.connectionName(), strings.Join(core, ", "), p.shownDB()))
 	case len(users) > 0:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the user of connection %s may not %s on database %s, which restoring users and roles may need (e.g. the restore or userAdmin role)",
-			p.connectionName(), strings.Join(users, ", "), p.targetDB))
+			p.connectionName(), strings.Join(users, ", "), p.shownDB()))
 	default:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("the user of connection %s may restore into %s", p.connectionName(), p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("the user of connection %s may restore into %s", p.connectionName(), p.shownDB()))
 	}
 }
 
@@ -453,7 +472,7 @@ func (p *preflightRun) collections() {
 	}
 	list, err := p.target.ListCollections(p.ctx, p.targetDB)
 	if err != nil {
-		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not list the collections of %s: %s", p.targetDB, errText(err)))
+		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("could not list the collections of %s: %s", p.shownDB(), errText(err)))
 		return
 	}
 	var existing []string
@@ -464,7 +483,7 @@ func (p *preflightRun) collections() {
 	}
 	slices.Sort(existing)
 	if len(existing) == 0 {
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("database %s holds no collections; nothing is replaced", p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("database %s holds no collections; nothing is replaced", p.shownDB()))
 		return
 	}
 	restored, known := p.restoredCollections()
@@ -479,22 +498,22 @@ func (p *preflightRun) collections() {
 	}
 	switch {
 	case len(affected) == 0:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("none of the %d existing collection(s) of %s is in the restore; they are kept", len(existing), p.targetDB))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("none of the %d existing collection(s) of %s is in the restore; they are kept", len(existing), p.shownDB()))
 	case !known && p.req.DropTarget:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the backup's collection list is unknown: any of the %d existing collection(s) of %s may be dropped and replaced: %s",
-			len(affected), p.targetDB, listNames(affected)))
+			len(affected), p.shownDB(), listNames(affected)))
 	case !known:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"the backup's collection list is unknown: any of the %d existing collection(s) of %s may receive its documents: %s",
-			len(affected), p.targetDB, listNames(affected)))
+			len(affected), p.shownDB(), listNames(affected)))
 	case p.req.DropTarget:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf("%d existing collection(s) of %s are dropped and replaced: %s",
-			len(affected), p.targetDB, listNames(affected)))
+			len(affected), p.shownDB(), listNames(affected)))
 	default:
 		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
 			"%d existing collection(s) of %s receive the backup's documents without being dropped (documents with the same _id fail the restore): %s",
-			len(affected), p.targetDB, listNames(affected)))
+			len(affected), p.shownDB(), listNames(affected)))
 	}
 }
 
