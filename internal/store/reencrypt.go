@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -51,6 +52,11 @@ func (s *SQLiteStore) SwapBackupArchive(ctx context.Context, sw ArchiveSwap) err
 		// those of the old one.
 		rec.StorageVersionID, rec.RetainUntil, rec.ObjectLockMode = "", nil, ""
 		rec.SetStorageObject(sw.Object)
+		// The copies of the old archive, as stored now, go to the tombstone, so the
+		// purge removes exactly those objects; the backup's copies are made again
+		// from the new archive under its new key.
+		sw.Tombstone.Copies = slices.Clone(rec.Copies)
+		rec.RequeueCopies(sw.NewKey)
 		if err = putBackup(ctx, tx, rec); err != nil {
 			return err
 		}

@@ -46,6 +46,10 @@ const (
 	// ReasonKeysNotEscrowed: the newest backup is encrypted and no recovery kit holds
 	// the current keys.
 	ReasonKeysNotEscrowed = "keys_not_escrowed"
+	// ReasonCopyMissing: the newest good backup has copy targets, and not all of its
+	// copies were done Config.CopyMissingAfter after it finished; or any completed
+	// backup of the database has a copy the copy queue gave up on.
+	ReasonCopyMissing = "copy_missing"
 )
 
 // RTO sources.
@@ -138,6 +142,10 @@ type Row struct {
 	// good backup is encrypted (it then needs the escrowed keys).
 	KeysEscrowed bool `json:"keys_escrowed"`
 	Encrypted    bool `json:"encrypted"`
+	// Copies counts the done copies of the newest good backup on other storage
+	// targets, of CopyTargets planned (3-2-1).
+	Copies      int `json:"copies"`
+	CopyTargets int `json:"copy_targets,omitempty"`
 	// Status is the overall readiness; Reasons explain it (see the Reason
 	// constants), fail reasons first.
 	Status  Status   `json:"status"`
@@ -234,6 +242,8 @@ type rowAcc struct {
 	missed   bool
 	lastOK   *RestoreTestRef
 	verifyKO bool
+	// copyMissing: the newest good backup's copies are overdue.
+	copyMissing bool
 }
 
 // latestBackups returns the newest (verified) backup of every job and database
@@ -331,6 +341,12 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 
 	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names),
 		StorageHints: s.storageHints(ctx)}
+	// Every backup whose copies the queue gave up on, not only the newest one.
+	for rk := range s.exhaustedCopies(ctx) {
+		if acc := rows[rk]; acc != nil {
+			acc.copyMissing = true
+		}
+	}
 	for rk, acc := range rows {
 		finishRow(acc, byDB[rk], now, byConn[rk.connection])
 		switch acc.row.Status {
@@ -387,6 +403,8 @@ func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time
 			Filtered: p.last.Filtered, Collections: slices.Clone(p.last.Collections), ExcludedCollections: slices.Clone(p.last.ExcludedCollections)}
 		acc.row.Encrypted = p.last.Encrypted
 		acc.verifyKO = p.last.Verification == models.VerificationMismatch || p.last.Verification == models.VerificationError
+		acc.row.Copies, acc.row.CopyTargets = p.last.DoneCopies(), len(p.last.Copies)
+		acc.copyMissing = !p.last.CopiesComplete() && now.Sub(at) >= s.cfg.CopyMissingAfter
 	}
 }
 
@@ -479,6 +497,9 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	if r.Encrypted && !r.KeysEscrowed {
 		warn = append(warn, ReasonKeysNotEscrowed)
 	}
+	if acc.copyMissing {
+		warn = append(warn, ReasonCopyMissing)
+	}
 	if stream != nil {
 		sf, sw := streamReasons(*stream)
 		fail, warn = append(fail, sf...), append(warn, sw...)
@@ -495,6 +516,31 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	default:
 		r.Status = StatusOK
 	}
+}
+
+// exhaustedCopyLister lists the backups with exhausted copies (implemented by
+// *store.SQLiteStore).
+type exhaustedCopyLister interface {
+	ExhaustedCopyRecords(ctx context.Context) ([]*models.BackupRecord, error)
+}
+
+// exhaustedCopies returns the connection and database of every completed backup
+// with a copy the copy queue gave up on; a failed listing gives none.
+func (s *Service) exhaustedCopies(ctx context.Context) map[rowKey]bool {
+	out := map[rowKey]bool{}
+	l, ok := s.cfg.Store.(exhaustedCopyLister)
+	if !ok {
+		return out
+	}
+	list, err := l.ExhaustedCopyRecords(ctx)
+	if err != nil {
+		s.logger.Warn("readiness: cannot list the backups with exhausted copies", logsafe.Error(err))
+		return out
+	}
+	for _, b := range list {
+		out[rowKey{b.ConnectionID, b.Database}] = true
+	}
+	return out
 }
 
 // connectionNames maps connection IDs to names; a failed lookup leaves names empty.

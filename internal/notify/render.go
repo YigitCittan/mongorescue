@@ -46,6 +46,9 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.PITRWindowLow:             {"⚠️", "PITR oplog headroom low"},
 	events.PITRCollectorFailed:       {"❌", "PITR collector failing"},
 	events.PITRCollectorRecovered:    {"✅", "PITR collector recovered"},
+	events.BackupCopyFailed:          {"❌", "Backup copy failing"},
+	events.BackupCopyRecovered:       {"✅", "Backup copy recovered"},
+	events.BackupCopyExhausted:       {"🚨", "Backup copy given up"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -109,6 +112,12 @@ func Render(e events.Event) Message {
 	case events.PITRChainBroken, events.PITRDiverged, events.PITRLagHigh, events.PITRLagRecovered,
 		events.PITRWindowLow, events.PITRCollectorFailed, events.PITRCollectorRecovered:
 		target = fmt.Sprintf("stream %s (connection %s)", e.Stream, e.ConnectionID)
+	case events.BackupCopyFailed, events.BackupCopyRecovered, events.BackupCopyExhausted:
+		name := e.TargetName
+		if name == "" {
+			name = e.TargetID
+		}
+		target = fmt.Sprintf("backup %s (db %s) to storage target %s", e.BackupID, e.Database, name)
 	case events.MetadataBackupFailed:
 		name := e.TargetName
 		if name == "" {

@@ -245,6 +245,8 @@ type startBackupInput struct {
 	Collections        []string                `json:"collections,omitempty" jsonschema:"only these collections (one database only)"`
 	ExcludeCollections []string                `json:"exclude_collections,omitempty" jsonschema:"skip these collections (one database only)"`
 	Gzip               *bool                   `json:"gzip,omitempty" jsonschema:"compress the archive (default: the server setting)"`
+	CopyTargets        []string                `json:"copy_targets,omitempty" jsonschema:"up to 3 further storage targets the archive is copied to (3-2-1 copies, see list_storage_targets)"`
+	CopyMode           models.CopyMode         `json:"copy_mode,omitempty" jsonschema:"async (default: copied after the backup completed) or sync (the backup completes only once every copy succeeded)"`
 }
 
 type cancelRunInput struct {
@@ -269,6 +271,7 @@ type restoreInput struct {
 	Verify             *bool    `json:"verify,omitempty" jsonschema:"verify the archive checksum (and decryption) before restoring (default: the server's verify policy)"`
 	VerifyRestore      bool     `json:"verify_restore,omitempty" jsonschema:"after the restore, compare the document counts and indexes of the restored collections with the backup's manifest (result in the restore's verification)"`
 	Force              bool     `json:"force,omitempty" jsonschema:"WARNING: starts the restore even though a preflight check failed, which may fail or harm the target; set it only after reading the failed checks"`
+	SourceTargetID     string   `json:"source_target_id,omitempty" jsonschema:"storage target to read the archive from: the backup's primary target or one of its completed copies (default: the primary, or a healthy copy when the primary is missing or damaged)"`
 }
 
 // Outputs.
@@ -532,6 +535,12 @@ func (s *Server) registerTools() {
 		Annotations: additive("Start backup"),
 		InputSchema: schemaFor[startBackupInput](func(p map[string]*jsonschema.Schema) {
 			limitIDs(p, "connection_id", "storage_target_id")
+			if c := p["copy_targets"]; c != nil {
+				c.MaxItems = ptr(models.MaxCopyTargets)
+			}
+			if m := p["copy_mode"]; m != nil {
+				m.Enum = []any{string(models.CopyAsync), string(models.CopySync)}
+			}
 			p["database"].MinLength, p["database"].MaxLength = ptr(1), ptr(maxNameLength)
 			if d := p["databases"]; d != nil {
 				d.MinItems, d.MaxItems = ptr(1), ptr(operations.MaxBackupDatabases)
@@ -561,7 +570,7 @@ func (s *Server) registerTools() {
 			"with the reasons unless force is set (only after reading them). verify_restore compares the restored collections with the backup's manifest.",
 		Annotations: additive("Restore to a safe clone"),
 		InputSchema: schemaFor[restoreInput](func(p map[string]*jsonschema.Schema) {
-			limitIDs(p, "backup_id", "target_connection_id")
+			limitIDs(p, "backup_id", "target_connection_id", "source_target_id")
 			collectionProps(p, "collections")
 		}),
 	}, s.restoreSafeClone)
@@ -915,6 +924,7 @@ func (s *Server) startBackup(ctx context.Context, in startBackupInput) (backupSt
 		BackupOptions: models.BackupOptions{
 			ConnectionID: in.ConnectionID, Database: in.Database, StorageTargetID: in.StorageTargetID,
 			Collections: in.Collections, ExcludeCollections: in.ExcludeCollections,
+			CopyTargets: in.CopyTargets, CopyMode: in.CopyMode,
 		},
 		Gzip:    in.Gzip,
 		Trigger: models.TriggerMCP,
@@ -985,6 +995,7 @@ func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restore
 		Verify:              in.Verify,
 		VerifyRestore:       in.VerifyRestore,
 		Force:               in.Force,
+		SourceTargetID:      in.SourceTargetID,
 	})
 	if err != nil {
 		return restoreStarted{}, "", err

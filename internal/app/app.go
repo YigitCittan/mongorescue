@@ -27,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/copies"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
@@ -117,6 +118,7 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	copies        *copies.Service
 	reencrypt     *reencrypt.Service
 	pitr          *collector.Service
 	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
@@ -333,8 +335,14 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// slots hold every connection's max_concurrent_backups.
 	runManager := runs.NewManager(logger)
 	sizeEstimator := archiveSizeEstimator(metaStore, prober.DatabaseSize)
+	// The copy queue is built below (it needs the event bus); synchronous copies
+	// only run once the app has started.
+	var copySvc *copies.Service
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
+		backup.WithCopier(func(ctx context.Context, rec *models.BackupRecord, mbps float64) error {
+			return copySvc.CopyAll(ctx, rec, mbps)
+		}),
 		backup.WithToolsDir(cfg.ToolsDir),
 		backup.WithConfigDir(toolsTemp),
 		backup.WithStorageResolver(targetSvc.Storage),
@@ -403,6 +411,25 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	bus.Subscribe(metricSet.ObserveEvent)
 	bus.Subscribe(notifySvc.HandleEvent)
 	bus.Subscribe(watchEncryptionOffAlert(logger, settingsSvc))
+	// Copies of backups to their copy targets (3-2-1): the persistent queue wakes up
+	// for every succeeded backup.
+	copySvc = copies.New(copies.Config{
+		Store:    metaStore,
+		Storages: copies.StorageFunc(targetSvc.Storage),
+		UploadMbps: func(ctx context.Context, rec *models.BackupRecord) float64 {
+			if rec.JobID != "" {
+				if job, jobErr := metaStore.GetJob(ctx, rec.JobID); jobErr == nil && job.MaxUploadMbps > 0 {
+					return job.MaxUploadMbps
+				}
+			}
+			return settingsSvc.Current().General.MaxUploadMbps
+		},
+		Publisher: bus,
+		Observe:   metricSet.ObserveCopy,
+		Logger:    logger,
+	})
+	metricSet.SetCopyQueueSource(copySvc.QueueDepth)
+	bus.Subscribe(copySvc.HandleEvent)
 	if err = checkEncryptionAfterUpgrade(ctx, logger, legacy, settingsSvc, bus); err != nil {
 		return nil, fmt.Errorf("check encryption after upgrade: %w", err)
 	}
@@ -438,6 +465,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
 		ChunkKeys: metaStore.ChunkKeys,
+		CopyKeys:  metaStore.CopyKeys,
 		VerifyChunks: func(ctx context.Context) (integrity.ChunkSweep, error) {
 			if pitrSvc == nil {
 				return integrity.ChunkSweep{}, nil
@@ -606,6 +634,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// server, so both adapters apply exactly the same rules.
 	ops = operations.New(operations.Config{
 		Store:       metaStore,
+		WakeCopies:  copySvc.Notify,
 		Backup:      backupEngine,
 		Restore:     restoreEngine,
 		Jobs:        sched,
@@ -771,6 +800,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		copies:        copySvc,
 		reencrypt:     reencryptSvc,
 		pitr:          pitrSvc,
 		cleanupPITR:   ops.CleanupInterruptedPITR,
@@ -1178,6 +1208,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.metaBackup != nil {
 		a.metaBackup.Start(context.WithoutCancel(ctx))
 	}
+	// The copy queue; stopped by shutdownRuns.
+	if a.copies != nil {
+		a.copies.Start(context.WithoutCancel(ctx))
+	}
 	// Re-encryption of backups after a key rotation; resumes an interrupted job and
 	// is stopped by shutdownRuns.
 	if a.reencrypt != nil {
@@ -1320,6 +1354,9 @@ func (a *App) shutdownRuns() {
 			if a.metaBackup != nil {
 				a.metaBackup.Stop()
 			}
+			if a.copies != nil {
+				a.copies.Stop()
+			}
 			if a.reencrypt != nil {
 				a.reencrypt.Stop()
 			}
@@ -1370,6 +1407,9 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 		for _, b := range backups {
 			if b.Status == models.StatusInProgress {
 				b.Status, b.ErrorMessage, b.SizeBytes, b.SHA256 = models.StatusFailed, msg, 0, ""
+				// Copies it never made leave the queue; copies a synchronous run made
+				// already go to the purge (archive_cleanup_pending).
+				b.AbandonCopies()
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), logsafe.Error(err))
 				}

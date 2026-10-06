@@ -152,6 +152,10 @@ type Engine struct {
 	// estimateSize, when set, estimates a backup's archive size before it runs, to
 	// warn about archives close to the storage target's limit (see capacity.go).
 	estimateSize SizeEstimator
+
+	// copier copies the archive of a backup with synchronous copies before it
+	// completes (see copies.go).
+	copier CopyFunc
 }
 
 // RunConfig holds the settings a run uses. They are read when a run is prepared and
@@ -384,6 +388,7 @@ func (e *Engine) Prepare(opts models.BackupOptions) (*models.BackupRecord, error
 		record.Encrypted = true
 		record.EncryptionMode = string(enc.Mode())
 	}
+	record.PlanCopies(opts.Copies, opts.CopyMode)
 	return record, nil
 }
 
@@ -736,6 +741,9 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	if err := e.verifyAfterUpload(runCtx, opts, record); err != nil {
 		return e.fail(runCtx, record, err)
 	}
+	if err := e.copySync(runCtx, opts, record); err != nil {
+		return e.fail(runCtx, record, err)
+	}
 	return record, nil
 }
 
@@ -802,6 +810,7 @@ func (e *Engine) fail(ctx context.Context, record *models.BackupRecord, err erro
 	record.Status = models.StatusFailed
 	record.SizeBytes = 0
 	record.SHA256 = ""
+	record.AbandonCopies()
 	record.Phases.Finished = models.Stamp(time.Now())
 	if c := runs.CancellationOf(ctx); c != nil {
 		if !errors.Is(err, runs.ErrCancelled) {

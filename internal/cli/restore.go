@@ -35,6 +35,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 	targetDB := fs.String("target-database", "", "With --in-place: restore into this database instead of the backup's")
 	drop := fs.Bool("drop", false, "With --in-place: drop each restored collection in the target first")
 	targetConn := fs.String("target-connection", "", "Restore into this connection instead of the backup's (admin)")
+	fromTarget := fs.String("from-target", "", "Read the archive from this storage target: the backup's primary or one of its copies (default: the primary, or a healthy copy when it is missing or damaged)")
 	collections := fs.String("collections", "", "Restore only these collections, comma-separated")
 	dryRun := fs.Bool("dry-run", false, "Check the archive and the target without writing anything")
 	verifyArchive := fs.Bool("verify-archive", false, "Verify the archive's checksum before restoring (default: the server's policy)")
@@ -76,6 +77,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 	req := models.RestoreRequest{
 		BackupID: id, SelectedCollections: csv(*collections), DryRun: *dryRun,
 		TargetConnectionID: strings.TrimSpace(*targetConn), VerifyRestore: *verifyRestore,
+		SourceTargetID: strings.TrimSpace(*fromTarget),
 	}
 	if *verifyArchive || *noVerifyArchive {
 		v := *verifyArchive
@@ -90,7 +92,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 }
 
 // pitrOnlyFlags are the restore flags that do not apply to --pitr.
-var pitrOnlyFlags = []string{"in-place", "confirm", "target-database", "drop", "collections", "dry-run", "verify-archive", "no-verify-archive", "verify-restore"}
+var pitrOnlyFlags = []string{"in-place", "confirm", "target-database", "drop", "collections", "dry-run", "verify-archive", "no-verify-archive", "verify-restore", "from-target"}
 
 // pitrRequest builds the request of "restore --pitr".
 func (s *session) pitrRequest(pos []string, stream, at, databases string) (models.RestoreRequest, error) {

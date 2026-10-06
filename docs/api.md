@@ -261,6 +261,14 @@ A safe clone is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>_<id>`: the s
 
 Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are always verified first (`verify` and the policy apply to safe clones only). A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started. Two restores into the same target database cannot run at once (`409`); a dry run (`"dry_run": true`) writes nothing, so it takes no lock on the target and runs alongside them.
 
+A backup with [copies](configuration.md#copies-on-a-second-target-3-2-1) can be restored from any target that holds it: `source_target_id` names the primary target or the target of a `done` copy (anything else is `400`). Without it the restore reads the primary, and falls back to the first healthy copy when the primary archive is recorded missing, failed its last verification, or is missing or has another size on its target. The restore record then has `source_target_id`, `source_target_name` and `source_fallback` (why it read a copy), and the preflight adds a `source` check: `pass` when the chosen archive is there, `warn` with the reason after a fallback, `fail` when the archive is missing and no healthy copy exists.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/restore \
+  -H "Authorization: Bearer $MONGORESCUE_KEY" -H 'Content-Type: application/json' \
+  -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e", "source_target_id": "stg_offsite"}'
+```
+
 ### Restore preflight
 
 `POST /api/v1/restores/preflight` (operator scope) takes the body of a restore request and answers the go/no-go summary without starting anything:
@@ -675,6 +683,16 @@ Invalid values answer `400` naming the field. The read preference is added to th
 
 A scheduled run outside its job's window does not start, and it is not a failure. Consecutive skips with no run in between share one job run with `"status": "skipped"`, `"skip_reason": "outside window"` and `skipped_runs` (how many activations it stands for, from `started_at` to `completed_at`), so an hourly job with a four-hour window records one skip a day; it is listed by `GET /api/v1/jobs/{id}/runs`, passed over as the job's last status and left out of the overview history before its limit. Only the first skip of each such gap publishes `backup.skipped` (`status: "skipped"`, `detail: "skipped (outside window)"`), and only to [notification rules](notifications.md) that name it: it is opt-in. With `cancel_at_window_end`, a scheduled run still going when the window closes is cancelled by `system` with the reason "the backup window ended". `POST /api/v1/jobs/{id}/run` and the MCP `run_job` tool ignore the window. `GET /api/v1/jobs/{id}` adds `window_open` for a job with a window and lists in `next_runs` only the runs the window allows; its `effective_rpo_minutes` uses the largest gap between them.
 
+## Copies on further storage targets
+
+Jobs (`POST /api/v1/jobs`, `PUT /api/v1/jobs/{id}`) and manual backups (`POST /api/v1/backups`) take `copy_targets` (up to 3 storage target IDs other than the primary) and `copy_mode` (`async`, the default, or `sync`). An update without `copy_targets` keeps them, and `[]` removes them. An unknown or invisible target is `404`/`400`, the primary or more than three targets are `400`. Every backup record lists its copies in `copies` (`target_id`, `target_name`, `storage_key`, `status`, `sha256_ok`, `version_id`, `retain_until`, `error`, `copied_at`, `attempts`, `next_attempt_at`, `verification`, `verified_at`), and `copy_mode`. A retried backup keeps the copy targets of the failed one. `POST /api/v1/backups/{id}/copies/retry` (admin) queues every failed copy of a completed backup again with its attempts reset, including copies the queue gave up on (`backup.copy_exhausted`). It answers the updated backup, or `400` when the backup is not completed or has no failed copy. MCP's `start_backup` takes the same fields, and `restore_backup` takes `source_target_id`. See [configuration.md](configuration.md#copies-on-a-second-target-3-2-1) for the copy queue, retries and the purge.
+
+```bash
+curl -s -X PUT http://localhost:8080/api/v1/jobs/job_shop \
+  -H "Authorization: Bearer $MONGORESCUE_KEY" -H 'Content-Type: application/json' \
+  -d '{"name": "shop", "database": "shop", "connection_id": "conn_prod", "copy_targets": ["stg_offsite"], "copy_mode": "async"}'
+```
+
 ## Recovery point objectives
 
 A job's `rpo_minutes` (`POST /api/v1/jobs`, `PUT /api/v1/jobs/{id}`, returned by `GET /api/v1/jobs/{id}` and the MCP `get_job` tool) is its recovery point objective: how old, in minutes, the newest successful backup of each of its databases may be. `0` or absent means the default from the schedule: twice its interval plus an hour, at least six hours. The interval is the largest gap between consecutive runs over 8 days (a year for monthly and rarer schedules), read in the server's time zone like the scheduler does, so it does not change with the day of the week: `@hourly` gets 6 hours, `@every 6h` 13 hours, `@daily` 49 hours, `0 9,17 * * *` 33 hours (the 16-hour night), `0 9 * * 1-5` 145 hours (Friday to Monday) and `@monthly` about 63 days; a schedule that cannot be read counts as daily. A job with a [backup window](#read-preferences-throttling-and-backup-windows) counts only the runs the window allows. When set it must be between 15 (15 minutes) and 129600 (90 days), else `400`. An update without `rpo_minutes` keeps it; `0` restores the default. `GET /api/v1/jobs/{id}` adds `effective_rpo_minutes` (the objective that applies) and `rpo_default`.
@@ -695,7 +713,8 @@ Every 5 minutes, right after a job's backup finished and right after a job is cr
 | `rpo` | `{target_seconds, age_seconds, met}`: the strictest objective of the enabled jobs, the age of `last_good_backup`, and whether every enabled job meets its objective (`met` is absent when every job is paused) |
 | `rto` | `{seconds, source, id, measured_at}`: the estimated recovery time, the duration of the newest successful restore test (`source: "restore_test"`), else of the newest completed real restore of the whole database (`"restore"`; dry runs and selective restores do not count); absent when neither exists |
 | `keys_escrowed`, `encrypted` | Whether a [recovery kit](#metadata-backups-and-the-recovery-kit) was downloaded for the current `secret.key`, encryption keys and storage targets, and whether `last_good_backup` is encrypted |
-| `status`, `reasons` | `fail` for `rpo_missed`, `restore_test_failed` (the newest test failed) or `verification_failed` (the newest good backup failed verification); `warn` for `no_backup`, `paused`, `not_verified`, `no_restore_test` or `keys_not_escrowed` (an encrypted backup without an escrowed key); `ok` otherwise |
+| `copies`, `copy_targets` | How many [copies](configuration.md#copies-on-a-second-target-3-2-1) of `last_good_backup` are done, of how many planned (`copy_targets` is absent without copy targets) |
+| `status`, `reasons` | `fail` for `rpo_missed`, `restore_test_failed` (the newest test failed) or `verification_failed` (the newest good backup failed verification); `warn` for `no_backup`, `paused`, `not_verified`, `no_restore_test`, `keys_not_escrowed` (an encrypted backup without an escrowed key) or `copy_missing` (copies of the newest good backup still not done six hours after it finished); `ok` otherwise |
 
 The report reads each kind of record (jobs, newest and verified backups, restore tests, restores, breaches, join times) with one query, whatever the number of jobs. The dashboard's *Overview* shows it as the *Recovery readiness* table, and its *Attention needed* list reports the jobs whose objective is missed from the same data.
 

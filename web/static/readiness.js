@@ -641,7 +641,7 @@ function readinessRender() {
       return `<tr>
         <th scope="row"><span class="mono">${escapeHtml(r.database)}</span>${where ? `<span class="rd-sub">${escapeHtml(where)}</span>` : ""}</th>
         <td>${readinessJobsCell(r)}</td>
-        <td>${escapeHtml(readinessWhen(r.last_good_backup && r.last_good_backup.at))}${readinessPartialCell(r.last_good_backup)}</td>
+        <td>${escapeHtml(readinessWhen(r.last_good_backup && r.last_good_backup.at))}${readinessPartialCell(r.last_good_backup)}${typeof copiesReadinessCell === "function" ? copiesReadinessCell(r) : ""}</td>
         <td>${escapeHtml(readinessWhen(r.last_verified_backup && r.last_verified_backup.at))}</td>
         <td>${readinessRestoreTestCell(r)}</td>
         <td>${readinessRpoCell(r)}</td>

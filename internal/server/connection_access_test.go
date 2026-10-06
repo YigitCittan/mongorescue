@@ -125,6 +125,7 @@ var accessPathRoutes = map[string]accessKind{
 	"POST /api/v1/backups/{id}/verify":        kindBackup,
 	"POST /api/v1/backups/{id}/pin":           kindBackup,
 	"POST /api/v1/backups/{id}/unpin":         kindBackup,
+	"POST /api/v1/backups/{id}/copies/retry":  kindBackup,
 	undeleteRoute:                             kindBackup,
 	"POST /api/v1/restores/{id}/cancel":       kindRestore,
 	"POST /api/v1/restores/{id}/drop-clones":  kindRestore,

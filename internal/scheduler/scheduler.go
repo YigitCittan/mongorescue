@@ -751,6 +751,17 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 			return opts, fmt.Errorf("resolve storage target %s: %w", job.StorageTargetID, err)
 		}
 		opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
+		// The job's copy targets (3-2-1 copies) with their names.
+		for _, id := range job.CopyTargets {
+			ct, resolveErr := s.targets.Resolve(ctx, id)
+			if resolveErr != nil {
+				return opts, fmt.Errorf("resolve copy target %s: %w", id, resolveErr)
+			}
+			if ct.ID != target.ID {
+				opts.Copies = append(opts.Copies, models.CopyTarget{ID: ct.ID, Name: ct.Name})
+			}
+		}
+		opts.CopyMode = job.CopyMode
 	}
 	if s.connections == nil {
 		return opts, nil

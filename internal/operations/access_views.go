@@ -26,6 +26,9 @@ func (s *Service) VisibleTargets(ctx context.Context) (map[string]bool, error) {
 		if j.StorageTargetID != "" {
 			out[j.StorageTargetID] = true
 		}
+		for _, id := range j.CopyTargets {
+			out[id] = true
+		}
 	}
 	ids, err := s.cfg.Store.ListBackupTargetsIn(ctx, set)
 	if err != nil {

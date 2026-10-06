@@ -55,6 +55,10 @@ const (
 	// PreflightCheckPostRestore lists the post-restore commands of the target
 	// connection the restore runs against its clones (only when it has some).
 	PreflightCheckPostRestore = "post_restore"
+	// PreflightCheckSource checks that the archive the restore reads exists on the
+	// storage target chosen for it (the primary or a copy). It runs only for
+	// backups with copies.
+	PreflightCheckSource = "source"
 )
 
 // PITRPreflight summarises the plan of a point-in-time restore for its preflight.

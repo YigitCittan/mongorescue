@@ -115,9 +115,11 @@ var routeScopes = map[string]auth.Scope{
 	// write into a temporary database the test drops again: operator. Unpinning
 	// lifts a legal hold and makes the backup deletable: admin. Sweeps, storage scans
 	// (which mark records missing) and imports (which create records): admin.
-	"POST /api/v1/backups/{id}/verify":         auth.ScopeOperator,
-	"POST /api/v1/backups/{id}/pin":            auth.ScopeOperator,
-	"POST /api/v1/backups/{id}/unpin":          auth.ScopeAdmin,
+	"POST /api/v1/backups/{id}/verify": auth.ScopeOperator,
+	"POST /api/v1/backups/{id}/pin":    auth.ScopeOperator,
+	"POST /api/v1/backups/{id}/unpin":  auth.ScopeAdmin,
+	// Retrying copies the queue gave up on writes to storage targets again: admin.
+	"POST /api/v1/backups/{id}/copies/retry":   auth.ScopeAdmin,
 	"GET /api/v1/jobs/{id}/retention/preview":  auth.ScopeRead,
 	"GET /api/v1/jobs/{id}/retention/log":      auth.ScopeRead,
 	"POST /api/v1/jobs/{id}/restore-test":      auth.ScopeOperator,

@@ -503,7 +503,12 @@ func (s *SQLiteStore) ListRestoreDatabases(ctx context.Context) ([]string, error
 func (s *SQLiteStore) ListBackupTargetsIn(ctx context.Context, set auth.ConnectionSet) ([]string, error) {
 	c := conditions{clauses: []string{"storage_target_id != ''"}}
 	c.addConnections("connection_id", set)
-	return s.distinct(ctx, "SELECT DISTINCT storage_target_id FROM backups"+c.where()+" ORDER BY storage_target_id", c.args...)
+	// The targets of their copies are used by them too.
+	cc := conditions{clauses: []string{"coalesce(json_extract(c.value, '$.target_id'), '') != ''"}}
+	cc.addConnections("backups.connection_id", set)
+	return s.distinct(ctx, "SELECT DISTINCT storage_target_id FROM backups"+c.where()+
+		" UNION SELECT DISTINCT json_extract(c.value, '$.target_id') FROM backups, json_each(backups.data, '$.copies') c"+cc.where()+
+		" ORDER BY 1", append(c.args, cc.args...)...)
 }
 
 // ListRestoreDatabasesIn returns the distinct target database names of the restore

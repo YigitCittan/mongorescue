@@ -2412,6 +2412,7 @@ function setupForms() {
       ...(typeof readinessJobPayload === "function" ? readinessJobPayload() : {}),
       ...(typeof monitoringJobPayload === "function" ? monitoringJobPayload() : {}),
       ...(typeof throttleJobPayload === "function" ? throttleJobPayload() : {}),
+      ...(typeof copiesJobPayload === "function" ? copiesJobPayload() : {}),
       enabled: document.getElementById("job-enabled").checked
     };
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
@@ -2611,6 +2612,8 @@ function openJobModal(jobID) {
   if (typeof monitoringFillJobForm === "function") monitoringFillJobForm(job);
   // Read preference, throttling and the backup window (throttle.js).
   if (typeof throttleFillJobForm === "function") throttleFillJobForm(job);
+  // Copy targets and copy mode (copies.js), once the primary target is selected.
+  if (typeof copiesFillJobForm === "function") copiesFillJobForm(job);
   // Single / Selected / All / Pattern database selection (jobdbs.js).
   if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
@@ -2958,6 +2961,8 @@ function openRestoreModal(backupID, sourceDB) {
   });
   document.getElementById("restore-verify-restore").checked = true;
   document.getElementById("restore-force").checked = false;
+  // The storage target the archive is read from: automatic, the primary or a copy (copies.js).
+  if (typeof copiesFillRestore === "function") copiesFillRestore(backup);
   updateRestoreMode(false);
   resetRestoreCollections(backupID);
   openModal("modal-restore");
@@ -3012,7 +3017,8 @@ function restoreRequestBody(selected) {
     verify_restore: document.getElementById("restore-verify-restore").checked,
     ...(!isSafeClone && !usersRoles.disabled && usersRoles.checked ? { restore_users_and_roles: true } : {}),
     ...(selected.length > 0 ? { selected_collections: selected } : {}),
-    ...(targetConnection ? { target_connection_id: targetConnection } : {})
+    ...(targetConnection ? { target_connection_id: targetConnection } : {}),
+    ...(typeof copiesRestorePayload === "function" ? copiesRestorePayload() : {})
   };
 }
 
@@ -3574,6 +3580,8 @@ function renderBackupDetails() {
   if (typeof protectionBackupDetailRows === "function") protectionBackupDetailRows(b, row);
   // S3 Object Lock, legal hold and version (objectlock.js).
   if (typeof objectLockBackupDetailRows === "function") objectLockBackupDetailRows(b, row);
+  // Copies on further storage targets (copies.js).
+  if (typeof copiesBackupDetailRows === "function") copiesBackupDetailRows(b, row);
   // Progress, cancel button, phase timeline and log viewer (runs.js).
   renderRunPanel("backup", "backup", b);
 

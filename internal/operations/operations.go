@@ -206,6 +206,9 @@ type Config struct {
 	Storage func(ctx context.Context, targetID string) (storage.Storage, error)
 	// Audit receives one entry per bulk operation (real runs); nil disables them.
 	Audit Auditor
+	// WakeCopies wakes the copy queue after copies were queued again (implemented
+	// by copies.Service.Notify); nil means the queue finds them on its next look.
+	WakeCopies func()
 	// OnJobDeleted is called after a job has been deleted (for example to drop its
 	// metric series); nil disables it.
 	OnJobDeleted func(jobID string)
@@ -425,8 +428,12 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 			ConnectionID:    original.ConnectionID,
 			// A failed backup records whether it was meant to include users and roles.
 			IncludeUsersAndRoles: original.UsersAndRoles,
+			CopyMode:             original.CopyMode,
 		},
 		Trigger: trigger,
+	}
+	for _, c := range original.Copies {
+		req.CopyTargets = append(req.CopyTargets, c.TargetID)
 	}
 	// The backup's own filter, so a database of a multi-database run (whose filter
 	// is per database) is retried with it.
@@ -489,6 +496,13 @@ func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.
 		return opts, err
 	}
 	opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
+	if opts.Copies, err = s.resolveCopyTargets(ctx, opts.CopyTargets, target.ID, opts.CopyMode); err != nil {
+		return opts, err
+	}
+	opts.CopyTargets = nil
+	for _, c := range opts.Copies {
+		opts.CopyTargets = append(opts.CopyTargets, c.ID)
+	}
 	opts.Gzip = derefOr(req.Gzip, s.settings().General.DefaultGzip)
 	opts.Trigger = models.TriggerManual
 	if req.Trigger == models.TriggerMCP {
@@ -696,6 +710,11 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		record.Preflight, record.Forced = pre, !pre.OK && req.Force
 	}
+	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = source.StorageTargetID, source.StorageTargetName, req.SourceFallback
+	if req.SourceFallback != "" {
+		s.logger.Warn("restore falls back to a copy of the backup", logsafe.Attr("backup_id", source.ID),
+			logsafe.Attr("storage_target_id", source.StorageTargetID), slog.String("reason", req.SourceFallback))
+	}
 	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
 	if source.ConnectionID != "" && s.cfg.Connections != nil {
 		if src, getErr := s.cfg.Connections.Get(ctx, source.ConnectionID); getErr == nil {
@@ -733,6 +752,11 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
+		// An archive that does not match its checksum is recorded as such, so the
+		// next restore reads a healthy copy instead; this one is not retried.
+		if errors.Is(runErr, restore.ErrChecksumMismatch) {
+			s.recordArchiveMismatch(persistCtx, source, runErr)
+		}
 		// The outcome events are published before the final record is stored, so a
 		// client that sees the restore finished (GET /api/v1/restores) can rely on its
 		// events having been published. Publishing never blocks.
@@ -855,7 +879,14 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	if !forPreflight && (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {
 		return nil, fmt.Errorf("%w: backup %s is encrypted; %s", ErrKeyRequired, source.ID, restore.KeyRequiredHint)
 	}
-	return &restorePlan{req: req, source: source}, nil
+	// The primary archive, a copy chosen by the client, or a healthy copy when the
+	// primary is missing or damaged.
+	view, fallback, err := s.restoreSource(ctx, source, strings.TrimSpace(req.SourceTargetID))
+	if err != nil {
+		return nil, err
+	}
+	req.SourceFallback = fallback
+	return &restorePlan{req: req, source: view}, nil
 }
 
 // ResolveConnection returns connection id with its full URI. It returns

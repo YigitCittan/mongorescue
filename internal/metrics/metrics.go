@@ -82,7 +82,9 @@ type Metrics struct {
 	integrity integritySeries
 	// Metadata self-backup series (see metabackup.go).
 	metaBackup metaBackupSeries
-	pitr       pitrSeries
+	// Backup copy series (see copies.go).
+	copies copySeries
+	pitr   pitrSeries
 	// Audit log series (see auditlog.go) and the write queue depth source.
 	audit            auditSeries
 	auditQueueSource atomic.Pointer[func() int]
@@ -239,6 +241,7 @@ func New(info BuildInfo) *Metrics {
 	)
 	m.registry.MustRegister(activeRuns...)
 	m.registry.MustRegister(m.newMetaBackupSeries()...)
+	m.registry.MustRegister(m.newCopySeries()...)
 	m.registry.MustRegister(m.newPITRSeries()...)
 	m.registry.MustRegister(m.newAuditSeries()...)
 	m.registry.MustRegister(m.newLivenessSeries()...)
