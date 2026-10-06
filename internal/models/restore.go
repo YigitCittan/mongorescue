@@ -85,7 +85,7 @@ type RestoreRequest struct {
 	TargetDatabase string `json:"target_database,omitempty"`
 
 	// SafeClone routes the restore into an isolated clone namespace
-	// (<db>_rescue_<timestamp>). Nil (omitted) means true: a restore never overwrites
+	// (<db>_rescue_<timestamp>_<id>). Nil (omitted) means true: a restore never overwrites
 	// existing data unless the caller sets it to false explicitly. Use IsSafeClone.
 	SafeClone *bool `json:"safe_clone,omitempty"`
 
@@ -138,7 +138,7 @@ type RestoreRequest struct {
 	Force bool `json:"force,omitempty"`
 
 	// CloneDatabase, when set, names the safe clone instead of the default
-	// <db>_rescue_<timestamp> (automated restore tests restore into
+	// <db>_rescue_<timestamp>_<id> (automated restore tests restore into
 	// <db>_rescue_verify_<timestamp>). It only applies to safe-clone restores and is
 	// set by code, never read from clients.
 	CloneDatabase string `json:"-"`
@@ -154,7 +154,7 @@ type RestoreRequest struct {
 	// restores every database of the instance except admin, config and local.
 	Databases []string `json:"databases,omitempty"`
 
-	// PITRCloneSuffix, when set, replaces the "_rescue_<timestamp>" suffix of the
+	// PITRCloneSuffix, when set, replaces the "_rescue_<timestamp>_<id>" suffix of the
 	// databases of a point-in-time restore (chain tests use
 	// "_rescue_verify_<timestamp>_<hex>"). It is set by code, never read from
 	// clients.
@@ -311,7 +311,7 @@ func (r RestoreRequest) IsSafeClone() bool {
 }
 
 // InPlace reports whether the restore would write into a pre-named namespace (the
-// source database or TargetDatabase) instead of a fresh <db>_rescue_<timestamp> clone.
+// source database or TargetDatabase) instead of a fresh <db>_rescue_<timestamp>_<id> clone.
 func (r RestoreRequest) InPlace() bool {
 	return !r.IsSafeClone() || strings.TrimSpace(r.TargetDatabase) != ""
 }

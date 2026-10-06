@@ -11,7 +11,7 @@
 // Safety model: callers authenticate with an API key (never a browser session); each
 // tool requires a scope (read or operator; admin for pitr_restore) and tools/list
 // only shows the tools the key may call; nothing can be deleted and restores always
-// go into fresh <db>_rescue_<timestamp> clones; every tool call is audited, counted in
+// go into fresh <db>_rescue_<timestamp>_<id> clones; every tool call is audited, counted in
 // mongorescue_mcp_calls_total and rate limited per API key.
 package mcp
 
@@ -49,8 +49,8 @@ const ServerName = "mongorescue"
 const instructions = `MongoRescue backs up and restores MongoDB databases.
 Use the read tools (list_*, get_*) to inspect connections, jobs, backups, restores and storage targets; get_status gives an overview.
 start_backup, run_job, restore_to_safe_clone and pitr_restore start asynchronous operations and return a record with status "in_progress": poll get_backup or get_restore until the status is "completed" or "failed".
-pitr_status shows the point-in-time windows of PITR streams; pitr_restore (admin keys only, experimental) restores a replica set, or some of its databases, to a moment in a window, into new databases ending in _rescue_<timestamp>.
-Restores through MCP always go into new databases named <db>_rescue_<timestamp>; nothing is overwritten and nothing can be deleted through MCP. In-place restores, deletions and configuration changes are done by a person in the MongoRescue dashboard.`
+pitr_status shows the point-in-time windows of PITR streams; pitr_restore (admin keys only, experimental) restores a replica set, or some of its databases, to a moment in a window, into new databases ending in _rescue_<timestamp>_<id>.
+Restores through MCP always go into new databases named <db>_rescue_<timestamp>_<id>; nothing is overwritten and nothing can be deleted through MCP. In-place restores, deletions and configuration changes are done by a person in the MongoRescue dashboard.`
 
 // ConnectionService is the part of connections.Service the MCP tools use.
 type ConnectionService interface {

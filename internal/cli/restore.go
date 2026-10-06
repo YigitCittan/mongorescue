@@ -14,7 +14,7 @@ const restoreUsage = `Usage: mongorescue restore BACKUP_ID [flags]
        mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database DB] [flags]
 
 Restores a backup. By default it restores into a new safe clone database
-(<db>_rescue_<timestamp>) and never touches existing data. Restoring into the
+(<db>_rescue_<timestamp>_<id>) and never touches existing data. Restoring into the
 backup's own database (or --target-database) needs both --in-place and --confirm;
 the CLI never prompts. The restore preflight runs first: a failed check prints the
 checks and exits 1 unless --force is given. Safe clones need an operator key;
@@ -22,7 +22,7 @@ in-place and cross-connection restores need an admin key.
 
 With --pitr (experimental, admin key) it restores a replica set to a point in
 time from its PITR stream (a stream or connection ID): every database, or those
-given with --database, goes into a new <db>_rescue_<timestamp> database, and
+given with --database, goes into a new <db>_rescue_<timestamp>_<id> database, and
 writes up to and including the second --at are replayed. Point-in-time restores
 are never in place.
 `

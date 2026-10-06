@@ -54,7 +54,7 @@ func TestRestoreFidelity(t *testing.T) {
 				rst := mustRestore(t, env, target.Storage, models.RestoreRequest{}, bkp, rOpts...)
 				defer env.dropDB(t, rst.TargetDatabase)
 				if !strings.HasPrefix(rst.TargetDatabase, f.Name+"_rescue_") {
-					t.Fatalf("restore target %q; want the safe clone %s_rescue_<timestamp>", rst.TargetDatabase, f.Name)
+					t.Fatalf("restore target %q; want the safe clone %s_rescue_<timestamp>_<id>", rst.TargetDatabase, f.Name)
 				}
 				assertSnapshotsEqual(t, want, env.snapshotDB(t, rst.TargetDatabase))
 			})

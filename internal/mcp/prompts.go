@@ -57,7 +57,7 @@ Do not try to delete anything or change settings; those actions are not availabl
 1. Call list_backups with database %q and status "completed" to find the newest good backups. Note id, started_at, size_bytes, sha256, encrypted and storage_target_id.
 2. Call get_status to check that the service is healthy and whether backups of this database failed recently.
 3. Propose a recovery point (usually the newest completed backup) and state the expected data loss window (time since that backup started).
-4. With the user's approval, rehearse the recovery: call restore_to_safe_clone with the chosen backup_id and verify true. It restores into a NEW database named %s_rescue_<timestamp>, so no existing data is touched.
+4. With the user's approval, rehearse the recovery: call restore_to_safe_clone with the chosen backup_id and verify true. It restores into a NEW database named %s_rescue_<timestamp>_<id>, so no existing data is touched.
 5. Poll get_restore until the status is completed or failed, then report the clone's database name and whether the archive was verified.
 6. Explain how to validate the clone (document counts, spot checks) and that switching applications over, or an in-place restore, is done by a person in the MongoRescue dashboard; it is intentionally not available through MCP.`, db, db, db), nil
 	}))
