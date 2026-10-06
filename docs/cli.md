@@ -104,7 +104,7 @@ mongorescue restore BACKUP_ID [--target-connection ID] [--collections a,b] [--dr
 mongorescue restore BACKUP_ID --in-place --confirm [--target-database NAME] [--drop] [...]
 ```
 
-A restore goes into a new safe clone database (`<db>_rescue_<timestamp>`) unless `--in-place` is given, and never touches existing data then. `--in-place` restores into the backup's own database (or `--target-database`) and needs `--confirm`: without it the command exits `2` before it sends anything. It never prompts, so a script cannot hang on a question. `--target-database` and `--drop` (drop each restored collection in the target first) need `--in-place --confirm`; `--confirm` alone is refused too.
+A restore goes into a new safe clone database (`<db>_rescue_<timestamp>_<id>`) unless `--in-place` is given, and never touches existing data then. `--in-place` restores into the backup's own database (or `--target-database`) and needs `--confirm`: without it the command exits `2` before it sends anything. It never prompts, so a script cannot hang on a question. `--target-database` and `--drop` (drop each restored collection in the target first) need `--in-place --confirm`; `--confirm` alone is refused too.
 
 | Flag | Request field |
 | :--- | :--- |
@@ -127,7 +127,7 @@ mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database a,b]
 mongorescue restore --pitr conn_rs0 --at 2026-10-05T14:29:59Z --wait
 ```
 
-Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time) from its PITR stream (a stream ID or the ID of its connection), with an **admin** key. Every database, or those given with `--database`, goes into a new database `<db>_rescue_<timestamp>`; writes up to and including the second `--at` (the primary's clock) are replayed. Point-in-time restores are never in place: `--in-place`, `--confirm`, `--target-database`, `--drop`, `--collections`, `--dry-run` and the verify flags are refused with exit `2`, as is a backup ID next to `--pitr`. The preflight runs first like for every restore and also checks the oplog chain, the replay privileges, the disk space for the base and the oplog and the `mongorestore` version; a time outside every window is refused by the server (exit `1`, `422`).
+Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time) from its PITR stream (a stream ID or the ID of its connection), with an **admin** key. Every database, or those given with `--database`, goes into a new database `<db>_rescue_<timestamp>_<id>`; writes up to and including the second `--at` (the primary's clock) are replayed. Point-in-time restores are never in place: `--in-place`, `--confirm`, `--target-database`, `--drop`, `--collections`, `--dry-run` and the verify flags are refused with exit `2`, as is a backup ID next to `--pitr`. The preflight runs first like for every restore and also checks the oplog chain, the replay privileges, the disk space for the base and the oplog and the `mongorestore` version; a time outside every window is refused by the server (exit `1`, `422`).
 
 | Flag | Request field |
 | :--- | :--- |

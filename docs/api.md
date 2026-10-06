@@ -255,6 +255,8 @@ curl -s -X POST http://localhost:8080/api/v1/restore \
   -d '{"backup_id": "bkp_shop_20260924_030000_3f9a1c2e"}'
 ```
 
+A safe clone is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>_<id>`: the source database, the start of the restore in UTC and a random 4-character lowercase hex ID (from a cryptographic random source), for example `shop_rescue_20261002_120000_3f9a`. The ID keeps two restores of one database started in the same second apart. A name may not exceed MongoDB's 63 bytes, so the source part of a database longer than 35 bytes is shortened (at a character boundary). Anything matching `_rescue_` still matches every clone. The restore record's `target_database` names the clone; the preflight of `POST /api/v1/restore` checks that very name.
+
 Restoring in place (into the source database, or into `target_database`) must be confirmed explicitly with `{"safe_clone": false, "confirm_in_place": true}`; any other in-place request is rejected with `400 Bad Request` before `mongorestore` starts. In-place restores are always verified first (`verify` and the policy apply to safe clones only). A missing decryption key is rejected up front with `422 Unprocessable Entity`; a checksum mismatch or failed decryption found during verification marks the restore record as failed, and `mongorestore` is never started. Two restores into the same target database cannot run at once (`409`); a dry run (`"dry_run": true`) writes nothing, so it takes no lock on the target and runs alongside them.
 
 ### Restore preflight
@@ -268,8 +270,8 @@ Restoring in place (into the source database, or into `target_database`) must be
     {"id": "connection", "status": "pass", "message": "connected to prod (MongoDB 7.0.14)"},
     {"id": "encryption", "status": "pass", "message": "the backup is not encrypted"},
     {"id": "server_version", "status": "warn", "message": "the backup's server version is unknown (backups of earlier releases do not record it); the target runs MongoDB 7.0.14"},
-    {"id": "target_database", "status": "pass", "message": "restores into the new database shop_rescue_20261002_120000; existing data is untouched"},
-    {"id": "privileges", "status": "pass", "message": "the user of connection prod may restore into shop_rescue_20261002_120000"},
+    {"id": "target_database", "status": "pass", "message": "restores into the new database shop_rescue_<YYYYMMDD_HHMMSS>_<id>; existing data is untouched"},
+    {"id": "privileges", "status": "pass", "message": "the user of connection prod may restore into shop_rescue_<YYYYMMDD_HHMMSS>_<id>"},
     {"id": "disk_space", "status": "fail", "message": "the target has 120.0 MiB free, less than the 2.1 GiB archive"},
     {"id": "collections", "status": "pass", "message": "a safe clone restores into a new database; no existing collection is replaced"},
     {"id": "users_and_roles", "status": "pass", "message": "users and roles are not restored"}
@@ -277,19 +279,19 @@ Restoring in place (into the source database, or into `target_database`) must be
 }
 ```
 
-`status` is `pass`, `warn` or `fail`; `ok` is `false` when a check failed. The checks, in this order:
+`status` is `pass`, `warn` or `fail`; `ok` is `false` when a check failed. A safe clone is named when its restore starts, so this endpoint names it by its pattern (`shop_rescue_<YYYYMMDD_HHMMSS>_<id>`, also in `post_restore`); the checks stored on a started restore name its clone. The checks, in this order:
 
 | ID | Checks |
 | :--- | :--- |
 | `connection` | The target server answers (`fail` otherwise; the server checks below are then `warn` "not checked"). |
 | `encryption` | An encrypted backup has a decryption key configured. |
 | `server_version` | The target's MongoDB version against the version recorded on the backup (`server_version`, read with `buildInfo` while the manifest is captured; backups of earlier releases have none and warn "unknown"). Any difference only warns (mongorestore may still work across versions); this check never fails. |
-| `target_database` | Whether the target database exists; for a safe clone the clone name must be free (two restores of a database within the same second share one). |
+| `target_database` | Whether the target database exists; for a safe clone the clone name must be free. |
 | `privileges` | The connection's user holds `createCollection`, `createIndex` and `insert` on the target database (`connectionStatus`), or on each restored collection through collection-level grants, plus `dropCollection` for an in-place restore with `drop_target`. It fails only when the actions are certainly missing (built-in roles only, every privilege understood); with custom roles, partial grants or an unreadable `connectionStatus` it warns. Missing user administration actions for `restore_users_and_roles` only warn. |
 | `disk_space` | The archive size against the free space of the target server's data filesystem, from `dbStats` (`fsTotalSize - fsUsedSize`) or, for a server on the same host, from the file system of its `dbPath`. Less free space than the archive fails only when `dbStats` reported it and the restore is not in place with `drop_target` (which frees the space of what it replaces); the local value (a loopback address may be an SSH tunnel or a Docker host network) only warns. Less than twice (uncompressed) or four times (compressed or unknown) the archive warns; unknown free space warns. |
 | `collections` | For an in-place restore, the existing collections the restore writes into (from the selection, the backup's manifest or its collection filter, against `listCollections`): dropped and replaced with `drop_target`, otherwise documents are added. Listed as a warning. |
 | `users_and_roles` | `restore_users_and_roles` against the backup (fails where `POST /api/v1/restore` answers `400`); a valid request warns that the database's users and roles are replaced. |
-| `post_restore` | Only when the target connection has [post-restore commands](#post-restore-commands): the commands the restore runs, per clone (`delete on users in shop_rescue_20261002_120000`), also listed in `post_restore` of the result with `status: "planned"`. Passes for a safe clone and a dry run (which runs none), warns for an in-place restore (which runs none), fails when a stored command is no longer valid. Point-in-time preflights list them too. |
+| `post_restore` | Only when the target connection has [post-restore commands](#post-restore-commands): the commands the restore runs, per clone (`delete on users in shop_rescue_20261002_120000_3f9a`), also listed in `post_restore` of the result with `status: "planned"`. Passes for a safe clone and a dry run (which runs none), warns for an in-place restore (which runs none), fails when a stored command is no longer valid. Point-in-time preflights list them too. |
 
 Only these can fail, and so refuse a restore: `connection` (the target is unreachable), `encryption` (no decryption key, which `POST /api/v1/restore` already answered with `422`), `target_database` (the safe clone name exists), `privileges` (write actions certainly missing), `disk_space` (free space reported by `dbStats` smaller than the archive), `users_and_roles` (a request `POST /api/v1/restore` already answered with `400`) and `post_restore` (a stored command that is no longer valid). Everything else warns. The server checks share one connection to the target and are bounded by 15 seconds.
 
@@ -337,9 +339,9 @@ The restore record shows what ran, with names and counts only, never the command
 "post_restore": {
   "status": "completed",
   "commands": [
-    {"index": 0, "database": "shop_rescue_20261002_120000", "source_database": "shop", "command": "delete", "collection": "users",
+    {"index": 0, "database": "shop_rescue_20261002_120000_3f9a", "source_database": "shop", "command": "delete", "collection": "users",
      "status": "ok", "n": 2, "duration_ms": 14},
-    {"index": 1, "database": "shop_rescue_20261002_120000", "source_database": "shop", "command": "update", "collection": "orders",
+    {"index": 1, "database": "shop_rescue_20261002_120000_3f9a", "source_database": "shop", "command": "update", "collection": "orders",
      "status": "ok", "n": 5, "modified": 5, "duration_ms": 9}
   ]
 }
@@ -812,7 +814,7 @@ Deletes are soft, lowering a protection waits for the delete grace period, and w
 `POST /api/v1/backups/{id}/cancel` and `POST /api/v1/restores/{id}/cancel` (operator scope) stop a running backup or restore, whether it was started through the API, the dashboard, MCP or the scheduler. They wait up to 5 seconds for the run to stop and answer `200 OK` with the final record (`"status": "cancelled"`); a run that takes longer to stop is answered with `202 Accepted` and its in-progress record (`progress.cancelling` is `true`): poll it until the status is `cancelled`. A run cancelled while it is still queued never starts its tool. `mongodump` or `mongorestore` is terminated with its process group (SIGTERM, then SIGKILL), so no tool process outlives the run.
 
 - A cancelled **backup** deletes its partial artifact (an S3 multipart upload is aborted, a local temporary file removed) and records neither size nor checksum.
-- A cancelled **safe-clone restore** drops the partially restored `<db>_rescue_<timestamp>` database; the message says so (or asks to drop it by hand if that failed).
+- A cancelled **safe-clone restore** drops the partially restored `<db>_rescue_<timestamp>_<id>` database; the message says so (or asks to drop it by hand if that failed).
 - A cancelled **in-place restore** cannot be undone: the target may be left **partially restored**. The record's `warning` and `error_message` say so loudly. Cancelling one needs `admin`, like starting it.
 - A run cancelled before its tool started leaves the target untouched.
 

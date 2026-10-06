@@ -37,7 +37,7 @@
 
 MongoRescue runs `mongodump` on a schedule, streams the archive to local disk or any S3-compatible bucket, and brings it back with `mongorestore` when you need it. The dump is piped straight through, so memory use stays flat no matter how large the database is.
 
-Restores go into a separate copy of the database (`<db>_rescue_<timestamp>`) unless you explicitly ask to overwrite the original. Nothing touches production by accident.
+Restores go into a separate copy of the database (`<db>_rescue_<timestamp>_<id>`) unless you explicitly ask to overwrite the original. Nothing touches production by accident.
 
 ## Features
 
@@ -155,7 +155,7 @@ claude mcp add --transport http mongorescue http://127.0.0.1:8080/mcp \
   --header "Authorization: Bearer $MONGORESCUE_MCP_API_KEY"
 ```
 
-or, for clients that start a local command (Claude Desktop), `mongorescue mcp` bridges stdio to a running instance, with the key in `MONGORESCUE_MCP_API_KEY`. Assistants can never delete anything or restore in place: restores through MCP always go into a new `<db>_rescue_<timestamp>` database, and every call is audited and rate limited. Configurations for Claude Desktop, Claude Code, VS Code and Cursor, the tool list and the security model are in [docs/mcp.md](docs/mcp.md).
+or, for clients that start a local command (Claude Desktop), `mongorescue mcp` bridges stdio to a running instance, with the key in `MONGORESCUE_MCP_API_KEY`. Assistants can never delete anything or restore in place: restores through MCP always go into a new `<db>_rescue_<timestamp>_<id>` database, and every call is audited and rate limited. Configurations for Claude Desktop, Claude Code, VS Code and Cursor, the tool list and the security model are in [docs/mcp.md](docs/mcp.md).
 
 ## Configuration
 
@@ -208,7 +208,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 
 ## Known limitations
 
-- **Point-in-time recovery is experimental.** For replica sets, a PITR stream collects the oplog and base backups of the whole instance, and a point-in-time restore (admin only) restores the instance or some of its databases to a moment in a window into new `<db>_rescue_<timestamp>` databases ([docs/pitr.md](docs/pitr.md)). In-place point-in-time restores and sharded clusters are not supported. Users and roles can be included per job (`include_users_and_roles`).
+- **Point-in-time recovery is experimental.** For replica sets, a PITR stream collects the oplog and base backups of the whole instance, and a point-in-time restore (admin only) restores the instance or some of its databases to a moment in a window into new `<db>_rescue_<timestamp>_<id>` databases ([docs/pitr.md](docs/pitr.md)). In-place point-in-time restores and sharded clusters are not supported. Users and roles can be included per job (`include_users_and_roles`).
 - **Single instance.** Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance refuses to start. MongoRescue backs up its own metadata on a schedule and the recovery kit holds what a rebuild needs. High availability is planned (#64, #65); until then the instance is a single point of failure, and nothing alerts when it is down unless you monitor it from outside (#97).
 - **Delete protection stops at MongoRescue.** Deletes are soft (a grace period of 7 days by default, with undo), lowered protections wait for the grace period, and an optional two-person rule needs a second administrator ([docs/security.md](docs/security.md)). Whoever holds the bucket's credentials can still delete archives directly: use least-privilege credentials without `s3:DeleteObject`; S3 Object Lock is planned (#59).
 - **Roles are global.** Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but no per-connection access yet: an operator may back up and restore every connection (#98). Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
