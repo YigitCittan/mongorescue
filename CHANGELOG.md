@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-06
+
 ### Added
 - S3 multipart part size per storage target (#118): `s3.part_size_mb`, 5 to 512 MiB (default 16, about 156 GiB per archive; 64 MiB allows about 625 GiB). S3 allows 10,000 parts, so the part size caps one archive, and each running upload buffers part size × 2. The dashboard's storage form shows the largest archive and the upload memory next to the field, in all eight languages. Changing the part size of a target that holds backups needs no connection test. An upload that runs out of parts names the setting in its error. See [docs/production.md](docs/production.md#s3-multipart-limits).
 - Archive size warnings (#118): before a backup to an S3 target, the database's expected archive (the size of its last completed backup on the connection, or the server's `dbStats` data size) is compared with the target's largest archive; above 80% the backup carries a warning (`warnings`, shown in the backups list and the run log) and it is logged, and the backup still runs. Job database previews take `storage_target_id` and show the same warning.
