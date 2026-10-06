@@ -10,6 +10,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
 
@@ -198,6 +199,11 @@ func (s *SQLiteStore) openConnection(c *models.Connection) error {
 		if *f.value, err = s.open(secretbox.At(tableConnections, c.ID, f.field), *f.value); err != nil {
 			return err
 		}
+	}
+	// A connection with TLS material always asks for TLS in its URI (see
+	// mongotools.EnsureTLS), also when it was saved before that was enforced.
+	if !c.IsZero() {
+		uri = mongotools.EnsureTLS(uri)
 	}
 	c.URI = uri
 	return nil

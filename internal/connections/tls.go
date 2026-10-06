@@ -50,8 +50,23 @@ var uriTLSOptions = []string{
 	"sslAllowInvalidCertificates", "sslAllowInvalidHostnames",
 }
 
-// resolve applies in to stored and returns the validated result for uri.
-func (in TLSInput) resolve(stored models.ConnectionTLS, uri string) (models.ConnectionTLS, error) {
+// resolve applies in to stored and returns the validated result for uri, and uri
+// itself, with tls=true added when there is TLS material (mongotools.EnsureTLS):
+// a client that is built from the URI alone, without the material, then still
+// uses TLS and fails verification instead of connecting in plain text.
+func (in TLSInput) resolve(stored models.ConnectionTLS, uri string) (models.ConnectionTLS, string, error) {
+	out, err := in.apply(stored, uri)
+	if err != nil {
+		return out, uri, err
+	}
+	if !out.IsZero() {
+		uri = mongotools.EnsureTLS(uri)
+	}
+	return out, uri, nil
+}
+
+// apply applies in to stored and validates the result for uri.
+func (in TLSInput) apply(stored models.ConnectionTLS, uri string) (models.ConnectionTLS, error) {
 	out := stored
 	setPEM(&out.CAPEM, in.CAPEM)
 	setPEM(&out.ClientCertPEM, in.ClientCertPEM)

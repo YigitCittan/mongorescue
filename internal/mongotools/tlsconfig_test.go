@@ -185,3 +185,25 @@ func TestCleanupStaleRemovesTLSDirectories(t *testing.T) {
 		t.Fatalf("fresh TLS directory removed: %v", err)
 	}
 }
+
+func TestEnsureTLS(t *testing.T) {
+	for in, want := range map[string]string{
+		"mongodb://h":                      "mongodb://h/?tls=true",
+		"mongodb://h/":                     "mongodb://h/?tls=true",
+		"mongodb://h/db":                   "mongodb://h/db?tls=true",
+		"mongodb://h/?":                    "mongodb://h/?tls=true",
+		"mongodb://h/?replicaSet=rs0":      "mongodb://h/?replicaSet=rs0&tls=true",
+		"mongodb://h/?replicaSet=rs0&":     "mongodb://h/?replicaSet=rs0&tls=true",
+		"mongodb://h/?tls=true":            "mongodb://h/?tls=true",
+		"mongodb://h/?TLS=TRUE":            "mongodb://h/?TLS=TRUE",
+		"mongodb://h/?ssl=true":            "mongodb://h/?ssl=true",
+		"mongodb+srv://c.example.net/?w=1": "mongodb+srv://c.example.net/?w=1&tls=true",
+	} {
+		if got := mongotools.EnsureTLS(in); got != want {
+			t.Errorf("EnsureTLS(%q) = %q, want %q", in, got, want)
+		}
+		if !mongotools.RequiresTLS(mongotools.EnsureTLS(in)) {
+			t.Errorf("RequiresTLS(EnsureTLS(%q)) = false", in)
+		}
+	}
+}

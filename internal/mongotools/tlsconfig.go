@@ -133,3 +133,40 @@ func writePrivate(path, data string) error {
 	}
 	return nil
 }
+
+// RequiresTLS reports whether uri asks for TLS: tls=true or ssl=true (any case).
+func RequiresTLS(uri string) bool {
+	for _, name := range []string{"tls", "ssl"} {
+		if v, ok := OptionValue(uri, name); ok && strings.EqualFold(v, "true") {
+			return true
+		}
+	}
+	return false
+}
+
+// EnsureTLS returns uri with tls=true appended unless it already asks for TLS
+// (RequiresTLS). A connection with TLS material stores such a URI, so that a
+// client built from the URI alone uses TLS too, and fails against a server whose
+// certificate the system roots do not trust instead of connecting in plain text.
+// uri must not turn TLS off (tls=false or ssl=false): callers refuse that first.
+func EnsureTLS(uri string) string {
+	if RequiresTLS(uri) {
+		return uri
+	}
+	schemeEnd := strings.Index(uri, "://")
+	if schemeEnd == -1 {
+		return uri
+	}
+	rest := uri[schemeEnd+3:]
+	switch {
+	case strings.Contains(rest, "?"):
+		if strings.HasSuffix(uri, "?") || strings.HasSuffix(uri, "&") {
+			return uri + "tls=true"
+		}
+		return uri + "&tls=true"
+	case strings.Contains(rest, "/"):
+		return uri + "?tls=true"
+	default:
+		return uri + "/?tls=true"
+	}
+}

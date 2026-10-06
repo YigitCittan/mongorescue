@@ -274,7 +274,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	if err := checkURI(in.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, err := in.resolve(models.ConnectionTLS{}, in.URI)
+	tlsMaterial, uri, err := in.resolve(models.ConnectionTLS{}, in.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +283,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 		return nil, err
 	}
 	now := s.now().UTC()
-	c := &models.Connection{ID: id, Name: in.Name, URI: in.URI, Description: in.Description, CreatedAt: now, UpdatedAt: now,
+	c := &models.Connection{ID: id, Name: in.Name, URI: uri, Description: in.Description, CreatedAt: now, UpdatedAt: now,
 		ConnectionTLS: tlsMaterial}
 	in.apply(c)
 	if err := s.repo.SaveConnection(ctx, c); err != nil {
@@ -318,7 +318,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	if err = checkURI(uri, existing.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, err := in.resolve(existing.ConnectionTLS, uri)
+	tlsMaterial, uri, err := in.resolve(existing.ConnectionTLS, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +452,7 @@ func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.
 	if err := checkURI(uri, stored); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, err := tlsIn.resolve(storedTLS, uri)
+	tlsMaterial, uri, err := tlsIn.resolve(storedTLS, uri)
 	if err != nil {
 		return TestResult{}, err
 	}

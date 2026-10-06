@@ -8,6 +8,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotls/mongotlstest"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 )
 
 func TestClientOptionsUseTLSMaterialFromContext(t *testing.T) {
@@ -46,5 +47,20 @@ func TestClientOptionsFailClosedOnBadMaterial(t *testing.T) {
 	}
 	if opts.TLSConfig.VerifyConnection(tls.ConnectionState{}) == nil {
 		t.Fatal("handshake check passed")
+	}
+}
+
+// TestURIWithoutMaterialStillUsesTLS checks the fail-closed guarantee: the URI a
+// connection with TLS material stores asks for TLS, so a client built without the
+// material (a path that lost the context) uses TLS with the system roots and can
+// never connect in plain text.
+func TestURIWithoutMaterialStillUsesTLS(t *testing.T) {
+	uri := mongotools.EnsureTLS("mongodb://db.example:27017/?replicaSet=rs0")
+	opts := clientOptions(context.Background(), uri)
+	if opts.TLSConfig == nil {
+		t.Fatalf("a client for %s without TLS material does not use TLS", uri)
+	}
+	if opts.TLSConfig.InsecureSkipVerify || opts.TLSConfig.RootCAs != nil {
+		t.Fatalf("context-less TLS config is not the system roots with verification: %+v", opts.TLSConfig)
 	}
 }

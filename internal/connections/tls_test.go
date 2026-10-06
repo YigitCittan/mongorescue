@@ -226,3 +226,33 @@ func TestTLSChangeClearsLastTest(t *testing.T) {
 		t.Fatalf("last test kept after a TLS change: %+v", c)
 	}
 }
+
+// TestTLSMaterialForcesTLSInTheURI saves a connection with only a CA and a URI
+// that does not ask for TLS: the stored URI gets tls=true, so a client built
+// from it alone never connects in plain text.
+func TestTLSMaterialForcesTLSInTheURI(t *testing.T) {
+	svc := connections.NewService(storetest.New(t), &tlsProber{})
+	ctx := context.Background()
+	ca, _, _, _ := x509Material(t)
+	c, err := svc.Create(ctx, connections.Input{Name: "ca-only", URI: "mongodb://u:pw@db.internal:27017/?replicaSet=rs0",
+		TLSInput: connections.TLSInput{CAPEM: &ca}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := svc.Resolve(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.URI != "mongodb://u:pw@db.internal:27017/?replicaSet=rs0&tls=true" || !strings.Contains(c.URI, "tls=true") {
+		t.Fatalf("stored URI = %q, redacted %q; want tls=true", full.URI, c.URI)
+	}
+	// The redacted form still keeps the stored password on update.
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "renamed", URI: c.URI}); err != nil {
+		t.Fatal(err)
+	}
+	// Without TLS material the URI is left alone.
+	plain, err := svc.Create(ctx, connections.Input{Name: "plain", URI: "mongodb://h:27017/"})
+	if err != nil || strings.Contains(plain.URI, "tls") {
+		t.Fatalf("plain connection = %+v, %v", plain, err)
+	}
+}

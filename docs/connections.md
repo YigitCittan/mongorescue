@@ -39,7 +39,7 @@ Rules:
 - **An omitted field keeps the stored value, and `""` removes it.** Send `******` back for the key or password to keep it, like the URI's password.
 - **The material is checked on save.** The CA must parse, the certificate and key must match, and an encrypted key must open with its password. Errors name the field and never quote its value.
 - **Legacy encrypted PEM keys are refused** (`Proc-Type: 4,ENCRYPTED`). Convert them: `openssl pkcs8 -topk8 -v2 aes256 -in old.key -out new.key`.
-- **TLS goes in the fields or in the URI, not both.** A URI with `tlsCAFile`, `tlsCertificateKeyFile`, `tlsCertificateKeyFilePassword`, `tlsInsecure`, `tlsAllowInvalidCertificates`, `tlsAllowInvalidHostnames` or their `ssl*` forms is refused when TLS fields are set, and so is `tls=false`. Setting any TLS field turns TLS on.
+- **TLS goes in the fields or in the URI, not both.** A URI with `tlsCAFile`, `tlsCertificateKeyFile`, `tlsCertificateKeyFilePassword`, `tlsInsecure`, `tlsAllowInvalidCertificates`, `tlsAllowInvalidHostnames` or their `ssl*` forms is refused when TLS fields are set, and so is `tls=false`. Setting any TLS field adds `tls=true` to the stored connection string, so a client that is built from the connection string alone still uses TLS, verified against the system roots, and never falls back to plain text.
 - **Changing the TLS material clears the last connection test.**
 
 How the material is used:

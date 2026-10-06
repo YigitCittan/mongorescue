@@ -145,3 +145,21 @@ func TestConnectionTLSSecretsAreBoundToTheirConnection(t *testing.T) {
 		}
 	}
 }
+
+// TestConnectionTLSForcesTLSOnLoad loads a connection with TLS material whose
+// stored URI does not ask for TLS (saved before that was enforced): it comes back
+// with tls=true.
+func TestConnectionTLSForcesTLSOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), dbFile)
+	s := storetest.OpenWithBox(t, path, testBox)
+	ctx := context.Background()
+	c := tlsConnection("conn_a")
+	c.URI = "mongodb://h:27017/?authMechanism=MONGODB-X509"
+	if err := s.SaveConnection(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetConnection(ctx, "conn_a")
+	if err != nil || got.URI != "mongodb://h:27017/?authMechanism=MONGODB-X509&tls=true" {
+		t.Fatalf("loaded URI = %q, %v", got.URI, err)
+	}
+}
