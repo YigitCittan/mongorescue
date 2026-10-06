@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/postrestore"
@@ -150,6 +151,9 @@ type Input struct {
 	// into the connection runs against its clones before it completes (an empty
 	// list removes them); omitted keeps them. See internal/postrestore.
 	PostRestoreCommands *[]models.PostRestoreCommand `json:"post_restore_commands,omitempty"`
+	// TLSInput holds the TLS material (a custom CA, an x509 client certificate);
+	// omitted fields keep the stored values.
+	TLSInput
 }
 
 // CommandChecker is implemented by Probers that can check that a post-restore
@@ -270,23 +274,30 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	if err := checkURI(in.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	tlsMaterial, err := in.resolve(models.ConnectionTLS{}, in.URI)
+	if err != nil {
+		return nil, err
+	}
 	id, err := NewID()
 	if err != nil {
 		return nil, err
 	}
 	now := s.now().UTC()
-	c := &models.Connection{ID: id, Name: in.Name, URI: in.URI, Description: in.Description, CreatedAt: now, UpdatedAt: now}
+	c := &models.Connection{ID: id, Name: in.Name, URI: in.URI, Description: in.Description, CreatedAt: now, UpdatedAt: now,
+		ConnectionTLS: tlsMaterial}
 	in.apply(c)
 	if err := s.repo.SaveConnection(ctx, c); err != nil {
 		return nil, err
 	}
 	s.logger.Info("connection created", slog.String("connection_id", c.ID), logsafe.Attr("uri", redact.URI(c.URI)))
+	s.warnTLS(c.ID, c.ConnectionTLS)
 	return c.Redacted(), nil
 }
 
 // Update replaces the editable fields of connection id. A URI equal to the redacted
 // form of the stored URI keeps the stored credentials; any other masked URI is
-// rejected with ErrMaskedURI. Changing the URI clears the last test result. A new URI
+// rejected with ErrMaskedURI. TLS fields follow TLSInput. Changing the URI or the
+// TLS material clears the last test result. A new URI
 // must pass mongouri.Validate; the stored one (kept or re-entered unchanged) only
 // mongouri.ValidateStored, so editing the name of an older connection keeps working.
 func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Connection, error) {
@@ -304,18 +315,27 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	if err != nil {
 		return nil, err
 	}
-	if err := checkURI(uri, existing.URI); err != nil {
+	if err = checkURI(uri, existing.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	tlsMaterial, err := in.resolve(existing.ConnectionTLS, uri)
+	if err != nil {
+		return nil, err
+	}
 	updated := *existing
-	if uri != existing.URI {
+	tlsChanged := tlsMaterial != existing.ConnectionTLS
+	if uri != existing.URI || tlsChanged {
 		updated.LastTestAt, updated.LastTestOK, updated.LastTestError, updated.ServerVersion = nil, false, "", ""
 	}
 	updated.Name, updated.URI, updated.Description = in.Name, uri, in.Description
+	updated.ConnectionTLS = tlsMaterial
 	in.apply(&updated)
 	updated.UpdatedAt = s.now().UTC()
 	if err := s.repo.SaveConnection(ctx, &updated); err != nil {
 		return nil, err
+	}
+	if tlsChanged {
+		s.warnTLS(updated.ID, updated.ConnectionTLS)
 	}
 	return updated.Redacted(), nil
 }
@@ -372,7 +392,7 @@ func (s *Service) Test(ctx context.Context, id string) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	res := s.probe(ctx, c.URI, c.ReadPref())
+	res := s.probe(mongotls.NewContext(ctx, &c.ConnectionTLS), c.URI, c.ReadPref())
 
 	now := s.now().UTC()
 	c.LastTestAt, c.LastTestOK, c.LastTestError = &now, res.OK, res.Error
@@ -398,10 +418,18 @@ func (s *Service) TestURI(ctx context.Context, uri, id string) (TestResult, erro
 // TestURIWith is TestURI that also reports the member a backup with read
 // preference rp (validated first) would read from.
 func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.ReadPreference) (TestResult, error) {
+	return s.TestURIWithTLS(ctx, uri, id, rp, TLSInput{})
+}
+
+// TestURIWithTLS is TestURIWith with the TLS material of the form, applied to the
+// stored material of connection id like Update does (omitted fields and masked
+// secrets keep the stored values).
+func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.ReadPreference, tlsIn TLSInput) (TestResult, error) {
 	if err := rp.Validate(); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	stored := ""
+	var storedTLS models.ConnectionTLS
 	if id != "" && strings.Contains(uri, redact.Mask) {
 		existing, err := s.repo.GetConnection(ctx, id)
 		if err != nil {
@@ -410,12 +438,12 @@ func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.Rea
 		if uri, err = KeepSecret(uri, existing.URI); err != nil {
 			return TestResult{}, err
 		}
-		stored = existing.URI
+		stored, storedTLS = existing.URI, existing.ConnectionTLS
 	} else if id != "" {
 		// The unchanged URI of a stored connection (one without a password) is not
 		// new input either; a lookup failure just means the strict rules apply.
 		if existing, err := s.repo.GetConnection(ctx, id); err == nil {
-			stored = existing.URI
+			stored, storedTLS = existing.URI, existing.ConnectionTLS
 		}
 	}
 	if strings.Contains(uri, redact.Mask) {
@@ -424,7 +452,11 @@ func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.Rea
 	if err := checkURI(uri, stored); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	return s.probe(ctx, uri, rp), nil
+	tlsMaterial, err := tlsIn.resolve(storedTLS, uri)
+	if err != nil {
+		return TestResult{}, err
+	}
+	return s.probe(mongotls.NewContext(ctx, &tlsMaterial), uri, rp), nil
 }
 
 // Databases lists the databases of connection id, hiding admin, config and local
@@ -437,7 +469,7 @@ func (s *Service) Databases(ctx context.Context, id string, includeSystem bool) 
 	if s.prober == nil {
 		return nil, ErrUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
+	ctx, cancel := context.WithTimeout(mongotls.NewContext(ctx, &c.ConnectionTLS), s.testTimeout)
 	defer cancel()
 	dbs, err := s.prober.ListDatabases(ctx, c.URI)
 	if err != nil {
@@ -465,7 +497,7 @@ func (s *Service) Collections(ctx context.Context, id, database string) ([]Colle
 	if s.prober == nil {
 		return nil, ErrUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
+	ctx, cancel := context.WithTimeout(mongotls.NewContext(ctx, &c.ConnectionTLS), s.testTimeout)
 	defer cancel()
 	cols, err := s.prober.ListCollections(ctx, c.URI, database)
 	if err != nil {

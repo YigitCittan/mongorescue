@@ -68,24 +68,35 @@ func WithReadPreference(uri, mode string, tagSets []map[string]string) string {
 // HasOption reports whether uri sets the connection string option name (matched
 // case-insensitively, also percent-encoded).
 func HasOption(uri, name string) bool {
+	_, ok := OptionValue(uri, name)
+	return ok
+}
+
+// OptionValue returns the value of the first connection string option name of uri
+// (matched case-insensitively, also percent-encoded), unescaped when it can be,
+// and whether the option is set.
+func OptionValue(uri, name string) (string, bool) {
 	rest := uri
 	if i := strings.Index(uri, "://"); i != -1 {
 		rest = uri[i+3:]
 	}
 	i := strings.IndexByte(rest, '?')
 	if i == -1 {
-		return false
+		return "", false
 	}
 	for _, opt := range strings.Split(rest[i+1:], "&") {
-		key, _, _ := strings.Cut(opt, "=")
+		key, value, _ := strings.Cut(opt, "=")
 		if unescaped, err := url.QueryUnescape(key); err == nil {
 			key = unescaped
 		}
 		if strings.EqualFold(key, name) {
-			return true
+			if unescaped, err := url.QueryUnescape(value); err == nil {
+				value = unescaped
+			}
+			return value, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // encodeTagSet renders a tag set as "k1:v1,k2:v2", sorted by name and
