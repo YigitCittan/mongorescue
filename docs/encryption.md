@@ -131,7 +131,7 @@ Verification reads the artifact one extra time, so it is controlled by a policy:
 
 **In-place restores are always verified**, whatever the policy or the request says: a damaged artifact or a wrong key is found before `mongorestore` touches an existing database. The artifact is read twice (verification, then the restore), never buffered. Only a backup record without a checksum (from an older release) skips the pass; the restore record then carries a warning. An explicit `verify: true` or the `always` policy still refuses such a record.
 
-The policy therefore decides for safe clones only: `auto` and `never` stream straight into the new `<db>_rescue_<timestamp>` database, `always` (or `verify: true`) verifies first. A clone restore is refused before anything is written if that database already exists (another restore of the same database started within the same second).
+The policy therefore decides for safe clones only: `auto` and `never` stream straight into the new `<db>_rescue_<timestamp>_<id>` database, `always` (or `verify: true`) verifies first. A clone restore is refused before anything is written if that database already exists.
 
 A clone restore that fails once `mongorestore` has started (a corrupted object, a wrong key discovered late, a checksum mismatch, a `mongorestore` error, a cancellation) drops the partially restored clone, and the record says so. The exception is a restore with documents that failed to insert: that clone is kept for inspection.
 

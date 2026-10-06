@@ -150,7 +150,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     REQ["Restore request"] --> INP{"in place?"}
-    INP -- "no (default)" --> T1["target: #lt;db#gt;_rescue_#lt;timestamp#gt;"]
+    INP -- "no (default)" --> T1["target: #lt;db#gt;_rescue_#lt;timestamp#gt;_#lt;id#gt;"]
     INP -- yes --> CONF{"confirm_in_place?"}
     CONF -- no --> REJ["rejected:<br/>ErrInPlaceNotConfirmed"]
     CONF -- yes --> T2["target: target_database<br/>or the source database"]
@@ -166,7 +166,7 @@ flowchart TD
     MR --> REC["save record,<br/>publish restore event"]
 ```
 
-1. The target namespace is resolved: `<db>_rescue_<timestamp>` by default (an omitted `safe_clone` means true). An in-place restore into the source database or an explicit `target_database` requires `safe_clone: false` and `confirm_in_place: true`; otherwise the request is rejected with `ErrInPlaceNotConfirmed` (HTTP 400). The source part of a clone name is shortened so that it fits MongoDB's 63-byte limit. A client-supplied target database and selected collections must be valid MongoDB names (`models.ErrInvalidNamespace`, HTTP 400); the backup's own database name is never refused.
+1. The target namespace is resolved: `<db>_rescue_<timestamp>_<id>` by default (an omitted `safe_clone` means true). An in-place restore into the source database or an explicit `target_database` requires `safe_clone: false` and `confirm_in_place: true`; otherwise the request is rejected with `ErrInPlaceNotConfirmed` (HTTP 400). The source part of a clone name is shortened so that it fits MongoDB's 63-byte limit. A client-supplied target database and selected collections must be valid MongoDB names (`models.ErrInvalidNamespace`, HTTP 400); the backup's own database name is never refused.
 2. If the verify policy applies (`always`, or `auto` for in-place restores), the artifact is streamed once into `io.Discard` while its SHA-256 is compared with the record and, for encrypted backups, the age stream is fully authenticated. On any failure the restore stops before `mongorestore` starts.
 3. The artifact is streamed again, decrypted if needed, into `mongorestore`'s stdin, and hashed on the way. Namespace rewriting (`--nsFrom`/`--nsTo`) implements safe clones; `--nsInclude` implements collection-level restores. `--bypassDocumentValidation` is added when the user holds that privilege on the target (checked through `mongoconn`).
 4. After `mongorestore` exits, the unread rest of the artifact is hashed and the SHA-256 compared with the record: a mismatch fails the restore (*backup checksum mismatch*), and so does a `mongorestore` summary with documents that failed to restore (`ErrDocumentsFailed`), although `mongorestore` exits 0 then.
