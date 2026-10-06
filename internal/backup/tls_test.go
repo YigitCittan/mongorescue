@@ -1,9 +1,11 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -115,5 +117,38 @@ func TestBackupTLSReachesTheDriver(t *testing.T) {
 	}
 	if r := (models.BackupOptions{MongoTLS: material}).Redacted(); strings.Contains(r.MongoTLS.ClientKeyPEM, "key-material") {
 		t.Fatal("redacted options leak the client key")
+	}
+}
+
+// TestBackupRunLogHoldsNoTLSSecret runs a backup with TLS material that succeeds
+// and one that fails, and checks that the engine's log holds neither the client
+// key nor its password.
+func TestBackupRunLogHoldsNoTLSSecret(t *testing.T) {
+	const password = "log-must-not-see-5b9e"
+	for _, outcome := range []string{"success", "error"} {
+		t.Run(outcome, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			var seen []string
+			e := NewEngine(storage.NewMockStorage(), "", WithLogger(logger), WithConfigDir(t.TempDir()),
+				WithRunner(tlsFilesRunner(t, outcome, &seen)))
+			material := tlsBackupMaterial()
+			material.ClientKeyPassword = password
+			rec, err := e.Run(context.Background(), models.BackupOptions{Database: "app",
+				MongoURI: "mongodb://h/?tls=true&authMechanism=MONGODB-X509", MongoTLS: material})
+			out := buf.String()
+			if err != nil {
+				out += err.Error()
+			}
+			if rec != nil {
+				out += rec.ErrorMessage
+			}
+			if strings.Contains(out, password) || strings.Contains(out, "key-material") {
+				t.Fatalf("log or error holds a TLS secret:\n%s", out)
+			}
+			if !strings.Contains(buf.String(), "mongodb streaming backup") {
+				t.Fatalf("no backup log captured:\n%s", buf.String())
+			}
+		})
 	}
 }

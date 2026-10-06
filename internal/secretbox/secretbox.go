@@ -53,6 +53,10 @@ var (
 	// ErrMalformed is returned when a value is not a well-formed sealed value, for
 	// example plaintext or a value in the wrong format.
 	ErrMalformed = errors.New("secretbox: malformed sealed value")
+	// ErrUnsupportedVersion is returned (wrapping ErrMalformed) for a sealed value
+	// of an unknown format version. It carries nothing from the value: errors of
+	// Open reach logs, and no byte of a stored secret may.
+	ErrUnsupportedVersion = fmt.Errorf("%w: unsupported format version", ErrMalformed)
 	// ErrInvalidBinding is returned for a Binding with an empty component.
 	ErrInvalidBinding = errors.New("secretbox: binding needs a table, record ID and field")
 	// ErrDecrypt is returned when authentication fails: the value was tampered with or
@@ -235,7 +239,7 @@ func (b *Box) open(payload string, version byte, aad []byte) (string, error) {
 		return "", ErrMalformed
 	}
 	if raw[0] != version {
-		return "", fmt.Errorf("%w: unsupported version %d", ErrMalformed, raw[0])
+		return "", ErrUnsupportedVersion
 	}
 	plain, err := b.aead.Open(nil, raw[1:1+nonceSize], raw[1+nonceSize:], aad)
 	if err != nil {

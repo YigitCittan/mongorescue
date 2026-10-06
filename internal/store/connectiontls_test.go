@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -161,5 +162,40 @@ func TestConnectionTLSForcesTLSOnLoad(t *testing.T) {
 	got, err := s.GetConnection(ctx, "conn_a")
 	if err != nil || got.URI != "mongodb://h:27017/?authMechanism=MONGODB-X509&tls=true" {
 		t.Fatalf("loaded URI = %q, %v", got.URI, err)
+	}
+}
+
+// TestUnreadableTLSSecretErrorHoldsNoValue damages the sealed key password of a
+// connection (an unknown format version): loading it fails with an error that
+// names the location only, never any part of the stored value, since such errors
+// are logged by the scheduler and the bulk operations.
+func TestUnreadableTLSSecretErrorHoldsNoValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), dbFile)
+	s := storetest.OpenWithBox(t, path, testBox)
+	ctx := context.Background()
+	if err := s.SaveConnection(ctx, tlsConnection("conn_a")); err != nil {
+		t.Fatal(err)
+	}
+	var sealed string
+	if err := rawDB(t, path).QueryRow(`SELECT json_extract(data, '$.tls_client_key_password') FROM connections WHERE id = 'conn_a'`).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(sealed, secretbox.Prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] = 0xd7
+	damaged := secretbox.Prefix + base64.StdEncoding.EncodeToString(raw)
+	if _, err = rawDB(t, path).Exec(`UPDATE connections SET data = json_set(data, '$.tls_client_key_password', ?) WHERE id = 'conn_a'`, damaged); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.GetConnection(ctx, "conn_a")
+	if err == nil {
+		t.Fatal("a damaged key password opened")
+	}
+	msg := err.Error()
+	body := damaged[len(secretbox.Prefix):]
+	if strings.Contains(msg, "215") || strings.Contains(msg, body[:12]) || strings.Contains(msg, tlsPasswordMarker) {
+		t.Fatalf("error %q carries data from the stored value", msg)
 	}
 }
