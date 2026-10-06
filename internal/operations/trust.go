@@ -72,7 +72,8 @@ func (s *Service) VerifyBackup(ctx context.Context, id string) (*models.BackupRe
 // PinBackup puts backup id on legal hold with an optional note: retention never
 // deletes it, and deleting it needs UnpinBackup first. Pinning a pinned backup
 // replaces its note. The pin records who set it (the session's user or the API
-// key). Expected failures: ErrNotFound and ErrInvalid.
+// key). On a storage target with legal_hold_on_pin the archive also gets an S3
+// legal hold. Expected failures: ErrNotFound, ErrInvalid and ErrLegalHold.
 func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.BackupRecord, error) {
 	note = strings.TrimSpace(note)
 	if utf8.RuneCountInString(note) > MaxPinNoteLength {
@@ -91,10 +92,15 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 		return nil, notFound(err, "backup not found")
 	}
 	if !rec.Status.Deleted() && s.legalHoldOnPin(ctx, rec) {
-		if err = s.setLegalHold(ctx, rec, true); err != nil {
+		err = s.setLegalHold(ctx, rec, true)
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			// No archive to hold (a failed backup, a missing archive): pin only.
+		case err != nil:
 			return nil, err
+		default:
+			hold = true
 		}
-		hold = true
 	}
 	pinned, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
 		if r.Status.Deleted() {
@@ -147,7 +153,8 @@ func (s *Service) setLegalHold(ctx context.Context, rec *models.BackupRecord, on
 // UnpinBackup lifts the pin of backup id, which makes it deletable again; it needs a
 // principal with the admin scope in ctx (auth.ErrForbidden otherwise). With the
 // two-person rule on, it waits for a second administrator (*ApprovalPendingError).
-// Expected failures: ErrNotFound, auth.ErrForbidden and ErrApprovalRequired.
+// An S3 legal hold set by the pin is lifted first. Expected failures: ErrNotFound,
+// auth.ErrForbidden, ErrApprovalRequired and ErrLegalHold.
 func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, fmt.Errorf("lifting a legal hold needs the admin role or an admin API key: %w", err)
