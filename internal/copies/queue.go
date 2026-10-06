@@ -334,7 +334,7 @@ func (s *Service) observe(err error) {
 
 // succeed records the stored object obj on cp, checked against sha.
 func succeed(cp *models.BackupCopy, obj *models.StorageObject, at time.Time, sha string) {
-	cp.Status, cp.SHA256OK, cp.SHA256, cp.Error, cp.NextAttemptAt = models.CopyDone, true, sha, "", nil
+	cp.Status, cp.SHA256OK, cp.SHA256, cp.Error, cp.NextAttemptAt, cp.Written = models.CopyDone, true, sha, "", nil, false
 	cp.VerifiedAt, cp.Verification, cp.VerificationError = nil, "", ""
 	cp.CopiedAt = &at
 	cp.SetStorageObject(obj)
@@ -395,8 +395,7 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 		if copyErr == nil {
 			succeed(c, obj, at, cur.SHA256)
 		} else {
-			c.Status, c.SHA256OK = models.CopyFailed, false
-			c.Error = redact.Text(copyErr.Error())
+			c.RecordFailure(redact.Text(copyErr.Error()), obj)
 			c.NextAttemptAt = nil
 			if c.Attempts < s.cfg.MaxAttempts {
 				next := at.Add(s.backoff(c.Attempts))
@@ -410,7 +409,7 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 	case errors.Is(err, errSkip):
 		return nil
 	case errors.Is(err, errGone), errors.Is(err, store.ErrNotFound):
-		if copyErr == nil {
+		if copyErr == nil || obj != nil {
 			s.removeUntracked(ctx, rec.ID, targetID, key, obj)
 		}
 		return nil
@@ -513,6 +512,7 @@ func (s *Service) CopyAll(ctx context.Context, record *models.BackupRecord, mbps
 			continue
 		}
 		var lastErr error
+		var lastObj *models.StorageObject
 		for attempt := 1; attempt <= SyncAttempts; attempt++ {
 			cp.Attempts++
 			obj, err := s.copyOne(ctx, record, cp, mbps)
@@ -522,6 +522,9 @@ func (s *Service) CopyAll(ctx context.Context, record *models.BackupRecord, mbps
 				break
 			}
 			lastErr = err
+			if obj != nil {
+				lastObj = obj
+			}
 			if errors.Is(err, ErrChecksumMismatch) || ctx.Err() != nil || attempt == SyncAttempts {
 				break
 			}
@@ -531,8 +534,8 @@ func (s *Service) CopyAll(ctx context.Context, record *models.BackupRecord, mbps
 			}
 		}
 		if lastErr != nil {
-			cp.Status, cp.SHA256OK, cp.NextAttemptAt = models.CopyFailed, false, nil
-			cp.Error = redact.Text(lastErr.Error())
+			cp.RecordFailure(redact.Text(lastErr.Error()), lastObj)
+			cp.NextAttemptAt = nil
 			name := cp.TargetName
 			if name == "" {
 				name = cp.TargetID

@@ -9,11 +9,12 @@ import (
 
 // liveCopySQL matches a copy (c, a json_each row of data.copies) on storage target
 // ? whose object exists or is about to be written: a done or pending copy, or any
-// copy but a purged one that is still under its Object Lock (a failed copy wrote no
-// object, see copies.Copy).
+// copy but a purged one that is still under its Object Lock or left an object
+// behind (written); see models.BackupCopy.MayExist.
 const liveCopySQL = `json_extract(c.value, '$.target_id') = ? AND (
 		json_extract(c.value, '$.status') IN ('done', 'pending')
-		OR (json_extract(c.value, '$.status') != 'purged' AND json_extract(c.value, '$.retain_until') IS NOT NULL))`
+		OR (json_extract(c.value, '$.status') != 'purged' AND (json_extract(c.value, '$.retain_until') IS NOT NULL
+			OR json_extract(c.value, '$.written') = 1)))`
 
 // PendingCopyRecords returns the completed backups with a copy in the copy queue:
 // pending, or failed with a next attempt, oldest first. The queue decides from

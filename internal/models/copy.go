@@ -75,6 +75,10 @@ type BackupCopy struct {
 	RetainUntil    *time.Time     `json:"retain_until,omitempty"`
 	// Error is the redacted reason of the last failed attempt.
 	Error string `json:"error,omitempty"`
+	// Written reports that a failed attempt may have left an object on the copy
+	// target (it stored one without reading the whole archive): the copy keeps
+	// its target in use and the purge deletes it.
+	Written bool `json:"written,omitempty"`
 	// CopiedAt is when the copy was completed.
 	CopiedAt *time.Time `json:"copied_at,omitempty"`
 	// Attempts counts the attempts made so far.
@@ -98,9 +102,10 @@ func (c *BackupCopy) Healthy() bool {
 }
 
 // MayExist reports whether the object of c exists on its target or is about to be
-// written: a done or pending copy, or a copy that is not purged and still under its
-// Object Lock. A failed copy wrote no object (a mismatch fails the upload before it
-// completes). The store's in-use check of storage targets uses the same rule.
+// written: a done or pending copy, or a copy that is not purged and is still under
+// its Object Lock or left an object behind (Written). Any other failed copy wrote
+// no object (a mismatch fails the upload before it completes). The store's in-use
+// check of storage targets uses the same rule.
 func (c *BackupCopy) MayExist() bool {
 	switch c.Status {
 	case CopyDone, CopyPending:
@@ -108,7 +113,17 @@ func (c *BackupCopy) MayExist() bool {
 	case CopyPurged:
 		return false
 	default:
-		return c.RetainUntil != nil
+		return c.RetainUntil != nil || c.Written
+	}
+}
+
+// RecordFailure records a failed attempt with the redacted reason msg; obj is
+// what the copy target stored anyway (nil when it stored nothing).
+func (c *BackupCopy) RecordFailure(msg string, obj *StorageObject) {
+	c.Status, c.SHA256OK, c.Error = CopyFailed, false, msg
+	if obj != nil {
+		c.Written = true
+		c.SetStorageObject(obj)
 	}
 }
 

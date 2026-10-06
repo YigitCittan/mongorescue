@@ -68,7 +68,8 @@ func (e *Engine) deleteCopies(ctx context.Context, record *models.BackupRecord) 
 	defer cancel()
 	for i := range record.Copies {
 		cp := &record.Copies[i]
-		if cp.Status != models.CopyDone {
+		// A copy that was made, or a failed one that left an object behind.
+		if cp.Status == models.CopyPending || !cp.MayExist() {
 			continue
 		}
 		driver, err := e.storageFor(cleanupCtx, cp.TargetID)
