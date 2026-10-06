@@ -180,7 +180,7 @@ status=$(curl -s -o "$WORK/setup.json" -w '%{http_code}' -c "$JAR" -H 'Content-T
   -d "$(jq -n --arg c "$SETUP_CODE" --arg p "$ADMIN_PW" '{setup_code: $c, username: "admin", password: $p}')" "$BASE/api/v1/setup")
 [ "$status" = "201" ] || fail "setup returned $status: $(cat "$WORK/setup.json")"
 CSRF=$(jq -r '.data.csrf_token' "$WORK/setup.json")
-[ -n "$CSRF" ] && [ "$CSRF" != null ] || fail "setup response has no csrf_token"
+if [ -z "$CSRF" ] || [ "$CSRF" = null ]; then fail "setup response has no csrf_token"; fi
 log "signed in through the setup API"
 
 api() { # api METHOD PATH [BODY]: prints the body, fails on a non-2xx status
@@ -194,11 +194,11 @@ api() { # api METHOD PATH [BODY]: prints the body, fails on a non-2xx status
 
 URI="mongodb://root:$MONGO_PW@mongo.$NAMESPACE.svc.cluster.local:27017/?authSource=admin"
 CONN_ID=$(api POST /api/v1/connections "$(jq -n --arg u "$URI" '{name: "kind", uri: $u}')" | jq -r '.data.id')
-[ -n "$CONN_ID" ] && [ "$CONN_ID" != null ] || fail "connection not created"
+if [ -z "$CONN_ID" ] || [ "$CONN_ID" = null ]; then fail "connection not created"; fi
 log "connection $CONN_ID added"
 
 BACKUP_ID=$(api POST /api/v1/backups "$(jq -n --arg c "$CONN_ID" '{connection_id: $c, database: "shop"}')" | jq -r '.data.id')
-[ -n "$BACKUP_ID" ] && [ "$BACKUP_ID" != null ] || fail "backup not started"
+if [ -z "$BACKUP_ID" ] || [ "$BACKUP_ID" = null ]; then fail "backup not started"; fi
 log "backup $BACKUP_ID started"
 
 backup_status() {
