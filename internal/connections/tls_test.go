@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
@@ -309,5 +310,38 @@ func TestStoredTLSDoesNotFollowANewHost(t *testing.T) {
 	// Renaming on the same hosts keeps it without a new confirmation.
 	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "renamed", URI: elsewhere}); err != nil {
 		t.Fatalf("rename: %v", err)
+	}
+}
+
+// TestTLSFlagChangesAreAudited checks the audit annotations of changes of the
+// loosened TLS checks, and that unchanged flags add none.
+func TestTLSFlagChangesAreAudited(t *testing.T) {
+	svc := connections.NewService(storetest.New(t), &tlsProber{})
+	const uri = "mongodb://h/?tls=true"
+	ctx := auditlog.WithAnnotations(context.Background())
+	c, err := svc.Create(ctx, connections.Input{Name: "lab", URI: uri,
+		TLSInput: connections.TLSInput{Insecure: ptr(true), ConfirmInsecure: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := auditlog.Annotations(ctx); a["tls_insecure_from"] != "false" || a["tls_insecure_to"] != "true" || a["tls_allow_invalid_hostnames_to"] != "" {
+		t.Fatalf("create annotations = %v", a)
+	}
+	ctx = auditlog.WithAnnotations(context.Background())
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "lab", URI: uri,
+		TLSInput: connections.TLSInput{Insecure: ptr(false), AllowInvalidHostnames: ptr(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	a := auditlog.Annotations(ctx)
+	if a["tls_insecure_from"] != "true" || a["tls_insecure_to"] != "false" ||
+		a["tls_allow_invalid_hostnames_from"] != "false" || a["tls_allow_invalid_hostnames_to"] != "true" {
+		t.Fatalf("update annotations = %v", a)
+	}
+	ctx = auditlog.WithAnnotations(context.Background())
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "renamed", URI: uri}); err != nil {
+		t.Fatal(err)
+	}
+	if a = auditlog.Annotations(ctx); len(a) != 0 {
+		t.Fatalf("rename annotations = %v", a)
 	}
 }

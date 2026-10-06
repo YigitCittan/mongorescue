@@ -1,11 +1,14 @@
 package connections
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
@@ -169,6 +172,27 @@ func checkURITLS(uri string, t *models.ConnectionTLS) error {
 		}
 	}
 	return nil
+}
+
+// Audit log annotations of a change of the loosened TLS checks.
+const (
+	auditTLSInsecureFrom  = "tls_insecure_from"
+	auditTLSInsecureTo    = "tls_insecure_to"
+	auditTLSHostnamesFrom = "tls_allow_invalid_hostnames_from"
+	auditTLSHostnamesTo   = "tls_allow_invalid_hostnames_to"
+)
+
+// auditTLS records in the audit log of the request in ctx how the loosened TLS
+// checks changed from before to after (a new connection starts with neither).
+func auditTLS(ctx context.Context, before, after models.ConnectionTLS) {
+	if before.Insecure != after.Insecure {
+		auditlog.Annotate(ctx, auditTLSInsecureFrom, strconv.FormatBool(before.Insecure))
+		auditlog.Annotate(ctx, auditTLSInsecureTo, strconv.FormatBool(after.Insecure))
+	}
+	if before.AllowInvalidHostnames != after.AllowInvalidHostnames {
+		auditlog.Annotate(ctx, auditTLSHostnamesFrom, strconv.FormatBool(before.AllowInvalidHostnames))
+		auditlog.Annotate(ctx, auditTLSHostnamesTo, strconv.FormatBool(after.AllowInvalidHostnames))
+	}
 }
 
 // warnTLS logs the loosened certificate checks of connection id.

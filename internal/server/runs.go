@@ -42,10 +42,14 @@ func (s *Server) handleDropKeptClones(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rec)
 }
 
-// warnings returns the persistent warnings of svc and, from the restore records,
-// one per restore whose clones were kept after a failed post-restore command.
+// warnings returns the persistent warnings of svc, one about the connections whose
+// TLS checks are loosened, and, from the restore records, one per restore whose
+// clones were kept after a failed post-restore command.
 func (s *Server) warnings(ctx context.Context, svc *settings.Service) []settings.Warning {
 	out := svc.Warnings()
+	if w, ok := s.tlsWarning(ctx); ok {
+		out = append(out, w)
+	}
 	if s.ops == nil {
 		return out
 	}
@@ -167,4 +171,28 @@ func logFileName(id string) string {
 		clean = "run"
 	}
 	return clean + ".log"
+}
+
+// tlsWarning returns the settings.WarningConnectionTLSLoosened warning when any
+// connection has tls_insecure or tls_allow_invalid_hostnames on.
+func (s *Server) tlsWarning(ctx context.Context) (settings.Warning, bool) {
+	if s.connections == nil {
+		return settings.Warning{}, false
+	}
+	list, err := s.connections.List(ctx)
+	if err != nil {
+		s.logger.Warn("could not list the connections for the TLS warning", logsafe.Error(err))
+		return settings.Warning{}, false
+	}
+	var loose []settings.WarningConnection
+	for _, c := range list {
+		if c.Insecure || c.AllowInvalidHostnames {
+			loose = append(loose, settings.WarningConnection{ID: c.ID, Name: c.Name,
+				Insecure: c.Insecure, AllowInvalidHostnames: c.AllowInvalidHostnames})
+		}
+	}
+	if len(loose) == 0 {
+		return settings.Warning{}, false
+	}
+	return settings.ConnectionTLSLoosened(loose), true
 }

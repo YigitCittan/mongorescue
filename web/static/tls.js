@@ -20,6 +20,8 @@
 const TLS_TRANSLATIONS = {
   en: {
     tls: {
+      banner_title: "Connections without full TLS verification",
+      banner_desc: "These connections do not verify the server certificate, or its hostname, and can be intercepted. Fix the certificates and turn the options off in the connection form.",
       section: "TLS / client certificate",
       intro: "Optional. For servers with a private certificate authority or x509 authentication. Leave empty to use the connection string alone; Atlas and public CAs need nothing here.",
       ca: "CA certificate (PEM)",
@@ -48,6 +50,8 @@ const TLS_TRANSLATIONS = {
   },
   tr: {
     tls: {
+      banner_title: "Tam TLS doğrulaması olmayan bağlantılar",
+      banner_desc: "Bu bağlantılar sunucu sertifikasını veya ana bilgisayar adını doğrulamıyor ve ele geçirilebilir. Sertifikaları düzeltip bağlantı formunda bu seçenekleri kapatın.",
       section: "TLS / istemci sertifikası",
       intro: "İsteğe bağlı. Özel bir sertifika yetkilisi veya x509 kimlik doğrulaması kullanan sunucular için. Yalnızca bağlantı dizesini kullanmak için boş bırakın; Atlas ve genel CA'lar için burada bir şey gerekmez.",
       ca: "CA sertifikası (PEM)",
@@ -76,6 +80,8 @@ const TLS_TRANSLATIONS = {
   },
   de: {
     tls: {
+      banner_title: "Verbindungen ohne vollständige TLS-Prüfung",
+      banner_desc: "Diese Verbindungen prüfen das Serverzertifikat oder seinen Hostnamen nicht und können abgefangen werden. Korrigieren Sie die Zertifikate und schalten Sie die Optionen im Verbindungsformular ab.",
       section: "TLS / Client-Zertifikat",
       intro: "Optional. Für Server mit einer eigenen Zertifizierungsstelle oder x509-Authentifizierung. Leer lassen, um nur den Connection String zu verwenden; Atlas und öffentliche CAs brauchen hier nichts.",
       ca: "CA-Zertifikat (PEM)",
@@ -104,6 +110,8 @@ const TLS_TRANSLATIONS = {
   },
   es: {
     tls: {
+      banner_title: "Conexiones sin verificación TLS completa",
+      banner_desc: "Estas conexiones no verifican el certificado del servidor, o su nombre de host, y pueden ser interceptadas. Corrija los certificados y desactive las opciones en el formulario de la conexión.",
       section: "TLS / certificado de cliente",
       intro: "Opcional. Para servidores con una autoridad de certificación privada o autenticación x509. Déjelo vacío para usar solo la cadena de conexión; Atlas y las CA públicas no necesitan nada aquí.",
       ca: "Certificado de la CA (PEM)",
@@ -132,6 +140,8 @@ const TLS_TRANSLATIONS = {
   },
   fr: {
     tls: {
+      banner_title: "Connexions sans vérification TLS complète",
+      banner_desc: "Ces connexions ne vérifient pas le certificat du serveur, ou son nom d'hôte, et peuvent être interceptées. Corrigez les certificats et désactivez les options dans le formulaire de connexion.",
       section: "TLS / certificat client",
       intro: "Facultatif. Pour les serveurs avec une autorité de certification privée ou une authentification x509. Laissez vide pour n'utiliser que la chaîne de connexion ; Atlas et les CA publiques n'ont besoin de rien ici.",
       ca: "Certificat de la CA (PEM)",
@@ -160,6 +170,8 @@ const TLS_TRANSLATIONS = {
   },
   zh: {
     tls: {
+      banner_title: "未完全验证 TLS 的连接",
+      banner_desc: "这些连接不验证服务器证书或其主机名，可能被截获。请修正证书，并在连接表单中关闭这些选项。",
       section: "TLS / 客户端证书",
       intro: "可选。用于使用私有证书颁发机构或 x509 身份验证的服务器。留空则只使用连接字符串；Atlas 和公共 CA 无需在此填写。",
       ca: "CA 证书 (PEM)",
@@ -188,6 +200,8 @@ const TLS_TRANSLATIONS = {
   },
   ja: {
     tls: {
+      banner_title: "TLS を完全に検証していない接続",
+      banner_desc: "これらの接続はサーバー証明書またはそのホスト名を検証しておらず、傍受される可能性があります。証明書を修正し、接続フォームでこれらのオプションをオフにしてください。",
       section: "TLS / クライアント証明書",
       intro: "任意。プライベート認証局や x509 認証を使うサーバー向けです。接続文字列だけを使う場合は空のままにしてください。Atlas や公的 CA ではここに何も必要ありません。",
       ca: "CA 証明書 (PEM)",
@@ -216,6 +230,8 @@ const TLS_TRANSLATIONS = {
   },
   ru: {
     tls: {
+      banner_title: "Подключения без полной проверки TLS",
+      banner_desc: "Эти подключения не проверяют сертификат сервера или его имя хоста и могут быть перехвачены. Исправьте сертификаты и отключите эти параметры в форме подключения.",
       section: "TLS / клиентский сертификат",
       intro: "Необязательно. Для серверов с частным удостоверяющим центром или аутентификацией x509. Оставьте пустым, чтобы использовать только строку подключения; для Atlas и публичных ЦС здесь ничего не нужно.",
       ca: "Сертификат ЦС (PEM)",
@@ -400,6 +416,41 @@ function tlsConnectionBadges(c) {
   else if (c.tls_allow_invalid_hostnames) out += ` ${statusBadge("warn", t("tls.badge_hostnames"), t("tls.warn_hostnames"))}`;
   if (c.tls_client_cert_pem) out += ` ${statusBadge("neutral", t("tls.badge_x509"))}`;
   return out;
+}
+
+// WARNING_CONNECTION_TLS_LOOSENED is settings.WarningConnectionTLSLoosened.
+const WARNING_CONNECTION_TLS_LOOSENED = "connection_tls_loosened";
+
+// tlsRenderWarnings lists the connections whose TLS checks are loosened.
+function tlsRenderWarnings(list) {
+  const banner = tlsEl("connection-tls-loosened");
+  const ul = tlsEl("connection-tls-loosened-list");
+  if (!banner || !ul) return;
+  const w = (Array.isArray(list) ? list : []).find(x => x && x.id === WARNING_CONNECTION_TLS_LOOSENED);
+  const conns = w && Array.isArray(w.connections) ? w.connections : [];
+  banner.hidden = conns.length === 0;
+  banner.classList.toggle("callout-danger", conns.some(c => c && c.tls_insecure));
+  banner.classList.toggle("callout-warning", !conns.some(c => c && c.tls_insecure));
+  ul.replaceChildren();
+  conns.forEach(c => {
+    const li = document.createElement("li");
+    li.textContent = `${c.name || c.id}: ${t(c.tls_insecure ? "tls.badge_insecure" : "tls.badge_hostnames")}`;
+    ul.append(li);
+  });
+}
+
+// tlsRefreshWarnings reloads the persistent warnings after a connection changed,
+// without touching the settings forms.
+async function tlsRefreshWarnings() {
+  if (!state.loaded || !state.loaded.settings) return;
+  try {
+    const json = await apiJSON("/api/v1/settings");
+    if (!json.success) return;
+    state.settings = { ...(state.settings || {}), warnings: (json.data && json.data.warnings) || [] };
+    if (typeof renderWarnings === "function") renderWarnings();
+  } catch (_) {
+    // The next settings load shows them.
+  }
 }
 
 function setupTLS() {

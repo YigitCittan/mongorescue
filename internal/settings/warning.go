@@ -26,6 +26,34 @@ type Warning struct {
 	// WarningPostRestoreClonesKept.
 	RestoreID string   `json:"restore_id,omitempty"`
 	Databases []string `json:"databases,omitempty"`
+	// Connections names the connections of a WarningConnectionTLSLoosened.
+	Connections []WarningConnection `json:"connections,omitempty"`
+}
+
+// WarningConnection is a connection a warning is about.
+type WarningConnection struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Insecure and AllowInvalidHostnames are the connection's loosened checks.
+	Insecure              bool `json:"tls_insecure,omitempty"`
+	AllowInvalidHostnames bool `json:"tls_allow_invalid_hostnames,omitempty"`
+}
+
+// WarningConnectionTLSLoosened identifies the warning about connections that do
+// not verify the server certificate (tls_insecure) or its hostname
+// (tls_allow_invalid_hostnames). It is raised by the server from the
+// connections (not stored here) while any has either on.
+const WarningConnectionTLSLoosened = "connection_tls_loosened"
+
+// ConnectionTLSLoosened returns the WarningConnectionTLSLoosened warning for conns.
+func ConnectionTLSLoosened(conns []WarningConnection) Warning {
+	names := make([]string, 0, len(conns))
+	for _, c := range conns {
+		names = append(names, c.Name)
+	}
+	return Warning{ID: WarningConnectionTLSLoosened, Setting: "connections", Connections: conns,
+		Message: fmt.Sprintf("These connections do not fully verify the server's TLS certificate and can be intercepted: %s.",
+			strings.Join(names, ", "))}
 }
 
 // WarningPostRestoreClonesKept identifies the warning about clones a restore kept

@@ -4505,6 +4505,7 @@ async function saveConnection(e) {
       showToast(t("conn.saved"), "success");
       closeModal("modal-connection");
       await loadConnections();
+      if (typeof tlsRefreshWarnings === "function") tlsRefreshWarnings();
     } else {
       showToast(json.error || t("notify.toast_save_failed"), "error");
     }
@@ -4935,6 +4936,8 @@ function renderWarnings() {
   if (typeof keyrotRenderWarnings === "function") keyrotRenderWarnings(list);
   // Clones kept after a failed post-restore command (postrestore.js).
   if (typeof postRestoreRenderWarnings === "function") postRestoreRenderWarnings(list);
+  // Connections whose TLS checks are loosened (tls.js).
+  if (typeof tlsRenderWarnings === "function") tlsRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {

@@ -78,6 +78,8 @@ test("stores TLS material masked and warns about loosened checks", async ({ page
   expect(conn?.tls_insecure).toBe(true);
   expect(conn?.tls_client_key_pem).toBe("******");
   await expect(row.getByText("TLS not verified")).toBeVisible();
+  // The persistent warning lists it too.
+  await expect(page.locator("#connection-tls-loosened")).toContainText(`${NAME}: TLS not verified`);
 
   // Clean up so later specs see only their own connections.
   const id = conn?.id as string;

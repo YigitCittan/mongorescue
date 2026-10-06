@@ -291,6 +291,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	}
 	s.logger.Info("connection created", slog.String("connection_id", c.ID), logsafe.Attr("uri", redact.URI(c.URI)))
 	s.warnTLS(c.ID, c.ConnectionTLS)
+	auditTLS(ctx, models.ConnectionTLS{}, c.ConnectionTLS)
 	return c.Redacted(), nil
 }
 
@@ -336,6 +337,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	}
 	if tlsChanged {
 		s.warnTLS(updated.ID, updated.ConnectionTLS)
+		auditTLS(ctx, existing.ConnectionTLS, updated.ConnectionTLS)
 	}
 	return updated.Redacted(), nil
 }

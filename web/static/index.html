@@ -179,6 +179,15 @@
       </div>
     </section>
 
+    <!-- Connections that do not fully verify the server certificate (tls.js) -->
+    <section id="connection-tls-loosened" class="callout callout-warning" role="alert" aria-labelledby="connection-tls-loosened-title" hidden>
+      <div>
+        <h2 class="callout-title" id="connection-tls-loosened-title" data-i18n="tls.banner_title">Connections without full TLS verification</h2>
+        <p class="section-desc" data-i18n="tls.banner_desc">These connections do not verify the server certificate, or its hostname, and can be intercepted. Fix the certificates and turn the options off in the connection form.</p>
+        <ul class="postrestore-kept-list" id="connection-tls-loosened-list"></ul>
+      </div>
+    </section>
+
     <!-- Reminder: no recovery kit since secret.key, the keys or the storage targets changed (recovery.js) -->
     <section id="recovery-kit-warning" class="callout callout-warning" role="status" aria-labelledby="recovery-kit-warning-title" hidden>
       <div>
