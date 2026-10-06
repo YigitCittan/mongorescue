@@ -19,23 +19,43 @@ var _ connections.Repository = (*SQLiteStore)(nil)
 const upsertConnectionSQL = `INSERT INTO connections (id, name, data) VALUES (?, ?, ?)
 	ON CONFLICT (id) DO UPDATE SET name = excluded.name, data = excluded.data`
 
-// ListConnections returns all connections sorted by name, with decrypted URIs.
-func (s *SQLiteStore) ListConnections(ctx context.Context) ([]*models.Connection, error) {
-	defer s.lockKey()()
-	return listRecords(ctx, s, tableConnections, s.openConnection, "SELECT id, data FROM connections ORDER BY name, id")
+// storedConnection is the stored form of a connection. Its post-restore commands
+// are an erasure log (identifiers of people whose data was erased), so they are
+// sealed like a credential, as one JSON value bound to the connection's ID, and
+// never stored in plain form.
+type storedConnection struct {
+	models.Connection
+	// PostRestoreSealed holds Connection.PostRestoreCommands, sealed.
+	PostRestoreSealed string `json:"post_restore_sealed,omitempty"`
 }
 
-// GetConnection returns a connection with its decrypted URI or connections.ErrNotFound.
-func (s *SQLiteStore) GetConnection(ctx context.Context, id string) (*models.Connection, error) {
+// ListConnections returns all connections sorted by name, with decrypted URIs and
+// post-restore commands.
+func (s *SQLiteStore) ListConnections(ctx context.Context) ([]*models.Connection, error) {
 	defer s.lockKey()()
-	c, err := getRecord[models.Connection](ctx, s.db, connections.ErrNotFound, "SELECT data FROM connections WHERE id = ?", id)
+	stored, err := listRecords(ctx, s, tableConnections, s.openStoredConnection, "SELECT id, data FROM connections ORDER BY name, id")
 	if err != nil {
 		return nil, err
 	}
-	if err := s.openConnection(c); err != nil {
+	out := make([]*models.Connection, 0, len(stored))
+	for _, sc := range stored {
+		out = append(out, &sc.Connection)
+	}
+	return out, nil
+}
+
+// GetConnection returns a connection with its decrypted URI and post-restore
+// commands, or connections.ErrNotFound.
+func (s *SQLiteStore) GetConnection(ctx context.Context, id string) (*models.Connection, error) {
+	defer s.lockKey()()
+	sc, err := getRecord[storedConnection](ctx, s.db, connections.ErrNotFound, "SELECT data FROM connections WHERE id = ?", id)
+	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	if err := s.openStoredConnection(sc); err != nil {
+		return nil, err
+	}
+	return &sc.Connection, nil
 }
 
 // SaveConnection creates or replaces a connection, encrypting its URI.
@@ -69,23 +89,68 @@ func (s *SQLiteStore) DeleteConnection(ctx context.Context, id string) error {
 	})
 }
 
-// putConnection encrypts the URI of c and upserts it.
+// putConnection seals the URI and the post-restore commands of c and upserts it.
 func (s *SQLiteStore) putConnection(ctx context.Context, e execer, c *models.Connection) error {
 	if s.box == nil {
 		return ErrNoSecretBox
 	}
-	sealed := *c
+	sc := storedConnection{Connection: *c}
+	if len(c.PostRestoreCommands) > 0 {
+		raw, err := json.Marshal(c.PostRestoreCommands)
+		if err != nil {
+			return fmt.Errorf("store: encode post-restore commands of %s: %w", c.ID, err)
+		}
+		if sc.PostRestoreSealed, err = s.seal(secretbox.At(tableConnections, c.ID, fieldConnectionPostRestore), string(raw)); err != nil {
+			return err
+		}
+	}
+	sc.PostRestoreCommands = nil
+	return s.putStoredConnection(ctx, e, &sc)
+}
+
+// putStoredConnection seals the plain URI of sc and upserts it; its post-restore
+// commands must be sealed already (PostRestoreSealed).
+func (s *SQLiteStore) putStoredConnection(ctx context.Context, e execer, sc *storedConnection) error {
+	if s.box == nil {
+		return ErrNoSecretBox
+	}
+	if len(sc.PostRestoreCommands) > 0 {
+		return fmt.Errorf("%w: post-restore commands of %s are not sealed", ErrInvalidRecord, sc.ID)
+	}
+	sealed := *sc
 	var err error
-	if sealed.URI, err = s.seal(secretbox.At(tableConnections, c.ID, fieldConnectionURI), c.URI); err != nil {
+	if sealed.URI, err = s.seal(secretbox.At(tableConnections, sc.ID, fieldConnectionURI), sc.URI); err != nil {
 		return err
 	}
 	data, err := encode(&sealed)
 	if err != nil {
 		return err
 	}
-	if _, err := e.ExecContext(ctx, upsertConnectionSQL, c.ID, c.Name, data); err != nil {
-		return fmt.Errorf("store: save connection %s: %w", c.ID, err)
+	if _, err := e.ExecContext(ctx, upsertConnectionSQL, sc.ID, sc.Name, data); err != nil {
+		return fmt.Errorf("store: save connection %s: %w", sc.ID, err)
 	}
+	return nil
+}
+
+// openStoredConnection decrypts the URI and the post-restore commands of sc in
+// place. Post-restore commands stored in plain form are refused
+// (ErrUnsealedSecret): they may have been planted.
+func (s *SQLiteStore) openStoredConnection(sc *storedConnection) error {
+	if err := s.openConnection(&sc.Connection); err != nil {
+		return err
+	}
+	at := secretbox.At(tableConnections, sc.ID, fieldConnectionPostRestore)
+	if len(sc.PostRestoreCommands) > 0 {
+		return fmt.Errorf("%w: %s", ErrUnsealedSecret, at)
+	}
+	plain, err := s.open(at, sc.PostRestoreSealed)
+	if err != nil || plain == "" {
+		return err
+	}
+	if err = json.Unmarshal([]byte(plain), &sc.PostRestoreCommands); err != nil {
+		return unreadable(fmt.Errorf("store: decode post-restore commands of %s: %w", sc.ID, err))
+	}
+	sc.PostRestoreSealed = ""
 	return nil
 }
 

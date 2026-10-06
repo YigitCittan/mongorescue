@@ -193,8 +193,8 @@ var recordCheckers = map[string]recordChecker{
 	tableRestores: checkJSON[models.RestoreRecord](tableRestores, nil),
 	tableJobRuns:  checkJSON[models.JobRun](tableJobRuns, nil),
 	tableRules:    checkJSON[notify.Rule](tableRules, nil),
-	tableConnections: checkJSON(tableConnections, func(s *SQLiteStore, c *models.Connection) error {
-		return s.openConnection(c)
+	tableConnections: checkJSON(tableConnections, func(s *SQLiteStore, c *storedConnection) error {
+		return s.openStoredConnection(c)
 	}),
 	tableStorageTargets: checkJSON(tableStorageTargets, func(s *SQLiteStore, t *models.StorageTarget) error {
 		return s.openStorageTarget(t)

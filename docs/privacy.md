@@ -119,7 +119,13 @@ MongoRescue can apply the erasure log for you: a connection's **post-restore com
 - Every command that ran is in the audit log and on the restore record with its counts (documents deleted, matched, modified), never with its document or the documents it touched. The restore preflight lists the commands a restore will run.
 - In-place restores run none (the restore carries a warning): re-apply the log yourself before the data is used. Restoring in place over production is rarely what an erasure-aware recovery wants; restore into a clone, let the commands run, then promote the clone.
 
-Store identifiers, not personal data, in the commands: they are kept in `mongorescue.db` (and its metadata snapshots) and shown to administrators only.
+The commands are an erasure log, and so personal data themselves (they name the people whose data was erased):
+
+- **Sealed at rest.** They are stored like connection strings: encrypted with `secret.key` (AES-256-GCM through the secret box), as one value bound to the connection's ID, so a value copied to another connection does not open. `mongorescue.db` never holds them in plain form, and plain commands planted in it are refused. Metadata snapshots and copies of the database (for example a row exported while [repairing an unreadable record](troubleshooting.md#unreadable-records)) therefore carry them sealed only, and opening them needs `secret.key` (kept in the recovery kit).
+- **Rotated with the key.** Rotating `secret.key` re-seals them with the other stored secrets.
+- **Administrators only.** Only administrators can set or read them; the API answers other callers without the field. They never appear in the audit log, the API key activity log, run logs or restore records, which carry command names and counts only.
+
+Store identifiers rather than names, e-mail addresses or other direct personal data in the commands wherever you can.
 
 ## Contact
 

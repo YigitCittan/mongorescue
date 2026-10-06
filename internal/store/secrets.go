@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
@@ -55,6 +54,9 @@ var unsealedSecretQueries = []struct {
 	query string
 }{
 	{tableConnections, `SELECT id, 'uri' FROM connections WHERE ` + unsealedSQL(`json_extract(data, '$.uri')`)},
+	{tableConnections, `SELECT id, 'post_restore_sealed' FROM connections WHERE ` + unsealedSQL(`json_extract(data, '$.post_restore_sealed')`)},
+	// Post-restore commands are never stored in plain form.
+	{tableConnections, `SELECT id, 'post_restore_commands' FROM connections WHERE coalesce(json_type(data, '$.post_restore_commands'), 'null') != 'null'`},
 	{tableJobs, `SELECT id, 'mongo_uri' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.mongo_uri')`)},
 	{tableJobs, `SELECT id, 'heartbeat_url' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.heartbeat_url')`)},
 	{tableChannels, `SELECT id, 'webhook.url' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.webhook.url')`)},
@@ -98,15 +100,19 @@ const (
 	tableChannels      = "notification_channels"
 	tableJobs          = "jobs"
 	fieldConnectionURI = "uri"
-	fieldLegacyJobURI  = "mongo_uri"
-	fieldSettingValue  = "value"
+	// fieldConnectionPostRestore is the sealed post-restore commands of a
+	// connection (an erasure log), stored at $.post_restore_sealed.
+	fieldConnectionPostRestore = "post_restore_commands"
+	fieldLegacyJobURI          = "mongo_uri"
+	fieldSettingValue          = "value"
 )
 
 // sealedSecretQueries count rows whose secret fields hold a sealed value (current or
 // legacy format). Only the secret fields are inspected, never whole rows, so a name or
 // description containing "sb1:" is not mistaken for a secret.
 var sealedSecretQueries = []string{
-	`SELECT COUNT(*) FROM connections WHERE ` + sealedSQL(`json_extract(data, '$.uri')`),
+	`SELECT COUNT(*) FROM connections WHERE ` + sealedSQL(`json_extract(data, '$.uri')`) +
+		` OR ` + sealedSQL(`json_extract(data, '$.post_restore_sealed')`),
 	`SELECT COUNT(*) FROM jobs WHERE ` + sealedSQL(`json_extract(data, '$.mongo_uri')`) +
 		` OR ` + sealedSQL(`json_extract(data, '$.heartbeat_url')`),
 	`SELECT COUNT(*) FROM notification_channels WHERE ` + strings.Join([]string{
@@ -277,7 +283,8 @@ func (s *SQLiteStore) upgradeSecrets(ctx context.Context) error {
 			channels++
 		}
 
-		list, err := listRecordsStrict[models.Connection](ctx, tx, "SELECT data FROM connections")
+		// Stored form: sealed post-restore commands are kept as they are.
+		list, err := listRecordsStrict[storedConnection](ctx, tx, "SELECT data FROM connections")
 		if err != nil {
 			return err
 		}
@@ -290,7 +297,7 @@ func (s *SQLiteStore) upgradeSecrets(ctx context.Context) error {
 				continue
 			}
 			c.URI = plain
-			if err = s.putConnection(ctx, tx, c); err != nil {
+			if err = s.putStoredConnection(ctx, tx, c); err != nil {
 				return err
 			}
 			conns++
