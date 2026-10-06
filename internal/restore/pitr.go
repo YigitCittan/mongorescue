@@ -137,10 +137,10 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 	if e.resolveURI(req) == "" {
 		return nil, errors.New("restore: mongo connection uri is required")
 	}
-	start := time.Now().UTC()
+	start := e.now().UTC()
 	suffix := req.PITRCloneSuffix
 	if suffix == "" {
-		cloneID, err := models.NewPITRCloneID()
+		cloneID, err := e.newCloneID()
 		if err != nil {
 			return nil, fmt.Errorf("restore: %w", err)
 		}

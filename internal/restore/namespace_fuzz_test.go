@@ -87,7 +87,7 @@ func FuzzPrepareNamespaces(f *testing.F) {
 func TestPrepareShortensLongCloneNames(t *testing.T) {
 	e := NewEngine(storage.NewMockStorage(), "mongodb://h")
 	rec, err := e.Prepare(models.RestoreRequest{BackupID: "bkp_1"}, &models.BackupRecord{ID: "bkp_1", Database: strings.Repeat("d", 50)})
-	if err != nil || len(rec.TargetDatabase) > models.MaxDatabaseNameLength || !strings.HasPrefix(rec.TargetDatabase, strings.Repeat("d", 40)+"_rescue_") {
+	if err != nil || len(rec.TargetDatabase) > models.MaxDatabaseNameLength || !strings.HasPrefix(rec.TargetDatabase, strings.Repeat("d", 35)+"_rescue_") {
 		t.Fatalf("clone of a 50-byte database = %q, %v", rec.TargetDatabase, err)
 	}
 }

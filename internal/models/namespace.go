@@ -95,47 +95,58 @@ func ValidateCollectionNames(names []string) error {
 	return nil
 }
 
-// Safe-clone restore targets are named "<source>_rescue_<YYYYMMDD_HHMMSS>".
+// Safe-clone restore targets are named "<source>_rescue_<YYYYMMDD_HHMMSS>_<id>".
 const (
 	rescueInfix      = "_rescue_"
 	rescueTimeLayout = "20060102_150405"
 )
 
-// RescueDatabaseName returns the safe-clone restore target for source at t:
-// "<source>_rescue_<YYYYMMDD_HHMMSS>" in UTC. The source part is shortened (at a
-// character boundary) when needed so that the name fits in MaxDatabaseNameLength;
-// the suffix alone adds 23 bytes, so any source longer than 40 bytes used to give a
-// name MongoDB refuses.
-func RescueDatabaseName(source string, t time.Time) string {
-	return withSuffix(source, rescueInfix+t.UTC().Format(rescueTimeLayout))
-}
+// CloneIDLength is the length of the random hex part of safe-clone names and of the
+// clone suffixes of point-in-time restores and chain tests.
+const CloneIDLength = 4
 
-// PITRCloneIDLength is the length of the random hex part of the clone suffixes of
-// point-in-time restores and chain tests.
-const PITRCloneIDLength = 4
-
-// ErrInvalidCloneID is returned for a clone ID that is not PITRCloneIDLength
-// lowercase hex characters.
+// ErrInvalidCloneID is returned for a clone ID that is not CloneIDLength lowercase
+// hex characters.
 var ErrInvalidCloneID = errors.New("clone id must be 4 lowercase hex characters")
 
-// NewPITRCloneID returns a random clone ID for RescueCloneSuffix and
-// ChainTestCloneSuffix.
-func NewPITRCloneID() (string, error) {
-	b := make([]byte, PITRCloneIDLength/2)
+// NewCloneID returns a random clone ID (from crypto/rand) for RescueDatabaseName,
+// RescueCloneSuffix and ChainTestCloneSuffix.
+func NewCloneID() (string, error) {
+	b := make([]byte, CloneIDLength/2)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("random clone id: %w", err)
 	}
 	return hex.EncodeToString(b), nil
 }
 
-// RescueCloneSuffix returns the suffix a point-in-time restore started at t appends
-// to the name of every database it restores: "_rescue_<YYYYMMDD_HHMMSS>_<id>" in UTC,
-// where id is a random clone ID (NewPITRCloneID), so two restores started within the
-// same second never share a name, nor with a backup's safe clone. Unlike
-// RescueDatabaseName it never shortens the source name, since mongorestore renames a
-// whole instance with one pattern.
+// RescueDatabaseName returns the safe-clone restore target for source at t:
+// "<source>_rescue_<YYYYMMDD_HHMMSS>_<id>" in UTC, where id is a random clone ID
+// (NewCloneID), so two restores of one database started within the same second
+// never share a name. The source part is shortened (at a character boundary) when
+// needed so that the name fits in MaxDatabaseNameLength: the suffix alone adds 28
+// bytes, so sources longer than 35 bytes are shortened.
+func RescueDatabaseName(source string, t time.Time, id string) (string, error) {
+	suffix, err := RescueCloneSuffix(t, id)
+	if err != nil {
+		return "", err
+	}
+	return withSuffix(source, suffix), nil
+}
+
+// RescueDatabasePattern describes the safe-clone name of source without a concrete
+// time and ID ("<source>_rescue_<YYYYMMDD_HHMMSS>_<id>"), for messages about a
+// restore that has not been started, whose name is only chosen when it starts.
+func RescueDatabasePattern(source string) string {
+	return source + rescueInfix + "<YYYYMMDD_HHMMSS>_<id>"
+}
+
+// RescueCloneSuffix returns the suffix "_rescue_<YYYYMMDD_HHMMSS>_<id>" (UTC) of the
+// safe clones of a restore started at t, where id is a random clone ID
+// (NewCloneID). Point-in-time restores append it to the name of every database
+// they restore; unlike RescueDatabaseName they never shorten the source name, since
+// mongorestore renames a whole instance with one pattern.
 func RescueCloneSuffix(t time.Time, id string) (string, error) {
-	if !isLowerHex(id, PITRCloneIDLength) {
+	if !isLowerHex(id, CloneIDLength) {
 		return "", ErrInvalidCloneID
 	}
 	return rescueInfix + t.UTC().Format(rescueTimeLayout) + "_" + id, nil
@@ -148,7 +159,7 @@ const chainTestInfix = rescueInfix + "cv"
 // test started at t: "_rescue_cv<unix seconds in base 36><id>" (20 bytes), so
 // database names up to 43 bytes fit.
 func ChainTestCloneSuffix(t time.Time, id string) (string, error) {
-	if !isLowerHex(id, PITRCloneIDLength) {
+	if !isLowerHex(id, CloneIDLength) {
 		return "", ErrInvalidCloneID
 	}
 	return chainTestInfix + strconv.FormatInt(t.Unix(), 36) + id, nil
