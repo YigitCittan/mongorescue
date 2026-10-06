@@ -75,6 +75,58 @@ func TestPostRestoreCommandsAreSealedAtRest(t *testing.T) {
 	}
 }
 
+// TestPostRestoreCommandsSurviveAKeyRotation rotates secret.key and restarts with
+// the new key: the commands of a connection, and those a pending approval holds,
+// are re-sealed and open again; nothing is skipped and nothing is left in plain form.
+func TestPostRestoreCommandsSurviveAKeyRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), dbFile)
+	oldBox := storetest.NewBox(t)
+	s := storetest.OpenWithBox(t, path, oldBox)
+	ctx := context.Background()
+	want := erasureConnection("conn_a")
+	if err := s.SaveConnection(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	held := `[{"database":"*","command":{"drop":"` + erasureMarker + `"}}]`
+	now := time.Now().UTC()
+	if err := s.CreateApproval(ctx, &models.Approval{ID: "apr_1", Action: models.ApprovalPostRestoreCommands, Status: models.ApprovalPending,
+		Subject: "conn_a", CreatedAt: now, ExpiresAt: now.Add(time.Hour), Secret: held}); err != nil {
+		t.Fatal(err)
+	}
+	before := rawData(t, path, "connections")
+	var approvalBefore string
+	if err := rawDB(t, path).QueryRow("SELECT secret FROM approvals WHERE id = 'apr_1'").Scan(&approvalBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	next := storetest.NewBox(t)
+	res, err := s.RotateSecretBox(ctx, store.SecretKeyRotation{Next: next})
+	if err != nil || len(res.Skipped) != 0 {
+		t.Fatalf("rotation = %+v, %v; want nothing skipped", res, err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restart with the new key.
+	s = storetest.OpenWithBox(t, path, next)
+	got, err := s.GetConnection(ctx, "conn_a")
+	if err != nil || len(got.PostRestoreCommands) != 1 || string(got.PostRestoreCommands[0].Command) != string(want.PostRestoreCommands[0].Command) {
+		t.Fatalf("after the rotation = %+v, %v", got, err)
+	}
+	if secret, secretErr := s.ApprovalSecret(ctx, "apr_1"); secretErr != nil || secret != held {
+		t.Fatalf("approval secret after the rotation = %q, %v", secret, secretErr)
+	}
+	after := rawData(t, path, "connections")
+	var approvalAfter string
+	if err = rawDB(t, path).QueryRow("SELECT secret FROM approvals WHERE id = 'apr_1'").Scan(&approvalAfter); err != nil {
+		t.Fatal(err)
+	}
+	if after == before || approvalAfter == approvalBefore || strings.Contains(after+approvalAfter, erasureMarker) {
+		t.Fatal("the post-restore commands were not re-sealed, or are stored in plain form")
+	}
+}
+
 func TestPostRestoreCommandsAreBoundToTheirConnection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), dbFile)
 	s := storetest.OpenWithBox(t, path, testBox)
