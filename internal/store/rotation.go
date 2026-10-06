@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -416,95 +415,6 @@ func (r resealer) resealSettings(ctx context.Context, tx *sql.Tx, keys []string)
 		}
 	}
 	return len(list), nil
-}
-
-// retireImportedKeyMAC adds mac to the retired imported-key MAC keys (sealed under
-// the next key) while API keys MACed with it exist, and drops the list once none
-// does.
-func (r resealer) retireImportedKeyMAC(ctx context.Context, tx *sql.Tx, mac []byte, res *KeyRotationResult) error {
-	var imported int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys WHERE substr(key_hash, 1, ?) = ?",
-		len(importedKeyHashPrefix), importedKeyHashPrefix).Scan(&imported); err != nil {
-		return fmt.Errorf("count imported api keys: %w", err)
-	}
-	if imported == 0 || len(mac) == 0 {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM settings WHERE key = ?", retiredMACKeysSetting); err != nil {
-			return fmt.Errorf("drop retired api key MAC keys: %w", err)
-		}
-		return nil
-	}
-	at := secretbox.At(tableSettings, retiredMACKeysSetting, fieldSettingValue)
-	keys, err := readRetiredMACKeys(ctx, tx, r.next, at)
-	if err != nil {
-		return err
-	}
-	keys = append([]string{base64.StdEncoding.EncodeToString(mac)}, keys...)
-	if len(keys) > maxRetiredMACKeys {
-		keys = keys[:maxRetiredMACKeys]
-	}
-	raw, err := json.Marshal(keys)
-	if err != nil {
-		return err
-	}
-	sealed, err := r.next.Seal(at, string(raw))
-	if err != nil {
-		return fmt.Errorf("encrypt %s: %w", at, err)
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
-		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, retiredMACKeysSetting, sealed); err != nil {
-		return fmt.Errorf("store retired api key MAC keys: %w", err)
-	}
-	res.Resealed++
-	return nil
-}
-
-// readRetiredMACKeys returns the base64 retired imported-key MAC keys stored at at,
-// opened with box (nil when there are none).
-func readRetiredMACKeys(ctx context.Context, q queryer, box *secretbox.Box, at secretbox.Binding) ([]string, error) {
-	var sealed string
-	err := q.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", retiredMACKeysSetting).Scan(&sealed)
-	switch {
-	case errors.Is(err, sql.ErrNoRows) || err == nil && sealed == "":
-		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("read retired api key MAC keys: %w", err)
-	}
-	if !secretbox.IsSealed(sealed) {
-		return nil, fmt.Errorf("%w: %s", ErrUnsealedSecret, at)
-	}
-	plain, err := box.Open(at, sealed)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt %s: %w", at, err)
-	}
-	var keys []string
-	if err := json.Unmarshal([]byte(plain), &keys); err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrCorruptRecord, at, err)
-	}
-	return keys, nil
-}
-
-// RetiredImportedKeyMACs returns the keys that MACed API keys imported from
-// MONGORESCUE_API_KEY under earlier secret keys, newest first (see
-// SecretKeyRotation.RetiredImportedKeyMAC).
-func (s *SQLiteStore) RetiredImportedKeyMACs(ctx context.Context) ([][]byte, error) {
-	defer s.lockKey()()
-	if s.box == nil {
-		return nil, ErrNoSecretBox
-	}
-	at := secretbox.At(tableSettings, retiredMACKeysSetting, fieldSettingValue)
-	keys, err := readRetiredMACKeys(ctx, s.db, s.box, at)
-	if err != nil {
-		return nil, fmt.Errorf("store: %w", err)
-	}
-	out := make([][]byte, 0, len(keys))
-	for _, k := range keys {
-		raw, err := base64.StdEncoding.DecodeString(k)
-		if err != nil {
-			return nil, fmt.Errorf("store: %w: %s", ErrCorruptRecord, at)
-		}
-		out = append(out, raw)
-	}
-	return out, nil
 }
 
 // lockKey takes the read side of the key lock: a rotation (which takes the write

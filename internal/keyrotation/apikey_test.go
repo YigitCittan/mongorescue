@@ -55,6 +55,14 @@ func TestImportedAPIKeysVerifyAfterRotation(t *testing.T) {
 	if _, err := authOn(t, again.Store, again.Key).AuthenticateAPIKey(ctx, importedKey); err != nil {
 		t.Fatalf("authenticate after re-hash: %v", err)
 	}
+	// The hash names its MAC key, so the retired one is dropped once nothing uses it.
+	sub, _ := secretbox.DeriveSubkey(again.Key, auth.ImportedKeySubkeyPurpose)
+	if kid, _ := auth.ImportedKeyHashKID(after[0].Hash); kid != auth.ImportedKeyMACID(sub) {
+		t.Fatalf("hash key ID = %q; want the current MAC key's", kid)
+	}
+	if macs, err := again.Store.RetiredImportedKeyMACs(ctx); err != nil || len(macs) != 0 {
+		t.Fatalf("retired MAC keys after the re-hash = %d, %v; want none", len(macs), err)
+	}
 	if _, err := restarted.AuthenticateAPIKey(ctx, importedKey+"x"); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("wrong key = %v; want ErrUnauthenticated", err)
 	}
