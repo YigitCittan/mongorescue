@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,6 +37,10 @@ var (
 	// ErrKeyRotationPending is returned by BeginKeyRotation while another rotation
 	// is recorded as in progress.
 	ErrKeyRotationPending = errors.New("store: a secret key rotation is already in progress")
+	// ErrCommitUncertain is returned by RotateSecretBox when the commit failed and
+	// the database could not be read to tell whether it took effect; the startup
+	// recovery decides (keep secret.key.next).
+	ErrCommitUncertain = errors.New("store: the secret key rotation may or may not have committed")
 )
 
 // KeyRotation is the marker of a secret key rotation in progress. It is written
@@ -108,6 +113,9 @@ type SecretKeyRotation struct {
 	// BeforeCommit, when set, runs inside the transaction right before it commits;
 	// an error rolls everything back. It exists for fault injection in tests.
 	BeforeCommit func() error
+	// AfterCommit, when set, runs after a successful commit and its error is
+	// treated like an error of the commit itself (fault injection in tests).
+	AfterCommit func() error
 }
 
 // KeyRotationResult counts what RotateSecretBox changed.
@@ -191,12 +199,45 @@ func (s *SQLiteStore) RotateSecretBox(ctx context.Context, r SecretKeyRotation) 
 			return nil, err
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: rotate secret key: commit: %w", err)
+	err = tx.Commit()
+	committed = true // a failed commit has ended the transaction too
+	if err == nil && r.AfterCommit != nil {
+		err = r.AfterCommit()
 	}
-	committed = true
+	if err != nil {
+		// A failed commit does not prove that nothing was written (an fsync error
+		// after the WAL frame): the key check value tells which key the database is
+		// sealed with now.
+		switch rotated, checkErr := keyCheckOpens(ctx, conn, r.Next); {
+		case checkErr != nil:
+			return nil, fmt.Errorf("%w: commit: %w (check: %w)", ErrCommitUncertain, err, checkErr)
+		case !rotated:
+			return nil, fmt.Errorf("store: rotate secret key: commit: %w", err)
+		}
+		s.logger.Warn("secret key rotation: the commit reported an error but the database uses the new key", slog.Any("error", err))
+	}
 	s.box = r.Next
 	return res, nil
+}
+
+// SealedWith reports whether box opens the stored key check value, that is whether
+// the database is sealed with box's key.
+func (s *SQLiteStore) SealedWith(ctx context.Context, box *secretbox.Box) (bool, error) {
+	ok, err := keyCheckOpens(ctx, s.db, box)
+	if err != nil {
+		return false, fmt.Errorf("store: read key check value: %w", err)
+	}
+	return ok, nil
+}
+
+// keyCheckOpens reports whether box opens the stored key check value.
+func keyCheckOpens(ctx context.Context, q queryer, box *secretbox.Box) (bool, error) {
+	var kcv string
+	if err := q.QueryRowContext(context.WithoutCancel(ctx), "SELECT value FROM settings WHERE key = ?", keyCheckSetting).Scan(&kcv); err != nil {
+		return false, err
+	}
+	plain, err := box.Open(secretbox.At(tableSettings, keyCheckSetting, fieldSettingValue), kcv)
+	return err == nil && plain == keyCheckPlaintext, nil
 }
 
 // resealer opens values with the old Box and seals them with the next one.

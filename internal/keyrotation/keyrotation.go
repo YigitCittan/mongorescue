@@ -300,6 +300,9 @@ type Config struct {
 	// Fault, when set, is called after every Step; a non-nil error stops the
 	// rotation at once, as a crash would (fault injection in tests).
 	Fault func(Step) error
+	// CommitError, when set, is reported as an error of the re-sealing commit after
+	// the commit succeeded (fault injection: an fsync error after the WAL frame).
+	CommitError func() error
 }
 
 // Rotator rotates secret.key. It is safe for concurrent use; one rotation runs at a
@@ -378,6 +381,10 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	oldBox, err := secretbox.New(old)
+	if err != nil {
+		return nil, err
+	}
 	oldFP, err := secretbox.Fingerprint(old)
 	if err != nil {
 		return nil, err
@@ -404,7 +411,7 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 	if err = secretbox.WriteKeyFile(r.cfg.Files.Next, next); err != nil {
-		r.abort(ctx, log)
+		_ = r.abort(ctx, nil, log) // nothing was re-sealed yet
 		return nil, err
 	}
 	if err = r.fault(StepNextWritten); err != nil {
@@ -413,10 +420,19 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 	res, err := r.cfg.Store.RotateSecretBox(ctx, store.SecretKeyRotation{
 		Next: nextBox, RetiredImportedKeyMAC: retiredMAC,
 		BeforeCommit: func() error { return r.fault(StepBeforeCommit) },
+		AfterCommit:  r.cfg.CommitError,
 	})
 	if err != nil {
-		if crash := (*crashError)(nil); !errors.As(err, &crash) {
-			r.abort(ctx, log)
+		if crash := (*crashError)(nil); errors.As(err, &crash) {
+			return nil, err
+		}
+		if errors.Is(err, store.ErrCommitUncertain) {
+			// Never discard the only copy of a key the database may already use.
+			log.Error("secret key rotation: the commit may have taken effect; keeping secret.key.next for the startup recovery", logsafe.Error(err))
+			return nil, ErrIncomplete
+		}
+		if abortErr := r.abort(ctx, oldBox, log); abortErr != nil {
+			return nil, abortErr
 		}
 		return nil, err
 	}
@@ -455,12 +471,23 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 }
 
 // abort undoes a rotation that never committed: the next key file and the marker go.
-func (r *Rotator) abort(ctx context.Context, log *slog.Logger) {
+// When old is set, the key check value is read first: if the old key no longer opens
+// the database it was rotated after all, secret.key.next (the only copy of the key it
+// uses) is kept for the startup recovery and ErrIncomplete is returned.
+func (r *Rotator) abort(ctx context.Context, old *secretbox.Box, log *slog.Logger) error {
 	ctx = context.WithoutCancel(ctx)
+	if old != nil {
+		ok, err := r.cfg.Store.SealedWith(ctx, old)
+		if err != nil || !ok {
+			log.Error("secret key rotation: the database may use the new key; keeping secret.key.next for the startup recovery", logsafe.Error(err))
+			return ErrIncomplete
+		}
+	}
 	if err := secretbox.RemoveKeyFile(r.cfg.Files.Next); err != nil {
 		log.Warn("secret key rotation: could not remove secret.key.next", logsafe.Error(err))
 	}
 	if err := r.cfg.Store.EndKeyRotation(ctx); err != nil {
 		log.Warn("secret key rotation: could not clear the rotation marker", logsafe.Error(err))
 	}
+	return nil
 }
