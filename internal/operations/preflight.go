@@ -145,6 +145,7 @@ func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, sour
 	p.diskSpace()
 	p.collections()
 	p.usersAndRoles()
+	p.sourceCheck()
 	p.postRestore(map[string]string{source.Database: p.shownDB()})
 	return p.res
 }

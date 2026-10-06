@@ -329,6 +329,7 @@ func (s *Service) observe(err error) {
 // succeed records the stored object obj on cp.
 func succeed(cp *models.BackupCopy, obj *models.StorageObject, at time.Time) {
 	cp.Status, cp.SHA256OK, cp.Error, cp.NextAttemptAt = models.CopyDone, true, "", nil
+	cp.VerifiedAt, cp.Verification, cp.VerificationError = nil, "", ""
 	cp.CopiedAt = &at
 	cp.SetStorageObject(obj)
 }
@@ -342,14 +343,15 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 		return ctx.Err()
 	}
 	at := s.now().UTC()
-	var prev models.CopyStatus
+	// A copy that failed before (or that a verification found damaged) recovers.
+	var failing bool
 	var updated models.BackupCopy
 	_, err := s.cfg.Store.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
 		c := r.Copy(targetID)
 		if c == nil || !waiting(c) {
 			return errSkip
 		}
-		prev = c.Status
+		failing = c.Status == models.CopyFailed || c.Error != ""
 		c.Attempts++
 		if copyErr == nil {
 			succeed(c, obj, at)
@@ -371,7 +373,7 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 	case err != nil:
 		return fmt.Errorf("record the copy of %s to %s: %w", rec.ID, targetID, err)
 	}
-	s.report(ctx, rec, &updated, prev, copyErr)
+	s.report(ctx, rec, &updated, failing, copyErr)
 	if copyErr != nil {
 		return fmt.Errorf("copy %s to %s: %w", rec.ID, targetID, copyErr)
 	}
@@ -383,17 +385,17 @@ var errSkip = errors.New("copies: the copy left the queue")
 
 // report logs an attempt and publishes backup.copy_failed (when a copy starts
 // failing) and backup.copy_recovered (when a failing copy succeeds).
-func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *models.BackupCopy, prev models.CopyStatus, copyErr error) {
+func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *models.BackupCopy, failing bool, copyErr error) {
 	attrs := []any{logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_target_id", cp.TargetID), slog.Int("attempts", cp.Attempts)}
 	var typ events.EventType
 	if copyErr == nil {
 		s.logger.Info("backup copied", attrs...)
-		if prev == models.CopyFailed {
+		if failing {
 			typ = events.BackupCopyRecovered
 		}
 	} else {
 		s.logger.Warn("backup copy failed", append(attrs, slog.String("error", cp.Error))...)
-		if prev != models.CopyFailed {
+		if !failing {
 			typ = events.BackupCopyFailed
 		}
 	}

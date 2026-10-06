@@ -707,6 +707,11 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		record.Preflight, record.Forced = pre, !pre.OK && req.Force
 	}
+	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = source.StorageTargetID, source.StorageTargetName, req.SourceFallback
+	if req.SourceFallback != "" {
+		s.logger.Warn("restore falls back to a copy of the backup", logsafe.Attr("backup_id", source.ID),
+			logsafe.Attr("storage_target_id", source.StorageTargetID), slog.String("reason", req.SourceFallback))
+	}
 	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
 	if source.ConnectionID != "" && s.cfg.Connections != nil {
 		if src, getErr := s.cfg.Connections.Get(ctx, source.ConnectionID); getErr == nil {
@@ -866,7 +871,14 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	if !forPreflight && (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {
 		return nil, fmt.Errorf("%w: backup %s is encrypted; %s", ErrKeyRequired, source.ID, restore.KeyRequiredHint)
 	}
-	return &restorePlan{req: req, source: source}, nil
+	// The primary archive, a copy chosen by the client, or a healthy copy when the
+	// primary is missing or damaged.
+	view, fallback, err := s.restoreSource(ctx, source, strings.TrimSpace(req.SourceTargetID))
+	if err != nil {
+		return nil, err
+	}
+	req.SourceFallback = fallback
+	return &restorePlan{req: req, source: view}, nil
 }
 
 // ResolveConnection returns connection id with its full URI. It returns

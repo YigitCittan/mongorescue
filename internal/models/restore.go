@@ -160,6 +160,10 @@ type RestoreRequest struct {
 	// damaged falls back to a healthy copy by itself.
 	SourceTargetID string `json:"source_target_id,omitempty"`
 
+	// SourceFallback explains why the restore reads a copy instead of the primary
+	// archive. It is set by the application, never read from clients.
+	SourceFallback string `json:"-"`
+
 	// Databases restricts a point-in-time restore to these databases; empty
 	// restores every database of the instance except admin, config and local.
 	Databases []string `json:"databases,omitempty"`

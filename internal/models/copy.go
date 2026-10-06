@@ -126,6 +126,21 @@ func (c *BackupCopy) LockedAt(now time.Time) bool {
 	return c.Status != CopyPurged && c.RetainUntil != nil && now.Before(*c.RetainUntil)
 }
 
+// AtCopy returns a shallow copy of r that reads its archive from copy c: the storage
+// target, key, version, Object Lock and verification are c's. Restores and
+// verifications of a copy use it.
+func (r *BackupRecord) AtCopy(c *BackupCopy) *BackupRecord {
+	v := *r
+	v.StorageTargetID, v.StorageTargetName, v.StorageKey, v.StorageVersionID = c.TargetID, c.TargetName, c.StorageKey, c.VersionID
+	v.RetainUntil, v.ObjectLockMode = c.RetainUntil, c.ObjectLockMode
+	v.VerifiedAt, v.Verification, v.VerificationError = c.VerifiedAt, c.Verification, c.VerificationError
+	if v.Status == StatusMissing {
+		// The primary is missing, the copy is not.
+		v.Status, v.MissingSince = StatusCompleted, nil
+	}
+	return &v
+}
+
 // CopyTarget is a resolved copy target of a backup: its ID and name.
 type CopyTarget struct {
 	ID   string `json:"id"`

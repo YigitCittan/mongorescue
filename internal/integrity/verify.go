@@ -76,14 +76,22 @@ func (s *Service) StartVerify(ctx context.Context, id string) (*models.BackupRec
 // unlimited), records the outcome on the record and publishes a verification event.
 // source is events.VerificationSweep or events.VerificationOnDemand. It returns the
 // updated record; a mismatch is an outcome, not an error. Expected failures:
-// ErrNotFound and ErrNotVerifiable.
+// ErrNotFound and ErrNotVerifiable. The completed copies of the backup are verified
+// too (see verifyCopies).
 func (s *Service) Verify(ctx context.Context, id, source string, bytesPerSecond int64) (*models.BackupRecord, error) {
+	rec, _, err := s.verifyWithCopies(ctx, id, source, bytesPerSecond)
+	return rec, err
+}
+
+// verifyWithCopies is Verify, also returning the tally of the copy checks.
+func (s *Service) verifyWithCopies(ctx context.Context, id, source string, bytesPerSecond int64) (*models.BackupRecord, copyTally, error) {
+	var tally copyTally
 	rec, err := s.cfg.Store.GetBackupRecord(ctx, id)
 	if err != nil {
-		return nil, notFound(err, "backup not found")
+		return nil, tally, notFound(err, "backup not found")
 	}
 	if !verifiable(rec) {
-		return nil, fmt.Errorf("%w; backup %s is %s", ErrNotVerifiable, rec.ID, rec.Status)
+		return nil, tally, fmt.Errorf("%w; backup %s is %s", ErrNotVerifiable, rec.ID, rec.Status)
 	}
 	var res verify.Result
 	driver, err := s.cfg.Targets.Storage(ctx, rec.StorageTargetID)
@@ -94,7 +102,7 @@ func (s *Service) Verify(ctx context.Context, id, source string, bytesPerSecond 
 	}
 	if ctx.Err() != nil && res.Status != models.VerificationOK {
 		// A cancelled verification (shutdown) says nothing about the archive.
-		return rec, fmt.Errorf("verification of %s cancelled: %w", id, ctx.Err())
+		return rec, tally, fmt.Errorf("verification of %s cancelled: %w", id, ctx.Err())
 	}
 	// The outcome is written onto the stored record, so a pin or another change
 	// made meanwhile is kept; a record deleted or pruned meanwhile is left alone.
@@ -107,9 +115,9 @@ func (s *Service) Verify(ctx context.Context, id, source string, bytesPerSecond 
 	})
 	switch {
 	case errors.Is(err, errRecordChanged), errors.Is(err, store.ErrNotFound):
-		return rec, nil
+		return rec, tally, nil
 	case err != nil:
-		return nil, fmt.Errorf("record verification of %s: %w", id, err)
+		return nil, tally, fmt.Errorf("record verification of %s: %w", id, err)
 	}
 	if e, ok := events.VerificationEvent(updated, source); ok {
 		s.publish(ctx, e)
@@ -123,7 +131,10 @@ func (s *Service) Verify(ctx context.Context, id, source string, bytesPerSecond 
 	} else {
 		s.logger.Warn("backup archive verification failed", attrs...)
 	}
-	return updated, nil
+	withCopies, tally := s.verifyCopies(ctx, updated, bytesPerSecond)
+	// The primary's outcome is the record's; the copies keep theirs.
+	withCopies.Verification, withCopies.VerifiedAt, withCopies.VerificationError = updated.Verification, updated.VerifiedAt, updated.VerificationError
+	return withCopies, tally, nil
 }
 
 // errRecordChanged aborts a record update whose record changed meanwhile.
@@ -153,6 +164,11 @@ type SweepStatus struct {
 	Interrupted string `json:"interrupted,omitempty"`
 	// NextRunAt is when the next scheduled sweep starts (nil when off).
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	// CopiesOK, CopiesMismatch and CopiesErrors count the outcomes of the checks of
+	// backup copies (each completed copy is verified with its backup).
+	CopiesOK       int `json:"copies_ok,omitempty"`
+	CopiesMismatch int `json:"copies_mismatch,omitempty"`
+	CopiesErrors   int `json:"copies_errors,omitempty"`
 	// Chunks is the outcome of the PITR oplog chunk item (nil without streams or
 	// when the sweep stopped before it).
 	Chunks *ChunkSweep `json:"chunks,omitempty"`
@@ -242,8 +258,9 @@ func (s *Service) Sweep(ctx context.Context, trigger string) (SweepStatus, error
 		s.mu.Lock()
 		st.Current = rec.ID
 		s.mu.Unlock()
-		updated, err := s.Verify(ctx, rec.ID, events.VerificationSweep, rate)
+		updated, tally, err := s.verifyWithCopies(ctx, rec.ID, events.VerificationSweep, rate)
 		s.mu.Lock()
+		st.CopiesOK, st.CopiesMismatch, st.CopiesErrors = st.CopiesOK+tally.ok, st.CopiesMismatch+tally.mismatch, st.CopiesErrors+tally.errors
 		switch {
 		case ctx.Err() != nil:
 		case err != nil:
