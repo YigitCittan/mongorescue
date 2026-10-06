@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -80,7 +79,7 @@ func (e *Engine) deleteCopies(ctx context.Context, record *models.BackupRecord) 
 		switch {
 		case err != nil && !errors.Is(err, storage.ErrNotFound):
 			e.logger.Warn("failed to delete the copy of a failed backup", logsafe.Attr("backup_id", record.ID),
-				logsafe.Attr("storage_target_id", cp.TargetID), slog.Any("error", err))
+				logsafe.Attr("storage_target_id", cp.TargetID), logsafe.Error(err))
 			record.ArchiveCleanupPending = true
 		case until != nil:
 			at := until.UTC()
