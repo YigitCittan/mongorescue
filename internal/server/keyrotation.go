@@ -9,6 +9,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/targets"
 )
 
 // maxRotateBody bounds the JSON body of the key rotation endpoints.
@@ -36,6 +37,36 @@ func (s *Server) registerKeyRotationRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/security/rotate-secret-key", s.handleRotateSecretKey)
 	mux.HandleFunc("POST /api/v1/encryption/rotate", s.handleRotateEncryptionKey)
 	mux.HandleFunc("GET /api/v1/encryption/reencryption", s.handleReencryptionStatus)
+	mux.HandleFunc("POST /api/v1/storage-targets/{id}/rotate-credentials", s.handleRotateCredentials)
+}
+
+// handleRotateCredentials probes new S3 credentials of a storage target and swaps
+// them in when every probe passes. A failed probe answers 422 with the steps.
+func (s *Server) handleRotateCredentials(w http.ResponseWriter, r *http.Request) {
+	var req targets.Credentials
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRotateBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request json: "+jsonProblem(err))
+		return
+	}
+	res, err := s.ops.RotateStorageCredentials(r.Context(), r.PathValue("id"), req)
+	switch {
+	case errors.Is(err, targets.ErrProbeFailed):
+		writeErrorData(w, http.StatusUnprocessableEntity, err.Error(), res)
+		return
+	case errors.Is(err, targets.ErrInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, targets.ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		s.writeOperationError(w, err)
+		return
+	}
+	s.refreshRecoveryKit(r.Context())
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleRotateEncryptionKey rotates the backup encryption key (body:

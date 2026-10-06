@@ -58,14 +58,15 @@ var routeScopes = map[string]auth.Scope{
 	heartbeatTestRoute:                              auth.ScopeAdmin,
 	oidcTestRoute:                                   auth.ScopeAdmin,
 
-	"GET /api/v1/storage-targets":               auth.ScopeRead,
-	"POST /api/v1/storage-targets":              auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/test":         auth.ScopeAdmin,
-	"GET /api/v1/storage-targets/{id}":          auth.ScopeRead,
-	"PUT /api/v1/storage-targets/{id}":          auth.ScopeAdmin,
-	"DELETE /api/v1/storage-targets/{id}":       auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/{id}/test":    auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/{id}/default": auth.ScopeAdmin,
+	"GET /api/v1/storage-targets":                          auth.ScopeRead,
+	"POST /api/v1/storage-targets":                         auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/test":                    auth.ScopeAdmin,
+	"GET /api/v1/storage-targets/{id}":                     auth.ScopeRead,
+	"PUT /api/v1/storage-targets/{id}":                     auth.ScopeAdmin,
+	"DELETE /api/v1/storage-targets/{id}":                  auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/test":               auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/default":            auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/rotate-credentials": auth.ScopeAdmin,
 
 	"GET /api/v1/stats": auth.ScopeRead,
 	// The dashboard overview (SQL aggregates) and the cron builder's preview.
