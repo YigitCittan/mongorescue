@@ -147,11 +147,7 @@ func TestKeyRotationEndToEnd(t *testing.T) {
 	second, api := rotationApp(t, cfg, logger, false)
 	t.Cleanup(func() { second.Stop(); _ = second.Close() })
 	after := runJob(t, api, job.ID)
-	for i, b := range []*models.BackupRecord{before, after} {
-		if i > 0 {
-			// Safe clone names carry the restore's start second.
-			time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
-		}
+	for _, b := range []*models.BackupRecord{before, after} {
 		restored := restoreBackup(t, api, b.ID)
 		if !strings.HasPrefix(restored, db+"_rescue_") {
 			t.Fatalf("restored into %q", restored)

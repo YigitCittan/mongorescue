@@ -270,8 +270,8 @@ func TestPreflightCheckMatrix(t *testing.T) {
 		{
 			name: "a taken clone name fails",
 			ins: func(f *fakeInspector) {
-				// The clone name carries a timestamp to the second; taking every
-				// shop_rescue_ name keeps the case independent of the clock.
+				// The clone name carries a timestamp and a random ID; taking every
+				// shop_rescue_ name keeps the case independent of both.
 				f.takenPrefix = "shop_rescue_"
 			},
 			want: want{"target_database": "fail"},

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -133,7 +132,6 @@ func TestRestorePreflightAndVerification(t *testing.T) {
 	}
 
 	// A restore with verification into a safe clone matches the manifest.
-	nextSecond() // safe clone names have a resolution of one second
 	rst, err := svc.StartRestore(admin, models.RestoreRequest{BackupID: bkp.ID, VerifyRestore: true})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
@@ -148,7 +146,6 @@ func TestRestorePreflightAndVerification(t *testing.T) {
 	}
 
 	// A selective restore is verified against the selection only.
-	nextSecond() // safe clone names have a resolution of one second
 	rst, err = svc.StartRestore(admin, models.RestoreRequest{BackupID: bkp.ID, VerifyRestore: true, SelectedCollections: []string{"users"}})
 	if err != nil {
 		t.Fatalf("selective restore: %v", err)
@@ -174,7 +171,6 @@ func TestRestorePreflightAndVerification(t *testing.T) {
 	if err = meta.SaveBackupRecord(context.Background(), bkp); err != nil {
 		t.Fatal(err)
 	}
-	nextSecond() // safe clone names have a resolution of one second
 	rst, err = svc.StartRestore(admin, models.RestoreRequest{BackupID: bkp.ID, VerifyRestore: true})
 	if err != nil {
 		t.Fatalf("restore against the edited manifest: %v", err)
@@ -192,13 +188,6 @@ func TestRestorePreflightAndVerification(t *testing.T) {
 	if got := published.of(events.RestoreVerificationFailed); len(got) != 1 || got[0].RestoreID != done.ID {
 		t.Fatalf("restore.verification_failed events = %+v; want one for %s", got, done.ID)
 	}
-}
-
-// nextSecond waits for the next wall-clock second, so a new safe clone gets a name of
-// its own (the preflight refuses one that exists).
-func nextSecond() {
-	now := time.Now()
-	time.Sleep(now.Truncate(time.Second).Add(time.Second).Sub(now) + 10*time.Millisecond)
 }
 
 // checkMessages returns the messages of p's checks.
