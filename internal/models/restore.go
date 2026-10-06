@@ -154,6 +154,12 @@ type RestoreRequest struct {
 	// roles are refused (see ValidatePITR).
 	PITR *PITRTarget `json:"pitr,omitempty"`
 
+	// SourceTargetID selects the storage target the archive is read from: the
+	// backup's primary target (empty, the default) or the target of one of its
+	// completed copies. Without it a restore whose primary archive is missing or
+	// damaged falls back to a healthy copy by itself.
+	SourceTargetID string `json:"source_target_id,omitempty"`
+
 	// Databases restricts a point-in-time restore to these databases; empty
 	// restores every database of the instance except admin, config and local.
 	Databases []string `json:"databases,omitempty"`
@@ -479,6 +485,15 @@ type RestoreRecord struct {
 	// PostRestore is what the target connection's post-restore commands did (see
 	// RestoreRequest.PostRestoreCommands); nil when the connection has none.
 	PostRestore *PostRestoreReport `json:"post_restore,omitempty"`
+
+	// SourceTargetID and SourceTargetName name the storage target the archive was
+	// read from (the backup's primary target or one of its copies).
+	SourceTargetID   string `json:"source_target_id,omitempty"`
+	SourceTargetName string `json:"source_target_name,omitempty"`
+
+	// SourceFallback explains why the restore read a copy instead of the primary
+	// archive (the primary was missing or damaged); empty when it did not fall back.
+	SourceFallback string `json:"source_fallback,omitempty"`
 }
 
 // Redacted returns a copy of the request with the MongoURI password masked, suitable

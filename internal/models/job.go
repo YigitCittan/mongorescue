@@ -128,6 +128,13 @@ type Job struct {
 	// BackupWindow, when set, restricts when scheduled runs may start (see
 	// BackupWindow); manual runs ignore it.
 	BackupWindow *BackupWindow `json:"backup_window,omitempty"`
+
+	// CopyTargets lists the storage targets (IDs, at most MaxCopyTargets) every
+	// backup of the job is copied to besides StorageTargetID (3-2-1 copies).
+	CopyTargets []string `json:"copy_targets,omitempty"`
+
+	// CopyMode says when a backup with copies is completed (CopyAsync by default).
+	CopyMode CopyMode `json:"copy_mode,omitempty"`
 }
 
 // Clone returns a deep copy of the job.
@@ -142,6 +149,7 @@ func (j *Job) Clone() *Job {
 	clone.ExcludeCollections = slices.Clone(j.ExcludeCollections)
 	clone.ReadPreferenceTags = CloneTagSets(j.ReadPreferenceTags)
 	clone.BackupWindow = j.BackupWindow.Clone()
+	clone.CopyTargets = slices.Clone(j.CopyTargets)
 	if j.PausedUntil != nil {
 		until := *j.PausedUntil
 		clone.PausedUntil = &until

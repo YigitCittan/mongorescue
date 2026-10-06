@@ -155,15 +155,18 @@ func missingOrChanged(ctx context.Context, tx *sql.Tx, id string) error {
 // record but purged and pruned ones (see goneBackupStatuses), except failed and
 // cancelled records that never named an object (no storage key) and the records
 // listed in an exclusion (failed ones whose object a check found missing).
-const liveBackupsSQL = `SELECT COUNT(*) FROM backups WHERE storage_target_id = ? AND status NOT IN (?, ?)
-	AND NOT (status IN ('failed', 'cancelled') AND coalesce(json_extract(data, '$.storage_key'), '') = '')`
+//
+// A record also counts when it holds a copy on the target (see liveCopySQL).
+const liveBackupsSQL = `SELECT COUNT(*) FROM backups WHERE status NOT IN (?, ?) AND (
+	(storage_target_id = ? AND NOT (status IN ('failed', 'cancelled') AND coalesce(json_extract(data, '$.storage_key'), '') = ''))
+	OR EXISTS (SELECT 1 FROM json_each(backups.data, '$.copies') c WHERE ` + liveCopySQL + `))`
 
 // countLiveBackups counts the backups stored on target id whose object may exist
 // (see liveBackupsSQL), whatever their state: completed, running, failed, missing or
 // deleted and waiting for their purge. The records ignore names are not counted.
 func countLiveBackups(ctx context.Context, q queryer, id string, ignore ...string) (int, error) {
 	query := liveBackupsSQL
-	args := append([]any{id}, goneBackupStatuses...)
+	args := append(append([]any{}, goneBackupStatuses...), id, id)
 	if len(ignore) > 0 {
 		query += " AND id NOT IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(ignore)), ", ") + ")"
 		for _, v := range ignore {
@@ -252,7 +255,8 @@ func (s *SQLiteStore) DeleteStorageTargetIgnoring(ctx context.Context, id string
 			return targets.ErrIsDefault
 		}
 		var jobs int
-		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE storage_target_id = ?", id).Scan(&jobs); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE storage_target_id = ?
+			OR EXISTS (SELECT 1 FROM json_each(jobs.data, '$.copy_targets') WHERE value = ?)`, id, id).Scan(&jobs); err != nil {
 			return fmt.Errorf("store: count jobs of storage target: %w", err)
 		}
 		backups, err := countLiveBackups(ctx, tx, id, ignore...)

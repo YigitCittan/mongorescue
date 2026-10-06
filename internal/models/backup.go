@@ -319,6 +319,14 @@ type BackupRecord struct {
 	// backup (admin, config and local left out, MongoRescue's own clones kept):
 	// point-in-time restores plan their clone names from it and leave the clones out.
 	InstanceDatabases []string `json:"instance_databases,omitempty"`
+
+	// Copies are the copies of the archive on other storage targets (3-2-1), in
+	// the order of the job's or request's copy targets; empty without any.
+	Copies []BackupCopy `json:"copies,omitempty"`
+
+	// CopyMode is the copy mode of the backup (CopyAsync or CopySync) when it has
+	// copies.
+	CopyMode CopyMode `json:"copy_mode,omitempty"`
 }
 
 // SoftDelete describes a deletion: when, by whom and why, and the end of its grace
@@ -376,10 +384,18 @@ func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
 	return !now.Before(end)
 }
 
-// LockedAt reports whether r's archive is still under its S3 Object Lock retention
-// at now.
+// LockedAt reports whether r's archive, or one of its copies, is still under its S3
+// Object Lock retention at now.
 func (r *BackupRecord) LockedAt(now time.Time) bool {
-	return r.RetainUntil != nil && now.Before(*r.RetainUntil)
+	if r.RetainUntil != nil && now.Before(*r.RetainUntil) {
+		return true
+	}
+	for i := range r.Copies {
+		if r.Copies[i].LockedAt(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetStorageObject records the S3 version and Object Lock retention of the stored
@@ -454,6 +470,17 @@ type BackupOptions struct {
 	// It is filled by the server or scheduler, never read from clients.
 	StorageTargetName string `json:"-"`
 
+	// CopyTargets lists the storage targets (IDs, at most MaxCopyTargets) the
+	// archive is copied to besides the primary target.
+	CopyTargets []string `json:"copy_targets,omitempty"`
+
+	// CopyMode is the copy mode (CopyAsync by default).
+	CopyMode CopyMode `json:"copy_mode,omitempty"`
+
+	// Copies are the resolved copy targets (IDs and names) recorded on the backup
+	// record. They are filled by the server or scheduler, never read from clients.
+	Copies []CopyTarget `json:"-"`
+
 	// TargetKey is an optional custom path or key for the stored archive. It is set
 	// by code only and never read from clients: a client-chosen key could overwrite
 	// another backup's archive.
@@ -520,6 +547,8 @@ type BackupOptions struct {
 func (o BackupOptions) Redacted() BackupOptions {
 	o.Collections = slices.Clone(o.Collections)
 	o.ExcludeCollections = slices.Clone(o.ExcludeCollections)
+	o.CopyTargets = slices.Clone(o.CopyTargets)
+	o.Copies = slices.Clone(o.Copies)
 	o.MongoURI = redact.URI(o.MongoURI)
 	o.MongoTLS = o.MongoTLS.Redacted()
 	return o
