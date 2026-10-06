@@ -125,7 +125,7 @@ func randomHex(t *testing.T, n int) string {
 
 // uniqueDB returns a short, unique database name for the test and registers a cleanup
 // that drops it together with every database derived from it (rescue clones, targets).
-// Names stay well under MongoDB's 63-byte limit even after "_rescue_<timestamp>".
+// Names stay well under MongoDB's 63-byte limit even after "_rescue_<timestamp>_<id>".
 func (m *mongoEnv) uniqueDB(t *testing.T, tag string) string {
 	t.Helper()
 	if len(tag) > 8 {

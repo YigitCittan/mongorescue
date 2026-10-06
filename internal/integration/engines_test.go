@@ -93,8 +93,8 @@ func tryRestore(t *testing.T, env *mongoEnv, st storage.Storage, req models.Rest
 		assertNoSecret(t, env.Password, "restore error", err.Error())
 	}
 	if rec != nil && !req.InPlace() {
-		// Clones are named by the second: drop each one when its (sub)test ends so a
-		// later restore within the same second starts from an empty namespace.
+		// Drop each clone when its (sub)test ends, so the server does not collect
+		// them while the suite runs.
 		t.Cleanup(func() {
 			if env.dbExists(t, rec.TargetDatabase) {
 				env.dropDB(t, rec.TargetDatabase)
