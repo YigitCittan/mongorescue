@@ -1,0 +1,121 @@
+name: Helm
+
+# The Helm chart (deploy/helm/mongorescue): lint, render and schema-validate it, and
+# install it on a kind cluster with a MongoDB pod. Neither job is a required check.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned tool versions; downloads are checked against these SHA-256 sums.
+  HELM_VERSION: v4.3.0
+  HELM_SHA256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  KIND_VERSION: v0.33.0
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+  KIND_NODE_IMAGE: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  KUBECTL_VERSION: v1.37.0
+  KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+  # Kubernetes version the manifests are validated against, and the pinned commit of
+  # the CRD schema catalog (ServiceMonitor, PrometheusRule).
+  KUBE_SCHEMA_VERSION: 1.37.0
+  CRD_CATALOG_REF: 4c8dc296d32b06d15ccde9668ff136c951f4d539
+
+jobs:
+  lint:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install helm and kubeconform
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz linux-amd64/helm
+          install -m 0755 linux-amd64/helm bin/helm
+          curl -fsSLo kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
+          install -m 0755 kubeconform bin/kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: The chart's alert rules match deploy/prometheus/alerts.yml
+        run: diff -u deploy/prometheus/alerts.yml deploy/helm/mongorescue/files/alerts.yml
+
+      - name: helm lint
+        run: |
+          helm lint --strict deploy/helm/mongorescue
+          helm lint --strict deploy/helm/mongorescue -f deploy/helm/mongorescue/ci/full-values.yaml
+
+      - name: helm template + kubeconform
+        run: |
+          set -euo pipefail
+          helm template smoke deploy/helm/mongorescue > "$RUNNER_TEMP/default.yaml"
+          helm template smoke deploy/helm/mongorescue -f deploy/helm/mongorescue/ci/full-values.yaml > "$RUNNER_TEMP/full.yaml"
+          helm template smoke deploy/helm/mongorescue --set secretKey.generate=false --set persistence.enabled=false \
+            --set backups.persistence.enabled=false > "$RUNNER_TEMP/ephemeral.yaml"
+          # The template language is kubeconform's, not the shell's.
+          # shellcheck disable=SC2016
+          kubeconform -strict -summary -kubernetes-version "$KUBE_SCHEMA_VERSION" \
+            -schema-location default \
+            -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRD_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            "$RUNNER_TEMP/default.yaml" "$RUNNER_TEMP/full.yaml" "$RUNNER_TEMP/ephemeral.yaml"
+
+      - name: The values schema refuses invalid values
+        run: |
+          if helm template smoke deploy/helm/mongorescue --set config.logLevel=loud >/dev/null 2>&1; then
+            echo "an invalid log level was accepted"; exit 1
+          fi
+          if helm template smoke deploy/helm/mongorescue --set unknownKey=1 >/dev/null 2>&1; then
+            echo "an unknown top-level value was accepted"; exit 1
+          fi
+
+  kind:
+    name: Helm (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kind, kubectl and helm
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind" | sha256sum -c -
+          install -m 0755 kind bin/kind
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  kubectl" | sha256sum -c -
+          install -m 0755 kubectl bin/kubectl
+          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz linux-amd64/helm
+          install -m 0755 linux-amd64/helm bin/helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Install the chart on kind and run a backup
+        run: ./scripts/test-helm-kind.sh
+        env:
+          KIND_CLUSTER: mongorescue-ci
