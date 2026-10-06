@@ -4,6 +4,8 @@ MongoRescue holds the means to destroy your backups: an administrator, or anyone
 
 This page is the threat model. Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
 
+Delete protection keeps data longer on purpose, which works against erasure requests: [privacy.md](privacy.md#backups-and-erasure-requests) shows what each artefact holds, how long the grace period and retention keep it, and how to re-apply erasures after a restore.
+
 ## Delete protection
 
 ### Soft deletes and the grace period
