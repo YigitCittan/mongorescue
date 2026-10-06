@@ -166,6 +166,26 @@ func (r *BackupRecord) RequeueCopies(key string) {
 	}
 }
 
+// ErrNotCopied is the error recorded on the pending copies of a backup that did not
+// complete.
+const ErrNotCopied = "not copied: the backup did not complete"
+
+// AbandonCopies settles the copies of r, a backup that failed, was cancelled or
+// was interrupted: a pending copy was never made and is marked failed (it then
+// keeps no target in use), and a copy that was made (a synchronous copy finished
+// before the backup failed) marks r ArchiveCleanupPending, so the purge deletes it.
+func (r *BackupRecord) AbandonCopies() {
+	for i := range r.Copies {
+		c := &r.Copies[i]
+		switch {
+		case c.Status == CopyPending:
+			c.Status, c.Error, c.NextAttemptAt = CopyFailed, ErrNotCopied, nil
+		case c.MayExist():
+			r.ArchiveCleanupPending = true
+		}
+	}
+}
+
 // CopyTarget is a resolved copy target of a backup: its ID and name.
 type CopyTarget struct {
 	ID   string `json:"id"`

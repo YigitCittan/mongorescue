@@ -1406,6 +1406,9 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 		for _, b := range backups {
 			if b.Status == models.StatusInProgress {
 				b.Status, b.ErrorMessage, b.SizeBytes, b.SHA256 = models.StatusFailed, msg, 0, ""
+				// Copies it never made leave the queue; copies a synchronous run made
+				// already go to the purge (archive_cleanup_pending).
+				b.AbandonCopies()
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), logsafe.Error(err))
 				}

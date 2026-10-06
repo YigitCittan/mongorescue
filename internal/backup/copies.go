@@ -17,9 +17,6 @@ import (
 // backup is failed, and its archive and the copies already made are deleted.
 var ErrCopyFailed = errors.New("backup: copying the archive to a copy target failed")
 
-// errNotCopied is recorded on the pending copies of a backup that failed.
-const errNotCopied = "not copied: the backup did not complete"
-
 // CopyFunc copies the archive of a completed record to every pending copy of it
 // (record.Copies) and records the outcome on them; mbps caps the upload (0 =
 // unlimited). It is implemented by copies.Service.CopyAll.
@@ -90,18 +87,6 @@ func (e *Engine) deleteCopies(ctx context.Context, record *models.BackupRecord) 
 		default:
 			now := time.Now().UTC()
 			cp.Status, cp.PurgedAt = models.CopyPurged, &now
-		}
-	}
-}
-
-// abandonCopies marks the pending copies of a failed or cancelled record as not
-// made, so they leave the copy queue and do not keep their targets in use.
-func abandonCopies(record *models.BackupRecord) {
-	for i := range record.Copies {
-		if record.Copies[i].Status == models.CopyPending {
-			record.Copies[i].Status = models.CopyFailed
-			record.Copies[i].Error = errNotCopied
-			record.Copies[i].NextAttemptAt = nil
 		}
 	}
 }

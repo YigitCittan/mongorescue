@@ -810,7 +810,7 @@ func (e *Engine) fail(ctx context.Context, record *models.BackupRecord, err erro
 	record.Status = models.StatusFailed
 	record.SizeBytes = 0
 	record.SHA256 = ""
-	abandonCopies(record)
+	record.AbandonCopies()
 	record.Phases.Finished = models.Stamp(time.Now())
 	if c := runs.CancellationOf(ctx); c != nil {
 		if !errors.Is(err, runs.ErrCancelled) {

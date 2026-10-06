@@ -113,7 +113,7 @@ func TestFailedBackupAbandonsItsCopies(t *testing.T) {
 	e := copyEngine(drivers)
 	e.runner = runner
 	rec, err := e.Run(context.Background(), copyOptions("", "copy"))
-	if err == nil || rec.Copies[0].Status != models.CopyFailed || rec.Copies[0].Error != errNotCopied || rec.HoldsTarget("copy") {
+	if err == nil || rec.Copies[0].Status != models.CopyFailed || rec.Copies[0].Error != models.ErrNotCopied || rec.HoldsTarget("copy") {
 		t.Fatalf("run = %+v, %v", rec.Copies, err)
 	}
 }
