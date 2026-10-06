@@ -212,13 +212,12 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 	})
 	if err != nil {
 		// Fallback to estimated values if HeadObject fails
-		return &models.StorageObject{
+		return s.lock.describe(&models.StorageObject{
 			Key:         cleanKey,
 			ModTime:     startTime,
 			StorageType: models.StorageS3,
 			VersionID:   aws.ToString(uploadOutput.VersionID),
-			RetainUntil: retainUntil,
-		}, nil
+		}, retainUntil), nil
 	}
 
 	var size int64
@@ -245,15 +244,14 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		retainUntil = &until
 	}
 
-	return &models.StorageObject{
+	return s.lock.describe(&models.StorageObject{
 		Key:         cleanKey,
 		SizeBytes:   size,
 		ModTime:     modTime,
 		StorageType: models.StorageS3,
 		ETag:        etag,
 		VersionID:   versionID,
-		RetainUntil: retainUntil,
-	}, nil
+	}, retainUntil), nil
 }
 
 // abortTimeout bounds the abort of a failed multipart upload.
@@ -378,7 +376,8 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]*models.StorageO
 	return objects, nil
 }
 
-// Stat retrieves metadata for a specific key in S3.
+// Stat retrieves metadata for a specific key in S3, with the current version and its
+// Object Lock retention on a versioned bucket.
 func (s *S3Storage) Stat(ctx context.Context, key string) (*models.StorageObject, error) {
 	objKey, err := s.objectKey(key)
 	if err != nil {
@@ -412,13 +411,19 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (*models.StorageObject
 		etag = *head.ETag
 	}
 
-	return &models.StorageObject{
+	obj := &models.StorageObject{
 		Key:         cleanKey,
 		SizeBytes:   size,
 		ModTime:     modTime,
 		StorageType: models.StorageS3,
 		ETag:        etag,
-	}, nil
+		VersionID:   aws.ToString(head.VersionId),
+	}
+	if head.ObjectLockRetainUntilDate != nil {
+		until := head.ObjectLockRetainUntilDate.UTC()
+		obj.RetainUntil, obj.ObjectLockMode = &until, models.ObjectLockMode(strings.ToLower(string(head.ObjectLockMode)))
+	}
+	return obj, nil
 }
 
 // isS3NotFound tests if an AWS error corresponds to a 404 Not Found condition.

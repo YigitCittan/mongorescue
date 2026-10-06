@@ -41,6 +41,9 @@ type StorageObject struct {
 	// RetainUntil is the end of the object's S3 Object Lock retention: until then
 	// the version cannot be deleted. Nil for an object without retention.
 	RetainUntil *time.Time `json:"retain_until,omitempty"`
+
+	// ObjectLockMode is the Object Lock mode of the retention (with RetainUntil).
+	ObjectLockMode ObjectLockMode `json:"object_lock_mode,omitempty"`
 }
 
 // StorageTarget is a configured destination for backup archives: a local directory

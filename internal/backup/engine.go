@@ -698,6 +698,12 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	if savedObj != nil && savedObj.SizeBytes > 0 && record.SizeBytes == 0 {
 		record.SizeBytes = savedObj.SizeBytes
 	}
+	// The S3 version and Object Lock retention: reads and the purge address this
+	// version, and the purge waits for the retention to end.
+	record.SetStorageObject(savedObj)
+	if record.RetainUntil != nil {
+		tracker.Printf("archive locked (%s) until %s", record.ObjectLockMode, record.RetainUntil.Format(time.RFC3339))
+	}
 
 	record.Status = models.StatusCompleted
 	record.Phases.Finished = models.Stamp(finishTime)

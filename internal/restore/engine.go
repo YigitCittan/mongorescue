@@ -482,7 +482,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	tracker.StartTransfer(sourceRecord.SizeBytes)
 
 	// Open read stream from storage
-	stream, err := e.storage.Retrieve(ctx, sourceRecord.StorageKey)
+	stream, err := storage.RetrieveVersion(ctx, e.storage, sourceRecord.StorageKey, sourceRecord.StorageVersionID)
 	if err != nil {
 		return e.failRun(ctx, record, fmt.Errorf("retrieve backup stream from storage: %w", err),
 			fmt.Sprintf("retrieve backup stream: %v", err))
@@ -863,7 +863,7 @@ func (e *Engine) verifyArtifact(ctx context.Context, rec *models.BackupRecord) e
 		return ErrChecksumUnavailable
 	}
 
-	stream, err := e.storage.Retrieve(ctx, rec.StorageKey)
+	stream, err := storage.RetrieveVersion(ctx, e.storage, rec.StorageKey, rec.StorageVersionID)
 	if err != nil {
 		return fmt.Errorf("retrieve backup stream for verification: %w", err)
 	}

@@ -615,7 +615,9 @@ func (s *Service) prune(ctx context.Context, driver storage.Storage, keep string
 		if at, ok := snapshotTime(strings.TrimPrefix(k, prefix)); !ok || at.After(cutoff) {
 			continue
 		}
-		if err := driver.Delete(ctx, k); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		// A snapshot under an S3 Object Lock retention stays until it ends (a later
+		// run deletes it); a versioned bucket gets its version deleted.
+		if _, err := storage.DeleteUnlocked(ctx, driver, k, s.now()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			errs = append(errs, fmt.Errorf("delete %s: %w", k, err))
 		}
 	}

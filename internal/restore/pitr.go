@@ -510,7 +510,7 @@ func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, i
 	base := run.Base
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(base.SizeBytes)
-	stream, err := e.storage.Retrieve(ctx, base.StorageKey)
+	stream, err := storage.RetrieveVersion(ctx, e.storage, base.StorageKey, base.StorageVersionID)
 	if err != nil {
 		return false, fmt.Errorf("retrieve base backup %s: %w", base.ID, err)
 	}
@@ -761,7 +761,7 @@ func (e *Engine) verifyPITRChunks(ctx context.Context, run PITRRun) error {
 
 // hashChunk streams the stored object of c into a SHA-256 and compares it.
 func hashChunk(ctx context.Context, st storage.Storage, c *pitr.Chunk, count func(io.Reader) io.Reader) error {
-	rc, err := st.Retrieve(ctx, c.StorageKey)
+	rc, err := storage.RetrieveVersion(ctx, st, c.StorageKey, c.VersionID)
 	if err != nil {
 		return fmt.Errorf("retrieve: %w", err)
 	}
@@ -793,7 +793,7 @@ func (e *Engine) chunkStorage(ctx context.Context, targetID string) (storage.Sto
 // early, and its SHA-256 must match the chunk's.
 func (e *Engine) copyChunk(ctx context.Context, st storage.Storage, c *pitr.Chunk, filter *oplog.Filter, aw *oplog.ArchiveWriter) error {
 	tracker := runs.FromContext(ctx)
-	rc, err := st.Retrieve(ctx, c.StorageKey)
+	rc, err := storage.RetrieveVersion(ctx, st, c.StorageKey, c.VersionID)
 	if err != nil {
 		return fmt.Errorf("retrieve: %w", err)
 	}

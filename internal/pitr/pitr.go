@@ -259,6 +259,12 @@ type Chunk struct {
 	// longer part of any window, and its object stays until PurgeAfter.
 	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
 	PurgeAfter *time.Time `json:"purge_after,omitempty"`
+	// VersionID is the S3 version of the object on a versioned bucket (S3 Object
+	// Lock): reads and the purge address it.
+	VersionID string `json:"version_id,omitempty"`
+	// RetainUntil is the end of the object's S3 Object Lock retention: a deleted
+	// chunk is purged only afterwards.
+	RetainUntil *time.Time `json:"retain_until,omitempty"`
 }
 
 // Live reports whether the chunk is part of its chain: committed and not deleted.

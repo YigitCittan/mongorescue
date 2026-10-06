@@ -22,7 +22,7 @@ const (
 
 	chunkColumns = `id, stream_id, chain_id, target_id, storage_key, from_t, from_i, to_t, to_i,
 		first_term, last_term, entries, size_bytes, sha256, encrypted, encryption_mode, status,
-		created_at, verified_at, verify_error, deleted_at, purge_after`
+		created_at, verified_at, verify_error, deleted_at, purge_after, version_id, retain_until`
 )
 
 // streamData is the JSON data column of pitr_streams: the options without a column.
@@ -347,10 +347,11 @@ func (s *SQLiteStore) CommitChunk(ctx context.Context, c *pitr.Chunk) error {
 			return fmt.Errorf("%w: chunk %s starts at %s, the chain is at %s", pitr.ErrDiscontinuous, c.ID, c.From, last)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO oplog_chunks ("+chunkColumns+`)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
 			c.ID, c.StreamID, c.ChainID, c.TargetID, c.StorageKey, c.From.T, c.From.I, c.To.T, c.To.I,
 			c.FirstTerm, c.LastTerm, c.Entries, c.SizeBytes, c.SHA256, c.Encrypted, c.EncryptionMode,
-			string(pitr.ChunkCommitted), timeKey(created), nullTime(c.VerifiedAt), c.VerifyError); err != nil {
+			string(pitr.ChunkCommitted), timeKey(created), nullTime(c.VerifiedAt), c.VerifyError,
+			c.VersionID, nullTime(c.RetainUntil)); err != nil {
 			if isUniqueViolation(err) {
 				return pitr.ErrAlreadyExists
 			}
@@ -411,16 +412,18 @@ func (s *SQLiteStore) queryChunks(ctx context.Context, query string, args ...any
 			status                 string
 			created                int64
 			verified, deleted, pa  sql.NullInt64
+			retain                 sql.NullInt64
 		)
 		if err = rows.Scan(&c.ID, &c.StreamID, &c.ChainID, &c.TargetID, &c.StorageKey, &fromT, &fromI, &toT, &toI,
 			&c.FirstTerm, &c.LastTerm, &c.Entries, &c.SizeBytes, &c.SHA256, &c.Encrypted, &c.EncryptionMode,
-			&status, &created, &verified, &c.VerifyError, &deleted, &pa); err != nil {
+			&status, &created, &verified, &c.VerifyError, &deleted, &pa, &c.VersionID, &retain); err != nil {
 			return nil, fmt.Errorf("store: read oplog chunk: %w", err)
 		}
 		c.From, c.To = oplogTS(fromT, fromI), oplogTS(toT, toI)
 		c.Status = pitr.ChunkStatus(status)
 		c.CreatedAt, c.VerifiedAt = fromKey(created), nullableKey(verified)
 		c.DeletedAt, c.PurgeAfter = nullableKey(deleted), nullableKey(pa)
+		c.RetainUntil = nullableKey(retain)
 		out = append(out, &c)
 	}
 	if err = rows.Err(); err != nil {
@@ -510,11 +513,13 @@ func (s *SQLiteStore) DeleteChunks(ctx context.Context, ids []string, at, purgeA
 }
 
 // ListPurgeableChunks returns up to limit deleted chunks of a stream whose grace
-// period ended at now and whose object is still there, oldest first.
+// period ended at now and whose object is still there, oldest first. A chunk whose
+// object is still under its S3 Object Lock retention at now waits.
 func (s *SQLiteStore) ListPurgeableChunks(ctx context.Context, streamID string, now time.Time, limit int) ([]*pitr.Chunk, error) {
 	return s.queryChunks(ctx, "SELECT "+chunkColumns+` FROM oplog_chunks
 		WHERE stream_id = ? AND purge_after IS NOT NULL AND purge_after <= ? AND status != 'pruned'
-		ORDER BY purge_after, id LIMIT ?`, streamID, timeKey(now), limit)
+			AND (retain_until IS NULL OR retain_until <= ?)
+		ORDER BY purge_after, id LIMIT ?`, streamID, timeKey(now), timeKey(now), limit)
 }
 
 // MarkChunkPruned records that the object of deleted chunk id was removed. It

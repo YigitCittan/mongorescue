@@ -81,7 +81,7 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 
 	h := sha256.New()
 	counted := &hashReader{r: pr, h: h}
-	_, saveErr := driver.Save(ctx, key, counted)
+	saved, saveErr := driver.Save(ctx, key, counted)
 	if saveErr != nil {
 		cancelRead()
 	}
@@ -112,6 +112,9 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 	}
 	if stats.Entries > 0 {
 		c.FirstTerm, c.LastTerm = stats.First.Term, stats.Last.Term
+	}
+	if saved != nil {
+		c.VersionID, c.RetainUntil = saved.VersionID, saved.RetainUntil
 	}
 	if err := w.svc.cfg.Repo.CommitChunk(ctx, c); err != nil {
 		w.removeObject(ctx, driver, key)

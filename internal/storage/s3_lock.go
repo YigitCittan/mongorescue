@@ -81,6 +81,14 @@ func (l ObjectLock) apply(in *s3.PutObjectInput) *time.Time {
 	return &until
 }
 
+// describe records the retention until (nil without a lock) on obj.
+func (l ObjectLock) describe(obj *models.StorageObject, until *time.Time) *models.StorageObject {
+	if until != nil {
+		obj.RetainUntil, obj.ObjectLockMode = until, l.Mode
+	}
+	return obj
+}
+
 // Versioned is implemented by drivers that can address one version of an object
 // (an S3 bucket with versioning, as Object Lock requires).
 type Versioned interface {
@@ -124,6 +132,22 @@ func DeleteVersion(ctx context.Context, s Storage, key, versionID string) error 
 		return v.DeleteVersion(ctx, key, versionID)
 	}
 	return s.Delete(ctx, key)
+}
+
+// DeleteUnlocked deletes the current version of key from s unless it is under an
+// Object Lock retention at now, in which case it returns the end of the retention
+// and deletes nothing (the caller retries later). It reads the object's version and
+// retention first (Stat), so on a versioned bucket the version itself is deleted
+// and its space freed, not hidden behind a delete marker.
+func DeleteUnlocked(ctx context.Context, s Storage, key string, now time.Time) (*time.Time, error) {
+	obj, err := s.Stat(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if obj.RetainUntil != nil && now.Before(*obj.RetainUntil) {
+		return obj.RetainUntil, nil
+	}
+	return nil, DeleteVersion(ctx, s, key, obj.VersionID)
 }
 
 // SetLegalHold turns the legal hold of version versionID of key on s on or off; it

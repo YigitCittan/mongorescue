@@ -379,14 +379,14 @@ func (r *BackupRecord) LockedAt(now time.Time) bool {
 
 // SetStorageObject records the S3 version and Object Lock retention of the stored
 // archive obj (nothing for a nil obj or one without them).
-func (r *BackupRecord) SetStorageObject(obj *StorageObject, mode ObjectLockMode) {
+func (r *BackupRecord) SetStorageObject(obj *StorageObject) {
 	if obj == nil {
 		return
 	}
 	r.StorageVersionID = obj.VersionID
 	if obj.RetainUntil != nil {
 		until := obj.RetainUntil.UTC()
-		r.RetainUntil, r.ObjectLockMode = &until, mode
+		r.RetainUntil, r.ObjectLockMode = &until, obj.ObjectLockMode
 	}
 }
 

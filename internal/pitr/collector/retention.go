@@ -281,7 +281,7 @@ func (s *Service) purgeChunk(ctx context.Context, c *pitr.Chunk) error {
 	defer unlock()
 	driver, err := s.cfg.Storage(ctx, c.TargetID)
 	if err == nil {
-		err = driver.Delete(ctx, c.StorageKey)
+		err = storage.DeleteVersion(ctx, driver, c.StorageKey, c.VersionID)
 	}
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return fmt.Errorf("delete the object of chunk %s: %w", c.ID, err)
