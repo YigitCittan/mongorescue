@@ -73,7 +73,7 @@ func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.
 		}
 		return nil, public(msg, ErrNoChainTest, lastErr)
 	}
-	cloneID, err := models.NewPITRCloneID()
+	cloneID, err := models.NewCloneID()
 	if err != nil {
 		return nil, err
 	}

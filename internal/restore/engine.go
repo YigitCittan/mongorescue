@@ -95,6 +95,10 @@ type Engine struct {
 	// them (WithCommandAudit).
 	commands CommandRunner
 	audit    CommandAudit
+	// now is the clock that names restores (WithClock) and newCloneID draws the
+	// random part of clone names (models.NewCloneID, from crypto/rand).
+	now        func() time.Time
+	newCloneID func() (string, error)
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
@@ -215,6 +219,16 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
+// WithClock sets the clock that stamps restores and names their safe clones
+// (time.Now by default); nil keeps the default.
+func WithClock(now func() time.Time) Option {
+	return func(e *Engine) {
+		if now != nil {
+			e.now = now
+		}
+	}
+}
+
 // BypassCheck reports whether the user of the connection string uri may bypass
 // document validation on every collection of database.
 type BypassCheck func(ctx context.Context, uri, database string) (bool, error)
@@ -257,6 +271,8 @@ func NewEngine(store storage.Storage, defaultURI string, opts ...Option) *Engine
 		logger:       slog.Default(),
 		defaultURI:   defaultURI,
 		verifyPolicy: models.VerifyAuto,
+		now:          time.Now,
+		newCloneID:   models.NewCloneID,
 	}
 
 	for _, opt := range opts {
@@ -302,7 +318,7 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 		return nil, fmt.Errorf("restore: %w", err)
 	}
 
-	startTime := time.Now().UTC()
+	startTime := e.now().UTC()
 	// Sanitize the database component so the derived ID satisfies models.ValidateID.
 	// A random suffix keeps IDs unique for restores started within the same second.
 	const restoreIDOverhead = len("rst___") + len("20060102_150405") + models.IDSuffixLength
@@ -314,18 +330,30 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 	restoreID := fmt.Sprintf("rst_%s_%s_%s", idDB, startTime.Format("20060102_150405"), suffix)
 
 	// Determine destination database name: a fresh clone unless in place was confirmed.
-	targetDB := models.RescueDatabaseName(sourceRecord.Database, startTime)
-	if clone := strings.TrimSpace(req.CloneDatabase); clone != "" && !req.InPlace() {
+	// This is the only place a safe clone is named: the preflight and the restore
+	// both use the record's TargetDatabase.
+	var targetDB string
+	switch clone := strings.TrimSpace(req.CloneDatabase); {
+	case req.InPlace():
+		targetDB = strings.TrimSpace(req.TargetDatabase)
+		if targetDB == "" {
+			targetDB = sourceRecord.Database
+		}
+	case clone != "":
 		// A named clone (restore tests) must never be the source database itself.
 		if clone == sourceRecord.Database {
 			return nil, fmt.Errorf("restore: clone database %s is the source database", clone)
 		}
 		targetDB = clone
-	}
-	if req.InPlace() {
-		targetDB = strings.TrimSpace(req.TargetDatabase)
-		if targetDB == "" {
-			targetDB = sourceRecord.Database
+	default:
+		// The random clone ID keeps restores of one database started within the
+		// same second apart.
+		cloneID, idErr := e.newCloneID()
+		if idErr != nil {
+			return nil, fmt.Errorf("restore: %w", idErr)
+		}
+		if targetDB, err = models.RescueDatabaseName(sourceRecord.Database, startTime, cloneID); err != nil {
+			return nil, fmt.Errorf("restore: %w", err)
 		}
 	}
 

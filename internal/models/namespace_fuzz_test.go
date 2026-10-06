@@ -7,11 +7,11 @@ import (
 )
 
 // FuzzRescueDatabaseName checks that the safe-clone target of a valid source database
-// is itself a valid database name of at most 63 bytes, ends with "_rescue_<timestamp>"
-// and starts with (a prefix of) the source name, and that a name that fits is kept.
+// is itself a valid database name of at most 63 bytes, ends with
+// "_rescue_<timestamp>_<id>" and starts with (a prefix of) the source name, and that a name that fits is kept.
 func FuzzRescueDatabaseName(f *testing.F) {
 	for _, s := range []string{
-		"shop", "ecommerce_prod", strings.Repeat("a", 40), strings.Repeat("a", 41), strings.Repeat("a", 63),
+		"shop", "ecommerce_prod", strings.Repeat("a", 35), strings.Repeat("a", 36), strings.Repeat("a", 63),
 		strings.Repeat("é", 30), "日本語データベース名前がとても長い場合のテストケース", "a*b", "a-b_c", "", "legacy db",
 	} {
 		f.Add(s, int64(1790000000))
@@ -24,8 +24,11 @@ func FuzzRescueDatabaseName(f *testing.F) {
 			return
 		}
 		at := time.Unix(unix, 0)
-		name := RescueDatabaseName(source, at)
-		suffix := "_rescue_" + at.UTC().Format("20060102_150405")
+		name, err := RescueDatabaseName(source, at, "0f9a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		suffix := "_rescue_" + at.UTC().Format("20060102_150405") + "_0f9a"
 		if !strings.HasSuffix(name, suffix) || !strings.HasPrefix(source, strings.TrimSuffix(name, suffix)) {
 			t.Fatalf("RescueDatabaseName(%q) = %q; want a prefix of the source and %q", source, name, suffix)
 		}
@@ -36,8 +39,8 @@ func FuzzRescueDatabaseName(f *testing.F) {
 			t.Fatalf("RescueDatabaseName(%q) = %q shortened a name that fits", source, name)
 		}
 		if ValidateDatabaseName(source) == nil {
-			if err := ValidateDatabaseName(name); err != nil {
-				t.Fatalf("RescueDatabaseName(%q) = %q: %v", source, name, err)
+			if verr := ValidateDatabaseName(name); verr != nil {
+				t.Fatalf("RescueDatabaseName(%q) = %q: %v", source, name, verr)
 			}
 		}
 	})

@@ -143,9 +143,15 @@ type fakeRestorer struct {
 func (r *fakeRestorer) CanDecrypt() bool { return r.canDecrypt }
 
 func (r *fakeRestorer) Prepare(req models.RestoreRequest, src *models.BackupRecord) (*models.RestoreRecord, error) {
-	target := models.RescueDatabaseName(src.Database, time.Now())
-	if req.CloneDatabase != "" {
-		target = req.CloneDatabase
+	target := req.CloneDatabase
+	if target == "" {
+		id, err := models.NewCloneID()
+		if err != nil {
+			return nil, err
+		}
+		if target, err = models.RescueDatabaseName(src.Database, time.Now(), id); err != nil {
+			return nil, err
+		}
 	}
 	return &models.RestoreRecord{ID: "rst_x", BackupID: src.ID, TargetDatabase: target, Status: models.RestoreStatusInProgress}, nil
 }

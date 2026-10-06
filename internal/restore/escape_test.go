@@ -45,7 +45,10 @@ func TestRestoreArgsEscapeWildcards(t *testing.T) {
 	e := NewEngine(storage.NewMockStorage(), "mongodb://h")
 	no := false
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	clone := models.RescueDatabaseName("x*", at)
+	clone, err := models.RescueDatabaseName("x*", at, "ab12")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name           string
 		source, target string
@@ -58,9 +61,9 @@ func TestRestoreArgsEscapeWildcards(t *testing.T) {
 		{"in place, selected a*, a\\b and *", "shop", "shop", true, []string{"a*", `a\b`, "*"},
 			[]string{`--nsInclude=shop.a\*`, `--nsInclude=shop.a\\b`, `--nsInclude=shop.\*`}},
 		{"safe clone of database x*", "x*", clone, false, nil,
-			[]string{`--nsFrom=x\*.*`, `--nsTo=x\*_rescue_20260925_120000.*`, `--nsInclude=x\*.*`}},
+			[]string{`--nsFrom=x\*.*`, `--nsTo=x\*_rescue_20260925_120000_ab12.*`, `--nsInclude=x\*.*`}},
 		{"safe clone of database x*, selected a*", "x*", clone, false, []string{"a*"},
-			[]string{`--nsFrom=x\*.*`, `--nsTo=x\*_rescue_20260925_120000.*`, `--nsInclude=x\*.a\*`}},
+			[]string{`--nsFrom=x\*.*`, `--nsTo=x\*_rescue_20260925_120000_ab12.*`, `--nsInclude=x\*.a\*`}},
 		{"in place into database x*, selected a*", "x*", "x*", true, []string{"a*"},
 			[]string{`--nsInclude=x\*.a\*`}},
 		{"in place from x* into y*", "x*", "y*", true, nil,
