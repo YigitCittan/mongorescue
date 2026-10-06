@@ -13,6 +13,9 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/runs"
+	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // Defaults of Config.
@@ -40,6 +43,9 @@ type Store interface {
 	// PendingCopyRecords returns the completed backups with a pending or failed
 	// copy.
 	PendingCopyRecords(ctx context.Context) ([]*models.BackupRecord, error)
+	// GetBackupRecord returns a backup record or an error wrapping
+	// store.ErrNotFound.
+	GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
 	// UpdateBackupRecord applies fn to the stored record id in one transaction.
 	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
 }
@@ -335,26 +341,59 @@ func succeed(cp *models.BackupCopy, obj *models.StorageObject, at time.Time, sha
 }
 
 // attempt tries queued copy targetID of rec once and records the outcome.
+//
+// The object is written and recorded under the deletion lock of the copy's object
+// (runs.ArchiveKey), the lock the purge takes before it deletes a copy, so a purge
+// never runs between the upload and its record. Under the lock the backup is read
+// again: one that is no longer completed, or whose copy left the queue, is not
+// copied. A backup deleted while its copy uploads keeps the copy on its record
+// (the purge then removes it); one that is gone, or whose copy was purged,
+// meanwhile gets the new object deleted again, so no object is left untracked.
 func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetID string) error {
-	cp := rec.Copy(targetID)
-	obj, copyErr := s.copyOne(ctx, rec, cp, s.mbps(ctx, rec))
-	if ctx.Err() != nil {
-		// Stopped: the copy stays pending and is tried again after the restart.
+	key := rec.Copy(targetID).StorageKey
+	if key == "" {
+		key = rec.StorageKey
+	}
+	unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(targetID, key))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	cur, err := s.cfg.Store.GetBackupRecord(ctx, rec.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("reload %s: %w", rec.ID, err)
+	}
+	cp := cur.Copy(targetID)
+	if cur.Status != models.StatusCompleted || cur.StorageKey != rec.StorageKey || cp == nil || !waiting(cp) || cp.StorageKey != key {
+		return nil
+	}
+	obj, copyErr := s.copyOne(ctx, cur, cp, s.mbps(ctx, cur))
+	if ctx.Err() != nil && copyErr != nil {
+		// Stopped: the copy stays pending (an object it may have left is still
+		// tracked by it) and is tried again after the restart.
 		return ctx.Err()
 	}
 	at := s.now().UTC()
 	// A copy that failed before (or that a verification found damaged) recovers.
 	var failing bool
 	var updated models.BackupCopy
-	_, err := s.cfg.Store.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
+	_, err = s.cfg.Store.UpdateBackupRecord(context.WithoutCancel(ctx), rec.ID, func(r *models.BackupRecord) error {
 		c := r.Copy(targetID)
-		if c == nil || !waiting(c) {
+		switch {
+		case c == nil || c.StorageKey != key || c.Status == models.CopyPurged:
+			return errGone
+		case copyErr != nil && !waiting(c):
 			return errSkip
 		}
+		// Recorded whatever the backup's state now: a backup deleted meanwhile
+		// keeps the copy, and its purge removes it.
 		failing = c.Status == models.CopyFailed || c.Error != ""
 		c.Attempts++
 		if copyErr == nil {
-			succeed(c, obj, at, rec.SHA256)
+			succeed(c, obj, at, cur.SHA256)
 		} else {
 			c.Status, c.SHA256OK = models.CopyFailed, false
 			c.Error = redact.Text(copyErr.Error())
@@ -370,14 +409,49 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 	switch {
 	case errors.Is(err, errSkip):
 		return nil
+	case errors.Is(err, errGone), errors.Is(err, store.ErrNotFound):
+		if copyErr == nil {
+			s.removeUntracked(ctx, rec.ID, targetID, key, obj)
+		}
+		return nil
 	case err != nil:
 		return fmt.Errorf("record the copy of %s to %s: %w", rec.ID, targetID, err)
 	}
-	s.report(ctx, rec, &updated, failing, copyErr)
+	s.report(ctx, cur, &updated, failing, copyErr)
 	if copyErr != nil {
 		return fmt.Errorf("copy %s to %s: %w", rec.ID, targetID, copyErr)
 	}
 	return nil
+}
+
+// errGone aborts the record of a copy whose backup or copy entry is gone.
+var errGone = errors.New("copies: the backup or its copy is gone")
+
+// removeUntracked deletes the object of a copy that no record holds any more (its
+// backup was removed or purged while it uploaded). An object under its Object Lock
+// cannot be deleted before the lock ends; that is logged as an error.
+func (s *Service) removeUntracked(ctx context.Context, backupID, targetID, key string, obj *models.StorageObject) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	attrs := []any{logsafe.Attr("backup_id", backupID), logsafe.Attr("storage_target_id", targetID), logsafe.Attr("storage_key", key)}
+	dst, err := s.cfg.Storages(cleanupCtx, targetID)
+	var until *time.Time
+	if err == nil {
+		version := ""
+		if obj != nil {
+			version = obj.VersionID
+		}
+		until, err = storage.Purge(cleanupCtx, dst, key, version, s.now())
+	}
+	switch {
+	case err != nil && !errors.Is(err, storage.ErrNotFound):
+		s.logger.Error("cannot delete the copy of a backup that was removed while it uploaded", append(attrs, logsafe.Error(err))...)
+	case until != nil:
+		s.logger.Error("the copy of a backup that was removed while it uploaded is locked; delete it once its lock ends",
+			append(attrs, slog.Time("retain_until", *until))...)
+	default:
+		s.logger.Info("deleted the copy of a backup that was removed while it uploaded", attrs...)
+	}
 }
 
 // errSkip aborts the update of a copy that left the queue meanwhile.
