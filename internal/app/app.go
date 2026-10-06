@@ -850,9 +850,78 @@ func (a *App) Handler() http.Handler {
 }
 
 // Busy reports whether a backup or restore runs (API-started or scheduled), so an
-// embedded host can hold back a restart, such as the desktop app's update.
+// embedded host can hold back a restart, such as the desktop app's update. A run of
+// a multi-database job counts between its databases too.
 func (a *App) Busy() bool {
-	return len(a.runs.Active()) > 0
+	return !a.runs.Idle()
+}
+
+// drainPoll is how often Drain checks whether the runs ended, and
+// drainProgressInterval how often it logs the runs it still waits for.
+const (
+	drainPoll             = 250 * time.Millisecond
+	drainProgressInterval = 30 * time.Second
+)
+
+// Drain prepares a graceful shutdown: it refuses new backups and restores (see
+// PauseRuns: the API answers 503, the scheduler skips its triggers) and waits until
+// the running ones end, grace passes or ctx ends. It reports whether no run is left.
+// It does not stop anything itself: Stop or ForceStop (for the runs left) follow.
+func (a *App) Drain(ctx context.Context, grace time.Duration) bool {
+	a.PauseRuns()
+	if !a.Busy() {
+		return true
+	}
+	if grace <= 0 {
+		return false
+	}
+	a.logger.Info("waiting for running backups and restores to finish before shutting down; new runs are refused",
+		slog.Any("active_runs", a.runs.Active()), slog.Duration("grace", grace))
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	poll := time.NewTicker(drainPoll)
+	defer poll.Stop()
+	lastLog := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return !a.Busy()
+		case <-deadline.C:
+			return !a.Busy()
+		case <-poll.C:
+			if !a.Busy() {
+				a.logger.Info("running backups and restores finished; shutting down")
+				return true
+			}
+			if time.Since(lastLog) >= drainProgressInterval {
+				lastLog = time.Now()
+				a.logger.Info("still waiting for running backups and restores", slog.Any("active_runs", a.runs.Active()))
+			}
+		}
+	}
+}
+
+// ShutdownReason is the reason recorded on the backups and restores a shutdown
+// cancels because they did not finish within the shutdown grace period.
+const ShutdownReason = "interrupted: MongoRescue shut down before the run finished"
+
+// shutdown drains the runs for at most a.cfg.ShutdownGrace (a second signal on
+// ctx stops the wait), stops the HTTP server and then stops the App: with
+// ForceStop(ShutdownReason) when runs are left, so they are recorded as cancelled with
+// their partial archives removed, and with Stop otherwise.
+func (a *App) shutdown(ctx context.Context) error {
+	idle := a.Drain(ctx, a.cfg.ShutdownGrace)
+	drainCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
+	err := a.server.Shutdown(drainCtx)
+	cancel()
+	if !idle && a.Busy() {
+		a.logger.Warn("cancelling the backups and restores still running",
+			slog.Any("active_runs", a.runs.Active()), slog.Duration("grace", a.cfg.ShutdownGrace))
+		a.ForceStop(ShutdownReason)
+		return err
+	}
+	a.Stop()
+	return err
 }
 
 // SetupCode returns the one-time setup code while no user exists, or "" otherwise.
@@ -1122,9 +1191,10 @@ func (a *App) Run() error {
 	select {
 	case <-ctx.Done():
 		a.logger.Info("shutdown signal received, initiating graceful exit...")
-		drainCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
-		runErr = a.server.Shutdown(drainCtx)
-		cancel()
+		// A second signal ends the wait for running backups and restores.
+		again, stopAgain := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		runErr = a.shutdown(again)
+		stopAgain()
 	case runErr = <-serverErrChan:
 	}
 	return runErr

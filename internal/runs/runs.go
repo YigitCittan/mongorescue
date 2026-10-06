@@ -65,7 +65,10 @@ type Manager struct {
 	closed bool
 	// refusing makes Acquire and Go return ErrShuttingDown until Accept.
 	refusing bool
-	wg       sync.WaitGroup
+	// started counts the operations started with Go that have not returned, keyed
+	// or not.
+	started int
+	wg      sync.WaitGroup
 }
 
 // NewManager returns a Manager whose operations run under a context detached from any
@@ -107,11 +110,17 @@ func (m *Manager) Go(key string, fn func(ctx context.Context)) error {
 		return err
 	}
 	m.wg.Add(1)
+	m.started++
 	m.mu.Unlock()
 
 	release := m.releaseFunc(key)
 	go func() {
 		defer m.wg.Done()
+		defer func() {
+			m.mu.Lock()
+			m.started--
+			m.mu.Unlock()
+		}()
 		defer release()
 		defer func() {
 			if r := recover(); r != nil {
@@ -145,6 +154,14 @@ func (m *Manager) Running(key string) bool {
 	defer m.mu.Unlock()
 	_, ok := m.active[key]
 	return ok
+}
+
+// Idle reports whether no operation runs: no key is held and every operation started
+// with Go, with or without a key (such as a run of a multi-database job), returned.
+func (m *Manager) Idle() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.active) == 0 && m.started == 0
 }
 
 // Active returns the keys of the operations currently running, sorted. Operations

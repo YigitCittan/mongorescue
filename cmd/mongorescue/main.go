@@ -98,6 +98,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	port := fs.Int("port", 0, fmt.Sprintf("Listen port (env %s, default %d)", config.EnvPort, config.DefaultPort))
 	dashboard := fs.Bool("dashboard", false, "Serve the embedded web dashboard (env "+config.EnvDashboard+", default false)")
 	toolsDir := fs.String("tools-dir", "", "Directory searched first for mongodump and mongorestore (env "+config.EnvToolsDir+", default <executable dir>/tools, then PATH)")
+	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -117,6 +118,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
+	var graceErr error
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "data-dir":
@@ -133,8 +135,13 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			if v := strings.TrimSpace(*toolsDir); v != "" {
 				cfg.ToolsDir = filepath.Clean(v)
 			}
+		case "shutdown-grace":
+			cfg.ShutdownGrace, graceErr = config.ParseShutdownGrace(*shutdownGrace)
 		}
 	})
+	if graceErr != nil {
+		return nil, 0, false, fmt.Errorf("-shutdown-grace: %w", graceErr)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, 0, false, err
 	}
