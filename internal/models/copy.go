@@ -93,10 +93,19 @@ func (c *BackupCopy) Healthy() bool {
 	return c.Status == CopyDone && c.Verification != VerificationMismatch
 }
 
-// MayExist reports whether the object of c may exist on its target: anything but a
-// purged copy or one that was never attempted.
+// MayExist reports whether the object of c exists on its target or is about to be
+// written: a done or pending copy, or a copy that is not purged and still under its
+// Object Lock. A failed copy wrote no object (a mismatch fails the upload before it
+// completes). The store's in-use check of storage targets uses the same rule.
 func (c *BackupCopy) MayExist() bool {
-	return c.Status != CopyPurged && (c.Status != CopyPending || c.Attempts > 0 || c.CopiedAt != nil)
+	switch c.Status {
+	case CopyDone, CopyPending:
+		return true
+	case CopyPurged:
+		return false
+	default:
+		return c.RetainUntil != nil
+	}
 }
 
 // SetStorageObject records the S3 version and Object Lock retention of the stored

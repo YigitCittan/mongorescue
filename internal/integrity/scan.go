@@ -247,6 +247,12 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 			return fmt.Errorf("list the oplog chunks of the target: %w", err)
 		}
 	}
+	var copyKeys map[string]bool
+	if s.cfg.CopyKeys != nil {
+		if copyKeys, err = s.cfg.CopyKeys(ctx, target.ID); err != nil {
+			return fmt.Errorf("list the backup copies on the target: %w", err)
+		}
+	}
 
 	present := make(map[string]bool, len(objects))
 	for _, obj := range objects {
@@ -270,7 +276,7 @@ func (s *Service) scan(ctx context.Context, target *models.StorageTarget, listSt
 			continue
 		}
 		rec := byKey[obj.Key]
-		if rec != nil && liveStatus(rec.Status) {
+		if (rec != nil && liveStatus(rec.Status)) || copyKeys[obj.Key] {
 			continue
 		}
 		if unreadableOwner(index, readable, obj.Key) != "" {

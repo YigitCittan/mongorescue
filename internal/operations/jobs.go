@@ -120,6 +120,11 @@ type JobUpdate struct {
 	// BackupWindow, when set, replaces the job's backup window; an empty object
 	// ({}) removes it.
 	BackupWindow *models.BackupWindow `json:"backup_window"`
+	// CopyTargets, when set, replaces the storage targets every backup of the job
+	// is copied to (an empty list removes them).
+	CopyTargets *[]string `json:"copy_targets"`
+	// CopyMode, when set, replaces the job's copy mode ("async" or "sync").
+	CopyMode *models.CopyMode `json:"copy_mode"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -229,6 +234,17 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 		return err
 	}
 	job.StorageTargetID, job.StorageType = target.ID, target.Type
+	resolved, err := s.resolveCopyTargets(ctx, job.CopyTargets, target.ID, job.CopyMode)
+	if err != nil {
+		return err
+	}
+	job.CopyTargets = nil
+	for _, c := range resolved {
+		job.CopyTargets = append(job.CopyTargets, c.ID)
+	}
+	if len(job.CopyTargets) == 0 {
+		job.CopyMode = ""
+	}
 	s.snapshotKnownDatabases(ctx, job)
 	return nil
 }
@@ -396,6 +412,10 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	job.RetentionCount = derefOr(u.RetentionCount, existing.RetentionCount)
 	job.Gzip = derefOr(u.Gzip, existing.Gzip)
 	job.IncludeUsersAndRoles = derefOr(u.IncludeUsersAndRoles, existing.IncludeUsersAndRoles)
+	if u.CopyTargets != nil {
+		job.CopyTargets = slices.Clone(*u.CopyTargets)
+	}
+	job.CopyMode = derefOr(u.CopyMode, existing.CopyMode)
 	CarryKnownDatabases(job, existing)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
 	switch {

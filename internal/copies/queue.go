@@ -386,13 +386,12 @@ var errSkip = errors.New("copies: the copy left the queue")
 func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *models.BackupCopy, prev models.CopyStatus, copyErr error) {
 	attrs := []any{logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_target_id", cp.TargetID), slog.Int("attempts", cp.Attempts)}
 	var typ events.EventType
-	switch {
-	case copyErr == nil:
+	if copyErr == nil {
 		s.logger.Info("backup copied", attrs...)
 		if prev == models.CopyFailed {
 			typ = events.BackupCopyRecovered
 		}
-	default:
+	} else {
 		s.logger.Warn("backup copy failed", append(attrs, slog.String("error", cp.Error))...)
 		if prev != models.CopyFailed {
 			typ = events.BackupCopyFailed

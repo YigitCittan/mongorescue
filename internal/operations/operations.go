@@ -425,8 +425,12 @@ func (s *Service) RetryBackup(ctx context.Context, id string, trigger models.Bac
 			ConnectionID:    original.ConnectionID,
 			// A failed backup records whether it was meant to include users and roles.
 			IncludeUsersAndRoles: original.UsersAndRoles,
+			CopyMode:             original.CopyMode,
 		},
 		Trigger: trigger,
+	}
+	for _, c := range original.Copies {
+		req.CopyTargets = append(req.CopyTargets, c.TargetID)
 	}
 	// The backup's own filter, so a database of a multi-database run (whose filter
 	// is per database) is retried with it.
@@ -489,6 +493,13 @@ func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.
 		return opts, err
 	}
 	opts.StorageTargetID, opts.StorageTargetName, opts.StorageType = target.ID, target.Name, target.Type
+	if opts.Copies, err = s.resolveCopyTargets(ctx, opts.CopyTargets, target.ID, opts.CopyMode); err != nil {
+		return opts, err
+	}
+	opts.CopyTargets = nil
+	for _, c := range opts.Copies {
+		opts.CopyTargets = append(opts.CopyTargets, c.ID)
+	}
 	opts.Gzip = derefOr(req.Gzip, s.settings().General.DefaultGzip)
 	opts.Trigger = models.TriggerManual
 	if req.Trigger == models.TriggerMCP {

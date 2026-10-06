@@ -167,6 +167,10 @@ type Config struct {
 	// target (implemented by store.SQLiteStore.ChunkKeys); nil means none, and
 	// chunk objects are then never reported as orphans.
 	ChunkKeys func(ctx context.Context, targetID string) (map[string]bool, error)
+	// CopyKeys returns the storage keys of the backup copies recorded on a target
+	// (implemented by store.SQLiteStore.CopyKeys); nil means none. Storage scans
+	// never report them as orphans.
+	CopyKeys func(ctx context.Context, targetID string) (map[string]bool, error)
 	// ObserveScan receives the outcome of every storage scan (metrics).
 	ObserveScan func(targetID string, orphans, missing int, at time.Time)
 	// Logger receives operational logs; nil means slog.Default().
