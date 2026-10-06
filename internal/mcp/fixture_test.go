@@ -104,6 +104,9 @@ func newFixtureWith(t *testing.T, mutate func(*Config), inspector operations.Res
 	f := &fixture{store: st, audit: audit.NewService(st, nil), registry: registry, observed: map[string]int{}}
 	cfg := Config{
 		Operations: ops, Connections: conns, Audit: f.audit, Version: "test",
+		// The flow tests poll every 20 ms; a slow runner would otherwise hit the
+		// default limit. The rate limit tests set their own.
+		RateLimit: RateLimit{PerMinute: 60000, Burst: 10000},
 		ObserveCall: func(tool, result string) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
