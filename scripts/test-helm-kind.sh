@@ -44,9 +44,17 @@ CREATED_CLUSTER=0
 log() { printf '==> %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+stop_port_forward() {
+  if [ -n "$PF_PID" ]; then
+    kill "$PF_PID" >/dev/null 2>&1 || true
+    wait "$PF_PID" 2>/dev/null || true
+    PF_PID=""
+  fi
+}
+
 cleanup() {
   local status=$?
-  if [ -n "$PF_PID" ]; then kill "$PF_PID" >/dev/null 2>&1 || true; fi
+  stop_port_forward
   if [ "$status" -ne 0 ]; then
     echo "---- pods ----"
     kubectl -n "$NAMESPACE" get pods -o wide 2>&1 || true
@@ -123,8 +131,18 @@ spec:
     - port: 27017
 EOF
 kubectl -n "$NAMESPACE" rollout status deployment/mongo --timeout=300s >/dev/null
-kubectl -n "$NAMESPACE" exec deploy/mongo -- mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval \
-  'db.getSiblingDB("shop").orders.insertMany(Array.from({length: 500}, (_, i) => ({n: i, item: "widget-" + i})))' >/dev/null
+# The image's first start runs a temporary mongod without the root user (which the
+# readiness probe can already reach) and then restarts with authentication: retry.
+seeded=0
+for _ in $(seq 1 60); do
+  if kubectl -n "$NAMESPACE" exec deploy/mongo -- mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval \
+    'db.getSiblingDB("shop").orders.insertMany(Array.from({length: 500}, (_, i) => ({n: i, item: "widget-" + i})))' >/dev/null 2>&1; then
+    seeded=1
+    break
+  fi
+  sleep 2
+done
+[ "$seeded" = 1 ] || fail "could not seed the shop database"
 log "MongoDB is ready with a seeded shop database"
 
 helm upgrade --install "$RELEASE" "$CHART" --namespace "$NAMESPACE" \
@@ -200,8 +218,7 @@ size=$(echo "$state" | awk '{print $2}')
 [ "$size" -gt 0 ] || fail "completed backup has size $size"
 log "backup completed ($size bytes)"
 
-kill "$PF_PID" >/dev/null 2>&1 || true
-PF_PID=""
+stop_port_forward
 kubectl -n "$NAMESPACE" rollout restart "statefulset/$FULLNAME" >/dev/null
 kubectl -n "$NAMESPACE" rollout status "statefulset/$FULLNAME" --timeout=300s >/dev/null
 kubectl -n "$NAMESPACE" port-forward "svc/$FULLNAME" "$PORT:8080" >"$WORK/pf.log" 2>&1 &
@@ -210,8 +227,6 @@ for _ in $(seq 1 30); do
   if curl -fsS "$BASE/api/v1/health" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-kubectl -n "$NAMESPACE" logs "$FULLNAME-0" --previous 2>/dev/null | grep -q 'shutdown signal received' \
-  || log "(the previous pod's log is not available; skipped its shutdown check)"
 state=$(backup_status)
 case "$state" in completed\ *) ;; *) fail "after a restart the backup is $state" ;; esac
 log "after a rolling restart the session, the database and the backup are intact"
