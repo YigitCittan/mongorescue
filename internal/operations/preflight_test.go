@@ -13,6 +13,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -42,12 +43,16 @@ type fakeInspector struct {
 	opened      int
 	closed      int
 	deadline    time.Duration
+	// openedTLS and openedURI are the TLS material and URI of the last OpenTarget.
+	openedTLS *models.ConnectionTLS
+	openedURI string
 }
 
-func (f *fakeInspector) OpenTarget(ctx context.Context, _ string) (connections.RestoreTarget, error) {
+func (f *fakeInspector) OpenTarget(ctx context.Context, uri string) (connections.RestoreTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opened++
+	f.openedTLS, f.openedURI = mongotls.FromContext(ctx), uri
 	if d, ok := ctx.Deadline(); ok {
 		f.deadline = time.Until(d)
 	}

@@ -172,12 +172,14 @@ func (s *Server) handleTestConnectionURI(w http.ResponseWriter, r *http.Request)
 		// backup with them would read from.
 		ReadPreference     string              `json:"read_preference"`
 		ReadPreferenceTags []map[string]string `json:"read_preference_tags"`
+		// TLSInput is the TLS material of the form (see connections.TLSInput).
+		connections.TLSInput
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	res, err := svc.TestURIWith(r.Context(), req.URI, req.ConnectionID,
-		models.ReadPreference{Mode: req.ReadPreference, Tags: req.ReadPreferenceTags})
+	res, err := svc.TestURIWithTLS(r.Context(), req.URI, req.ConnectionID,
+		models.ReadPreference{Mode: req.ReadPreference, Tags: req.ReadPreferenceTags}, req.TLSInput)
 	if err != nil {
 		s.writeConnectionError(w, err)
 		return

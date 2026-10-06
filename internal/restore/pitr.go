@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/oplog"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
@@ -213,6 +214,9 @@ func (e *Engine) ExecutePITR(ctx context.Context, req models.RestoreRequest, run
 // executePITR runs ExecutePITR on an engine bound by forRun.
 func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run PITRRun, record *models.RestoreRecord) (*models.RestoreRecord, error) {
 	info, base, uri := record.PITR, run.Base, e.resolveURI(req)
+	if req.MongoURI != "" {
+		ctx = mongotls.NewContext(ctx, req.MongoTLS)
+	}
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, e.timeout, ErrTimeout)
@@ -536,12 +540,12 @@ func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, i
 	}
 	input := &errTrackingReader{r: plain}
 
-	configArg, cleanup, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(uri))
+	configArgs, cleanup, err := mongotools.WriteConfig(e.configDir, mongotools.WithConnectionDefaults(uri), mongotls.FromContext(ctx))
 	if err != nil {
 		return false, fmt.Errorf("prepare mongorestore config: %w", err)
 	}
 	defer cleanup()
-	args := pitrBaseArgs(configArg, info, run.Databases, isGzip)
+	args := append(pitrBaseArgs(configArgs[0], info, run.Databases, isGzip), configArgs[1:]...)
 	if e.pitrBypass(ctx, uri, info) {
 		args = append(args, "--bypassDocumentValidation")
 	}
@@ -644,12 +648,12 @@ var errReplayExited = errors.New("restore: mongorestore stopped reading the oplo
 func (e *Engine) replayPITROplog(ctx context.Context, uri, version string, run PITRRun, info *models.PITRRestore, clones *cloneRecorder) (int64, *int64, error) {
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(info.OplogBytes)
-	configArg, cleanup, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(uri))
+	configArgs, cleanup, err := mongotools.WriteConfig(e.configDir, mongotools.WithConnectionDefaults(uri), mongotls.FromContext(ctx))
 	if err != nil {
 		return 0, nil, fmt.Errorf("prepare mongorestore config: %w", err)
 	}
 	defer cleanup()
-	args := []string{configArg, "--archive", "--oplogReplay", fmt.Sprintf("--oplogLimit=%d:%d", info.Limit.T, info.Limit.I)}
+	args := append(slices.Clone(configArgs), "--archive", "--oplogReplay", fmt.Sprintf("--oplogLimit=%d:%d", info.Limit.T, info.Limit.I))
 	if e.pitrBypass(ctx, uri, info) {
 		args = append(args, "--bypassDocumentValidation")
 	}

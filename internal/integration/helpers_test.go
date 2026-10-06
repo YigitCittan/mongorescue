@@ -18,6 +18,9 @@
 //	MONGORESCUE_TEST_S3_<PROVIDER>_PATH_STYLE   "true" for path-style addressing (MinIO, LocalStack)
 //	MONGORESCUE_TEST_S3_<PROVIDER>_CREATE_BUCKET "true" to create the bucket if missing (emulators)
 //	MONGORESCUE_TEST_S3_MINIO_LOCK_BUCKET       a MinIO bucket with S3 Object Lock (created with the lock when CREATE_BUCKET is set)
+//	MONGORESCUE_TEST_TLS_URI                    root URI of a MongoDB with --tlsMode requireTLS (password over TLS)
+//	MONGORESCUE_TEST_TLS_X509_URI               the same server with authMechanism=MONGODB-X509
+//	MONGORESCUE_TEST_TLS_DIR                    its CA and x509 client material (internal/integration/gencerts)
 //	MONGORESCUE_TEST_LARGE                      "1" runs TestThroughputAndMemory with ~2 GiB and a memory limit
 //	MONGORESCUE_TEST_LARGE_MB                   size of that test's generated data in MiB
 //

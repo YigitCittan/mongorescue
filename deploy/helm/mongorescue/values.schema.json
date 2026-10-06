@@ -96,6 +96,14 @@
       "additionalProperties": false,
       "properties": { "sizeLimit": { "$ref": "#/definitions/quantity" } }
     },
+    "credentialsTmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "medium": { "type": "string", "enum": ["", "Memory"] },
+        "sizeLimit": { "$ref": "#/definitions/quantity" }
+      }
+    },
     "resources": { "type": "object" },
     "podSecurityContext": { "type": "object" },
     "securityContext": { "type": "object" },

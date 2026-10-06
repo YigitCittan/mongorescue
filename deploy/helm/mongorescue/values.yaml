@@ -88,10 +88,19 @@ backups:
     annotations: {}
     existingClaim: ""
 
-# Scratch space for temporary files (the private mongodump/mongorestore config
-# files); the root filesystem is read-only.
+# Scratch space for temporary files; the root filesystem is read-only.
 tmp:
   sizeLimit: 256Mi
+
+# The short-lived files that pass connection strings and TLS material (CA,
+# client certificate and key, key password) to mongodump and mongorestore: a
+# separate emptyDir mounted at /run/mongorescue-tmp (MONGORESCUE_TMP_DIR).
+# medium: Memory keeps them in RAM (tmpfs), so credentials never reach a node's
+# disk; the files are a few KiB per running backup or restore and count against
+# the memory limit. Set medium to "" for a disk-backed emptyDir.
+credentialsTmp:
+  medium: Memory
+  sizeLimit: 16Mi
 
 resources:
   requests:

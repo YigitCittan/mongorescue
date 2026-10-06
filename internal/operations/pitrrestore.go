@@ -169,7 +169,7 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if err != nil {
 		return nil, err
 	}
-	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = conn.ID, conn.Name, conn.URI
+	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI, req.MongoTLS = conn.ID, conn.Name, conn.URI, conn.TLS()
 	req.PostRestoreCommands = models.ClonePostRestoreCommands(conn.PostRestoreCommands)
 	out.req = req
 	return out, nil
@@ -346,7 +346,7 @@ func (s *Service) preflightPITR(ctx context.Context, pp *pitrPlan, record *model
 			targetDB = dbs[0] + record.PITR.CloneSuffix
 		}
 	}
-	p := &preflightRun{svc: s, ctx: ctx, req: pp.req, source: pp.run.Base, targetDB: targetDB, res: &models.PreflightResult{OK: true}}
+	p := s.newPreflightRun(ctx, pp.req, pp.run.Base, targetDB)
 	defer p.close()
 	p.pitrChain(pp, record)
 	p.connection()

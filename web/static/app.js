@@ -4354,7 +4354,7 @@ function renderConnections() {
     return `<tr>
       <td class="cell-primary">${ellipsis(c.name)}${desc}${idCopy(c.id, "cell-sub")}</td>
       <td><span class="mono host-cell" title="${escapeHtml(c.uri || "")}">${escapeHtml(maskedHost(c.uri))}</span></td>
-      <td>${connectionTestBadge(c)}${errorLine}</td>
+      <td>${connectionTestBadge(c)}${typeof tlsConnectionBadges === "function" ? tlsConnectionBadges(c) : ""}${errorLine}</td>
       <td>${c.server_version ? `<span class="mono">${escapeHtml(c.server_version)}</span>` : mutedDash()}</td>
       <td>${timeCell(c.last_test_at)}</td>
       <td class="col-actions"><div class="row-actions">
@@ -4390,6 +4390,7 @@ function openConnectionModal(id) {
   setValue("connection-description", c ? c.description : "");
   if (typeof throttleFillConnectionForm === "function") throttleFillConnectionForm(c);
   if (typeof postRestoreFillConnectionForm === "function") postRestoreFillConnectionForm(c);
+  if (typeof tlsFillConnectionForm === "function") tlsFillConnectionForm(c);
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
   // Paste URI or Build, as last used (forms.js).
@@ -4421,8 +4422,9 @@ function describeTest(data) {
   return tf("conn.test_failed", { error: truncate(errorSummary(data && data.error ? data.error : ""), 160) });
 }
 
-// Tests the URI in the form. An unchanged (redacted) URI of a saved connection is
-// tested server-side with the stored secret; anything else via /connections/test.
+// Tests the URI in the form. An unchanged (redacted) URI of a saved connection with
+// unchanged TLS settings is tested server-side with the stored secrets; anything
+// else via /connections/test, which keeps stored secrets the form shows masked.
 async function testConnectionForm() {
   const id = getValue("connection-id");
   const uri = getValue("connection-uri");
@@ -4431,7 +4433,9 @@ async function testConnectionForm() {
     return false;
   }
   const existing = id ? state.connections.find(c => c.id === id) : null;
-  const useStored = existing && existing.uri === uri;
+  if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return false;
+  const tlsChanged = typeof tlsFormChanged === "function" && tlsFormChanged();
+  const useStored = existing && existing.uri === uri && !tlsChanged;
   const btn = document.getElementById("connection-test-btn");
   btn.disabled = true;
   showConnectionTestResult("pending", t("conn.testing"));
@@ -4442,7 +4446,12 @@ async function testConnectionForm() {
       : await apiJSON("/api/v1/connections/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri, ...(typeof throttleConnectionReadPref === "function" ? throttleConnectionReadPref() : {}) })
+        body: JSON.stringify({
+          uri,
+          ...(existing ? { connection_id: id } : {}),
+          ...(typeof throttleConnectionReadPref === "function" ? throttleConnectionReadPref() : {}),
+          ...(typeof tlsConnectionPayload === "function" ? tlsConnectionPayload(uri) : {})
+        })
       });
     data = json.success ? (json.data || {}) : { ok: false, error: json.error || "" };
   } catch (err) {
@@ -4464,11 +4473,13 @@ async function saveConnection(e) {
   // Post-restore commands (postrestore.js); null means the editor holds an error.
   const postRestore = typeof postRestoreConnectionPayload === "function" ? postRestoreConnectionPayload() : {};
   if (postRestore === null) return;
+  if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return;
   const payload = {
     name: getValue("connection-name"),
     uri,
     description: getValue("connection-description"),
     ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {}),
+    ...(typeof tlsConnectionPayload === "function" ? tlsConnectionPayload(uri) : {}),
     ...postRestore
   };
 
@@ -4494,6 +4505,7 @@ async function saveConnection(e) {
       showToast(t("conn.saved"), "success");
       closeModal("modal-connection");
       await loadConnections();
+      if (typeof tlsRefreshWarnings === "function") tlsRefreshWarnings();
     } else {
       showToast(json.error || t("notify.toast_save_failed"), "error");
     }
@@ -4924,6 +4936,8 @@ function renderWarnings() {
   if (typeof keyrotRenderWarnings === "function") keyrotRenderWarnings(list);
   // Clones kept after a failed post-restore command (postrestore.js).
   if (typeof postRestoreRenderWarnings === "function") postRestoreRenderWarnings(list);
+  // Connections whose TLS checks are loosened (tls.js).
+  if (typeof tlsRenderWarnings === "function") tlsRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {

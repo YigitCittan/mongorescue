@@ -8,6 +8,7 @@ package mongoconn
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 )
 
 // Compile-time check that Prober implements the domain port.
@@ -229,9 +231,13 @@ func withClient(ctx context.Context, uri string, fn func(*mongo.Client) error) (
 // clientOptions returns the options of a client for uri. The connection string's
 // own serverSelectionTimeoutMS and connectTimeoutMS are kept, like every other
 // option (replicaSet, directConnection, TLS); missing ones default to
-// fallbackTimeout. A deadline on ctx caps both.
+// fallbackTimeout. A deadline on ctx caps both. The TLS material ctx carries (see
+// mongotls.NewContext) replaces the URI's TLS configuration and turns TLS on.
 func clientOptions(ctx context.Context, uri string) *options.ClientOptions {
 	opts := options.Client().ApplyURI(uri).SetAppName(appName)
+	if cfg := tlsConfig(ctx); cfg != nil {
+		opts.SetTLSConfig(cfg)
+	}
 	selection, connect := fallbackTimeout, fallbackTimeout
 	if opts.ServerSelectionTimeout != nil && *opts.ServerSelectionTimeout > 0 {
 		selection = *opts.ServerSelectionTimeout
@@ -244,4 +250,18 @@ func clientOptions(ctx context.Context, uri string) *options.ClientOptions {
 		selection, connect = min(selection, left), min(connect, left)
 	}
 	return opts.SetServerSelectionTimeout(selection).SetConnectTimeout(connect)
+}
+
+// tlsConfig returns the TLS configuration of the material ctx carries, or nil. The
+// material was validated when the connection was saved; should it still fail, the
+// returned configuration fails every handshake with the reason (fail closed).
+func tlsConfig(ctx context.Context) *tls.Config {
+	cfg, err := mongotls.Config(mongotls.FromContext(ctx))
+	if err != nil {
+		return &tls.Config{
+			MinVersion:       tls.VersionTLS12,
+			VerifyConnection: func(tls.ConnectionState) error { return err },
+		}
+	}
+	return cfg
 }

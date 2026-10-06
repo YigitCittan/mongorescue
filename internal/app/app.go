@@ -37,6 +37,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -70,6 +71,15 @@ const (
 	forceKillGrace   = 5 * time.Second
 )
 
+// ToolsTempDirName is the private (0700) directory under the data directory that
+// holds the short-lived files passing connection URIs and TLS material to
+// mongodump and mongorestore (see mongotools.WriteConfig) when neither
+// MONGORESCUE_TMP_DIR nor a writable system temporary directory is available.
+const ToolsTempDirName = "tmp"
+
+// toolsTempDirPerm restricts ToolsTempDirName to the current user.
+const toolsTempDirPerm = 0o700
+
 // RunLogDirName is the directory under the data directory that holds the log of
 // every backup and restore run (<run-id>.log).
 const RunLogDirName = "logs"
@@ -88,7 +98,10 @@ var ErrStarted = errors.New("app: already started")
 
 // App manages the lifecycle of all MongoRescue core systems.
 type App struct {
-	cfg           *config.Config
+	cfg *config.Config
+	// toolsTemp is the directory of the Database Tools' temporary files
+	// (toolsTempDir).
+	toolsTemp     string
 	logger        *slog.Logger
 	server        *server.Server
 	scheduler     *scheduler.Scheduler
@@ -310,6 +323,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// 3. Engines read their settings and storage target for every run, so changes in
 	// the dashboard apply without a restart.
 	logToolPaths(logger, cfg.ToolsDir)
+	toolsTemp, err := toolsTempDir(cfg)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("temporary files for the database tools", slog.String("dir", toolsTemp))
 	// Background operations started through the API live under the application
 	// lifecycle, and share per-database concurrency keys with scheduled runs; its
 	// slots hold every connection's max_concurrent_backups.
@@ -318,6 +336,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
 		backup.WithToolsDir(cfg.ToolsDir),
+		backup.WithConfigDir(toolsTemp),
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithManifestCapturer(prober.Manifest),
@@ -342,6 +361,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	restoreEngine := restore.NewEngine(nil, "",
 		restore.WithLogger(logger),
 		restore.WithToolsDir(cfg.ToolsDir),
+		restore.WithConfigDir(toolsTemp),
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
@@ -638,7 +658,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if err != nil {
 				return nil, err
 			}
-			return openOplogSession(ctx, prober, conn.URI, st.ReadPreference)
+			return openOplogSession(mongotls.NewContext(ctx, conn.TLS()), prober, conn.URI, st.ReadPreference)
 		},
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,
@@ -662,6 +682,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if err != nil {
 				return collector.Inspection{}, err
 			}
+			ctx = mongotls.NewContext(ctx, conn.TLS())
 			// The oplog's ends are read only once the user may read it.
 			if ok, accessErr := prober.CanReadOplog(ctx, conn.URI); accessErr != nil || !ok {
 				return collector.Inspection{}, accessErr
@@ -734,6 +755,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	return &App{
 		cfg:           cfg,
+		toolsTemp:     toolsTemp,
 		logger:        logger,
 		server:        srv,
 		scheduler:     sched,
@@ -1117,14 +1139,24 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.started = true
 
-	// Purge credential-bearing tools config files left behind by a previous crash.
-	if removed, err := mongotools.CleanupStale("", staleToolsConfigAge); err != nil {
-		a.logger.Warn("failed to clean up stale mongo tools config files",
-			slog.Int("removed", removed),
-			slog.Any("error", err),
-		)
-	} else {
-		a.logger.Info("stale mongo tools config cleanup completed", slog.Int("removed", removed))
+	// Purge credential-bearing tools config files and TLS directories left behind by
+	// a previous crash: in the directory in use, and in <data dir>/tmp, the
+	// fallback an earlier start may have used.
+	dirs := []string{a.toolsTemp}
+	if fallback := filepath.Join(a.cfg.DataDir, ToolsTempDirName); fallback != a.toolsTemp {
+		if info, statErr := os.Stat(fallback); statErr == nil && info.IsDir() {
+			dirs = append(dirs, fallback)
+		}
+	}
+	for _, dir := range dirs {
+		if removed, err := mongotools.CleanupStale(dir, staleToolsConfigAge); err != nil {
+			a.logger.Warn("failed to clean up stale mongo tools config files",
+				slog.Int("removed", removed),
+				slog.Any("error", err),
+			)
+		} else {
+			a.logger.Info("stale mongo tools config cleanup completed", slog.Int("removed", removed))
+		}
 	}
 
 	a.failInterruptedRuns(ctx)
@@ -1433,4 +1465,40 @@ func logToolPaths(logger *slog.Logger, toolsDir string) {
 		}
 		logger.Info("MongoDB Database Tools binary found", slog.String("tool", tool), slog.String("path", path))
 	}
+}
+
+// toolsTempDir returns the directory of the short-lived files that pass connection
+// strings and TLS material to the Database Tools: cfg.TmpDir (created 0700 when
+// missing), else the system temporary directory, else, when that is not
+// writable, <data dir>/tmp (created 0700).
+func toolsTempDir(cfg *config.Config) (string, error) {
+	if cfg.TmpDir != "" {
+		if err := os.MkdirAll(cfg.TmpDir, toolsTempDirPerm); err != nil {
+			return "", fmt.Errorf("create %s: %w", config.EnvTmpDir, err)
+		}
+		if err := writableDir(cfg.TmpDir); err != nil {
+			return "", fmt.Errorf("%s is not writable: %w", config.EnvTmpDir, err)
+		}
+		return cfg.TmpDir, nil
+	}
+	if dir := os.TempDir(); writableDir(dir) == nil {
+		return dir, nil
+	}
+	dir := filepath.Join(cfg.DataDir, ToolsTempDirName)
+	if err := os.MkdirAll(dir, toolsTempDirPerm); err != nil {
+		return "", fmt.Errorf("create tools temporary directory: %w", err)
+	}
+	if err := os.Chmod(dir, toolsTempDirPerm); err != nil {
+		return "", fmt.Errorf("restrict tools temporary directory: %w", err)
+	}
+	return dir, nil
+}
+
+// writableDir reports whether a private directory can be created in dir.
+func writableDir(dir string) error {
+	probe, err := os.MkdirTemp(dir, "mongorescue-probe-*")
+	if err != nil {
+		return err
+	}
+	return os.Remove(probe)
 }

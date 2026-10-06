@@ -54,6 +54,70 @@ type Connection struct {
 	// this connection creates, before the restore is reported complete (e.g. to
 	// re-apply erasures). Only administrators may set and see them.
 	PostRestoreCommands []PostRestoreCommand `json:"post_restore_commands,omitempty"`
+
+	// ConnectionTLS is the TLS material of the connection (a custom CA, an x509
+	// client certificate), used instead of tls* file options in the URI.
+	ConnectionTLS
+}
+
+// ConnectionTLS is the optional TLS material of a connection. Its PEM values are
+// kept in memory for the driver and written to private temporary files only for
+// the lifetime of a mongodump or mongorestore process. The client key and its
+// password are sealed at rest and masked in API responses (see Redacted).
+type ConnectionTLS struct {
+	// CAPEM holds the PEM certificates of the certificate authorities that sign the
+	// server certificates; empty uses the system roots.
+	CAPEM string `json:"tls_ca_pem,omitempty"`
+
+	// ClientCertPEM is the PEM client certificate (and any intermediates) for x509
+	// authentication; ClientKeyPEM is its private key. Both or neither are set.
+	ClientCertPEM string `json:"tls_client_cert_pem,omitempty"`
+	ClientKeyPEM  string `json:"tls_client_key_pem,omitempty"`
+
+	// ClientKeyPassword decrypts an encrypted (PKCS#8) ClientKeyPEM.
+	ClientKeyPassword string `json:"tls_client_key_password,omitempty"`
+
+	// AllowInvalidHostnames skips the check that the server certificate names the
+	// host connected to. The chain is still verified.
+	AllowInvalidHostnames bool `json:"tls_allow_invalid_hostnames,omitempty"`
+
+	// Insecure disables every check of the server certificate. It exposes the
+	// connection to interception and is only accepted with an explicit confirmation.
+	Insecure bool `json:"tls_insecure,omitempty"`
+}
+
+// IsZero reports whether t sets nothing, so the URI alone decides TLS.
+func (t *ConnectionTLS) IsZero() bool {
+	return t == nil || *t == ConnectionTLS{}
+}
+
+// Redacted returns a copy of t with the client key and its password replaced by
+// redact.Mask; nil stays nil.
+func (t *ConnectionTLS) Redacted() *ConnectionTLS {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	out.ClientKeyPEM = maskSet(t.ClientKeyPEM)
+	out.ClientKeyPassword = maskSet(t.ClientKeyPassword)
+	return &out
+}
+
+// maskSet returns redact.Mask for a non-empty value and "" otherwise.
+func maskSet(v string) string {
+	if v == "" {
+		return ""
+	}
+	return redact.Mask
+}
+
+// TLS returns a copy of the connection's TLS material, or nil when it has none.
+func (c *Connection) TLS() *ConnectionTLS {
+	if c == nil || c.IsZero() {
+		return nil
+	}
+	t := c.ConnectionTLS
+	return &t
 }
 
 // ReadPref returns the connection's read preference.
@@ -62,7 +126,8 @@ func (c *Connection) ReadPref() ReadPreference {
 }
 
 // Redacted returns a copy that is safe to serialize to API clients or logs: the URI
-// password and sensitive query options are masked.
+// password and sensitive query options are masked, and so are the TLS client key
+// and its password.
 func (c *Connection) Redacted() *Connection {
 	if c == nil {
 		return nil
@@ -75,5 +140,6 @@ func (c *Connection) Redacted() *Connection {
 	}
 	clone.ReadPreferenceTags = CloneTagSets(c.ReadPreferenceTags)
 	clone.PostRestoreCommands = ClonePostRestoreCommands(c.PostRestoreCommands)
+	clone.ConnectionTLS = *c.ConnectionTLS.Redacted()
 	return &clone
 }

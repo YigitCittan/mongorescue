@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
+	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -59,6 +61,12 @@ func (f *fakePITR) ExecutePITR(_ context.Context, req models.RestoreRequest, run
 // (100, 110], (110, 120], (120, 130] and base b1 consistent at 108.
 func pitrService(t *testing.T, inspector operations.RestoreInspector, bases ...*models.BackupRecord) (*operations.Service, *fakePITR) {
 	t.Helper()
+	return pitrServiceFor(t, &models.Connection{ID: "conn_a", Name: "rs", URI: "mongodb://u:pw@db.internal/?replicaSet=rs0"}, inspector, bases...)
+}
+
+// pitrServiceFor is pitrService with conn as the stream's connection conn_a.
+func pitrServiceFor(t *testing.T, conn *models.Connection, inspector operations.RestoreInspector, bases ...*models.BackupRecord) (*operations.Service, *fakePITR) {
+	t.Helper()
 	ctx := context.Background()
 	st := storetest.New(t)
 	if err := st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: "conn_a", ReplicaSet: "rs0", TargetID: "tgt",
@@ -97,7 +105,7 @@ func pitrService(t *testing.T, inspector operations.RestoreInspector, bases ...*
 		Backup:      backup.NewEngine(mock, ""),
 		Restore:     restore.NewEngine(mock, ""),
 		Runs:        manager,
-		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "rs", URI: "mongodb://u:pw@db.internal/?replicaSet=rs0"}},
+		Connections: fakeConnections{"conn_a": conn},
 		PITR:        st,
 		PITRRestore: fake,
 		PITRBases:   st.ListBaseBackups,
@@ -186,6 +194,32 @@ func TestPITRRestoreRefusals(t *testing.T) {
 	fake.keys = false
 	if _, err := svc.StartRestore(admin(), pitrAt(125)); !errors.Is(err, operations.ErrKeyRequired) {
 		t.Errorf("no key: err = %v, want ErrKeyRequired", err)
+	}
+}
+
+// TestPreflightPITRUsesTheConnectionTLS checks that the preflight of a
+// point-in-time restore into a TLS-only server with a custom CA opens the target
+// with the connection's TLS material and a URI that asks for TLS, so it never
+// connects in plain text.
+func TestPreflightPITRUsesTheConnectionTLS(t *testing.T) {
+	material := models.ConnectionTLS{CAPEM: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"}
+	conn := &models.Connection{ID: "conn_a", Name: "rs", URI: "mongodb://u:pw@db.internal/?replicaSet=rs0&tls=true", ConnectionTLS: material}
+	inspector := &fakeInspector{version: "8.0.4", free: 1 << 40, freeKnown: true, freeSource: connections.DiskSpaceDBStats}
+	svc, _ := pitrServiceFor(t, conn, inspector)
+	res, err := svc.PreflightRestore(admin(), pitrAt(125))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := res.Check(models.PreflightCheckConnection); c == nil || c.Status != models.PreflightPass {
+		t.Fatalf("connection check = %+v", c)
+	}
+	inspector.mu.Lock()
+	defer inspector.mu.Unlock()
+	if inspector.opened == 0 || inspector.openedTLS == nil || inspector.openedTLS.CAPEM != material.CAPEM {
+		t.Fatalf("OpenTarget got TLS %+v (opened %d)", inspector.openedTLS, inspector.opened)
+	}
+	if v, ok := mongotools.OptionValue(inspector.openedURI, "tls"); !ok || v != "true" {
+		t.Fatalf("OpenTarget got a URI without tls=true")
 	}
 }
 

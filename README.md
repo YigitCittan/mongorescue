@@ -176,6 +176,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
+- [Connections: TLS, x509, LDAP, Kerberos, Atlas and AWS](docs/connections.md)
 - [Desktop app](docs/desktop.md)
 - [REST API](docs/api.md)
 - [Command line](docs/cli.md)

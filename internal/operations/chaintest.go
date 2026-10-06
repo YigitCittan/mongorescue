@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -95,14 +96,14 @@ func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.
 	// No force: the preflight (privileges, disk space) can refuse a chain test.
 	req := models.RestoreRequest{
 		PITR: &models.PITRTarget{StreamID: stream.ID, TS: &limit}, PITRCloneSuffix: suffix,
-		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI,
+		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI, MongoTLS: conn.TLS(),
 	}
 	base := byID[plan.Base.ID]
 	pp := &pitrPlan{req: req, stream: stream, chainTest: true,
 		run: restore.PITRRun{Plan: plan, Base: base, Databases: base.InstanceDatabases}}
 	expected := s.manifest(ctx, byID[b2.ID])
 	return s.runPITRRestore(ctx, pp, func(runCtx context.Context, final *models.RestoreRecord) {
-		s.finishChainTest(runCtx, final, b2.ID, expected, conn.URI)
+		s.finishChainTest(mongotls.NewContext(runCtx, conn.TLS()), final, b2.ID, expected, conn.URI)
 	})
 }
 
@@ -228,5 +229,5 @@ func (s *Service) CleanupInterruptedPITR(ctx context.Context, rec *models.Restor
 		return fmt.Sprintf("; the %s %s could not be dropped (%s), drop them manually",
 			what, strings.Join(rec.PITR.Clones, ", "), redact.Text(err.Error()))
 	}
-	return s.cfg.PITRRestore.DropPITRClones(ctx, conn.URI, rec.PITR)
+	return s.cfg.PITRRestore.DropPITRClones(mongotls.NewContext(ctx, conn.TLS()), conn.URI, rec.PITR)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 )
@@ -52,7 +53,7 @@ func (s *Service) verifyRestore(ctx context.Context, req models.RestoreRequest, 
 		skip("the backup has no manifest of its collections (taken by an earlier release, or the capture failed)", true)
 		return
 	}
-	actual, err := s.cfg.Inspector.Manifest(ctx, req.MongoURI, rec.TargetDatabase)
+	actual, err := s.cfg.Inspector.Manifest(mongotls.NewContext(ctx, req.MongoTLS), req.MongoURI, rec.TargetDatabase)
 	if err != nil {
 		skip("could not inspect the restored database "+rec.TargetDatabase+": "+redact.Text(err.Error()), true)
 		return

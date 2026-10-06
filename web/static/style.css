@@ -3656,3 +3656,9 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
   margin: 8px 0 0;
   padding-left: 18px;
 }
+
+/* Connection form: TLS file pickers (tls.js) */
+.tls-file {
+  display: block;
+  margin-top: 4px;
+}

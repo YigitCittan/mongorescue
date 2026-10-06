@@ -121,6 +121,10 @@ type RestoreRequest struct {
 	// filled by the server and never read from or written to JSON.
 	MongoURI string `json:"-"`
 
+	// MongoTLS is the TLS material of that connection (nil: none), filled with
+	// MongoURI and never read from or written to JSON.
+	MongoTLS *ConnectionTLS `json:"-"`
+
 	// Verify, when set, explicitly enables or disables verify-before-restore: a first
 	// pass streams the whole artifact to check its SHA-256 (and decrypt it) before
 	// mongorestore starts. When nil, the server's VerifyPolicy decides.
@@ -483,6 +487,7 @@ type RestoreRecord struct {
 func (r RestoreRequest) Redacted() RestoreRequest {
 	r.SelectedCollections = slices.Clone(r.SelectedCollections)
 	r.MongoURI = redact.URI(r.MongoURI)
+	r.MongoTLS = r.MongoTLS.Redacted()
 	if r.SafeClone != nil {
 		v := *r.SafeClone
 		r.SafeClone = &v

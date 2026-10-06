@@ -16,6 +16,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -822,8 +823,16 @@ func (s *Service) jobsByID(ctx context.Context, ids []string) ([]BulkItem, error
 }
 
 // failed is the BulkItemResult of err; messages of expected failures are shown, any
-// other error is logged and reported generically.
-func (s *Service) failed(err error) BulkItemResult {
+// other error is logged and reported generically. A request that waits for a
+// second administrator is an expected outcome, never logged. The log names the
+// caller by kind and user ID and holds the error's message only, not the error
+// value: an error may carry records (an approval naming its requester's API key)
+// whose fields must not reach the log.
+func (s *Service) failed(ctx context.Context, err error) BulkItemResult {
+	var pending *ApprovalPendingError
+	if errors.As(err, &pending) {
+		return BulkItemResult{Error: redact.Text(pending.Error())}
+	}
 	var pe *publicError
 	if errors.As(err, &pe) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrBusy) ||
 		errors.Is(err, ErrShuttingDown) || errors.Is(err, ErrConnectionRequired) || errors.Is(err, ErrUnknownConnection) ||
@@ -832,7 +841,7 @@ func (s *Service) failed(err error) BulkItemResult {
 		errors.Is(err, ErrBackupRunning) || errors.Is(err, ErrBackupDeleted) || errors.Is(err, ErrNotDeleted) {
 		return BulkItemResult{Error: redact.Text(err.Error())}
 	}
-	s.logger.Error("bulk item failed", slog.Any("error", err))
+	s.logger.With(actorAttrs(ctx)...).Error("bulk item failed", logsafe.Error(err))
 	return BulkItemResult{Error: "internal error (see the server log)"}
 }
 
@@ -967,7 +976,7 @@ func (s *Service) registerBulkActions() {
 			// deletion since the plan is honoured.
 			unlock, err := deletionLock(ctx, it.Backup)
 			if err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			defer unlock()
 			current, err := s.store.GetBackupRecord(ctx, it.ID)
@@ -975,21 +984,21 @@ func (s *Service) registerBulkActions() {
 				return BulkItemResult{Skip: &BulkSkip{Reason: SkipNotFound, Detail: "deleted meanwhile"}}
 			}
 			if err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			if current.Status.Deleted() {
 				return BulkItemResult{Skip: &BulkSkip{Reason: SkipAlreadyDeleted, Params: map[string]string{"status": string(current.Status)}, Detail: "deleted meanwhile"}}
 			}
 			skip, err := s.deleteProtection(ctx, current, run.jobNames[current.JobID])
 			if err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			if skip != nil {
 				return BulkItemResult{Skip: skip}
 			}
 			updated, err := s.softDelete(ctx, current.ID, run.reason)
 			if err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true, Detail: "recoverable until " + updated.PurgeAfter.Format(time.RFC3339)}
 		},
@@ -1026,7 +1035,7 @@ func (s *Service) registerBulkActions() {
 		},
 		Apply: func(ctx context.Context, s *Service, run *BulkRun, it BulkItem) BulkItemResult {
 			if _, err := s.PinBackup(ctx, it.ID, run.note); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},
@@ -1042,7 +1051,7 @@ func (s *Service) registerBulkActions() {
 		},
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			if _, err := s.UnpinBackup(ctx, it.ID); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},
@@ -1057,7 +1066,7 @@ func (s *Service) registerBulkActions() {
 		},
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			if _, err := s.CancelBackup(ctx, it.ID, ""); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},
@@ -1075,7 +1084,7 @@ func (s *Service) registerBulkActions() {
 		},
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			if _, err := s.CancelRestore(ctx, it.ID, ""); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},
@@ -1093,7 +1102,7 @@ func (s *Service) registerBulkActions() {
 		},
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			if err := s.deleteRestore(ctx, it.Restore); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},
@@ -1116,7 +1125,7 @@ func (s *Service) registerBulkActions() {
 			},
 			Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 				if _, err := s.SetJobEnabled(ctx, it.ID, enable); err != nil {
-					return s.failed(err)
+					return s.failed(ctx, err)
 				}
 				return BulkItemResult{OK: true}
 			},
@@ -1128,7 +1137,7 @@ func (s *Service) registerBulkActions() {
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			started, err := s.RunJob(ctx, it.ID, models.TriggerOnDemand)
 			if err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true, Detail: started.ID()}
 		},
@@ -1137,7 +1146,7 @@ func (s *Service) registerBulkActions() {
 		Resource: BulkJobs, Name: BulkDelete, Scope: auth.ScopeAdmin, Destructive: true,
 		Apply: func(ctx context.Context, s *Service, _ *BulkRun, it BulkItem) BulkItemResult {
 			if err := s.DeleteJob(ctx, it.ID); err != nil {
-				return s.failed(err)
+				return s.failed(ctx, err)
 			}
 			return BulkItemResult{OK: true}
 		},

@@ -481,7 +481,7 @@ func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.
 	if err != nil {
 		return opts, err
 	}
-	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
+	opts.MongoURI, opts.MongoTLS, opts.ConnectionName = conn.URI, conn.TLS(), conn.Name
 	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())
 	opts.MaxConcurrentBackups = conn.MaxConcurrentBackups
 	target, err := s.ResolveTarget(ctx, opts.StorageTargetID)
@@ -848,7 +848,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 		}
 		return nil, err
 	}
-	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = target.ID, target.Name, target.URI
+	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI, req.MongoTLS = target.ID, target.Name, target.URI, target.TLS()
 	req.PostRestoreCommands = models.ClonePostRestoreCommands(target.PostRestoreCommands)
 
 	// Key material is checked synchronously so the client learns about it immediately.

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -478,6 +479,8 @@ func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string) (*Resu
 		BeforeCommit: func() error { return r.fault(StepBeforeCommit) },
 		AfterCommit:  r.cfg.CommitError,
 		OnCommit: func() {
+			// Parsed TLS client keys opened under the old key's era leave memory.
+			mongotls.ForgetAll()
 			if r.cfg.OnCommit != nil {
 				r.cfg.OnCommit(next, old)
 			}

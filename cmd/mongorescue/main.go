@@ -98,6 +98,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	port := fs.Int("port", 0, fmt.Sprintf("Listen port (env %s, default %d)", config.EnvPort, config.DefaultPort))
 	dashboard := fs.Bool("dashboard", false, "Serve the embedded web dashboard (env "+config.EnvDashboard+", default false)")
 	toolsDir := fs.String("tools-dir", "", "Directory searched first for mongodump and mongorestore (env "+config.EnvToolsDir+", default <executable dir>/tools, then PATH)")
+	tmpDir := fs.String("tmp-dir", "", "Directory of the short-lived files that pass connection strings and TLS material to mongodump and mongorestore (env "+config.EnvTmpDir+", default the system temporary directory, or <data-dir>/tmp when it is not writable)")
 	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
@@ -134,6 +135,11 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.ToolsDir = ""
 			if v := strings.TrimSpace(*toolsDir); v != "" {
 				cfg.ToolsDir = filepath.Clean(v)
+			}
+		case "tmp-dir":
+			cfg.TmpDir = ""
+			if v := strings.TrimSpace(*tmpDir); v != "" {
+				cfg.TmpDir = filepath.Clean(v)
 			}
 		case "shutdown-grace":
 			cfg.ShutdownGrace, graceErr = config.ParseShutdownGrace(*shutdownGrace)

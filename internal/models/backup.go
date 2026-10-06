@@ -470,6 +470,10 @@ type BackupOptions struct {
 	// server or scheduler and never read from or written to JSON.
 	MongoURI string `json:"-"`
 
+	// MongoTLS is the TLS material of that connection (nil: none), filled with
+	// MongoURI and never read from or written to JSON.
+	MongoTLS *ConnectionTLS `json:"-"`
+
 	// JobID associates this run with a scheduled job.
 	JobID string `json:"job_id,omitempty"`
 
@@ -517,6 +521,7 @@ func (o BackupOptions) Redacted() BackupOptions {
 	o.Collections = slices.Clone(o.Collections)
 	o.ExcludeCollections = slices.Clone(o.ExcludeCollections)
 	o.MongoURI = redact.URI(o.MongoURI)
+	o.MongoTLS = o.MongoTLS.Redacted()
 	return o
 }
 
