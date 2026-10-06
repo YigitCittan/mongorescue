@@ -188,6 +188,10 @@ func (p purgeRun) cleanupOne(ctx context.Context, updater BackupUpdater, rec *mo
 		return err
 	}
 	defer unlock()
+	// The copies a failed synchronous backup made, once their locks have ended.
+	if until, copyErr := p.purgeCopies(ctx, rec); copyErr != nil || until != nil {
+		return copyErr
+	}
 	if holder, refErr := archiveHolder(ctx, p.store, rec); refErr != nil || holder != "" {
 		return refErr
 	}
@@ -236,6 +240,17 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		return PurgeOutcome{}, errPurgeSkip
 	}
 	out := PurgeOutcome{Backup: current}
+	// The copies on other storage targets go first, each honouring its own
+	// target's Object Lock; a locked copy keeps the backup deleted until it ends.
+	copiesLocked, err := p.purgeCopies(ctx, current)
+	switch {
+	case err != nil:
+		return PurgeOutcome{}, err
+	case copiesLocked != nil:
+		logger.Info("deleted backup waits for the S3 Object Lock of a copy to end",
+			logsafe.Attr("backup_id", current.ID), slog.Time("retain_until", *copiesLocked))
+		return PurgeOutcome{}, errPurgeSkip
+	}
 	if current.StorageKey != "" {
 		unlockArchive, lockErr := runs.LockDeletion(ctx, runs.ArchiveKey(current.StorageTargetID, current.StorageKey))
 		if lockErr != nil {
