@@ -89,14 +89,17 @@ func (s *SQLiteStore) DeleteConnection(ctx context.Context, id string) error {
 	})
 }
 
-// putConnection seals the URI and the post-restore commands of c and upserts it.
+// putConnection seals the URI, the post-restore commands and the TLS client key
+// and password of c and upserts it.
 func (s *SQLiteStore) putConnection(ctx context.Context, e execer, c *models.Connection) error {
 	if s.box == nil {
 		return ErrNoSecretBox
 	}
 	sc := storedConnection{Connection: *c}
+	var err error
 	if len(c.PostRestoreCommands) > 0 {
-		raw, err := json.Marshal(c.PostRestoreCommands)
+		var raw []byte
+		raw, err = json.Marshal(c.PostRestoreCommands)
 		if err != nil {
 			return fmt.Errorf("store: encode post-restore commands of %s: %w", c.ID, err)
 		}
@@ -105,17 +108,44 @@ func (s *SQLiteStore) putConnection(ctx context.Context, e execer, c *models.Con
 		}
 	}
 	sc.PostRestoreCommands = nil
+	for _, f := range connectionTLSSecrets(&sc.Connection) {
+		if *f.value, err = s.seal(secretbox.At(tableConnections, c.ID, f.field), *f.value); err != nil {
+			return err
+		}
+	}
 	return s.putStoredConnection(ctx, e, &sc)
 }
 
+// tlsSecret is a sealed TLS field of a connection: its binding field name and a
+// pointer to its value.
+type tlsSecret struct {
+	field string
+	value *string
+}
+
+// connectionTLSSecrets returns the TLS fields of c that are sealed at rest: the
+// client key and its password.
+func connectionTLSSecrets(c *models.Connection) []tlsSecret {
+	return []tlsSecret{
+		{fieldConnectionTLSKey, &c.ClientKeyPEM},
+		{fieldConnectionTLSKeyPassword, &c.ClientKeyPassword},
+	}
+}
+
 // putStoredConnection seals the plain URI of sc and upserts it; its post-restore
-// commands must be sealed already (PostRestoreSealed).
+// commands (PostRestoreSealed) and TLS client key and password must be sealed
+// already.
 func (s *SQLiteStore) putStoredConnection(ctx context.Context, e execer, sc *storedConnection) error {
 	if s.box == nil {
 		return ErrNoSecretBox
 	}
 	if len(sc.PostRestoreCommands) > 0 {
 		return fmt.Errorf("%w: post-restore commands of %s are not sealed", ErrInvalidRecord, sc.ID)
+	}
+	for _, f := range connectionTLSSecrets(&sc.Connection) {
+		if *f.value != "" && !secretbox.IsSealed(*f.value) {
+			return fmt.Errorf("%w: %s of %s is not sealed", ErrInvalidRecord, f.field, sc.ID)
+		}
 	}
 	sealed := *sc
 	var err error
@@ -154,7 +184,8 @@ func (s *SQLiteStore) openStoredConnection(sc *storedConnection) error {
 	return nil
 }
 
-// openConnection decrypts c.URI in place.
+// openConnection decrypts c.URI and the TLS client key and password of c in place.
+// Plain (unsealed) values are refused (ErrUnsealedSecret).
 func (s *SQLiteStore) openConnection(c *models.Connection) error {
 	if s.box == nil {
 		return ErrNoSecretBox
@@ -162,6 +193,11 @@ func (s *SQLiteStore) openConnection(c *models.Connection) error {
 	uri, err := s.open(secretbox.At(tableConnections, c.ID, fieldConnectionURI), c.URI)
 	if err != nil {
 		return err
+	}
+	for _, f := range connectionTLSSecrets(c) {
+		if *f.value, err = s.open(secretbox.At(tableConnections, c.ID, f.field), *f.value); err != nil {
+			return err
+		}
 	}
 	c.URI = uri
 	return nil

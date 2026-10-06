@@ -153,6 +153,8 @@ type sealedJSONField struct {
 var sealedJSONFields = []sealedJSONField{
 	{tableConnections, "$.uri", fieldConnectionURI},
 	{tableConnections, "$.post_restore_sealed", fieldConnectionPostRestore},
+	{tableConnections, "$.tls_client_key_pem", fieldConnectionTLSKey},
+	{tableConnections, "$.tls_client_key_password", fieldConnectionTLSKeyPassword},
 	{tableJobs, "$.mongo_uri", fieldLegacyJobURI},
 	{tableJobs, "$.heartbeat_url", fieldJobHeartbeatURL},
 	{tableStorageTargets, "$.s3.secret_access_key", fieldS3SecretKey},

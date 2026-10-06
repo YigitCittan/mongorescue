@@ -105,8 +105,13 @@ const (
 	// fieldConnectionPostRestore is the sealed post-restore commands of a
 	// connection (an erasure log), stored at $.post_restore_sealed.
 	fieldConnectionPostRestore = "post_restore_commands"
-	fieldLegacyJobURI          = "mongo_uri"
-	fieldSettingValue          = "value"
+	// fieldConnectionTLSKey and fieldConnectionTLSKeyPassword are the sealed TLS
+	// client key of a connection and its password, stored at $.tls_client_key_pem
+	// and $.tls_client_key_password.
+	fieldConnectionTLSKey         = "tls_client_key_pem"
+	fieldConnectionTLSKeyPassword = "tls_client_key_password" //nolint:gosec // G101: a field name, not a credential.
+	fieldLegacyJobURI             = "mongo_uri"
+	fieldSettingValue             = "value"
 )
 
 // sealedSecretQueries count rows whose secret fields hold a sealed value (current or
@@ -114,7 +119,9 @@ const (
 // description containing "sb1:" is not mistaken for a secret.
 var sealedSecretQueries = []string{
 	`SELECT COUNT(*) FROM connections WHERE ` + sealedSQL(`json_extract(data, '$.uri')`) +
-		` OR ` + sealedSQL(`json_extract(data, '$.post_restore_sealed')`),
+		` OR ` + sealedSQL(`json_extract(data, '$.post_restore_sealed')`) +
+		` OR ` + sealedSQL(`json_extract(data, '$.tls_client_key_pem')`) +
+		` OR ` + sealedSQL(`json_extract(data, '$.tls_client_key_password')`),
 	`SELECT COUNT(*) FROM jobs WHERE ` + sealedSQL(`json_extract(data, '$.mongo_uri')`) +
 		` OR ` + sealedSQL(`json_extract(data, '$.heartbeat_url')`),
 	`SELECT COUNT(*) FROM notification_channels WHERE ` + strings.Join([]string{
