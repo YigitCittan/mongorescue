@@ -63,7 +63,7 @@ test("copies a job's backup to a second target and shows the copy", async ({ pag
 
   await page.getByRole("tab", { name: /^Backups/ }).click();
   const panel = page.getByRole("tabpanel", { name: "Backups" });
-  await panel.locator(`button[data-action="backup-details"][data-id="${backupID}"]`).first().click();
+  await panel.locator(`tr[data-row-action="backup-details"][data-id="${backupID}"]`).first().click();
   const details = page.getByRole("dialog", { name: "Backup details" });
   await expect(details).toBeVisible();
   await expect(details).toContainText("1 copy");
