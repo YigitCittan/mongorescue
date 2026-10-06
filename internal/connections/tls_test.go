@@ -256,3 +256,58 @@ func TestTLSMaterialForcesTLSInTheURI(t *testing.T) {
 		t.Fatalf("plain connection = %+v, %v", plain, err)
 	}
 }
+
+// TestStoredTLSDoesNotFollowANewHost checks that the stored material of a
+// connection is never applied to other hosts: a form test of another host does
+// not use the stored CA, key or loosened checks, and moving an insecure
+// connection to another host needs the confirmation again.
+func TestStoredTLSDoesNotFollowANewHost(t *testing.T) {
+	p := &tlsProber{}
+	svc := connections.NewService(storetest.New(t), p)
+	ctx := context.Background()
+	ca, cert, key, pw := x509Material(t)
+	const here = "mongodb://db1.internal:27017/?tls=true&authMechanism=MONGODB-X509"
+	const elsewhere = "mongodb://attacker.example:27017/?tls=true&authMechanism=MONGODB-X509"
+	c, err := svc.Create(ctx, connections.Input{Name: "x509", URI: here, TLSInput: connections.TLSInput{
+		CAPEM: &ca, ClientCertPEM: &cert, ClientKeyPEM: &key, ClientKeyPassword: &pw,
+		Insecure: ptr(true), ConfirmInsecure: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Same hosts: the stored material is used through the mask.
+	if _, err = svc.TestURIWithTLS(ctx, here, c.ID, models.ReadPreference{}, connections.TLSInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if seen := p.last(); seen == nil || seen.ClientKeyPEM != key || !seen.Insecure {
+		t.Fatalf("same-host test got %+v", seen)
+	}
+	// Other hosts: nothing stored is applied.
+	if _, err = svc.TestURIWithTLS(ctx, elsewhere, c.ID, models.ReadPreference{}, connections.TLSInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if seen := p.last(); seen != nil {
+		t.Fatalf("other-host test got the stored material %+v", seen.Redacted())
+	}
+	if _, err = svc.TestURIWithTLS(ctx, elsewhere, c.ID, models.ReadPreference{}, connections.TLSInput{
+		ClientCertPEM: &cert, ClientKeyPEM: ptr(redact.Mask)}); !errors.Is(err, connections.ErrMaskedTLSSecret) {
+		t.Fatalf("other-host test with the masked key = %v; want ErrMaskedTLSSecret", err)
+	}
+	if _, err = svc.TestURIWithTLS(ctx, elsewhere, c.ID, models.ReadPreference{}, connections.TLSInput{
+		Insecure: ptr(true)}); !errors.Is(err, connections.ErrInsecureNotConfirmed) {
+		t.Fatalf("other-host insecure test = %v; want ErrInsecureNotConfirmed", err)
+	}
+
+	// Moving the insecure connection to other hosts needs the confirmation again.
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "x509", URI: elsewhere}); !errors.Is(err, connections.ErrInsecureNotConfirmed) {
+		t.Fatalf("move without confirmation = %v; want ErrInsecureNotConfirmed", err)
+	}
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "x509", URI: elsewhere,
+		TLSInput: connections.TLSInput{ConfirmInsecure: true}}); err != nil {
+		t.Fatalf("confirmed move: %v", err)
+	}
+	// Renaming on the same hosts keeps it without a new confirmation.
+	if _, err = svc.Update(ctx, c.ID, connections.Input{Name: "renamed", URI: elsewhere}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+}

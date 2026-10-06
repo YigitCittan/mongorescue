@@ -9,6 +9,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
+	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -50,12 +51,16 @@ var uriTLSOptions = []string{
 	"sslAllowInvalidCertificates", "sslAllowInvalidHostnames",
 }
 
-// resolve applies in to stored and returns the validated result for uri, and uri
-// itself, with tls=true added when there is TLS material (mongotools.EnsureTLS):
-// a client that is built from the URI alone, without the material, then still
-// uses TLS and fails verification instead of connecting in plain text.
-func (in TLSInput) resolve(stored models.ConnectionTLS, uri string) (models.ConnectionTLS, string, error) {
-	out, err := in.apply(stored, uri)
+// resolve applies in to stored, the material of the connection whose URI is
+// storedURI ("" for a new connection), and returns the validated result for uri,
+// and uri itself, with tls=true added when there is TLS material
+// (mongotools.EnsureTLS): a client that is built from the URI alone, without the
+// material, then still uses TLS and fails verification instead of connecting in
+// plain text. A stored tls_insecure only counts as confirmed for the hosts it was
+// confirmed for: when uri names other hosts, turning it on, or keeping it, needs
+// ConfirmInsecure again.
+func (in TLSInput) resolve(stored models.ConnectionTLS, storedURI, uri string) (models.ConnectionTLS, string, error) {
+	out, err := in.apply(stored, sameEndpoint(storedURI, uri), uri)
 	if err != nil {
 		return out, uri, err
 	}
@@ -65,8 +70,9 @@ func (in TLSInput) resolve(stored models.ConnectionTLS, uri string) (models.Conn
 	return out, uri, nil
 }
 
-// apply applies in to stored and validates the result for uri.
-func (in TLSInput) apply(stored models.ConnectionTLS, uri string) (models.ConnectionTLS, error) {
+// apply applies in to stored and validates the result for uri. sameHosts reports
+// that uri names the hosts the stored material was saved for.
+func (in TLSInput) apply(stored models.ConnectionTLS, sameHosts bool, uri string) (models.ConnectionTLS, error) {
 	out := stored
 	setPEM(&out.CAPEM, in.CAPEM)
 	setPEM(&out.ClientCertPEM, in.ClientCertPEM)
@@ -82,7 +88,8 @@ func (in TLSInput) apply(stored models.ConnectionTLS, uri string) (models.Connec
 	if in.Insecure != nil {
 		out.Insecure = *in.Insecure
 	}
-	if out.Insecure && !stored.Insecure && !in.ConfirmInsecure {
+	confirmed := in.ConfirmInsecure || (stored.Insecure && sameHosts)
+	if out.Insecure && !confirmed {
 		return out, fmt.Errorf("%w: %w", ErrInvalid, ErrInsecureNotConfirmed)
 	}
 	if err := mongotls.Validate(&out); err != nil {
@@ -92,6 +99,21 @@ func (in TLSInput) apply(stored models.ConnectionTLS, uri string) (models.Connec
 		return out, err
 	}
 	return out, nil
+}
+
+// sameEndpoint reports whether URIs a and b name the same scheme and hosts
+// (credentials and options aside). An empty a never matches.
+func sameEndpoint(a, b string) bool {
+	if a == "" {
+		return false
+	}
+	scheme := func(uri string) string {
+		if strings.HasPrefix(uri, mongouri.SchemeSRV) {
+			return mongouri.SchemeSRV
+		}
+		return mongouri.SchemeStandard
+	}
+	return scheme(a) == scheme(b) && strings.EqualFold(HostList(a), HostList(b))
 }
 
 // setPEM replaces *dst with the trimmed v (ending in a newline) when v is set.

@@ -41,6 +41,7 @@ Rules:
 - **Legacy encrypted PEM keys are refused** (`Proc-Type: 4,ENCRYPTED`). Convert them: `openssl pkcs8 -topk8 -v2 aes256 -in old.key -out new.key`.
 - **TLS goes in the fields or in the URI, not both.** A URI with `tlsCAFile`, `tlsCertificateKeyFile`, `tlsCertificateKeyFilePassword`, `tlsInsecure`, `tlsAllowInvalidCertificates`, `tlsAllowInvalidHostnames` or their `ssl*` forms is refused when TLS fields are set, and so is `tls=false`. Setting any TLS field adds `tls=true` to the stored connection string, so a client that is built from the connection string alone still uses TLS, verified against the system roots, and never falls back to plain text.
 - **Changing the TLS material clears the last connection test.**
+- **The material belongs to the hosts it was saved for.** Testing a connection string with other hosts (`POST /api/v1/connections/test` with `connection_id`) uses none of the stored material: no CA, no client key, no loosened checks. Moving a connection that has `tls_insecure` to other hosts needs `tls_insecure_confirm` again.
 
 How the material is used:
 

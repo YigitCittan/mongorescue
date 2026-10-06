@@ -274,7 +274,7 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	if err := checkURI(in.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, uri, err := in.resolve(models.ConnectionTLS{}, in.URI)
+	tlsMaterial, uri, err := in.resolve(models.ConnectionTLS{}, "", in.URI)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +318,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	if err = checkURI(uri, existing.URI); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, uri, err := in.resolve(existing.ConnectionTLS, uri)
+	tlsMaterial, uri, err := in.resolve(existing.ConnectionTLS, existing.URI, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +423,8 @@ func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.Rea
 
 // TestURIWithTLS is TestURIWith with the TLS material of the form, applied to the
 // stored material of connection id like Update does (omitted fields and masked
-// secrets keep the stored values).
+// secrets keep the stored values) as long as uri names the stored hosts. For
+// other hosts the stored material is not used at all.
 func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.ReadPreference, tlsIn TLSInput) (TestResult, error) {
 	if err := rp.Validate(); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
@@ -452,7 +453,12 @@ func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.
 	if err := checkURI(uri, stored); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	tlsMaterial, uri, err := tlsIn.resolve(storedTLS, uri)
+	if !sameEndpoint(stored, uri) {
+		// The stored material (a CA, a client key, loosened checks) was saved for
+		// the stored hosts; it is never sent to, or relaxed for, other ones.
+		storedTLS = models.ConnectionTLS{}
+	}
+	tlsMaterial, uri, err := tlsIn.resolve(storedTLS, stored, uri)
 	if err != nil {
 		return TestResult{}, err
 	}

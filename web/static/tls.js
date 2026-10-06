@@ -262,7 +262,10 @@ const TLS_MASK = "******";
 const TLS_MAX_PEM = 64 * 1024;
 
 // What the connection being edited has stored (the key and password are masked).
-const tlsStored = { key: false, password: false, insecure: false, snapshot: "" };
+// uri is the stored (redacted) connection string: the server confirms
+// tls_insecure for the hosts it was turned on for, so another connection string
+// needs the confirmation again (reconfirmedURI).
+const tlsStored = { key: false, password: false, insecure: false, snapshot: "", uri: "", reconfirmedURI: null };
 
 function tlsEl(id) {
   return document.getElementById(id);
@@ -290,6 +293,8 @@ function tlsFillConnectionForm(c) {
   tlsStored.key = !!(c && c.tls_client_key_pem);
   tlsStored.password = !!(c && c.tls_client_key_password);
   tlsStored.insecure = !!(c && c.tls_insecure);
+  tlsStored.uri = c && c.uri ? c.uri : "";
+  tlsStored.reconfirmedURI = null;
   const hostnames = tlsEl("connection-tls-hostnames");
   if (hostnames) hostnames.checked = !!(c && c.tls_allow_invalid_hostnames);
   const insecure = tlsEl("connection-tls-insecure");
@@ -310,10 +315,21 @@ function tlsPlaceholders() {
   if (pw) pw.placeholder = tlsStored.password ? t("tls.password_stored") : "";
 }
 
-// tlsConnectionPayload returns the TLS fields of the connection payload, also for
-// the form's connection test. Empty key and password fields keep stored values
-// (the mask) unless the certificate was removed, which removes them too.
-function tlsConnectionPayload() {
+// tlsConfirmURI asks again before a connection that does not verify the server
+// certificate is tested or saved with another connection string. It returns
+// false when the user declines.
+function tlsConfirmURI(uri) {
+  if (!tlsChecked("connection-tls-insecure") || !tlsStored.insecure || uri === tlsStored.uri || tlsStored.reconfirmedURI === uri) return true;
+  if (!window.confirm(t("tls.insecure_confirm"))) return false;
+  tlsStored.reconfirmedURI = uri;
+  return true;
+}
+
+// tlsConnectionPayload returns the TLS fields of the connection payload for the
+// connection string uri, also for the form's connection test. Empty key and
+// password fields keep stored values (the mask) unless the certificate was
+// removed, which removes them too.
+function tlsConnectionPayload(uri) {
   if (!tlsEl("connection-tls")) return {};
   const cert = tlsValue("connection-tls-cert").trim();
   let key = tlsValue("connection-tls-key").trim();
@@ -330,8 +346,9 @@ function tlsConnectionPayload() {
     tls_allow_invalid_hostnames: tlsChecked("connection-tls-hostnames"),
     tls_insecure: insecure,
   };
-  // Confirmed when the box was ticked (setupTLS).
-  if (insecure && !tlsStored.insecure) out.tls_insecure_confirm = true;
+  // Confirmed when the box was ticked (setupTLS), or for a new connection string
+  // by tlsConfirmURI.
+  if (insecure && (!tlsStored.insecure || (uri !== undefined && uri === tlsStored.reconfirmedURI))) out.tls_insecure_confirm = true;
   return out;
 }
 
