@@ -20,7 +20,7 @@ type fakeKeyRotator struct {
 func (f *fakeKeyRotator) FromEnv() bool         { return f.env }
 func (f *fakeKeyRotator) Fingerprint() string   { return "fp-current" }
 func (f *fakeKeyRotator) PreviousKeyKept() bool { return false }
-func (f *fakeKeyRotator) Rotate(context.Context) (*keyrotation.Result, error) {
+func (f *fakeKeyRotator) RotateAs(context.Context, string, string) (*keyrotation.Result, error) {
 	f.calls++
 	return &keyrotation.Result{OldFingerprint: "fp-current", NewFingerprint: "fp-new"}, nil
 }

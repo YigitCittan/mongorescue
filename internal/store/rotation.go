@@ -51,6 +51,9 @@ type KeyRotation struct {
 	NewFingerprint string `json:"new_fingerprint"`
 	// StartedAt is when the rotation began.
 	StartedAt time.Time `json:"started_at"`
+	// Actor and ApprovalID name who asked for it and the approval it ran for.
+	Actor      string `json:"actor,omitempty"`
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // BeginKeyRotation records m as the rotation in progress. It returns

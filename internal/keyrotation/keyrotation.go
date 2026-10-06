@@ -93,6 +93,14 @@ type Opened struct {
 	Key []byte
 	// Outcome tells what happened to an interrupted rotation.
 	Outcome Outcome
+	// Completed is the marker of the rotation this start completed (nil unless
+	// Outcome is OutcomeCompleted): its fingerprints, actor and approval, so that the
+	// security.key_rotated event of a rotation that a crash or an incomplete install
+	// interrupted is sent once it is effectively done.
+	Completed *store.KeyRotation
+
+	// marker is the rotation marker a candidate key matched (see tryCandidate).
+	marker *store.KeyRotation
 }
 
 // Open opens the metadata store with key (loaded from files.Current, or from
@@ -115,12 +123,16 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 		return &Opened{Store: st, Key: key}, nil
 	}
 	if openErr == nil {
-		outcome, settleErr := settleOpened(ctx, st, files, key, logger)
+		outcome, m, settleErr := settleOpened(ctx, st, files, key, logger)
 		if settleErr != nil {
 			_ = st.Close()
 			return nil, settleErr
 		}
-		return &Opened{Store: st, Key: key, Outcome: outcome}, nil
+		opened := &Opened{Store: st, Key: key, Outcome: outcome}
+		if outcome == OutcomeCompleted {
+			opened.Completed = m
+		}
+		return opened, nil
 	}
 	if !errors.Is(openErr, secretbox.ErrSecretKeyMismatch) {
 		return nil, openErr
@@ -140,7 +152,7 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 			return nil, err
 		}
 		logger.Warn("completed an interrupted secret key rotation: installed secret.key.next as secret.key")
-		opened.Outcome = OutcomeCompleted
+		opened.Outcome, opened.Completed = OutcomeCompleted, opened.marker
 		return opened, nil
 	}
 	// The new key was installed but the commit was lost (power loss).
@@ -161,32 +173,32 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 }
 
 // settleOpened cleans up after a rotation when secret.key opened the database.
-func settleOpened(ctx context.Context, st *store.SQLiteStore, files Files, key []byte, logger *slog.Logger) (Outcome, error) {
+func settleOpened(ctx context.Context, st *store.SQLiteStore, files Files, key []byte, logger *slog.Logger) (Outcome, *store.KeyRotation, error) {
 	m, err := st.PendingKeyRotation(ctx)
 	if err != nil {
-		return OutcomeNone, err
+		return OutcomeNone, nil, err
 	}
 	if m == nil {
 		// A next key without a marker belongs to no rotation (the marker is written
 		// first and removed last).
-		return OutcomeNone, secretbox.RemoveKeyFile(files.Next)
+		return OutcomeNone, nil, secretbox.RemoveKeyFile(files.Next)
 	}
 	fp, err := secretbox.Fingerprint(key)
 	if err != nil {
-		return OutcomeNone, err
+		return OutcomeNone, nil, err
 	}
 	if err = secretbox.RemoveKeyFile(files.Next); err != nil {
-		return OutcomeNone, err
+		return OutcomeNone, nil, err
 	}
 	if err = st.EndKeyRotation(ctx); err != nil {
-		return OutcomeNone, err
+		return OutcomeNone, nil, err
 	}
 	if fp == m.NewFingerprint {
 		logger.Info("completed an interrupted secret key rotation")
-		return OutcomeCompleted, nil
+		return OutcomeCompleted, m, nil
 	}
 	logger.Warn("rolled back an interrupted secret key rotation: the database still uses secret.key")
-	return OutcomeRolledBack, nil
+	return OutcomeRolledBack, m, nil
 }
 
 // tryCandidate opens the store with the key file at path, when it exists, and keeps
@@ -218,7 +230,7 @@ func tryCandidate(ctx context.Context, path string, open OpenFunc, match func(*s
 		_ = st.Close()
 		return nil, errors.Join(err, fpErr)
 	}
-	return &Opened{Store: st, Key: key}, nil
+	return &Opened{Store: st, Key: key, marker: m}, nil
 }
 
 // completeInstall finishes a rotation whose transaction committed: the old key goes
@@ -358,6 +370,13 @@ func (r *Rotator) Fingerprint() string {
 	return fp
 }
 
+// partial is the result of a rotation that committed but whose key file could not
+// be installed (returned with ErrIncomplete).
+func partial(oldFP, newFP string, res *store.KeyRotationResult) *Result {
+	return &Result{OldFingerprint: oldFP, NewFingerprint: newFP, Resealed: res.Resealed,
+		SessionsRevoked: res.SessionsRevoked, Skipped: res.Skipped}
+}
+
 // crashError is an injected crash (see Config.Fault).
 type crashError struct{ err error }
 
@@ -378,6 +397,13 @@ func (r *Rotator) fault(step Step) error {
 // Rotate generates a new key, re-seals the database under it and installs it as
 // secret.key (see the package comment). Everyone has to sign in again afterwards.
 func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
+	return r.RotateAs(ctx, "", "")
+}
+
+// RotateAs is Rotate on behalf of actor, approved by approval approvalID (both may
+// be empty). They are kept in the rotation marker, so the security.key_rotated event
+// of a rotation that only completes at the next start still names them.
+func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string) (*Result, error) {
 	if r.cfg.FromEnv {
 		return nil, ErrEnvKey
 	}
@@ -423,7 +449,8 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 	}
 	log := r.cfg.Logger.With(slog.String("old_fingerprint", oldFP), slog.String("new_fingerprint", newFP))
 
-	if err = r.cfg.Store.BeginKeyRotation(ctx, store.KeyRotation{OldFingerprint: oldFP, NewFingerprint: newFP, StartedAt: r.cfg.Now().UTC()}); err != nil {
+	if err = r.cfg.Store.BeginKeyRotation(ctx, store.KeyRotation{OldFingerprint: oldFP, NewFingerprint: newFP, StartedAt: r.cfg.Now().UTC(),
+		Actor: actor, ApprovalID: approvalID}); err != nil {
 		if errors.Is(err, store.ErrKeyRotationPending) {
 			return nil, ErrPending
 		}
@@ -476,14 +503,14 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 	}
 	if err = secretbox.WriteKeyFile(r.cfg.Files.Previous, old); err != nil {
 		log.Error("secret key rotation: could not keep the previous key", logsafe.Error(err))
-		return nil, ErrIncomplete
+		return partial(oldFP, newFP, res), ErrIncomplete
 	}
 	if err = r.fault(StepPreviousKept); err != nil {
 		return nil, err
 	}
 	if err = secretbox.InstallKeyFile(r.cfg.Files.Next, r.cfg.Files.Current); err != nil {
 		log.Error("secret key rotation: could not install the new key file", logsafe.Error(err))
-		return nil, ErrIncomplete
+		return partial(oldFP, newFP, res), ErrIncomplete
 	}
 	if err = r.fault(StepInstalled); err != nil {
 		return nil, err

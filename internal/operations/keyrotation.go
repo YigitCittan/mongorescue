@@ -2,6 +2,7 @@ package operations
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // Kinds of key rotations (events.SecurityKeyRotated, Event.Action).
@@ -27,8 +29,8 @@ const (
 type SecretKeyRotator interface {
 	// FromEnv reports a key from MONGORESCUE_SECRET_KEY, which cannot be rotated.
 	FromEnv() bool
-	// Rotate rotates the key.
-	Rotate(ctx context.Context) (*keyrotation.Result, error)
+	// RotateAs rotates the key on behalf of actor, for approval approvalID.
+	RotateAs(ctx context.Context, actor, approvalID string) (*keyrotation.Result, error)
 }
 
 // RotateSecretKey rotates secret.key: every sealed credential is re-sealed under a
@@ -56,12 +58,50 @@ func (s *Service) RotateSecretKey(ctx context.Context) (*keyrotation.Result, err
 		return nil, s.requestApproval(ctx, &models.Approval{Action: models.ApprovalRotateSecretKey, Subject: KeyKindSecretKey,
 			Summary: "rotate secret.key (every user has to sign in again)"})
 	}
-	res, err := r.Rotate(ctx)
+	by, approvedBy := actorNames(ctx)
+	if approvedBy != "" {
+		by += " (approved by " + approvedBy + ")"
+	}
+	approvalID := ""
+	if a := approvalOf(ctx); a != nil {
+		approvalID = a.approval.ID
+	}
+	res, err := r.RotateAs(ctx, by, approvalID)
+	if errors.Is(err, keyrotation.ErrIncomplete) && res != nil {
+		// The database uses the new key; the next start installs the key file and
+		// sends security.key_rotated then. The audit entry records it now.
+		auditlog.Annotate(ctx, "key_rotated", KeyKindSecretKey+" (completes at the next start)")
+		auditlog.Annotate(ctx, "old_fingerprint", res.OldFingerprint)
+		auditlog.Annotate(ctx, "new_fingerprint", res.NewFingerprint)
+	}
 	if err != nil {
 		return nil, err
 	}
 	s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint, res.Skipped...)
 	return res, nil
+}
+
+// KeyRotationCompleted publishes security.key_rotated for a secret key rotation
+// that the startup recovery completed (keyrotation.Opened.Completed): one a crash
+// or a failed key file install had interrupted after its commit.
+func (s *Service) KeyRotationCompleted(ctx context.Context, m *store.KeyRotation) {
+	if m == nil {
+		return
+	}
+	by := m.Actor
+	if by == "" {
+		by = "unknown"
+	}
+	detail := "old fingerprint " + m.OldFingerprint + ", new fingerprint " + m.NewFingerprint + " (completed at startup)"
+	s.publish(context.WithoutCancel(ctx), events.SecurityEvent(events.SecurityKeyRotated, s.now(), KeyKindSecretKey, by, m.ApprovalID, detail))
+	if s.cfg.Audit != nil {
+		s.cfg.Audit.Record(context.WithoutCancel(ctx), systemAudit(s.now(), "keyrotation.completed", map[string]any{
+			"kind": KeyKindSecretKey, "old_fingerprint": m.OldFingerprint, "new_fingerprint": m.NewFingerprint,
+			"actor": m.Actor, "approval_id": m.ApprovalID,
+		}))
+	}
+	s.logger.Info("key rotated", slog.String("kind", KeyKindSecretKey), slog.String("old_fingerprint", m.OldFingerprint),
+		slog.String("new_fingerprint", m.NewFingerprint), slog.String("completed", "at startup"))
 }
 
 // keyRotated records a key rotation: a security.key_rotated event naming the kind,

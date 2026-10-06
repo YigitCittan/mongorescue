@@ -258,6 +258,12 @@ func TestCrashAtEveryStep(t *testing.T) {
 			if again.Outcome != tc.outcome {
 				t.Fatalf("outcome = %q; want %q", again.Outcome, tc.outcome)
 			}
+			// A completed rotation hands its marker over for the security.key_rotated
+			// event; a rolled-back one does not.
+			oldFP, _ := secretbox.Fingerprint(oldKey)
+			if completed := again.Completed != nil && again.Completed.OldFingerprint == oldFP; completed != tc.newKey {
+				t.Fatalf("completed marker = %+v; want one: %v", again.Completed, tc.newKey)
+			}
 			checkSecrets(t, again.Store)
 			cur := readKey(t, e.files.Current)
 			if tc.newKey == bytes.Equal(cur, oldKey) {

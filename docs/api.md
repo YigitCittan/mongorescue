@@ -240,7 +240,7 @@ See the runbook in [encryption.md](encryption.md#key-rotation-runbook).
 - `POST /api/v1/encryption/rotate` (admin) answers `{mode, old_fingerprint, new_fingerprint, recipients, reencryption}`. X25519 keys are named by their public keys; passphrases by `"passphrase"`. With `"reencrypt": true` the answer carries the job `{id, status, total, done, skipped, failed, errors, ...}`, also returned by `GET /api/v1/encryption/reencryption`.
 - `POST /api/v1/storage-targets/{id}/rotate-credentials` (admin) answers `{target, steps: [{name, ok, error}], old_access_key_id, new_access_key_id}`. A failed probe answers `422` with the same document in `data` and changes nothing; a local target, missing fields or unchanged credentials answer `400`.
 
-Each successful rotation publishes `security.key_rotated` (`action`: `secret_key`, `encryption` or `storage_credentials`; `detail`: the old and new fingerprints; `approval_id`) and annotates its audit entry with `key_rotated`, `old_fingerprint` and `new_fingerprint`.
+When the database was re-sealed but the new key file could not be installed, the endpoint answers `500` with that explanation: the audit entry already carries the fingerprints, and the next start installs `secret.key.next` and publishes the event then (also for a rotation a crash interrupted after its commit; the actor and approval come from the rotation marker, the audit log gets a `keyrotation.completed` system entry). Each successful rotation publishes `security.key_rotated` (`action`: `secret_key`, `encryption` or `storage_credentials`; `detail`: the old and new fingerprints; `approval_id`) and annotates its audit entry with `key_rotated`, `old_fingerprint` and `new_fingerprint`.
 
 ## Restores
 

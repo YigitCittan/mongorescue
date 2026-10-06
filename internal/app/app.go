@@ -614,6 +614,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// A secret key rotation that the startup recovery completed is announced now
+	// (the bus queues the event until it runs).
+	if opened.Completed != nil {
+		ops.KeyRotationCompleted(ctx, opened.Completed)
+	}
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{

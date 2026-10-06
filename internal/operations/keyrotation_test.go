@@ -9,18 +9,21 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // fakeRotator counts rotations.
 type fakeRotator struct {
-	env   bool
-	calls int
+	env               bool
+	calls             int
+	actor, approvalID string
 }
 
 func (f *fakeRotator) FromEnv() bool { return f.env }
 
-func (f *fakeRotator) Rotate(context.Context) (*keyrotation.Result, error) {
+func (f *fakeRotator) RotateAs(_ context.Context, actor, approvalID string) (*keyrotation.Result, error) {
 	f.calls++
+	f.actor, f.approvalID = actor, approvalID
 	return &keyrotation.Result{OldFingerprint: "old-fp", NewFingerprint: "new-fp"}, nil
 }
 
@@ -94,5 +97,20 @@ func TestRotateSecretKeyWaitsForASecondAdmin(t *testing.T) {
 	ev := keyRotatedEvents(env)
 	if len(ev) != 1 || ev[0].ApprovalID != a.ID {
 		t.Fatalf("events = %+v; want one naming the approval", ev)
+	}
+	if r.approvalID != a.ID || r.actor != "alice (approved by bob)" {
+		t.Fatalf("rotator got actor %q, approval %q", r.actor, r.approvalID)
+	}
+}
+
+// TestKeyRotationCompletedAtStartupIsAnnounced checks the event of a rotation that
+// the startup recovery completed: it names the actor and approval of the marker.
+func TestKeyRotationCompletedAtStartupIsAnnounced(t *testing.T) {
+	env := rotEnv(t, &fakeRotator{})
+	env.svc.KeyRotationCompleted(context.Background(), &store.KeyRotation{OldFingerprint: "o", NewFingerprint: "n",
+		Actor: "alice", ApprovalID: "apr_1"})
+	ev := keyRotatedEvents(env)
+	if len(ev) != 1 || ev[0].Actor != "alice" || ev[0].ApprovalID != "apr_1" || ev[0].Action != operations.KeyKindSecretKey {
+		t.Fatalf("events = %+v", ev)
 	}
 }
