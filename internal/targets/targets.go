@@ -311,6 +311,9 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 			return nil, err
 		}
 	}
+	if err = s.checkObjectLock(ctx, t); err != nil {
+		return nil, err
+	}
 	id, err := NewID()
 	if err != nil {
 		return nil, err
@@ -373,6 +376,9 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 		if err = s.verifyInUseChange(ctx, existing, t); err != nil {
 			return nil, err
 		}
+	}
+	if err = s.checkObjectLock(ctx, t); err != nil {
+		return nil, err
 	}
 	t.ID, t.CreatedAt, t.IsDefault = existing.ID, existing.CreatedAt, existing.IsDefault
 	t.UpdatedAt = s.now().UTC()
@@ -690,8 +696,16 @@ func (s *Service) probe(ctx context.Context, t *models.StorageTarget) TestResult
 	return res
 }
 
+// A target with S3 Object Lock is probed without a lock (a locked probe object could
+// not be deleted for days or years), its probe version is deleted, and the bucket's
+// Object Lock and versioning are checked afterwards.
 func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
-	driver, err := s.build(ctx, t)
+	unlocked := t
+	if t.ObjectLocked() {
+		unlocked = t.Clone()
+		unlocked.S3.ObjectLock, unlocked.S3.RetentionDays, unlocked.S3.LegalHoldOnPin = "", 0, false
+	}
+	driver, err := s.build(ctx, unlocked)
 	if err != nil {
 		return err
 	}
@@ -701,13 +715,19 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 	}
 	key := ProbePrefix + suffix
 	payload := []byte("mongorescue storage probe " + suffix)
-	if _, err = driver.Save(ctx, key, bytes.NewReader(payload)); err != nil {
+	obj, err := driver.Save(ctx, key, bytes.NewReader(payload))
+	if err != nil {
 		return fmt.Errorf("write test object: %w", err)
+	}
+	version := ""
+	if obj != nil {
+		version = obj.VersionID
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		if err = driver.Delete(cleanupCtx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		// On a versioned bucket only deleting the version frees it.
+		if err := storage.DeleteVersion(cleanupCtx, driver, key, version); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), logsafe.Error(err))
 		}
 	}()
@@ -722,6 +742,38 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 	}
 	if !bytes.Equal(got, payload) {
 		return errors.New("read test object: content differs from what was written")
+	}
+	if t.ObjectLocked() {
+		return lockCheck(ctx, driver)
+	}
+	return nil
+}
+
+// lockCheck verifies that the bucket of driver has Object Lock and versioning
+// enabled.
+func lockCheck(ctx context.Context, driver storage.Storage) error {
+	locker, ok := driver.(storage.ObjectLocker)
+	if !ok {
+		return fmt.Errorf("%w: the storage driver does not support object lock", storage.ErrObjectLockUnavailable)
+	}
+	return locker.CheckObjectLock(ctx)
+}
+
+// checkObjectLock refuses to save an S3 target with an object lock mode whose bucket
+// does not have Object Lock and versioning enabled. MongoRescue never enables them
+// itself.
+func (s *Service) checkObjectLock(ctx context.Context, t *models.StorageTarget) error {
+	if !t.ObjectLocked() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
+	defer cancel()
+	driver, err := s.build(ctx, t)
+	if err == nil {
+		err = lockCheck(ctx, driver)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: object lock: %s", ErrInvalid, scrub(err, t))
 	}
 	return nil
 }
@@ -903,6 +955,23 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 		SecretAccessKey: strings.TrimSpace(in.SecretAccessKey),
 		UsePathStyle:    in.UsePathStyle,
 		PartSizeMB:      in.PartSizeMB,
+		ObjectLock:      models.ObjectLockMode(strings.ToLower(strings.TrimSpace(string(in.ObjectLock)))),
+		RetentionDays:   in.RetentionDays,
+		LegalHoldOnPin:  in.LegalHoldOnPin,
+	}
+	switch out.ObjectLock {
+	case "", models.ObjectLockNone:
+		if out.LegalHoldOnPin {
+			return out, fmt.Errorf("%w: s3.legal_hold_on_pin needs s3.object_lock governance or compliance", ErrInvalid)
+		}
+		out.ObjectLock, out.RetentionDays = "", 0
+	case models.ObjectLockGovernance, models.ObjectLockCompliance:
+		if out.RetentionDays < models.MinObjectLockRetentionDays || out.RetentionDays > models.MaxObjectLockRetentionDays {
+			return out, fmt.Errorf("%w: s3.retention_days must be %d to %d with an object lock", ErrInvalid,
+				models.MinObjectLockRetentionDays, models.MaxObjectLockRetentionDays)
+		}
+	default:
+		return out, fmt.Errorf("%w: s3.object_lock must be none, governance or compliance", ErrInvalid)
 	}
 	if out.PartSizeMB == 0 {
 		out.PartSizeMB = models.DefaultS3PartSizeMB
