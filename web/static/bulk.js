@@ -1090,6 +1090,9 @@ function confirmDialog(opts) {
     const input = document.getElementById("confirm-input");
     require.hidden = !confirmState.require && !o.prompt;
     input.value = o.prompt ? String(o.prompt.value || "") : "";
+    // A secret prompt (a password, a passphrase) is masked and never autofilled.
+    input.type = o.prompt && o.prompt.secret ? "password" : "text";
+    input.autocomplete = o.prompt && o.prompt.secret ? "new-password" : "off";
     if (o.prompt && o.prompt.maxLength) input.maxLength = Number(o.prompt.maxLength);
     else input.removeAttribute("maxlength");
     setText("confirm-require-label", o.prompt ? String(o.prompt.label || "")
