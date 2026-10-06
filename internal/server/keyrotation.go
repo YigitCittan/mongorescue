@@ -3,10 +3,12 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
 // maxRotateBody bounds the JSON body of the key rotation endpoints.
@@ -32,6 +34,38 @@ func WithKeyRotation(info KeyRotationInfo) Option {
 func (s *Server) registerKeyRotationRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/security/key-rotation", s.handleKeyRotationStatus)
 	mux.HandleFunc("POST /api/v1/security/rotate-secret-key", s.handleRotateSecretKey)
+	mux.HandleFunc("POST /api/v1/encryption/rotate", s.handleRotateEncryptionKey)
+	mux.HandleFunc("GET /api/v1/encryption/reencryption", s.handleReencryptionStatus)
+}
+
+// handleRotateEncryptionKey rotates the backup encryption key (body:
+// operations.EncryptionRotationRequest) and optionally starts the re-encryption of
+// existing backups. The new passphrase is never logged or echoed.
+func (s *Server) handleRotateEncryptionKey(w http.ResponseWriter, r *http.Request) {
+	var req operations.EncryptionRotationRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRotateBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request json: "+jsonProblem(err))
+		return
+	}
+	res, err := s.ops.RotateEncryptionKey(r.Context(), req)
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	s.refreshRecoveryKit(r.Context())
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleReencryptionStatus returns the latest re-encryption job (null when none).
+func (s *Server) handleReencryptionStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.ops.ReencryptionStatus(r.Context())
+	if err != nil {
+		s.writeOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // secretKeyStatus is the secret key part of GET /api/v1/security/key-rotation.

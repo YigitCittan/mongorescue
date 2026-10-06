@@ -135,6 +135,7 @@ type Service struct {
 
 	mu      sync.Mutex
 	ctx     context.Context
+	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	running bool
 }
@@ -156,8 +157,9 @@ func New(cfg Config) *Service {
 // Start binds the service to ctx (the application lifecycle) and resumes a job that
 // a shutdown or crash interrupted.
 func (s *Service) Start(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
-	s.ctx = ctx
+	s.ctx, s.cancel = ctx, cancel
 	s.mu.Unlock()
 	st, ok, err := s.load(ctx)
 	if err != nil {
@@ -172,6 +174,17 @@ func (s *Service) Start(ctx context.Context) {
 
 // Wait blocks until a running job stopped (after the lifecycle context ended).
 func (s *Service) Wait() { s.wg.Wait() }
+
+// Stop cancels a running job, which resumes on the next start, and waits for it.
+func (s *Service) Stop() {
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
+}
 
 // Status returns the latest job (nil when none ran).
 func (s *Service) Status(ctx context.Context) (*State, error) {

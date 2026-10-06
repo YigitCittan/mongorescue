@@ -44,6 +44,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
+	"github.com/yigitcittan/mongorescue/internal/reencrypt"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -103,6 +104,7 @@ type App struct {
 	targets       *targets.Service
 	integrity     *integrity.Service
 	metaBackup    *metabackup.Service
+	reencrypt     *reencrypt.Service
 	pitr          *collector.Service
 	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
 	// or chain test (operations.Service.CleanupInterruptedPITR).
@@ -470,6 +472,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Apply:      holders.apply,
 		Logger:     logger,
 	})
+	// Re-encryption of existing backups after an encryption key rotation.
+	reencryptSvc := reencrypt.New(reencrypt.Config{
+		Store: metaStore, Storage: targetSvc.Storage,
+		Encryptor: settingsSvc.Encryptor, Decryptor: settingsSvc.Decryptor,
+		Grace:  func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
+		Logger: logger,
+	})
 
 	// Recovery readiness: the RPO checker (job.rpo_missed / job.rpo_recovered, the
 	// job_rpo_* gauges) and the per-database readiness report. A finished backup
@@ -581,6 +590,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		SecondApproverCheck: authSvc.CheckSecondApproverPossible,
 		Users:               authSvc,
 		KeyRotator:          keyRotator,
+		Reencrypter:         reencryptSvc,
 		Publisher:           bus,
 		Verifier:            integritySvc,
 		Inspector:           prober,
@@ -720,6 +730,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		targets:       targetSvc,
 		integrity:     integritySvc,
 		metaBackup:    metaBackupSvc,
+		reencrypt:     reencryptSvc,
 		pitr:          pitrSvc,
 		cleanupPITR:   ops.CleanupInterruptedPITR,
 		readiness:     readinessSvc,
@@ -1116,6 +1127,11 @@ func (a *App) Start(ctx context.Context) error {
 	if a.metaBackup != nil {
 		a.metaBackup.Start(context.WithoutCancel(ctx))
 	}
+	// Re-encryption of backups after a key rotation; resumes an interrupted job and
+	// is stopped by shutdownRuns.
+	if a.reencrypt != nil {
+		a.reencrypt.Start(context.WithoutCancel(ctx))
+	}
 	// The PITR oplog collector; stopped by shutdownRuns.
 	if a.pitr != nil {
 		a.pitr.Start(context.WithoutCancel(ctx))
@@ -1252,6 +1268,9 @@ func (a *App) shutdownRuns() {
 			defer wg.Done()
 			if a.metaBackup != nil {
 				a.metaBackup.Stop()
+			}
+			if a.reencrypt != nil {
+				a.reencrypt.Stop()
 			}
 		}()
 		go func() {

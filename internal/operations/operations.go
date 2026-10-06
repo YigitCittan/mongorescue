@@ -223,6 +223,9 @@ type Config struct {
 	Users UserAdmin
 	// KeyRotator rotates secret.key (nil: rotation unavailable).
 	KeyRotator SecretKeyRotator
+	// Reencrypter re-encrypts existing backups after an encryption key rotation
+	// (nil: unavailable).
+	Reencrypter Reencrypter
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
