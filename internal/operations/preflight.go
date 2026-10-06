@@ -134,7 +134,8 @@ func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreReques
 func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB, shown string) *models.PreflightResult {
 	ctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()
-	p := &preflightRun{svc: s, ctx: mongotls.NewContext(ctx, req.MongoTLS), req: req, source: source, targetDB: targetDB, shown: shown, res: &models.PreflightResult{OK: true}}
+	p := s.newPreflightRun(ctx, req, source, targetDB)
+	p.shown = shown
 	defer p.close()
 	p.connection()
 	p.encryption()
@@ -261,6 +262,14 @@ func (p *preflightRun) skipServer(id string) bool {
 // errText is the redacted text of err for a check message.
 func errText(err error) string {
 	return redact.Text(err.Error())
+}
+
+// newPreflightRun returns the checks of one preflight of req. Its context carries
+// the target connection's TLS material, so every driver call of the preflight
+// (OpenTarget and the checks on the target) uses it.
+func (s *Service) newPreflightRun(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB string) *preflightRun {
+	return &preflightRun{svc: s, ctx: mongotls.NewContext(ctx, req.MongoTLS), req: req, source: source, targetDB: targetDB,
+		res: &models.PreflightResult{OK: true}}
 }
 
 func (p *preflightRun) connection() {

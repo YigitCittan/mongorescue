@@ -159,6 +159,17 @@ func TestTLSWithCustomCA(t *testing.T) {
 		t.Fatal("ping without the CA succeeded; the server certificate must not be trusted")
 	}
 
+	// The restore preflight's target (also the point-in-time preflight's) opens
+	// with the material carried by the context, and reports the server.
+	target, err := mongoconn.New().OpenTarget(mongotls.NewContext(ctx, material), env.URI)
+	if err != nil {
+		t.Fatalf("open preflight target: %v", err)
+	}
+	if info, pingErr := target.Ping(ctx); pingErr != nil || info.Version == "" {
+		t.Fatalf("preflight target ping = %+v, %v", info, pingErr)
+	}
+	target.Close()
+
 	// Without the CA, mongodump cannot verify the server either. It keeps retrying
 	// the handshake rather than failing fast, so the attempt is bounded.
 	st, err := storage.NewLocalStorage(t.TempDir())
