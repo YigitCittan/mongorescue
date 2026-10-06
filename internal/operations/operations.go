@@ -689,7 +689,8 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
 	}
 	if s.cfg.Inspector != nil {
-		pre := s.preflight(ctx, req, source, record.TargetDatabase)
+		// The checks name the clone this restore creates: Prepare named it once.
+		pre := s.preflight(ctx, req, source, record.TargetDatabase, record.TargetDatabase)
 		if !pre.OK && !req.Force && !req.DryRun {
 			return nil, &PreflightError{Result: pre}
 		}
