@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Privacy and erasure requests (#104): [docs/privacy.md](docs/privacy.md) describes what each artefact holds (archives, PITR oplog chunks and base backups, clones, run logs, the audit and activity logs, metadata snapshots, the recovery kit, notification payloads), where it lives, how long it is kept and how to configure that (job retention, `oplog_max_days`, audit retention, the delete grace period, Object Lock in #59), the common legal position (backups expire on schedule, erasures are re-applied after every restore) and a recommended erasure log. Linked from the README and docs/security.md.
+- Post-restore commands (#104): a connection's `post_restore_commands` (admin only, hidden from other callers) run against the databases every safe-clone restore into it creates (restores, point-in-time restores and restore tests) before the restore is reported complete, to re-apply erasures. `database` is a source database (its clone) or `"*"` (every clone); commands never run in a source database, another database or `admin`/`config`/`local`. Allowed: `delete`, `update`, `findAndModify`, `dropIndexes`, `collMod` and `drop`; server-side JavaScript, `$out`, `$merge`, `$lookup`, `$graphLookup`, `$unionWith`, `$db`, `eval`, `applyOps` and other commands are refused. A failing command fails the restore and keeps the clones for inspection (`post_restore.clones_kept`). Each command's name and counts (never its document) are recorded on the restore (`post_restore`), in the run log and in the audit log (`SYSTEM restore.post_restore_command`); the preflight lists them (`post_restore` check). In-place restores and dry runs run none (in place with a warning); `verify_restore` and restore tests compare with the manifest first. The dashboard's connection form has a *Post-restore commands* editor with JSON validation, in all eight languages. See [docs/api.md](docs/api.md#post-restore-commands).
+
 ## [0.23.0] - 2026-10-06
 
 ### Added
