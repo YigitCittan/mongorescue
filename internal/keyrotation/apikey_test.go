@@ -70,3 +70,38 @@ func TestImportedAPIKeysVerifyAfterRotation(t *testing.T) {
 		t.Fatalf("re-import = %v, %v; want a no-op", created, err)
 	}
 }
+
+// TestReimportAfterRotationRehashes checks the import path on its own: a key MACed
+// under the retired secret key is recognised by the next start's import (the
+// variable is still set), re-hashed as "hmac-sha256:<kid>:" under the new MAC key
+// and not imported twice.
+func TestReimportAfterRotationRehashes(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	opened := e.start(t)
+	if created, err := authOn(t, opened.Store, opened.Key).ImportAPIKey(ctx, importedKey); err != nil || !created {
+		t.Fatalf("ImportAPIKey = %v, %v", created, err)
+	}
+	if _, err := rotator(e, opened, nil, nil).Rotate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := opened.Store.ListAPIKeys(ctx)
+	_ = opened.Store.Close()
+
+	again := e.start(t)
+	restarted := authOn(t, again.Store, again.Key)
+	if created, err := restarted.ImportAPIKey(ctx, importedKey); err != nil || created {
+		t.Fatalf("re-import after rotation = %v, %v; want a no-op", created, err)
+	}
+	after, _ := again.Store.ListAPIKeys(ctx)
+	if len(after) != 1 || after[0].ID != before[0].ID || after[0].Hash == before[0].Hash {
+		t.Fatalf("keys after re-import = %+v; want the one record, re-hashed", after)
+	}
+	sub, _ := secretbox.DeriveSubkey(again.Key, auth.ImportedKeySubkeyPurpose)
+	if kid, ok := auth.ImportedKeyHashKID(after[0].Hash); !ok || kid != auth.ImportedKeyMACID(sub) {
+		t.Fatalf("hash key ID = %q, %v; want the current MAC key's", kid, ok)
+	}
+	if _, err := restarted.AuthenticateAPIKey(ctx, importedKey); err != nil {
+		t.Fatalf("authenticate after the re-import: %v", err)
+	}
+}
