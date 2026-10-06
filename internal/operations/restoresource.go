@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
@@ -75,6 +79,54 @@ func (s *Service) archiveProblem(ctx context.Context, rec *models.BackupRecord) 
 	}
 	return ""
 }
+
+// recordArchiveMismatch records that the archive a restore read (view: the backup
+// or one of its copies, see restoreSource) did not match the backup's checksum.
+// The backup itself gets verification "mismatch" when its primary archive was
+// read, so the next restore falls back to a healthy copy by itself; a damaged copy
+// gets the mismatch too and is queued to be copied again. A record whose archive
+// changed meanwhile is left alone.
+func (s *Service) recordArchiveMismatch(ctx context.Context, view *models.BackupRecord, cause error) {
+	u, ok := s.cfg.Store.(backupUpdater)
+	if !ok {
+		return
+	}
+	at := time.Now().UTC()
+	msg := redact.Text(cause.Error())
+	requeued := false
+	_, err := u.UpdateBackupRecord(ctx, view.ID, func(r *models.BackupRecord) error {
+		if r.SHA256 != view.SHA256 {
+			return errArchiveChanged
+		}
+		if r.StorageTargetID == view.StorageTargetID && r.StorageKey == view.StorageKey {
+			r.Verification, r.VerifiedAt, r.VerificationError = models.VerificationMismatch, &at, msg
+			return nil
+		}
+		c := r.Copy(view.StorageTargetID)
+		if c == nil || c.StorageKey != view.StorageKey || c.Status != models.CopyDone {
+			return errArchiveChanged
+		}
+		c.VerifiedAt, c.Verification, c.VerificationError = &at, models.VerificationMismatch, msg
+		c.Status, c.SHA256OK, c.Attempts, c.NextAttemptAt = models.CopyPending, false, 0, nil
+		c.Error = "copied again: " + msg
+		requeued = true
+		return nil
+	})
+	if err != nil {
+		if !errors.Is(err, errArchiveChanged) {
+			s.logger.Warn("cannot record the checksum mismatch a restore found", logsafe.Attr("backup_id", view.ID), logsafe.Error(err))
+		}
+		return
+	}
+	s.logger.Warn("a restore found the archive damaged; later restores read a healthy copy", logsafe.Attr("backup_id", view.ID),
+		logsafe.Attr("storage_target_id", view.StorageTargetID), slog.String("error", msg))
+	if requeued && s.cfg.WakeCopies != nil {
+		s.cfg.WakeCopies()
+	}
+}
+
+// errArchiveChanged aborts recording a mismatch on a record that changed.
+var errArchiveChanged = errors.New("operations: the backup's archive changed meanwhile")
 
 // targetLabel returns a storage target's name, else its ID.
 func targetLabel(name, id string) string {

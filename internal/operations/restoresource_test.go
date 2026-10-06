@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,12 @@ import (
 // names.
 func newCopyRestoreEnv(t *testing.T, withArchive ...string) *operations.Service {
 	t.Helper()
+	return newCopyRestoreEnvWith(t, &completingEngine{prep: restore.NewEngine(nil, "")}, withArchive...)
+}
+
+// newCopyRestoreEnvWith is newCopyRestoreEnv restoring with eng.
+func newCopyRestoreEnvWith(t *testing.T, eng operations.RestoreEngine, withArchive ...string) *operations.Service {
+	t.Helper()
 	const key = "shop/2026/10/bkp_copy.archive.gz"
 	data := []byte("archive bytes")
 	drivers := map[string]*storage.MockStorage{"stg_p": storage.NewMockStorage(), "stg_c": storage.NewMockStorage()}
@@ -35,7 +42,7 @@ func newCopyRestoreEnv(t *testing.T, withArchive ...string) *operations.Service 
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	svc := operations.New(operations.Config{
 		Store: st, Backup: backup.NewEngine(storage.NewMockStorage(), ""), Runs: manager,
-		Restore:     &completingEngine{prep: restore.NewEngine(nil, "")},
+		Restore:     eng,
 		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "prod", URI: "mongodb://db.internal:27017"}},
 		Storage: func(_ context.Context, id string) (storage.Storage, error) {
 			if d, ok := drivers[id]; ok {
@@ -102,5 +109,53 @@ func TestRestoreWithoutAHealthyCopyFailsItsSourceCheck(t *testing.T) {
 	}
 	if c := pre.Check(models.PreflightCheckSource); c == nil || c.Status != models.PreflightFail || pre.OK {
 		t.Fatalf("source check = %+v, ok %v", c, pre.OK)
+	}
+}
+
+// mismatchEngine fails every restore of the primary archive (stg_p) with a
+// checksum mismatch and completes restores of copies.
+type mismatchEngine struct {
+	completingEngine
+	sources []string
+}
+
+func (e *mismatchEngine) Execute(ctx context.Context, req models.RestoreRequest, src *models.BackupRecord, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
+	e.mu.Lock()
+	e.sources = append(e.sources, src.StorageTargetID)
+	e.mu.Unlock()
+	if src.StorageTargetID == "stg_p" {
+		rec.Status = models.RestoreStatusFailed
+		return rec, fmt.Errorf("verify archive: %w: recorded abc, stored artifact def", restore.ErrChecksumMismatch)
+	}
+	return e.completingEngine.Execute(ctx, req, src, rec)
+}
+
+// TestRestoreMismatchMakesTheNextRestoreUseACopy proves that a restore that finds
+// the primary archive damaged records the mismatch on the backup without retrying,
+// and that the next restore reads the healthy copy by itself.
+func TestRestoreMismatchMakesTheNextRestoreUseACopy(t *testing.T) {
+	ctx := context.Background()
+	eng := &mismatchEngine{completingEngine: completingEngine{prep: restore.NewEngine(nil, "")}}
+	svc := newCopyRestoreEnvWith(t, eng, "stg_p", "stg_c")
+	first, err := svc.StartRestore(ctx, models.RestoreRequest{BackupID: "bkp_copy"})
+	if err != nil || first.SourceTargetID != "stg_p" {
+		t.Fatalf("first restore = %+v, %v", first, err)
+	}
+	if done := waitRestoreDone(t, svc, first.ID); done.Status != models.RestoreStatusFailed {
+		t.Fatalf("first restore = %s", done.Status)
+	}
+	rec, err := svc.GetBackup(ctx, "bkp_copy")
+	if err != nil || rec.Verification != models.VerificationMismatch {
+		t.Fatalf("backup verification = %q, %v", rec.Verification, err)
+	}
+	second, err := svc.StartRestore(ctx, models.RestoreRequest{BackupID: "bkp_copy"})
+	if err != nil || second.SourceTargetID != "stg_c" || !strings.Contains(second.SourceFallback, "verification") {
+		t.Fatalf("second restore = %+v, %v", second, err)
+	}
+	waitRestoreDone(t, svc, second.ID)
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+	if len(eng.sources) != 2 || eng.sources[0] != "stg_p" || eng.sources[1] != "stg_c" {
+		t.Fatalf("restores read %v; want the primary once (no retry), then the copy", eng.sources)
 	}
 }

@@ -752,6 +752,11 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
+		// An archive that does not match its checksum is recorded as such, so the
+		// next restore reads a healthy copy instead; this one is not retried.
+		if errors.Is(runErr, restore.ErrChecksumMismatch) {
+			s.recordArchiveMismatch(persistCtx, source, runErr)
+		}
 		// The outcome events are published before the final record is stored, so a
 		// client that sees the restore finished (GET /api/v1/restores) can rely on its
 		// events having been published. Publishing never blocks.
