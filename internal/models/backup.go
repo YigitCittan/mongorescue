@@ -238,6 +238,23 @@ type BackupRecord struct {
 	PinnedAt *time.Time `json:"pinned_at,omitempty"`
 	PinnedBy string     `json:"pinned_by,omitempty"`
 
+	// StorageVersionID is the S3 version of the archive (a target with Object
+	// Lock): restores and verifications read this version, and the purge deletes
+	// it, since deleting the key only adds a delete marker on a versioned bucket.
+	StorageVersionID string `json:"storage_version_id,omitempty"`
+
+	// ObjectLockMode is the S3 Object Lock mode the archive was uploaded with
+	// ("governance" or "compliance"); empty for an archive without a lock.
+	ObjectLockMode ObjectLockMode `json:"object_lock_mode,omitempty"`
+
+	// RetainUntil is the end of the archive's S3 Object Lock retention: storage
+	// refuses to delete it before, so a deleted backup is purged only afterwards.
+	RetainUntil *time.Time `json:"retain_until,omitempty"`
+
+	// LegalHold reports that an S3 legal hold is set on the archive (a pin on a
+	// target with legal_hold_on_pin).
+	LegalHold bool `json:"legal_hold,omitempty"`
+
 	// Imported marks a record created from an orphan archive found by a storage scan.
 	Imported bool `json:"imported,omitempty"`
 
@@ -341,10 +358,10 @@ func (r *BackupRecord) Undelete() {
 // PurgeDue reports whether deleted record r may be purged at now: its grace period
 // has ended, both as recorded (PurgeAfter) and as grace, the grace period in force
 // now, counts it from DeletedAt (a longer grace period protects deletions made
-// before it was raised). A pinned record, or one without a deletion time, is never
-// due.
+// before it was raised). A pinned record, one without a deletion time, or one whose
+// archive is still under its S3 Object Lock retention (see LockedAt) is never due.
 func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
-	if r.Status != StatusDeleted || r.Pinned || r.DeletedAt == nil || r.PurgeAfter == nil {
+	if r.Status != StatusDeleted || r.Pinned || r.DeletedAt == nil || r.PurgeAfter == nil || r.LockedAt(now) {
 		return false
 	}
 	end := *r.PurgeAfter
@@ -352,6 +369,25 @@ func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
 		end = byGrace
 	}
 	return !now.Before(end)
+}
+
+// LockedAt reports whether r's archive is still under its S3 Object Lock retention
+// at now.
+func (r *BackupRecord) LockedAt(now time.Time) bool {
+	return r.RetainUntil != nil && now.Before(*r.RetainUntil)
+}
+
+// SetStorageObject records the S3 version and Object Lock retention of the stored
+// archive obj (nothing for a nil obj or one without them).
+func (r *BackupRecord) SetStorageObject(obj *StorageObject, mode ObjectLockMode) {
+	if obj == nil {
+		return
+	}
+	r.StorageVersionID = obj.VersionID
+	if obj.RetainUntil != nil {
+		until := obj.RetainUntil.UTC()
+		r.RetainUntil, r.ObjectLockMode = &until, mode
+	}
 }
 
 // InstanceScope reports whether r is a PITR base backup of a whole instance.
