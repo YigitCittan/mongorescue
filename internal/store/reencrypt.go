@@ -22,6 +22,9 @@ type ArchiveSwap struct {
 	SizeBytes      int64
 	SHA256         string
 	EncryptionMode string
+	// Object is the new archive as stored: its S3 version and Object Lock
+	// retention on a locked target (nil or empty elsewhere).
+	Object *models.StorageObject
 	// Tombstone is a deleted record (StatusDeleted, PurgeAfter set) that keeps the
 	// old archive until the delete grace period ends; the purge then removes it.
 	Tombstone *models.BackupRecord
@@ -44,6 +47,10 @@ func (s *SQLiteStore) SwapBackupArchive(ctx context.Context, sw ArchiveSwap) err
 			return ErrArchiveChanged
 		}
 		rec.StorageKey, rec.SizeBytes, rec.SHA256, rec.EncryptionMode = sw.NewKey, sw.SizeBytes, sw.SHA256, sw.EncryptionMode
+		// The version and lock now describe the new archive; the tombstone keeps
+		// those of the old one.
+		rec.StorageVersionID, rec.RetainUntil, rec.ObjectLockMode = "", nil, ""
+		rec.SetStorageObject(sw.Object)
 		if err = putBackup(ctx, tx, rec); err != nil {
 			return err
 		}

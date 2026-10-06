@@ -10,6 +10,12 @@
 // archive to the delete grace period, so the purge removes it later and it can be
 // undeleted until then.
 //
+// On a storage target with S3 Object Lock the new archive is uploaded with the lock
+// like any backup, the old one is read by its recorded version, and the tombstone
+// keeps the old version and its lock (and legal hold): the purge deletes every
+// version of the old archive only once its lock has ended. A new archive that has
+// to be discarded but is already locked is handed to the purge the same way.
+//
 // The job's progress is persisted after every backup. A job interrupted by a
 // shutdown or a crash resumes on the next start: a half-written new object is
 // removed and the backup processed again; finished backups are skipped.
@@ -72,6 +78,7 @@ type Store interface {
 	ListBackupRecords(ctx context.Context, database string) ([]*models.BackupRecord, error)
 	GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
 	SwapBackupArchive(ctx context.Context, sw store.ArchiveSwap) error
+	SaveBackupRecord(ctx context.Context, rec *models.BackupRecord) error
 	LoadIntegrityState(ctx context.Context, key string, v any) (bool, error)
 	SaveIntegrityState(ctx context.Context, key string, v any) error
 }
@@ -339,7 +346,7 @@ func (s *Service) cleanUp(ctx context.Context, st *State) error {
 		if derr != nil {
 			return derr
 		}
-		if derr = drv.Delete(ctx, cur.NewKey); derr != nil && !errors.Is(derr, storage.ErrNotFound) {
+		if derr = s.discard(ctx, drv, rec, cur, st.ID, nil, false); derr != nil {
 			return fmt.Errorf("reencrypt: remove the partial archive of backup %s: %w", cur.BackupID, derr)
 		}
 	default:
@@ -382,9 +389,15 @@ func (s *Service) process(ctx context.Context, st *State, rec *models.BackupReco
 	if err = s.save(ctx, st); err != nil {
 		return err
 	}
-	removeNew := func() { _ = drv.Delete(context.WithoutCancel(ctx), item.NewKey) }
+	var saved *models.StorageObject
+	held := false
+	removeNew := func() {
+		if discardErr := s.discard(context.WithoutCancel(ctx), drv, rec, item, st.ID, saved, held); discardErr != nil {
+			s.cfg.Logger.Warn("could not remove a re-encrypted archive that was not used", slog.String("backup_id", rec.ID), logsafe.Error(discardErr))
+		}
+	}
 
-	oldHash, plainHash, newHash, size, err := s.copy(ctx, drv, item, enc, dec)
+	oldHash, plainHash, newHash, size, saved, err := s.copy(ctx, drv, item, rec.StorageVersionID, enc, dec)
 	if err != nil {
 		removeNew()
 		return err
@@ -397,6 +410,19 @@ func (s *Service) process(ctx context.Context, st *State, rec *models.BackupReco
 		removeNew()
 		return err
 	}
+	// A pinned backup with an S3 legal hold keeps it on its new archive; the old
+	// archive's hold stays on the tombstone until the purge lifts it.
+	if rec.LegalHold {
+		version := ""
+		if saved != nil {
+			version = saved.VersionID
+		}
+		if err = storage.SetLegalHold(ctx, drv, item.NewKey, version, true); err != nil {
+			removeNew()
+			return fmt.Errorf("reencrypt: set the legal hold of the new archive of %s: %w", rec.ID, err)
+		}
+		held = true
+	}
 	grace := s.cfg.Grace()
 	tomb := *rec
 	tomb.ID = rec.ID + "-reenc-" + strings.TrimPrefix(st.ID, "reenc_")
@@ -407,7 +433,7 @@ func (s *Service) process(ctx context.Context, st *State, rec *models.BackupReco
 	tomb.Pinned, tomb.Manifest = false, nil
 	err = s.cfg.Store.SwapBackupArchive(ctx, store.ArchiveSwap{
 		BackupID: rec.ID, OldKey: item.OldKey, NewKey: item.NewKey, SizeBytes: size, SHA256: newHash,
-		EncryptionMode: string(enc.Mode()), Tombstone: &tomb,
+		EncryptionMode: string(enc.Mode()), Object: saved, Tombstone: &tomb,
 	})
 	if err != nil {
 		removeNew()
@@ -430,18 +456,19 @@ func (h *hashingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// copy streams the old archive through decryption and encryption into the new
-// object, hashing the old ciphertext, the plaintext and the new ciphertext.
-func (s *Service) copy(ctx context.Context, drv storage.Storage, item *Item, enc *encryption.Encryptor, dec *encryption.Decryptor) (oldHash, plainHash, newHash string, size int64, err error) {
-	src, err := drv.Retrieve(ctx, item.OldKey)
+// copy streams the old archive (version oldVersion on a locked target) through
+// decryption and encryption into the new object, hashing the old ciphertext, the
+// plaintext and the new ciphertext. It returns the new object as stored.
+func (s *Service) copy(ctx context.Context, drv storage.Storage, item *Item, oldVersion string, enc *encryption.Encryptor, dec *encryption.Decryptor) (oldHash, plainHash, newHash string, size int64, saved *models.StorageObject, err error) {
+	src, err := storage.RetrieveVersion(ctx, drv, item.OldKey, oldVersion)
 	if err != nil {
-		return "", "", "", 0, fmt.Errorf("reencrypt: read %s: %w", item.BackupID, err)
+		return "", "", "", 0, nil, fmt.Errorf("reencrypt: read %s: %w", item.BackupID, err)
 	}
 	defer func() { _ = src.Close() }()
 	oldR := &hashingReader{r: src, h: sha256.New()}
 	plain, err := dec.Decrypt(oldR)
 	if err != nil {
-		return "", "", "", 0, fmt.Errorf("reencrypt: decrypt %s: %w", item.BackupID, err)
+		return "", "", "", 0, nil, fmt.Errorf("reencrypt: decrypt %s: %w", item.BackupID, err)
 	}
 	plainR := &hashingReader{r: plain, h: sha256.New()}
 	pr, pw := io.Pipe()
@@ -460,18 +487,60 @@ func (s *Service) copy(ctx context.Context, drv storage.Storage, item *Item, enc
 		_ = pw.CloseWithError(e)
 	}()
 	newR := &hashingReader{r: pr, h: sha256.New()}
-	_, saveErr := drv.Save(ctx, item.NewKey, newR)
+	saved, saveErr := drv.Save(ctx, item.NewKey, newR)
 	_ = pr.CloseWithError(errors.New("reencrypt: upload ended"))
 	wg.Wait()
 	if err = errors.Join(saveErr, encErr); err != nil {
-		return "", "", "", 0, fmt.Errorf("reencrypt: write %s: %w", item.BackupID, err)
+		return "", "", "", 0, saved, fmt.Errorf("reencrypt: write %s: %w", item.BackupID, err)
 	}
 	// Drain what the decryptor left (the age trailer) so the old hash covers it all.
 	if _, err = io.Copy(io.Discard, oldR); err != nil {
-		return "", "", "", 0, fmt.Errorf("reencrypt: read %s: %w", item.BackupID, err)
+		return "", "", "", 0, saved, fmt.Errorf("reencrypt: read %s: %w", item.BackupID, err)
 	}
 	return hex.EncodeToString(oldR.h.Sum(nil)), hex.EncodeToString(plainR.h.Sum(nil)),
-		hex.EncodeToString(newR.h.Sum(nil)), newR.n, nil
+		hex.EncodeToString(newR.h.Sum(nil)), newR.n, saved, nil
+}
+
+// discard removes a new archive that was not swapped in. Elsewhere it is deleted
+// like before; on a locked target it cannot go before its lock ends, so a deleted
+// record naming it (with its version and lock, and held when a legal hold was set
+// on it) is stored for the purge, which deletes every version once the lock ended.
+// rec may be nil when the backup is gone.
+func (s *Service) discard(ctx context.Context, drv storage.Storage, rec *models.BackupRecord, item *Item, jobID string, saved *models.StorageObject, held bool) error {
+	version := ""
+	if saved != nil {
+		version = saved.VersionID
+	}
+	var until *time.Time
+	err := storage.ErrObjectHeld
+	if !held {
+		until, err = storage.Purge(ctx, drv, item.NewKey, version, s.cfg.Now())
+	}
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return nil
+	case err != nil && !errors.Is(err, storage.ErrObjectHeld):
+		return err
+	case err == nil && until == nil:
+		return nil
+	}
+	now := s.cfg.Now().UTC()
+	part := &models.BackupRecord{
+		ID: item.BackupID + "-reenc-partial-" + strings.TrimPrefix(jobID, "reenc_"), StorageTargetID: item.TargetID,
+		StorageKey: item.NewKey, StorageVersionID: version, Encrypted: true, StartedAt: now, StatusBeforeDelete: models.StatusFailed,
+		LegalHold: held,
+	}
+	if rec != nil {
+		part.JobID, part.ConnectionID, part.ConnectionName, part.Database = rec.JobID, rec.ConnectionID, rec.ConnectionName, rec.Database
+		part.StorageType, part.StorageTargetName = rec.StorageType, rec.StorageTargetName
+	}
+	if until != nil {
+		at := until.UTC()
+		part.RetainUntil = &at
+	}
+	part.Status, part.DeletedAt, part.PurgeAfter = models.StatusDeleted, &now, &now
+	part.DeletedBy, part.DeleteReason = "system", "unused re-encrypted archive of backup "+item.BackupID+", kept until its S3 Object Lock ends"
+	return s.cfg.Store.SaveBackupRecord(ctx, part)
 }
 
 // verify reads the new object back: its SHA-256 must be newHash and its plaintext

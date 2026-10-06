@@ -157,3 +157,37 @@ func TestObjectLockProbeIsUnlockedAndDeletesItsVersion(t *testing.T) {
 		t.Errorf("probe objects left: %v", objs)
 	}
 }
+
+// TestCredentialRotationOnALockedTarget checks that the credential probes of a
+// locked target write the probe without a lock, delete every version of it through
+// the locked driver and check the bucket's Object Lock with the new credentials,
+// and that the rotation keeps the target's lock.
+func TestCredentialRotationOnALockedTarget(t *testing.T) {
+	svc, d := newLockFixture(t, nil)
+	ctx := context.Background()
+	created, err := svc.Create(ctx, lockInput(models.ObjectLockCompliance, 30, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.modes, d.checks, d.versions = nil, 0, nil
+	res, err := svc.RotateCredentials(ctx, created.ID, targets.Credentials{AccessKeyID: "AKID2", SecretAccessKey: "secret2"})
+	if err != nil {
+		t.Fatalf("rotate = %+v, %v", res, err)
+	}
+	var names []string
+	for _, st := range res.Steps {
+		names = append(names, st.Name)
+	}
+	if fmt.Sprint(names) != "[write read list delete object_lock]" {
+		t.Fatalf("probe steps = %v", names)
+	}
+	if len(d.modes) != 2 || d.modes[0] != "" || d.modes[1] != models.ObjectLockCompliance || d.checks != 1 {
+		t.Fatalf("builds = %v, lock checks = %d; want an unlocked probe writer, the locked cleaner and one check", d.modes, d.checks)
+	}
+	if len(d.versions) != 1 || !strings.HasPrefix(d.versions[0], targets.ProbePrefix+"rotate-") {
+		t.Fatalf("purged keys = %v; want every version of the probe", d.versions)
+	}
+	if got := res.Target.S3; got.ObjectLock != models.ObjectLockCompliance || got.RetentionDays != 30 || !got.LegalHoldOnPin {
+		t.Fatalf("rotated target lock = %+v; want it kept", got)
+	}
+}

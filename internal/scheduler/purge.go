@@ -255,6 +255,13 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		} else {
 			driver, delErr := storages(ctx, current.StorageTargetID)
 			var lockedUntil *time.Time
+			if delErr == nil && current.LegalHold && !current.Pinned {
+				// A legal hold left on a deleted, unpinned record (the old archive of a
+				// re-encrypted pinned backup) ends with the purge.
+				if delErr = storage.SetLegalHold(ctx, driver, current.StorageKey, current.StorageVersionID, false); errors.Is(delErr, storage.ErrNotFound) {
+					delErr = nil
+				}
+			}
 			if delErr == nil {
 				// On a locked target every version of the archive is deleted (deleting
 				// the key would only add a delete marker), and only once none is
@@ -285,7 +292,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		if !r.PurgeDue(now, grace) {
 			return errPurgeSkip
 		}
-		r.Status, r.PurgedAt = models.StatusPurged, &at
+		r.Status, r.PurgedAt, r.LegalHold = models.StatusPurged, &at, false
 		return nil
 	}
 	if u, ok := metadataStore.(BackupUpdater); ok {

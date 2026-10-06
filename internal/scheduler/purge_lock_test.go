@@ -25,6 +25,8 @@ type lockedBucket struct {
 	until   map[string]time.Time
 	markers []string
 	deleted []string
+	held    map[string]bool
+	lifted  []string
 }
 
 func (b *lockedBucket) Delete(_ context.Context, key string) error {
@@ -38,14 +40,29 @@ func (b *lockedBucket) RetrieveVersion(ctx context.Context, key, _ string) (io.R
 	return b.Retrieve(ctx, key)
 }
 
-func (b *lockedBucket) ObjectLockEnabled() bool                                  { return true }
-func (b *lockedBucket) CheckObjectLock(context.Context) error                    { return nil }
-func (b *lockedBucket) SetLegalHold(context.Context, string, string, bool) error { return nil }
+func (b *lockedBucket) ObjectLockEnabled() bool               { return true }
+func (b *lockedBucket) CheckObjectLock(context.Context) error { return nil }
+func (b *lockedBucket) SetLegalHold(_ context.Context, key, _ string, on bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.held[key] && !on {
+		b.lifted = append(b.lifted, key)
+	}
+	if b.held == nil {
+		b.held = map[string]bool{}
+	}
+	b.held[key] = on
+	return nil
+}
 
 // PurgeVersions deletes the key's one version ("v-" + the backup ID) once its lock
 // ended at now, and refuses an early delete like S3 would.
 func (b *lockedBucket) PurgeVersions(ctx context.Context, key string, now time.Time) (*time.Time, error) {
 	b.mu.Lock()
+	if b.held[key] {
+		b.mu.Unlock()
+		return nil, storage.ErrObjectHeld
+	}
 	versionID := "v-" + strings.TrimSuffix(strings.TrimPrefix(key, "shop/"), ".archive")
 	if until, ok := b.until[versionID]; ok && now.Before(until) {
 		b.mu.Unlock()
@@ -178,5 +195,30 @@ func TestPurgeDeletesTheLockedArtifactOfAFailedBackup(t *testing.T) {
 	}
 	if !slices.Equal(bucket.deleted, []string{"shop/bkp_fail.archive@v-bkp_fail"}) {
 		t.Fatalf("deleted versions = %v", bucket.deleted)
+	}
+}
+
+// TestPurgeLiftsTheLegalHoldOfAnUnpinnedDeletedRecord proves that a deleted record
+// that is not pinned but still holds an S3 legal hold (the old archive of a pinned
+// backup that was re-encrypted) gets the hold lifted by the purge before its
+// versions are deleted, and is purged.
+func TestPurgeLiftsTheLegalHoldOfAnUnpinnedDeletedRecord(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.New(t)
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	bucket := &lockedBucket{MockStorage: storage.NewMockStorage(), until: map[string]time.Time{}, now: t0.Add(testGrace),
+		held: map[string]bool{"shop/bkp_tomb.archive": true}}
+	saveDeleted(t, st, bucket.MockStorage, "bkp_tomb", t0, testGrace, func(r *models.BackupRecord) {
+		r.StorageVersionID, r.LegalHold = "v-bkp_tomb", true
+	})
+	got, err := PurgeDeleted(ctx, t0.Add(testGrace), testGrace, st, fixedStorage(bucket), nil, nil)
+	if err != nil || !slices.Equal(got, []string{"bkp_tomb"}) {
+		t.Fatalf("purge = %v, %v", got, err)
+	}
+	if !slices.Equal(bucket.lifted, []string{"shop/bkp_tomb.archive"}) || !slices.Equal(bucket.deleted, []string{"shop/bkp_tomb.archive@v-bkp_tomb"}) {
+		t.Fatalf("lifted %v, deleted %v; want the hold lifted, then the version deleted", bucket.lifted, bucket.deleted)
+	}
+	if rec, _ := st.GetBackupRecord(ctx, "bkp_tomb"); rec.Status != models.StatusPurged || rec.LegalHold {
+		t.Fatalf("record = %+v; want purged without a hold", rec)
 	}
 }

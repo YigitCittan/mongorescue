@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -26,7 +27,8 @@ type Credentials struct {
 
 // ProbeStep is one check of the credential probes.
 type ProbeStep struct {
-	// Name is write, read, list or delete.
+	// Name is write, read, list, delete or, on a target with S3 Object Lock,
+	// object_lock.
 	Name string `json:"name"`
 	OK   bool   `json:"ok"`
 	// Error is the failure reason (never containing credentials).
@@ -92,16 +94,31 @@ func (s *Service) RotateCredentials(ctx context.Context, id string, c Credential
 }
 
 // credentialProbes runs the write, read, list and delete probes with t on a
-// temporary object. The probe object is removed whatever happens.
+// temporary object. The probe object is removed whatever happens. On a target with
+// S3 Object Lock the probe is written without a lock (a locked one could not be
+// deleted) and deleted through the locked driver, version by version, as the purge
+// deletes archives; an "object_lock" step then checks that the new credentials can
+// read the bucket's Object Lock and versioning configuration.
 func (s *Service) credentialProbes(ctx context.Context, t *models.StorageTarget) []ProbeStep {
 	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
 	defer cancel()
 	fail := func(steps []ProbeStep, name string, err error) []ProbeStep {
 		return append(steps, ProbeStep{Name: name, Error: scrub(err, t)})
 	}
-	driver, err := s.build(ctx, t)
+	unlocked := t
+	if t.ObjectLocked() {
+		unlocked = t.Clone()
+		unlocked.S3.ObjectLock, unlocked.S3.RetentionDays, unlocked.S3.LegalHoldOnPin = "", 0, false
+	}
+	driver, err := s.build(ctx, unlocked)
 	if err != nil {
 		return fail(nil, "write", err)
+	}
+	cleaner := driver
+	if t.ObjectLocked() {
+		if cleaner, err = s.build(ctx, t); err != nil {
+			return fail(nil, "write", err)
+		}
 	}
 	suffix, err := randomHex(8)
 	if err != nil {
@@ -109,6 +126,12 @@ func (s *Service) credentialProbes(ctx context.Context, t *models.StorageTarget)
 	}
 	key := ProbePrefix + "rotate-" + suffix
 	payload := []byte("mongorescue credential probe " + suffix)
+	// remove deletes the probe (every version of it on a locked target); retained
+	// reports a bucket default retention that keeps it until that ends.
+	remove := func(ctx context.Context) (retained bool, err error) {
+		until, err := storage.Purge(ctx, cleaner, key, "", s.now())
+		return until != nil, err
+	}
 	var steps []ProbeStep
 	if _, err = driver.Save(ctx, key, bytes.NewReader(payload)); err != nil {
 		return fail(steps, "write", err)
@@ -118,7 +141,7 @@ func (s *Service) credentialProbes(ctx context.Context, t *models.StorageTarget)
 		if !deleted {
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
-			_ = driver.Delete(cleanup, key)
+			_, _ = remove(cleanup)
 		}
 	}()
 	steps = append(steps, ProbeStep{Name: "write", OK: true})
@@ -137,17 +160,27 @@ func (s *Service) credentialProbes(ctx context.Context, t *models.StorageTarget)
 	}
 	steps = append(steps, ProbeStep{Name: "list", OK: true})
 
-	if err = driver.Delete(ctx, key); err != nil {
+	retained, err := remove(ctx)
+	if err != nil {
 		return fail(steps, "delete", err)
 	}
-	if _, err = driver.Stat(ctx, key); !errors.Is(err, storage.ErrNotFound) {
+	deleted = true
+	if retained {
+		s.logger.Warn("the credential probe object is locked by the bucket's default retention and stays until it ends", slog.String("key", key))
+	} else if _, err = driver.Stat(ctx, key); !errors.Is(err, storage.ErrNotFound) {
 		if err == nil {
 			err = errors.New("the probe object still exists after the delete")
 		}
 		return fail(steps, "delete", err)
 	}
-	deleted = true
-	return append(steps, ProbeStep{Name: "delete", OK: true})
+	steps = append(steps, ProbeStep{Name: "delete", OK: true})
+	if t.ObjectLocked() {
+		if err = lockCheck(ctx, cleaner); err != nil {
+			return fail(steps, "object_lock", err)
+		}
+		steps = append(steps, ProbeStep{Name: "object_lock", OK: true})
+	}
+	return steps
 }
 
 // readBack checks that key holds payload.
