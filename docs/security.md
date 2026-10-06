@@ -26,6 +26,7 @@ A lower protection is stored as a pending change with an `effective_at` time, th
 
 - **Shorter retention** of a job: fewer days, fewer backups, or a rule where there was none (`0` is "keep forever"). `PUT /api/v1/jobs/{id}` (and `POST /api/v1/jobs`) store the job with its current retention and answer with `pending_retention`. A longer retention applies at once and cancels a pending shortening. A job created under the ID of a deleted job that still names backups counts as keeping them forever.
 - **A shorter grace period** (`security.delete_grace_days`). A longer one applies at once and cancels a pending lowering.
+- **A lower S3 Object Lock** of a storage target: governance instead of compliance, no lock, a shorter `retention_days` or `legal_hold_on_pin` turned off. `PUT /api/v1/storage-targets/{id}` stores the target with its current lock and answers with `pending_object_lock` (with the two-person rule, `approval` first). Raising the lock applies at once and cancels a pending lowering; a mixed change raises the stronger parts at once and holds the weaker ones.
 
 `GET /api/v1/pending-changes` lists them, and so do `GET /api/v1/settings` (`pending_changes`), `GET /api/v1/jobs/{id}` (`pending_retention`) and the dashboard (Settings → Security). An administrator can cancel a pending change (`DELETE /api/v1/pending-changes/{id}`), which keeps the current protection and needs no approval.
 
@@ -84,7 +85,7 @@ Delete protection guards the paths through MongoRescue; an S3 target with an obj
 - **Governance mode**: the same, except for principals with `s3:BypassGovernanceRetention`, who can delete locked versions or shorten their lock. Never give that permission to MongoRescue's credentials; the dashboard warns about governance-mode targets.
 - **Legal hold on pin** keeps a pinned backup's archive beyond its retention until it is unpinned. Unpinning needs the admin role and, with the two-person rule, a second administrator.
 
-MongoRescue itself respects the lock: a deleted backup whose archive is still locked stays `deleted` (and can be undeleted) until the lock ends, and then the purge deletes the recorded object version, which frees the space; deleting only the key would leave the data behind a delete marker. A target with an object lock mode is refused unless its bucket has Object Lock and versioning enabled; MongoRescue never enables them. Lowering a target's lock (a shorter retention, governance instead of compliance, or none) only applies to later uploads: objects already written keep their lock.
+MongoRescue itself respects the lock: a deleted backup whose archive is still locked stays `deleted` (and can be undeleted) until the lock ends, and then the purge deletes the recorded object version, which frees the space; deleting only the key would leave the data behind a delete marker. A target with an object lock mode is refused unless its bucket has Object Lock and versioning enabled; MongoRescue never enables them. Lowering a target's lock (a shorter retention, governance instead of compliance, or none) takes the grace period like any lowered protection ([above](#lowering-a-protection-takes-the-grace-period-too)), and then only applies to later uploads: objects already written keep their lock.
 
 ## What this protects against
 
