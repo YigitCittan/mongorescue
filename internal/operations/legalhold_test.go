@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -13,15 +14,28 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
-// holdDriver records the S3 legal holds set on a mock bucket; fail makes them fail.
+// holdDriver records the S3 legal holds set on a mock bucket and the state of each
+// key's hold; fail makes them fail.
 type holdDriver struct {
 	*storage.MockStorage
 	mu    sync.Mutex
 	holds []string
+	held  map[string]bool
 	fail  error
 }
 
+func (d *holdDriver) ObjectLockEnabled() bool               { return true }
 func (d *holdDriver) CheckObjectLock(context.Context) error { return nil }
+func (d *holdDriver) PurgeVersions(ctx context.Context, key string, _ time.Time) (*time.Time, error) {
+	return nil, d.Delete(ctx, key)
+}
+
+// isHeld reports the hold state of key in storage.
+func (d *holdDriver) isHeld(key string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.held[key]
+}
 
 func (d *holdDriver) SetLegalHold(_ context.Context, key, versionID string, on bool) error {
 	d.mu.Lock()
@@ -30,6 +44,12 @@ func (d *holdDriver) SetLegalHold(_ context.Context, key, versionID string, on b
 		return d.fail
 	}
 	d.holds = append(d.holds, fmt.Sprintf("%s@%s=%v", key, versionID, on))
+	if d.held == nil {
+		d.held = map[string]bool{}
+	}
+	d.held[key] = on
+	// Widen the window between the S3 call and the record update.
+	time.Sleep(time.Millisecond)
 	return nil
 }
 
@@ -159,5 +179,33 @@ func TestJobWarningsForARetentionShorterThanTheLock(t *testing.T) {
 		if w := env.svc.JobWarnings(ctx, j); len(w) != 0 {
 			t.Errorf("warnings for %+v = %v; want none", j, w)
 		}
+	}
+}
+
+// TestPinAndUnpinRaceKeepsRecordAndHoldInStep runs pins and unpins of one backup
+// concurrently: with the deletion lock around each S3 call and record update, the
+// record's pin and legal hold always end equal to the hold in storage.
+func TestPinAndUnpinRaceKeepsRecordAndHoldInStep(t *testing.T) {
+	env, d := newLegalHoldEnv(t)
+	alice := asUser("alice", auth.ScopeAdmin)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				_, _ = env.svc.PinBackup(alice, "bkp_lock", "")
+			} else {
+				_, _ = env.svc.UnpinBackup(alice, "bkp_lock")
+			}
+		}()
+	}
+	wg.Wait()
+	rec, err := env.st.GetBackupRecord(context.Background(), "bkp_lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := d.isHeld("shop/bkp_lock"); rec.LegalHold != held || rec.Pinned != held {
+		t.Fatalf("record pinned=%v legal_hold=%v, storage hold=%v; want all equal", rec.Pinned, rec.LegalHold, held)
 	}
 }

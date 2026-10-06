@@ -84,14 +84,25 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 	}
 	by := principalName(ctx)
 	now := s.now().UTC()
-	// On a target with legal_hold_on_pin the archive gets an S3 legal hold before
-	// the pin is recorded: a pin whose hold failed is refused, never half applied.
-	hold := false
 	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
-	if !rec.Status.Deleted() && s.legalHoldOnPin(ctx, rec) {
+	// The backup's deletion lock is held across the S3 call and the record update,
+	// so a concurrent pin, unpin or deletion never leaves the record and the legal
+	// hold in storage disagreeing.
+	unlock, err := deletionLock(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if rec, err = s.store.GetBackupRecord(ctx, id); err != nil {
+		return nil, notFound(err, "backup not found")
+	}
+	// On a target with legal_hold_on_pin the archive gets an S3 legal hold before
+	// the pin is recorded: a pin whose hold failed is refused, never half applied.
+	hold := false
+	if !rec.Status.Deleted() && !rec.LegalHold && s.legalHoldOnPin(ctx, rec) {
 		err = s.setLegalHold(ctx, rec, true)
 		switch {
 		case errors.Is(err, storage.ErrNotFound):
@@ -110,11 +121,12 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 		r.LegalHold = r.LegalHold || hold
 		return nil
 	})
-	if err != nil && hold && !rec.LegalHold {
+	if err != nil && hold {
 		// The pin was not recorded: lift the hold set for it, so it does not keep
-		// the archive forever without a pin that says so.
+		// the archive without a pin that says so.
 		if liftErr := s.setLegalHold(context.WithoutCancel(ctx), rec, false); liftErr != nil {
-			s.logger.Warn("could not lift the legal hold of a pin that failed", logsafe.Attr("backup_id", rec.ID), logsafe.Error(liftErr))
+			s.logger.Error("could not lift the legal hold of a pin that failed; the archive stays held without a pin",
+				logsafe.Attr("backup_id", rec.ID), logsafe.Error(liftErr))
 		}
 	}
 	return pinned, err
@@ -153,7 +165,8 @@ func (s *Service) setLegalHold(ctx context.Context, rec *models.BackupRecord, on
 // UnpinBackup lifts the pin of backup id, which makes it deletable again; it needs a
 // principal with the admin scope in ctx (auth.ErrForbidden otherwise). With the
 // two-person rule on, it waits for a second administrator (*ApprovalPendingError).
-// An S3 legal hold set by the pin is lifted first. Expected failures: ErrNotFound,
+// An S3 legal hold set by the pin is lifted after the record is unpinned (the pin
+// is restored when that fails). Expected failures: ErrNotFound,
 // auth.ErrForbidden, ErrApprovalRequired and ErrLegalHold.
 func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRecord, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
@@ -170,28 +183,46 @@ func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRec
 		return nil, s.requestApproval(ctx, &models.Approval{Action: models.ApprovalUnpinBackup, Subject: rec.ID,
 			Summary: fmt.Sprintf("unpin backup %s (db %s)", rec.ID, rec.Database)})
 	}
-	// The S3 legal hold is lifted first: if that fails the backup stays pinned.
-	current, err := s.store.GetBackupRecord(ctx, id)
+	rec, err := s.store.GetBackupRecord(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "backup not found")
 	}
-	if current.Pinned && current.LegalHold {
-		if err = s.setLegalHold(ctx, current, false); err != nil {
-			return nil, err
-		}
+	// Like PinBackup: the deletion lock spans the record update and the S3 call.
+	unlock, err := deletionLock(ctx, rec)
+	if err != nil {
+		return nil, err
 	}
-	wasPinned := false
-	rec, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
-		wasPinned = r.Pinned
+	defer unlock()
+	if rec, err = s.store.GetBackupRecord(ctx, id); err != nil {
+		return nil, notFound(err, "backup not found")
+	}
+	prev := *rec
+	// The record is unpinned first, then the S3 legal hold lifted; if lifting fails
+	// the record gets its pin and hold back, so both always agree.
+	if rec, err = s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
 		r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy = false, "", nil, ""
 		r.LegalHold = false
 		return nil
-	})
-	if err == nil && wasPinned {
+	}); err != nil {
+		return nil, err
+	}
+	if prev.LegalHold {
+		if holdErr := s.setLegalHold(ctx, &prev, false); holdErr != nil {
+			if _, restoreErr := s.updateBackup(context.WithoutCancel(ctx), id, func(r *models.BackupRecord) error {
+				r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy, r.LegalHold = prev.Pinned, prev.PinNote, prev.PinnedAt, prev.PinnedBy, true
+				return nil
+			}); restoreErr != nil {
+				s.logger.Error("could not restore the pin of a backup whose legal hold could not be lifted",
+					logsafe.Attr("backup_id", id), logsafe.Error(restoreErr))
+			}
+			return nil, holdErr
+		}
+	}
+	if prev.Pinned {
 		s.destructive(ctx, "unpin_backup", fmt.Sprintf("backup %s (db %s) unpinned", rec.ID, rec.Database),
 			func(e *events.Event) { e.BackupID, e.JobID, e.Database = rec.ID, rec.JobID, rec.Database })
 	}
-	return rec, err
+	return rec, nil
 }
 
 // updateBackup applies fn to backup id atomically.
