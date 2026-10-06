@@ -85,6 +85,8 @@ The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/dat
 
 **Desktop app.** On a workstation, download the desktop app from [Releases](https://github.com/YigitCittan/mongorescue/releases) (Windows installer, macOS `.app`, Linux binary) and start it; `mongodump` and `mongorestore` are bundled. It shows the same dashboard in a native window, without opening a network port, fills in the setup code on first start and updates itself from GitHub Releases. See [docs/desktop.md](docs/desktop.md).
 
+**Kubernetes.** A Helm chart in [deploy/helm/mongorescue](deploy/helm/mongorescue) runs the image as a one-replica StatefulSet with probes, a restricted security context and a graceful shutdown that waits for running backups. See [docs/kubernetes.md](docs/kubernetes.md).
+
 **Server binary.** For headless use (REST API, MCP, metrics), download `mongorescue` from Releases, put the tools on your `PATH` and run `./mongorescue`. It serves no dashboard unless you pass `-dashboard` (or set `MONGORESCUE_DASHBOARD=true`); the setup code is printed in its log.
 
 MongoRescue serves plain HTTP. Before you expose the port to a network, put a TLS-terminating reverse proxy in front of it; see [docs/production.md](docs/production.md). No MongoDB to try it with? [examples/with-mongodb.yml](examples/with-mongodb.yml) adds a demo instance to the Compose setup.
@@ -185,6 +187,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Metrics and alerting](docs/metrics.md)
 - [Monitoring: heartbeats, health check and alert rules](docs/monitoring.md)
 - [Running in production](docs/production.md)
+- [Kubernetes (Helm chart)](docs/kubernetes.md)
 - [Troubleshooting: unreadable records](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
 - [Testing: what is tested and known limits](docs/testing.md)

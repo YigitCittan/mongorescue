@@ -211,8 +211,10 @@ The repository's `docker-compose.yml` is hardened by default. Keep these propert
 - **Locked-down container.** The service runs with `read_only: true`, a `tmpfs` on `/tmp` (where `mongodump` and `mongorestore` receive their temporary `--config` file), `cap_drop: [ALL]` and `no-new-privileges`. The only writable paths are `/data`, `/backups` and `/tmp`.
 - **Back up the data volume.** The data volume (`/data`) holds the metadata database and `secret.key`. Back it up as described in [Data directory](#data-directory), for example with `docker compose stop mongorescue` before copying the volume.
 
+- **Stopping during a backup.** `docker compose stop` gives the container 10 seconds by default, after which running backups are cancelled (recorded as cancelled, their partial archives removed). To let them finish, set `MONGORESCUE_SHUTDOWN_GRACE` (for example `9m`) and a longer `stop_grace_period` (for example `10m`); see [Graceful shutdown](kubernetes.md#graceful-shutdown).
+
 To attach MongoRescue to a Compose project that already runs MongoDB, start from [examples/compose-existing-stack.yml](../examples/compose-existing-stack.yml).
 
 ## systemd
 
-`scripts/mongorescue.service` runs the binary as a daemon with `-data-dir=/var/lib/mongorescue/data`; the default "Local disk" storage target is then `/var/lib/mongorescue/backups`. Everything else is configured in the dashboard. To supply `MONGORESCUE_SECRET_KEY` from a file, use an `EnvironmentFile=` readable only by the service user. The shipped unit runs as `root`; consider a dedicated user that owns the data and backup directories.
+`scripts/mongorescue.service` runs the binary as a daemon with `-data-dir=/var/lib/mongorescue/data`; the default "Local disk" storage target is then `/var/lib/mongorescue/backups`. Everything else is configured in the dashboard. To supply `MONGORESCUE_SECRET_KEY` from a file, use an `EnvironmentFile=` readable only by the service user. The shipped unit runs as `root`; consider a dedicated user that owns the data and backup directories. To let running backups finish on `systemctl stop`, set `Environment=MONGORESCUE_SHUTDOWN_GRACE=9m` and `TimeoutStopSec=10min` ([graceful shutdown](kubernetes.md#graceful-shutdown)).
