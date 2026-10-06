@@ -180,7 +180,9 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		} else {
 			driver, delErr := storages(ctx, current.StorageTargetID)
 			if delErr == nil {
-				delErr = driver.Delete(ctx, current.StorageKey)
+				// On a versioned bucket (S3 Object Lock) only deleting the version frees
+				// its space; deleting the key would add a delete marker.
+				delErr = storage.DeleteVersion(ctx, driver, current.StorageKey, current.StorageVersionID)
 			}
 			switch {
 			case delErr == nil:

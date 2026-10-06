@@ -283,3 +283,47 @@ func TestS3VersionOperations(t *testing.T) {
 		t.Fatalf("legal hold on a mock = %v; want ErrUnsupported", err)
 	}
 }
+
+// statLocked is a versioned mock whose objects carry a version and a retention.
+type statLocked struct {
+	*MockStorage
+	until   time.Time
+	deleted []string
+}
+
+func (s *statLocked) Stat(ctx context.Context, key string) (*models.StorageObject, error) {
+	obj, err := s.MockStorage.Stat(ctx, key)
+	if obj != nil {
+		obj.VersionID, obj.RetainUntil = "v-"+key, &s.until
+	}
+	return obj, err
+}
+
+func (s *statLocked) RetrieveVersion(ctx context.Context, key, _ string) (io.ReadCloser, error) {
+	return s.Retrieve(ctx, key)
+}
+
+func (s *statLocked) DeleteVersion(ctx context.Context, key, versionID string) error {
+	s.deleted = append(s.deleted, versionID)
+	return s.Delete(ctx, key)
+}
+
+// TestDeleteUnlockedWaitsForTheRetention checks that an object under retention is
+// kept (with the end of its retention returned) and deleted by version afterwards.
+func TestDeleteUnlockedWaitsForTheRetention(t *testing.T) {
+	ctx := context.Background()
+	s := &statLocked{MockStorage: NewMockStorage(), until: lockNow.Add(24 * time.Hour)}
+	if _, err := s.Save(ctx, "snap.db", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	until, err := DeleteUnlocked(ctx, s, "snap.db", lockNow)
+	if err != nil || until == nil || !until.Equal(s.until) || len(s.deleted) != 0 {
+		t.Fatalf("DeleteUnlocked under retention = %v, %v (deleted %v); want kept until %s", until, err, s.deleted, s.until)
+	}
+	if until, err = DeleteUnlocked(ctx, s, "snap.db", s.until); err != nil || until != nil || fmt.Sprint(s.deleted) != "[v-snap.db]" {
+		t.Fatalf("DeleteUnlocked after retention = %v, %v (deleted %v); want the version deleted", until, err, s.deleted)
+	}
+	if _, err = DeleteUnlocked(ctx, s, "snap.db", s.until); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteUnlocked of a missing object = %v; want ErrNotFound", err)
+	}
+}
