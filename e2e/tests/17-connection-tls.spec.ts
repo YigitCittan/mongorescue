@@ -19,7 +19,9 @@ test("stores TLS material masked and warns about loosened checks", async ({ page
   }, NAME) as Promise<Conn | undefined>;
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Add connection" }).first().click();
+  await page.getByRole("tab", { name: /^Connections/ }).click();
+  const panel = page.getByRole("tabpanel", { name: "Connections" });
+  await panel.getByRole("button", { name: "Add connection" }).click();
   const dialog = page.getByRole("dialog", { name: "New connection" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("textbox", { name: "Name" }).fill(NAME);
@@ -47,8 +49,6 @@ test("stores TLS material masked and warns about loosened checks", async ({ page
   expect(conn?.tls_client_key_pem).toBe("******");
   expect(conn?.tls_allow_invalid_hostnames).toBe(true);
 
-  await page.getByRole("tab", { name: /^Connections/ }).click();
-  const panel = page.getByRole("tabpanel", { name: "Connections" });
   const row = panel.getByRole("row").filter({ hasText: NAME });
   await expect(row.getByText("Hostname not checked")).toBeVisible();
   await expect(row.getByText("x509 certificate")).toBeVisible();
