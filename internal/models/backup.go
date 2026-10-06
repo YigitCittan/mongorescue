@@ -255,6 +255,11 @@ type BackupRecord struct {
 	// target with legal_hold_on_pin).
 	LegalHold bool `json:"legal_hold,omitempty"`
 
+	// ArchiveCleanupPending marks a failed or cancelled backup whose artifact could
+	// not be deleted because of its S3 Object Lock: the scheduler's purge deletes
+	// every version of it once RetainUntil has passed, then clears the flag.
+	ArchiveCleanupPending bool `json:"archive_cleanup_pending,omitempty"`
+
 	// Imported marks a record created from an orphan archive found by a storage scan.
 	Imported bool `json:"imported,omitempty"`
 

@@ -404,6 +404,41 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 	return t.Redacted(), nil
 }
 
+// LowerObjectLock applies a held lowering of the S3 Object Lock of target id (see
+// models.SplitLockChange): each part of the lock becomes the weaker of the lock in
+// force and lowered (models.LowerLock). createdAt, when set, binds the change to the
+// target it was requested for: a target created since under the same ID is left
+// alone. It reports whether the lock changed. Objects already uploaded keep their
+// lock; only later uploads use the lowered one.
+func (s *Service) LowerObjectLock(ctx context.Context, id string, lowered models.ObjectLockSettings, createdAt *time.Time) (bool, error) {
+	existing, err := s.repo.GetStorageTarget(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if existing.Type != models.StorageS3 || existing.S3 == nil || (createdAt != nil && !existing.CreatedAt.Equal(*createdAt)) {
+		return false, nil
+	}
+	current := existing.S3.LockSettings()
+	next := models.LowerLock(current, lowered)
+	if next == current {
+		return false, nil
+	}
+	t := existing.Clone()
+	t.S3.SetLockSettings(next)
+	t.UpdatedAt = s.now().UTC()
+	if !t.UpdatedAt.After(existing.UpdatedAt) {
+		t.UpdatedAt = existing.UpdatedAt.Add(time.Microsecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err = s.repo.UpdateStorageTarget(ctx, t, existing.UpdatedAt, false); err != nil {
+		return false, err
+	}
+	delete(s.drivers, t.ID)
+	s.logger.Info("storage target object lock lowered", slog.String("storage_target_id", t.ID), slog.String("object_lock", next.String()))
+	return true, nil
+}
+
 // baseLocation is where target t stores its objects, in a form that compares equal
 // for every way of naming the same place: "local:" and the resolved directory with a
 // trailing separator, or "s3:" and the endpoint, bucket and prefix.
@@ -697,8 +732,9 @@ func (s *Service) probe(ctx context.Context, t *models.StorageTarget) TestResult
 }
 
 // A target with S3 Object Lock is probed without a lock (a locked probe object could
-// not be deleted for days or years), its probe version is deleted, and the bucket's
-// Object Lock and versioning are checked afterwards.
+// not be deleted for days or years), every version of the probe is deleted through
+// the locked driver (deleting the key would only add a delete marker), and the
+// bucket's Object Lock and versioning are checked afterwards.
 func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 	unlocked := t
 	if t.ObjectLocked() {
@@ -709,26 +745,31 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 	if err != nil {
 		return err
 	}
+	cleaner := driver
+	if t.ObjectLocked() {
+		if cleaner, err = s.build(ctx, t); err != nil {
+			return err
+		}
+	}
 	suffix, err := randomHex(8)
 	if err != nil {
 		return err
 	}
 	key := ProbePrefix + suffix
 	payload := []byte("mongorescue storage probe " + suffix)
-	obj, err := driver.Save(ctx, key, bytes.NewReader(payload))
-	if err != nil {
+	if _, err = driver.Save(ctx, key, bytes.NewReader(payload)); err != nil {
 		return fmt.Errorf("write test object: %w", err)
-	}
-	version := ""
-	if obj != nil {
-		version = obj.VersionID
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		// On a versioned bucket only deleting the version frees it.
-		if delErr := storage.DeleteVersion(cleanupCtx, driver, key, version); delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
+		until, delErr := storage.Purge(cleanupCtx, cleaner, key, "", s.now())
+		switch {
+		case delErr != nil && !errors.Is(delErr, storage.ErrNotFound):
 			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), logsafe.Error(delErr))
+		case until != nil:
+			s.logger.Warn("the storage probe object is locked by the bucket's default retention and stays until it ends",
+				slog.String("key", key), slog.Time("retain_until", *until))
 		}
 	}()
 	rc, err := driver.Retrieve(ctx, key)
@@ -744,7 +785,7 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 		return errors.New("read test object: content differs from what was written")
 	}
 	if t.ObjectLocked() {
-		return lockCheck(ctx, driver)
+		return lockCheck(ctx, cleaner)
 	}
 	return nil
 }

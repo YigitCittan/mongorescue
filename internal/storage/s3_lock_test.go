@@ -2,12 +2,14 @@ package storage
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +28,11 @@ type lockS3 struct {
 	lockConfig string // "" answers ObjectLockConfigurationNotFoundError
 	versioning string
 	objects    map[string][]byte
+	// versions lists the versions of each key (ListObjectVersions), markers its
+	// delete markers; until is the retain-until date of a version.
+	versions map[string][]string
+	markers  map[string][]string
+	until    map[string]time.Time
 }
 
 func (f *lockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,8 +54,27 @@ func (f *lockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && q.Has("versioning"):
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = fmt.Fprintf(w, `<VersioningConfiguration><Status>%s</Status></VersioningConfiguration>`, f.versioning)
-	case r.Method == http.MethodPut && q.Has("legal-hold"):
+	case r.Method == http.MethodPut && (q.Has("legal-hold") || q.Has("retention")):
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodGet && q.Has("versions"):
+		w.Header().Set("Content-Type", "application/xml")
+		prefix := q.Get("prefix")
+		_, _ = fmt.Fprintf(w, `<ListVersionsResult><Name>%s</Name>`, fakeBucket)
+		for k, ids := range f.versions {
+			for _, id := range ids {
+				if strings.HasPrefix(k, prefix) {
+					_, _ = fmt.Fprintf(w, `<Version><Key>%s</Key><VersionId>%s</VersionId></Version>`, k, id)
+				}
+			}
+		}
+		for k, ids := range f.markers {
+			for _, id := range ids {
+				if strings.HasPrefix(k, prefix) {
+					_, _ = fmt.Fprintf(w, `<DeleteMarker><Key>%s</Key><VersionId>%s</VersionId></DeleteMarker>`, k, id)
+				}
+			}
+		}
+		_, _ = fmt.Fprint(w, `<IsTruncated>false</IsTruncated></ListVersionsResult>`)
 	case r.Method == http.MethodPost && q.Has("uploads"):
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = fmt.Fprintf(w, `<InitiateMultipartUploadResult><Bucket>%s</Bucket><Key>k</Key><UploadId>u1</UploadId></InitiateMultipartUploadResult>`, fakeBucket)
@@ -65,7 +91,11 @@ func (f *lockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-amz-version-id", "v-"+key)
 	case r.Method == http.MethodHead:
 		w.Header().Set("Content-Length", fmt.Sprint(len(f.objects[key])))
-		w.Header().Set("x-amz-version-id", q.Get("versionId"))
+		w.Header().Set("x-amz-version-id", cmp.Or(q.Get("versionId"), "v-current"))
+		if u, ok := f.until[q.Get("versionId")]; ok {
+			w.Header().Set("x-amz-object-lock-mode", "COMPLIANCE")
+			w.Header().Set("x-amz-object-lock-retain-until-date", u.Format(time.RFC3339))
+		}
 	case r.Method == http.MethodGet:
 		_, _ = w.Write(f.objects[key])
 	case r.Method == http.MethodDelete:
@@ -134,11 +164,11 @@ func TestS3SaveSetsObjectLockPerMode(t *testing.T) {
 			if put == nil {
 				t.Fatal("no PutObject")
 			}
-			wantUntil := lockNow.Add(30 * 24 * time.Hour).Truncate(time.Second)
+			wantUntil := lockNow.Add(30 * 24 * time.Hour).Truncate(time.Second).Add(time.Second) // rounded up
 			if got := put.Header.Get("X-Amz-Object-Lock-Mode"); got != tc.wantMode {
 				t.Errorf("lock mode header = %q; want %q", got, tc.wantMode)
 			}
-			if obj.VersionID != "v-a.archive" {
+			if want := map[bool]string{true: "v-a.archive"}[tc.wantMode != ""]; obj.VersionID != want {
 				t.Errorf("version = %q", obj.VersionID)
 			}
 			if tc.wantMode == "" {
@@ -232,8 +262,8 @@ func TestS3CheckObjectLock(t *testing.T) {
 	}
 }
 
-// TestS3VersionOperations checks that versioned reads, deletes and legal holds name
-// the version, and that the generic helpers fall back for other drivers.
+// TestS3VersionOperations checks that versioned reads and legal holds name the
+// version, and that the generic helpers fall back for other drivers.
 func TestS3VersionOperations(t *testing.T) {
 	f := &lockS3{lockConfig: "Enabled", versioning: "Enabled"}
 	st := newLockS3(t, f, ObjectLock{})
@@ -244,28 +274,23 @@ func TestS3VersionOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = rc.Close()
-	if err = DeleteVersion(ctx, st, "k", "v1"); err != nil {
-		t.Fatal(err)
-	}
 	if err = SetLegalHold(ctx, st, "k", "v1", true); err != nil {
 		t.Fatal(err)
 	}
 	if err = SetLegalHold(ctx, st, "k", "v1", false); err != nil {
 		t.Fatal(err)
 	}
-	var gets, deletes, holds []string
+	var gets, holds []string
 	for i, r := range f.requests {
 		switch {
 		case r.Method == http.MethodGet:
 			gets = append(gets, r.URL.Query().Get("versionId"))
-		case r.Method == http.MethodDelete:
-			deletes = append(deletes, r.URL.Query().Get("versionId"))
 		case r.URL.Query().Has("legal-hold"):
 			holds = append(holds, r.URL.Query().Get("versionId")+":"+map[bool]string{true: "ON", false: "OFF"}[strings.Contains(f.bodies[i], "ON")])
 		}
 	}
-	if fmt.Sprint(gets, deletes, holds) != "[v1] [v1] [v1:ON v1:OFF]" {
-		t.Fatalf("gets=%v deletes=%v holds=%v", gets, deletes, holds)
+	if fmt.Sprint(gets, holds) != "[v1] [v1:ON v1:OFF]" {
+		t.Fatalf("gets=%v holds=%v", gets, holds)
 	}
 
 	mock := NewMockStorage()
@@ -276,54 +301,117 @@ func TestS3VersionOperations(t *testing.T) {
 		t.Fatalf("fallback retrieve: %v", err)
 	}
 	_ = rc.Close()
-	if err = DeleteVersion(ctx, mock, "m", "v1"); err != nil {
-		t.Fatalf("fallback delete: %v", err)
+	if _, err = Purge(ctx, mock, "m", "v1", lockNow); err != nil {
+		t.Fatalf("fallback purge: %v", err)
 	}
 	if err = SetLegalHold(ctx, mock, "m", "", true); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("legal hold on a mock = %v; want ErrUnsupported", err)
 	}
 }
 
-// statLocked is a versioned mock whose objects carry a version and a retention.
-type statLocked struct {
-	*MockStorage
-	until   time.Time
-	deleted []string
-}
-
-func (s *statLocked) Stat(ctx context.Context, key string) (*models.StorageObject, error) {
-	obj, err := s.MockStorage.Stat(ctx, key)
-	if obj != nil {
-		obj.VersionID, obj.RetainUntil = "v-"+key, &s.until
+// deletes returns the versionId of every DELETE request ("" for a plain delete).
+func (f *lockS3) deletes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, r := range f.requests {
+		if r.Method == http.MethodDelete {
+			out = append(out, r.URL.Query().Get("versionId"))
+		}
 	}
-	return obj, err
+	return out
 }
 
-func (s *statLocked) RetrieveVersion(ctx context.Context, key, _ string) (io.ReadCloser, error) {
-	return s.Retrieve(ctx, key)
+// listed reports whether ListObjectVersions was called.
+func (f *lockS3) listed() bool {
+	r, _ := f.find(http.MethodGet, "versions")
+	return r != nil
 }
 
-func (s *statLocked) DeleteVersion(ctx context.Context, key, versionID string) error {
-	s.deleted = append(s.deleted, versionID)
-	return s.Delete(ctx, key)
-}
-
-// TestDeleteUnlockedWaitsForTheRetention checks that an object under retention is
-// kept (with the end of its retention returned) and deleted by version afterwards.
-func TestDeleteUnlockedWaitsForTheRetention(t *testing.T) {
+// TestPurgeOnALockedTargetWaitsThenDeletesEveryVersion checks that a locked
+// target's purge lists the key's versions and delete markers (also for a record
+// without a version, such as an import or an orphan), deletes nothing while one
+// version is locked and returns when the lock ends, and afterwards deletes each
+// version and marker by ID: never a plain delete that would leave the data.
+func TestPurgeOnALockedTargetWaitsThenDeletesEveryVersion(t *testing.T) {
+	f := &lockS3{
+		versions: map[string][]string{"a.archive": {"v1", "v2"}, "a.archive.other": {"x"}},
+		markers:  map[string][]string{"a.archive": {"m1"}},
+		until:    map[string]time.Time{"v2": lockNow.Add(48 * time.Hour)},
+	}
+	st := newLockS3(t, f, ObjectLock{Mode: models.ObjectLockCompliance, RetentionDays: 1})
 	ctx := context.Background()
-	s := &statLocked{MockStorage: NewMockStorage(), until: lockNow.Add(24 * time.Hour)}
-	if _, err := s.Save(ctx, "snap.db", strings.NewReader("x")); err != nil {
+	until, err := Purge(ctx, st, "a.archive", "", lockNow)
+	if err != nil || until == nil || !until.Equal(lockNow.Add(48*time.Hour).Truncate(time.Second)) || len(f.deletes()) != 0 {
+		t.Fatalf("purge while locked = %v, %v (deletes %v); want it kept until the lock ends", until, err, f.deletes())
+	}
+	until, err = Purge(ctx, st, "a.archive", "", lockNow.Add(48*time.Hour))
+	if err != nil || until != nil {
+		t.Fatalf("purge after the lock = %v, %v", until, err)
+	}
+	got := f.deletes()
+	slices.Sort(got)
+	if fmt.Sprint(got) != "[m1 v1 v2]" {
+		t.Fatalf("deleted versions = %v; want every version and marker of the key, nothing else", got)
+	}
+	if _, err = Purge(ctx, st, "gone", "", lockNow); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("purge of a key without versions = %v; want ErrNotFound", err)
+	}
+}
+
+// TestUnlockedVersionedBucketKeepsPlainDeletes checks that a target without a lock
+// behaves as before on a bucket that returns versions (Backblaze B2 always does):
+// uploads record no version, reads and Stat ignore it, and the purge sends a plain
+// DeleteObject, which leaves a delete marker, without listing versions.
+func TestUnlockedVersionedBucketKeepsPlainDeletes(t *testing.T) {
+	f := &lockS3{versions: map[string][]string{"b.archive": {"v1"}}}
+	st := newLockS3(t, f, ObjectLock{})
+	ctx := context.Background()
+	obj, err := st.Save(ctx, "b.archive", strings.NewReader("data"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	until, err := DeleteUnlocked(ctx, s, "snap.db", lockNow)
-	if err != nil || until == nil || !until.Equal(s.until) || len(s.deleted) != 0 {
-		t.Fatalf("DeleteUnlocked under retention = %v, %v (deleted %v); want kept until %s", until, err, s.deleted, s.until)
+	if obj.VersionID != "" || obj.RetainUntil != nil {
+		t.Fatalf("unlocked upload recorded %+v; want no version", obj)
 	}
-	if until, err = DeleteUnlocked(ctx, s, "snap.db", s.until); err != nil || until != nil || fmt.Sprint(s.deleted) != "[v-snap.db]" {
-		t.Fatalf("DeleteUnlocked after retention = %v, %v (deleted %v); want the version deleted", until, err, s.deleted)
+	if stat, statErr := st.Stat(ctx, "b.archive"); statErr != nil || stat.VersionID != "" {
+		t.Fatalf("unlocked Stat = %+v, %v; want no version", stat, statErr)
 	}
-	if _, err = DeleteUnlocked(ctx, s, "snap.db", s.until); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("DeleteUnlocked of a missing object = %v; want ErrNotFound", err)
+	if head, _ := f.find(http.MethodHead, ""); head == nil || head.URL.Query().Has("versionId") {
+		t.Fatalf("unlocked HeadObject = %v; want one without a version", head)
+	}
+	if until, purgeErr := Purge(ctx, st, "b.archive", "", lockNow); purgeErr != nil || until != nil {
+		t.Fatalf("purge = %v, %v", until, purgeErr)
+	}
+	if got := f.deletes(); len(got) != 1 || got[0] != "" || f.listed() {
+		t.Fatalf("deletes %q, listed %v; want one plain DeleteObject and no version listing", got, f.listed())
+	}
+}
+
+// TestLongUploadExtendsTheLock checks that an upload that ends after it began gets
+// its lock extended to the end plus the retention, so no object is locked for less
+// than the retention.
+func TestLongUploadExtendsTheLock(t *testing.T) {
+	f := &lockS3{}
+	var calls int
+	clock := func() time.Time {
+		calls++
+		if calls == 1 {
+			return lockNow
+		}
+		return lockNow.Add(3 * time.Hour)
+	}
+	st := newLockS3(t, f, ObjectLock{Mode: models.ObjectLockGovernance, RetentionDays: 7, Now: clock})
+	obj, err := st.Save(context.Background(), "long.archive", strings.NewReader("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := lockNow.Add(3*time.Hour + 7*24*time.Hour).Truncate(time.Second).Add(time.Second)
+	put, body := f.find(http.MethodPut, "retention")
+	if put == nil || put.URL.Query().Get("versionId") != "v-long.archive" || !strings.Contains(body, want.Format("2006-01-02T15:04:05")) {
+		t.Fatalf("PutObjectRetention = %v %q; want the version extended to %s", put, body, want)
+	}
+	if obj.RetainUntil == nil || !obj.RetainUntil.Equal(want) {
+		t.Fatalf("RetainUntil = %v; want %s", obj.RetainUntil, want)
 	}
 }

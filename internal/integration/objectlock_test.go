@@ -141,8 +141,8 @@ func TestObjectLockOnMinIO(t *testing.T) {
 			if err = st.DeleteVersion(ctx, key, obj.VersionID); err == nil || errors.Is(err, storage.ErrNotFound) {
 				t.Fatalf("deleting a locked version = %v; want a refusal", err)
 			}
-			if until, delErr := storage.DeleteUnlocked(ctx, st, key, time.Now()); delErr != nil || until == nil {
-				t.Fatalf("DeleteUnlocked before the lock ends = %v, %v; want it kept", until, delErr)
+			if until, delErr := storage.Purge(ctx, st, key, "", time.Now()); delErr != nil || until == nil {
+				t.Fatalf("purge before the lock ends = %v, %v; want it kept", until, delErr)
 			}
 
 			// Legal hold on and off.

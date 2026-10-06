@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,15 +38,26 @@ func (b *lockedBucket) RetrieveVersion(ctx context.Context, key, _ string) (io.R
 	return b.Retrieve(ctx, key)
 }
 
-func (b *lockedBucket) DeleteVersion(ctx context.Context, key, versionID string) error {
+func (b *lockedBucket) ObjectLockEnabled() bool                                  { return true }
+func (b *lockedBucket) CheckObjectLock(context.Context) error                    { return nil }
+func (b *lockedBucket) SetLegalHold(context.Context, string, string, bool) error { return nil }
+
+// PurgeVersions deletes the key's one version ("v-" + the backup ID) once its lock
+// ended at now, and refuses an early delete like S3 would.
+func (b *lockedBucket) PurgeVersions(ctx context.Context, key string, now time.Time) (*time.Time, error) {
 	b.mu.Lock()
-	if until, ok := b.until[versionID]; ok && b.now.Before(until) {
+	versionID := "v-" + strings.TrimSuffix(strings.TrimPrefix(key, "shop/"), ".archive")
+	if until, ok := b.until[versionID]; ok && now.Before(until) {
 		b.mu.Unlock()
-		return errors.New("AccessDenied: object is WORM protected")
+		return &until, nil
+	}
+	if b.now.Before(b.until[versionID]) {
+		b.mu.Unlock()
+		return nil, errors.New("AccessDenied: object is WORM protected")
 	}
 	b.deleted = append(b.deleted, key+"@"+versionID)
 	b.mu.Unlock()
-	return b.MockStorage.Delete(ctx, key)
+	return nil, b.MockStorage.Delete(ctx, key)
 }
 
 // TestPurgeWaitsForTheObjectLockAndDeletesTheVersion proves that a deleted backup
@@ -103,5 +115,68 @@ func TestPurgeWaitsForTheObjectLockAndDeletesTheVersion(t *testing.T) {
 		if rec, err = st.GetBackupRecord(ctx, id); err != nil || rec.Status != models.StatusPurged {
 			t.Errorf("%s = %+v, %v; want purged", id, rec, err)
 		}
+	}
+}
+
+// TestPurgeFindsTheLockOfARecordWithoutOne proves that on a locked target a deleted
+// backup recorded without a version or lock (an import, a backup taken before the
+// lock) is not marked purged while a version is still locked: the purge reads the
+// versions, records when the lock ends and purges the backup only afterwards.
+func TestPurgeFindsTheLockOfARecordWithoutOne(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.New(t)
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	until := t0.Add(20 * 24 * time.Hour)
+	bucket := &lockedBucket{MockStorage: storage.NewMockStorage(), until: map[string]time.Time{"v-bkp_import": until}, now: t0.Add(testGrace)}
+	saveDeleted(t, st, bucket.MockStorage, "bkp_import", t0, testGrace, nil)
+
+	if got, err := PurgeDeleted(ctx, t0.Add(testGrace), testGrace, st, fixedStorage(bucket), nil, nil); err != nil || len(got) != 0 {
+		t.Fatalf("purge while a version is locked = %v, %v; want nothing purged", got, err)
+	}
+	rec, err := st.GetBackupRecord(ctx, "bkp_import")
+	if err != nil || rec.Status != models.StatusDeleted || rec.RetainUntil == nil || !rec.RetainUntil.Equal(until) {
+		t.Fatalf("record = %+v, %v; want deleted with the lock found in storage", rec, err)
+	}
+	bucket.now = until
+	if got, err := PurgeDeleted(ctx, until, testGrace, st, fixedStorage(bucket), nil, nil); err != nil || !slices.Equal(got, []string{"bkp_import"}) {
+		t.Fatalf("purge once the lock ended = %v, %v", got, err)
+	}
+	if !slices.Equal(bucket.deleted, []string{"shop/bkp_import.archive@v-bkp_import"}) {
+		t.Fatalf("deleted versions = %v", bucket.deleted)
+	}
+}
+
+// TestPurgeDeletesTheLockedArtifactOfAFailedBackup proves that the artifact a failed
+// backup left on a locked target (ArchiveCleanupPending) is deleted, version and
+// all, once its lock ends, and that the flag is cleared then and not before.
+func TestPurgeDeletesTheLockedArtifactOfAFailedBackup(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.New(t)
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	until := t0.Add(24 * time.Hour)
+	bucket := &lockedBucket{MockStorage: storage.NewMockStorage(), until: map[string]time.Time{"v-bkp_fail": until}, now: t0}
+	rec := &models.BackupRecord{ID: "bkp_fail", JobID: "job_p", Database: "shop", Status: models.StatusFailed, StartedAt: t0,
+		StorageKey: "shop/bkp_fail.archive", StorageVersionID: "v-bkp_fail", RetainUntil: &until, ArchiveCleanupPending: true}
+	if err := st.SaveBackupRecord(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bucket.MockStorage.Save(ctx, rec.StorageKey, strings.NewReader("partial")); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{t0, until} {
+		bucket.now = at
+		if _, err := PurgeDeleted(ctx, at, testGrace, st, fixedStorage(bucket), nil, nil); err != nil {
+			t.Fatalf("purge at %s: %v", at, err)
+		}
+		got, err := st.GetBackupRecord(ctx, "bkp_fail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if locked := at.Before(until); got.ArchiveCleanupPending != locked || got.Status != models.StatusFailed {
+			t.Fatalf("at %s: pending %v, status %s; want pending=%v and still failed", at, got.ArchiveCleanupPending, got.Status, locked)
+		}
+	}
+	if !slices.Equal(bucket.deleted, []string{"shop/bkp_fail.archive@v-bkp_fail"}) {
+		t.Fatalf("deleted versions = %v", bucket.deleted)
 	}
 }

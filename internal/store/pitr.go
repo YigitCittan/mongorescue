@@ -522,6 +522,12 @@ func (s *SQLiteStore) ListPurgeableChunks(ctx context.Context, streamID string, 
 		ORDER BY purge_after, id LIMIT ?`, streamID, timeKey(now), timeKey(now), limit)
 }
 
+// SetChunkRetainUntil records the end of the S3 Object Lock retention of chunk id's
+// object, found by the purge: ListPurgeableChunks skips the chunk until then.
+func (s *SQLiteStore) SetChunkRetainUntil(ctx context.Context, id string, until time.Time) error {
+	return execOne(ctx, s.db, pitr.ErrNotFound, "UPDATE oplog_chunks SET retain_until = ? WHERE id = ?", timeKey(until), id)
+}
+
 // MarkChunkPruned records that the object of deleted chunk id was removed. It
 // returns pitr.ErrNotFound unless the chunk is deleted and not pruned yet.
 func (s *SQLiteStore) MarkChunkPruned(ctx context.Context, id string) error {

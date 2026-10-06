@@ -59,6 +59,24 @@ func (l ObjectLock) s3Mode() types.ObjectLockMode {
 	return types.ObjectLockModeGovernance
 }
 
+// now returns the time on the lock's clock.
+func (l ObjectLock) now() time.Time {
+	if l.Now != nil {
+		return l.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// retainUntil returns the retain-until date of an object finished at t: t plus the
+// retention, rounded up to the second S3 keeps, so it is never shorter.
+func (l ObjectLock) retainUntil(t time.Time) time.Time {
+	until := t.UTC().Add(time.Duration(l.RetentionDays) * 24 * time.Hour)
+	if r := until.Truncate(time.Second); !r.Equal(until) {
+		return r.Add(time.Second)
+	}
+	return until
+}
+
 // apply sets the lock headers on an upload and returns its retain-until date (nil
 // without a lock). S3 requires an integrity checksum (Content-MD5 or an
 // x-amz-checksum header) on every put with a retention, and the client otherwise
@@ -69,55 +87,88 @@ func (l ObjectLock) apply(in *s3.PutObjectInput) *time.Time {
 	if !l.Enabled() {
 		return nil
 	}
-	now := time.Now
-	if l.Now != nil {
-		now = l.Now
-	}
-	// S3 keeps retain-until dates with second precision.
-	until := now().UTC().Add(time.Duration(l.RetentionDays) * 24 * time.Hour).Truncate(time.Second)
+	until := l.retainUntil(l.now())
 	in.ObjectLockMode = l.s3Mode()
 	in.ObjectLockRetainUntilDate = aws.Time(until)
 	in.ChecksumAlgorithm = types.ChecksumAlgorithmCrc32
 	return &until
 }
 
-// describe records the retention until (nil without a lock) on obj.
-func (l ObjectLock) describe(obj *models.StorageObject, until *time.Time) *models.StorageObject {
+// describe records the version and the retention (nil without a lock) on obj.
+// Versions are recorded only on a locked target: other targets keep addressing
+// objects by key, as before, even on a bucket that returns versions.
+func (l ObjectLock) describe(obj *models.StorageObject, versionID string, until *time.Time) *models.StorageObject {
+	if !l.Enabled() {
+		return obj
+	}
+	obj.VersionID = versionID
 	if until != nil {
 		obj.RetainUntil, obj.ObjectLockMode = until, l.Mode
 	}
 	return obj
 }
 
-// Versioned is implemented by drivers that can address one version of an object
-// (an S3 bucket with versioning, as Object Lock requires).
+// extendRetention moves the retain-until date of a finished locked upload to the
+// upload's end plus the retention when that is later than the date set when it
+// began (a long upload), so no object is locked for less than the retention.
+// Extending a retention is allowed in both modes.
+func (s *S3Storage) extendRetention(ctx context.Context, objKey, versionID string, until *time.Time) (*time.Time, error) {
+	if until == nil || !s.lock.Enabled() {
+		return until, nil
+	}
+	want := s.lock.retainUntil(s.lock.now())
+	if !want.After(*until) {
+		return until, nil
+	}
+	in := &s3.PutObjectRetentionInput{
+		Bucket:    aws.String(s.bucket),
+		Key:       aws.String(objKey),
+		Retention: &types.ObjectLockRetention{Mode: types.ObjectLockRetentionMode(s.lock.s3Mode()), RetainUntilDate: aws.Time(want)},
+	}
+	if versionID != "" {
+		in.VersionId = aws.String(versionID)
+	}
+	if _, err := s.client.PutObjectRetention(ctx, in); err != nil {
+		return until, fmt.Errorf("s3 extend the object lock to the end of the upload (needs s3:PutObjectRetention): %w", err)
+	}
+	return &want, nil
+}
+
+// Versioned is implemented by drivers that can read one version of an object (an
+// S3 bucket with versioning, as Object Lock requires).
 type Versioned interface {
 	// RetrieveVersion streams version versionID of key.
 	RetrieveVersion(ctx context.Context, key, versionID string) (io.ReadCloser, error)
-	// DeleteVersion permanently deletes version versionID of key. Unlike Delete on
-	// a versioned bucket, which only adds a delete marker, it frees the space; it
-	// fails while the version is under an Object Lock retention or legal hold.
-	DeleteVersion(ctx context.Context, key, versionID string) error
 }
 
 // ObjectLocker is implemented by drivers that support S3 Object Lock.
 type ObjectLocker interface {
+	// ObjectLockEnabled reports whether the driver locks its uploads.
+	ObjectLockEnabled() bool
 	// CheckObjectLock returns an error wrapping ErrObjectLockUnavailable when the
 	// bucket does not have Object Lock and versioning enabled.
 	CheckObjectLock(ctx context.Context) error
 	// SetLegalHold turns the legal hold of version versionID of key (the current
 	// version for "") on or off.
 	SetLegalHold(ctx context.Context, key, versionID string, on bool) error
+	// PurgeVersions deletes every version and delete marker of key once none is
+	// locked at now; see Purge.
+	PurgeVersions(ctx context.Context, key string, now time.Time) (*time.Time, error)
 }
 
-// Compile-time checks that S3Storage addresses versions and supports Object Lock.
+// ErrObjectHeld indicates an object version under an S3 legal hold, which cannot
+// be deleted until the hold is lifted.
+var ErrObjectHeld = errors.New("storage: an object version is under a legal hold")
+
+// Compile-time checks that S3Storage reads versions and supports Object Lock.
 var (
 	_ Versioned    = (*S3Storage)(nil)
 	_ ObjectLocker = (*S3Storage)(nil)
 )
 
-// RetrieveVersion streams version versionID of key from s when it is set and s
-// addresses versions, and the current object otherwise.
+// RetrieveVersion streams version versionID of key from s when it is set (it is
+// recorded only for objects of a locked target) and s reads versions, and the
+// current object otherwise.
 func RetrieveVersion(ctx context.Context, s Storage, key, versionID string) (io.ReadCloser, error) {
 	if v, ok := s.(Versioned); ok && versionID != "" {
 		return v.RetrieveVersion(ctx, key, versionID)
@@ -125,29 +176,19 @@ func RetrieveVersion(ctx context.Context, s Storage, key, versionID string) (io.
 	return s.Retrieve(ctx, key)
 }
 
-// DeleteVersion permanently deletes version versionID of key from s when it is set
-// and s addresses versions, and deletes key otherwise.
-func DeleteVersion(ctx context.Context, s Storage, key, versionID string) error {
-	if v, ok := s.(Versioned); ok && versionID != "" {
-		return v.DeleteVersion(ctx, key, versionID)
+// Purge removes key from s for good. On a target with Object Lock, or for an object
+// recorded with a version (uploaded while its target locked objects), it lists
+// every version and delete marker of key, and deletes them all once none is locked
+// at now; while one is, it deletes nothing and returns the latest end of their
+// retentions for the caller to retry then. A version under a legal hold fails with
+// ErrObjectHeld, and a key without any version with ErrNotFound. Every other target
+// deletes key exactly like Delete (on a versioned bucket that leaves a delete
+// marker, as before).
+func Purge(ctx context.Context, s Storage, key, versionID string, now time.Time) (*time.Time, error) {
+	if l, ok := s.(ObjectLocker); ok && (l.ObjectLockEnabled() || versionID != "") {
+		return l.PurgeVersions(ctx, key, now)
 	}
-	return s.Delete(ctx, key)
-}
-
-// DeleteUnlocked deletes the current version of key from s unless it is under an
-// Object Lock retention at now, in which case it returns the end of the retention
-// and deletes nothing (the caller retries later). It reads the object's version and
-// retention first (Stat), so on a versioned bucket the version itself is deleted
-// and its space freed, not hidden behind a delete marker.
-func DeleteUnlocked(ctx context.Context, s Storage, key string, now time.Time) (*time.Time, error) {
-	obj, err := s.Stat(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	if obj.RetainUntil != nil && now.Before(*obj.RetainUntil) {
-		return obj.RetainUntil, nil
-	}
-	return nil, DeleteVersion(ctx, s, key, obj.VersionID)
+	return nil, s.Delete(ctx, key)
 }
 
 // SetLegalHold turns the legal hold of version versionID of key on s on or off; it
@@ -158,6 +199,73 @@ func SetLegalHold(ctx context.Context, s Storage, key, versionID string, on bool
 		return fmt.Errorf("storage: legal holds: %w", errors.ErrUnsupported)
 	}
 	return l.SetLegalHold(ctx, key, versionID, on)
+}
+
+// ObjectLockEnabled reports whether the driver locks its uploads.
+func (s *S3Storage) ObjectLockEnabled() bool { return s.lock.Enabled() }
+
+// objectVersion is one version or delete marker of a key.
+type objectVersion struct {
+	id     string
+	marker bool
+}
+
+// PurgeVersions deletes every version and delete marker of key once none of its
+// versions is under a retention at now or under a legal hold (see Purge).
+func (s *S3Storage) PurgeVersions(ctx context.Context, key string, now time.Time) (*time.Time, error) {
+	objKey, err := s.objectKey(key)
+	if err != nil {
+		return nil, err
+	}
+	var versions []objectVersion
+	pages := s3.NewListObjectVersionsPaginator(s.client, &s3.ListObjectVersionsInput{Bucket: aws.String(s.bucket), Prefix: aws.String(objKey)})
+	for pages.HasMorePages() {
+		page, pageErr := pages.NextPage(ctx)
+		if pageErr != nil {
+			return nil, fmt.Errorf("s3 list object versions: %w", pageErr)
+		}
+		for _, v := range page.Versions {
+			if aws.ToString(v.Key) == objKey {
+				versions = append(versions, objectVersion{id: aws.ToString(v.VersionId)})
+			}
+		}
+		for _, m := range page.DeleteMarkers {
+			if aws.ToString(m.Key) == objKey {
+				versions = append(versions, objectVersion{id: aws.ToString(m.VersionId), marker: true})
+			}
+		}
+	}
+	if len(versions) == 0 {
+		return nil, ErrNotFound
+	}
+	var wait *time.Time
+	for _, v := range versions {
+		if v.marker {
+			continue
+		}
+		head, headErr := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(objKey), VersionId: aws.String(v.id)})
+		switch {
+		case headErr != nil && (isS3NotFound(headErr) || isNoSuchVersion(headErr)):
+			continue
+		case headErr != nil:
+			return nil, fmt.Errorf("s3 head object version: %w", headErr)
+		case head.ObjectLockLegalHoldStatus == types.ObjectLockLegalHoldStatusOn:
+			return nil, fmt.Errorf("%w: %s version %s", ErrObjectHeld, key, v.id)
+		}
+		if u := head.ObjectLockRetainUntilDate; u != nil && now.Before(*u) && (wait == nil || u.After(*wait)) {
+			until := u.UTC()
+			wait = &until
+		}
+	}
+	if wait != nil {
+		return wait, nil
+	}
+	for _, v := range versions {
+		if err = s.DeleteVersion(ctx, key, v.id); err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 // CheckObjectLock verifies that the bucket has Object Lock enabled

@@ -203,21 +203,33 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		return nil, fmt.Errorf("s3 multipart upload failed: %w", err)
 	}
 
+	// A locked upload's version: reads and the purge address it, and a long upload
+	// gets its lock extended to its end plus the retention.
+	versionID := ""
+	if s.lock.Enabled() {
+		versionID = aws.ToString(uploadOutput.VersionID)
+		if retainUntil, err = s.extendRetention(ctx, objKey, versionID, retainUntil); err != nil {
+			return nil, err
+		}
+	}
+
 	// Retrieve object head to obtain definitive size and modtime (of the version
-	// just written, on a versioned bucket)
-	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket:    aws.String(s.bucket),
-		Key:       aws.String(objKey),
-		VersionId: uploadOutput.VersionID,
-	})
+	// just written, on a locked target)
+	headIn := &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objKey),
+	}
+	if versionID != "" {
+		headIn.VersionId = aws.String(versionID)
+	}
+	head, err := s.client.HeadObject(ctx, headIn)
 	if err != nil {
 		// Fallback to estimated values if HeadObject fails
 		return s.lock.describe(&models.StorageObject{
 			Key:         cleanKey,
 			ModTime:     startTime,
 			StorageType: models.StorageS3,
-			VersionID:   aws.ToString(uploadOutput.VersionID),
-		}, retainUntil), nil
+		}, versionID, retainUntil), nil
 	}
 
 	var size int64
@@ -235,11 +247,10 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		etag = *uploadOutput.ETag
 	}
 
-	versionID := aws.ToString(uploadOutput.VersionID)
 	if versionID == "" {
 		versionID = aws.ToString(head.VersionId)
 	}
-	if head.ObjectLockRetainUntilDate != nil && retainUntil != nil {
+	if head.ObjectLockRetainUntilDate != nil && retainUntil != nil && head.ObjectLockRetainUntilDate.After(*retainUntil) {
 		until := head.ObjectLockRetainUntilDate.UTC()
 		retainUntil = &until
 	}
@@ -250,8 +261,7 @@ func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.
 		ModTime:     modTime,
 		StorageType: models.StorageS3,
 		ETag:        etag,
-		VersionID:   versionID,
-	}, retainUntil), nil
+	}, versionID, retainUntil), nil
 }
 
 // abortTimeout bounds the abort of a failed multipart upload.
@@ -377,7 +387,7 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]*models.StorageO
 }
 
 // Stat retrieves metadata for a specific key in S3, with the current version and its
-// Object Lock retention on a versioned bucket.
+// Object Lock retention on a locked target.
 func (s *S3Storage) Stat(ctx context.Context, key string) (*models.StorageObject, error) {
 	objKey, err := s.objectKey(key)
 	if err != nil {
@@ -417,9 +427,11 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (*models.StorageObject
 		ModTime:     modTime,
 		StorageType: models.StorageS3,
 		ETag:        etag,
-		VersionID:   aws.ToString(head.VersionId),
 	}
-	if head.ObjectLockRetainUntilDate != nil {
+	if s.lock.Enabled() {
+		obj.VersionID = aws.ToString(head.VersionId)
+	}
+	if head.ObjectLockRetainUntilDate != nil && s.lock.Enabled() {
 		until := head.ObjectLockRetainUntilDate.UTC()
 		obj.RetainUntil, obj.ObjectLockMode = &until, models.ObjectLockMode(strings.ToLower(string(head.ObjectLockMode)))
 	}

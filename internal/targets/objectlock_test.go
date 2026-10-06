@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,8 +17,8 @@ import (
 )
 
 // lockingDriver is a versioned mock bucket whose Object Lock state is lockErr (nil
-// for a lock-enabled bucket). It records the lock mode of every build and the
-// versions it deleted.
+// for a lock-enabled bucket). It records the lock mode of every build and the keys
+// whose versions it purged.
 type lockingDriver struct {
 	*storage.MockStorage
 	mu       sync.Mutex
@@ -29,23 +28,13 @@ type lockingDriver struct {
 	versions []string
 }
 
-func (d *lockingDriver) Save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
-	obj, err := d.MockStorage.Save(ctx, key, r)
-	if obj != nil {
-		obj.VersionID = "v-" + key
-	}
-	return obj, err
-}
+func (d *lockingDriver) ObjectLockEnabled() bool { return true }
 
-func (d *lockingDriver) RetrieveVersion(ctx context.Context, key, _ string) (io.ReadCloser, error) {
-	return d.Retrieve(ctx, key)
-}
-
-func (d *lockingDriver) DeleteVersion(ctx context.Context, key, versionID string) error {
+func (d *lockingDriver) PurgeVersions(ctx context.Context, key string, _ time.Time) (*time.Time, error) {
 	d.mu.Lock()
-	d.versions = append(d.versions, versionID)
+	d.versions = append(d.versions, key)
 	d.mu.Unlock()
-	return d.Delete(ctx, key)
+	return nil, d.Delete(ctx, key)
 }
 
 func (d *lockingDriver) CheckObjectLock(context.Context) error {
@@ -155,11 +144,11 @@ func TestObjectLockProbeIsUnlockedAndDeletesItsVersion(t *testing.T) {
 	if err != nil || !res.OK {
 		t.Fatalf("Test = %+v, %v", res, err)
 	}
-	if len(d.modes) != 1 || d.modes[0] != "" {
-		t.Errorf("probe driver lock modes = %v; want one unlocked build", d.modes)
+	if len(d.modes) != 2 || d.modes[0] != "" || d.modes[1] != models.ObjectLockCompliance {
+		t.Errorf("probe driver lock modes = %v; want an unlocked build for the probe and the locked one for its clean-up", d.modes)
 	}
-	if len(d.versions) != 1 || !strings.HasPrefix(d.versions[0], "v-"+targets.ProbePrefix) {
-		t.Errorf("deleted versions = %v; want the probe's version", d.versions)
+	if len(d.versions) != 1 || !strings.HasPrefix(d.versions[0], targets.ProbePrefix) {
+		t.Errorf("purged keys = %v; want every version of the probe", d.versions)
 	}
 	if d.checks != 1 {
 		t.Errorf("lock checks = %d; want 1", d.checks)

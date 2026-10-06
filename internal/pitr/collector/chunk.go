@@ -144,11 +144,12 @@ func checkScan(sc *oplog.Scanner, stats pitr.OplogStats) error {
 }
 
 // removeObject deletes an object that was not committed, detached from ctx's
-// cancellation.
+// cancellation. On a locked target the object cannot go before its lock ends: it is
+// left without a delete marker, so the orphan purge finds and deletes it then.
 func (w *worker) removeObject(ctx context.Context, driver storage.Storage, key string) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if err := driver.Delete(cctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	if _, err := storage.Purge(cctx, driver, key, "", w.svc.now()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		w.svc.logger.Warn("cannot remove an uncommitted oplog chunk", logsafe.Attr("stream_id", w.stream.ID),
 			logsafe.Attr("storage_key", key), logsafe.Error(err))
 	}
