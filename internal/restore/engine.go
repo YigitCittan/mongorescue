@@ -21,6 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -82,6 +83,7 @@ type Engine struct {
 	defaultURI   string
 	runner       ProcessRunner
 	toolsDir     string
+	configDir    string
 	decryptor    *encryption.Decryptor
 	verifyPolicy models.VerifyPolicy
 	timeout      time.Duration
@@ -184,6 +186,15 @@ func WithRunner(runner ProcessRunner) Option {
 func WithToolsDir(dir string) Option {
 	return func(e *Engine) {
 		e.toolsDir = dir
+	}
+}
+
+// WithConfigDir sets the directory of the private, short-lived files that pass the
+// connection URI and TLS material to the tools (see mongotools.WriteConfig);
+// "" (the default) is os.TempDir.
+func WithConfigDir(dir string) Option {
+	return func(e *Engine) {
+		e.configDir = dir
 	}
 }
 
@@ -449,6 +460,10 @@ func (e *Engine) Execute(ctx context.Context, req models.RestoreRequest, sourceR
 func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceRecord *models.BackupRecord, record *models.RestoreRecord) (*models.RestoreRecord, error) {
 	restoreID, targetDB, startTime := record.ID, record.TargetDatabase, record.StartedAt
 	mongoURI := e.resolveURI(req)
+	if req.MongoURI != "" {
+		// Every connection the restore opens (tools and driver) uses the material.
+		ctx = mongotls.NewContext(ctx, req.MongoTLS)
+	}
 
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
@@ -569,14 +584,14 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 
 	// Pass the URI through a private config file so credentials never appear in argv.
 	// Connection timeouts are defaulted there; the augmented URI is never logged.
-	configArg, cleanupConfig, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(mongoURI))
+	configArgs, cleanupConfig, err := mongotools.WriteConfig(e.configDir, mongotools.WithConnectionDefaults(mongoURI), mongotls.FromContext(ctx))
 	if err != nil {
 		return e.failRun(ctx, record, fmt.Errorf("prepare mongorestore config: %w", err),
 			fmt.Sprintf("prepare mongorestore config: %v", err))
 	}
 	defer cleanupConfig()
 
-	args := e.buildRestoreArgs(configArg, sourceRecord.Database, targetDB, req, isGzip)
+	args := append(e.buildRestoreArgs(configArgs[0], sourceRecord.Database, targetDB, req, isGzip), configArgs[1:]...)
 	if e.bypassValidation(ctx, mongoURI, targetDB) {
 		// A backup is restored as it was taken: documents that predate a collection's
 		// validator (or were written with validationAction "warn") would otherwise be

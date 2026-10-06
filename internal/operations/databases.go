@@ -10,6 +10,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
@@ -118,7 +119,7 @@ func (s *Service) archiveSizeWarnings(ctx context.Context, targetID string, conn
 	}
 	var out []string
 	for _, db := range databases[:min(len(databases), maxSizeChecks)] {
-		size, source, estErr := s.cfg.ArchiveSize(ctx, conn.ID, conn.URI, db)
+		size, source, estErr := s.cfg.ArchiveSize(mongotls.NewContext(ctx, conn.TLS()), conn.ID, conn.URI, db)
 		if estErr != nil {
 			continue
 		}

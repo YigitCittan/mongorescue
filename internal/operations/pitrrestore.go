@@ -169,7 +169,7 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if err != nil {
 		return nil, err
 	}
-	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = conn.ID, conn.Name, conn.URI
+	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI, req.MongoTLS = conn.ID, conn.Name, conn.URI, conn.TLS()
 	req.PostRestoreCommands = models.ClonePostRestoreCommands(conn.PostRestoreCommands)
 	out.req = req
 	return out, nil

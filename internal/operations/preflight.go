@@ -11,6 +11,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/postrestore"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
@@ -133,7 +134,7 @@ func (s *Service) PreflightRestore(ctx context.Context, req models.RestoreReques
 func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, targetDB, shown string) *models.PreflightResult {
 	ctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	defer cancel()
-	p := &preflightRun{svc: s, ctx: ctx, req: req, source: source, targetDB: targetDB, shown: shown, res: &models.PreflightResult{OK: true}}
+	p := &preflightRun{svc: s, ctx: mongotls.NewContext(ctx, req.MongoTLS), req: req, source: source, targetDB: targetDB, shown: shown, res: &models.PreflightResult{OK: true}}
 	defer p.close()
 	p.connection()
 	p.encryption()

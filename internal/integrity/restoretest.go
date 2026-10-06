@@ -13,6 +13,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -240,6 +241,8 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 		return fmt.Errorf("resolve connection %s: %w", connID, err)
 	}
 	res.ConnectionID, res.ConnectionName = conn.ID, conn.Name
+	// The privilege checks, the manifest and the drop use the connection's TLS.
+	ctx = mongotls.NewContext(ctx, conn.TLS())
 	encrypted := backup.Encrypted || strings.HasSuffix(backup.StorageKey, ".age")
 	if encrypted && !s.cfg.Restore.CanDecrypt() {
 		return errors.New("the backup is encrypted and no decryption key is configured under Settings → Encryption")
@@ -286,7 +289,7 @@ func (s *Service) restoreTest(ctx context.Context, job *models.Job, backup *mode
 
 	noVerifyPass := false
 	req := models.RestoreRequest{
-		BackupID: backup.ID, MongoURI: conn.URI, TargetConnectionID: conn.ID, TargetConnectionName: conn.Name,
+		BackupID: backup.ID, MongoURI: conn.URI, MongoTLS: conn.TLS(), TargetConnectionID: conn.ID, TargetConnectionName: conn.Name,
 		CloneDatabase: temp, Verify: &noVerifyPass, // the streamed bytes are still checked against the checksum
 		// The connection's post-restore commands run once the copy was compared
 		// with the manifest: they change it on purpose.

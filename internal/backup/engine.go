@@ -20,6 +20,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -117,6 +118,7 @@ type Engine struct {
 	defaultURI string
 	runner     ProcessRunner
 	toolsDir   string
+	configDir  string
 	encryptor  *encryption.Encryptor
 
 	timeout      time.Duration
@@ -238,6 +240,15 @@ func WithRunner(runner ProcessRunner) Option {
 func WithToolsDir(dir string) Option {
 	return func(e *Engine) {
 		e.toolsDir = dir
+	}
+}
+
+// WithConfigDir sets the directory of the private, short-lived files that pass the
+// connection URI and TLS material to the tools (see mongotools.WriteConfig);
+// "" (the default) is os.TempDir.
+func WithConfigDir(dir string) Option {
+	return func(e *Engine) {
+		e.configDir = dir
 	}
 }
 
@@ -483,6 +494,10 @@ func (e *Engine) Execute(ctx context.Context, opts models.BackupOptions, record 
 func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record *models.BackupRecord) (*models.BackupRecord, error) {
 	backupID, targetKey, startTime := record.ID, record.StorageKey, record.StartedAt
 	mongoURI := e.resolveURI(opts)
+	if opts.MongoURI != "" {
+		// Every connection the backup opens (tools and driver) uses the material.
+		ctx = mongotls.NewContext(ctx, opts.MongoTLS)
+	}
 
 	tracker := runs.FromContext(ctx)
 	if runs.CancellationOf(ctx) != nil {
@@ -534,7 +549,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	// Pass the URI through a private config file so credentials never appear in argv.
 	// Connection timeouts are defaulted there so an unreachable host fails fast; the
 	// augmented URI is never logged or stored.
-	configArg, cleanupConfig, err := mongotools.WriteURIConfig("", mongotools.WithConnectionDefaults(mongoURI))
+	configArgs, cleanupConfig, err := mongotools.WriteConfig(e.configDir, mongotools.WithConnectionDefaults(mongoURI), mongotls.FromContext(runCtx))
 	if err != nil {
 		return e.fail(runCtx, record, fmt.Errorf("prepare mongodump config: %w", err))
 	}
@@ -558,7 +573,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	manifest := e.captureManifest(runCtx, mongoURI, dumpOpts)
 
 	// Build mongodump arguments
-	args := e.buildDumpArgs(configArg, dumpOpts)
+	args := append(e.buildDumpArgs(configArgs[0], dumpOpts), configArgs[1:]...)
 
 	// A base backup's T_before: every write before it is in the dump or in the
 	// oplog chain from here on.

@@ -111,6 +111,15 @@ func maskSet(v string) string {
 	return redact.Mask
 }
 
+// TLS returns a copy of the connection's TLS material, or nil when it has none.
+func (c *Connection) TLS() *ConnectionTLS {
+	if c == nil || c.IsZero() {
+		return nil
+	}
+	t := c.ConnectionTLS
+	return &t
+}
+
 // ReadPref returns the connection's read preference.
 func (c *Connection) ReadPref() ReadPreference {
 	return ReadPreference{Mode: c.ReadPreference, Tags: CloneTagSets(c.ReadPreferenceTags)}

@@ -762,7 +762,7 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 	if err != nil {
 		return opts, fmt.Errorf("resolve connection %s: %w", job.ConnectionID, err)
 	}
-	opts.MongoURI, opts.ConnectionName = conn.URI, conn.Name
+	opts.MongoURI, opts.MongoTLS, opts.ConnectionName = conn.URI, conn.TLS(), conn.Name
 	// The job's read preference overrides its connection's; the connection's
 	// limit of concurrent backups applies to every job that reads from it.
 	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())

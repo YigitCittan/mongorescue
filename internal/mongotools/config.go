@@ -236,7 +236,10 @@ func defaultAuthSource(scheme, rest, mechanism string, hasAuthSource bool) (stri
 // subprocess starts, so removing files older than about a minute cannot disturb a
 // running dump or restore.
 //
-// Only regular files are removed; symlinks and directories are skipped. Files that
+// It also removes the private directories of WriteConfig (TLSDirPattern), which hold
+// the same configuration and TLS client keys, under the same age rule.
+//
+// Only regular files and directories are removed; symlinks are skipped. Files that
 // vanish concurrently or belong to another user (permission denied) are ignored.
 // It returns the number of files removed and any other errors joined together.
 func CleanupStale(dir string, olderThan time.Duration) (int, error) {
@@ -252,6 +255,23 @@ func CleanupStale(dir string, olderThan time.Duration) (int, error) {
 	cutoff := time.Now().Add(-olderThan)
 	removed := 0
 	var errs []error
+	dirs, err := filepath.Glob(filepath.Join(dir, TLSDirPattern))
+	if err != nil {
+		return 0, fmt.Errorf("glob stale tools TLS directories: %w", err)
+	}
+	for _, path := range dirs {
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.IsDir() || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			if !errors.Is(rmErr, fs.ErrPermission) {
+				errs = append(errs, fmt.Errorf("remove %s: %w", path, rmErr))
+			}
+			continue
+		}
+		removed++
+	}
 	for _, path := range matches {
 		info, statErr := os.Lstat(path)
 		if statErr != nil {

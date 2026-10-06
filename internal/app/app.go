@@ -37,6 +37,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -69,6 +70,14 @@ const (
 	httpDrainTimeout = 15 * time.Second
 	forceKillGrace   = 5 * time.Second
 )
+
+// ToolsTempDirName is the private (0700) directory under the data directory that
+// holds the short-lived files passing connection URIs and TLS material to
+// mongodump and mongorestore (see mongotools.WriteConfig).
+const ToolsTempDirName = "tmp"
+
+// toolsTempDirPerm restricts ToolsTempDirName to the current user.
+const toolsTempDirPerm = 0o700
 
 // RunLogDirName is the directory under the data directory that holds the log of
 // every backup and restore run (<run-id>.log).
@@ -310,6 +319,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// 3. Engines read their settings and storage target for every run, so changes in
 	// the dashboard apply without a restart.
 	logToolPaths(logger, cfg.ToolsDir)
+	toolsTemp := filepath.Join(cfg.DataDir, ToolsTempDirName)
+	if err = os.MkdirAll(toolsTemp, toolsTempDirPerm); err != nil {
+		return nil, fmt.Errorf("create tools temporary directory: %w", err)
+	}
+	if err = os.Chmod(toolsTemp, toolsTempDirPerm); err != nil {
+		return nil, fmt.Errorf("restrict tools temporary directory: %w", err)
+	}
 	// Background operations started through the API live under the application
 	// lifecycle, and share per-database concurrency keys with scheduled runs; its
 	// slots hold every connection's max_concurrent_backups.
@@ -318,6 +334,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	backupEngine := backup.NewEngine(nil, "",
 		backup.WithLogger(logger),
 		backup.WithToolsDir(cfg.ToolsDir),
+		backup.WithConfigDir(toolsTemp),
 		backup.WithStorageResolver(targetSvc.Storage),
 		backup.WithCollectionLister(collectionLister(prober)),
 		backup.WithManifestCapturer(prober.Manifest),
@@ -342,6 +359,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	restoreEngine := restore.NewEngine(nil, "",
 		restore.WithLogger(logger),
 		restore.WithToolsDir(cfg.ToolsDir),
+		restore.WithConfigDir(toolsTemp),
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
@@ -638,7 +656,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if err != nil {
 				return nil, err
 			}
-			return openOplogSession(ctx, prober, conn.URI, st.ReadPreference)
+			return openOplogSession(mongotls.NewContext(ctx, conn.TLS()), prober, conn.URI, st.ReadPreference)
 		},
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,
@@ -662,6 +680,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			if err != nil {
 				return collector.Inspection{}, err
 			}
+			ctx = mongotls.NewContext(ctx, conn.TLS())
 			// The oplog's ends are read only once the user may read it.
 			if ok, accessErr := prober.CanReadOplog(ctx, conn.URI); accessErr != nil || !ok {
 				return collector.Inspection{}, accessErr
@@ -1117,14 +1136,18 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.started = true
 
-	// Purge credential-bearing tools config files left behind by a previous crash.
-	if removed, err := mongotools.CleanupStale("", staleToolsConfigAge); err != nil {
-		a.logger.Warn("failed to clean up stale mongo tools config files",
-			slog.Int("removed", removed),
-			slog.Any("error", err),
-		)
-	} else {
-		a.logger.Info("stale mongo tools config cleanup completed", slog.Int("removed", removed))
+	// Purge credential-bearing tools config files and TLS directories left behind by
+	// a previous crash: in the data directory, and in the system temporary
+	// directory, where earlier releases wrote them.
+	for _, dir := range []string{filepath.Join(a.cfg.DataDir, ToolsTempDirName), ""} {
+		if removed, err := mongotools.CleanupStale(dir, staleToolsConfigAge); err != nil {
+			a.logger.Warn("failed to clean up stale mongo tools config files",
+				slog.Int("removed", removed),
+				slog.Any("error", err),
+			)
+		} else {
+			a.logger.Info("stale mongo tools config cleanup completed", slog.Int("removed", removed))
+		}
 	}
 
 	a.failInterruptedRuns(ctx)

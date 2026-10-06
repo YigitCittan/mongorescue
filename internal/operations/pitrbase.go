@@ -60,7 +60,7 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 	// connection's max_concurrent_backups.
 	opts := models.BackupOptions{
 		Scope: models.ScopeInstance, PITRStreamID: stream.ID, ReplicaSet: stream.ReplicaSet,
-		ConnectionID: conn.ID, ConnectionName: conn.Name, MongoURI: conn.URI,
+		ConnectionID: conn.ID, ConnectionName: conn.Name, MongoURI: conn.URI, MongoTLS: conn.TLS(),
 		StorageTargetID: target.ID, StorageTargetName: target.Name, StorageType: target.Type,
 		Gzip: true, Trigger: trigger,
 		ReadPreference: conn.ReadPref(), MaxConcurrentBackups: conn.MaxConcurrentBackups,

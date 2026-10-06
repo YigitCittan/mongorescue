@@ -15,6 +15,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
@@ -42,6 +44,8 @@ var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 type OplogSession struct {
 	OplogMember
 	uri string
+	// tls is the TLS material of the connection, reused for member clients.
+	tls *models.ConnectionTLS
 
 	mu      sync.Mutex
 	members map[string]*mongo.Client
@@ -91,7 +95,7 @@ func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference strin
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return nil, errors.New("invalid connection string")
 	}
-	return &OplogSession{OplogMember: OplogMember{client: client, rp: rp}, uri: uri, members: map[string]*mongo.Client{}}, nil
+	return &OplogSession{OplogMember: OplogMember{client: client, rp: rp}, uri: uri, tls: mongotls.FromContext(ctx), members: map[string]*mongo.Client{}}, nil
 }
 
 // Close disconnects the session's client and the clients of pinned members.
@@ -184,7 +188,7 @@ func (s *OplogSession) memberClient(ctx context.Context, host string) (*mongo.Cl
 	if c, ok := s.members[host]; ok {
 		return c, nil
 	}
-	opts := clientOptions(ctx, s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest())
+	opts := clientOptions(mongotls.NewContext(ctx, s.tls), s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest())
 	opts.SRVMaxHosts, opts.SRVServiceName = nil, nil
 	c, err := mongo.Connect(opts)
 	if err != nil {
