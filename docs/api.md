@@ -66,7 +66,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 
 | Method | Endpoint | Description | Success | Errors |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`, `scheduler`, `scheduler_last_tick`); see [health](#health) | 200 | 503 stale scheduler |
+| `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`, `scheduler`, `scheduler_last_tick`, `draining`); see [health](#health) | 200 | 503 stale scheduler |
 | `GET` | `/api/v1/setup/status` | `{"setup_required": bool}` | 200 | |
 | `POST` | `/api/v1/setup` | `{setup_code, username, password}` → first user and session: `{user, csrf_token}` | 201 | 400, 403 wrong code, 409 already set up, 429 |
 | `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin or [password sign-in limited to local admins](#single-sign-on), 415, 429 |
@@ -594,7 +594,7 @@ Every query is answered from an index on `backups`, never by scanning the table,
 
 ## Health
 
-`GET /api/v1/health` (public) answers `200` with `{status: "healthy", version, time, scheduler, scheduler_last_tick}`. `scheduler` is `ok` while the scheduler records its liveness tick (every 30 seconds) and `not_started` before it starts; `scheduler_last_tick` is the time of the last tick. When the last tick is older than three intervals (90 seconds: the cron runner is hung, the scheduler deadlocked or stopped), the answer is `503` with `success: false` and `scheduler: "stale"` (`status` keeps its value `"healthy"`; read the HTTP status or `scheduler`), so the Docker `HEALTHCHECK`, a load balancer or an uptime monitor see the failure. The fields of earlier releases are unchanged. The tick time is also exported as `mongorescue_scheduler_last_tick_timestamp_seconds` ([metrics](metrics.md)).
+`GET /api/v1/health` (public) answers `200` with `{status: "healthy", version, time, scheduler, scheduler_last_tick}`. `scheduler` is `ok` while the scheduler records its liveness tick (every 30 seconds) and `not_started` before it starts; `scheduler_last_tick` is the time of the last tick. When the last tick is older than three intervals (90 seconds: the cron runner is hung, the scheduler deadlocked or stopped), the answer is `503` with `success: false` and `scheduler: "stale"` (`status` keeps its value `"healthy"`; read the HTTP status or `scheduler`), so the Docker `HEALTHCHECK`, a load balancer or an uptime monitor see the failure. While new runs are refused (a [graceful shutdown](kubernetes.md#graceful-shutdown) waiting for running backups, or the desktop app waiting before it quits) the answer adds `draining: true` and stays `200`. The fields of earlier releases are unchanged. The tick time is also exported as `mongorescue_scheduler_last_tick_timestamp_seconds` ([metrics](metrics.md)).
 
 ## Job heartbeats
 
