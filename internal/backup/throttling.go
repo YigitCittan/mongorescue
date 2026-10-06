@@ -68,7 +68,7 @@ func (e *Engine) waitForSlot(ctx context.Context, opts models.BackupOptions, rec
 		tracker.Printf("waiting: connection %s already runs %d backup(s), its max_concurrent_backups",
 			opts.ConnectionName, opts.MaxConcurrentBackups)
 		e.logger.Info("backup waits for a slot of its connection",
-			logsafe.Attr("backup_id", record.ID), slog.String("connection_id", opts.ConnectionID),
+			logsafe.Attr("backup_id", record.ID), logsafe.Attr("connection_id", opts.ConnectionID),
 			slog.Int("max_concurrent_backups", opts.MaxConcurrentBackups))
 	}
 	release, err := e.slots.AcquireSlot(ctx, runs.ConnectionKey(opts.ConnectionID), opts.MaxConcurrentBackups, waiting)

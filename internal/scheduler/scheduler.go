@@ -699,7 +699,7 @@ func (s *Scheduler) runScheduled(jobID string) {
 func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	job, err := s.metadataStore.GetJob(ctx, jobID)
 	if err != nil {
-		s.logger.Error("cron triggered for missing job", logsafe.Attr("job_id", jobID), slog.Any("error", err))
+		s.logger.Error("cron triggered for missing job", logsafe.Attr("job_id", jobID), logsafe.Error(err))
 		return
 	}
 	// Only scheduled runs honour the backup window: outside it the run is recorded
@@ -877,9 +877,9 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 	if record != nil {
 		if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, record); saveErr != nil {
 			s.logger.Error("failed to persist backup record",
-				slog.String("job_id", job.ID),
-				slog.String("backup_id", record.ID),
-				slog.Any("error", saveErr),
+				logsafe.Attr("job_id", job.ID),
+				logsafe.Attr("backup_id", record.ID),
+				logsafe.Error(saveErr),
 			)
 		}
 	}
@@ -898,8 +898,8 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 
 	if err != nil {
 		s.logger.Error("backup job execution failed",
-			slog.String("job_id", job.ID),
-			slog.Any("error", err),
+			logsafe.Attr("job_id", job.ID),
+			logsafe.Error(err),
 		)
 		return record, err
 	}

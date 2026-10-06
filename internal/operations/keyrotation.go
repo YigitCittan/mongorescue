@@ -11,6 +11,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -127,6 +128,6 @@ func (s *Service) keyRotated(ctx context.Context, kind, oldFP, newFP string, ski
 	auditlog.Annotate(ctx, "key_rotated", kind)
 	auditlog.Annotate(ctx, "old_fingerprint", oldFP)
 	auditlog.Annotate(ctx, "new_fingerprint", newFP)
-	s.logger.With(actorAttrs(ctx)...).Info("key rotated", slog.String("kind", kind),
-		slog.String("old_fingerprint", oldFP), slog.String("new_fingerprint", newFP))
+	s.logger.With(actorAttrs(ctx)...).Info("key rotated", logsafe.Attr("kind", kind),
+		logsafe.Attr("old_fingerprint", oldFP), logsafe.Attr("new_fingerprint", newFP))
 }

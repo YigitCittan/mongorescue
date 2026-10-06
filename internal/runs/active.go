@@ -92,7 +92,7 @@ func (c *Cancellation) LogAttrs() []any {
 	if kind == "" {
 		kind = ActorSystem
 	}
-	return []any{slog.String("cancelled_by_kind", string(kind)), logsafe.Attr("cancelled_by_user_id", c.UserID)}
+	return []any{logsafe.Attr("cancelled_by_kind", string(kind)), logsafe.Attr("cancelled_by_user_id", c.UserID)}
 }
 
 // CancellationOf returns the Cancellation that ended ctx, or nil when ctx is live or
