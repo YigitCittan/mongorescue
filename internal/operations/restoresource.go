@@ -20,8 +20,8 @@ import (
 func (s *Service) restoreSource(ctx context.Context, rec *models.BackupRecord, want string) (*models.BackupRecord, string, error) {
 	if want != "" && want != rec.StorageTargetID {
 		c := rec.Copy(want)
-		if c == nil || c.Status != models.CopyDone {
-			return nil, "", public(fmt.Sprintf("backup %s has no completed copy on storage target %s", rec.ID, want), ErrInvalid)
+		if !rec.CopyUsable(c) {
+			return nil, "", public(fmt.Sprintf("backup %s has no completed copy of its current archive on storage target %s", rec.ID, want), ErrInvalid)
 		}
 		return rec.AtCopy(c), "", nil
 	}
@@ -34,7 +34,7 @@ func (s *Service) restoreSource(ctx context.Context, rec *models.BackupRecord, w
 	}
 	for i := range rec.Copies {
 		c := &rec.Copies[i]
-		if !c.Healthy() {
+		if !rec.CopyUsable(c) {
 			continue
 		}
 		view := rec.AtCopy(c)

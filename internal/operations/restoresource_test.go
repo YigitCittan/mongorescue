@@ -48,7 +48,7 @@ func newCopyRestoreEnv(t *testing.T, withArchive ...string) *operations.Service 
 		StartedAt: time.Now().UTC(), StorageTargetID: "stg_p", StorageTargetName: "primary", StorageKey: key,
 		SizeBytes: int64(len(data)), SHA256: "abc"}
 	rec.PlanCopies([]models.CopyTarget{{ID: "stg_c", Name: "offsite"}}, "")
-	rec.Copies[0].Status = models.CopyDone
+	rec.Copies[0].Status, rec.Copies[0].SHA256 = models.CopyDone, "abc"
 	if err := st.SaveBackupRecord(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}

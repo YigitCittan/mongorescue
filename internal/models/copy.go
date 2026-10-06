@@ -64,6 +64,10 @@ type BackupCopy struct {
 	Status CopyStatus `json:"status"`
 	// SHA256OK reports that the bytes copied hashed to the primary's SHA-256.
 	SHA256OK bool `json:"sha256_ok"`
+	// SHA256 is the checksum the copy was checked against when it was made (the
+	// backup's SHA-256 at that time). A copy whose SHA256 differs from its
+	// backup's current one (the archive was re-encrypted since) is never read.
+	SHA256 string `json:"sha256,omitempty"`
 	// VersionID is the S3 version of the copy on a versioned target.
 	VersionID string `json:"version_id,omitempty"`
 	// ObjectLockMode and RetainUntil are the copy target's own Object Lock.
@@ -139,6 +143,27 @@ func (r *BackupRecord) AtCopy(c *BackupCopy) *BackupRecord {
 		v.Status, v.MissingSince = StatusCompleted, nil
 	}
 	return &v
+}
+
+// CopyUsable reports whether copy c of r can be read in place of r's archive: a
+// healthy copy (see BackupCopy.Healthy) made from r's current archive, so its
+// checksum is r's.
+func (r *BackupRecord) CopyUsable(c *BackupCopy) bool {
+	return c != nil && c.Healthy() && r.SHA256 != "" && strings.EqualFold(c.SHA256, r.SHA256)
+}
+
+// RequeueCopies points every copy of r that is not purged at key (r's new
+// archive after a re-encryption) and queues it again: the copy queue copies the
+// new archive and checks it against r's new checksum. Until then no copy is
+// usable.
+func (r *BackupRecord) RequeueCopies(key string) {
+	for i := range r.Copies {
+		c := &r.Copies[i]
+		if c.Status == CopyPurged {
+			continue
+		}
+		*c = BackupCopy{TargetID: c.TargetID, TargetName: c.TargetName, StorageKey: key, Status: CopyPending}
+	}
 }
 
 // CopyTarget is a resolved copy target of a backup: its ID and name.

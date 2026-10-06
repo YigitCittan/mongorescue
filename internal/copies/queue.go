@@ -326,9 +326,9 @@ func (s *Service) observe(err error) {
 	}
 }
 
-// succeed records the stored object obj on cp.
-func succeed(cp *models.BackupCopy, obj *models.StorageObject, at time.Time) {
-	cp.Status, cp.SHA256OK, cp.Error, cp.NextAttemptAt = models.CopyDone, true, "", nil
+// succeed records the stored object obj on cp, checked against sha.
+func succeed(cp *models.BackupCopy, obj *models.StorageObject, at time.Time, sha string) {
+	cp.Status, cp.SHA256OK, cp.SHA256, cp.Error, cp.NextAttemptAt = models.CopyDone, true, sha, "", nil
 	cp.VerifiedAt, cp.Verification, cp.VerificationError = nil, "", ""
 	cp.CopiedAt = &at
 	cp.SetStorageObject(obj)
@@ -354,7 +354,7 @@ func (s *Service) attempt(ctx context.Context, rec *models.BackupRecord, targetI
 		failing = c.Status == models.CopyFailed || c.Error != ""
 		c.Attempts++
 		if copyErr == nil {
-			succeed(c, obj, at)
+			succeed(c, obj, at, rec.SHA256)
 		} else {
 			c.Status, c.SHA256OK = models.CopyFailed, false
 			c.Error = redact.Text(copyErr.Error())
@@ -436,7 +436,7 @@ func (s *Service) CopyAll(ctx context.Context, record *models.BackupRecord, mbps
 			cp.Attempts++
 			obj, err := s.copyOne(ctx, record, cp, mbps)
 			if err == nil {
-				succeed(cp, obj, s.now().UTC())
+				succeed(cp, obj, s.now().UTC(), record.SHA256)
 				lastErr = nil
 				break
 			}
