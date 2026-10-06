@@ -191,6 +191,9 @@ if [[ " $IT_PROVIDERS " == *" minio "* ]]; then
   export MONGORESCUE_TEST_S3_MINIO_SECRET_KEY="minioadmin"
   export MONGORESCUE_TEST_S3_MINIO_PATH_STYLE="true"
   export MONGORESCUE_TEST_S3_MINIO_CREATE_BUCKET="true"
+  # A second bucket, created by the tests with S3 Object Lock enabled (like
+  # mc mb --with-lock), for the immutable backup tests.
+  export MONGORESCUE_TEST_S3_MINIO_LOCK_BUCKET="mongorescue-it-lock"
 fi
 
 # --- LocalStack ----------------------------------------------------------------
