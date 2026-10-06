@@ -220,10 +220,13 @@ func (s *Service) Trigger(ctx context.Context, requestedBy string) (*State, erro
 	if err := s.save(ctx, st); err != nil {
 		return nil, err
 	}
+	// The job owns st from now on; the caller gets a copy taken before it runs.
+	// A new job's slices and pointers are still nil, so a shallow copy is enough.
+	snapshot := *st
 	if !s.launch(st) {
 		return nil, ErrBusy
 	}
-	return st, nil
+	return &snapshot, nil
 }
 
 // launch runs st in the background under the lifecycle context.
