@@ -102,6 +102,9 @@ type recoveryKitRequest struct {
 	Passphrase string `json:"passphrase"`
 	// CurrentPassword re-authenticates the signed-in user.
 	CurrentPassword string `json:"current_password"`
+	// IncludePreviousKey adds secret.key.previous, the key the last secret key
+	// rotation replaced (metadata snapshots taken before it need it).
+	IncludePreviousKey bool `json:"include_previous_key,omitempty"`
 }
 
 // handleDownloadRecoveryKit streams the recovery kit, sealed with the passphrase
@@ -151,7 +154,11 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	kit, err := s.recoveryKit.Prepare(r.Context())
+	kit, err := s.recoveryKit.PrepareWith(r.Context(), recoverykit.PrepareOptions{IncludePreviousKey: req.IncludePreviousKey})
+	if errors.Is(err, recoverykit.ErrNoPreviousKey) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		s.logger.Error("recovery kit could not be prepared", logsafe.Error(err))
 		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusInternalServerError, "kit could not be prepared")

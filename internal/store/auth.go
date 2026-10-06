@@ -755,6 +755,27 @@ func (s *SQLiteStore) TouchAPIKey(ctx context.Context, id string, at time.Time) 
 	return nil
 }
 
+// Compile-time check that SQLiteStore keeps imported API keys verifying across
+// secret key rotations.
+var _ auth.RetiredMACRepository = (*SQLiteStore)(nil)
+
+// RehashAPIKey replaces the lookup prefix and hash of key id (an imported key that
+// is re-hashed under the current secret key) or returns auth.ErrAPIKeyNotFound.
+// In the same transaction it drops the retired MAC keys no stored hash names any
+// more.
+func (s *SQLiteStore) RehashAPIKey(ctx context.Context, id, prefix, hash string) error {
+	defer s.lockKey()()
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := execOne(ctx, tx, auth.ErrAPIKeyNotFound, "UPDATE api_keys SET prefix = ?, key_hash = ? WHERE id = ?", prefix, hash, id); err != nil {
+			return err
+		}
+		if s.box == nil {
+			return nil
+		}
+		return s.pruneRetiredMACs(ctx, tx)
+	})
+}
+
 // DeleteAPIKey removes a key or returns auth.ErrAPIKeyNotFound.
 func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, id string) error {
 	return execOne(ctx, s.db, auth.ErrAPIKeyNotFound, "DELETE FROM api_keys WHERE id = ?", id)

@@ -17,6 +17,7 @@ var _ settings.Repository = (*SQLiteStore)(nil)
 // decrypted. Rows the settings package does not know (the key check value) are
 // skipped.
 func (s *SQLiteStore) LoadSettings(ctx context.Context) (map[string]string, error) {
+	defer s.lockKey()()
 	rows, err := s.db.QueryContext(ctx, "SELECT key, value FROM settings ORDER BY key")
 	if err != nil {
 		return nil, fmt.Errorf("store: load settings: %w", err)
@@ -56,6 +57,7 @@ func (s *SQLiteStore) SaveSettings(ctx context.Context, values map[string]string
 // secret values. A precondition that does not hold returns an error wrapping
 // settings.ErrPreconditionFailed and saves nothing.
 func (s *SQLiteStore) SaveSettingsWith(ctx context.Context, values map[string]string, pre []settings.Precondition) error {
+	defer s.lockKey()()
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		for _, p := range pre {
 			switch p {

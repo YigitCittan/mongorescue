@@ -52,8 +52,10 @@ type Service struct {
 	hashSlots chan struct{}
 	hashWait  time.Duration
 	// importedKeyMACKey keys the hashes of keys imported from MONGORESCUE_API_KEY
-	// (see WithImportedKeySecret).
+	// (see WithImportedKeySecret); a secret key rotation replaces it (guarded by
+	// macMu, see SetImportedKeySecret).
 	importedKeyMACKey []byte
+	macMu             sync.RWMutex
 
 	mu        sync.Mutex
 	setupCode string
@@ -414,16 +416,17 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 	if key == "" || len(key) > maxAPIKeyLength {
 		return nil, ErrUnauthenticated
 	}
-	stored, err := s.lookupAPIKey(ctx, key)
+	stored, mac, err := s.lookupAPIKey(ctx, key)
 	if errors.Is(err, ErrAPIKeyNotFound) {
 		return nil, ErrUnauthenticated
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !s.apiKeyMatches(key, stored.Hash) {
+	if !s.apiKeyMatches(key, stored.Hash, mac) {
 		return nil, ErrUnauthenticated
 	}
+	s.rehashImportedKey(ctx, stored, key, mac)
 	now := s.now().UTC()
 	if stored.LastUsedAt == nil || now.Sub(*stored.LastUsedAt) >= touchInterval {
 		if err := s.repo.TouchAPIKey(ctx, stored.ID, now); err != nil {
@@ -949,7 +952,90 @@ const (
 // importedKeyPrefix derives the lookup prefix of an imported key from its MAC. The
 // leading upper-case "K" never occurs in generated (lower-case base32) prefixes.
 func (s *Service) importedKeyPrefix(key string) string {
-	return "K" + importedKeyMAC(s.importedKeyMACKey, key)[:apiKeyPrefixLen-1]
+	return importedKeyPrefixWith(s.macKey(), key)
+}
+
+// importedKeyPrefixWith is the lookup prefix of an imported key MACed with macKey.
+func importedKeyPrefixWith(macKey []byte, key string) string {
+	return "K" + importedKeyMAC(macKey, key)[:apiKeyPrefixLen-1]
+}
+
+// macKey returns the current imported-key MAC key.
+func (s *Service) macKey() []byte {
+	s.macMu.RLock()
+	defer s.macMu.RUnlock()
+	return s.importedKeyMACKey
+}
+
+// SetImportedKeySecret replaces the key that MACs imported API keys, after a
+// secret key rotation (a subkey of the new secret.key, see WithImportedKeySecret).
+// Keys MACed with the previous one keep verifying through the retired MAC keys of
+// the repository (RetiredMACRepository) and are re-hashed on their next use.
+func (s *Service) SetImportedKeySecret(key []byte) {
+	if len(key) == 0 {
+		return
+	}
+	s.macMu.Lock()
+	defer s.macMu.Unlock()
+	s.importedKeyMACKey = bytes.Clone(key)
+}
+
+// RetiredMACRepository is implemented by repositories that keep, across secret key
+// rotations, the keys that MACed imported API keys, so those keys keep verifying
+// until their next use re-hashes them under the current key.
+type RetiredMACRepository interface {
+	// RetiredImportedKeyMACs returns the retired MAC keys, newest first.
+	RetiredImportedKeyMACs(ctx context.Context) ([][]byte, error)
+	// RehashAPIKey replaces the lookup prefix and hash of key id.
+	RehashAPIKey(ctx context.Context, id, prefix, hash string) error
+}
+
+// findImportedKey looks an imported key up by its MAC prefix: under the current MAC
+// key first, then under every retired one. It returns the record and the MAC key
+// that matched, or ErrAPIKeyNotFound.
+func (s *Service) findImportedKey(ctx context.Context, presented string) (*APIKey, []byte, error) {
+	cur := s.macKey()
+	stored, err := s.repo.GetAPIKeyByPrefix(ctx, importedKeyPrefixWith(cur, presented))
+	if !errors.Is(err, ErrAPIKeyNotFound) {
+		return stored, cur, err
+	}
+	rr, ok := s.repo.(RetiredMACRepository)
+	if !ok {
+		return nil, nil, ErrAPIKeyNotFound
+	}
+	retired, err := rr.RetiredImportedKeyMACs(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, mk := range retired {
+		stored, err = s.repo.GetAPIKeyByPrefix(ctx, importedKeyPrefixWith(mk, presented))
+		if errors.Is(err, ErrAPIKeyNotFound) {
+			continue
+		}
+		return stored, mk, err
+	}
+	return nil, nil, ErrAPIKeyNotFound
+}
+
+// rehashImportedKey re-hashes an imported key that verified under a retired MAC key
+// with the current one. A failure is logged: the key keeps working either way.
+func (s *Service) rehashImportedKey(ctx context.Context, stored *APIKey, presented string, mac []byte) {
+	cur := s.macKey()
+	if mac == nil || bytes.Equal(mac, cur) || !strings.HasPrefix(stored.Hash, importedKeyMACScheme) {
+		return
+	}
+	rr, ok := s.repo.(RetiredMACRepository)
+	if !ok {
+		return
+	}
+	prefix, hash := importedKeyPrefixWith(cur, presented), importedKeyHash(cur, presented)
+	if err := rr.RehashAPIKey(ctx, stored.ID, prefix, hash); err != nil {
+		s.logger.Warn("could not re-hash an imported api key under the rotated secret key",
+			slog.String("api_key_id", stored.ID), slog.Any("error", err))
+		return
+	}
+	stored.Prefix, stored.Hash = prefix, hash
+	s.logger.Info("imported api key re-hashed under the rotated secret key", slog.String("api_key_id", stored.ID))
 }
 
 // legacyImportedKeyPrefix is the lookup prefix of a key imported by a release before
@@ -963,18 +1049,21 @@ func legacyImportedKeyPrefix(presented string) string {
 // lookupAPIKey finds the stored record of a presented key: by the prefix of a
 // generated key, otherwise by the prefix of an imported one (current MAC form first,
 // then the SHA-256 form of earlier releases).
-func (s *Service) lookupAPIKey(ctx context.Context, presented string) (*APIKey, error) {
+// The MAC key that matched is returned for imported keys (nil otherwise).
+func (s *Service) lookupAPIKey(ctx context.Context, presented string) (*APIKey, []byte, error) {
 	if prefix, ok := parseAPIKey(presented); ok {
-		return s.repo.GetAPIKeyByPrefix(ctx, prefix)
+		k, err := s.repo.GetAPIKeyByPrefix(ctx, prefix)
+		return k, nil, err
 	}
 	if len(presented) < minImportedKeyLength {
-		return nil, ErrAPIKeyNotFound
+		return nil, nil, ErrAPIKeyNotFound
 	}
-	stored, err := s.repo.GetAPIKeyByPrefix(ctx, s.importedKeyPrefix(presented))
+	stored, mac, err := s.findImportedKey(ctx, presented)
 	if errors.Is(err, ErrAPIKeyNotFound) {
-		return s.repo.GetAPIKeyByPrefix(ctx, legacyImportedKeyPrefix(presented))
+		k, legacyErr := s.repo.GetAPIKeyByPrefix(ctx, legacyImportedKeyPrefix(presented))
+		return k, nil, legacyErr
 	}
-	return stored, err
+	return stored, mac, err
 }
 
 // legacyImportedRecord returns a key record an earlier release imported in the
@@ -997,9 +1086,21 @@ func (s *Service) legacyImportedRecord(ctx context.Context) (*APIKey, error) {
 
 // apiKeyMatches compares a presented key with a stored hash in constant time: an
 // HMAC for keys imported by this release, a SHA-256 digest otherwise.
-func (s *Service) apiKeyMatches(presented, storedHash string) bool {
-	if mac, ok := strings.CutPrefix(storedHash, importedKeyMACScheme); ok {
-		return equalHashes(importedKeyMAC(s.importedKeyMACKey, presented), mac)
+// macKey is the MAC key the record was found under (nil: the current one).
+func (s *Service) apiKeyMatches(presented, storedHash string, macKey []byte) bool {
+	if rest, ok := strings.CutPrefix(storedHash, importedKeyMACScheme); ok {
+		if macKey == nil {
+			macKey = s.macKey()
+		}
+		mac := rest
+		if kid, m, found := strings.Cut(rest, ":"); found {
+			// The hash names its MAC key; another key never verifies it.
+			if kid != ImportedKeyMACID(macKey) {
+				return false
+			}
+			mac = m
+		}
+		return equalHashes(importedKeyMAC(macKey, presented), mac)
 	}
 	return equalHashes(HashToken(presented), storedHash)
 }
@@ -1015,8 +1116,16 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	prefix := s.importedKeyPrefix(key)
 	if p, ok := parseAPIKey(key); ok {
 		prefix = p
-	}
-	if _, err := s.repo.GetAPIKeyByPrefix(ctx, prefix); err == nil {
+		if _, err := s.repo.GetAPIKeyByPrefix(ctx, prefix); err == nil {
+			return false, nil
+		} else if !errors.Is(err, ErrAPIKeyNotFound) {
+			return false, err
+		}
+	} else if stored, mac, err := s.findImportedKey(ctx, key); err == nil {
+		// Imported before a secret key rotation: bring it under the current key.
+		if s.apiKeyMatches(key, stored.Hash, mac) {
+			s.rehashImportedKey(ctx, stored, key, mac)
+		}
 		return false, nil
 	} else if !errors.Is(err, ErrAPIKeyNotFound) {
 		return false, err
@@ -1040,7 +1149,7 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	// The imported key keeps the full rights it had before scopes existed. It was
 	// chosen by an administrator, not generated, so it is stored as a keyed MAC
 	// rather than a plain digest.
-	hash := importedKeyMACScheme + importedKeyMAC(s.importedKeyMACKey, key)
+	hash := importedKeyHash(s.macKey(), key)
 	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC(),
 		ConnectionAccess: EveryConnection()}
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {

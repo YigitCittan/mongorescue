@@ -106,6 +106,7 @@ func (s *SQLiteStore) clearCorrupt(table, id string) {
 // sorted by table and ID. Every row is checked again first: rows that were repaired
 // or deleted meanwhile are dropped from the report. Rows are never changed.
 func (s *SQLiteStore) CorruptRecords(ctx context.Context) ([]CorruptRecord, error) {
+	defer s.lockKey()()
 	s.corrupt.mu.Lock()
 	pending := make([]CorruptRecord, 0, len(s.corrupt.rows))
 	for _, rec := range s.corrupt.rows {

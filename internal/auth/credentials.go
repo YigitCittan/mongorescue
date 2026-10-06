@@ -121,6 +121,38 @@ const importedKeyMACScheme = "hmac-sha256:"
 // MACs imported API keys.
 const ImportedKeySubkeyPurpose = "auth/imported-api-key"
 
+// importedKeyIDLabel is MACed with an imported-key MAC key to name it.
+const importedKeyIDLabel = "mongorescue/imported-api-key/kid"
+
+// ImportedKeyMACID returns the public identifier of an imported-key MAC key: 16 hex
+// characters of an HMAC under the key, which reveal nothing about it. Stored hashes
+// carry it ("hmac-sha256:<kid>:<mac>"), so a retired MAC key can be dropped once no
+// hash names it.
+func ImportedKeyMACID(macKey []byte) string {
+	m := hmac.New(sha256.New, macKey)
+	m.Write([]byte(importedKeyIDLabel))
+	return hex.EncodeToString(m.Sum(nil))[:16]
+}
+
+// ImportedKeyHashKID returns the MAC key ID of a stored imported-key hash, "" for a
+// hash without one (imported before key IDs) and ok false for other hashes.
+func ImportedKeyHashKID(storedHash string) (kid string, ok bool) {
+	rest, ok := strings.CutPrefix(storedHash, importedKeyMACScheme)
+	if !ok {
+		return "", false
+	}
+	kid, _, found := strings.Cut(rest, ":")
+	if !found {
+		return "", true
+	}
+	return kid, true
+}
+
+// importedKeyHash returns the stored hash of an imported key under macKey.
+func importedKeyHash(macKey []byte, key string) string {
+	return importedKeyMACScheme + ImportedKeyMACID(macKey) + ":" + importedKeyMAC(macKey, key)
+}
+
 // importedKeyMAC returns the hex HMAC-SHA256 of an imported key under macKey. The
 // key was chosen by an administrator and may have little entropy; keyed with a
 // subkey of secret.key, its stored hash cannot be attacked offline from a copy of

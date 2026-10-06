@@ -64,7 +64,7 @@ var unsealedSecretQueries = []struct {
 	{tableChannels, `SELECT id, 'twilio.auth_token' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.twilio.auth_token')`)},
 	{tableChannels, `SELECT c.id, 'webhook.headers.' || h.key FROM notification_channels c, json_each(c.data, '$.webhook.headers') h WHERE ` + unsealedSQL(`h.value`)},
 	{tableStorageTargets, `SELECT id, 's3.secret_access_key' FROM storage_targets WHERE ` + unsealedSQL(`json_extract(data, '$.s3.secret_access_key')`)},
-	{tableSettings, `SELECT key, 'value' FROM settings WHERE key IN ('` + strings.Join(append(secretSettingKeys(), keyCheckSetting), "', '") + `') AND ` + unsealedSQL(`value`)},
+	{tableSettings, `SELECT key, 'value' FROM settings WHERE key IN ('` + strings.Join(append(secretSettingKeys(), keyCheckSetting, retiredMACKeysSetting), "', '") + `') AND ` + unsealedSQL(`value`)},
 }
 
 // unsealedSQL is an SQL condition that holds when expr is a non-empty value without

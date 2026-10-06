@@ -51,11 +51,13 @@ var goneBackupStatuses = []any{string(models.StatusPurged), string(models.Status
 
 // ListStorageTargets returns all storage targets sorted by name, secrets decrypted.
 func (s *SQLiteStore) ListStorageTargets(ctx context.Context) ([]*models.StorageTarget, error) {
+	defer s.lockKey()()
 	return listRecords(ctx, s, tableStorageTargets, s.openStorageTarget, "SELECT id, data FROM storage_targets ORDER BY name, id")
 }
 
 // GetStorageTarget returns a storage target or targets.ErrNotFound.
 func (s *SQLiteStore) GetStorageTarget(ctx context.Context, id string) (*models.StorageTarget, error) {
+	defer s.lockKey()()
 	t, err := getRecord[models.StorageTarget](ctx, s.db, targets.ErrNotFound, "SELECT data FROM storage_targets WHERE id = ?", id)
 	if err != nil {
 		return nil, err
@@ -70,6 +72,7 @@ func (s *SQLiteStore) GetStorageTarget(ctx context.Context, id string) (*models.
 // SetDefaultStorageTarget), encrypting its S3 secret key. It is the only insert path:
 // updates never recreate a deleted target.
 func (s *SQLiteStore) CreateStorageTarget(ctx context.Context, t *models.StorageTarget) error {
+	defer s.lockKey()()
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("%w: storage target with ID is required", ErrInvalidRecord)
 	}
@@ -89,6 +92,7 @@ func (s *SQLiteStore) CreateStorageTarget(ctx context.Context, t *models.Storage
 // changed meanwhile. With locationChanged, it refuses atomically with
 // targets.ErrLocationInUse while completed or running backups are stored on it.
 func (s *SQLiteStore) UpdateStorageTarget(ctx context.Context, t *models.StorageTarget, expected time.Time, locationChanged bool) error {
+	defer s.lockKey()()
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("%w: storage target with ID is required", ErrInvalidRecord)
 	}

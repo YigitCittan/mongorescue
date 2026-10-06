@@ -69,6 +69,55 @@ Encryption is **not** turned on automatically: check the recipients (or passphra
 - **Test restores regularly** on an instance that holds only the escrowed key, so a missing key is discovered before it is needed.
 - **Passphrase mode** has the same property: a forgotten passphrase cannot be recovered or reset.
 
+## Key rotation runbook
+
+Rotate a key when it may have leaked, when someone who held it leaves, or on a schedule. Every rotation below is audited (the request's audit entry carries `key_rotated` and the old and new fingerprints) and publishes a `security.key_rotated` event (`action` is `secret_key`, `encryption` or `storage_credentials`, `detail` the old and new fingerprints, `approval_id` the approval if any). No key material is ever logged, audited or sent. The dashboard has the three actions under **Settings → Security → Key rotation**.
+
+### secret.key
+
+`secret.key` seals every credential in `mongorescue.db`: connection strings, storage credentials, notification secrets, job heartbeat URLs, the OIDC client secret, the audit webhook secret, the backup encryption identities and passphrases. `POST /api/v1/security/rotate-secret-key` (body `{"current_password": "..."}`) replaces it. It needs an administrator signed in to the dashboard who confirms their password, like the recovery kit; API keys are refused. With the two-person rule on it answers `202` and waits for a second administrator.
+
+What happens:
+
+1. A marker (the old and new key fingerprints, never the keys) is written to the database, then the new key to `secret.key.next` (temporary file, fsync, rename).
+2. Every sealed value is re-sealed under the new key in **one** transaction, which also removes every dashboard session. It runs with `synchronous=FULL`, so a power loss after it cannot bring the old key back.
+3. The old key is written to `secret.key.previous`, `secret.key.next` is renamed to `secret.key` and the marker is removed.
+
+A crash at any point is settled at the next start: when `secret.key` opens the database the rotation either completed or never committed (a leftover `secret.key.next` is discarded); when it does not and the marker names it as the old key, the commit happened and `secret.key.next` is installed. Any other key is refused as before.
+
+Effects:
+
+- **Everyone signs in again.** Sessions, and single sign-on flows in progress (their cookie is sealed with a subkey of `secret.key`), end.
+- **The old key no longer opens the database**; the new one does.
+- **API keys keep working.** Generated keys are SHA-256 digests and are not affected. Keys imported from the deprecated `MONGORESCUE_API_KEY` are MACed with a subkey of `secret.key`: the old subkey is kept, sealed under the new key, so they keep verifying, and their first use after the rotation re-hashes them under the new subkey.
+- **The recovery kit reminder fires again**, because the kit's fingerprint changed. Download a new kit.
+- **Metadata snapshots taken before the rotation are sealed with the old key** and stay below the old install ID's prefix (`_mongorescue/metadata/<old id>/`); new snapshots go below the new key's prefix. They hold the credentials of their time sealed with the old, possibly leaked key, so they do not stay: the rotation records the old install ID in the same transaction, and once the delete grace period (Settings → Security) has passed since the rotation, the metadata backup service deletes the snapshots below that prefix on every storage target. Until then, restore an old snapshot with the old key: the previous recovery kit, or a kit downloaded with **Include the previous key** (`"include_previous_key": true` in `POST /api/v1/recovery-kit`), which adds `secret.key.previous`.
+- **secret.key.previous goes after the old snapshots.** Once they are pruned, MongoRescue deletes `secret.key.previous` itself when a recovery kit was downloaded after the rotation; otherwise the dashboard warns (`previous_secret_key`) until you download a kit or delete the file.
+
+#### Keys from MONGORESCUE_SECRET_KEY
+
+A key set by `MONGORESCUE_SECRET_KEY` cannot be rotated by MongoRescue (it does not own the environment); the endpoint answers `409`. Rotate it by hand:
+
+1. Download a recovery kit, then stop MongoRescue.
+2. Unset `MONGORESCUE_SECRET_KEY` and put the current key into `<data dir>/secret.key` (mode `0600`).
+3. Start MongoRescue, sign in and rotate from the dashboard (or the endpoint).
+4. Either keep the file key, or stop again, set `MONGORESCUE_SECRET_KEY` to the content of the new `secret.key`, remove the file and start.
+5. Download a new recovery kit.
+
+### Backup encryption key
+
+`POST /api/v1/encryption/rotate` (admin) needs encryption to be on.
+
+- **X25519 mode**: a new identity is generated; its public key replaces the old identity's public key among the recipients (other recipients, such as an offline escrow key, stay). The old identity is retired: restores keep trying it, so every older backup still restores. In recipient-only mode (no identity stored) MongoRescue holds no private key and refuses: generate a new pair yourself and replace the recipient.
+- **Passphrase mode**: send the new passphrase, `{"passphrase": "..."}`. The old one is retired.
+- **Re-encrypting existing backups** (optional, `{"reencrypt": true}`): a background job streams every encrypted backup, decrypts it with the current or a retired key, encrypts it under the new key into a new object, reads that object back (its SHA-256, and a decryption whose plaintext hash must match the original's), then points the backup at it in one transaction. The old archive is not deleted at once: the same transaction stores a deleted copy of the record that keeps it until the delete grace period ends, when the purge removes it (and it can be undeleted until then). The job survives restarts: an interrupted backup's half-written object is removed and the backup processed again; finished ones are skipped. `GET /api/v1/encryption/reencryption` reports its progress. A backup whose archive does not match its recorded SHA-256 is left alone and reported.
+
+After rotating, escrow the new identity (download a new recovery kit) and keep the escrow of the old ones until no backup needs them.
+
+### Storage credentials
+
+`POST /api/v1/storage-targets/{id}/rotate-credentials` (admin, body `{"access_key_id": "...", "secret_access_key": "..."}`) tests the new S3 credentials on a temporary object named `.mongorescue-probe-rotate-<random>` (below the target's prefix): write, read back, list and delete (the delete is checked). Only when every probe passes are they swapped in, in one write; otherwise it answers `422` with the steps and nothing changes. Revoke the old key at the provider afterwards. See [production.md](production.md#least-privilege-storage-credentials) for the policy the new key needs.
+
 ## Verify-before-restore
 
 Before `mongorestore` runs, MongoRescue can stream the stored artifact once end to end: it recomputes the SHA-256 against the backup record and, for encrypted backups, decrypts the whole stream. Only if that pass succeeds does the real restore begin. On a checksum mismatch, a missing checksum or a decryption error, `mongorestore` is never started and the API returns `422 Unprocessable Entity`.

@@ -58,14 +58,15 @@ var routeScopes = map[string]auth.Scope{
 	heartbeatTestRoute:                              auth.ScopeAdmin,
 	oidcTestRoute:                                   auth.ScopeAdmin,
 
-	"GET /api/v1/storage-targets":               auth.ScopeRead,
-	"POST /api/v1/storage-targets":              auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/test":         auth.ScopeAdmin,
-	"GET /api/v1/storage-targets/{id}":          auth.ScopeRead,
-	"PUT /api/v1/storage-targets/{id}":          auth.ScopeAdmin,
-	"DELETE /api/v1/storage-targets/{id}":       auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/{id}/test":    auth.ScopeAdmin,
-	"POST /api/v1/storage-targets/{id}/default": auth.ScopeAdmin,
+	"GET /api/v1/storage-targets":                          auth.ScopeRead,
+	"POST /api/v1/storage-targets":                         auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/test":                    auth.ScopeAdmin,
+	"GET /api/v1/storage-targets/{id}":                     auth.ScopeRead,
+	"PUT /api/v1/storage-targets/{id}":                     auth.ScopeAdmin,
+	"DELETE /api/v1/storage-targets/{id}":                  auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/test":               auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/default":            auth.ScopeAdmin,
+	"POST /api/v1/storage-targets/{id}/rotate-credentials": auth.ScopeAdmin,
 
 	"GET /api/v1/stats": auth.ScopeRead,
 	// The dashboard overview (SQL aggregates) and the cron builder's preview.
@@ -144,6 +145,12 @@ var routeScopes = map[string]auth.Scope{
 	"POST /api/v1/metadata-backup/run": auth.ScopeAdmin,
 	"GET /api/v1/recovery-kit":         auth.ScopeRead,
 	"POST /api/v1/recovery-kit":        auth.ScopeAdmin,
+
+	// Key rotation: secret.key additionally needs a session and the password.
+	"GET /api/v1/security/key-rotation":       auth.ScopeRead,
+	"POST /api/v1/security/rotate-secret-key": auth.ScopeAdmin,
+	"POST /api/v1/encryption/rotate":          auth.ScopeAdmin,
+	"GET /api/v1/encryption/reencryption":     auth.ScopeRead,
 
 	// Bulk endpoints need the lowest scope of their actions (operator: running jobs
 	// now; verifying, pinning and cancelling plug in here too). The operations service

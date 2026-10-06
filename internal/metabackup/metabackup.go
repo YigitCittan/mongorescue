@@ -138,6 +138,9 @@ type Config struct {
 	Logger *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// OnRetiredPruned, when set, runs once every install ID retired by a secret key
+	// rotation was pruned (see PruneRetired), with the time of the last rotation.
+	OnRetiredPruned func(ctx context.Context, lastRotation time.Time)
 	// CheckInterval is how often the background loop looks for a due snapshot
 	// (default 5 minutes); StartDelay delays its first check (default 1 minute).
 	CheckInterval time.Duration
@@ -190,6 +193,10 @@ type Service struct {
 	cfg    Config
 	logger *slog.Logger
 
+	// installID is the install ID in use (a secret key rotation replaces it).
+	idMu      sync.RWMutex
+	installID string
+
 	// runMu makes snapshots single-flight; running mirrors it for Status.
 	runMu   sync.Mutex
 	mu      sync.Mutex
@@ -221,11 +228,31 @@ func New(cfg Config) *Service {
 	if cfg.StartDelay <= 0 {
 		cfg.StartDelay = time.Minute
 	}
-	return &Service{cfg: cfg, logger: cfg.Logger}
+	return &Service{cfg: cfg, logger: cfg.Logger, installID: cfg.InstallID}
 }
 
 // Prefix returns the storage key prefix of this installation's snapshots.
-func (s *Service) Prefix() string { return Prefix + s.cfg.InstallID + "/" }
+func (s *Service) Prefix() string { return Prefix + s.InstallID() + "/" }
+
+// InstallID returns the install ID snapshots are written under.
+func (s *Service) InstallID() string {
+	s.idMu.RLock()
+	defer s.idMu.RUnlock()
+	return s.installID
+}
+
+// SetInstallID switches to the install ID of a rotated secret.key (see InstallID):
+// later snapshots, sealed with the new key, go below the new prefix, and the
+// snapshots sealed with the old key stay below the old one, out of retention.
+func (s *Service) SetInstallID(id string) error {
+	if !installIDPattern.MatchString(id) {
+		return errors.New("metabackup: invalid install ID")
+	}
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	s.installID = id
+	return nil
+}
 
 // settings returns the live metadata backup settings or the defaults.
 func (s *Service) settings() settings.MetadataBackup {
@@ -308,6 +335,9 @@ func (s *Service) loop(ctx context.Context) {
 		case <-timer.C:
 		}
 		s.RunDue(ctx)
+		if err := s.PruneRetired(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Warn("could not delete the metadata snapshots of a rotated secret key", logsafe.Error(err))
+		}
 		timer.Reset(s.cfg.CheckInterval)
 	}
 }
@@ -456,7 +486,20 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 		}
 	}()
 	file := filepath.Join(dir, "mongorescue.db")
-	if err = s.cfg.Store.VacuumInto(ctx, file); err != nil {
+	// The install ID names the key the snapshot is sealed with: read both under the
+	// store's key lock, so a secret key rotation cannot commit in between and put a
+	// snapshot sealed with one key below the other key's prefix.
+	var installID string
+	vacuum := func() error {
+		installID = s.InstallID()
+		return s.cfg.Store.VacuumInto(ctx, file)
+	}
+	if kl, ok := s.cfg.Store.(keyLocker); ok {
+		err = kl.WithKeyLocked(vacuum)
+	} else {
+		err = vacuum()
+	}
+	if err != nil {
 		return res, err
 	}
 
@@ -464,12 +507,12 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 	if s.cfg.Encryptor != nil {
 		enc = s.cfg.Encryptor()
 	}
-	key := s.Prefix() + snapshotFile(at, enc != nil)
+	key := Prefix + installID + "/" + snapshotFile(at, enc != nil)
 	obj, err := upload(ctx, driver, key, file, enc)
 	if err != nil {
 		return res, err
 	}
-	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, InstallID: s.cfg.InstallID, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
+	res.snap = &Snapshot{TargetID: target.ID, TargetName: target.Name, InstallID: installID, Key: key, CreatedAt: at, SizeBytes: obj.SizeBytes, Encrypted: enc != nil}
 	res.retentionErr = s.prune(ctx, driver, key)
 	return res, nil
 }

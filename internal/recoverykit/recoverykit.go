@@ -29,8 +29,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -56,6 +58,9 @@ const (
 	ReadmeName = "README.txt"
 	// SecretKeyName is the copy of secret.key.
 	SecretKeyName = secretbox.KeyFileName
+	// PreviousKeyName is the copy of secret.key.previous, the key a rotation
+	// replaced, when the kit was asked to carry it.
+	PreviousKeyName = secretbox.PreviousKeyFileName
 	// IdentitiesName holds the age X25519 private keys, one per line.
 	IdentitiesName = "identities.txt"
 	// ManifestName is the JSON document with settings, targets and the snapshot.
@@ -108,6 +113,9 @@ type Config struct {
 	// MetadataPrefix is the storage key prefix of this installation's metadata
 	// snapshots (metabackup.Service.Prefix).
 	MetadataPrefix string
+	// PreviousKeyFile is the path of secret.key.previous ("" when unknown); see
+	// PrepareOptions.IncludePreviousKey.
+	PreviousKeyFile string
 	// Version is the MongoRescue version written to the kit.
 	Version string
 	// Now is the clock; nil means time.Now.
@@ -118,9 +126,12 @@ type Config struct {
 
 // Service builds recovery kits. It is safe for concurrent use.
 type Service struct {
-	cfg    Config
+	cfg Config
+
+	mu     sync.RWMutex
 	fpKey  []byte
 	keyB64 string
+	prefix string
 }
 
 // New returns a Service.
@@ -135,7 +146,28 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{cfg: cfg, fpKey: fpKey, keyB64: secretbox.EncodeKey(cfg.SecretKey)}, nil
+	return &Service{cfg: cfg, fpKey: fpKey, keyB64: secretbox.EncodeKey(cfg.SecretKey), prefix: cfg.MetadataPrefix}, nil
+}
+
+// SetSecretKey switches the kit to a rotated secret.key and the metadata prefix
+// that goes with it. The fingerprint changes, so the reminder to download a new kit
+// fires again.
+func (s *Service) SetSecretKey(key []byte, metadataPrefix string) error {
+	fpKey, err := secretbox.DeriveSubkey(key, fingerprintPurpose)
+	if err != nil {
+		return fmt.Errorf("recoverykit: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fpKey, s.keyB64, s.prefix = fpKey, secretbox.EncodeKey(key), metadataPrefix
+	return nil
+}
+
+// keys returns the fingerprint key, the encoded secret key and the metadata prefix.
+func (s *Service) keys() (fpKey []byte, keyB64, prefix string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fpKey, s.keyB64, s.prefix
 }
 
 // ValidatePassphrase checks the passphrase that seals a kit.
@@ -177,6 +209,12 @@ type fingerprintTarget struct {
 // secret.key, the encryption keys (by their public keys) and the storage targets (by
 // ID and last change). Changing any of them changes it.
 func (s *Service) Fingerprint(ctx context.Context) (string, error) {
+	fpKey, _, _ := s.keys()
+	return s.fingerprint(ctx, fpKey)
+}
+
+// fingerprint computes the fingerprint keyed with fpKey.
+func (s *Service) fingerprint(ctx context.Context, fpKey []byte) (string, error) {
 	enc := s.cfg.Settings.Current().Encryption
 	in := fingerprintInput{Mode: enc.Mode, Recipients: slices.Clone(enc.Recipients), Retired: []fingerprintRetired{}, Targets: []fingerprintTarget{}}
 	slices.Sort(in.Recipients)
@@ -202,7 +240,7 @@ func (s *Service) Fingerprint(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	mac := hmac.New(sha256.New, s.fpKey)
+	mac := hmac.New(sha256.New, fpKey)
 	_, _ = mac.Write(doc)
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
@@ -245,6 +283,10 @@ type SecretKeyInfo struct {
 	// FromEnv reports that the installation reads the key from
 	// MONGORESCUE_SECRET_KEY (the file content is that value).
 	FromEnv bool `json:"from_env"`
+	// PreviousFile names the copy of the key the last rotation replaced ("" when
+	// the kit does not carry it). Metadata snapshots taken before that rotation are
+	// sealed with it.
+	PreviousFile string `json:"previous_file,omitempty"`
 }
 
 // EncryptionInfo describes the backup encryption keys. Passphrases are never
@@ -282,16 +324,49 @@ type Kit struct {
 	manifest    Manifest
 	identities  string
 	fingerprint string
+	secretKey   string
+	previousKey string
 }
+
+// PrepareOptions customises PrepareWith.
+type PrepareOptions struct {
+	// IncludePreviousKey adds secret.key.previous (the key the last secret key
+	// rotation replaced), which opens metadata snapshots taken before the rotation.
+	IncludePreviousKey bool
+}
+
+// ErrNoPreviousKey is returned by PrepareWith when the previous key was asked for
+// but there is none (no rotation happened, or the file was removed).
+var ErrNoPreviousKey = errors.New("recoverykit: there is no previous secret key (secret.key.previous) to include")
 
 // CreatedAt returns when the kit was prepared.
 func (k *Kit) CreatedAt() time.Time { return k.manifest.CreatedAt }
 
 // Prepare gathers the kit's content.
 func (s *Service) Prepare(ctx context.Context) (*Kit, error) {
-	fp, err := s.Fingerprint(ctx)
+	return s.PrepareWith(ctx, PrepareOptions{})
+}
+
+// PrepareWith gathers the kit's content with opts.
+func (s *Service) PrepareWith(ctx context.Context, opts PrepareOptions) (*Kit, error) {
+	fpKey, keyB64, prefix := s.keys()
+	fp, err := s.fingerprint(ctx, fpKey)
 	if err != nil {
 		return nil, err
+	}
+	var previous string
+	if opts.IncludePreviousKey {
+		if s.cfg.PreviousKeyFile == "" {
+			return nil, ErrNoPreviousKey
+		}
+		key, readErr := secretbox.ReadKeyFile(s.cfg.PreviousKeyFile)
+		switch {
+		case errors.Is(readErr, fs.ErrNotExist):
+			return nil, ErrNoPreviousKey
+		case readErr != nil:
+			return nil, fmt.Errorf("recoverykit: %w", readErr)
+		}
+		previous = secretbox.EncodeKey(key)
 	}
 	enc := s.cfg.Settings.Current().Encryption
 	m := Manifest{
@@ -302,7 +377,7 @@ func (s *Service) Prepare(ctx context.Context) (*Kit, error) {
 			PassphraseConfigured: enc.Passphrase != "",
 		},
 		StorageTargets: []*models.StorageTarget{},
-		MetadataPrefix: s.cfg.MetadataPrefix,
+		MetadataPrefix: prefix,
 	}
 	if m.Encryption.Recipients == nil {
 		m.Encryption.Recipients = []string{}
@@ -346,7 +421,10 @@ func (s *Service) Prepare(ctx context.Context) (*Kit, error) {
 	if s.cfg.LatestSnapshot != nil {
 		m.MetadataSnapshot = s.cfg.LatestSnapshot(ctx)
 	}
-	return &Kit{manifest: m, identities: ids.String(), fingerprint: fp}, nil
+	if previous != "" {
+		m.SecretKey.PreviousFile = PreviousKeyName
+	}
+	return &Kit{manifest: m, identities: ids.String(), fingerprint: fp, secretKey: keyB64, previousKey: previous}, nil
 }
 
 // kitFile is one file of the kit archive.
@@ -378,8 +456,11 @@ func (s *Service) Seal(w io.Writer, kit *Kit, passphrase string) error {
 	}
 	files := []kitFile{
 		{ReadmeName, 0o644, readme(kit)},
-		{SecretKeyName, 0o600, s.keyB64 + "\n"},
+		{SecretKeyName, 0o600, kit.secretKey + "\n"},
 		{ManifestName, 0o600, string(manifest) + "\n"},
+	}
+	if kit.previousKey != "" {
+		files = append(files, kitFile{PreviousKeyName, 0o600, kit.previousKey + "\n"})
 	}
 	if kit.identities != "" {
 		files = append(files, kitFile{IdentitiesName, 0o600, kit.identities})

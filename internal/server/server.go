@@ -107,6 +107,8 @@ type Server struct {
 	// metaBackup snapshots the metadata database; recoveryKit builds recovery kits.
 	metaBackup  *metabackup.Service
 	recoveryKit *recoverykit.Service
+	// keyRotation describes secret.key for the key rotation endpoints (nil: none).
+	keyRotation KeyRotationInfo
 
 	// readiness reports the RPO, RTO and evidence of every database a job backs up.
 	readiness *readiness.Service
@@ -144,7 +146,7 @@ type Server struct {
 	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
 	// usedStates remembers consumed states (see WithOIDC); nil in the desktop app.
 	oidc       *oidc.Client
-	oidcBox    *secretbox.Box
+	oidcBox    *secretbox.Ref
 	usedStates *stateSet
 }
 
@@ -358,6 +360,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Metadata backups and the recovery kit
 	s.registerRecoveryRoutes(mux)
+	s.registerKeyRotationRoutes(mux)
 
 	// Recovery readiness: RPO, RTO and evidence per database
 	s.registerReadinessRoutes(mux)
@@ -887,6 +890,9 @@ func (s *Server) operationsConfig() operations.Config {
 	if s.auth != nil {
 		cfg.SecondApproverCheck = s.auth.CheckSecondApproverPossible
 		cfg.Users = s.auth
+	}
+	if r, ok := s.keyRotation.(operations.SecretKeyRotator); ok {
+		cfg.KeyRotator = r
 	}
 	return cfg
 }

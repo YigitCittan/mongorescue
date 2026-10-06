@@ -4911,6 +4911,8 @@ function renderWarnings() {
   if (typeof recoveryRenderWarnings === "function") recoveryRenderWarnings(list);
   // A single sign-on kept the last administrator's role (sso.js).
   if (typeof ssoRenderWarnings === "function") ssoRenderWarnings(list);
+  // secret.key.previous is no longer needed (keyrotation.js).
+  if (typeof keyrotRenderWarnings === "function") keyrotRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {

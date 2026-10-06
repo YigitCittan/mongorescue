@@ -136,6 +136,8 @@ const (
 	// ApprovalRestoreDropTarget runs the in-place restore Restore that drops the
 	// target database first.
 	ApprovalRestoreDropTarget ApprovalAction = "restore_drop_target"
+	// ApprovalRotateSecretKey rotates secret.key (every session ends).
+	ApprovalRotateSecretKey ApprovalAction = "rotate_secret_key"
 )
 
 // ApprovalStatus is the state of an approval request.

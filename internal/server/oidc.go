@@ -56,6 +56,13 @@ var oidcFlowBinding = secretbox.At("cookie", OIDCFlowCookieName, "flow")
 // desktop app) the /auth/oidc/ routes are not registered and /api/v1/auth/methods
 // reports single sign-on as unavailable.
 func WithOIDC(client *oidc.Client, box *secretbox.Box) Option {
+	return WithOIDCRef(client, secretbox.NewRef(box))
+}
+
+// WithOIDCRef is WithOIDC with a box that a secret key rotation replaces: flow
+// cookies sealed before the rotation no longer open, so sign-ins in progress start
+// over.
+func WithOIDCRef(client *oidc.Client, box *secretbox.Ref) Option {
 	return func(s *Server) {
 		s.oidc, s.oidcBox = client, box
 		s.usedStates = newStateSet()

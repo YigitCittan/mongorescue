@@ -39,6 +39,17 @@ secret.key      The key that seals the credentials stored in mongorescue.db and 
 recovery.json   Encryption settings, every storage target with its credentials and
                 the location of the latest metadata snapshot.
 `)
+	if kit.previousKey != "" {
+		b.WriteString(`secret.key.previous
+                The key the last secret key rotation replaced. Metadata snapshots
+                taken before that rotation are sealed with it: to restore one, use
+                this file as secret.key.
+`)
+	}
+	b.WriteString(`Metadata snapshots taken before a secret key rotation need the key of their
+time: keep the recovery kit of that time, or a kit that carries
+secret.key.previous.
+`)
 	if hasIdentities {
 		b.WriteString(`identities.txt  The age private keys (current and retired) that decrypt encrypted
                 backups and metadata snapshots.

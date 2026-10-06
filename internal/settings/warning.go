@@ -62,6 +62,9 @@ func (s *Service) Warnings() []Warning {
 	if s.oidcRoleKept == warningActive {
 		out = append(out, Warning{ID: WarningOIDCRoleKept, Message: oidcRoleKeptMessage, Setting: "sso"})
 	}
+	if s.previousKey {
+		out = append(out, Warning{ID: WarningPreviousKey, Message: previousKeyMessage, Setting: "security"})
+	}
 	return out
 }
 
