@@ -46,6 +46,9 @@ const (
 	// ReasonKeysNotEscrowed: the newest backup is encrypted and no recovery kit holds
 	// the current keys.
 	ReasonKeysNotEscrowed = "keys_not_escrowed"
+	// ReasonCopyMissing: the newest good backup has copy targets, and not all of its
+	// copies were done Config.CopyMissingAfter after it finished.
+	ReasonCopyMissing = "copy_missing"
 )
 
 // RTO sources.
@@ -138,6 +141,10 @@ type Row struct {
 	// good backup is encrypted (it then needs the escrowed keys).
 	KeysEscrowed bool `json:"keys_escrowed"`
 	Encrypted    bool `json:"encrypted"`
+	// Copies counts the done copies of the newest good backup on other storage
+	// targets, of CopyTargets planned (3-2-1).
+	Copies      int `json:"copies"`
+	CopyTargets int `json:"copy_targets,omitempty"`
 	// Status is the overall readiness; Reasons explain it (see the Reason
 	// constants), fail reasons first.
 	Status  Status   `json:"status"`
@@ -234,6 +241,8 @@ type rowAcc struct {
 	missed   bool
 	lastOK   *RestoreTestRef
 	verifyKO bool
+	// copyMissing: the newest good backup's copies are overdue.
+	copyMissing bool
 }
 
 // latestBackups returns the newest (verified) backup of every job and database
@@ -387,6 +396,8 @@ func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time
 			Filtered: p.last.Filtered, Collections: slices.Clone(p.last.Collections), ExcludedCollections: slices.Clone(p.last.ExcludedCollections)}
 		acc.row.Encrypted = p.last.Encrypted
 		acc.verifyKO = p.last.Verification == models.VerificationMismatch || p.last.Verification == models.VerificationError
+		acc.row.Copies, acc.row.CopyTargets = p.last.DoneCopies(), len(p.last.Copies)
+		acc.copyMissing = !p.last.CopiesComplete() && now.Sub(at) >= s.cfg.CopyMissingAfter
 	}
 }
 
@@ -478,6 +489,9 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	}
 	if r.Encrypted && !r.KeysEscrowed {
 		warn = append(warn, ReasonKeysNotEscrowed)
+	}
+	if acc.copyMissing {
+		warn = append(warn, ReasonCopyMissing)
 	}
 	if stream != nil {
 		sf, sw := streamReasons(*stream)

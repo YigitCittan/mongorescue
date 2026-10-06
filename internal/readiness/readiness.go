@@ -117,7 +117,14 @@ type Config struct {
 	// StartDelay delays its first check (default DefaultStartDelay).
 	CheckInterval time.Duration
 	StartDelay    time.Duration
+	// CopyMissingAfter is how long after a backup finished its configured copies
+	// may still be missing before its row warns with ReasonCopyMissing (default
+	// DefaultCopyMissingAfter).
+	CopyMissingAfter time.Duration
 }
+
+// DefaultCopyMissingAfter is the default of Config.CopyMissingAfter.
+const DefaultCopyMissingAfter = 6 * time.Hour
 
 // Service computes readiness reports and runs the RPO checker. It is safe for
 // concurrent use.
@@ -152,6 +159,9 @@ func New(cfg Config) *Service {
 	}
 	if cfg.StartDelay <= 0 {
 		cfg.StartDelay = DefaultStartDelay
+	}
+	if cfg.CopyMissingAfter <= 0 {
+		cfg.CopyMissingAfter = DefaultCopyMissingAfter
 	}
 	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1)}
 }
