@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // WarningEncryptionOff identifies the warning raised when the previous (deprecated)
@@ -21,6 +22,24 @@ type Warning struct {
 	Message string `json:"message"`
 	// Setting names the settings section that resolves the warning.
 	Setting string `json:"setting"`
+	// RestoreID and Databases name the restore and the databases of a
+	// WarningPostRestoreClonesKept.
+	RestoreID string   `json:"restore_id,omitempty"`
+	Databases []string `json:"databases,omitempty"`
+}
+
+// WarningPostRestoreClonesKept identifies the warning about clones a restore kept
+// after a failed post-restore command: they still hold data the commands should
+// have erased. It is raised per restore by the server from the restore records
+// (not stored here) until the clones are dropped.
+const WarningPostRestoreClonesKept = "post_restore_clones_kept"
+
+// PostRestoreClonesKept returns the WarningPostRestoreClonesKept warning of
+// restore restoreID, which kept databases.
+func PostRestoreClonesKept(restoreID string, databases []string) Warning {
+	return Warning{ID: WarningPostRestoreClonesKept, RestoreID: restoreID, Databases: databases,
+		Message: fmt.Sprintf("Restore %s kept the clone(s) %s after a failed post-restore command; they still hold data the commands should have erased (such as erasures). Drop them when done.",
+			restoreID, strings.Join(databases, ", "))}
 }
 
 // encryptionOffMessage is the text of the WarningEncryptionOff warning.

@@ -9,6 +9,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
 // WithConnections enables the /api/v1/connections endpoints and connection-based
@@ -110,8 +111,21 @@ func (s *Server) handleUpdateConnection(w http.ResponseWriter, r *http.Request) 
 	if !decodeBody(w, r, &in) {
 		return
 	}
-	c, err := svc.Update(r.Context(), r.PathValue("id"), in)
+	// Through operations when it is there: it audits changes of the post-restore
+	// commands and holds back their removal under the two-person rule.
+	update := svc.Update
+	if s.ops != nil {
+		update = s.ops.UpdateConnection
+	}
+	c, err := update(r.Context(), r.PathValue("id"), in)
+	if writeApprovalPending(w, err) {
+		return
+	}
 	if err != nil {
+		if errors.Is(err, operations.ErrUnavailable) || errors.Is(err, operations.ErrRequesterUnknown) {
+			s.writeOperationError(w, err)
+			return
+		}
 		s.writeConnectionError(w, err)
 		return
 	}

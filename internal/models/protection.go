@@ -138,6 +138,11 @@ const (
 	ApprovalRestoreDropTarget ApprovalAction = "restore_drop_target"
 	// ApprovalRotateSecretKey rotates secret.key (every session ends).
 	ApprovalRotateSecretKey ApprovalAction = "rotate_secret_key"
+	// ApprovalPostRestoreCommands replaces the post-restore commands of connection
+	// Subject with a list that removes or changes some of them (which could bring
+	// erased data back after a restore). The new list is the request's Secret,
+	// sealed in the store.
+	ApprovalPostRestoreCommands ApprovalAction = "reduce_post_restore_commands"
 )
 
 // ApprovalStatus is the state of an approval request.

@@ -115,7 +115,9 @@ MongoRescue can apply the erasure log for you: a connection's **post-restore com
 
 - `"*"` runs a command in every restored database, a database name in that database's clone only. Commands never run in the source database, in another database or in `admin`, `config` and `local`.
 - Only `delete`, `update`, `findAndModify`, `dropIndexes`, `collMod` and `drop` are allowed, without server-side JavaScript or stages that reach other collections.
-- **A failing command fails the restore.** The clone is kept for inspection and marked so on the restore record (`post_restore.clones_kept`): it still holds data that should have been erased, so drop it once you know what went wrong.
+- **A failing command fails the restore.** The clone is kept for inspection and marked so on the restore record (`post_restore.clones_kept`): it still holds data that should have been erased. Until it is dropped, the dashboard shows a warning listing it with a *Drop clones* button (`POST /api/v1/restores/{id}/drop-clones`, admin), which drops exactly the recorded clones. Failure messages carry the server's error code only, never its message, which can quote document values.
+- **Only removing or changing data.** Upserts are refused, and each command is bounded by `general.post_restore_command_timeout` (60 seconds by default).
+- **Removing an erasure needs a second administrator.** With the two-person rule on, removing or changing any of a connection's commands waits for an approval; every change of the commands is audited with their counts before and after.
 - Every command that ran is in the audit log and on the restore record with its counts (documents deleted, matched, modified), never with its document or the documents it touched. The restore preflight lists the commands a restore will run.
 - In-place restores run none (the restore carries a warning): re-apply the log yourself before the data is used. Restoring in place over production is rarely what an erasure-aware recovery wants; restore into a clone, let the commands run, then promote the clone.
 

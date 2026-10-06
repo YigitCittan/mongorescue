@@ -1,6 +1,9 @@
 package models
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // PostRestoreAllDatabases is the PostRestoreCommand.Database that runs a command in
 // every database a restore created.
@@ -95,6 +98,15 @@ type PostRestoreReport struct {
 	// they hold the restored data without every command applied and must not be
 	// used.
 	ClonesKept []string `json:"clones_kept,omitempty"`
+	// ClonesDroppedAt and ClonesDroppedBy say when and by whom the kept clones were
+	// dropped (POST /api/v1/restores/{id}/drop-clones).
+	ClonesDroppedAt *time.Time `json:"clones_dropped_at,omitempty"`
+	ClonesDroppedBy string     `json:"clones_dropped_by,omitempty"`
+}
+
+// KeepsClones reports whether a failed run left clones that were not dropped yet.
+func (r *PostRestoreReport) KeepsClones() bool {
+	return r != nil && len(r.ClonesKept) > 0 && r.ClonesDroppedAt == nil
 }
 
 // ClonePostRestoreCommands returns a deep copy of cmds (nil for none).

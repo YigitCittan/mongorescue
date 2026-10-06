@@ -606,6 +606,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Publisher:           bus,
 		Verifier:            integritySvc,
 		Inspector:           prober,
+		Dropper:             prober,
 		Audit:               auditSvc,
 		PITR:                metaStore,
 		PITRRestore:         restoreEngine,

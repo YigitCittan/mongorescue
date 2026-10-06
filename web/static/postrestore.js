@@ -30,6 +30,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Item {n}: \"command\" must be a command document such as {\"delete\": \"users\", \"deletes\": [...]}.",
       item_not_allowed: "Item {n}: {name} is not allowed. Allowed: {allowed}.",
       fix_first: "Fix the post-restore commands first.",
+      timeout: "Post-restore command timeout",
+      timeout_hint: "Maximum run time of each post-restore command of a connection (1s to 24h); a command that takes longer fails the restore.",
+      kept_title: "Restored clones still hold erased data",
+      kept_desc: "A post-restore command failed, so these clones were kept for inspection without every command applied (such as erasures). Do not use them; drop them when done.",
+      kept_item: "Restore {id}: {databases}",
+      drop: "Drop clones",
+      drop_confirm: "Drop {databases}? The data in them is deleted for good.",
+      dropped: "Clones dropped.",
     },
   },
   tr: {
@@ -44,6 +52,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Öğe {n}: \"command\" {\"delete\": \"users\", \"deletes\": [...]} gibi bir komut belgesi olmalı.",
       item_not_allowed: "Öğe {n}: {name} izinli değil. İzin verilenler: {allowed}.",
       fix_first: "Önce geri yükleme sonrası komutları düzeltin.",
+      timeout: "Geri yükleme sonrası komut zaman aşımı",
+      timeout_hint: "Bir bağlantının her geri yükleme sonrası komutunun en uzun çalışma süresi (1 sn ile 24 sa arası); daha uzun süren bir komut geri yüklemeyi başarısız kılar.",
+      kept_title: "Geri yüklenen kopyalar hâlâ silinmiş veri içeriyor",
+      kept_desc: "Bir geri yükleme sonrası komut başarısız oldu; bu kopyalar her komut (örneğin silmeler) uygulanmadan incelemek için korundu. Kullanmayın; işiniz bitince silin.",
+      kept_item: "Geri yükleme {id}: {databases}",
+      drop: "Kopyaları sil",
+      drop_confirm: "{databases} silinsin mi? İçlerindeki veriler kalıcı olarak silinir.",
+      dropped: "Kopyalar silindi.",
     },
   },
   de: {
@@ -58,6 +74,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Eintrag {n}: \"command\" muss ein Befehlsdokument sein, etwa {\"delete\": \"users\", \"deletes\": [...]}.",
       item_not_allowed: "Eintrag {n}: {name} ist nicht erlaubt. Erlaubt: {allowed}.",
       fix_first: "Korrigieren Sie zuerst die Befehle nach der Wiederherstellung.",
+      timeout: "Zeitlimit für Befehle nach der Wiederherstellung",
+      timeout_hint: "Maximale Laufzeit jedes Befehls nach der Wiederherstellung einer Verbindung (1 s bis 24 h); ein länger laufender Befehl lässt die Wiederherstellung fehlschlagen.",
+      kept_title: "Wiederhergestellte Kopien enthalten noch gelöschte Daten",
+      kept_desc: "Ein Befehl nach der Wiederherstellung ist fehlgeschlagen; diese Kopien wurden zur Prüfung behalten, ohne dass alle Befehle (etwa Löschungen) angewendet wurden. Verwenden Sie sie nicht und löschen Sie sie danach.",
+      kept_item: "Wiederherstellung {id}: {databases}",
+      drop: "Kopien löschen",
+      drop_confirm: "{databases} löschen? Die Daten darin werden endgültig gelöscht.",
+      dropped: "Kopien gelöscht.",
     },
   },
   es: {
@@ -72,6 +96,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Elemento {n}: \"command\" debe ser un documento de comando como {\"delete\": \"users\", \"deletes\": [...]}.",
       item_not_allowed: "Elemento {n}: {name} no está permitido. Permitidos: {allowed}.",
       fix_first: "Corrija primero los comandos posteriores a la restauración.",
+      timeout: "Tiempo límite de los comandos posteriores a la restauración",
+      timeout_hint: "Duración máxima de cada comando posterior a la restauración de una conexión (de 1 s a 24 h); un comando que tarda más hace fallar la restauración.",
+      kept_title: "Las copias restauradas aún contienen datos suprimidos",
+      kept_desc: "Un comando posterior a la restauración falló, así que estas copias se conservaron para inspección sin aplicar todos los comandos (como las supresiones). No las use; elimínelas al terminar.",
+      kept_item: "Restauración {id}: {databases}",
+      drop: "Eliminar copias",
+      drop_confirm: "¿Eliminar {databases}? Sus datos se borran definitivamente.",
+      dropped: "Copias eliminadas.",
     },
   },
   fr: {
@@ -86,6 +118,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Élément {n} : \"command\" doit être un document de commande comme {\"delete\": \"users\", \"deletes\": [...]}.",
       item_not_allowed: "Élément {n} : {name} n'est pas autorisée. Autorisées : {allowed}.",
       fix_first: "Corrigez d'abord les commandes après restauration.",
+      timeout: "Délai des commandes après restauration",
+      timeout_hint: "Durée maximale de chaque commande après restauration d'une connexion (de 1 s à 24 h) ; une commande plus longue fait échouer la restauration.",
+      kept_title: "Des copies restaurées contiennent encore des données effacées",
+      kept_desc: "Une commande après restauration a échoué : ces copies ont été conservées pour inspection sans que toutes les commandes (comme les effacements) soient appliquées. Ne les utilisez pas ; supprimez-les ensuite.",
+      kept_item: "Restauration {id} : {databases}",
+      drop: "Supprimer les copies",
+      drop_confirm: "Supprimer {databases} ? Leurs données sont effacées définitivement.",
+      dropped: "Copies supprimées.",
     },
   },
   zh: {
@@ -100,6 +140,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "第 {n} 项：\"command\" 必须是命令文档，例如 {\"delete\": \"users\", \"deletes\": [...]}。",
       item_not_allowed: "第 {n} 项：不允许 {name}。允许：{allowed}。",
       fix_first: "请先修正恢复后命令。",
+      timeout: "恢复后命令超时",
+      timeout_hint: "连接的每条恢复后命令的最长运行时间（1 秒到 24 小时）；超时的命令会使恢复失败。",
+      kept_title: "已恢复的副本仍包含已删除的数据",
+      kept_desc: "一条恢复后命令失败，因此这些副本被保留以供检查，但并未执行全部命令（例如数据删除）。请勿使用，检查完毕后删除。",
+      kept_item: "恢复 {id}：{databases}",
+      drop: "删除副本",
+      drop_confirm: "删除 {databases}？其中的数据将被永久删除。",
+      dropped: "副本已删除。",
     },
   },
   ja: {
@@ -114,6 +162,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "項目 {n}：\"command\" は {\"delete\": \"users\", \"deletes\": [...]} のようなコマンドドキュメントにしてください。",
       item_not_allowed: "項目 {n}：{name} は使用できません。使用可能：{allowed}。",
       fix_first: "先にリストア後のコマンドを修正してください。",
+      timeout: "リストア後コマンドのタイムアウト",
+      timeout_hint: "接続のリストア後コマンド 1 件あたりの最大実行時間（1 秒〜24 時間）。これを超えるとリストアは失敗します。",
+      kept_title: "リストアしたクローンに削除済みのデータが残っています",
+      kept_desc: "リストア後のコマンドが失敗したため、これらのクローンはすべてのコマンド（削除の再適用など）が適用されないまま調査用に保持されています。使用せず、確認後に削除してください。",
+      kept_item: "リストア {id}：{databases}",
+      drop: "クローンを削除",
+      drop_confirm: "{databases} を削除しますか？ データは完全に削除されます。",
+      dropped: "クローンを削除しました。",
     },
   },
   ru: {
@@ -128,6 +184,14 @@ const POSTRESTORE_TRANSLATIONS = {
       item_command: "Элемент {n}: \"command\" должно быть документом команды, например {\"delete\": \"users\", \"deletes\": [...]}.",
       item_not_allowed: "Элемент {n}: {name} не разрешена. Разрешены: {allowed}.",
       fix_first: "Сначала исправьте команды после восстановления.",
+      timeout: "Тайм-аут команд после восстановления",
+      timeout_hint: "Максимальное время выполнения каждой команды после восстановления подключения (от 1 с до 24 ч); более долгая команда приводит к ошибке восстановления.",
+      kept_title: "Восстановленные копии всё ещё содержат удалённые данные",
+      kept_desc: "Команда после восстановления завершилась ошибкой, поэтому эти копии сохранены для проверки без применения всех команд (например, удалений). Не используйте их и удалите после проверки.",
+      kept_item: "Восстановление {id}: {databases}",
+      drop: "Удалить копии",
+      drop_confirm: "Удалить {databases}? Данные в них будут удалены безвозвратно.",
+      dropped: "Копии удалены.",
     },
   },
 };
@@ -215,6 +279,64 @@ function postRestoreConnectionPayload() {
     return null;
   }
   return { post_restore_commands: commands };
+}
+
+// ---------------------------------------------------------------------------
+// Clones kept after a failed post-restore command
+// ---------------------------------------------------------------------------
+
+// WARNING_POSTRESTORE_CLONES_KEPT is settings.WarningPostRestoreClonesKept.
+const WARNING_POSTRESTORE_CLONES_KEPT = "post_restore_clones_kept";
+
+// postRestoreRenderWarnings shows the restores whose clones were kept after a
+// failed post-restore command, each with a button that drops them (admin).
+function postRestoreRenderWarnings(list) {
+  const banner = document.getElementById("postrestore-clones-warning");
+  const ul = document.getElementById("postrestore-clones-list");
+  if (!banner || !ul) return;
+  const kept = (Array.isArray(list) ? list : []).filter(w => w && w.id === WARNING_POSTRESTORE_CLONES_KEPT && w.restore_id);
+  banner.hidden = kept.length === 0;
+  ul.replaceChildren();
+  kept.forEach(w => {
+    const databases = Array.isArray(w.databases) ? w.databases.join(", ") : "";
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = tf("postrestore.kept_item", { id: w.restore_id, databases });
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-danger btn-sm";
+    btn.dataset.requires = "admin";
+    btn.textContent = t("postrestore.drop");
+    btn.addEventListener("click", () => postRestoreDropClones(w.restore_id, databases, btn));
+    li.append(text, " ", btn);
+    ul.append(li);
+  });
+  if (typeof gateAll === "function") gateAll();
+}
+
+async function postRestoreDropClones(restoreID, databases, btn) {
+  const ok = typeof confirmDialog === "function"
+    ? await confirmDialog({ body: tf("postrestore.drop_confirm", { databases }), confirmLabel: t("postrestore.drop") })
+    : true;
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const json = await apiJSON(`/api/v1/restores/${encodeURIComponent(restoreID)}/drop-clones`, { method: "POST" });
+    if (!json.success) {
+      showToast(json.error || t("toasts.request_failed"), "error");
+      return;
+    }
+    showToast(t("postrestore.dropped"), "success");
+    const settings = await apiJSON("/api/v1/settings");
+    if (settings.success) {
+      state.settings = { ...(state.settings || {}), warnings: (settings.data && settings.data.warnings) || [] };
+      renderWarnings();
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function setupPostRestore() {

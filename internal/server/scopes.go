@@ -108,6 +108,8 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/backups/{id}/log":      auth.ScopeRead,
 	"GET /api/v1/restores/{id}/log":     auth.ScopeRead,
 	"GET /api/v1/runs/active":           auth.ScopeRead,
+	// Dropping the clones a failed post-restore command kept: admin.
+	"POST /api/v1/restores/{id}/drop-clones": auth.ScopeAdmin,
 
 	// Verifying, pinning and restore-testing only read archives, protect a backup or
 	// write into a temporary database the test drops again: operator. Unpinning

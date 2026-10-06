@@ -127,6 +127,7 @@ var accessPathRoutes = map[string]accessKind{
 	"POST /api/v1/backups/{id}/unpin":         kindBackup,
 	undeleteRoute:                             kindBackup,
 	"POST /api/v1/restores/{id}/cancel":       kindRestore,
+	"POST /api/v1/restores/{id}/drop-clones":  kindRestore,
 	"GET /api/v1/restores/{id}/log":           kindRestore,
 
 	// A PITR stream belongs to its connection.

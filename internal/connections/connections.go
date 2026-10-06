@@ -320,6 +320,26 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	return updated.Redacted(), nil
 }
 
+// SetPostRestoreCommands replaces the post-restore commands of connection id,
+// checked like those of Update (an empty list removes them), and returns the
+// redacted result. The two-person rule's approved changes come through here.
+func (s *Service) SetPostRestoreCommands(ctx context.Context, id string, cmds []models.PostRestoreCommand) (*models.Connection, error) {
+	existing, err := s.repo.GetConnection(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.checkCommands(Input{PostRestoreCommands: &cmds}); err != nil {
+		return nil, err
+	}
+	updated := *existing
+	updated.PostRestoreCommands = models.ClonePostRestoreCommands(cmds)
+	updated.UpdatedAt = s.now().UTC()
+	if err := s.repo.SaveConnection(ctx, &updated); err != nil {
+		return nil, err
+	}
+	return forCaller(ctx, &updated), nil
+}
+
 // checkURI validates uri with mongouri.Validate, or with mongouri.ValidateStored when
 // it is the stored URI of the connection (so a stricter release never rejects it).
 func checkURI(uri, stored string) error {

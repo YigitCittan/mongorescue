@@ -3648,3 +3648,11 @@ body:not([data-scope="admin"]) [data-hide-unless="admin"] {
 .sso-mapping-connections {
   min-width: 10rem;
 }
+
+/* Clones kept after a failed post-restore command (postrestore.js) */
+.postrestore-kept-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}

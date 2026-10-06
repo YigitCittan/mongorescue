@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
@@ -57,6 +58,7 @@ var unsealedSecretQueries = []struct {
 	{tableConnections, `SELECT id, 'post_restore_sealed' FROM connections WHERE ` + unsealedSQL(`json_extract(data, '$.post_restore_sealed')`)},
 	// Post-restore commands are never stored in plain form.
 	{tableConnections, `SELECT id, 'post_restore_commands' FROM connections WHERE coalesce(json_type(data, '$.post_restore_commands'), 'null') != 'null'`},
+	{tableApprovals, `SELECT id, 'secret' FROM approvals WHERE json_extract(data, '$.action') = '` + string(models.ApprovalPostRestoreCommands) + `' AND ` + unsealedSQL(`secret`)},
 	{tableJobs, `SELECT id, 'mongo_uri' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.mongo_uri')`)},
 	{tableJobs, `SELECT id, 'heartbeat_url' FROM jobs WHERE ` + unsealedSQL(`json_extract(data, '$.heartbeat_url')`)},
 	{tableChannels, `SELECT id, 'webhook.url' FROM notification_channels WHERE ` + unsealedSQL(`json_extract(data, '$.webhook.url')`)},

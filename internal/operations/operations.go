@@ -238,6 +238,9 @@ type Config struct {
 	// with it and verifies restored databases. nil skips both (PreflightRestore then
 	// reports the server checks as not checked).
 	Inspector RestoreInspector
+	// Dropper drops the clones a failed post-restore run kept (DropKeptClones); nil
+	// makes it fail with ErrUnavailable.
+	Dropper DatabaseDropper
 	// PITR holds the PITR streams StartBaseBackup reads; nil makes it fail with
 	// ErrPITRUnavailable.
 	PITR pitr.Repository
