@@ -69,6 +69,8 @@ func TestCommandErrorsNeverQuoteServerMessages(t *testing.T) {
 		want string
 	}{
 		{dup, "mongoconn: post-restore command failed: DuplicateKey (code 11000)"},
+		{mongo.WriteException{WriteErrors: mongo.WriteErrors{{Index: 0, Code: 11000, Message: `E11000 dup key: { email: "ann@example.com" }`}}},
+			"mongoconn: post-restore command failed: 1 write error(s), first code 11000"},
 		{fmt.Errorf("run: %w", invalid), "mongoconn: post-restore command failed: DocumentValidationFailure (code 121)"},
 		{mongo.CommandError{Code: 2, Message: "bad value ann@example.com"}, "mongoconn: post-restore command failed: error (code 2)"},
 		{errors.New("server selection error: ann@example.com"), "mongoconn: post-restore command failed: driver error (the server could not be reached or selected)"},

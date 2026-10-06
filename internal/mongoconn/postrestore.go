@@ -164,8 +164,13 @@ func notThere(name string, err error) bool {
 // server selection) as a driver error. The original error is not wrapped.
 func commandError(ctx context.Context, err error) error {
 	var ce mongo.CommandError
+	var we mongo.WriteException
 	var se mongo.ServerError
 	switch {
+	case errors.As(err, &we) && len(we.WriteErrors) > 0:
+		return fmt.Errorf("%w: %d write error(s), first code %d", ErrPostRestoreCommand, len(we.WriteErrors), we.WriteErrors[0].Code)
+	case errors.As(err, &we) && we.WriteConcernError != nil:
+		return fmt.Errorf("%w: write concern error %d (%s)", ErrPostRestoreCommand, we.WriteConcernError.Code, we.WriteConcernError.Name)
 	case errors.As(err, &ce):
 		name := ce.Name
 		if name == "" {
