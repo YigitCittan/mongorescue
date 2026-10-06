@@ -20,13 +20,7 @@ func TestSameSecondSafeClonesBothSucceed(t *testing.T) {
 	at := time.Date(2026, 10, 6, 9, 30, 5, 0, time.UTC)
 	admin := &fakeAdmin{exists: map[string]bool{}}
 	engine := NewEngine(store, "mongodb://localhost:27017", WithRunner((&capturingRunner{}).run), WithDatabaseAdmin(admin),
-		WithClock(func() time.Time { return at }))
-	ids := []string{"ab12", "cd34"}
-	engine.newCloneID = func() (string, error) {
-		id := ids[0]
-		ids = ids[1:]
-		return id, nil
-	}
+		WithClock(func() time.Time { return at }), WithCloneID(fixedCloneIDs("ab12", "cd34")))
 
 	var names []string
 	for range 2 {
@@ -57,7 +51,7 @@ func TestPrepareNamesSafeClonesRandomly(t *testing.T) {
 		t.Fatalf("clone %q started %s", rec.TargetDatabase, rec.StartedAt)
 	}
 
-	engine.newCloneID = func() (string, error) { return "", errors.New("no entropy") }
+	engine = NewEngine(storage.NewMockStorage(), "mongodb://h", WithCloneID(func() (string, error) { return "", errors.New("no entropy") }))
 	if _, err = engine.Prepare(models.RestoreRequest{BackupID: "bkp_1"}, src); err == nil {
 		t.Fatal("a failed clone ID must fail the restore")
 	}
@@ -67,5 +61,17 @@ func TestPrepareNamesSafeClonesRandomly(t *testing.T) {
 	}
 	if rec, err = engine.Prepare(models.RestoreRequest{BackupID: "bkp_1", CloneDatabase: "shop_rescue_verify_x"}, src); err != nil || rec.TargetDatabase != "shop_rescue_verify_x" {
 		t.Fatalf("named clone = %+v, %v", rec, err)
+	}
+}
+
+// fixedCloneIDs returns a clone ID source that hands out ids in order.
+func fixedCloneIDs(ids ...string) func() (string, error) {
+	return func() (string, error) {
+		if len(ids) == 0 {
+			return "", errors.New("no more clone ids")
+		}
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
 	}
 }

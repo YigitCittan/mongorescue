@@ -229,6 +229,18 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithCloneID sets the source of the random clone IDs in safe-clone and
+// point-in-time clone names (models.NewCloneID, from crypto/rand, by default); nil
+// keeps the default. It must return models.CloneIDLength lowercase hex
+// characters. Tests use it for fixed, distinct IDs.
+func WithCloneID(next func() (string, error)) Option {
+	return func(e *Engine) {
+		if next != nil {
+			e.newCloneID = next
+		}
+	}
+}
+
 // BypassCheck reports whether the user of the connection string uri may bypass
 // document validation on every collection of database.
 type BypassCheck func(ctx context.Context, uri, database string) (bool, error)
