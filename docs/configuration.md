@@ -13,7 +13,7 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 
 | Flag | Environment variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key`, the instance lock and the run logs (`logs/`) |
+| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key`, the instance lock, the run logs (`logs/`) and `tmp/` (0700), where the short-lived files that pass connection strings and [TLS material](connections.md#tls-settings) to the Database Tools live while they run |
 | `-host` | `MONGORESCUE_SERVER_HOST` | `0.0.0.0` | Listen address |
 | `-port` | `MONGORESCUE_SERVER_PORT` | `8080` | Listen port |
 | `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) | Serve the web dashboard at `/`. Without it the server answers only the REST API, `/mcp` and `/metrics`, and `GET /` returns 404 |

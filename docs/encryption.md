@@ -75,7 +75,7 @@ Rotate a key when it may have leaked, when someone who held it leaves, or on a s
 
 ### secret.key
 
-`secret.key` seals every credential in `mongorescue.db`: connection strings, storage credentials, notification secrets, job heartbeat URLs, the OIDC client secret, the audit webhook secret, the backup encryption identities and passphrases. `POST /api/v1/security/rotate-secret-key` (body `{"current_password": "..."}`) replaces it. It needs an administrator signed in to the dashboard who confirms their password, like the recovery kit; API keys are refused. With the two-person rule on it answers `202` and waits for a second administrator.
+`secret.key` seals every credential in `mongorescue.db`: connection strings, the TLS client keys of connections and their passwords, storage credentials, notification secrets, job heartbeat URLs, the OIDC client secret, the audit webhook secret, the backup encryption identities and passphrases. `POST /api/v1/security/rotate-secret-key` (body `{"current_password": "..."}`) replaces it. It needs an administrator signed in to the dashboard who confirms their password, like the recovery kit; API keys are refused. With the two-person rule on it answers `202` and waits for a second administrator.
 
 What happens:
 
