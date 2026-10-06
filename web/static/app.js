@@ -4385,6 +4385,7 @@ function openConnectionModal(id) {
   setValue("connection-uri", c ? c.uri : "");
   setValue("connection-description", c ? c.description : "");
   if (typeof throttleFillConnectionForm === "function") throttleFillConnectionForm(c);
+  if (typeof postRestoreFillConnectionForm === "function") postRestoreFillConnectionForm(c);
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
   // Paste URI or Build, as last used (forms.js).
@@ -4456,11 +4457,15 @@ async function saveConnection(e) {
   e.preventDefault();
   const id = getValue("connection-id");
   const uri = getValue("connection-uri");
+  // Post-restore commands (postrestore.js); null means the editor holds an error.
+  const postRestore = typeof postRestoreConnectionPayload === "function" ? postRestoreConnectionPayload() : {};
+  if (postRestore === null) return;
   const payload = {
     name: getValue("connection-name"),
     uri,
     description: getValue("connection-description"),
-    ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {})
+    ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {}),
+    ...postRestore
   };
 
   // Test before saving; a failing test must be overridden explicitly.

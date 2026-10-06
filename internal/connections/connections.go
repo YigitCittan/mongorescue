@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,10 +19,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
+	"github.com/yigitcittan/mongorescue/internal/postrestore"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -143,10 +146,23 @@ type Input struct {
 	// MaxConcurrentBackups, when set, replaces how many backups may read from the
 	// connection at once (0 = unlimited).
 	MaxConcurrentBackups *int `json:"max_concurrent_backups,omitempty"`
+	// PostRestoreCommands, when set, replaces the commands every safe-clone restore
+	// into the connection runs against its clones before it completes (an empty
+	// list removes them); omitted keeps them. See internal/postrestore.
+	PostRestoreCommands *[]models.PostRestoreCommand `json:"post_restore_commands,omitempty"`
+}
+
+// CommandChecker is implemented by Probers that can check that a post-restore
+// command is a document the server can be sent (valid extended JSON).
+type CommandChecker interface {
+	CheckPostRestoreCommand(command json.RawMessage) error
 }
 
 // apply copies the optional fields of in onto c.
 func (in Input) apply(c *models.Connection) {
+	if in.PostRestoreCommands != nil {
+		c.PostRestoreCommands = models.ClonePostRestoreCommands(*in.PostRestoreCommands)
+	}
 	if in.ReadPreference != nil {
 		c.ReadPreference = *in.ReadPreference
 		c.ReadPreferenceTags = models.CloneTagSets(in.ReadPreferenceTags)
@@ -190,7 +206,19 @@ func NewService(repo Repository, prober Prober, opts ...Option) *Service {
 	return s
 }
 
-// List returns all connections with redacted URIs.
+// forCaller returns c with a redacted URI and, unless the caller in ctx holds the
+// admin scope, without its post-restore commands (which can name the people whose
+// data was erased).
+func forCaller(ctx context.Context, c *models.Connection) *models.Connection {
+	out := c.Redacted()
+	if auth.RequireScope(ctx, auth.ScopeAdmin) != nil {
+		out.PostRestoreCommands = nil
+	}
+	return out
+}
+
+// List returns all connections with redacted URIs; post-restore commands only to
+// administrators.
 func (s *Service) List(ctx context.Context) ([]*models.Connection, error) {
 	list, err := s.repo.ListConnections(ctx)
 	if err != nil {
@@ -198,18 +226,19 @@ func (s *Service) List(ctx context.Context) ([]*models.Connection, error) {
 	}
 	out := make([]*models.Connection, 0, len(list))
 	for _, c := range list {
-		out = append(out, c.Redacted())
+		out = append(out, forCaller(ctx, c))
 	}
 	return out, nil
 }
 
-// Get returns one connection with a redacted URI.
+// Get returns one connection with a redacted URI; post-restore commands only to
+// administrators.
 func (s *Service) Get(ctx context.Context, id string) (*models.Connection, error) {
 	c, err := s.repo.GetConnection(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return c.Redacted(), nil
+	return forCaller(ctx, c), nil
 }
 
 // Resolve returns the connection with its full URI, for the backup and restore engines.
@@ -230,6 +259,9 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.Connection, err
 // user input, mongouri.ValidateStored for a URI imported from a former configuration.
 func (s *Service) create(ctx context.Context, in Input, checkURI func(string) error) (*models.Connection, error) {
 	if err := validateInput(&in); err != nil {
+		return nil, err
+	}
+	if err := s.checkCommands(in); err != nil {
 		return nil, err
 	}
 	if strings.Contains(in.URI, redact.Mask) {
@@ -263,6 +295,9 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 		return nil, err
 	}
 	if err = validateInput(&in); err != nil {
+		return nil, err
+	}
+	if err = s.checkCommands(in); err != nil {
 		return nil, err
 	}
 	uri, err := KeepSecret(in.URI, existing.URI)
@@ -535,6 +570,28 @@ func validateInput(in *Input) error {
 }
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// checkCommands validates the post-restore commands of in (postrestore.Validate)
+// and, when the prober can tell, that each is a document the server can be sent.
+func (s *Service) checkCommands(in Input) error {
+	if in.PostRestoreCommands == nil {
+		return nil
+	}
+	cmds := *in.PostRestoreCommands
+	if err := postrestore.Validate(cmds); err != nil {
+		return fmt.Errorf("%w: post_restore_commands: %w", ErrInvalid, err)
+	}
+	checker, ok := s.prober.(CommandChecker)
+	if !ok {
+		return nil
+	}
+	for i, c := range cmds {
+		if err := checker.CheckPostRestoreCommand(c.Command); err != nil {
+			return fmt.Errorf("%w: post_restore_commands: command %d: %w", ErrInvalid, i+1, err)
+		}
+	}
+	return nil
+}
 
 // NewID returns a new random connection ID ("conn_" + 16 hex characters).
 func NewID() (string, error) {

@@ -314,6 +314,17 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	}
 
 	tracker.Finishing()
+	// The connection's post-restore commands run against every clone before the
+	// restore counts as complete; a failure keeps the clones.
+	created := pitrCreated(info)
+	if err = e.applyPostRestore(ctx, uri, req, record, created); err != nil {
+		finish := time.Now().UTC()
+		record.CompletedAt = &finish
+		record.DurationSeconds = finish.Sub(record.StartedAt).Seconds()
+		record.Phases.RestoreDone = models.Stamp(finish)
+		record.Phases.Finished = models.Stamp(finish)
+		return e.failDone(ctx, record, err, err.Error()+keptNote(sortedClones(created)))
+	}
 	finish := time.Now().UTC()
 	record.CompletedAt = &finish
 	record.DurationSeconds = finish.Sub(record.StartedAt).Seconds()
@@ -370,6 +381,18 @@ func pitrEncrypted(run PITRRun) bool {
 		}
 	}
 	return false
+}
+
+// pitrCreated maps the source database of every clone a point-in-time restore
+// recorded (info.Clones) to the clone.
+func pitrCreated(info *models.PITRRestore) map[string]string {
+	out := make(map[string]string, len(info.Clones))
+	for _, clone := range info.Clones {
+		if src, ok := strings.CutSuffix(clone, info.CloneSuffix); ok && src != "" && info.CloneSuffix != "" {
+			out[src] = clone
+		}
+	}
+	return out
 }
 
 // pitrClones returns the clone names of a database selection (nil for a whole

@@ -119,6 +119,10 @@ type completingEngine struct {
 	canDecrypt bool
 	mu         sync.Mutex
 	executed   int
+	// requests are the requests Execute got; postRestores counts RunPostRestore
+	// calls that had commands to run.
+	requests     []models.RestoreRequest
+	postRestores int
 }
 
 func (e *completingEngine) CanDecrypt() bool { return e.canDecrypt }
@@ -127,12 +131,22 @@ func (e *completingEngine) Prepare(req models.RestoreRequest, src *models.Backup
 	return e.prep.Prepare(req, src)
 }
 
-func (e *completingEngine) Execute(_ context.Context, _ models.RestoreRequest, _ *models.BackupRecord, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
+func (e *completingEngine) Execute(_ context.Context, req models.RestoreRequest, _ *models.BackupRecord, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
 	e.mu.Lock()
 	e.executed++
+	e.requests = append(e.requests, req)
 	e.mu.Unlock()
 	now := time.Now().UTC()
 	rec.Status, rec.CompletedAt = models.RestoreStatusCompleted, &now
+	return rec, nil
+}
+
+func (e *completingEngine) RunPostRestore(_ context.Context, req models.RestoreRequest, rec *models.RestoreRecord) (*models.RestoreRecord, error) {
+	if len(req.PostRestoreCommands) > 0 {
+		e.mu.Lock()
+		e.postRestores++
+		e.mu.Unlock()
+	}
 	return rec, nil
 }
 
@@ -163,6 +177,13 @@ func backupManifest() *models.Manifest {
 
 func newPreflightEnv(t *testing.T, ins *fakeInspector, mutate func(*models.BackupRecord)) *preflightEnv {
 	t.Helper()
+	return newPreflightEnvWith(t, ins, mutate, nil)
+}
+
+// newPreflightEnvWith is newPreflightEnv whose connection has the post-restore
+// commands cmds.
+func newPreflightEnvWith(t *testing.T, ins *fakeInspector, mutate func(*models.BackupRecord), cmds []models.PostRestoreCommand) *preflightEnv {
+	t.Helper()
 	st := storetest.New(t)
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
@@ -172,7 +193,7 @@ func newPreflightEnv(t *testing.T, ins *fakeInspector, mutate func(*models.Backu
 		Backup:      backup.NewEngine(storage.NewMockStorage(), ""),
 		Restore:     env.engine,
 		Runs:        manager,
-		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "prod", URI: "mongodb://u:secret@db.internal:27017"}},
+		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "prod", URI: "mongodb://u:secret@db.internal:27017", PostRestoreCommands: cmds}},
 		Publisher:   env.publisher,
 	}
 	if ins != nil {

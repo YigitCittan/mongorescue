@@ -102,6 +102,25 @@ Record every erasure in an **erasure log**, kept apart from the data it erases, 
 
 After every restore, apply the whole log to the restored data before it is used, and keep the log for as long as the oldest backup it may need to be re-applied to: entries older than every backup, chunk and clone can be removed. Do the same after restoring a metadata snapshot when the erasure log lives in MongoRescue.
 
+### Re-applying erasures after a restore
+
+MongoRescue can apply the erasure log for you: a connection's **post-restore commands** (admin; the connection form, or `post_restore_commands` in the [API](api.md#post-restore-commands)) run against the databases every safe-clone restore into that connection creates, before the restore is reported complete. That covers restores, point-in-time restores and restore tests:
+
+```json
+[
+  {"database": "*", "command": {"delete": "users", "deletes": [{"q": {"_id": {"$in": [1042, 1077]}}, "limit": 0}]}},
+  {"database": "shop", "command": {"update": "orders", "updates": [{"q": {"customer_id": 1042}, "u": {"$unset": {"address": "", "phone": ""}}, "multi": true}]}}
+]
+```
+
+- `"*"` runs a command in every restored database, a database name in that database's clone only. Commands never run in the source database, in another database or in `admin`, `config` and `local`.
+- Only `delete`, `update`, `findAndModify`, `dropIndexes`, `collMod` and `drop` are allowed, without server-side JavaScript or stages that reach other collections.
+- **A failing command fails the restore.** The clone is kept for inspection and marked so on the restore record (`post_restore.clones_kept`): it still holds data that should have been erased, so drop it once you know what went wrong.
+- Every command that ran is in the audit log and on the restore record with its counts (documents deleted, matched, modified), never with its document or the documents it touched. The restore preflight lists the commands a restore will run.
+- In-place restores run none (the restore carries a warning): re-apply the log yourself before the data is used. Restoring in place over production is rarely what an erasure-aware recovery wants; restore into a clone, let the commands run, then promote the clone.
+
+Store identifiers, not personal data, in the commands: they are kept in `mongorescue.db` (and its metadata snapshots) and shown to administrators only.
+
 ## Contact
 
 Questions about this policy: open an [issue](https://github.com/YigitCittan/mongorescue/issues). For security issues, see [SECURITY.md](../SECURITY.md).

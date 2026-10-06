@@ -159,6 +159,18 @@ type RestoreRequest struct {
 	// "_rescue_verify_<timestamp>_<hex>"). It is set by code, never read from
 	// clients.
 	PITRCloneSuffix string `json:"-"`
+
+	// PostRestoreCommands are the target connection's post-restore commands
+	// (Connection.PostRestoreCommands), run against the databases a safe-clone
+	// restore created before it is reported complete. They are set by code from
+	// the target connection, never read from clients.
+	PostRestoreCommands []PostRestoreCommand `json:"-"`
+
+	// DeferPostRestore leaves the post-restore commands to the caller, which runs
+	// them through the restore engine's RunPostRestore once it has compared the
+	// restored data with the backup (restore verification, restore tests). Set by
+	// code, never read from clients.
+	DeferPostRestore bool `json:"-"`
 }
 
 // ErrPITRInPlace is returned for a point-in-time restore that asks to write into
@@ -459,6 +471,10 @@ type RestoreRecord struct {
 	// PITR describes a point-in-time restore: the base, the chain and the oplog it
 	// replayed. Nil for the restore of a backup.
 	PITR *PITRRestore `json:"pitr,omitempty"`
+
+	// PostRestore is what the target connection's post-restore commands did (see
+	// RestoreRequest.PostRestoreCommands); nil when the connection has none.
+	PostRestore *PostRestoreReport `json:"post_restore,omitempty"`
 }
 
 // Redacted returns a copy of the request with the MongoURI password masked, suitable

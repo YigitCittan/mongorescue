@@ -91,6 +91,10 @@ type Engine struct {
 	listDatabases DatabaseLister
 	// serverVersion reads the target version for PITR archives (WithServerVersion).
 	serverVersion ServerVersionFunc
+	// commands runs post-restore commands (WithCommandRunner) and audit records
+	// them (WithCommandAudit).
+	commands CommandRunner
+	audit    CommandAudit
 
 	// config and storageFor, when set, supply the settings and the storage driver of
 	// each run instead of the static values above.
@@ -673,6 +677,15 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		addWarning(record, "document counts unavailable: mongorestore printed no restored/failed summary")
 		e.logger.Warn("mongorestore printed no document summary; document counts unavailable",
 			slog.String("restore_id", restoreID), logsafe.Attr("target_db", targetDB))
+	}
+
+	// The connection's post-restore commands (such as re-applied erasures) run
+	// against the clone before the restore counts as complete; a failure keeps the
+	// clone for inspection and fails the restore.
+	created := map[string]string{sourceRecord.Database: targetDB}
+	if err := e.applyPostRestore(ctx, mongoURI, req, record, created); err != nil {
+		record.Phases.Finished = models.Stamp(time.Now())
+		return e.failDone(ctx, record, err, err.Error()+keptNote(sortedClones(created)))
 	}
 
 	record.Status = models.RestoreStatusCompleted

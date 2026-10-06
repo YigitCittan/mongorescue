@@ -52,6 +52,9 @@ const (
 	// PreflightCheckToolsVersion checks that mongorestore is recent enough for
 	// point-in-time restores (mongotools.MinPITRToolsVersion).
 	PreflightCheckToolsVersion = "tools_version"
+	// PreflightCheckPostRestore lists the post-restore commands of the target
+	// connection the restore runs against its clones (only when it has some).
+	PreflightCheckPostRestore = "post_restore"
 )
 
 // PITRPreflight summarises the plan of a point-in-time restore for its preflight.
@@ -100,6 +103,10 @@ type PreflightResult struct {
 	// PITR summarises the plan of a point-in-time restore; nil for the restore of a
 	// backup or when no plan was found (see the pitr_chain check).
 	PITR *PITRPreflight `json:"pitr,omitempty"`
+	// PostRestore lists the post-restore commands the restore runs (status
+	// "planned"), per restored database; empty when the target connection has
+	// none or the restore runs none (see the post_restore check).
+	PostRestore []PostRestoreResult `json:"post_restore,omitempty"`
 }
 
 // Add appends a check and keeps OK in step with it.

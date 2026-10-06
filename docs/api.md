@@ -190,6 +190,8 @@ Connection strings are validated, encrypted at rest and only ever returned redac
 
 A connection may also set `read_preference` (`primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`; empty keeps the URI's own) with `read_preference_tags` (a list of tag sets such as `[{"dc": "east", "use": "backup"}, {}]`), and `max_concurrent_backups` (`0` = unlimited, at most `64`); an update without them keeps them. A test (`POST /api/v1/connections/{id}/test`, or `POST /api/v1/connections/test` with `read_preference` and `read_preference_tags` next to `uri`) also reports `read_member` (`host`, `state`: `primary`, `secondary`, `standalone`, `mongos` or `other`, `set_name`) with the `read_preference` it used, or `read_member_error` when no member matches. See [Read preferences, throttling and backup windows](#read-preferences-throttling-and-backup-windows).
 
+Administrators may also set `post_restore_commands`, the MongoDB commands every safe-clone restore into the connection runs against its clones before it completes ([post-restore commands](#post-restore-commands)); an update without the field keeps them and `[]` removes them. Only administrators see them: `GET` answers other callers without the field.
+
 Jobs and manual backups name a `connection_id`. Backup records keep `connection_id` and a `connection_name` snapshot. A restore goes to the backup's connection unless `target_connection_id` names another one, which restores across servers and needs `admin`; restore records always carry `source_connection_id`, `source_connection_name`, `target_connection_id` and `target_connection_name`, the names as they were when the restore started.
 
 ## Settings
@@ -286,8 +288,9 @@ Restoring in place (into the source database, or into `target_database`) must be
 | `disk_space` | The archive size against the free space of the target server's data filesystem, from `dbStats` (`fsTotalSize - fsUsedSize`) or, for a server on the same host, from the file system of its `dbPath`. Less free space than the archive fails only when `dbStats` reported it and the restore is not in place with `drop_target` (which frees the space of what it replaces); the local value (a loopback address may be an SSH tunnel or a Docker host network) only warns. Less than twice (uncompressed) or four times (compressed or unknown) the archive warns; unknown free space warns. |
 | `collections` | For an in-place restore, the existing collections the restore writes into (from the selection, the backup's manifest or its collection filter, against `listCollections`): dropped and replaced with `drop_target`, otherwise documents are added. Listed as a warning. |
 | `users_and_roles` | `restore_users_and_roles` against the backup (fails where `POST /api/v1/restore` answers `400`); a valid request warns that the database's users and roles are replaced. |
+| `post_restore` | Only when the target connection has [post-restore commands](#post-restore-commands): the commands the restore runs, per clone (`delete on users in shop_rescue_20261002_120000`), also listed in `post_restore` of the result with `status: "planned"`. Passes for a safe clone and a dry run (which runs none), warns for an in-place restore (which runs none), fails when a stored command is no longer valid. Point-in-time preflights list them too. |
 
-Only these can fail, and so refuse a restore: `connection` (the target is unreachable), `encryption` (no decryption key, which `POST /api/v1/restore` already answered with `422`), `target_database` (the safe clone name exists), `privileges` (write actions certainly missing), `disk_space` (free space reported by `dbStats` smaller than the archive) and `users_and_roles` (a request `POST /api/v1/restore` already answered with `400`). Everything else warns. The server checks share one connection to the target and are bounded by 15 seconds.
+Only these can fail, and so refuse a restore: `connection` (the target is unreachable), `encryption` (no decryption key, which `POST /api/v1/restore` already answered with `422`), `target_database` (the safe clone name exists), `privileges` (write actions certainly missing), `disk_space` (free space reported by `dbStats` smaller than the archive), `users_and_roles` (a request `POST /api/v1/restore` already answered with `400`) and `post_restore` (a stored command that is no longer valid). Everything else warns. The server checks share one connection to the target and are bounded by 15 seconds.
 
 A preflight applies the scope rules of the restore it checks: an in-place or cross-connection preflight needs admin. `confirm_in_place` is not needed to ask (it is still needed to start the restore). Dry runs need neither privileges nor space.
 
@@ -308,6 +311,39 @@ A preflight applies the scope rules of the restore it checks: an in-place or cro
 ```
 
 `status` is `passed`, `failed` or `skipped` (a dry run, a backup without a manifest, a target that could not be inspected; `notes` says why). A failed verification keeps the restore `completed`, adds a warning to it and publishes `restore.verification_failed` (selectable in notification rules): the data is applied, but it does not match what the backup recorded. The dashboard shows the result in the restore details.
+
+### Post-restore commands
+
+A connection's `post_restore_commands` (admin, `POST`/`PUT /api/v1/connections`, or **Post-restore commands** in the dashboard's connection form) are MongoDB commands that every safe-clone restore into the connection (a restore, a point-in-time restore or a [restore test](verification.md#automated-restore-tests)) runs against the databases it created, before it is reported complete. The use case is re-applying erasures to restored data ([privacy.md](privacy.md#re-applying-erasures-after-a-restore)):
+
+```json
+"post_restore_commands": [
+  {"database": "*", "command": {"delete": "users", "deletes": [{"q": {"_id": {"$in": [1042, 1077]}}, "limit": 0}]}},
+  {"database": "shop", "command": {"update": "orders", "updates": [{"q": {"customer_id": 1042}, "u": {"$unset": {"address": ""}}, "multi": true}]}}
+]
+```
+
+- `database` is a source database: the command runs in that database's clone, and not at all when the restore did not restore it. `"*"` runs it in every clone the restore created. A command never runs in the database it names, in a source database, or in `admin`, `config` or `local`: every target must be a clone the restore created, or nothing runs and the restore fails.
+- `command` is a command document in (extended) JSON, sent with `runCommand`; its first key is the command. Allowed: `delete`, `update`, `findAndModify`, `dropIndexes`, `collMod` and `drop`, on one collection (not a `system.*` one). Refused anywhere in the document: `$where`, `$function`, `$accumulator` (server-side JavaScript), `$out`, `$merge`, `$lookup`, `$graphLookup`, `$unionWith` (other collections or databases) and `$db`; no top-level key may start with `$` and no key may repeat in one object. Commands such as `eval`, `applyOps`, `aggregate`, `renameCollection` and `dropDatabase` are refused with the reason. Integers beyond ±2^53 must be written as `{"$numberLong": "…"}`, so no client rounds an `_id`. At most 100 commands of 512 KiB together.
+- The commands run in order, per command in every clone it applies to. Dropping a collection or an index that does not exist succeeds, so a list can be re-applied any number of times.
+- A command that fails (or cannot run) fails the restore (`error_message` names the command, its collection and clone) and stops the rest. The clones are **kept for inspection**, not dropped: they hold the restored data without every command applied (erasures included), so do not use them; drop them when done.
+- In-place restores and dry runs run none: the record's `post_restore` says so, and an in-place restore carries a warning to re-apply them by hand. With `verify_restore`, the clone is compared with the manifest first, then the commands run. Restore tests compare first too, then run the commands as a rehearsal (a failure fails the test; the temporary database is dropped as always). PITR chain tests run none.
+
+The restore record shows what ran, with names and counts only, never the command documents or the documents they touched:
+
+```json
+"post_restore": {
+  "status": "completed",
+  "commands": [
+    {"index": 0, "database": "shop_rescue_20261002_120000", "source_database": "shop", "command": "delete", "collection": "users",
+     "status": "ok", "n": 2, "duration_ms": 14},
+    {"index": 1, "database": "shop_rescue_20261002_120000", "source_database": "shop", "command": "update", "collection": "orders",
+     "status": "ok", "n": 5, "modified": 5, "duration_ms": 9}
+  ]
+}
+```
+
+`status` is `completed`, `failed` (with `note` and `clones_kept`) or `skipped` (dry runs and in-place restores, with `note`); each command is `ok`, `failed` (with a redacted `error`; write errors give their codes only, since their messages can quote document values), `not_run` (after a failure) or `planned` (dry runs). `n` counts the documents a `delete` removed or an `update` or `findAndModify` matched, `modified` and `upserted` what an update changed. Every command that ran is also written to the [audit log](audit.md) as `SYSTEM restore.post_restore_command`, and its counts to the run log.
 
 ### Selective restores
 

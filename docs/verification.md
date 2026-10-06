@@ -56,7 +56,8 @@ A test runs *Run restore test now* in the job details (`POST /api/v1/jobs/{id}/r
 2. refuses to start when the temporary database already exists, and leaves it alone;
 3. restores the backup into the temporary database (the streamed bytes are checked against the recorded checksum, as in every restore);
 4. compares the restored copy with the **manifest** captured at backup time: every collection must exist, its document count must lie within the range captured before and after the dump, and every index must exist with the same keys, uniqueness, sparseness and TTL. Collections the restored copy has beyond the manifest (created during the dump) are noted, not counted as differences;
-5. **drops the temporary database in every case**, and only the exact name it created: success, failure, cancellation (shutdown) and even an internal panic. A drop that fails is reported on the result (`drop_error`) so the database can be dropped by hand.
+5. runs the connection's [post-restore commands](api.md#post-restore-commands) (such as re-applied erasures) against the temporary database, as a rehearsal: a command that fails fails the test (`post_restore` on the result shows what ran);
+6. **drops the temporary database in every case**, and only the exact name it created: success, failure, cancellation (shutdown) and even an internal panic. A drop that fails is reported on the result (`drop_error`) so the database can be dropped by hand.
 
 The result (`ok`, `mismatch` with the differences, or `error` with the reason) and its duration are stored (`GET /api/v1/jobs/{id}/restore-tests`, the newest 200 per job) and copied onto the job and the backup (`last_restore_test`), which the dashboard shows as *Son restore testi: başarılı · 3 gün önce*. `restore_test.succeeded` and `restore_test.failed` events feed notifications and metrics.
 

@@ -2449,6 +2449,13 @@
             <input type="number" id="connection-max-concurrent" class="form-input" min="0" max="64" step="1" aria-describedby="connection-max-concurrent-hint">
             <span class="form-hint" id="connection-max-concurrent-hint" data-i18n="throttle.max_concurrent_hint">At most this many backups read from this connection at once; others wait (shown as waiting). Empty or 0 is unlimited.</span>
           </div>
+          <!-- Post-restore commands of the connection, e.g. re-applied erasures (postrestore.js) -->
+          <div class="form-group">
+            <label class="form-label" for="connection-post-restore" data-i18n="postrestore.label">Post-restore commands</label>
+            <textarea id="connection-post-restore" class="form-input mono" rows="5" data-requires="admin" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder='[{"database": "*", "command": {"delete": "users", "deletes": [{"q": {"_id": {"$in": [42]}}, "limit": 0}]}}]' aria-describedby="connection-post-restore-hint connection-post-restore-error"></textarea>
+            <span class="form-hint" id="connection-post-restore-hint" data-i18n="postrestore.hint">Optional. A JSON array of {"database", "command"} run against the clones of every safe-clone restore into this connection before it completes, for example to re-apply erasures. "database" is a restored database or "*" for all of them. Allowed: delete, update, findAndModify, dropIndexes, collMod, drop. A failing command fails the restore and keeps the clone.</span>
+            <span class="field-error" id="connection-post-restore-error" role="alert" hidden></span>
+          </div>
           <div class="test-row">
             <button type="button" class="btn btn-secondary" id="connection-test-btn" data-action="test-connection-form" data-i18n="conn.test">Test connection</button>
             <span class="test-result" id="connection-test-result" role="status" aria-live="polite"></span>
@@ -3121,6 +3128,7 @@
   <script src="/protection.js"></script>
   <script src="/keyrotation.js"></script>
   <script src="/throttle.js"></script>
+  <script src="/postrestore.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

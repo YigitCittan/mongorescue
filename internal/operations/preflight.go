@@ -11,6 +11,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/postrestore"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 )
@@ -134,7 +135,55 @@ func (s *Service) preflight(ctx context.Context, req models.RestoreRequest, sour
 	p.diskSpace()
 	p.collections()
 	p.usersAndRoles()
+	p.postRestore(map[string]string{source.Database: targetDB})
 	return p.res
+}
+
+// pitrPreflightClones maps the source database of every planned clone of a
+// point-in-time restore to the clone.
+func pitrPreflightClones(info *models.PITRRestore) map[string]string {
+	out := map[string]string{}
+	if info == nil || info.CloneSuffix == "" {
+		return out
+	}
+	for _, clone := range info.Clones {
+		if src, ok := strings.CutSuffix(clone, info.CloneSuffix); ok && src != "" {
+			out[src] = clone
+		}
+	}
+	return out
+}
+
+// postRestore lists the post-restore commands of the target connection the restore
+// runs against clones (source database -> clone), when it has any: they pass for a
+// safe clone (and a dry run, which runs none), warn for an in-place restore, which
+// runs none, and fail when a stored command is no longer valid.
+func (p *preflightRun) postRestore(clones map[string]string) {
+	const id = models.PreflightCheckPostRestore
+	cmds := p.req.PostRestoreCommands
+	if len(cmds) == 0 {
+		return
+	}
+	if p.req.InPlace() {
+		p.res.Add(id, models.PreflightWarn, fmt.Sprintf(
+			"the %d post-restore command(s) of connection %s run only against safe clones: this in-place restore runs none; re-apply them (such as erasures) to %s yourself",
+			len(cmds), p.connectionName(), p.targetDB))
+		return
+	}
+	steps, err := postrestore.Plan(cmds, clones)
+	if err != nil {
+		p.res.Add(id, models.PreflightFail, fmt.Sprintf("the post-restore commands of connection %s cannot run: %s", p.connectionName(), errText(err)))
+		return
+	}
+	p.res.PostRestore = postrestore.Planned(steps)
+	switch {
+	case len(steps) == 0:
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("none of the %d post-restore command(s) of connection %s applies to the restored database(s)", len(cmds), p.connectionName()))
+	case p.req.DryRun:
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("dry run: nothing runs; a restore runs %d post-restore command(s) before it completes: %s", len(steps), postrestore.Describe(steps)))
+	default:
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("runs %d post-restore command(s) before the restore completes; a failure fails the restore and keeps the clone: %s", len(steps), postrestore.Describe(steps)))
+	}
 }
 
 // preflightRun holds the state of one preflight.

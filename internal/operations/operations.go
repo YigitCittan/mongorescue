@@ -94,6 +94,9 @@ type RestoreEngine interface {
 	Prepare(req models.RestoreRequest, source *models.BackupRecord) (*models.RestoreRecord, error)
 	// Execute runs the restore described by req and record.
 	Execute(ctx context.Context, req models.RestoreRequest, source *models.BackupRecord, record *models.RestoreRecord) (*models.RestoreRecord, error)
+	// RunPostRestore runs the post-restore commands Execute deferred
+	// (models.RestoreRequest.DeferPostRestore) against the restored clone.
+	RunPostRestore(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord) (*models.RestoreRecord, error)
 }
 
 // JobRunner prepares and executes on-demand runs of scheduled jobs (implemented by
@@ -716,9 +719,13 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		defer release()
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
+		// A verified restore compares the clone with the backup first, then runs
+		// the post-restore commands (which change it on purpose).
+		req.DeferPostRestore = req.VerifyRestore
 		final, runErr := s.cfg.Restore.Execute(runCtx, req, source, record)
 		if runErr == nil && req.VerifyRestore {
 			s.verifyRestore(runCtx, req, source, final)
+			final, runErr = s.cfg.Restore.RunPostRestore(runCtx, req, final)
 		}
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
 		defer cancel()
@@ -838,6 +845,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 		return nil, err
 	}
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI = target.ID, target.Name, target.URI
+	req.PostRestoreCommands = models.ClonePostRestoreCommands(target.PostRestoreCommands)
 
 	// Key material is checked synchronously so the client learns about it immediately.
 	if !forPreflight && (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {

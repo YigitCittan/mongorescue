@@ -21,6 +21,7 @@ The activity log stores arguments, which the audit log never does, and merges re
 | Downloads that copy data out: the recovery kit (`POST`) and the audit log export (`GET`) | `user` or `api_key` | `POST /api/v1/recovery-kit`, `GET /api/v1/audit/events/export` |
 | MCP tool calls (not resource reads or prompts) | `api_key` | `MCP <tool>`, e.g. `MCP start_backup` |
 | Actions MongoRescue takes on its own: retention deleting a backup, and the audit log's own retention (`targets`: `removed`, the new `anchor_id` and `anchor_hash`) | `system` | `SYSTEM <action>`, `SYSTEM audit.prune` |
+| Every [post-restore command](api.md#post-restore-commands) a restore ran, successful or not (`targets`: `restore_id`, `connection_id`, `database` (the clone), `source_database`, `collection`, `command`, `index`, the counts `n`, `modified` and `upserted`, and a redacted `error`); never the command document | `system` (`post_restore`) | `SYSTEM restore.post_restore_command` |
 
 Other `GET` requests (with or without credentials), `/metrics` scrapes and MCP requests other than tool calls are not recorded.
 
