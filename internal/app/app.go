@@ -436,16 +436,18 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("initialize metadata backups: %w", err)
 	}
+	var keyRotator *keyrotation.Rotator
 	metaBackupSvc := metabackup.New(metabackup.Config{
-		InstallID: installID,
-		Store:     metaStore,
-		Targets:   targetSvc,
-		DataDir:   cfg.DataDir,
-		Settings:  settingsSvc.Current,
-		Encryptor: settingsSvc.Encryptor,
-		Publisher: bus,
-		Observe:   metricSet.ObserveMetadataBackup,
-		Logger:    logger,
+		OnRetiredPruned: previousKeyCheck(settingsSvc, func() *keyrotation.Rotator { return keyRotator }, logger),
+		InstallID:       installID,
+		Store:           metaStore,
+		Targets:         targetSvc,
+		DataDir:         cfg.DataDir,
+		Settings:        settingsSvc.Current,
+		Encryptor:       settingsSvc.Encryptor,
+		Publisher:       bus,
+		Observe:         metricSet.ObserveMetadataBackup,
+		Logger:          logger,
 	})
 	kitSvc, err := recoverykit.New(recoverykit.Config{
 		SecretKey:        key.Key,
@@ -466,11 +468,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// secret.key rotation re-seals the store, then hands the new key to every
 	// component holding it or one of its subkeys.
 	holders := &keyHolders{auth: authSvc, oidcFlow: oidcFlowRef, metaBackup: metaBackupSvc, kit: kitSvc, logger: logger}
-	keyRotator := keyrotation.New(keyrotation.Config{
+	keyRotator = keyrotation.New(keyrotation.Config{
 		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv,
-		RetiredMAC: func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
-		Apply:      holders.apply,
-		Logger:     logger,
+		RetiredMAC:       func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
+		RetiredInstallID: metabackup.InstallID,
+		Apply:            holders.apply,
+		Logger:           logger,
 	})
 	// Re-encryption of existing backups after an encryption key rotation.
 	reencryptSvc := reencrypt.New(reencrypt.Config{

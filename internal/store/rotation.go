@@ -110,6 +110,10 @@ type SecretKeyRotation struct {
 	// sealed under the new key, so they keep verifying until their next use re-hashes
 	// them (see internal/auth).
 	RetiredImportedKeyMAC []byte
+	// RetiredInstallID is the metadata backup install ID of the old key, recorded
+	// in the same transaction (see RetiredInstalls) so that its snapshots, sealed
+	// with the old key, are pruned once the delete grace period has passed.
+	RetiredInstallID string
 	// BeforeCommit, when set, runs inside the transaction right before it commits;
 	// an error rolls everything back. It exists for fault injection in tests.
 	BeforeCommit func() error
@@ -187,6 +191,16 @@ func (s *SQLiteStore) RotateSecretBox(ctx context.Context, r SecretKeyRotation) 
 	}
 	if err = rs.retireImportedKeyMAC(ctx, tx, r.RetiredImportedKeyMAC, res); err != nil {
 		return nil, fmt.Errorf("store: rotate secret key: %w", err)
+	}
+	if r.RetiredInstallID != "" {
+		list, listErr := readRetiredInstalls(ctx, tx)
+		if listErr != nil {
+			return nil, fmt.Errorf("store: rotate secret key: %w", listErr)
+		}
+		list = append(list, RetiredInstall{InstallID: r.RetiredInstallID, RetiredAt: time.Now().UTC()})
+		if err = writeRetiredInstalls(ctx, tx, list); err != nil {
+			return nil, fmt.Errorf("store: rotate secret key: %w", err)
+		}
 	}
 	n, err := tx.ExecContext(ctx, "DELETE FROM sessions")
 	if err != nil {

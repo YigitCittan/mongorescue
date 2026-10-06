@@ -46,8 +46,10 @@ type Service struct {
 	kitCurrent string
 	// oidcRoleKept is the state of WarningOIDCRoleKept (see warning.go).
 	oidcRoleKept string
-	enc          *encryption.Encryptor
-	dec          *encryption.Decryptor
+	// previousKey shows WarningPreviousKey (not stored; see SetPreviousKeyWarning).
+	previousKey bool
+	enc         *encryption.Encryptor
+	dec         *encryption.Decryptor
 
 	// oidcGuard checks and applies changes of the OIDC section (see OIDCGuard);
 	// guarded by writeMu.

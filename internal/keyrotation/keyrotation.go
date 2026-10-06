@@ -291,6 +291,10 @@ type Config struct {
 	// RetiredMAC derives, from a key that is being replaced, the key that keeps
 	// API keys imported under it verifying (see store.SecretKeyRotation).
 	RetiredMAC func(old []byte) ([]byte, error)
+	// RetiredInstallID derives the metadata backup install ID of a key that is being
+	// replaced; it is recorded with the rotation so that the snapshots sealed with
+	// that key are pruned later (see store.RetiredInstall). May be nil.
+	RetiredInstallID func(old []byte) (string, error)
 	// Apply propagates a new key (see ApplyFunc); may be nil.
 	Apply ApplyFunc
 	// Logger logs the rotation (fingerprints only).
@@ -329,6 +333,11 @@ func New(cfg Config) *Rotator {
 func (r *Rotator) PreviousKeyKept() bool {
 	ok, _ := secretbox.KeyFileExists(r.cfg.Files.Previous)
 	return ok && !r.cfg.FromEnv
+}
+
+// ForgetPreviousKey deletes secret.key.previous (no error when it is absent).
+func (r *Rotator) ForgetPreviousKey() error {
+	return secretbox.RemoveKeyFile(r.cfg.Files.Previous)
 }
 
 // FromEnv reports whether the key comes from MONGORESCUE_SECRET_KEY.
@@ -399,6 +408,12 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 			return nil, err
 		}
 	}
+	var retiredInstall string
+	if r.cfg.RetiredInstallID != nil {
+		if retiredInstall, err = r.cfg.RetiredInstallID(old); err != nil {
+			return nil, err
+		}
+	}
 	log := r.cfg.Logger.With(slog.String("old_fingerprint", oldFP), slog.String("new_fingerprint", newFP))
 
 	if err = r.cfg.Store.BeginKeyRotation(ctx, store.KeyRotation{OldFingerprint: oldFP, NewFingerprint: newFP, StartedAt: r.cfg.Now().UTC()}); err != nil {
@@ -418,7 +433,7 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 	res, err := r.cfg.Store.RotateSecretBox(ctx, store.SecretKeyRotation{
-		Next: nextBox, RetiredImportedKeyMAC: retiredMAC,
+		Next: nextBox, RetiredImportedKeyMAC: retiredMAC, RetiredInstallID: retiredInstall,
 		BeforeCommit: func() error { return r.fault(StepBeforeCommit) },
 		AfterCommit:  r.cfg.CommitError,
 	})

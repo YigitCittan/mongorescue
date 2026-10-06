@@ -57,7 +57,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "The new credentials replace the current ones once every probe passed. Revoke the old key at your provider afterwards.",
       creds_done: "Credentials of {name} rotated.",
       creds_failed: "The new credentials failed the {step} probe; nothing was changed.",
-      creds_required: "Enter the access key ID and the secret access key."
+      creds_required: "Enter the access key ID and the secret access key.",
+      prev_warning: "The metadata snapshots sealed with the replaced secret key were deleted. Download a recovery kit (secret.key.previous is then deleted), or delete secret.key.previous from the data directory."
     }
   },
   tr: {
@@ -99,7 +100,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "Yeni kimlik bilgileri tüm sınamalar geçince mevcutların yerini alır. Ardından eski anahtarı sağlayıcınızda iptal edin.",
       creds_done: "{name} kimlik bilgileri yenilendi.",
       creds_failed: "Yeni kimlik bilgileri {step} sınamasında başarısız oldu; hiçbir şey değişmedi.",
-      creds_required: "Erişim anahtarı kimliğini ve gizli erişim anahtarını girin."
+      creds_required: "Erişim anahtarı kimliğini ve gizli erişim anahtarını girin.",
+      prev_warning: "Değiştirilen gizli anahtarla mühürlü meta veri anlık görüntüleri silindi. Bir kurtarma kiti indirin (secret.key.previous ardından silinir) ya da secret.key.previous'ı veri dizininden silin."
     }
   },
   de: {
@@ -141,7 +143,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "Die neuen Zugangsdaten ersetzen die aktuellen, sobald alle Prüfungen bestanden sind. Widerrufen Sie danach den alten Schlüssel beim Anbieter.",
       creds_done: "Zugangsdaten von {name} rotiert.",
       creds_failed: "Die neuen Zugangsdaten sind bei der Prüfung „{step}“ gescheitert; nichts wurde geändert.",
-      creds_required: "Geben Sie Zugriffsschlüssel-ID und geheimen Zugriffsschlüssel ein."
+      creds_required: "Geben Sie Zugriffsschlüssel-ID und geheimen Zugriffsschlüssel ein.",
+      prev_warning: "Die mit dem ersetzten geheimen Schlüssel versiegelten Metadaten-Snapshots wurden gelöscht. Laden Sie ein Recovery-Kit herunter (secret.key.previous wird dann gelöscht) oder löschen Sie secret.key.previous aus dem Datenverzeichnis."
     }
   },
   es: {
@@ -183,7 +186,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "Las credenciales nuevas sustituyen a las actuales cuando pasan todas las pruebas. Después revoque la clave antigua en su proveedor.",
       creds_done: "Credenciales de {name} rotadas.",
       creds_failed: "Las credenciales nuevas fallaron la prueba {step}; no se cambió nada.",
-      creds_required: "Introduzca el ID de clave de acceso y la clave de acceso secreta."
+      creds_required: "Introduzca el ID de clave de acceso y la clave de acceso secreta.",
+      prev_warning: "Se borraron las instantáneas de metadatos selladas con la clave secreta sustituida. Descargue un kit de recuperación (entonces se borra secret.key.previous) o borre secret.key.previous del directorio de datos."
     }
   },
   fr: {
@@ -225,7 +229,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "Les nouveaux identifiants remplacent les actuels une fois tous les tests réussis. Révoquez ensuite l'ancienne clé chez votre fournisseur.",
       creds_done: "Identifiants de {name} remplacés.",
       creds_failed: "Les nouveaux identifiants ont échoué au test {step} ; rien n'a été modifié.",
-      creds_required: "Saisissez l'ID de clé d'accès et la clé d'accès secrète."
+      creds_required: "Saisissez l'ID de clé d'accès et la clé d'accès secrète.",
+      prev_warning: "Les instantanés de métadonnées scellés avec la clé secrète remplacée ont été supprimés. Téléchargez un kit de récupération (secret.key.previous est alors supprimée) ou supprimez secret.key.previous du répertoire de données."
     }
   },
   zh: {
@@ -267,7 +272,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "所有测试通过后，新凭据将替换当前凭据。之后请在提供商处吊销旧密钥。",
       creds_done: "{name} 的凭据已轮换。",
       creds_failed: "新凭据未通过 {step} 测试；未做任何更改。",
-      creds_required: "请输入访问密钥 ID 和私有访问密钥。"
+      creds_required: "请输入访问密钥 ID 和私有访问密钥。",
+      prev_warning: "用被替换的密钥封存的元数据快照已删除。请下载恢复套件（随后会删除 secret.key.previous），或从数据目录中删除 secret.key.previous。"
     }
   },
   ja: {
@@ -309,7 +315,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "すべてのテストに合格すると、新しい認証情報が現在のものと置き換わります。その後、プロバイダーで古いキーを無効にしてください。",
       creds_done: "{name} の認証情報をローテーションしました。",
       creds_failed: "新しい認証情報は {step} テストに失敗しました。何も変更されていません。",
-      creds_required: "アクセスキー ID とシークレットアクセスキーを入力してください。"
+      creds_required: "アクセスキー ID とシークレットアクセスキーを入力してください。",
+      prev_warning: "置き換えた秘密鍵で封印されたメタデータスナップショットは削除されました。リカバリーキットをダウンロードする（その後 secret.key.previous は削除されます）か、データディレクトリから secret.key.previous を削除してください。"
     }
   },
   ru: {
@@ -351,7 +358,8 @@ const KEYROT_TRANSLATIONS = {
       creds_confirm: "Новые учётные данные заменят текущие, когда пройдут все проверки. Затем отзовите старый ключ у провайдера.",
       creds_done: "Учётные данные {name} заменены.",
       creds_failed: "Новые учётные данные не прошли проверку «{step}»; ничего не изменено.",
-      creds_required: "Введите ID ключа доступа и секретный ключ доступа."
+      creds_required: "Введите ID ключа доступа и секретный ключ доступа.",
+      prev_warning: "Снимки метаданных, запечатанные заменённым секретным ключом, удалены. Скачайте комплект восстановления (после этого secret.key.previous удаляется) или удалите secret.key.previous из каталога данных."
     }
   }
 };
@@ -375,6 +383,16 @@ if (typeof ROLE_ACTION_SCOPES === "object") {
 // ---------------------------------------------------------------------------
 
 const keyrot = { status: null, job: null };
+
+// WARNING_PREVIOUS_KEY is the settings warning that secret.key.previous is no
+// longer needed (settings.WarningPreviousKey).
+const WARNING_PREVIOUS_KEY = "previous_secret_key";
+
+// keyrotRenderWarnings refreshes the section when the warnings change (app.js
+// renderWarnings).
+function keyrotRenderWarnings() {
+  if (document.getElementById("keyrot-section")) renderKeyRotation();
+}
 
 // keyrotEl creates an element with a class and text.
 function keyrotEl(tag, className, text) {
@@ -424,6 +442,10 @@ function renderKeyRotation() {
   if (sk && sk.fingerprint) secret.appendChild(keyrotEl("p", "form-hint", tf("keyrot.secret_fp", { fp: sk.fingerprint })));
   if (sk && sk.from_env) secret.appendChild(keyrotEl("p", "notice notice-warn", t("keyrot.secret_env")));
   if (sk && sk.previous_key_kept) secret.appendChild(keyrotEl("p", "form-hint", t("keyrot.secret_prev")));
+  const warnings = state.settings && Array.isArray(state.settings.warnings) ? state.settings.warnings : [];
+  if (warnings.some(w => w && w.id === WARNING_PREVIOUS_KEY)) {
+    secret.appendChild(keyrotEl("p", "notice notice-warn", t("keyrot.prev_warning")));
+  }
   const sb = keyrotButton("keyrot-secret", t("keyrot.secret_btn"), true);
   sb.disabled = !sk || !!sk.from_env;
   secret.appendChild(sb);

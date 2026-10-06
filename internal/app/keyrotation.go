@@ -3,6 +3,10 @@ package app
 import (
 	"context"
 	"log/slog"
+	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/keyrotation"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/auth/oidc"
@@ -11,6 +15,33 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
+
+// previousKeyCheck runs once the metadata snapshots sealed with every rotated-away
+// secret key were pruned (metabackup.Config.OnRetiredPruned): secret.key.previous is
+// then only needed by an operator who kept nothing else, so it is deleted when a
+// recovery kit (which carries the current key) was downloaded after the last
+// rotation, and settings.WarningPreviousKey asks the administrator otherwise.
+func previousKeyCheck(settingsSvc *settings.Service, rotator func() *keyrotation.Rotator, logger *slog.Logger) func(context.Context, time.Time) {
+	return func(_ context.Context, lastRotation time.Time) {
+		r := rotator()
+		if r == nil || !r.PreviousKeyKept() {
+			settingsSvc.SetPreviousKeyWarning(false)
+			return
+		}
+		kit := settingsSvc.RecoveryKitStatus()
+		if kit.DownloadedAt == nil || !kit.DownloadedAt.After(lastRotation) {
+			settingsSvc.SetPreviousKeyWarning(true)
+			return
+		}
+		if err := r.ForgetPreviousKey(); err != nil {
+			logger.Warn("could not delete secret.key.previous", logsafe.Error(err))
+			settingsSvc.SetPreviousKeyWarning(true)
+			return
+		}
+		settingsSvc.SetPreviousKeyWarning(false)
+		logger.Info("deleted secret.key.previous: its metadata snapshots were pruned and a recovery kit was downloaded since the rotation")
+	}
+}
 
 // keyHolders are the components that keep secret.key, or a subkey of it, in memory.
 type keyHolders struct {

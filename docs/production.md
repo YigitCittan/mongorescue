@@ -185,7 +185,7 @@ After a suspected leak, when someone who held a key leaves, or on a schedule, ro
 
 | What | How | Afterwards |
 | :--- | :--- | :--- |
-| `secret.key` | *Rotate secret.key* (your password; a second administrator under the two-person rule), or `POST /api/v1/security/rotate-secret-key` | Everyone signs in again. Download a new recovery kit; keep the previous one (or include `secret.key.previous`) for snapshots taken before the rotation |
+| `secret.key` | *Rotate secret.key* (your password; a second administrator under the two-person rule), or `POST /api/v1/security/rotate-secret-key` | Everyone signs in again. Download a new recovery kit; keep the previous one (or include `secret.key.previous`) for snapshots taken before the rotation. Those snapshots are deleted once the delete grace period has passed, then `secret.key.previous` too (after a new kit; otherwise a warning asks for one) |
 | `MONGORESCUE_SECRET_KEY` | Not rotated by MongoRescue: move the key into `secret.key`, rotate, then set the variable to the new key ([procedure](encryption.md#keys-from-mongorescue_secret_key)) | As above |
 | Backup encryption key | *Rotate encryption key*, optionally re-encrypting existing backups, or `POST /api/v1/encryption/rotate` | Escrow the new identity (new recovery kit); keep the old ones until no backup needs them |
 | S3 credentials | *Test and rotate* with the new key pair, or `POST /api/v1/storage-targets/{id}/rotate-credentials` | Revoke the old key at the provider |

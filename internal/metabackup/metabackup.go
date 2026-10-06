@@ -138,6 +138,9 @@ type Config struct {
 	Logger *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// OnRetiredPruned, when set, runs once every install ID retired by a secret key
+	// rotation was pruned (see PruneRetired), with the time of the last rotation.
+	OnRetiredPruned func(ctx context.Context, lastRotation time.Time)
 	// CheckInterval is how often the background loop looks for a due snapshot
 	// (default 5 minutes); StartDelay delays its first check (default 1 minute).
 	CheckInterval time.Duration
@@ -332,6 +335,9 @@ func (s *Service) loop(ctx context.Context) {
 		case <-timer.C:
 		}
 		s.RunDue(ctx)
+		if err := s.PruneRetired(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Warn("could not delete the metadata snapshots of a rotated secret key", logsafe.Error(err))
+		}
 		timer.Reset(s.cfg.CheckInterval)
 	}
 }
