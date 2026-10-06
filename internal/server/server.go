@@ -599,7 +599,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot})
+	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot,
+		Warnings: s.ops.JobWarnings(r.Context(), &job)})
 }
 
 // handleGetJob returns a job with its next activations.
@@ -626,7 +627,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The redacted job with what the edit deferred (a shorter retention).
-	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection})
+	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection, Warnings: res.Warnings})
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target

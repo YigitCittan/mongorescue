@@ -474,6 +474,29 @@ a.menu-item {
   color: var(--success);
 }
 
+/* Storage protection hints under the readiness table (objectlock.js). */
+.rd-hints {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.rd-hints-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rd-hints ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.rd-hint-warn {
+  color: var(--warn);
+}
+
 .rd-missed {
   color: var(--danger);
   font-weight: 600;

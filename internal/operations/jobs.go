@@ -146,10 +146,29 @@ type JobDetails struct {
 
 // JobSaveResult is a stored job and what its edit deferred: a shortened retention
 // waits for the delete grace period (and, with the two-person rule, for a second
-// administrator first).
+// administrator first). Warnings are notes on the saved job that did not refuse it
+// (see JobWarnings).
 type JobSaveResult struct {
 	*models.Job
 	JobProtection
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// JobWarnings returns the notes on job worth showing after a save: a retention that
+// deletes backups before the S3 Object Lock of its storage target ends (allowed, but
+// storage keeps them, and their cost, until it does).
+func (s *Service) JobWarnings(ctx context.Context, job *models.Job) []string {
+	if s.cfg.Targets == nil || job == nil {
+		return nil
+	}
+	t, err := s.cfg.Targets.Resolve(ctx, job.StorageTargetID)
+	if err != nil {
+		return nil
+	}
+	if w := t.RetentionLockWarning(job.RetentionDays, job.RetentionCount); w != "" {
+		return []string{w}
+	}
+	return nil
 }
 
 // ValidateJob checks and normalises a job before it is created or updated: an empty
@@ -446,7 +465,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	if err != nil {
 		return nil, err
 	}
-	return &JobSaveResult{Job: job, JobProtection: *prot}, nil
+	return &JobSaveResult{Job: job, JobProtection: *prot, Warnings: s.JobWarnings(ctx, job)}, nil
 }
 
 // GetJobDetails returns job id with its next JobDetailsNextRuns activations, or an

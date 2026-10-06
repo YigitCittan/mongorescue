@@ -101,6 +101,9 @@ type Config struct {
 	// Streams lists the PITR streams: they appear in the report, and a stream's
 	// durable lag is the PITR RPO of the rows of its connection; nil means none.
 	Streams StreamLister
+	// Targets lists the storage targets (with masked secrets) for the report's
+	// storage hints; nil means none.
+	Targets func(ctx context.Context) ([]*models.StorageTarget, error)
 	// Publisher receives job.rpo_missed and job.rpo_recovered.
 	Publisher events.Publisher
 	// Observe receives the samples of every check (metrics) with the time the check

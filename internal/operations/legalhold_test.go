@@ -143,3 +143,21 @@ func TestLegalHoldUnpinWaitsForTheSecondApprover(t *testing.T) {
 		t.Fatalf("after the approval: %+v, holds %v; want unpinned and the hold lifted", rec, d.holds)
 	}
 }
+
+// TestJobWarningsForARetentionShorterThanTheLock checks the warning a job save
+// carries when its retention deletes backups before their object lock ends.
+func TestJobWarningsForARetentionShorterThanTheLock(t *testing.T) {
+	env, _ := newLegalHoldEnv(t)
+	ctx := context.Background()
+	if w := env.svc.JobWarnings(ctx, &models.Job{StorageTargetID: "tgt_lock", RetentionDays: 7}); len(w) != 1 {
+		t.Fatalf("warnings = %v; want one for 7 days under a 30-day lock", w)
+	}
+	for _, j := range []*models.Job{
+		{StorageTargetID: "tgt_lock", RetentionDays: 30},
+		{StorageTargetID: "tgt_plain", RetentionDays: 1},
+	} {
+		if w := env.svc.JobWarnings(ctx, j); len(w) != 0 {
+			t.Errorf("warnings for %+v = %v; want none", j, w)
+		}
+	}
+}
