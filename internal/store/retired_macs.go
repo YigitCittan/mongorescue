@@ -108,9 +108,12 @@ func writeRetiredMACs(ctx context.Context, tx *sql.Tx, box *secretbox.Box, keys 
 // the retired MAC keys, sealed under the next key, keeping only the keys a stored
 // hash still names. The list was re-sealed under the next key already.
 func (r resealer) retireImportedKeyMAC(ctx context.Context, tx *sql.Tx, mac []byte, res *KeyRotationResult) error {
-	keys, err := readRetiredMACs(ctx, tx, r.next)
-	if err != nil {
-		return err
+	var keys []retiredMAC
+	if !slices.Contains(*r.skipped, retiredMACsAt.String()) {
+		var err error
+		if keys, err = readRetiredMACs(ctx, tx, r.next); err != nil {
+			return err
+		}
 	}
 	if len(mac) > 0 {
 		kid := auth.ImportedKeyMACID(mac)

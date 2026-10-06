@@ -132,6 +132,9 @@ type KeyRotationResult struct {
 	Resealed int
 	// SessionsRevoked counts the dashboard sessions that were removed.
 	SessionsRevoked int
+	// Skipped names the values ("table|id|field") that could not be opened and were
+	// left as they were (see CorruptRecords); they need to be entered again.
+	Skipped []string
 }
 
 // sealedJSONField is a secret stored at path in the JSON data column of table.
@@ -213,9 +216,14 @@ func (s *SQLiteStore) reseal(ctx context.Context, r SecretKeyRotation, old *secr
 			_ = tx.Rollback()
 		}
 	}()
-	rs := resealer{old: old, next: r.Next}
+	rs := resealer{old: old, next: r.Next, skipped: &res.Skipped}
 	if err = rs.resealAll(ctx, tx, res); err != nil {
 		return nil, fmt.Errorf("store: rotate secret key: %w", err)
+	}
+	res.Resealed -= len(res.Skipped)
+	for _, at := range res.Skipped {
+		s.logger.Warn("secret key rotation: a stored secret could not be opened and was left as it was; enter it again",
+			slog.String("location", at))
 	}
 	if err = rs.retireImportedKeyMAC(ctx, tx, r.RetiredImportedKeyMAC, res); err != nil {
 		return nil, fmt.Errorf("store: rotate secret key: %w", err)
@@ -284,20 +292,30 @@ func keyCheckOpens(ctx context.Context, q queryer, box *secretbox.Box) (bool, er
 // resealer opens values with the old Box and seals them with the next one.
 type resealer struct {
 	old, next *secretbox.Box
+	// skipped collects the locations of values that could not be opened.
+	skipped *[]string
 }
 
-// reseal re-seals one value stored at at; empty values stay empty and anything not
-// sealed in the current format is refused (ErrUnsealedSecret).
+// reseal re-seals one value stored at at; empty values stay empty. A value that is
+// not sealed in the current format or does not open (damaged, or planted) is left
+// as it is and reported in skipped, like CorruptRecords: it was unreadable before
+// and stays so, and it must not block the rotation. The key check value is the
+// exception: without it the new key could not be verified.
 func (r resealer) reseal(at secretbox.Binding, v string) (string, error) {
 	if v == "" {
 		return "", nil
 	}
-	if !secretbox.IsSealed(v) {
-		return "", fmt.Errorf("%w: %s", ErrUnsealedSecret, at)
+	var plain string
+	err := fmt.Errorf("%w: %s", ErrUnsealedSecret, at)
+	if secretbox.IsSealed(v) {
+		plain, err = r.old.Open(at, v)
 	}
-	plain, err := r.old.Open(at, v)
 	if err != nil {
-		return "", fmt.Errorf("decrypt %s: %w", at, err)
+		if at.RecordID == keyCheckSetting && at.Table == tableSettings {
+			return "", fmt.Errorf("decrypt %s: %w", at, err)
+		}
+		*r.skipped = append(*r.skipped, at.String())
+		return v, nil
 	}
 	sealed, err := r.next.Seal(at, plain)
 	if err != nil {

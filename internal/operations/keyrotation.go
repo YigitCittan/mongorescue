@@ -3,6 +3,8 @@ package operations
 import (
 	"context"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -58,19 +60,25 @@ func (s *Service) RotateSecretKey(ctx context.Context) (*keyrotation.Result, err
 	if err != nil {
 		return nil, err
 	}
-	s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint)
+	s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint, res.Skipped...)
 	return res, nil
 }
 
 // keyRotated records a key rotation: a security.key_rotated event naming the kind,
 // the old and new fingerprints (never key material), the actor and the approval,
-// and the same facts on the request's audit entry.
-func (s *Service) keyRotated(ctx context.Context, kind, oldFP, newFP string) {
+// and the same facts on the request's audit entry. skipped names the stored secrets
+// that could not be re-sealed (locations only).
+func (s *Service) keyRotated(ctx context.Context, kind, oldFP, newFP string, skipped ...string) {
 	by, approvedBy := actorNames(ctx)
 	if approvedBy != "" {
 		by += " (approved by " + approvedBy + ")"
 	}
 	detail := "old fingerprint " + oldFP + ", new fingerprint " + newFP
+	if len(skipped) > 0 {
+		list := strings.Join(skipped, ", ")
+		detail += "; " + strconv.Itoa(len(skipped)) + " unreadable secrets left as they were: " + list
+		auditlog.Annotate(ctx, "skipped", list)
+	}
 	e := events.SecurityEvent(events.SecurityKeyRotated, s.now(), kind, by, "", detail)
 	if a := approvalOf(ctx); a != nil {
 		e.ApprovalID = a.approval.ID

@@ -270,6 +270,9 @@ type Result struct {
 	Resealed int `json:"resealed"`
 	// SessionsRevoked counts the dashboard sessions that were signed out.
 	SessionsRevoked int `json:"sessions_revoked"`
+	// Skipped names the stored secrets ("table|id|field") that could not be opened
+	// and were left as they were; they need to be entered again.
+	Skipped []string `json:"skipped,omitempty"`
 	// RotatedAt is when the rotation finished.
 	RotatedAt time.Time `json:"rotated_at"`
 }
@@ -491,7 +494,7 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 	}
 	log.Info("secret key rotated", slog.Int("resealed", res.Resealed), slog.Int("sessions_revoked", res.SessionsRevoked))
 	return &Result{OldFingerprint: oldFP, NewFingerprint: newFP, Resealed: res.Resealed,
-		SessionsRevoked: res.SessionsRevoked, RotatedAt: r.cfg.Now().UTC()}, nil
+		SessionsRevoked: res.SessionsRevoked, Skipped: res.Skipped, RotatedAt: r.cfg.Now().UTC()}, nil
 }
 
 // abort undoes a rotation that never committed: the next key file and the marker go.
