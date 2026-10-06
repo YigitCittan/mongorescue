@@ -83,3 +83,4 @@ Streaming keeps MongoRescue's memory flat: on a laptop (Apple silicon, MongoDB 7
 - **Legacy records** without a stored SHA-256 are restored without the checksum check.
 - **Integration tests run on Linux only**; Windows and macOS builds are unit-tested. The dashboard has no browser tests.
 - **Cloud providers** run the conformance, round-trip, API, fidelity and corruption suites; interruption tests (which inspect incomplete multipart uploads) run against MinIO and LocalStack only.
+- **S3 Object Lock** runs against MinIO only, on a second bucket the tests create with Object Lock enabled (`MONGORESCUE_TEST_S3_MINIO_LOCK_BUCKET`, set by the docker script). A lock cannot be waited out in a test, so the integration tests check the lock headers, that S3 refuses to delete a locked version, legal holds and reads of a version behind a delete marker; the purge once a lock has ended is covered by unit tests with a fixed clock.

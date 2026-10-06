@@ -76,15 +76,26 @@ In a shared instance, limit the people and the automation of each team to their 
 - **Global settings and names.** Settings, notification channels and the names of users stay readable to every role, as before.
 - **Deleted connections.** Deleting a connection keeps it in the lists of the users and keys limited to it (it simply no longer exists), and an empty list is no connection, never every connection, so a limit never widens by itself. Saving a user's list drops the deleted IDs.
 
+## Immutable backups (S3 Object Lock)
+
+Delete protection guards the paths through MongoRescue; an S3 target with an object lock mode also guards the storage itself. Every object MongoRescue uploads to it (backup archives, PITR base backups, oplog chunks, metadata snapshots) is locked for the target's `retention_days` ([configuration](configuration.md#immutable-backups-s3-object-lock)):
+
+- **Compliance mode**: nobody can delete or overwrite a locked version, or shorten its lock, before it ends: not MongoRescue, not an attacker with the bucket's credentials or with MongoRescue's database and `secret.key`, not the bucket owner, not the AWS root account. Only closing the whole cloud account removes the data.
+- **Governance mode**: the same, except for principals with `s3:BypassGovernanceRetention`, who can delete locked versions or shorten their lock. Never give that permission to MongoRescue's credentials; the dashboard warns about governance-mode targets.
+- **Legal hold on pin** keeps a pinned backup's archive beyond its retention until it is unpinned. Unpinning needs the admin role and, with the two-person rule, a second administrator.
+
+MongoRescue itself respects the lock: a deleted backup whose archive is still locked stays `deleted` (and can be undeleted) until the lock ends, and then the purge deletes the recorded object version, which frees the space; deleting only the key would leave the data behind a delete marker. A target with an object lock mode is refused unless its bucket has Object Lock and versioning enabled; MongoRescue never enables them. Lowering a target's lock (a shorter retention, governance instead of compliance, or none) only applies to later uploads: objects already written keep their lock.
+
 ## What this protects against
 
 - A stolen administrator API key or session, or a malicious or careless administrator, using MongoRescue (the dashboard, the REST API, the CLI or MCP) to delete backups, run retention with a short policy, lower the protections, or delete or repoint storage targets: every backup stays recoverable for at least the grace period, which is the time you have to notice (configure a `security.destructive_action` notification rule) and undo.
 - With the two-person rule, one compromised administrator cannot finish any of those actions at all.
+- With an S3 target in compliance mode, **deletion on the storage side** too: nobody, whatever credentials they hold, can delete a backup's archive before its lock ends.
 
 ## What this does not protect against
 
-- **Deletion on the storage side.** Anyone with the bucket's credentials (or the storage target's credentials taken from MongoRescue's database together with `secret.key`), or with write access to a local target's directory, can delete the archives directly, without MongoRescue noticing until a [storage scan](verification.md#storage-scans) reports them missing. Protect the storage itself:
-  - **S3 Object Lock** (compliance or governance mode retention on the bucket) makes objects undeletable for a fixed time; MongoRescue support for it is planned in [#59](https://github.com/YigitCittan/mongorescue/issues/59).
+- **Deletion on the storage side, without Object Lock.** On a target without an object lock mode (or in governance mode, by a principal with `s3:BypassGovernanceRetention`), anyone with the bucket's credentials (or the storage target's credentials taken from MongoRescue's database together with `secret.key`), or with write access to a local target's directory, can delete the archives directly, without MongoRescue noticing until a [storage scan](verification.md#storage-scans) reports them missing. Local targets have no immutability option at all: a delete there is a plain file removal. Protect the storage itself:
+  - **S3 Object Lock in compliance mode** on the target ([above](#immutable-backups-s3-object-lock)) makes every archive undeletable until its lock ends. Archives are deletable again afterwards, so choose `retention_days` at least as long as the time you need to notice an attack.
   - **Least-privilege credentials**: give MongoRescue's access key `s3:PutObject`, `s3:GetObject`, `s3:ListBucket` and `s3:AbortMultipartUpload`, but not `s3:DeleteObject`, and let a bucket lifecycle rule expire objects instead. Set the lifecycle expiry to at least the longest retention plus the grace period. The purge then cannot delete archives: it logs a warning and keeps the backups `deleted` until the lifecycle rule removed the objects, after which it marks them purged. Partial archives of failed or cancelled backups and the probe objects of target tests (`.mongorescue-probe-*`) stay too until the lifecycle expires them; storage scans report the partial ones as orphans.
   - Keep a copy outside MongoRescue's reach (another account, offline media).
 - **Access to the host or the data directory.** Whoever can write `mongorescue.db` or read `secret.key` can change any record, any setting and any credential. Protect the host, the volume and the recovery kit.

@@ -191,7 +191,46 @@ A storage target is where backup archives are written: a directory on the MongoR
 | `s3.use_path_style` | Path-style URLs (required by MinIO and some gateways) |
 | `s3.part_size_mb` | Multipart upload part size in MiB, 5 to 512 (default 16). S3 allows 10,000 parts, so it caps one archive: 16 MiB allows about 156 GiB, 64 MiB about 625 GiB. Each running upload buffers part size × 2. Backups warn when a database's expected archive exceeds 80% of that limit; see [S3 multipart limits](production.md#s3-multipart-limits). Changing it needs no connection test and applies to the next backup |
 
+| `s3.object_lock` | `none` (default), `governance` or `compliance`: the [S3 Object Lock](#immutable-backups-s3-object-lock) mode set on every uploaded object. The bucket must have Object Lock enabled |
+| `s3.retention_days` | How long every upload is locked, 1 to 3650 days; required with a lock mode, `0` without |
+| `s3.legal_hold_on_pin` | Set an S3 legal hold on a backup's archive while the backup is pinned (needs a lock mode) |
+
 Each target gets its own driver, built on first use and rebuilt after the target changes.
+
+### Immutable backups (S3 Object Lock)
+
+With `s3.object_lock` set, every object MongoRescue uploads to the target (backup archives, PITR base backups, oplog chunks and metadata snapshots) carries an S3 Object Lock retention in that mode until `now + s3.retention_days`. Until then nobody can delete or overwrite that version: in **compliance** mode not even the bucket owner or the AWS root account, in **governance** mode nobody without `s3:BypassGovernanceRetention`. This covers deletion on the storage side, which [delete protection](security.md) cannot (see the [threat model](security.md#immutable-backups-s3-object-lock)).
+
+- **The bucket must be created with Object Lock.** Saving or testing a target with a lock mode reads the bucket's Object Lock configuration (`GetObjectLockConfiguration`) and versioning state and refuses the target (`400`) when Object Lock is not enabled or versioning is off. MongoRescue never enables either itself: Object Lock cannot be turned off once on, so that is the bucket owner's decision.
+- **Uploads carry a checksum.** S3 requires `Content-MD5` or an `x-amz-checksum-*` header on every put with a retention. The driver otherwise sends checksums only when an operation requires them (some S3-compatible providers reject them), so locked targets, and only those, send CRC32 checksums, computed while streaming for every part of a multipart upload.
+- **Versions.** Object Lock needs versioning, and on a versioned bucket deleting a key only adds a delete marker: the data stays, and is billed, until the version itself is deleted. MongoRescue records the S3 version ID of every upload (`storage_version_id` on backups, `version_id` on oplog chunks); restores and verifications read that version, and the purge deletes that version, so space is freed once the lock ends. Objects written outside these paths (an archive whose backup failed after the upload, an orphan found by a storage scan) are only hidden by a delete marker; let a lifecycle rule expire noncurrent versions and delete markers to clean them up.
+- **Retention and purge wait for the lock.** A deleted backup or oplog chunk stays `deleted` after its grace period while its archive is locked, and the purge removes it once `retain_until` has passed. Backups show `retain_until` and `object_lock_mode` ("Locked until …" in the dashboard). Metadata snapshot retention reads each snapshot's retention and keeps locked ones until their lock ends.
+- **Job retention shorter than the lock** is allowed, but saving such a job answers with a warning: retention marks the backups deleted, and storage keeps them, and their cost, until their lock ends.
+- **Legal hold on pin.** With `s3.legal_hold_on_pin`, pinning a backup sets an S3 legal hold on its archive and unpinning lifts it; the hold has no end date and blocks deletion even after the retention. Unpinning needs the admin role and, with the [two-person rule](security.md#the-two-person-rule), a second administrator's approval; the hold is lifted only when the unpin runs. A pin or unpin whose hold change fails is refused (`502`) and changes nothing.
+- **Connection test.** The probe object of a locked target is written without a lock and its version is deleted afterwards, so tests leave nothing behind; a bucket with a *default retention* rule locks the probe anyway, so prefer the target's own lock mode to a bucket default.
+- **Hints.** A target without Object Lock shows an info hint (backups can be deleted with the bucket credentials), a governance-mode target a warning (principals with `s3:BypassGovernanceRetention` can delete), in the dashboard, in the target API (`hints`) and in the [readiness report](api.md#recovery-readiness) (`storage_hints`). Local targets have no immutability option: a local delete is a plain file removal, so only delete protection's grace period protects them.
+
+**Permissions** of a locked target's credentials: `s3:PutObject`, `s3:PutObjectRetention`, `s3:GetObject`, `s3:GetObjectVersion`, `s3:ListBucket`, `s3:AbortMultipartUpload`, `s3:DeleteObject`, `s3:DeleteObjectVersion` (for the purge once locks end), `s3:GetBucketObjectLockConfiguration`, `s3:GetBucketVersioning` and, with `legal_hold_on_pin`, `s3:PutObjectLegalHold`. Never grant `s3:BypassGovernanceRetention`.
+
+**Creating a lock-enabled bucket:**
+
+- **AWS S3:** `aws s3api create-bucket --bucket NAME --object-lock-enabled-for-bucket` (add `--create-bucket-configuration LocationConstraint=REGION` outside `us-east-1`); this also turns versioning on. An existing bucket can be switched once and irreversibly: enable versioning, then `aws s3api put-object-lock-configuration --bucket NAME --object-lock-configuration '{"ObjectLockEnabled":"Enabled"}'`.
+- **MinIO:** `mc mb --with-lock ALIAS/NAME` (Object Lock can only be enabled when the bucket is created).
+- **Wasabi:** enable *Object Locking* when creating the bucket in the console, or use the AWS CLI command above with `--endpoint-url https://s3.<region>.wasabisys.com`.
+- **Backblaze B2:** enable *Object Lock* when creating the bucket in the web console (or `b2 bucket create --file-lock-enabled NAME allPrivate`), and use the S3 endpoint `https://s3.<region>.backblazeb2.com`.
+- **Other providers:** create the bucket with Object Lock enabled through the provider's console or its S3 API (`CreateBucket` with `x-amz-bucket-object-lock-enabled: true`), then save and test the target: the check tells whether the provider supports the API.
+
+| Provider | S3 Object Lock | Notes |
+| :--- | :--- | :--- |
+| AWS S3 | Yes: governance, compliance, legal hold | Reference implementation |
+| MinIO | Yes: governance, compliance, legal hold | Only on buckets created with `--with-lock`; tested in the integration suite |
+| Wasabi | Yes: governance, compliance, legal hold | Enable Object Locking on bucket creation |
+| Backblaze B2 | Yes: governance, compliance, legal hold (S3 API) | Enable Object Lock on the bucket |
+| Cloudflare R2 | No | R2 *bucket locks* are a separate, bucket-level feature without the S3 Object Lock API: MongoRescue cannot set or check them. Deletes they block fail, and the purge keeps the backups `deleted` and retries |
+| DigitalOcean Spaces | No | |
+| Local disk | No | Use delete protection, least-privilege file permissions and an offsite copy |
+
+Provider support changes; the save-time check is authoritative for your bucket.
 
 ## Upgrading: deprecated environment variables and config.json
 
