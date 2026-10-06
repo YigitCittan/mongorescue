@@ -769,7 +769,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
-	case errors.Is(err, operations.ErrDatabaseListing):
+	case errors.Is(err, operations.ErrDatabaseListing), errors.Is(err, operations.ErrLegalHold):
 		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
 	case errors.Is(err, operations.ErrKeyRequired):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
