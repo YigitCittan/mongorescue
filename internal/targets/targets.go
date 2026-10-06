@@ -727,8 +727,8 @@ func (s *Service) runProbe(ctx context.Context, t *models.StorageTarget) error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		// On a versioned bucket only deleting the version frees it.
-		if err := storage.DeleteVersion(cleanupCtx, driver, key, version); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), logsafe.Error(err))
+		if delErr := storage.DeleteVersion(cleanupCtx, driver, key, version); delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
+			s.logger.Warn("failed to delete storage probe object", slog.String("key", key), logsafe.Error(delErr))
 		}
 	}()
 	rc, err := driver.Retrieve(ctx, key)

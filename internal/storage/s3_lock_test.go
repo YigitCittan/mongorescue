@@ -51,13 +51,13 @@ func (f *lockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPost && q.Has("uploads"):
 		w.Header().Set("Content-Type", "application/xml")
-		_, _ = fmt.Fprintf(w, `<InitiateMultipartUploadResult><Bucket>%s</Bucket><Key>%s</Key><UploadId>u1</UploadId></InitiateMultipartUploadResult>`, fakeBucket, key)
+		_, _ = fmt.Fprintf(w, `<InitiateMultipartUploadResult><Bucket>%s</Bucket><Key>k</Key><UploadId>u1</UploadId></InitiateMultipartUploadResult>`, fakeBucket)
 	case r.Method == http.MethodPut && q.Has("partNumber"):
 		w.Header().Set("ETag", `"part-`+q.Get("partNumber")+`"`)
 	case r.Method == http.MethodPost && q.Has("uploadId"):
 		w.Header().Set("Content-Type", "application/xml")
 		w.Header().Set("x-amz-version-id", "v-multi")
-		_, _ = fmt.Fprintf(w, `<CompleteMultipartUploadResult><Bucket>%s</Bucket><Key>%s</Key><ETag>"multi"</ETag></CompleteMultipartUploadResult>`, fakeBucket, key)
+		_, _ = fmt.Fprintf(w, `<CompleteMultipartUploadResult><Bucket>%s</Bucket><Key>k</Key><ETag>"multi"</ETag></CompleteMultipartUploadResult>`, fakeBucket)
 		f.objects[key] = nil
 	case r.Method == http.MethodPut:
 		f.objects[key] = body
