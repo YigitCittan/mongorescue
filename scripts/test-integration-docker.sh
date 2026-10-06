@@ -3,6 +3,9 @@
 # Runs the MongoRescue integration suite against disposable containers:
 #   - MongoDB (MONGO_IMAGE, default 7) with a random root password (exercises
 #     redaction and --config), standalone or a single-node replica set
+#   - a second MongoDB with --tlsMode requireTLS and --auth, its certificates
+#     signed by a throwaway CA generated in Go (internal/integration/gencerts),
+#     for TLS with a custom CA and x509 client certificate authentication
 #   - MinIO and LocalStack as S3-compatible emulators
 # Containers bind to random loopback ports and are always removed on exit.
 #
@@ -21,6 +24,7 @@
 #                  "keycloak" also starts Keycloak (KEYCLOAK_IMAGE) in dev mode
 #                  with the realm of internal/integration/testdata, for the
 #                  single sign-on test (MONGORESCUE_TEST_KEYCLOAK_URL)
+#   IT_TLS         1 (default) starts the TLS MongoDB (MONGORESCUE_TEST_TLS_*); 0 skips it
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
 #   GOTESTFLAGS    extra flags for go test (e.g. "-run TestStorageConformance -v")
@@ -37,6 +41,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IT_PROVIDERS="${IT_PROVIDERS:-minio localstack keycloak}"
 MONGO_TOPOLOGY="${MONGO_TOPOLOGY:-standalone}"
 IT_RACE="${IT_RACE:-1}"
+IT_TLS="${IT_TLS:-1}"
+TLS_DIR=""
 
 PREFIX="mongorescue-it-$$"
 MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
@@ -56,6 +62,7 @@ cleanup() {
   for c in "${CONTAINERS[@]:-}"; do
     if [ -n "$c" ]; then docker rm -f "$c" >/dev/null 2>&1 || true; fi
   done
+  if [ -n "$TLS_DIR" ]; then rm -rf "$TLS_DIR"; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -175,6 +182,44 @@ if [ "$MONGO_TOPOLOGY" = replset ]; then
   MONGO_URI_OPTIONS="${MONGO_URI_OPTIONS}&directConnection=true"
 fi
 export MONGORESCUE_TEST_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?${MONGO_URI_OPTIONS}"
+
+# --- MongoDB over TLS (custom CA, x509 client certificates) ---------------------
+if [ "$IT_TLS" = 1 ]; then
+  TLS_DIR="$(mktemp -d)"
+  # mongod runs as another user inside the container; only the client key and its
+  # password are private (0600), the server key is a throwaway.
+  chmod 755 "$TLS_DIR"
+  (cd "$ROOT" && go run -tags integration ./internal/integration/gencerts "$TLS_DIR")
+  log "starting $MONGO_IMAGE with --tlsMode requireTLS"
+  # Started without the image entrypoint: --auth with no user yet, so the first
+  # user is created through the localhost exception below. Clients without a
+  # certificate are allowed (password authentication over TLS); x509 clients
+  # present theirs.
+  docker run -d --name "$PREFIX-mongotls" -p 127.0.0.1::27017 -v "$TLS_DIR:/certs:ro" \
+    --entrypoint mongod "$MONGO_IMAGE" --auth --bind_ip_all \
+    --tlsMode requireTLS --tlsCertificateKeyFile /certs/server.pem --tlsCAFile /certs/ca.pem \
+    --tlsAllowConnectionsWithoutCertificates >/dev/null
+  CONTAINERS+=("$PREFIX-mongotls")
+  tls_eval() {
+    docker exec "$PREFIX-mongotls" mongosh --quiet --tls --tlsCAFile /certs/ca.pem --host localhost --eval "$1"
+  }
+  tls_ping() { tls_eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)' >/dev/null 2>&1; }
+  wait_for "mongodb (TLS)" 120 tls_ping
+  TLS_PW="tlsPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  TLS_SUBJECT="$(cat "$TLS_DIR/client.subject")"
+  log "creating the TLS root user and the x509 user ${TLS_SUBJECT}"
+  tls_eval "
+    const admin = db.getSiblingDB('admin');
+    admin.createUser({user: 'root', pwd: '${TLS_PW}', roles: ['root']});
+    admin.auth('root', '${TLS_PW}');
+    db.getSiblingDB('\$external').createUser({user: '${TLS_SUBJECT}', roles: [
+      {role: 'backup', db: 'admin'}, {role: 'restore', db: 'admin'}, {role: 'readAnyDatabase', db: 'admin'}]});
+  " >/dev/null
+  tls_port="$(host_port "$PREFIX-mongotls" 27017)"
+  export MONGORESCUE_TEST_TLS_URI="mongodb://root:${TLS_PW}@127.0.0.1:${tls_port}/?tls=true&authSource=admin"
+  export MONGORESCUE_TEST_TLS_X509_URI="mongodb://127.0.0.1:${tls_port}/?tls=true&authMechanism=MONGODB-X509"
+  export MONGORESCUE_TEST_TLS_DIR="$TLS_DIR"
+fi
 
 # --- MinIO ---------------------------------------------------------------------
 if [[ " $IT_PROVIDERS " == *" minio "* ]]; then
