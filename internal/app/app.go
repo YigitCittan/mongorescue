@@ -472,6 +472,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv,
 		RetiredMAC:       func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
 		RetiredInstallID: metabackup.InstallID,
+		OnCommit:         holders.onCommit,
 		Apply:            holders.apply,
 		Logger:           logger,
 	})

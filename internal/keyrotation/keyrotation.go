@@ -295,6 +295,10 @@ type Config struct {
 	// replaced; it is recorded with the rotation so that the snapshots sealed with
 	// that key are pruned later (see store.RetiredInstall). May be nil.
 	RetiredInstallID func(old []byte) (string, error)
+	// OnCommit hands the new key to in-memory holders that must switch atomically
+	// with the store (see store.SecretKeyRotation.OnCommit): it runs under the
+	// store's key lock and must not call the store. May be nil.
+	OnCommit ApplyFunc
 	// Apply propagates a new key (see ApplyFunc); may be nil.
 	Apply ApplyFunc
 	// Logger logs the rotation (fingerprints only).
@@ -436,6 +440,11 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 		Next: nextBox, RetiredImportedKeyMAC: retiredMAC, RetiredInstallID: retiredInstall,
 		BeforeCommit: func() error { return r.fault(StepBeforeCommit) },
 		AfterCommit:  r.cfg.CommitError,
+		OnCommit: func() {
+			if r.cfg.OnCommit != nil {
+				r.cfg.OnCommit(next, old)
+			}
+		},
 	})
 	if err != nil {
 		if crash := (*crashError)(nil); errors.As(err, &crash) {

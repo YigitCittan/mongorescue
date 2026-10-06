@@ -52,10 +52,20 @@ type keyHolders struct {
 	logger     *slog.Logger
 }
 
-// apply hands a rotated secret.key to every holder (keyrotation.ApplyFunc). The
-// store already uses it; a failure here is logged and fixed by a restart, which
-// derives everything from secret.key again.
-func (h *keyHolders) apply(next, _ []byte) {
+// apply refreshes what depends on the rotated key and needs the store (the recovery
+// kit fingerprint) once the rotation committed (keyrotation.ApplyFunc).
+func (h *keyHolders) apply(_, _ []byte) {
+	if err := h.kit.Refresh(context.Background()); err != nil {
+		h.logger.Warn("could not check whether the recovery kit is current", logsafe.Error(err))
+	}
+}
+
+// onCommit hands a rotated secret.key to every in-memory holder
+// (keyrotation.Config.OnCommit). It runs under the store's key lock, so a metadata
+// snapshot never pairs the new database with the old install ID; it must not call
+// the store. A failure is logged and fixed by a restart, which derives everything
+// from secret.key again.
+func (h *keyHolders) onCommit(next, _ []byte) {
 	fail := func(what string, err error) {
 		h.logger.Error("secret key rotation: "+what+" keeps the old key until a restart", logsafe.Error(err))
 	}
@@ -78,9 +88,5 @@ func (h *keyHolders) apply(next, _ []byte) {
 	}
 	if err := h.kit.SetSecretKey(next, h.metaBackup.Prefix()); err != nil {
 		fail("the recovery kit", err)
-		return
-	}
-	if err := h.kit.Refresh(context.Background()); err != nil {
-		h.logger.Warn("could not check whether the recovery kit is current", logsafe.Error(err))
 	}
 }

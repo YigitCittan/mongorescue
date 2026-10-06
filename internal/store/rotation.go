@@ -120,6 +120,11 @@ type SecretKeyRotation struct {
 	// AfterCommit, when set, runs after a successful commit and its error is
 	// treated like an error of the commit itself (fault injection in tests).
 	AfterCommit func() error
+	// OnCommit, when set, runs once the rotation committed, while writers and
+	// WithKeyLocked still wait: in-memory state derived from the key (the metadata
+	// backup install ID) switches together with the store. It must not call the
+	// store.
+	OnCommit func()
 }
 
 // KeyRotationResult counts what RotateSecretBox changed.
@@ -163,6 +168,30 @@ func (s *SQLiteStore) RotateSecretBox(ctx context.Context, r SecretKeyRotation) 
 	if old == nil {
 		return nil, ErrNoSecretBox
 	}
+	res, err := s.reseal(ctx, r, old)
+	if err != nil {
+		return nil, err
+	}
+	s.box = r.Next
+	// Still under the key lock: code that pairs reads with the key (metadata
+	// snapshots, see WithKeyLocked) sees the new box and what OnCommit set together.
+	if r.OnCommit != nil {
+		r.OnCommit()
+	}
+	return res, nil
+}
+
+// WithKeyLocked runs fn while no secret key rotation can commit: what fn reads from
+// the database is sealed with the key in use before and after it. fn must not call
+// store methods that seal or open values (they take the same lock).
+func (s *SQLiteStore) WithKeyLocked(fn func() error) error {
+	defer s.lockKey()()
+	return fn()
+}
+
+// reseal runs the re-sealing transaction of RotateSecretBox on a dedicated
+// connection, released before it returns. Caller holds keyMu.
+func (s *SQLiteStore) reseal(ctx context.Context, r SecretKeyRotation, old *secretbox.Box) (*KeyRotationResult, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: rotate secret key: %w", err)
@@ -230,7 +259,6 @@ func (s *SQLiteStore) RotateSecretBox(ctx context.Context, r SecretKeyRotation) 
 		}
 		s.logger.Warn("secret key rotation: the commit reported an error but the database uses the new key", slog.Any("error", err))
 	}
-	s.box = r.Next
 	return res, nil
 }
 

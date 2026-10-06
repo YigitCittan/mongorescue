@@ -20,6 +20,12 @@ type retiredStore interface {
 	MarkInstallPruned(ctx context.Context, id string, at time.Time) error
 }
 
+// keyLocker holds back secret key rotations while a snapshot is taken
+// (implemented by *store.SQLiteStore).
+type keyLocker interface {
+	WithKeyLocked(fn func() error) error
+}
+
 // targetLister lists every storage target (implemented by *targets.Service).
 type targetLister interface {
 	List(ctx context.Context) ([]*models.StorageTarget, error)

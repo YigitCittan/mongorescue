@@ -486,7 +486,20 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 		}
 	}()
 	file := filepath.Join(dir, "mongorescue.db")
-	if err = s.cfg.Store.VacuumInto(ctx, file); err != nil {
+	// The install ID names the key the snapshot is sealed with: read both under the
+	// store's key lock, so a secret key rotation cannot commit in between and put a
+	// snapshot sealed with one key below the other key's prefix.
+	var installID string
+	vacuum := func() error {
+		installID = s.InstallID()
+		return s.cfg.Store.VacuumInto(ctx, file)
+	}
+	if kl, ok := s.cfg.Store.(keyLocker); ok {
+		err = kl.WithKeyLocked(vacuum)
+	} else {
+		err = vacuum()
+	}
+	if err != nil {
 		return res, err
 	}
 
@@ -494,7 +507,6 @@ func (s *Service) snapshot(ctx context.Context, at time.Time) (result, error) {
 	if s.cfg.Encryptor != nil {
 		enc = s.cfg.Encryptor()
 	}
-	installID := s.InstallID()
 	key := Prefix + installID + "/" + snapshotFile(at, enc != nil)
 	obj, err := upload(ctx, driver, key, file, enc)
 	if err != nil {
