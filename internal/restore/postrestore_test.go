@@ -8,29 +8,57 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 // fakeCommands records the post-restore commands the engine runs; fail fails the
-// call with that (0-based) index.
+// call with that (0-based) index. It is its own session.
 type fakeCommands struct {
-	mu    sync.Mutex
-	dbs   []string
-	docs  []string
-	fail  int
-	calls int
+	mu       sync.Mutex
+	dbs      []string
+	docs     []string
+	fail     int
+	calls    int
+	opens    int
+	closes   int
+	deadline []time.Duration
+	// block makes every command wait for its context.
+	block bool
 }
 
-func (f *fakeCommands) RunPostRestoreCommand(_ context.Context, _, database string, command json.RawMessage) (models.PostRestoreCounts, error) {
+// open is the engine's CommandRunner.
+func (f *fakeCommands) open(context.Context, string) (CommandSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.opens++
+	return f, nil
+}
+
+func (f *fakeCommands) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closes++
+}
+
+func (f *fakeCommands) RunPostRestoreCommand(ctx context.Context, database string, command json.RawMessage) (models.PostRestoreCounts, error) {
+	f.mu.Lock()
 	f.dbs = append(f.dbs, database)
 	f.docs = append(f.docs, string(command))
 	f.calls++
-	if f.calls-1 == f.fail {
-		return models.PostRestoreCounts{}, errors.New("mongoconn: post-restore command failed: Unauthorized (code 13): not authorized")
+	if d, ok := ctx.Deadline(); ok {
+		f.deadline = append(f.deadline, time.Until(d))
+	}
+	failing, block := f.calls-1 == f.fail, f.block
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return models.PostRestoreCounts{}, errors.New("mongoconn: post-restore command failed: timed out")
+	}
+	if failing {
+		return models.PostRestoreCounts{}, errors.New("mongoconn: post-restore command failed: Unauthorized (code 13)")
 	}
 	return models.PostRestoreCounts{N: 2, Modified: 1}, nil
 }
@@ -61,7 +89,7 @@ func postRestoreEngine(t *testing.T, cmds *fakeCommands, audit *auditRecorder, a
 	src := plainBackup(t, store, []byte("archive-bytes"))
 	opts := []Option{WithRunner((&capturingRunner{}).run), WithDatabaseAdmin(admin)}
 	if cmds != nil {
-		opts = append(opts, WithCommandRunner(cmds))
+		opts = append(opts, WithCommandRunner(cmds.open))
 	}
 	if audit != nil {
 		opts = append(opts, WithCommandAudit(audit.record))
@@ -242,7 +270,7 @@ func TestPITRPostRestoreRunsInEveryCloneAndKeepsThemOnFailure(t *testing.T) {
 			cmds.fail = 1
 		}
 		e := NewEngine(f.store, "", WithRunner(r.run), WithDecryptor(f.dec), WithDatabaseAdmin(admin), WithDatabaseLister(admin.list),
-			WithCommandRunner(cmds), WithCommandAudit(audit.record))
+			WithCommandRunner(cmds.open), WithCommandAudit(audit.record))
 		req := pitrRequest()
 		req.PostRestoreCommands = []models.PostRestoreCommand{
 			{Database: "*", Command: json.RawMessage(`{"delete": "users", "deletes": [{"q": {"_id": 1}, "limit": 0}]}`)},
@@ -274,5 +302,36 @@ func TestPITRPostRestoreRunsInEveryCloneAndKeepsThemOnFailure(t *testing.T) {
 		if len(admin.dropped) != 0 || !slices.Equal(rec.PostRestore.ClonesKept, want) || !strings.Contains(rec.ErrorMessage, "kept for inspection") {
 			t.Fatalf("clones must be kept: dropped %v, kept %v, message %q", admin.dropped, rec.PostRestore.ClonesKept, rec.ErrorMessage)
 		}
+	}
+}
+
+func TestPostRestoreUsesOneSessionAndBoundsEachCommand(t *testing.T) {
+	cmds := &fakeCommands{fail: -1}
+	engine, src := postRestoreEngine(t, cmds, nil, &fakeAdmin{})
+	engine.config = func() RunConfig { return RunConfig{CommandTimeout: 80 * time.Millisecond} }
+	rec, err := engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID, PostRestoreCommands: erasures}, src)
+	if err != nil || rec.Status != models.RestoreStatusCompleted {
+		t.Fatalf("restore: %v", err)
+	}
+	if cmds.opens != 1 || cmds.closes != 1 || cmds.calls != 2 {
+		t.Fatalf("sessions opened %d, closed %d, commands %d; want one session for both commands", cmds.opens, cmds.closes, cmds.calls)
+	}
+	for _, d := range cmds.deadline {
+		if d <= 0 || d > 80*time.Millisecond {
+			t.Fatalf("command deadline %s; want within the 80ms limit", d)
+		}
+	}
+
+	// A command that does not finish in time fails the restore.
+	cmds.block = true
+	start := time.Now()
+	rec, err = engine.Run(context.Background(), models.RestoreRequest{BackupID: src.ID, PostRestoreCommands: erasures[:1]}, src)
+	if !errors.Is(err, ErrPostRestoreFailed) || !strings.Contains(rec.ErrorMessage, "timed out") || time.Since(start) > 5*time.Second {
+		t.Fatalf("blocked command: %v, %q after %s", err, rec.ErrorMessage, time.Since(start))
+	}
+	// Without a setting the default applies.
+	engine.config = func() RunConfig { return RunConfig{} }
+	if got := engine.commandTimeout(); got != DefaultCommandTimeout {
+		t.Fatalf("default command timeout = %s", got)
 	}
 }

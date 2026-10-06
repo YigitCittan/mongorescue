@@ -1,11 +1,25 @@
 package app
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+	"github.com/yigitcittan/mongorescue/internal/restore"
 )
+
+// commandRunner opens the post-restore command sessions of restores through p.
+func commandRunner(p *mongoconn.Prober) restore.CommandRunner {
+	return func(ctx context.Context, uri string) (restore.CommandSession, error) {
+		s, err := p.OpenCommandSession(ctx, uri)
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
+}
 
 // PostRestoreAuditAction is the audit log action of a post-restore command.
 const PostRestoreAuditAction = "SYSTEM restore.post_restore_command"

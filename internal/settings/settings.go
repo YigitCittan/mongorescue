@@ -156,7 +156,16 @@ type General struct {
 	// MaxUploadMbps caps the upload of every backup whose job sets no cap of its
 	// own, in megabits per second (0 = unlimited).
 	MaxUploadMbps float64 `json:"max_upload_mbps"`
+	// PostRestoreCommandTimeout bounds each post-restore command of a restore
+	// (MinPostRestoreCommandTimeout to MaxPostRestoreCommandTimeout).
+	PostRestoreCommandTimeout Duration `json:"post_restore_command_timeout"`
 }
+
+// Limits of General.PostRestoreCommandTimeout.
+const (
+	MinPostRestoreCommandTimeout = time.Second
+	MaxPostRestoreCommandTimeout = 24 * time.Hour
+)
 
 // Security holds session, cookie, proxy, CORS and metrics options.
 type Security struct {
@@ -225,14 +234,15 @@ type RetiredKey struct {
 func Defaults() Settings {
 	return Settings{
 		General: General{
-			DefaultRetentionDays:  30,
-			DefaultRetentionCount: 10,
-			DefaultGzip:           true,
-			BackupTimeout:         Duration(6 * time.Hour),
-			BackupStallTimeout:    Duration(10 * time.Minute),
-			RestoreTimeout:        Duration(12 * time.Hour),
-			RestoreVerifyPolicy:   models.VerifyAuto,
-			LogRetentionDays:      30,
+			DefaultRetentionDays:      30,
+			DefaultRetentionCount:     10,
+			DefaultGzip:               true,
+			BackupTimeout:             Duration(6 * time.Hour),
+			BackupStallTimeout:        Duration(10 * time.Minute),
+			RestoreTimeout:            Duration(12 * time.Hour),
+			RestoreVerifyPolicy:       models.VerifyAuto,
+			LogRetentionDays:          30,
+			PostRestoreCommandTimeout: Duration(time.Minute),
 		},
 		Security: Security{
 			SessionIdleTimeout:     Duration(12 * time.Hour),
@@ -316,15 +326,16 @@ type Patch struct {
 
 // GeneralPatch updates General; see General for the fields.
 type GeneralPatch struct {
-	DefaultRetentionDays  *int                 `json:"default_retention_days,omitempty"`
-	DefaultRetentionCount *int                 `json:"default_retention_count,omitempty"`
-	DefaultGzip           *bool                `json:"default_gzip,omitempty"`
-	BackupTimeout         *Duration            `json:"backup_timeout,omitempty"`
-	BackupStallTimeout    *Duration            `json:"backup_stall_timeout,omitempty"`
-	RestoreTimeout        *Duration            `json:"restore_timeout,omitempty"`
-	RestoreVerifyPolicy   *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
-	LogRetentionDays      *int                 `json:"log_retention_days,omitempty"`
-	MaxUploadMbps         *float64             `json:"max_upload_mbps,omitempty"`
+	DefaultRetentionDays      *int                 `json:"default_retention_days,omitempty"`
+	DefaultRetentionCount     *int                 `json:"default_retention_count,omitempty"`
+	DefaultGzip               *bool                `json:"default_gzip,omitempty"`
+	BackupTimeout             *Duration            `json:"backup_timeout,omitempty"`
+	BackupStallTimeout        *Duration            `json:"backup_stall_timeout,omitempty"`
+	RestoreTimeout            *Duration            `json:"restore_timeout,omitempty"`
+	RestoreVerifyPolicy       *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
+	LogRetentionDays          *int                 `json:"log_retention_days,omitempty"`
+	MaxUploadMbps             *float64             `json:"max_upload_mbps,omitempty"`
+	PostRestoreCommandTimeout *Duration            `json:"post_restore_command_timeout,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -365,6 +376,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.RestoreVerifyPolicy, g.RestoreVerifyPolicy)
 		setIf(&next.General.LogRetentionDays, g.LogRetentionDays)
 		setIf(&next.General.MaxUploadMbps, g.MaxUploadMbps)
+		setIf(&next.General.PostRestoreCommandTimeout, g.PostRestoreCommandTimeout)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -472,6 +484,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.log_retention_days must be between 0 and %d", ErrInvalid, maxRetentionDays)
 	case models.ValidateUploadMbps(g.MaxUploadMbps) != nil:
 		return fmt.Errorf("%w: general.%w", ErrInvalid, models.ErrInvalidUploadRate)
+	case g.PostRestoreCommandTimeout.Std() < MinPostRestoreCommandTimeout || g.PostRestoreCommandTimeout.Std() > MaxPostRestoreCommandTimeout:
+		return fmt.Errorf("%w: general.post_restore_command_timeout must be between 1s and 24h", ErrInvalid)
 	}
 
 	sec := &s.Security

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -37,16 +39,54 @@ func TestCommandDocumentKeepsKeyOrder(t *testing.T) {
 }
 
 func TestRunPostRestoreCommandRefusesBeforeConnecting(t *testing.T) {
-	p := New()
-	// An unreachable URI: a refusal must come before any connection attempt.
-	const uri = "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=1"
+	// An unreachable URI: the client connects lazily, and a refusal must come
+	// before any connection attempt.
+	s, err := New().OpenCommandSession(context.Background(), "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 	for _, db := range []string{"", "admin", "config", "local"} {
-		if _, err := p.RunPostRestoreCommand(context.Background(), uri, db, json.RawMessage(`{"drop": "x"}`)); !errors.Is(err, postrestore.ErrNotClone) {
+		if _, err := s.RunPostRestoreCommand(context.Background(), db, json.RawMessage(`{"drop": "x"}`)); !errors.Is(err, postrestore.ErrNotClone) {
 			t.Errorf("database %q: %v", db, err)
 		}
 	}
-	if _, err := p.RunPostRestoreCommand(context.Background(), uri, "shop_rescue_x", json.RawMessage(`{"eval": "1"}`)); !errors.Is(err, postrestore.ErrInvalid) {
+	if _, err := s.RunPostRestoreCommand(context.Background(), "shop_rescue_x", json.RawMessage(`{"eval": "1"}`)); !errors.Is(err, postrestore.ErrInvalid) {
 		t.Errorf("refused command: %v", err)
+	}
+	if _, err := New().OpenCommandSession(context.Background(), "mongo://u:pw@host"); err == nil || strings.Contains(err.Error(), "pw") {
+		t.Errorf("invalid URI: %v", err)
+	}
+}
+
+func TestCommandErrorsNeverQuoteServerMessages(t *testing.T) {
+	ctx := context.Background()
+	dup := mongo.CommandError{Code: 11000, Name: "DuplicateKey",
+		Message: `E11000 duplicate key error collection: shop_rescue_x.users index: email_1 dup key: { email: "ann@example.com" }`}
+	invalid := mongo.CommandError{Code: 121, Name: "DocumentValidationFailure", Message: `Document failed validation: {"ssn": "123-45-6789"}`}
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{dup, "mongoconn: post-restore command failed: DuplicateKey (code 11000)"},
+		{fmt.Errorf("run: %w", invalid), "mongoconn: post-restore command failed: DocumentValidationFailure (code 121)"},
+		{mongo.CommandError{Code: 2, Message: "bad value ann@example.com"}, "mongoconn: post-restore command failed: error (code 2)"},
+		{errors.New("server selection error: ann@example.com"), "mongoconn: post-restore command failed: driver error (the server could not be reached or selected)"},
+	} {
+		got := commandError(ctx, tc.err)
+		if !errors.Is(got, ErrPostRestoreCommand) || got.Error() != tc.want {
+			t.Errorf("commandError(%v) = %q; want %q", tc.err, got, tc.want)
+		}
+		for _, value := range []string{"ann@example.com", "123-45-6789", "email_1", "E11000"} {
+			if strings.Contains(got.Error(), value) {
+				t.Errorf("commandError quotes %q: %q", value, got)
+			}
+		}
+	}
+	expired, cancel := context.WithTimeout(ctx, 0)
+	defer cancel()
+	if got := commandError(expired, context.DeadlineExceeded); got.Error() != "mongoconn: post-restore command failed: timed out" {
+		t.Errorf("timeout = %q", got)
 	}
 }
 
@@ -82,9 +122,5 @@ func TestDroppingWhatIsNotThereSucceeds(t *testing.T) {
 		t.Fatal("dropping a missing collection or index must succeed")
 	case notThere("delete", missingNS), notThere("drop", missingIndex), notThere("drop", errors.New("x")):
 		t.Fatal("other failures must fail")
-	}
-	err := commandError(mongo.CommandError{Code: 13, Name: "Unauthorized", Message: "not authorized on shop_rescue_x"})
-	if !errors.Is(err, ErrPostRestoreCommand) || err.Error() != "mongoconn: post-restore command failed: Unauthorized (code 13): not authorized on shop_rescue_x" {
-		t.Fatalf("commandError = %v", err)
 	}
 }

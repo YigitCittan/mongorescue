@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
@@ -40,12 +42,22 @@ func TestPostRestoreCommandsReapplyErasures(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = users.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}); err != nil {
+		t.Fatal(err)
+	}
 	env.seed(t, db, "orders", 5)
 	bkp := runBackup(t, env, st, db, true)
 
 	prober := mongoconn.New()
 	var audited []models.PostRestoreResult
-	engine := newRestoreEngine(env, st, restore.WithCommandRunner(prober),
+	opener := func(ctx context.Context, uri string) (restore.CommandSession, error) {
+		s, openErr := prober.OpenCommandSession(ctx, uri)
+		if openErr != nil {
+			return nil, openErr
+		}
+		return s, nil
+	}
+	engine := newRestoreEngine(env, st, restore.WithCommandRunner(opener),
 		restore.WithCommandAudit(func(_ context.Context, _ *models.RestoreRecord, res models.PostRestoreResult) {
 			audited = append(audited, res)
 		}))
@@ -108,4 +120,22 @@ func TestPostRestoreCommandsReapplyErasures(t *testing.T) {
 		t.Fatalf("kept clone users = %d; want 2", got)
 	}
 	assertNoSecret(t, env.Password, "post-restore failure", rec.ErrorMessage, runErr.Error())
+
+	// A duplicate key fails the command with its code only: the server's message
+	// quotes the key's value, which must not reach the record or the audit log.
+	dup := models.PostRestoreCommand{Database: "*", Command: json.RawMessage(
+		`{"update": "users", "updates": [{"q": {"_id": 1}, "u": {"$set": {"email": "bob@example.com"}}}]}`)}
+	audited = nil
+	rec, runErr = engine.Run(ctx, models.RestoreRequest{BackupID: bkp.ID, MongoURI: env.URI, CloneDatabase: db + "_dup",
+		PostRestoreCommands: []models.PostRestoreCommand{dup}}, bkp)
+	if !errors.Is(runErr, restore.ErrPostRestoreFailed) || !strings.Contains(rec.ErrorMessage, "11000") {
+		t.Fatalf("duplicate key: %v, %q", runErr, rec.ErrorMessage)
+	}
+	raw, _ = json.Marshal(rec)
+	audit, _ := json.Marshal(audited)
+	for _, s := range []string{string(raw), string(audit), runErr.Error()} {
+		if strings.Contains(s, "bob@example.com") {
+			t.Fatalf("a document value leaked: %s", s)
+		}
+	}
 }

@@ -352,9 +352,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 		restore.WithRunConfig(func() restore.RunConfig {
 			g := settingsSvc.Current().General
-			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std()}
+			return restore.RunConfig{Decryptor: settingsSvc.Decryptor(), VerifyPolicy: g.RestoreVerifyPolicy, Timeout: g.RestoreTimeout.Std(),
+				CommandTimeout: g.PostRestoreCommandTimeout.Std()}
 		}),
-		restore.WithCommandRunner(prober),
+		restore.WithCommandRunner(commandRunner(prober)),
 		// auditLog is built below; restores only run once the app has started.
 		restore.WithCommandAudit(func(ctx context.Context, rec *models.RestoreRecord, res models.PostRestoreResult) {
 			auditLog.Record(ctx, postRestoreAuditEvent(rec, res))

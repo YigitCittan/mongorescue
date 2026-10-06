@@ -20,6 +20,8 @@ func TestParseAllowsDataCommands(t *testing.T) {
 		`{"update": "users", "updates": [{"q": {"email": "a@example.com"}, "u": {"$unset": {"phone": ""}}, "multi": true}]}`:  {"update", "users"},
 		`{"update": "users", "updates": [{"q": {}, "u": [{"$set": {"x": 1}}]}], "writeConcern": {"w": 1}}`:                    {"update", "users"},
 		`{"findAndModify": "users", "query": {"_id": 7}, "remove": true}`:                                                     {"findAndModify", "users"},
+		`{"findAndModify": "users", "query": {"_id": 7}, "update": {"$unset": {"a": ""}}, "upsert": false, "new": true}`:      {"findAndModify", "users"},
+		`{"update": "users", "updates": [{"q": {"upsert": true}, "u": {"$unset": {"a": ""}}, "upsert": false}]}`:              {"update", "users"},
 		`{"dropIndexes": "users", "index": "email_1"}`:                                                                        {"dropIndexes", "users"},
 		`{"collMod": "users", "validationLevel": "off"}`:                                                                      {"collMod", "users"},
 		`  {"drop": "sessions.old"}  `: {"drop", "sessions.old"},
@@ -69,6 +71,10 @@ func TestParseRefusals(t *testing.T) {
 		`{"delete": {"$out": "x"}}`: "must name a collection",
 		`{"drop": "system.users"}`:  "system collections",
 		`{"drop": "a$b"}`:           "invalid collection",
+		`{"update": "u", "updates": [{"q": {}, "u": {"$set": {"a": 1}}}, {"q": {"_id": 1}, "u": {"x": 1}, "upsert": true}]}`: "upsert is not allowed",
+		`{"update": "u", "updates": [{"q": {}, "u": {}, "upsert": 1}]}`:                                                      "upsert is not allowed",
+		`{"findAndModify": "u", "query": {"_id": 1}, "update": {"x": 1}, "upsert": true, "new": true}`:                       "upsert is not allowed",
+		`{"update": "u", "updates": ["x"]}`: "must be an object",
 	}
 	for doc, want := range cases {
 		_, err := Parse(json.RawMessage(doc))

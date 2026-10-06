@@ -121,7 +121,45 @@ func Parse(raw json.RawMessage) (Command, error) {
 	if err := checkCollection(w.name, w.collection, w.collectionOK); err != nil {
 		return Command{}, err
 	}
+	if err := checkNoUpsert(w.name, raw); err != nil {
+		return Command{}, err
+	}
 	return Command{Name: w.name, Collection: w.collection}, nil
+}
+
+// checkNoUpsert refuses upserts: the commands re-apply erasures and must never
+// insert. update refuses "upsert" in any of its updates and findAndModify at its top
+// level, unless it is false.
+func checkNoUpsert(name string, raw json.RawMessage) error {
+	var doc struct {
+		Upsert  json.RawMessage   `json:"upsert"`
+		Updates []json.RawMessage `json:"updates"`
+	}
+	if name != "update" && name != "findAndModify" {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("%w: %s: %s", ErrInvalid, name, jsonError(err))
+	}
+	upserts := []json.RawMessage{doc.Upsert}
+	if name == "update" {
+		upserts = upserts[:0]
+		for _, u := range doc.Updates {
+			var item struct {
+				Upsert json.RawMessage `json:"upsert"`
+			}
+			if json.Unmarshal(u, &item) != nil {
+				return fmt.Errorf("%w: update: every entry of \"updates\" must be an object", ErrInvalid)
+			}
+			upserts = append(upserts, item.Upsert)
+		}
+	}
+	for _, u := range upserts {
+		if len(u) > 0 && string(bytes.TrimSpace(u)) != "false" {
+			return fmt.Errorf("%w: %s with upsert is not allowed: post-restore commands only remove or change restored data, never insert", ErrInvalid, name)
+		}
+	}
+	return nil
 }
 
 // checkCollection checks the collection a command names.

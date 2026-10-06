@@ -110,6 +110,8 @@ type RunConfig struct {
 	VerifyPolicy models.VerifyPolicy
 	// Timeout bounds the run (0 = unlimited).
 	Timeout time.Duration
+	// CommandTimeout bounds each post-restore command (0 = DefaultCommandTimeout).
+	CommandTimeout time.Duration
 }
 
 // StorageFunc returns the storage driver of a storage target.

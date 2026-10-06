@@ -22,18 +22,27 @@ import (
 // for inspection.
 var ErrPostRestoreFailed = errors.New("restore: post-restore command failed")
 
-// CommandRunner runs one post-restore command in a database (implemented by
-// *mongoconn.Prober). Implementations must never include the URI's credentials or
-// document contents in errors.
-type CommandRunner interface {
-	// RunPostRestoreCommand runs command in database on the server at uri and
-	// returns its counts.
-	RunPostRestoreCommand(ctx context.Context, uri, database string, command json.RawMessage) (models.PostRestoreCounts, error)
+// DefaultCommandTimeout bounds one post-restore command when RunConfig sets none.
+const DefaultCommandTimeout = 60 * time.Second
+
+// CommandSession runs the post-restore commands of one restore over one connection
+// to the target (implemented by *mongoconn.CommandSession). Implementations must
+// never include the URI's credentials, server messages or document contents in
+// errors.
+type CommandSession interface {
+	// RunPostRestoreCommand runs command in database and returns its counts.
+	RunPostRestoreCommand(ctx context.Context, database string, command json.RawMessage) (models.PostRestoreCounts, error)
+	// Close releases the connection.
+	Close()
 }
 
+// CommandRunner opens a CommandSession to the server at uri.
+type CommandRunner func(ctx context.Context, uri string) (CommandSession, error)
+
 // WithCommandRunner lets restores run the post-restore commands of their target
-// connection (models.RestoreRequest.PostRestoreCommands). Without it, a safe-clone
-// restore with such commands fails instead of completing without them.
+// connection (models.RestoreRequest.PostRestoreCommands), over one session per
+// restore. Without it, a safe-clone restore with such commands fails instead of
+// completing without them.
 func WithCommandRunner(r CommandRunner) Option {
 	return func(e *Engine) {
 		e.commands = r
@@ -49,6 +58,15 @@ func WithCommandAudit(fn CommandAudit) Option {
 	return func(e *Engine) {
 		e.audit = fn
 	}
+}
+
+// commandTimeout returns the limit of one post-restore command (RunConfig
+// .CommandTimeout, DefaultCommandTimeout when unset).
+func (e *Engine) commandTimeout() time.Duration {
+	if t := e.runConfig().CommandTimeout; t > 0 {
+		return t
+	}
+	return DefaultCommandTimeout
 }
 
 // keptNote is the end of the message of a restore whose post-restore commands
@@ -120,10 +138,20 @@ func (e *Engine) runPostRestore(ctx context.Context, uri string, cmds []models.P
 		report.ClonesKept = sortedClones(clones)
 		return fmt.Errorf("%w: %s", ErrPostRestoreFailed, report.Note)
 	}
-	tracker.Printf("running %d post-restore command(s): %s", len(steps), postrestore.Describe(steps))
+	session, err := e.commands(ctx, uri)
+	if err != nil {
+		report.Note = "could not connect to the target: " + redact.Text(err.Error())
+		report.ClonesKept = sortedClones(clones)
+		return fmt.Errorf("%w: %s", ErrPostRestoreFailed, report.Note)
+	}
+	defer session.Close()
+	timeout := e.commandTimeout()
+	tracker.Printf("running %d post-restore command(s), each limited to %s: %s", len(steps), timeout, postrestore.Describe(steps))
 	for i, step := range steps {
 		start := time.Now()
-		counts, runErr := e.commands.RunPostRestoreCommand(ctx, uri, step.Target, step.Document)
+		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+		counts, runErr := session.RunPostRestoreCommand(cmdCtx, step.Target, step.Document)
+		cancel()
 		res := step.Result(models.PostRestoreCommandOK)
 		res.PostRestoreCounts, res.DurationMS = counts, time.Since(start).Milliseconds()
 		if runErr != nil {
@@ -165,6 +193,13 @@ func (e *Engine) RunPostRestore(ctx context.Context, req models.RestoreRequest, 
 		return record, nil
 	}
 	req.DeferPostRestore = false
+	// Bounded like the restore itself (RunConfig.Timeout), on top of the limit of
+	// each command.
+	if timeout := e.runConfig().Timeout; timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, timeout, ErrTimeout)
+		defer cancel()
+	}
 	clones := map[string]string{record.SourceDatabase: record.TargetDatabase}
 	if err := e.applyPostRestore(ctx, e.resolveURI(req), req, record, clones); err != nil {
 		record.Phases.Finished = models.Stamp(time.Now())

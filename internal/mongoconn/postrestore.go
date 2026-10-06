@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -20,9 +21,6 @@ const (
 	namespaceNotFoundCode = 26
 	indexNotFoundCode     = 27
 )
-
-// maxCommandErrorLength caps the server message quoted in a failed command's error.
-const maxCommandErrorLength = 200
 
 // ErrPostRestoreCommand is returned when a post-restore command fails on the server.
 var ErrPostRestoreCommand = errors.New("mongoconn: post-restore command failed")
@@ -67,12 +65,35 @@ type commandReply struct {
 	} `bson:"writeConcernError"`
 }
 
-// RunPostRestoreCommand runs a post-restore command in database on the server at uri
-// and returns its counts. The command is checked again first (postrestore.Parse)
-// and admin, config and local are refused. Write errors fail the command with their
-// codes only: their messages can quote document values. Dropping a collection or
-// index that does not exist succeeds.
-func (p *Prober) RunPostRestoreCommand(ctx context.Context, uri, database string, command json.RawMessage) (models.PostRestoreCounts, error) {
+// CommandSession runs the post-restore commands of one restore over one client. It
+// is not safe for concurrent use; Close it when done.
+type CommandSession struct {
+	client *mongo.Client
+}
+
+// OpenCommandSession connects to the server at uri for the post-restore commands of
+// one restore. Errors never quote the connection string.
+func (p *Prober) OpenCommandSession(ctx context.Context, uri string) (*CommandSession, error) {
+	client, err := mongo.Connect(clientOptions(ctx, uri))
+	if err != nil {
+		return nil, errors.New("invalid connection string")
+	}
+	return &CommandSession{client: client}, nil
+}
+
+// Close disconnects the session's client.
+func (s *CommandSession) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.client.Disconnect(ctx)
+}
+
+// RunPostRestoreCommand runs a post-restore command in database and returns its
+// counts. The command is checked again first (postrestore.Parse) and admin, config
+// and local are refused. Failures carry codes and code names only, never the
+// server's message: it can quote document values (a duplicate key, a failed
+// validation). Dropping a collection or index that does not exist succeeds.
+func (s *CommandSession) RunPostRestoreCommand(ctx context.Context, database string, command json.RawMessage) (models.PostRestoreCounts, error) {
 	var counts models.PostRestoreCounts
 	parsed, err := postrestore.Parse(command)
 	if err != nil {
@@ -85,24 +106,20 @@ func (p *Prober) RunPostRestoreCommand(ctx context.Context, uri, database string
 	if err != nil {
 		return counts, fmt.Errorf("%w: %w", postrestore.ErrInvalid, err)
 	}
-	err = withClient(ctx, uri, func(c *mongo.Client) error {
-		var reply commandReply
-		if runErr := c.Database(database).RunCommand(ctx, doc).Decode(&reply); runErr != nil {
-			if notThere(parsed.Name, runErr) {
-				return nil
-			}
-			return commandError(runErr)
+	var reply commandReply
+	if runErr := s.client.Database(database).RunCommand(ctx, doc).Decode(&reply); runErr != nil {
+		if notThere(parsed.Name, runErr) {
+			return counts, nil
 		}
-		if n := len(reply.WriteErrors); n > 0 {
-			return fmt.Errorf("%w: %d write error(s), first code %d", ErrPostRestoreCommand, n, reply.WriteErrors[0].Code)
-		}
-		if wce := reply.WriteConcernError; wce != nil {
-			return fmt.Errorf("%w: write concern error %d (%s)", ErrPostRestoreCommand, wce.Code, wce.CodeName)
-		}
-		counts = replyCounts(parsed.Name, &reply)
-		return nil
-	})
-	return counts, err
+		return counts, commandError(ctx, runErr)
+	}
+	if n := len(reply.WriteErrors); n > 0 {
+		return counts, fmt.Errorf("%w: %d write error(s), first code %d", ErrPostRestoreCommand, n, reply.WriteErrors[0].Code)
+	}
+	if wce := reply.WriteConcernError; wce != nil {
+		return counts, fmt.Errorf("%w: write concern error %d (%s)", ErrPostRestoreCommand, wce.Code, wce.CodeName)
+	}
+	return replyCounts(parsed.Name, &reply), nil
 }
 
 // replyCounts returns the counts of a successful reply.
@@ -141,15 +158,29 @@ func notThere(name string, err error) bool {
 	return false
 }
 
-// commandError renders a failed command: the server's code, name and a short message.
-func commandError(err error) error {
+// commandError renders a failed command without any server message, which can quote
+// document values (E11000 duplicate key {email: ...}): a server error by its code and
+// code name, a timeout or cancellation of ctx as such, and anything else (network,
+// server selection) as a driver error. The original error is not wrapped.
+func commandError(ctx context.Context, err error) error {
 	var ce mongo.CommandError
-	if errors.As(err, &ce) {
-		msg := ce.Message
-		if len(msg) > maxCommandErrorLength {
-			msg = msg[:maxCommandErrorLength] + "…"
+	var se mongo.ServerError
+	switch {
+	case errors.As(err, &ce):
+		name := ce.Name
+		if name == "" {
+			name = "error"
 		}
-		return fmt.Errorf("%w: %s (code %d): %s", ErrPostRestoreCommand, ce.Name, ce.Code, msg)
+		return fmt.Errorf("%w: %s (code %d)", ErrPostRestoreCommand, name, ce.Code)
+	case errors.As(err, &se):
+		return fmt.Errorf("%w: server error", ErrPostRestoreCommand)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: timed out", ErrPostRestoreCommand)
+	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		return fmt.Errorf("%w: cancelled", ErrPostRestoreCommand)
+	case mongo.IsNetworkError(err):
+		return fmt.Errorf("%w: network error", ErrPostRestoreCommand)
+	default:
+		return fmt.Errorf("%w: driver error (the server could not be reached or selected)", ErrPostRestoreCommand)
 	}
-	return fmt.Errorf("%w: %w", ErrPostRestoreCommand, err)
 }
