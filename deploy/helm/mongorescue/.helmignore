@@ -1,0 +1,12 @@
+# Patterns to ignore when packaging the chart.
+.DS_Store
+.git/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/
+# CI values are for helm lint/template only.
+ci/

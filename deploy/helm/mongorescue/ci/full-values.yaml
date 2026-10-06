@@ -1,0 +1,72 @@
+# Every optional feature on: rendered by CI (helm template + kubeconform).
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+config:
+  logLevel: debug
+  shutdownGrace: 9m
+  toolsDir: /opt/mongotools/bin
+secretKey:
+  existingSecret: mongorescue-key
+extraEnv:
+  - name: AWS_REGION
+    value: eu-central-1
+extraEnvFrom:
+  - secretRef:
+      name: mongorescue-aws
+persistence:
+  storageClass: fast
+  annotations:
+    example.com/backup: "true"
+backups:
+  persistence:
+    existingClaim: mongorescue-archives
+podAnnotations:
+  example.com/team: data
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: mongorescue.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mongorescue-tls
+      hosts:
+        - mongorescue.example.com
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+  egressTo:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - port: 27017
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+  authorization:
+    secretName: mongorescue-metrics
+prometheusRule:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+extraVolumes:
+  - name: mongo-ca
+    configMap:
+      name: mongo-ca
+extraVolumeMounts:
+  - name: mongo-ca
+    mountPath: /etc/mongo-ca
+    readOnly: true
