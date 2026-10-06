@@ -78,6 +78,32 @@ func RemoveKeyFile(path string) error {
 	return syncDir(filepath.Dir(path))
 }
 
+// tempKeyPattern matches the temporary files writeFileAtomic creates.
+const tempKeyPattern = ".secret.key.tmp-*"
+
+// RemoveStaleTempFiles removes temporary key files a crash left in dir (they are
+// renamed into place on success, so any that remain belong to an interrupted write)
+// and returns how many it removed. Only call it while no key file is being written.
+func RemoveStaleTempFiles(dir string) (int, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, tempKeyPattern))
+	if err != nil {
+		return 0, fmt.Errorf("secretbox: find temporary key files: %w", err)
+	}
+	removed := 0
+	var errs []error
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+			continue
+		}
+		removed++
+	}
+	if len(errs) > 0 {
+		return removed, fmt.Errorf("secretbox: remove temporary key files: %w", errors.Join(errs...))
+	}
+	return removed, nil
+}
+
 // KeyFileExists reports whether a key file exists at path.
 func KeyFileExists(path string) (bool, error) {
 	_, err := os.Stat(path)

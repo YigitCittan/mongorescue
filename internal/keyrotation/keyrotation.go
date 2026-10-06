@@ -111,6 +111,13 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// A crash during a key file write leaves its temporary file behind; nothing
+	// writes key files while the application starts.
+	if n, err := secretbox.RemoveStaleTempFiles(filepath.Dir(files.Current)); err != nil {
+		logger.Warn("could not remove stale temporary key files", logsafe.Error(err))
+	} else if n > 0 {
+		logger.Info("removed stale temporary key files", slog.Int("count", n))
+	}
 	box, err := secretbox.New(key)
 	if err != nil {
 		return nil, err

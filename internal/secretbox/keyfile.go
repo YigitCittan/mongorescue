@@ -99,7 +99,7 @@ func writeFileAtomic(path string, data []byte) (err error) {
 	if err = os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("secretbox: create key directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".secret.key.tmp-*")
+	tmp, err := os.CreateTemp(dir, tempKeyPattern)
 	if err != nil {
 		return fmt.Errorf("secretbox: create key file: %w", err)
 	}
