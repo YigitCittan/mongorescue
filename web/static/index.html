@@ -2493,6 +2493,45 @@
             <span class="form-hint" id="connection-post-restore-hint" data-i18n="postrestore.hint">Optional. A JSON array of {"database", "command"} run against the clones of every safe-clone restore into this connection before it completes, for example to re-apply erasures. "database" is a restored database or "*" for all of them. Allowed: delete, update, findAndModify, dropIndexes, collMod, drop. A failing command fails the restore and keeps the clone.</span>
             <span class="field-error" id="connection-post-restore-error" role="alert" hidden></span>
           </div>
+          <!-- TLS material: a custom CA, an x509 client certificate (tls.js) -->
+          <details class="form-group form-details" id="connection-tls">
+            <summary data-i18n="tls.section">TLS / client certificate</summary>
+            <p class="form-hint" data-i18n="tls.intro">Optional. For servers with a private certificate authority or x509 authentication. Leave empty to use the connection string alone; Atlas and public CAs need nothing here.</p>
+            <div class="form-group">
+              <label class="form-label" for="connection-tls-ca" data-i18n="tls.ca">CA certificate (PEM)</label>
+              <textarea id="connection-tls-ca" class="form-input mono" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="connection-tls-ca-hint"></textarea>
+              <label class="form-hint tls-file"><span data-i18n="tls.file">Load from file</span> <input type="file" accept=".pem,.crt,.cer,.ca-bundle" data-tls-file="connection-tls-ca"></label>
+              <span class="form-hint" id="connection-tls-ca-hint" data-i18n="tls.ca_hint">The certificates of the authority that signed the server certificate. Empty uses the system's trusted roots.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="connection-tls-cert" data-i18n="tls.cert">Client certificate (PEM)</label>
+              <textarea id="connection-tls-cert" class="form-input mono" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="connection-tls-cert-hint"></textarea>
+              <label class="form-hint tls-file"><span data-i18n="tls.file">Load from file</span> <input type="file" accept=".pem,.crt,.cer" data-tls-file="connection-tls-cert"></label>
+              <span class="form-hint" id="connection-tls-cert-hint" data-i18n="tls.cert_hint">For x509 authentication (authMechanism=MONGODB-X509 in the URI). Needs the key below.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="connection-tls-key" data-i18n="tls.key">Client private key (PEM)</label>
+              <textarea id="connection-tls-key" class="form-input mono" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----" aria-describedby="connection-tls-key-hint"></textarea>
+              <label class="form-hint tls-file"><span data-i18n="tls.file">Load from file</span> <input type="file" accept=".pem,.key" data-tls-file="connection-tls-key"></label>
+              <span class="form-hint" id="connection-tls-key-hint" data-i18n="tls.key_hint">Stored encrypted and never shown again. An encrypted (PKCS#8) key needs its password.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="connection-tls-password" data-i18n="tls.password">Key password</label>
+              <input type="password" id="connection-tls-password" class="form-input" autocomplete="new-password" maxlength="1024" aria-describedby="connection-tls-password-hint">
+              <span class="form-hint" id="connection-tls-password-hint" data-i18n="tls.password_hint">Only for an encrypted key.</span>
+            </div>
+            <div class="form-group">
+              <label class="check" for="connection-tls-hostnames"><input type="checkbox" id="connection-tls-hostnames" aria-describedby="connection-tls-hostnames-hint"> <span data-i18n="tls.hostnames">Allow invalid hostnames</span></label>
+              <span class="form-hint" id="connection-tls-hostnames-hint" data-i18n="tls.hostnames_hint">Skips the check that the server certificate names the host. The certificate chain is still verified.</span>
+            </div>
+            <div class="form-group">
+              <label class="check" for="connection-tls-insecure"><input type="checkbox" id="connection-tls-insecure" aria-describedby="connection-tls-insecure-hint"> <span data-i18n="tls.insecure">Do not verify the server certificate</span></label>
+              <span class="form-hint" id="connection-tls-insecure-hint" data-i18n="tls.insecure_hint">Accepts any certificate: anyone on the network path can read and change the traffic, credentials included.</span>
+            </div>
+            <div class="callout callout-warning" id="connection-tls-warning" role="alert" hidden>
+              <p class="section-desc" id="connection-tls-warning-text"></p>
+            </div>
+          </details>
           <div class="test-row">
             <button type="button" class="btn btn-secondary" id="connection-test-btn" data-action="test-connection-form" data-i18n="conn.test">Test connection</button>
             <span class="test-result" id="connection-test-result" role="status" aria-live="polite"></span>
@@ -3167,6 +3206,7 @@
   <script src="/objectlock.js"></script>
   <script src="/throttle.js"></script>
   <script src="/postrestore.js"></script>
+  <script src="/tls.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

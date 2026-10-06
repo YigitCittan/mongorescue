@@ -17,3 +17,9 @@ description = "TEST ONLY age identity of the golden restore fixtures (internal/r
 regexes = [
   '''^AGE-SECRET-KEY-19J3DWER8ED985HNSHV8YEKTMRSRVTTTQKZ54P4GVAFMCWT2C8NKSTCJDMM$''',
 ]
+
+[[allowlists]]
+description = "TEST ONLY x509 client key of the browser tests (e2e/fixtures/client.key)"
+regexes = [
+  '''I/wqtlMrlkx3lQbv63QH7hYQP36hRANCAAS7jnaF7T8zn9hqrKLMNQ/zTU6Qcksv''',
+]
