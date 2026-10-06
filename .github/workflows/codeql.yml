@@ -23,6 +23,13 @@ jobs:
       contents: read
       actions: read # required by CodeQL on private repositories
       security-events: write # upload results to code scanning
+    env:
+      # Pull requests are analysed in full, not "diff-informed" (the action's
+      # default for pull requests, which keeps only results whose path touches
+      # the changed lines). A diff-only analysis missed alerts that a change
+      # caused in code it did not touch (a new taint source reaching an old log
+      # call or file access); they appeared on main only after the merge.
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +66,28 @@ jobs:
         run: go build ./...
 
       - name: Perform CodeQL Analysis
+        id: analyze
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:${{ matrix.language }}
+
+      # main carries no open CodeQL alert, so any result of the full analysis is
+      # new: fail this job (on pull requests and on main) instead of letting it
+      # surface only in the Security tab. Fix the finding; do not dismiss it.
+      - name: Fail on CodeQL Results
+        env:
+          SARIF_DIR: ${{ steps.analyze.outputs.sarif-output }}
+        run: |
+          shopt -s nullglob
+          files=("$SARIF_DIR"/*.sarif)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no SARIF file in $SARIF_DIR"
+            exit 1
+          fi
+          filter='.runs[].results[]? | select(((.suppressions // []) | length) == 0)'
+          jq -r "$filter"' | "\(.ruleId) \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' "${files[@]}"
+          count=$(jq -s "[.[] | $filter] | length" "${files[@]}")
+          if [ "$count" -ne 0 ]; then
+            echo "::error::CodeQL reported $count result(s); fix them before merging"
+            exit 1
+          fi
