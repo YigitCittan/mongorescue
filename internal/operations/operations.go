@@ -206,6 +206,9 @@ type Config struct {
 	Storage func(ctx context.Context, targetID string) (storage.Storage, error)
 	// Audit receives one entry per bulk operation (real runs); nil disables them.
 	Audit Auditor
+	// WakeCopies wakes the copy queue after copies were queued again (implemented
+	// by copies.Service.Notify); nil means the queue finds them on its next look.
+	WakeCopies func()
 	// OnJobDeleted is called after a job has been deleted (for example to drop its
 	// metric series); nil disables it.
 	OnJobDeleted func(jobID string)

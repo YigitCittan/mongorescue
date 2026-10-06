@@ -132,6 +132,10 @@ const (
 	BackupCopyFailed EventType = "backup.copy_failed"
 	// BackupCopyRecovered is emitted when a copy that had failed succeeded.
 	BackupCopyRecovered EventType = "backup.copy_recovered"
+	// BackupCopyExhausted is emitted when the last automatic attempt of a copy
+	// failed: the copy queue gives up on it until an administrator retries it
+	// (POST /api/v1/backups/{id}/copies/retry).
+	BackupCopyExhausted EventType = "backup.copy_exhausted"
 )
 
 // Sources of verification events.
@@ -188,7 +192,7 @@ var ruleTypes = []EventType{
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated,
 	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
-	BackupCopyFailed, BackupCopyRecovered,
+	BackupCopyFailed, BackupCopyRecovered, BackupCopyExhausted,
 }
 
 // RuleTypes returns the event types that notification rules may subscribe to, in a
@@ -211,7 +215,7 @@ func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
-		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed:
+		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted:
 		return true
 	default:
 		return false

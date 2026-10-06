@@ -4,8 +4,35 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
+
+// RetryCopies queues every failed copy of completed backup id again, with its
+// attempts reset (also copies the queue gave up on), and wakes the copy queue.
+// Admin only. Expected failures: ErrNotFound and ErrInvalid (the backup is not
+// completed or has no failed copy).
+func (s *Service) RetryCopies(ctx context.Context, id string) (*models.BackupRecord, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
+		return nil, fmt.Errorf("retrying copies needs the admin role or an admin API key: %w", err)
+	}
+	rec, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
+		switch {
+		case r.Status != models.StatusCompleted:
+			return public(fmt.Sprintf("only the copies of completed backups can be retried; backup %s is %s", r.ID, r.Status), ErrInvalid)
+		case !r.RetryCopies():
+			return public(fmt.Sprintf("backup %s has no failed copy", r.ID), ErrInvalid)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if s.cfg.WakeCopies != nil {
+		s.cfg.WakeCopies()
+	}
+	return rec, nil
+}
 
 // resolveCopyTargets checks the copy targets ids of a job or backup whose primary
 // target is primary and returns them resolved, in order: mode must be a known copy

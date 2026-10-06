@@ -30,6 +30,7 @@ func (s *Server) registerIntegrityRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/backups/{id}/verify", s.handleVerifyBackup)
 	mux.HandleFunc("POST /api/v1/backups/{id}/pin", s.handlePinBackup)
 	mux.HandleFunc("POST /api/v1/backups/{id}/unpin", s.handleUnpinBackup)
+	mux.HandleFunc("POST /api/v1/backups/{id}/copies/retry", s.handleRetryCopies)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/retention/preview", s.handleRetentionPreview)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/retention/log", s.handleRetentionLog)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/restore-test", s.handleStartRestoreTest)
@@ -109,6 +110,16 @@ func (s *Server) handleUnpinBackup(w http.ResponseWriter, r *http.Request) {
 	rec, err := s.ops.UnpinBackup(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeIntegrityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// handleRetryCopies queues the failed copies of a backup again (admin).
+func (s *Server) handleRetryCopies(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.ops.RetryCopies(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeOperationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)

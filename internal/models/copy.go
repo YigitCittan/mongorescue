@@ -186,6 +186,26 @@ func (r *BackupRecord) AbandonCopies() {
 	}
 }
 
+// RetryCopies queues every failed copy of r again with its attempts reset, and
+// reports whether there was one.
+func (r *BackupRecord) RetryCopies() bool {
+	queued := false
+	for i := range r.Copies {
+		c := &r.Copies[i]
+		if c.Status != CopyFailed {
+			continue
+		}
+		c.Status, c.Attempts, c.NextAttemptAt = CopyPending, 0, nil
+		queued = true
+	}
+	return queued
+}
+
+// Exhausted reports whether c failed and the copy queue will not try it again.
+func (c *BackupCopy) Exhausted() bool {
+	return c.Status == CopyFailed && c.NextAttemptAt == nil
+}
+
 // CopyTarget is a resolved copy target of a backup: its ID and name.
 type CopyTarget struct {
 	ID   string `json:"id"`

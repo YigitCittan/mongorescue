@@ -634,6 +634,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// server, so both adapters apply exactly the same rules.
 	ops = operations.New(operations.Config{
 		Store:       metaStore,
+		WakeCopies:  copySvc.Notify,
 		Backup:      backupEngine,
 		Restore:     restoreEngine,
 		Jobs:        sched,

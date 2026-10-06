@@ -41,3 +41,28 @@ func TestReportCountsCopiesAndWarnsWhenTheyAreOverdue(t *testing.T) {
 		t.Fatalf("overdue copies: status %s, reasons %v", r.Status, r.Reasons)
 	}
 }
+
+// TestReportWarnsAboutAnOlderBackupWithExhaustedCopies proves that copy_missing
+// covers every backup whose copies the queue gave up on, not only the newest.
+func TestReportWarnsAboutAnOlderBackupWithExhaustedCopies(t *testing.T) {
+	st := storetest.New(t)
+	clk := &clock{now: t0.Add(3 * time.Hour)}
+	svc := readiness.New(readiness.Config{Store: unedited{st}, Now: clk.Now})
+	saveJob(t, st, &models.Job{ID: "job_c", Name: "copies", Database: "shop", CronExpression: "@daily", Enabled: true, ConnectionID: "c1"})
+	old := &models.BackupRecord{ID: "b_old", JobID: "job_c", Database: "shop", ConnectionID: "c1", StartedAt: t0}
+	old.PlanCopies([]models.CopyTarget{{ID: "tgt_a"}}, "")
+	old.Copies[0].Status, old.Copies[0].Attempts = models.CopyFailed, 10
+	saveBackup(t, st, old)
+	fresh := &models.BackupRecord{ID: "b_new", JobID: "job_c", Database: "shop", ConnectionID: "c1", StartedAt: t0.Add(2 * time.Hour)}
+	fresh.PlanCopies([]models.CopyTarget{{ID: "tgt_a"}}, "")
+	fresh.Copies[0].Status = models.CopyDone
+	saveBackup(t, st, fresh)
+
+	report, err := svc.Report(context.Background())
+	if err != nil || len(report.Rows) != 1 {
+		t.Fatalf("report = %+v, %v", report, err)
+	}
+	if r := report.Rows[0]; r.Copies != 1 || !slices.Contains(r.Reasons, readiness.ReasonCopyMissing) {
+		t.Fatalf("copies %d, reasons %v; want copy_missing for the older backup", r.Copies, r.Reasons)
+	}
+}

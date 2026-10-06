@@ -473,17 +473,24 @@ func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *mode
 			typ = events.BackupCopyFailed
 		}
 	}
-	if typ == "" || s.cfg.Publisher == nil {
+	if s.cfg.Publisher == nil {
 		return
 	}
-	s.cfg.Publisher.Publish(ctx, CopyEvent(typ, rec, cp, s.now()))
+	if typ != "" {
+		s.cfg.Publisher.Publish(ctx, CopyEvent(typ, rec, cp, s.now()))
+	}
+	if copyErr != nil && cp.NextAttemptAt == nil {
+		// The last automatic attempt failed.
+		s.logger.Error("backup copy given up after its last attempt; retry it with POST /api/v1/backups/{id}/copies/retry", attrs...)
+		s.cfg.Publisher.Publish(ctx, CopyEvent(events.BackupCopyExhausted, rec, cp, s.now()))
+	}
 }
 
 // CopyEvent returns event typ about copy cp of backup rec.
 func CopyEvent(typ events.EventType, rec *models.BackupRecord, cp *models.BackupCopy, at time.Time) events.Event {
 	e := events.Event{Type: typ, Time: at.UTC(), JobID: rec.JobID, BackupID: rec.ID, Database: rec.Database,
 		Status: string(cp.Status), TargetID: cp.TargetID, TargetName: cp.TargetName, RunID: rec.RunID}
-	if typ == events.BackupCopyFailed {
+	if typ == events.BackupCopyFailed || typ == events.BackupCopyExhausted {
 		e.Error = cp.Error
 		if cp.NextAttemptAt != nil {
 			e.Detail = "retried at " + cp.NextAttemptAt.UTC().Format(time.RFC3339)

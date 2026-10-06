@@ -37,6 +37,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "verified",
       verified_mismatch: "damaged",
       next_attempt: "next attempt {time}",
+      exhausted: "no further automatic attempts; an administrator can retry it",
       source_label: "Read the archive from",
       source_auto: "Automatic: the primary, or a healthy copy if it is missing or damaged",
       source_primary: "Primary: {name}",
@@ -46,7 +47,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Copies missing" },
     restore_checks: { check_source: "Source archive" },
-    notify: { events: { backup_copy_failed: "Backup copy failing", backup_copy_recovered: "Backup copy recovered" } },
+    notify: { events: { backup_copy_failed: "Backup copy failing", backup_copy_recovered: "Backup copy recovered", backup_copy_exhausted: "Backup copy given up" } },
   },
   tr: {
     copies: {
@@ -68,6 +69,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "doğrulandı",
       verified_mismatch: "bozuk",
       next_attempt: "sonraki deneme {time}",
+      exhausted: "başka otomatik deneme yok; bir yönetici yeniden deneyebilir",
       source_label: "Arşivin okunacağı yer",
       source_auto: "Otomatik: birincil, eksik ya da bozuksa sağlam bir kopya",
       source_primary: "Birincil: {name}",
@@ -77,7 +79,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Kopyalar eksik" },
     restore_checks: { check_source: "Kaynak arşiv" },
-    notify: { events: { backup_copy_failed: "Yedek kopyalanamıyor", backup_copy_recovered: "Yedek kopyası düzeldi" } },
+    notify: { events: { backup_copy_failed: "Yedek kopyalanamıyor", backup_copy_recovered: "Yedek kopyası düzeldi", backup_copy_exhausted: "Yedek kopyalamadan vazgeçildi" } },
   },
   de: {
     copies: {
@@ -99,6 +101,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "geprüft",
       verified_mismatch: "beschädigt",
       next_attempt: "nächster Versuch {time}",
+      exhausted: "keine weiteren automatischen Versuche; ein Administrator kann es erneut versuchen",
       source_label: "Archiv lesen von",
       source_auto: "Automatisch: das Primärziel, oder eine intakte Kopie, wenn es fehlt oder beschädigt ist",
       source_primary: "Primär: {name}",
@@ -108,7 +111,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Kopien fehlen" },
     restore_checks: { check_source: "Quellarchiv" },
-    notify: { events: { backup_copy_failed: "Backup-Kopie schlägt fehl", backup_copy_recovered: "Backup-Kopie wieder in Ordnung" } },
+    notify: { events: { backup_copy_failed: "Backup-Kopie schlägt fehl", backup_copy_recovered: "Backup-Kopie wieder in Ordnung", backup_copy_exhausted: "Backup-Kopie aufgegeben" } },
   },
   es: {
     copies: {
@@ -130,6 +133,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "verificada",
       verified_mismatch: "dañada",
       next_attempt: "próximo intento {time}",
+      exhausted: "sin más intentos automáticos; un administrador puede reintentarlo",
       source_label: "Leer el archivo de",
       source_auto: "Automático: el principal, o una copia sana si falta o está dañado",
       source_primary: "Principal: {name}",
@@ -139,7 +143,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Faltan copias" },
     restore_checks: { check_source: "Archivo de origen" },
-    notify: { events: { backup_copy_failed: "La copia de la copia de seguridad falla", backup_copy_recovered: "La copia de la copia de seguridad se recuperó" } },
+    notify: { events: { backup_copy_failed: "La copia de la copia de seguridad falla", backup_copy_recovered: "La copia de la copia de seguridad se recuperó", backup_copy_exhausted: "Copia de la copia de seguridad abandonada" } },
   },
   fr: {
     copies: {
@@ -161,6 +165,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "vérifiée",
       verified_mismatch: "endommagée",
       next_attempt: "prochain essai {time}",
+      exhausted: "plus d'essai automatique ; un administrateur peut la relancer",
       source_label: "Lire l'archive depuis",
       source_auto: "Automatique : la cible principale, ou une copie saine si elle manque ou est endommagée",
       source_primary: "Principale : {name}",
@@ -170,7 +175,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Copies manquantes" },
     restore_checks: { check_source: "Archive source" },
-    notify: { events: { backup_copy_failed: "Copie de sauvegarde en échec", backup_copy_recovered: "Copie de sauvegarde rétablie" } },
+    notify: { events: { backup_copy_failed: "Copie de sauvegarde en échec", backup_copy_recovered: "Copie de sauvegarde rétablie", backup_copy_exhausted: "Copie de sauvegarde abandonnée" } },
   },
   zh: {
     copies: {
@@ -192,6 +197,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "已校验",
       verified_mismatch: "已损坏",
       next_attempt: "下次尝试 {time}",
+      exhausted: "不再自动重试；管理员可以重试",
       source_label: "从以下位置读取归档",
       source_auto: "自动：主目标；若其缺失或损坏，则使用完好的副本",
       source_primary: "主目标：{name}",
@@ -201,7 +207,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "副本缺失" },
     restore_checks: { check_source: "源归档" },
-    notify: { events: { backup_copy_failed: "备份副本复制失败", backup_copy_recovered: "备份副本已恢复" } },
+    notify: { events: { backup_copy_failed: "备份副本复制失败", backup_copy_recovered: "备份副本已恢复", backup_copy_exhausted: "备份副本已放弃" } },
   },
   ja: {
     copies: {
@@ -223,6 +229,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "検証済み",
       verified_mismatch: "破損",
       next_attempt: "次の試行 {time}",
+      exhausted: "自動再試行はありません。管理者が再試行できます",
       source_label: "アーカイブの読み取り元",
       source_auto: "自動：プライマリ。欠落または破損している場合は健全なコピー",
       source_primary: "プライマリ：{name}",
@@ -232,7 +239,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "コピーが不足" },
     restore_checks: { check_source: "ソースアーカイブ" },
-    notify: { events: { backup_copy_failed: "バックアップのコピーが失敗", backup_copy_recovered: "バックアップのコピーが回復" } },
+    notify: { events: { backup_copy_failed: "バックアップのコピーが失敗", backup_copy_recovered: "バックアップのコピーが回復", backup_copy_exhausted: "バックアップのコピーを断念" } },
   },
   ru: {
     copies: {
@@ -254,6 +261,7 @@ const COPIES_TRANSLATIONS = {
       verified_ok: "проверена",
       verified_mismatch: "повреждена",
       next_attempt: "следующая попытка {time}",
+      exhausted: "автоматических попыток больше не будет; администратор может повторить",
       source_label: "Читать архив из",
       source_auto: "Автоматически: основное хранилище, или исправная копия, если архив отсутствует или повреждён",
       source_primary: "Основное: {name}",
@@ -263,7 +271,7 @@ const COPIES_TRANSLATIONS = {
     },
     readiness: { reason_copy_missing: "Нет копий" },
     restore_checks: { check_source: "Исходный архив" },
-    notify: { events: { backup_copy_failed: "Копирование резервной копии не удаётся", backup_copy_recovered: "Копирование резервной копии восстановлено" } },
+    notify: { events: { backup_copy_failed: "Копирование резервной копии не удаётся", backup_copy_recovered: "Копирование резервной копии восстановлено", backup_copy_exhausted: "Копирование резервной копии прекращено" } },
   },
 };
 
@@ -408,6 +416,7 @@ function copiesStatusText(c) {
   if (c.next_attempt_at && (c.status === "failed" || c.status === "pending")) {
     parts.push(tf("copies.next_attempt", { time: absoluteWithRelative(c.next_attempt_at) }));
   }
+  if (c.status === "failed" && !c.next_attempt_at && c.attempts > 0) parts.push(t("copies.exhausted"));
   if (c.error && c.status !== "done") parts.push(c.error);
   return parts.filter(Boolean).join(" · ");
 }

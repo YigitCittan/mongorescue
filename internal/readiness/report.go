@@ -47,7 +47,8 @@ const (
 	// the current keys.
 	ReasonKeysNotEscrowed = "keys_not_escrowed"
 	// ReasonCopyMissing: the newest good backup has copy targets, and not all of its
-	// copies were done Config.CopyMissingAfter after it finished.
+	// copies were done Config.CopyMissingAfter after it finished; or any completed
+	// backup of the database has a copy the copy queue gave up on.
 	ReasonCopyMissing = "copy_missing"
 )
 
@@ -340,6 +341,12 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 
 	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names),
 		StorageHints: s.storageHints(ctx)}
+	// Every backup whose copies the queue gave up on, not only the newest one.
+	for rk := range s.exhaustedCopies(ctx) {
+		if acc := rows[rk]; acc != nil {
+			acc.copyMissing = true
+		}
+	}
 	for rk, acc := range rows {
 		finishRow(acc, byDB[rk], now, byConn[rk.connection])
 		switch acc.row.Status {
@@ -509,6 +516,31 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	default:
 		r.Status = StatusOK
 	}
+}
+
+// exhaustedCopyLister lists the backups with exhausted copies (implemented by
+// *store.SQLiteStore).
+type exhaustedCopyLister interface {
+	ExhaustedCopyRecords(ctx context.Context) ([]*models.BackupRecord, error)
+}
+
+// exhaustedCopies returns the connection and database of every completed backup
+// with a copy the copy queue gave up on; a failed listing gives none.
+func (s *Service) exhaustedCopies(ctx context.Context) map[rowKey]bool {
+	out := map[rowKey]bool{}
+	l, ok := s.cfg.Store.(exhaustedCopyLister)
+	if !ok {
+		return out
+	}
+	list, err := l.ExhaustedCopyRecords(ctx)
+	if err != nil {
+		s.logger.Warn("readiness: cannot list the backups with exhausted copies", logsafe.Error(err))
+		return out
+	}
+	for _, b := range list {
+		out[rowKey{b.ConnectionID, b.Database}] = true
+	}
+	return out
 }
 
 // connectionNames maps connection IDs to names; a failed lookup leaves names empty.

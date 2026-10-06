@@ -15,15 +15,28 @@ const liveCopySQL = `json_extract(c.value, '$.target_id') = ? AND (
 		json_extract(c.value, '$.status') IN ('done', 'pending')
 		OR (json_extract(c.value, '$.status') != 'purged' AND json_extract(c.value, '$.retain_until') IS NOT NULL))`
 
-// PendingCopyRecords returns the completed backups with a copy that is pending or
-// failed (the copy queue), oldest first. The queue decides from each copy's
-// NextAttemptAt whether it is due.
+// PendingCopyRecords returns the completed backups with a copy in the copy queue:
+// pending, or failed with a next attempt, oldest first. The queue decides from
+// each copy's NextAttemptAt whether it is due. Copies whose attempts are exhausted
+// (failed without a next attempt) are left out until they are retried.
 func (s *SQLiteStore) PendingCopyRecords(ctx context.Context) ([]*models.BackupRecord, error) {
 	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
 		`SELECT id, data FROM backups WHERE status = 'completed' AND EXISTS (
 			SELECT 1 FROM json_each(backups.data, '$.copies') c
-			WHERE json_extract(c.value, '$.status') IN ('pending', 'failed'))
+			WHERE json_extract(c.value, '$.status') = 'pending'
+				OR (json_extract(c.value, '$.status') = 'failed' AND json_extract(c.value, '$.next_attempt_at') IS NOT NULL))
 		ORDER BY started_at, id`)
+}
+
+// ExhaustedCopyRecords returns the completed backups with a copy whose automatic
+// attempts are exhausted (failed without a next attempt), newest first: readiness
+// reports their databases with copy_missing.
+func (s *SQLiteStore) ExhaustedCopyRecords(ctx context.Context) ([]*models.BackupRecord, error) {
+	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		`SELECT id, data FROM backups WHERE status = 'completed' AND EXISTS (
+			SELECT 1 FROM json_each(backups.data, '$.copies') c
+			WHERE json_extract(c.value, '$.status') = 'failed' AND json_extract(c.value, '$.next_attempt_at') IS NULL)
+		ORDER BY started_at DESC, id DESC`)
 }
 
 // CopyKeys returns the storage keys of the copies recorded on storage target
