@@ -146,6 +146,24 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &in) {
 		return
 	}
+	// Through the operations service: lowering the object lock waits for the delete
+	// grace period (and, with the two-person rule, for a second administrator).
+	if s.ops != nil {
+		res, err := s.ops.UpdateTarget(r.Context(), r.PathValue("id"), in)
+		switch {
+		case err == nil:
+		case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrInvalid), errors.Is(err, targets.ErrMaskedSecret),
+			errors.Is(err, targets.ErrConflict), errors.Is(err, targets.ErrLocationInUse), errors.Is(err, targets.ErrUnverifiedChange),
+			errors.Is(err, targets.ErrLocationOverlap):
+			s.writeTargetError(w, err)
+			return
+		default:
+			s.writeOperationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
 	t, err := svc.Update(r.Context(), r.PathValue("id"), in)
 	if err != nil {
 		s.writeTargetError(w, err)

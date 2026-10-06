@@ -160,7 +160,7 @@ func TestPurgeDeletesTheLockedArtifactOfAFailedBackup(t *testing.T) {
 	if err := st.SaveBackupRecord(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bucket.MockStorage.Save(ctx, rec.StorageKey, strings.NewReader("partial")); err != nil {
+	if _, err := bucket.Save(ctx, rec.StorageKey, strings.NewReader("partial")); err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{t0, until} {

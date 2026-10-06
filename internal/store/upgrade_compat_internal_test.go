@@ -1098,6 +1098,26 @@ var compatSteps = []compatStep{
 			if err != nil || len(due) != 2 {
 				t.Errorf("purgeable chunks once the lock ended = %+v, %v; want both", due, err)
 			}
+			// The rebuilt pending_changes keeps every row and accepts object lock
+			// changes, one per target.
+			before, err := s.ListPendingChanges(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(before) == 0 || before[0].ID != "chg_v22" {
+				t.Errorf("pending changes after the rebuild = %+v; want chg_v22 kept", before)
+			}
+			lock := models.ObjectLockSettings{}
+			c := &models.PendingChange{ID: "chg_v25", Kind: models.PendingObjectLock, TargetID: "tgt_s3", ObjectLock: &lock, EffectiveAt: compatT0}
+			if _, err = s.ReplacePendingChange(ctx, c); err != nil {
+				t.Fatalf("store an object lock change: %v", err)
+			}
+			if _, err = s.db.Exec(`INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES ('chg_y', 'object_lock', 'tgt_s3', 1, '{}')`); err == nil {
+				t.Error("a target got two pending object lock changes")
+			}
+			if err = s.DeletePendingChange(ctx, "chg_v25"); err != nil {
+				t.Fatal(err)
+			}
 		},
 	},
 }
