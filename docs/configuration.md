@@ -236,6 +236,28 @@ With `s3.object_lock` set, every object MongoRescue uploads to the target (backu
 
 Provider support changes, and this table only lists what the providers' own documentation stated when it was written. **The save-time bucket check is authoritative**: save (or test) the target with a lock mode, and MongoRescue tells you whether your bucket has Object Lock and versioning enabled.
 
+### Copies on a second target (3-2-1)
+
+A job, or a manual backup, can list up to three **copy targets** besides its primary storage target (`copy_targets`, storage target IDs; never the primary). Every backup is then copied to each of them. See [3-2-1 backups](production.md#3-2-1-backups) for how to set this up.
+
+| Field | Description |
+| :--- | :--- |
+| `copy_targets` | Up to 3 storage target IDs the archive is copied to. On a job update, an empty list removes them and an omitted field keeps them |
+| `copy_mode` | `async` (default): the backup completes once its primary archive is stored and verified, and the copy queue copies it afterwards. `sync`: the backup completes only once every copy succeeded |
+
+- **What is copied.** The archive is streamed from the primary target (`Retrieve`) into the copy target (`Save`). mongodump never runs again and nothing is buffered beyond the drivers' part buffers. The bytes are hashed on the way: when they do not match the backup's SHA-256 and size, the stream fails before the copy target completes the object, so a damaged primary is never copied. The copy holds the same bytes, encrypted or not, under the same storage key.
+- **Records.** The backup gets one entry per copy in `copies`: `target_id`, `target_name`, `storage_key`, `status` (`pending`, `done`, `failed`, `purged`), `sha256_ok`, `version_id`, `object_lock_mode`, `retain_until`, `error`, `copied_at`, `attempts`, `next_attempt_at` and the copy's own `verification`, `verified_at` and `verification_error`.
+- **The copy queue** is the backup records themselves, so it survives restarts. It wakes up for every succeeded backup and also checks every minute. It tries each pending copy and retries a failed one with backoff: 1 minute, doubled for every attempt up to 6 hours, at most 10 attempts. Retrying the backup starts over. The first failure of a copy publishes `backup.copy_failed`, and a copy that succeeds after failing publishes `backup.copy_recovered`. Metrics: `mongorescue_backup_copies_total{result="ok|mismatch|error"}` and `mongorescue_backup_copy_queue_depth`.
+- **Throttling and windows.** Copies upload at most at the job's `max_upload_mbps`, else at the general `max_upload_mbps`. Copies run **outside backup windows** too: a window protects the MongoDB server from mongodump, and copies read only storage.
+- **Synchronous copies.** In `sync` mode a copy is tried three times inside the backup run. When it still fails, the backup fails, and its archive and the copies already made are deleted. A copy under an Object Lock is left to the purge, like the artifact of any failed backup.
+- **Object Lock per target.** Each copy is uploaded with its copy target's own lock settings. Its `version_id` and `retain_until` are recorded per copy, and reads and deletions address that version.
+- **Restores** read the primary by default. A restore can name `source_target_id` (the primary, or a target holding a `done` copy; `--from-target` on the CLI, the *Read the archive from* select in the dashboard). Without it, a restore falls back to the first healthy copy when the primary archive cannot be used: it is recorded missing, failed its last verification, or the object is missing or has another size on its target. The restore record then has `source_target_id`, `source_target_name` and `source_fallback`, and the preflight's `source` check reports which archive is read. The fallback checks the object's size, not its content: a damaged archive of the right size is only detected by verification (the integrity sweep, or the restore's *verify first*).
+- **Verification.** Sweeps and on-demand verifications re-read every `done` copy too, and record the result on the copy (`copies_ok`, `copies_mismatch` and `copies_errors` in the sweep status). A copy that is damaged or gone is queued again and copied from the primary once more, with `backup.copy_failed`.
+- **Deletion and purge.** Deleting a backup soft-deletes its copies with it: the same delete grace period, and the same undelete. The purge then deletes each copy from its own target, every version on a locked target, and only once that target's lock has ended. The backup stays `deleted` while a copy is still locked.
+- **Target deletion.** A storage target is in use (`409`) while a job lists it as a copy target or a backup holds a `pending` or `done` copy on it (or a copy still under its lock), as with primaries. Storage scans of a copy target never report its copies as orphans.
+- **Access.** Copy targets follow the [per-connection access](security.md) rules of primaries: a caller limited to some connections may only name the targets it sees, and a target holding copies of its backups is one of them.
+- **Readiness.** A row shows the copies of its newest good backup ("1 copy", "1 of 2 copies") and warns with `copy_missing` while some of them are not done six hours after the backup finished.
+
 ## Upgrading: deprecated environment variables and config.json
 
 Earlier builds read every setting from environment variables or a JSON file. Those are no longer used; the flags `-config`, `-api-key`, `-mongo-uri`, `-storage` and `-gen-age-key` are gone (the dashboard generates encryption keys).

@@ -118,6 +118,24 @@ Overview → *Recovery readiness* (and `GET /api/v1/readiness`, [api.md](api.md#
 
 **Filtered backups and the RPO.** A backup with a [collection filter](api.md#collection-filters-per-database) (only some collections, or all but some) counts towards its database's RPO like any successful backup: the database is "fresh" as soon as the filtered backup completes. It does not cover the collections it left out: their newest backup may be much older, or there may be none, and neither the RPO check nor the restore tests notice. Such backups carry `filtered: true` with the collections they kept (`collections`) or skipped (`exclude_collections`), show a *Filtered* badge in the Backups list and details, and the readiness row says *Covered partially: N collections excluded* (or *only N collections*). If the excluded collections matter, back them up with a job of their own and give it its own RPO.
 
+## 3-2-1 backups
+
+The 3-2-1 rule asks for **3** copies of your data (the live database and two backups), on **2** different kinds of storage, with **1** of them off site. MongoRescue gets there with [copy targets](configuration.md#copies-on-a-second-target-3-2-1):
+
+1. Add a second storage target in another place than the primary. If the primary is a local disk or a NAS, use an S3 bucket in another region or with another provider. If the primary is S3, use a bucket at another provider, or a local disk you take off site.
+2. In the job form, check that target under *Copy targets* (up to three). Keep *Copy mode* on **async** unless a run must not count as done until its copy exists (**sync**).
+3. Every backup is then copied byte for byte, checked against its SHA-256, under the same key. Encryption stays as it is: an encrypted archive stays encrypted on every target, so the copy target never sees plaintext and needs no key.
+4. Give the off-site copy its own immutability: an S3 target with [Object Lock](configuration.md#immutable-backups-s3-object-lock) locks each copy with its own retention, so even credentials stolen from the primary cannot delete it.
+
+What you get:
+
+- **Restore from either target.** A restore reads the primary, and falls back to a healthy copy by itself when the primary archive is missing or has the wrong size; the restore record says so (`source_fallback`). The dashboard's restore dialog (*Read the archive from*), `--from-target` on the CLI and `source_target_id` in the API choose a copy explicitly.
+- **Verification of every copy.** The integrity sweep re-reads every copy like the primary and copies a damaged or missing one again.
+- **Alerts.** `backup.copy_failed` and `backup.copy_recovered` events (subscribe to them in notification rules), the `mongorescue_backup_copy_queue_depth` metric, and the readiness warning `copy_missing` when a backup's copies are not done six hours after it finished. The readiness row shows "N copies" for the newest backup.
+- **One lifecycle.** Retention and deletion apply to the backup with all its copies: a deleted backup can be undeleted with its copies during the grace period, and the purge then removes every copy, each after its own target's lock.
+
+Copies read storage, not MongoDB, so they run outside backup windows too; they upload at the job's (or the general) `max_upload_mbps`. Size the copy target like the primary: it holds the same archives for as long as the primary does.
+
 ## Large databases
 
 MongoRescue streams `mongodump --archive`: a logical copy that reads every document through the query layer of the member it connects to. That is simple, portable across versions and restorable into any database, but its cost grows with the data:

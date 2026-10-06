@@ -39,6 +39,8 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
 | `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |
 | `mongorescue_metadata_backups_total` | counter | `result` | [Metadata snapshots](production.md#metadata-backups) (`ok`, `error`) |
+| `mongorescue_backup_copies_total` | counter | `result` | Attempts to copy a backup to a [copy target](configuration.md#copies-on-a-second-target-3-2-1) (`ok`, `mismatch`, `error`) |
+| `mongorescue_backup_copy_queue_depth` | gauge | | Backup copies waiting in the copy queue (pending, or failed with a next attempt) |
 | `mongorescue_last_successful_metadata_backup_timestamp_seconds` | gauge | | Unix time of the last stored metadata snapshot |
 | `mongorescue_metadata_backup_size_bytes` | gauge | | Size of the last stored metadata snapshot |
 | `mongorescue_job_rpo_seconds` | gauge | `job`, `database` | Age of the newest successful backup of each database of an enabled job (since the job's creation when it has none); see [recovery point objectives](#recovery-point-objectives) |
