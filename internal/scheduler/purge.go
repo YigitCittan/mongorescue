@@ -138,7 +138,82 @@ func (p purgeRun) run(ctx context.Context) ([]string, error) {
 	if len(purged) > 0 || len(errs) > 0 {
 		p.logger.Info("purge of deleted backups finished", slog.Int("purged", len(purged)), slog.Int("failed", len(errs)))
 	}
+	if err := p.cleanupLockedArtifacts(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	return purged, errors.Join(errs...)
+}
+
+// pendingCleanups lists the failed backups whose locked artifact waits for its
+// purge (implemented by *store.SQLiteStore).
+type pendingCleanups interface {
+	PendingArchiveCleanups(ctx context.Context) ([]*models.BackupRecord, error)
+}
+
+// cleanupLockedArtifacts deletes the artifacts of failed and cancelled backups that
+// could not be deleted when the backup failed because of their S3 Object Lock
+// (models.BackupRecord.ArchiveCleanupPending): once the lock has ended, every
+// version is deleted and the flag cleared. Each runs under the archive's lock and
+// is skipped while another live record names the same object.
+func (p purgeRun) cleanupLockedArtifacts(ctx context.Context) error {
+	lister, ok := p.store.(pendingCleanups)
+	updater, canUpdate := p.store.(BackupUpdater)
+	if !ok || !canUpdate {
+		return nil
+	}
+	list, err := lister.PendingArchiveCleanups(ctx)
+	if err != nil {
+		return fmt.Errorf("list locked artifacts of failed backups: %w", err)
+	}
+	var errs []error
+	for _, rec := range list {
+		if rec.LockedAt(p.now) || rec.StorageKey == "" {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := p.cleanupOne(ctx, updater, rec); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// cleanupOne deletes the locked artifact of failed backup rec (see
+// cleanupLockedArtifacts).
+func (p purgeRun) cleanupOne(ctx context.Context, updater BackupUpdater, rec *models.BackupRecord) error {
+	unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(rec.StorageTargetID, rec.StorageKey))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if holder, refErr := archiveHolder(ctx, p.store, rec); refErr != nil || holder != "" {
+		return refErr
+	}
+	driver, err := p.storages(ctx, rec.StorageTargetID)
+	var until *time.Time
+	if err == nil {
+		until, err = storage.Purge(ctx, driver, rec.StorageKey, rec.StorageVersionID, p.now)
+	}
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		p.logger.Warn("cannot delete the locked artifact of a failed backup; retried by the next purge",
+			logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
+		return fmt.Errorf("delete the artifact of failed backup %s: %w", rec.ID, err)
+	}
+	_, err = updater.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
+		if until != nil {
+			at := until.UTC()
+			r.RetainUntil = &at
+			return nil
+		}
+		r.ArchiveCleanupPending = false
+		return nil
+	})
+	if err == nil && until == nil {
+		p.logger.Info("deleted the locked artifact of a failed backup after its lock ended", logsafe.Attr("backup_id", rec.ID))
+	}
+	return err
 }
 
 // purgeOne purges the deleted backup listed as rec.
@@ -179,10 +254,27 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 			out.ArchiveKept = holder
 		} else {
 			driver, delErr := storages(ctx, current.StorageTargetID)
+			var lockedUntil *time.Time
+			if delErr == nil && current.LegalHold && !current.Pinned {
+				// A legal hold left on a deleted, unpinned record (the old archive of a
+				// re-encrypted pinned backup) ends with the purge.
+				if delErr = storage.SetLegalHold(ctx, driver, current.StorageKey, current.StorageVersionID, false); errors.Is(delErr, storage.ErrNotFound) {
+					delErr = nil
+				}
+			}
 			if delErr == nil {
-				delErr = driver.Delete(ctx, current.StorageKey)
+				// On a locked target every version of the archive is deleted (deleting
+				// the key would only add a delete marker), and only once none is
+				// locked; other targets delete the key as before.
+				lockedUntil, delErr = storage.Purge(ctx, driver, current.StorageKey, current.StorageVersionID, now)
 			}
 			switch {
+			case delErr == nil && lockedUntil != nil:
+				// A version is still locked (an archive recorded without its lock, or
+				// a lock extended in the bucket): record when it ends and keep the
+				// backup deleted until then.
+				p.waitForLock(ctx, current.ID, *lockedUntil)
+				return PurgeOutcome{}, errPurgeSkip
 			case delErr == nil:
 				out.ArchiveDeleted = true
 			case errors.Is(delErr, storage.ErrNotFound):
@@ -200,7 +292,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		if !r.PurgeDue(now, grace) {
 			return errPurgeSkip
 		}
-		r.Status, r.PurgedAt = models.StatusPurged, &at
+		r.Status, r.PurgedAt, r.LegalHold = models.StatusPurged, &at, false
 		return nil
 	}
 	if u, ok := metadataStore.(BackupUpdater); ok {
@@ -220,6 +312,24 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		logsafe.Attr("backup_id", current.ID), logsafe.Attr("database", current.Database),
 		slog.Bool("archive_deleted", out.ArchiveDeleted))
 	return out, nil
+}
+
+// waitForLock records until on deleted backup id: PurgeDue keeps it deleted until
+// its archive's lock ends.
+func (p purgeRun) waitForLock(ctx context.Context, id string, until time.Time) {
+	p.logger.Info("deleted backup waits for the S3 Object Lock of its archive to end",
+		logsafe.Attr("backup_id", id), slog.Time("retain_until", until))
+	u, ok := p.store.(BackupUpdater)
+	if !ok {
+		return
+	}
+	if _, err := u.UpdateBackupRecord(ctx, id, func(r *models.BackupRecord) error {
+		at := until.UTC()
+		r.RetainUntil = &at
+		return nil
+	}); err != nil {
+		p.logger.Warn("cannot record the lock of a deleted backup's archive", logsafe.Attr("backup_id", id), logsafe.Error(err))
+	}
 }
 
 // holderIndex maps physical object locations to the live records that name them,

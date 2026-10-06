@@ -108,7 +108,9 @@ func (s *Service) pruneInstall(ctx context.Context, id string) error {
 			if o == nil || !strings.HasPrefix(o.Key, prefix) || !snapshotName.MatchString(strings.TrimPrefix(o.Key, prefix)) {
 				continue
 			}
-			if err := driver.Delete(ctx, o.Key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			// On a locked target a snapshot stays until its lock ends (a later prune
+			// deletes every version of it); elsewhere it is deleted as before.
+			if _, err := storage.Purge(ctx, driver, o.Key, "", s.now()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 				errs = append(errs, fmt.Errorf("metabackup: delete retired snapshot: %w", err))
 			}
 		}

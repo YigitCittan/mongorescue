@@ -654,6 +654,8 @@ function readinessRender() {
       <caption class="sr-only">${escapeHtml(t("readiness.caption"))}</caption>
       <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
+  // How the storage targets protect backups against deletion (objectlock.js).
+  if (typeof objectLockReadinessHints === "function") html += objectLockReadinessHints(data);
   // Unchanged markup is not rewritten, so focus stays put across refreshes.
   if (html !== readinessRendered) {
     readinessRendered = html;

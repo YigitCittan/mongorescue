@@ -81,7 +81,7 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 
 	h := sha256.New()
 	counted := &hashReader{r: pr, h: h}
-	_, saveErr := driver.Save(ctx, key, counted)
+	saved, saveErr := driver.Save(ctx, key, counted)
 	if saveErr != nil {
 		cancelRead()
 	}
@@ -113,6 +113,9 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 	if stats.Entries > 0 {
 		c.FirstTerm, c.LastTerm = stats.First.Term, stats.Last.Term
 	}
+	if saved != nil {
+		c.VersionID, c.RetainUntil = saved.VersionID, saved.RetainUntil
+	}
 	if err := w.svc.cfg.Repo.CommitChunk(ctx, c); err != nil {
 		w.removeObject(ctx, driver, key)
 		return nil, 0, fmt.Errorf("commit the chunk: %w", err)
@@ -141,11 +144,12 @@ func checkScan(sc *oplog.Scanner, stats pitr.OplogStats) error {
 }
 
 // removeObject deletes an object that was not committed, detached from ctx's
-// cancellation.
+// cancellation. On a locked target the object cannot go before its lock ends: it is
+// left without a delete marker, so the orphan purge finds and deletes it then.
 func (w *worker) removeObject(ctx context.Context, driver storage.Storage, key string) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if err := driver.Delete(cctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	if _, err := storage.Purge(cctx, driver, key, "", w.svc.now()); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		w.svc.logger.Warn("cannot remove an uncommitted oplog chunk", logsafe.Attr("stream_id", w.stream.ID),
 			logsafe.Attr("storage_key", key), logsafe.Error(err))
 	}

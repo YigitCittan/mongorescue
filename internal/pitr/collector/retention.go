@@ -249,8 +249,15 @@ func (s *Service) purgeOrphan(ctx context.Context, st *pitr.Stream, driver stora
 	if err != nil || keys[key] {
 		return err
 	}
-	if err := driver.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	// On a locked target every version is deleted once none is locked; until then
+	// the orphan stays and a later run retries.
+	until, err := storage.Purge(ctx, driver, key, "", s.now())
+	switch {
+	case err != nil && !errors.Is(err, storage.ErrNotFound):
 		return fmt.Errorf("delete the orphan chunk object %s: %w", key, err)
+	case until != nil:
+		s.logger.Debug("an orphan oplog chunk object is still locked", logsafe.Attr("storage_key", key), slog.Time("retain_until", *until))
+		return nil
 	}
 	s.logger.Info("removed an orphan oplog chunk object", logsafe.Attr("stream_id", st.ID), logsafe.Attr("storage_key", key))
 	return nil
@@ -265,26 +272,42 @@ func (s *Service) purgeChunks(ctx context.Context, st *pitr.Stream, now time.Tim
 	}
 	var errs []error
 	for _, c := range due {
-		if err := s.purgeChunk(ctx, c); err != nil {
+		if err := s.purgeChunk(ctx, c, now); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// purgeChunk removes the object of deleted chunk c under its archive lock.
-func (s *Service) purgeChunk(ctx context.Context, c *pitr.Chunk) error {
+// chunkRetention records the retain-until date the purge found on a chunk's object
+// (implemented by *store.SQLiteStore).
+type chunkRetention interface {
+	SetChunkRetainUntil(ctx context.Context, id string, until time.Time) error
+}
+
+// purgeChunk removes the object of deleted chunk c under its archive lock. On a
+// locked target every version of the object is deleted once none is locked; while
+// one is, the chunk stays unpruned and its retain-until date is recorded, so the
+// purge skips it until then.
+func (s *Service) purgeChunk(ctx context.Context, c *pitr.Chunk, now time.Time) error {
 	unlock, err := runs.LockDeletion(ctx, runs.ArchiveKey(c.TargetID, c.StorageKey))
 	if err != nil {
 		return err
 	}
 	defer unlock()
 	driver, err := s.cfg.Storage(ctx, c.TargetID)
+	var until *time.Time
 	if err == nil {
-		err = driver.Delete(ctx, c.StorageKey)
+		until, err = storage.Purge(ctx, driver, c.StorageKey, c.VersionID, now)
 	}
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return fmt.Errorf("delete the object of chunk %s: %w", c.ID, err)
+	}
+	if until != nil {
+		if r, ok := s.cfg.Repo.(chunkRetention); ok {
+			return r.SetChunkRetainUntil(ctx, c.ID, *until)
+		}
+		return nil
 	}
 	if err := s.cfg.Repo.MarkChunkPruned(ctx, c.ID); err != nil && !errors.Is(err, pitr.ErrNotFound) {
 		return err

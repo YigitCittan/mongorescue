@@ -30,6 +30,7 @@ func NewForTarget(ctx context.Context, t *models.StorageTarget, localPath string
 			SecretKey:    t.S3.SecretAccessKey,
 			UsePathStyle: t.S3.UsePathStyle,
 			PartSizeMB:   t.S3.PartSizeMB,
+			ObjectLock:   ObjectLock{Mode: t.S3.ObjectLock, RetentionDays: t.S3.RetentionDays},
 		})
 	}
 	return nil, fmt.Errorf("storage: unsupported storage type %q", t.Type)

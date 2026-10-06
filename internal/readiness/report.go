@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -69,6 +70,40 @@ type Report struct {
 	Rows []Row `json:"rows"`
 	// Streams has one entry per PITR stream, ordered like Rows.
 	Streams []StreamRow `json:"streams"`
+	// StorageHints are notes on how the storage targets protect backups against
+	// deletion outside MongoRescue (models.StorageTarget.ImmutabilityHint), sorted
+	// by target name. They never change a row's status.
+	StorageHints []StorageHint `json:"storage_hints"`
+}
+
+// StorageHint is a note on one storage target.
+type StorageHint struct {
+	// TargetID and TargetName identify the target.
+	TargetID   string `json:"target_id"`
+	TargetName string `json:"target_name"`
+	models.TargetHint
+}
+
+// storageHints lists the hints of every storage target; a failed listing gives none.
+func (s *Service) storageHints(ctx context.Context) []StorageHint {
+	out := []StorageHint{}
+	if s.cfg.Targets == nil {
+		return out
+	}
+	list, err := s.cfg.Targets(ctx)
+	if err != nil {
+		s.logger.Warn("readiness: cannot list the storage targets", logsafe.Error(err))
+		return out
+	}
+	for _, t := range list {
+		if h := t.ImmutabilityHint(); h != nil {
+			out = append(out, StorageHint{TargetID: t.ID, TargetName: t.Name, TargetHint: *h})
+		}
+	}
+	slices.SortFunc(out, func(a, b StorageHint) int {
+		return cmp.Or(cmp.Compare(a.TargetName, b.TargetName), cmp.Compare(a.TargetID, b.TargetID))
+	})
+	return out
 }
 
 // Summary counts rows by status.
@@ -294,7 +329,8 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		byDB[rowKey{r.SourceConnectionID, r.SourceDatabase}] = r
 	}
 
-	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names)}
+	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names),
+		StorageHints: s.storageHints(ctx)}
 	for rk, acc := range rows {
 		finishRow(acc, byDB[rk], now, byConn[rk.connection])
 		switch acc.row.Status {

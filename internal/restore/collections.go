@@ -13,6 +13,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 // ErrNoArtifact indicates that a backup record has no stored artifact to read (a
@@ -52,7 +53,7 @@ func (e *Engine) ArchiveCollections(ctx context.Context, rec *models.BackupRecor
 		return nil, fmt.Errorf("%w: %s", encryption.ErrEncryptionKeyRequired, KeyRequiredHint)
 	}
 
-	stream, err := run.storage.Retrieve(ctx, rec.StorageKey)
+	stream, err := storage.RetrieveVersion(ctx, run.storage, rec.StorageKey, rec.StorageVersionID)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve backup stream: %w", err)
 	}

@@ -599,7 +599,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot})
+	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot,
+		Warnings: s.ops.JobWarnings(r.Context(), &job)})
 }
 
 // handleGetJob returns a job with its next activations.
@@ -626,7 +627,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The redacted job with what the edit deferred (a shorter retention).
-	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection})
+	writeJSON(w, http.StatusOK, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection, Warnings: res.Warnings})
 }
 
 // writeJobError maps job validation and save errors to HTTP responses: storage target
@@ -769,7 +770,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
-	case errors.Is(err, operations.ErrDatabaseListing):
+	case errors.Is(err, operations.ErrDatabaseListing), errors.Is(err, operations.ErrLegalHold):
 		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
 	case errors.Is(err, operations.ErrKeyRequired):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())

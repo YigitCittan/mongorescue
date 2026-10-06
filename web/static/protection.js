@@ -900,6 +900,8 @@ function renderPendingChanges() {
     if (c.kind === "retention") text = tf("protection.pending_retention", { job: String(c.job_id || ""), value: pendingRetentionText(c), when });
     if (c.kind === "metadata_backup_retention") text = tf("protection.pending_metadata", { n: formatCount(Number(c.metadata_retention_count) || 0), when });
     if (c.kind === "disable_second_approver") text = tf("protection.pending_disable", { when });
+    // A lowered S3 Object Lock of a storage target (objectlock.js).
+    if (c.kind === "object_lock" && typeof objectLockPendingText === "function") text = objectLockPendingText(c, when);
     const by = c.requested_by ? ` <span class="muted">(${escapeHtml(tf("protection.pending_by", { who: String(c.requested_by) }))})</span>` : "";
     return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}
       <button type="button" class="btn btn-secondary btn-sm" data-action="pending-cancel" data-id="${escapeHtml(c.id)}">${escapeHtml(t("protection.pending_cancel"))}</button></li>`;

@@ -1051,6 +1051,75 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 25,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO oplog_chunks (id, stream_id, chain_id, target_id, storage_key, from_t, from_i, to_t, to_i,
+					first_term, last_term, entries, size_bytes, sha256, encrypted, encryption_mode, status, created_at,
+					verified_at, verify_error, deleted_at, purge_after, version_id, retain_until)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"chk_v25", "pst_v21", "chain_lock", "tgt_local",
+				"_mongorescue/oplog/conn_v2/rs0/chain_lock/1790000300.0000000002-1790000600.0000000001.bson.gz.age",
+				1790000300, 2, 1790000600, 1, 3, 3, 12, 512, "beef", 1, "x25519", "committed", ns(37*time.Hour),
+				nil, "", ns(37*time.Hour), ns(37*time.Hour+7*24*time.Hour), "v-25", ns(37*time.Hour+30*24*time.Hour))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			old, err := s.ListChunks(ctx, pitr.ChunkQuery{StreamID: "pst_v21", ChainID: "chain_old"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks, err := s.ListChunks(ctx, pitr.ChunkQuery{StreamID: "pst_v21", ChainID: "chain_lock"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks = append(chunks, old...)
+			var locked *pitr.Chunk
+			for _, c := range chunks {
+				switch c.ID {
+				case "chk_v25":
+					locked = c
+				case "chk_v23":
+					if c.VersionID != "" || c.RetainUntil != nil {
+						t.Errorf("chk_v23 = %+v; want no version and no retention", c)
+					}
+				}
+			}
+			if locked == nil || locked.VersionID != "v-25" || locked.RetainUntil == nil ||
+				!locked.RetainUntil.Equal(compatT0.Add(37*time.Hour+30*24*time.Hour)) {
+				t.Fatalf("chk_v25 = %+v; want version v-25 and its retention", locked)
+			}
+			// Past its grace period but still locked: only the unlocked chunk is due.
+			due, err := s.ListPurgeableChunks(ctx, "pst_v21", compatT0.Add(38*time.Hour+7*24*time.Hour), 10)
+			if err != nil || len(due) != 1 || due[0].ID != "chk_v23" {
+				t.Errorf("purgeable chunks before the lock ends = %+v, %v; want chk_v23", due, err)
+			}
+			due, err = s.ListPurgeableChunks(ctx, "pst_v21", compatT0.Add(37*time.Hour+30*24*time.Hour), 10)
+			if err != nil || len(due) != 2 {
+				t.Errorf("purgeable chunks once the lock ended = %+v, %v; want both", due, err)
+			}
+			// The rebuilt pending_changes keeps every row and accepts object lock
+			// changes, one per target.
+			before, err := s.ListPendingChanges(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(before) == 0 || before[0].ID != "chg_v22" {
+				t.Errorf("pending changes after the rebuild = %+v; want chg_v22 kept", before)
+			}
+			lock := models.ObjectLockSettings{}
+			c := &models.PendingChange{ID: "chg_v25", Kind: models.PendingObjectLock, TargetID: "tgt_s3", ObjectLock: &lock, EffectiveAt: compatT0}
+			if _, err = s.ReplacePendingChange(ctx, c); err != nil {
+				t.Fatalf("store an object lock change: %v", err)
+			}
+			if _, err = s.db.Exec(`INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES ('chg_y', 'object_lock', 'tgt_s3', 1, '{}')`); err == nil {
+				t.Error("a target got two pending object lock changes")
+			}
+			if err = s.DeletePendingChange(ctx, "chg_v25"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

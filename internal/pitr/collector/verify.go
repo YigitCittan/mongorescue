@@ -50,7 +50,7 @@ func (s *Service) VerifyChunk(ctx context.Context, c *pitr.Chunk) error {
 	if err != nil {
 		return fmt.Errorf("storage target: %w", err)
 	}
-	obj, err := driver.Retrieve(ctx, c.StorageKey)
+	obj, err := storage.RetrieveVersion(ctx, driver, c.StorageKey, c.VersionID)
 	if err != nil {
 		return fmt.Errorf("read the chunk object: %w", err)
 	}

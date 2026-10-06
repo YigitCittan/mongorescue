@@ -58,7 +58,7 @@ This changes the backup model, so it starts with a design document that has to b
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. |
+| 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. Implemented for the next release (#59), see [configuration.md](configuration.md#immutable-backups-s3-object-lock). |
 | 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. |
 | 4.3 | **KMS** | M–L | Keep `secret.key` and age identities wrapped by AWS KMS, Google Cloud KMS or Azure Key Vault (envelope encryption), so the key material on disk is useless on its own. |
 | 4.4 | **HashiCorp Vault** | M–L | Read connection credentials and storage keys from Vault instead of storing them, with lease renewal. |

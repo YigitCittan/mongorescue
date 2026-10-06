@@ -4,6 +4,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -33,6 +34,17 @@ type StorageObject struct {
 
 	// ETag is an optional entity tag or checksum provided by the storage driver.
 	ETag string `json:"etag,omitempty"`
+
+	// VersionID is the object version the driver wrote, on a bucket with versioning
+	// (S3 Object Lock); empty otherwise.
+	VersionID string `json:"version_id,omitempty"`
+
+	// RetainUntil is the end of the object's S3 Object Lock retention: until then
+	// the version cannot be deleted. Nil for an object without retention.
+	RetainUntil *time.Time `json:"retain_until,omitempty"`
+
+	// ObjectLockMode is the Object Lock mode of the retention (with RetainUntil).
+	ObjectLockMode ObjectLockMode `json:"object_lock_mode,omitempty"`
 }
 
 // StorageTarget is a configured destination for backup archives: a local directory
@@ -72,6 +84,77 @@ type StorageTarget struct {
 
 	// LastTestError is the failure reason of the last test.
 	LastTestError string `json:"last_test_error,omitempty"`
+
+	// Hints are notes on how well the target protects backups against deletion
+	// (see ImmutabilityHint). They are computed for API responses (Redacted), never
+	// stored.
+	Hints []TargetHint `json:"hints,omitempty"`
+}
+
+// TargetHint is a note on a storage target shown in the dashboard and the
+// readiness report.
+type TargetHint struct {
+	// Level is HintInfo or HintWarn.
+	Level string `json:"level"`
+	// Code identifies the hint (HintNoObjectLock, HintGovernanceBypass,
+	// HintLocalNotImmutable).
+	Code string `json:"code"`
+	// Message explains it in English.
+	Message string `json:"message"`
+}
+
+// Hint levels and codes.
+const (
+	// HintInfo is a suggestion.
+	HintInfo = "info"
+	// HintWarn is a weakness worth fixing.
+	HintWarn = "warn"
+	// HintNoObjectLock: an S3 target without Object Lock.
+	HintNoObjectLock = "no_object_lock"
+	// HintGovernanceBypass: an S3 target in governance mode.
+	HintGovernanceBypass = "governance_bypass"
+	// HintLocalNotImmutable: a local target, which has no immutability option.
+	HintLocalNotImmutable = "local_not_immutable"
+)
+
+// ImmutabilityHint returns the note on how t protects backups against deletion
+// outside MongoRescue, or nil for a target in compliance mode.
+func (t *StorageTarget) ImmutabilityHint() *TargetHint {
+	switch {
+	case t == nil:
+		return nil
+	case t.Type == StorageLocal:
+		return &TargetHint{Level: HintInfo, Code: HintLocalNotImmutable,
+			Message: "local storage has no immutability option: anyone with access to the directory can delete backups; the delete grace period protects only against deletions through MongoRescue. Use an S3 target with Object Lock for immutable backups"}
+	case t.S3 == nil:
+		return nil
+	case t.S3.ObjectLock == ObjectLockGovernance:
+		return &TargetHint{Level: HintWarn, Code: HintGovernanceBypass,
+			Message: "governance mode: principals with s3:BypassGovernanceRetention can still delete locked backups or shorten their lock; use compliance mode to stop everyone, including the bucket owner"}
+	case !t.S3.Locked():
+		return &TargetHint{Level: HintInfo, Code: HintNoObjectLock,
+			Message: "backups can be deleted with the bucket credentials; enable S3 Object Lock (a bucket created with Object Lock and an object lock mode on this target) to make them immutable"}
+	}
+	return nil
+}
+
+// RetentionLockWarning returns a warning when a job's retention (days and count)
+// deletes backups on t before their S3 Object Lock ends, and "" otherwise: the
+// deletion is allowed, but storage keeps the objects, and their cost, until then.
+func (t *StorageTarget) RetentionLockWarning(retentionDays, retentionCount int) string {
+	if !t.ObjectLocked() {
+		return ""
+	}
+	lock := t.S3.RetentionDays
+	switch {
+	case retentionDays > 0 && retentionDays < lock:
+		return fmt.Sprintf("retention_days %d is shorter than the %d-day object lock of storage target %s: deleted backups stay in the bucket, and keep costing storage, until their lock ends",
+			retentionDays, lock, t.Name)
+	case retentionDays == 0 && retentionCount > 0:
+		return fmt.Sprintf("retention_count may delete backups before the %d-day object lock of storage target %s ends: they then stay in the bucket, and keep costing storage, until it does",
+			lock, t.Name)
+	}
+	return ""
 }
 
 // LocalTarget configures a directory on the MongoRescue host (or a mounted volume).
@@ -111,6 +194,63 @@ type S3Target struct {
 	// largest archive (see MaxArchiveBytes); the uploader holds part size × 2 bytes
 	// in memory per running upload. Zero means DefaultS3PartSizeMB.
 	PartSizeMB int `json:"part_size_mb,omitempty"`
+
+	// ObjectLock is the S3 Object Lock retention mode set on every uploaded object:
+	// ObjectLockNone (empty), ObjectLockGovernance or ObjectLockCompliance. A locked
+	// target needs a bucket created with Object Lock (and so versioning) enabled.
+	ObjectLock ObjectLockMode `json:"object_lock,omitempty"`
+
+	// RetentionDays is how long every uploaded object is locked
+	// (MinObjectLockRetentionDays to MaxObjectLockRetentionDays) when ObjectLock is
+	// set; zero otherwise.
+	RetentionDays int `json:"retention_days,omitempty"`
+
+	// LegalHoldOnPin sets an S3 legal hold on a backup's object while the backup is
+	// pinned (needs ObjectLock).
+	LegalHoldOnPin bool `json:"legal_hold_on_pin,omitempty"`
+}
+
+// ObjectLockMode is the S3 Object Lock retention mode of a storage target.
+type ObjectLockMode string
+
+// S3 Object Lock modes.
+const (
+	// ObjectLockNone (stored as "", shown as "none") uploads objects without a lock.
+	ObjectLockNone ObjectLockMode = "none"
+	// ObjectLockGovernance locks objects so that only principals with
+	// s3:BypassGovernanceRetention can delete them or shorten the lock.
+	ObjectLockGovernance ObjectLockMode = "governance"
+	// ObjectLockCompliance locks objects so that nobody, not even the bucket owner
+	// or the root account, can delete them before their retention ends.
+	ObjectLockCompliance ObjectLockMode = "compliance"
+)
+
+// S3 Object Lock retention bounds, in days.
+const (
+	// MinObjectLockRetentionDays is the shortest retention of a locked target.
+	MinObjectLockRetentionDays = 1
+	// MaxObjectLockRetentionDays is the longest retention of a locked target
+	// (about ten years).
+	MaxObjectLockRetentionDays = 3650
+)
+
+// Locked reports whether the target uploads objects with an S3 Object Lock.
+func (t *S3Target) Locked() bool {
+	return t != nil && (t.ObjectLock == ObjectLockGovernance || t.ObjectLock == ObjectLockCompliance)
+}
+
+// ObjectLocked reports whether t is an S3 target that locks uploaded objects.
+func (t *StorageTarget) ObjectLocked() bool {
+	return t != nil && t.Type == StorageS3 && t.S3.Locked()
+}
+
+// RetentionDuration returns the lock retention of t as a duration (zero when the
+// target does not lock objects).
+func (t *S3Target) RetentionDuration() time.Duration {
+	if !t.Locked() {
+		return 0
+	}
+	return time.Duration(t.RetentionDays) * 24 * time.Hour
 }
 
 // S3 multipart upload limits.
@@ -203,12 +343,14 @@ func (t *StorageTarget) Clone() *StorageTarget {
 		at := *t.LastTestAt
 		clone.LastTestAt = &at
 	}
+	clone.Hints = slices.Clone(t.Hints)
 	return &clone
 }
 
 // Redacted returns a copy that is safe to serialize to API clients or logs: the S3
 // secret access key is replaced by SecretMask, and an unset S3 part size shows the
-// default.
+// default and an unset object lock mode ObjectLockNone. Hints holds the target's
+// ImmutabilityHint.
 func (t *StorageTarget) Redacted() *StorageTarget {
 	clone := t.Clone()
 	if clone != nil && clone.S3 != nil && clone.S3.SecretAccessKey != "" {
@@ -216,6 +358,12 @@ func (t *StorageTarget) Redacted() *StorageTarget {
 	}
 	if clone != nil && clone.S3 != nil {
 		clone.S3.PartSizeMB = clone.S3.EffectivePartSizeMB()
+		if clone.S3.ObjectLock == "" {
+			clone.S3.ObjectLock = ObjectLockNone
+		}
+	}
+	if h := t.ImmutabilityHint(); clone != nil && h != nil {
+		clone.Hints = []TargetHint{*h}
 	}
 	return clone
 }

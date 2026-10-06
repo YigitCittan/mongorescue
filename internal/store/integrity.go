@@ -158,6 +158,15 @@ func (s *SQLiteStore) ArchiveRefs(ctx context.Context) ([]ArchiveRef, error) {
 	return out, nil
 }
 
+// PendingArchiveCleanups returns the failed and cancelled backups whose artifact
+// waits for its S3 Object Lock to end before the purge deletes it
+// (archive_cleanup_pending), oldest first.
+func (s *SQLiteStore) PendingArchiveCleanups(ctx context.Context) ([]*models.BackupRecord, error) {
+	return listRecords[models.BackupRecord](ctx, s, tableBackups, nil,
+		`SELECT id, data FROM backups WHERE status IN ('failed', 'cancelled')
+			AND json_extract(data, '$.archive_cleanup_pending') = 1 ORDER BY started_at, id`)
+}
+
 // ErrPruneRefused is returned by PruneBackupRecord for a backup retention must keep.
 var ErrPruneRefused = errors.New("store: retention must keep this backup")
 

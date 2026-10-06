@@ -97,7 +97,7 @@ func verifyArchive(ctx context.Context, st storage.Storage, rec *models.BackupRe
 	if st == nil {
 		return Result{Status: models.VerificationError, Err: errors.New("verify: no storage driver")}
 	}
-	stream, err := st.Retrieve(ctx, rec.StorageKey)
+	stream, err := storage.RetrieveVersion(ctx, st, rec.StorageKey, rec.StorageVersionID)
 	if err != nil {
 		return Result{Status: models.VerificationError, Err: fmt.Errorf("retrieve archive %s: %w", rec.StorageKey, err)}
 	}

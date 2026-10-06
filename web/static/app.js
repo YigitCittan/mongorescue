@@ -1892,7 +1892,7 @@ function renderBackups() {
     return `<tr class="row-clickable" data-row-action="backup-details" data-id="${escapeHtml(b.id)}" tabindex="0">
       ${bulkCell("backups", b.id, `${b.database} · ${b.id}`)}
       <td class="cell-primary"><div class="name-line">${ellipsis(b.database, "ell-md")}${lock}${trustPinIcon(b)}</div><div class="cell-sub">${ellipsis(backupOrigin(b), "ell-md")}</div>${idCopy(b.id, "cell-sub")}${retryLinks(b)}</td>
-      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${warningLine}${runProgressHtml(b)}${trustBackupBadges(b)}${typeof backupFilterBadge === "function" ? backupFilterBadge(b) : ""}</td>
+      <td>${statusBadge(kind, label, b.error_message)}${errorLine}${warningLine}${runProgressHtml(b)}${trustBackupBadges(b)}${typeof objectLockBackupBadge === "function" ? objectLockBackupBadge(b) : ""}${typeof backupFilterBadge === "function" ? backupFilterBadge(b) : ""}</td>
       <td>${timeCell(b.started_at)}</td>
       <td class="num">${durationCell(b)}</td>
       <td class="num">${size}${backupStorageCell(b)}</td>
@@ -2430,6 +2430,8 @@ function setupForms() {
       if (json.success) {
         // A shorter retention takes effect later (protection.js).
         const deferred = typeof protectionJobSaved === "function" && protectionJobSaved(json.data);
+        // A retention shorter than the storage target's object lock (objectlock.js).
+        if (typeof objectLockJobSaved === "function") objectLockJobSaved(json.data);
         if (!deferred) showToast(editing ? t("job_edit.updated") : t("toasts.job_created"), "success");
         closeModal("modal-new-job");
         refreshAll();
@@ -3570,6 +3572,8 @@ function renderBackupDetails() {
   trustBackupDetailRows(b, row);
   // When and by whom it was deleted, and until when it can be undone (protection.js).
   if (typeof protectionBackupDetailRows === "function") protectionBackupDetailRows(b, row);
+  // S3 Object Lock, legal hold and version (objectlock.js).
+  if (typeof objectLockBackupDetailRows === "function") objectLockBackupDetailRows(b, row);
   // Progress, cancel button, phase timeline and log viewer (runs.js).
   renderRunPanel("backup", "backup", b);
 
@@ -5545,7 +5549,7 @@ function renderStorageTargets() {
     return `<tr>
       <td class="cell-primary">${ellipsis(s.name)}<div class="storage-default">${defaultCell}</div></td>
       <td>${escapeHtml(providerLabel(provider))}</td>
-      <td><span class="mono host-cell storage-location" title="${escapeHtml(storageLocation(s))}">${escapeHtml(storageLocation(s))}</span>${where}</td>
+      <td><span class="mono host-cell storage-location" title="${escapeHtml(storageLocation(s))}">${escapeHtml(storageLocation(s))}</span>${where}${typeof objectLockTargetCell === "function" ? objectLockTargetCell(s) : ""}</td>
       <td><div class="status-line">${storageTestBadge(s)}${tested}</div>${errorLine}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="btn btn-secondary btn-sm" data-action="test-storage" data-id="${escapeHtml(s.id)}">${escapeHtml(t("conn.test_short"))}</button>
@@ -5712,6 +5716,7 @@ function openStorageModal(id) {
   document.getElementById("storage-path-style").checked = !!s3.use_path_style;
   setValue("storage-part-size", String(s3.part_size_mb || S3_PART_SIZE_DEFAULT));
   updatePartSizeHint();
+  if (typeof objectLockFillForm === "function") objectLockFillForm(s3);
   const provider = target ? inferProvider(target) : state.storageTargets.some(s => s.type === "local") ? "aws" : "local";
   setValue("storage-provider", provider);
   applyProvider(provider, !target);
@@ -5775,7 +5780,9 @@ function storagePayload() {
       access_key_id: accessKey,
       secret_access_key: secretKey,
       use_path_style: document.getElementById("storage-path-style").checked,
-      part_size_mb: partSize
+      part_size_mb: partSize,
+      // object_lock, retention_days, legal_hold_on_pin (objectlock.js)
+      ...(typeof objectLockPayload === "function" ? objectLockPayload() : {})
     }
   };
 }
@@ -5787,8 +5794,9 @@ function storageUnchanged(target, payload) {
   if (payload.type === "local") return ((target.local && target.local.path) || "") === payload.local.path;
   const a = target.s3 || {};
   const b = payload.s3;
-  return ["endpoint", "region", "bucket", "prefix", "access_key_id", "secret_access_key"].every(k => String(a[k] || "") === String(b[k] || "")) &&
-    !!a.use_path_style === !!b.use_path_style;
+  return ["endpoint", "region", "bucket", "prefix", "access_key_id", "secret_access_key", "retention_days"].every(k => String(a[k] || "") === String(b[k] || "")) &&
+    String(a.object_lock || "none") === String(b.object_lock || "none") &&
+    !!a.use_path_style === !!b.use_path_style && !!a.legal_hold_on_pin === !!b.legal_hold_on_pin;
 }
 
 function resetStorageTest() {
@@ -5901,7 +5909,9 @@ async function saveStorageTarget(e) {
       if (!def.success) showToast(def.error || t("toasts.request_failed"), "error");
       defaultMoved = !!def.success;
     }
-    showToast(t("storage.saved"), "success");
+    // A lowered object lock waits for the grace period or an approval (objectlock.js).
+    const deferred = typeof objectLockTargetSaved === "function" && objectLockTargetSaved(json.data);
+    if (!deferred) showToast(t("storage.saved"), "success");
     // A target created from a dialog's "New" button is selected there once reloaded.
     const ret = storageReturn;
     storageReturn = null;

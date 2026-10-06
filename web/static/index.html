@@ -2316,6 +2316,25 @@
               <input type="number" id="storage-part-size" class="form-input mono" min="5" max="512" step="1" value="16" inputmode="numeric" aria-describedby="storage-part-size-hint">
               <span class="form-hint" id="storage-part-size-hint" role="status" aria-live="polite"></span>
             </div>
+            <div class="form-group">
+              <label class="form-label" for="storage-object-lock" data-i18n="objectlock.label">Object Lock (immutable backups)</label>
+              <select id="storage-object-lock" class="form-input" aria-describedby="storage-object-lock-hint">
+                <option value="none" data-i18n="objectlock.mode_none">None</option>
+                <option value="governance" data-i18n="objectlock.mode_governance">Governance</option>
+                <option value="compliance" data-i18n="objectlock.mode_compliance">Compliance</option>
+              </select>
+              <span class="form-hint" id="storage-object-lock-hint" data-i18n="objectlock.form_hint">Needs a bucket created with Object Lock enabled; MongoRescue checks it on save and never enables it.</span>
+            </div>
+            <div id="storage-lock-fields" hidden>
+              <div class="form-group">
+                <label class="form-label" for="storage-retention-days" data-i18n="objectlock.retention_label">Lock each upload for (days)</label>
+                <input type="number" id="storage-retention-days" class="form-input mono" min="1" max="3650" step="1" value="30" inputmode="numeric">
+              </div>
+              <label class="check check-plain" for="storage-legal-hold">
+                <input type="checkbox" id="storage-legal-hold">
+                <span class="check-text"><span class="check-title" data-i18n="objectlock.legal_hold_label">Set an S3 legal hold on pinned backups</span></span>
+              </label>
+            </div>
           </div>
 
           <label class="check check-plain" for="storage-default" id="storage-default-row">
@@ -3145,6 +3164,7 @@
   <script src="/pitr.js"></script>
   <script src="/protection.js"></script>
   <script src="/keyrotation.js"></script>
+  <script src="/objectlock.js"></script>
   <script src="/throttle.js"></script>
   <script src="/postrestore.js"></script>
   <script src="/widgets.js"></script>

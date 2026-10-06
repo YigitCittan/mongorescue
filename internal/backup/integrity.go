@@ -203,7 +203,7 @@ func (e *Engine) verifyAfterUpload(ctx context.Context, opts models.BackupOption
 	case models.VerificationMismatch:
 		e.logger.Error("backup archive does not match its checksum after upload; deleting it",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
-		e.deleteArtifact(ctx, record.StorageKey)
+		e.deleteArtifact(ctx, record, record.StorageKey)
 		if errors.Is(res.Err, ErrChecksumMismatch) {
 			return fmt.Errorf("verify after upload: %w", res.Err)
 		}

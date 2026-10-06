@@ -541,6 +541,15 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "metadata snapshot retention change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalLowerObjectLock:
+		if a.ObjectLock == nil {
+			return "", public("the request names no object lock", ErrInvalid)
+		}
+		c, err := s.scheduleObjectLock(ctx, a.Subject, *a.ObjectLock, a.SubjectCreatedAt)
+		if err != nil {
+			return "", err
+		}
+		return "object lock change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
 	case models.ApprovalRestoreDropTarget:
 		if a.Restore == nil {
 			return "", public("the request names no restore", ErrInvalid)
@@ -976,6 +985,8 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			applyErr = s.applyGraceChange(ctx, c)
 		case models.PendingMetadataRetention:
 			applyErr = s.applyMetadataRetentionChange(ctx, c)
+		case models.PendingObjectLock:
+			applyErr = s.applyObjectLockChange(ctx, c)
 		case models.PendingDisableSecondApprover:
 			// Only while the lockout lasts: with two administrators again, turning the
 			// rule off needs an approval like before.

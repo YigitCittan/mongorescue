@@ -680,7 +680,8 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		}
 	}
 	if failErr != nil {
-		e.deleteArtifact(runCtx, targetKey)
+		record.SetStorageObject(savedObj)
+		e.deleteArtifact(runCtx, record, targetKey)
 		record.Phases.UploadDone = nil
 		if runs.CancellationOf(runCtx) != nil {
 			tracker.Printf("mongodump stopped and the partial artifact %s removed", targetKey)
@@ -697,6 +698,12 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	record.SHA256 = hex.EncodeToString(h.Sum(nil))
 	if savedObj != nil && savedObj.SizeBytes > 0 && record.SizeBytes == 0 {
 		record.SizeBytes = savedObj.SizeBytes
+	}
+	// The S3 version and Object Lock retention: reads and the purge address this
+	// version, and the purge waits for the retention to end.
+	record.SetStorageObject(savedObj)
+	if record.RetainUntil != nil {
+		tracker.Printf("archive locked (%s) until %s", record.ObjectLockMode, record.RetainUntil.Format(time.RFC3339))
 	}
 
 	record.Status = models.StatusCompleted
@@ -861,16 +868,31 @@ func (e *Engine) startStallWatchdog(r *activityReader, cancel context.CancelCaus
 // cleanupTimeout bounds deletion of a failed artifact after the run context is gone.
 const cleanupTimeout = 30 * time.Second
 
-// deleteArtifact removes a partial or truncated artifact. It runs detached from ctx
-// cancellation (a cancelled backup must still be cleaned up) but with a bounded timeout.
-func (e *Engine) deleteArtifact(ctx context.Context, key string) {
+// deleteArtifact removes a partial or truncated artifact of record. It runs detached
+// from ctx cancellation (a cancelled backup must still be cleaned up) but with a
+// bounded timeout. On a target with S3 Object Lock the artifact cannot be deleted
+// before its lock ends: the record keeps its version and lock and is marked
+// ArchiveCleanupPending, and the scheduler's purge deletes every version once the
+// lock has ended (no delete marker is added meanwhile).
+func (e *Engine) deleteArtifact(ctx context.Context, record *models.BackupRecord, key string) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if err := e.storage.Delete(cleanupCtx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	until, err := storage.Purge(cleanupCtx, e.storage, key, record.StorageVersionID, time.Now())
+	switch {
+	case err != nil && !errors.Is(err, storage.ErrNotFound):
 		e.logger.Warn("failed to delete partial backup artifact",
 			logsafe.Attr("storage_key", key),
 			slog.Any("error", err),
 		)
+		// On a locked target the artifact may still exist: the purge retries.
+		if l, ok := e.storage.(storage.ObjectLocker); ok && (l.ObjectLockEnabled() || record.StorageVersionID != "") {
+			record.ArchiveCleanupPending = true
+		}
+	case until != nil:
+		at := until.UTC()
+		record.RetainUntil, record.ArchiveCleanupPending = &at, true
+		e.logger.Info("the artifact of a failed backup is locked; the purge deletes it when the lock ends",
+			logsafe.Attr("storage_key", key), slog.Time("retain_until", at))
 	}
 }
 

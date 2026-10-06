@@ -41,6 +41,8 @@ const (
 	// PendingDisableSecondApprover turns security.require_second_approver off when
 	// fewer than two administrators could approve it (a lockout).
 	PendingDisableSecondApprover PendingChangeKind = "disable_second_approver"
+	// PendingObjectLock lowers the S3 Object Lock of storage target TargetID.
+	PendingObjectLock PendingChangeKind = "object_lock"
 )
 
 // PendingChange is a lowered protection that takes effect only at EffectiveAt (the
@@ -65,6 +67,12 @@ type PendingChange struct {
 	// MetadataRetentionCount is the new metadata snapshot count
 	// (PendingMetadataRetention).
 	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
+	// TargetID is the storage target whose object lock is lowered
+	// (PendingObjectLock); TargetCreatedAt binds the change to that target.
+	TargetID        string     `json:"target_id,omitempty"`
+	TargetCreatedAt *time.Time `json:"target_created_at,omitempty"`
+	// ObjectLock is the target's new object lock (PendingObjectLock).
+	ObjectLock *ObjectLockSettings `json:"object_lock,omitempty"`
 	// Admins are the IDs of the administrators when the two-person rule was asked
 	// to turn off (PendingDisableSecondApprover): the change is dropped when one of
 	// them lost the admin role or was deleted by then without an approval.
@@ -80,10 +88,13 @@ type PendingChange struct {
 }
 
 // Subject is the key a pending change replaces older ones of: the job of a retention
-// change, "" for the grace period.
+// change, the storage target of an object lock change, "" for the grace period.
 func (c *PendingChange) Subject() string {
-	if c.Kind == PendingRetention {
+	switch c.Kind {
+	case PendingRetention:
 		return c.JobID
+	case PendingObjectLock:
+		return c.TargetID
 	}
 	return ""
 }
@@ -143,6 +154,9 @@ const (
 	// erased data back after a restore). The new list is the request's Secret,
 	// sealed in the store.
 	ApprovalPostRestoreCommands ApprovalAction = "reduce_post_restore_commands"
+	// ApprovalLowerObjectLock lowers the S3 Object Lock of storage target Subject to
+	// ObjectLock (then delayed by the grace period).
+	ApprovalLowerObjectLock ApprovalAction = "lower_object_lock"
 )
 
 // ApprovalStatus is the state of an approval request.
@@ -197,6 +211,8 @@ type Approval struct {
 	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
 	// Restore is the in-place restore of ApprovalRestoreDropTarget.
 	Restore *RestoreRequest `json:"restore,omitempty"`
+	// ObjectLock is the new object lock of ApprovalLowerObjectLock.
+	ObjectLock *ObjectLockSettings `json:"object_lock,omitempty"`
 	// Secret is kept apart from the request in the store (the new password hash of
 	// ApprovalResetPassword) and never serialized; it is cleared once the request is
 	// decided.
