@@ -121,6 +121,11 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `POST` | `/api/v1/storage-targets/{id}/test` | Test a saved target → `{ok, latency_ms, error}` | 200 | 404 |
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |
 | `POST` | `/api/v1/storage-targets/{id}/default` | Make the target the default | 200 | 404 |
+| `POST` | `/api/v1/storage-targets/{id}/rotate-credentials` | Probe new S3 credentials `{access_key_id, secret_access_key}` (write, read, list, delete) and swap them in ([key rotation](#key-rotation)) | 200 | 400, 404, 409, 422 |
+| `GET` | `/api/v1/security/key-rotation` | `secret_key: {from_env, fingerprint, previous_key_kept}` ([key rotation](#key-rotation)) | 200 | |
+| `POST` | `/api/v1/security/rotate-secret-key` | Rotate `secret.key` `{current_password}` (admin, signed-in users only; everyone signs in again) | 200, 202 | 403, 409, 429 |
+| `POST` | `/api/v1/encryption/rotate` | Rotate the backup encryption key `{passphrase?, reencrypt?}` | 200 | 400, 409 |
+| `GET` | `/api/v1/encryption/reencryption` | The latest re-encryption job (`null` when none ran) | 200 | |
 | `GET` | `/api/v1/jobs` | List scheduled jobs, by name; optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated). A shorter retention of an existing job is answered as `pending_retention` (or `approval`) and applies later ([delete protection](#delete-protection)) | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC), its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) and a pending retention shortening (`pending_retention`) | 200 | 404 |
@@ -223,8 +228,19 @@ The `metadata_backup` settings group (`enabled`, `interval`, `target_id`, `reten
 - only a signed-in user may call it, with the session cookie and `X-CSRF-Token`; API keys get `403` whatever their scope;
 - `current_password` must be the user's password (`403` otherwise; wrong passwords count against the same throttle as password changes, then `429` with `Retry-After`);
 - `passphrase` seals the kit with age scrypt and needs at least 12 characters (`400`). It is not stored.
+- `include_previous_key` (optional) adds `secret.key.previous`, the key the last `secret.key` rotation replaced, which opens metadata snapshots taken before it (`409` when there is none).
 
 The kit is a tar archive with `README.txt` (the recovery steps), `secret.key`, `recovery.json` (encryption settings, every storage target with its credentials, the snapshot prefix `metadata_prefix` and the latest metadata snapshot) and `identities.txt` (the age private keys, only when the server holds one; in recipient-only mode the README points to your own key file instead). Passphrases are never included. Open it with `age -d -o kit.tar mongorescue-recovery-kit-<date>.tar.age && tar -xf kit.tar`. Every download and refused attempt is written to the audit log (`POST /api/v1/recovery-kit`, the user, the result), never the passphrase, the password or the content. `GET /api/v1/recovery-kit` returns `{downloaded_at, up_to_date, min_passphrase_length}`.
+
+## Key rotation
+
+See the runbook in [encryption.md](encryption.md#key-rotation-runbook).
+
+- `POST /api/v1/security/rotate-secret-key` needs a signed-in administrator, the session cookie, `X-CSRF-Token` and `{"current_password": "..."}` (API keys `403`, a wrong password `403`, then `429`). With the two-person rule it answers `202` with the approval request; the rotation runs when a second administrator approves it. A key from `MONGORESCUE_SECRET_KEY` answers `409`, as does a rotation already running or an earlier one a restart must settle. On success it answers `{old_fingerprint, new_fingerprint, resealed, sessions_revoked, rotated_at, sign_in_again: true}`; every session, the caller's included, has ended.
+- `POST /api/v1/encryption/rotate` (admin) answers `{mode, old_fingerprint, new_fingerprint, recipients, reencryption}`. X25519 keys are named by their public keys; passphrases by `"passphrase"`. With `"reencrypt": true` the answer carries the job `{id, status, total, done, skipped, failed, errors, ...}`, also returned by `GET /api/v1/encryption/reencryption`.
+- `POST /api/v1/storage-targets/{id}/rotate-credentials` (admin) answers `{target, steps: [{name, ok, error}], old_access_key_id, new_access_key_id}`. A failed probe answers `422` with the same document in `data` and changes nothing; a local target, missing fields or unchanged credentials answer `400`.
+
+Each successful rotation publishes `security.key_rotated` (`action`: `secret_key`, `encryption` or `storage_credentials`; `detail`: the old and new fingerprints; `approval_id`) and annotates its audit entry with `key_rotated`, `old_fingerprint` and `new_fingerprint`.
 
 ## Restores
 

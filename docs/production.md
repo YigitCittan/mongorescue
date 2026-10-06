@@ -92,6 +92,7 @@ Settings → Recovery → *Download recovery kit* (or the dashboard banner) asks
 | :--- | :--- |
 | `README.txt` | The recovery steps above |
 | `secret.key` | The key sealing the credentials in `mongorescue.db` and its snapshots |
+| `secret.key.previous` | Only when asked for (*Include the previous key*): the key the last `secret.key` rotation replaced, which opens the snapshots taken before it |
 | `identities.txt` | The age X25519 private keys, current and retired (only when one is configured) |
 | `recovery.json` | Encryption settings (passphrases are only flagged as configured, never included), every storage target with its credentials, and the location of the latest metadata snapshot |
 
@@ -177,6 +178,38 @@ Single objects are limited to 5 TiB by S3 anyway, and some S3-compatible service
 Use X25519 recipients (Settings → Encryption) rather than a passphrase: the instance taking backups then needs only the public key, and a compromise of that host or its storage credentials does not expose backup contents. Keep the private key on the host (or in the secret store) used for restores. See [encryption.md](encryption.md).
 
 For restores into existing databases, keep the *Verify before restore* policy (Settings → General) at `auto` or `always` so a corrupted or undecryptable artifact is rejected before `mongorestore` touches the target.
+
+## Key rotation
+
+After a suspected leak, when someone who held a key leaves, or on a schedule, rotate from **Settings → Security → Key rotation**. The full runbook, with what each rotation changes, is in [encryption.md](encryption.md#key-rotation-runbook).
+
+| What | How | Afterwards |
+| :--- | :--- | :--- |
+| `secret.key` | *Rotate secret.key* (your password; a second administrator under the two-person rule), or `POST /api/v1/security/rotate-secret-key` | Everyone signs in again. Download a new recovery kit; keep the previous one (or include `secret.key.previous`) for snapshots taken before the rotation |
+| `MONGORESCUE_SECRET_KEY` | Not rotated by MongoRescue: move the key into `secret.key`, rotate, then set the variable to the new key ([procedure](encryption.md#keys-from-mongorescue_secret_key)) | As above |
+| Backup encryption key | *Rotate encryption key*, optionally re-encrypting existing backups, or `POST /api/v1/encryption/rotate` | Escrow the new identity (new recovery kit); keep the old ones until no backup needs them |
+| S3 credentials | *Test and rotate* with the new key pair, or `POST /api/v1/storage-targets/{id}/rotate-credentials` | Revoke the old key at the provider |
+
+A rotation of `secret.key` is crash-safe: a start after an interruption completes or rolls it back (logged), and never accepts a key the rotation did not name.
+
+### Least-privilege storage credentials
+
+Give MongoRescue a key limited to its bucket and prefix, with only the actions it uses: `s3:PutObject` (backups, snapshots, probes), `s3:GetObject` (restores, verification), `s3:ListBucket` (scans, retention, probes; restrict it with an `s3:prefix` condition) and `s3:DeleteObject` (retention, purges, re-encryption, probes), plus `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` for large uploads. A credential rotation refuses a key that cannot write, read, list or delete. With object lock or versioning, deletions keep a version: size the bucket's lifecycle rules accordingly. Example AWS policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::my-backups",
+     "Condition": {"StringLike": {"s3:prefix": ["mongorescue/*"]}}},
+    {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject",
+      "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+     "Resource": "arn:aws:s3:::my-backups/mongorescue/*"}
+  ]
+}
+```
+
+Use a separate key per installation, so revoking one never stops another.
 
 ## Container images
 
