@@ -1060,8 +1060,8 @@ func (s *Service) lookupAPIKey(ctx context.Context, presented string) (*APIKey, 
 	}
 	stored, mac, err := s.findImportedKey(ctx, presented)
 	if errors.Is(err, ErrAPIKeyNotFound) {
-		k, err := s.repo.GetAPIKeyByPrefix(ctx, legacyImportedKeyPrefix(presented))
-		return k, nil, err
+		k, legacyErr := s.repo.GetAPIKeyByPrefix(ctx, legacyImportedKeyPrefix(presented))
+		return k, nil, legacyErr
 	}
 	return stored, mac, err
 }

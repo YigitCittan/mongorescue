@@ -272,8 +272,8 @@ func TestCrashAtEveryStep(t *testing.T) {
 			if tc.newKey && !bytes.Equal(readKey(t, e.files.Previous), oldKey) {
 				t.Fatal("secret.key.previous is not the old key")
 			}
-			if m, err := again.Store.PendingKeyRotation(context.Background()); err != nil || m != nil {
-				t.Fatalf("marker = %+v, %v; want none", m, err)
+			if m, mErr := again.Store.PendingKeyRotation(context.Background()); mErr != nil || m != nil {
+				t.Fatalf("marker = %+v, %v; want none", m, mErr)
 			}
 			// A new rotation works after the recovery.
 			if _, err = rotator(e, again, nil, nil).Rotate(context.Background()); err != nil {

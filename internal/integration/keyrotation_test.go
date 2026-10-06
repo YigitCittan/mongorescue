@@ -48,13 +48,18 @@ func runJob(t *testing.T, api *apiClient, id string) *models.BackupRecord {
 	var run models.BackupRecord
 	api.data("POST", "/api/v1/jobs/"+id+"/run", nil, http.StatusAccepted, &run)
 	for deadline := time.Now().Add(opTimeout); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
-		var b models.BackupRecord
-		api.data("GET", "/api/v1/backups/"+run.ID, nil, http.StatusOK, &b)
-		switch b.Status {
-		case models.StatusCompleted:
-			return &b
-		case models.StatusFailed, models.StatusCancelled:
-			t.Fatalf("backup %s: %s %s", b.ID, b.Status, b.ErrorMessage)
+		var list []*models.BackupRecord
+		api.data("GET", "/api/v1/backups?database="+run.Database, nil, http.StatusOK, &list)
+		for _, b := range list {
+			if b.ID != run.ID {
+				continue
+			}
+			switch b.Status {
+			case models.StatusCompleted:
+				return b
+			case models.StatusFailed, models.StatusCancelled:
+				t.Fatalf("backup %s: %s %s", b.ID, b.Status, b.ErrorMessage)
+			}
 		}
 	}
 	t.Fatalf("backup %s never completed", run.ID)

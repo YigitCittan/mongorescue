@@ -115,10 +115,10 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 		return &Opened{Store: st, Key: key}, nil
 	}
 	if openErr == nil {
-		outcome, err := settleOpened(ctx, st, files, key, logger)
-		if err != nil {
+		outcome, settleErr := settleOpened(ctx, st, files, key, logger)
+		if settleErr != nil {
 			_ = st.Close()
-			return nil, err
+			return nil, settleErr
 		}
 		return &Opened{Store: st, Key: key, Outcome: outcome}, nil
 	}
