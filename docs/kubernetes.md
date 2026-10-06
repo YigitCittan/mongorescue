@@ -13,7 +13,7 @@ kubectl -n mongorescue logs statefulset/mongorescue | grep setup_code
 kubectl -n mongorescue port-forward svc/mongorescue 8080:8080
 ```
 
-Open http://localhost:8080, enter the setup code and create the admin account. The chart's `NOTES.txt` prints these commands for your release. Pin the image with `image.tag` (an exact release such as `0.21.0`) or `image.digest`. By default the image tag is the chart's `appVersion`.
+Open http://localhost:8080, enter the setup code and create the admin account. The chart's `NOTES.txt` prints these commands for your release. Pin the image with `image.tag` (an exact release such as `0.22.0`) or `image.digest`. By default the image tag is the chart's `appVersion`.
 
 ## What the chart runs
 
