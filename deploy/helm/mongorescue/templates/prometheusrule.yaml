@@ -1,0 +1,16 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- /* files/alerts.yml is a copy of deploy/prometheus/alerts.yml (CI checks they match). It is read, not templated, so the rules keep their own Prometheus template expressions. */}}
+{{- $rules := .Files.Get "files/alerts.yml" | fromYaml }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "mongorescue.fullname" . }}
+  labels:
+    {{- include "mongorescue.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- toYaml $rules.groups | nindent 4 }}
+{{- end }}

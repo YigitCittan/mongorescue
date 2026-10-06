@@ -1,0 +1,57 @@
+MongoRescue {{ .Chart.AppVersion }} is starting as {{ include "mongorescue.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+1. Open the {{ if .Values.config.dashboard }}dashboard{{ else }}REST API{{ end }}:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+     http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "mongorescue.fullname" . }} 8080:{{ .Values.service.port }}
+     then http://localhost:8080/
+{{- end }}
+
+2. Finish the setup with the one-time setup code from the log:
+     kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "mongorescue.fullname" . }} | grep setup_code
+
+{{- if .Values.secretKey.existingSecret }}
+
+3. Stored credentials are encrypted with the key in Secret {{ .Values.secretKey.existingSecret }} (key {{ .Values.secretKey.existingSecretKey }}).
+   Keep a copy of it outside the cluster: without it the stored credentials cannot be opened.
+{{- else if .Values.secretKey.generate }}
+
+3. ##########################################################################
+   WARNING: the key encrypting every stored credential (connection strings,
+   S3 keys, notification secrets, the backup encryption identity) was
+   GENERATED into Secret {{ include "mongorescue.secretKeySecret" . }}.
+
+   IF THIS SECRET IS LOST, THE STORED CREDENTIALS ARE LOST WITH IT.
+
+   It is kept on `helm uninstall` (resource policy "keep"). Copy it out now:
+     kubectl -n {{ .Release.Namespace }} get secret {{ include "mongorescue.secretKeySecret" . }} -o jsonpath='{.data.{{ .Values.secretKey.existingSecretKey }}}' | base64 -d
+   and download the recovery kit (Settings → Recovery) once the setup is done.
+   Better: create the Secret from your secret manager and set
+   secretKey.existingSecret.
+   ##########################################################################
+{{- else }}
+
+3. WARNING: the key encrypting stored credentials is secret.key on the data volume
+   ({{ if .Values.persistence.enabled }}PersistentVolumeClaim data-{{ include "mongorescue.fullname" . }}-0{{ else }}an emptyDir: IT IS LOST WITH THE POD{{ end }}).
+   Download the recovery kit (Settings → Recovery) once the setup is done.
+{{- end }}
+
+4. Shutdown: pod deletions, rolling updates and node drains refuse new runs and wait
+   up to {{ include "mongorescue.shutdownGrace" . }} for running backups and restores
+   (terminationGracePeriodSeconds {{ .Values.terminationGracePeriodSeconds }}), then
+   cancel the rest: they are recorded as cancelled, never as completed.
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence.enabled is false: the database lives in an emptyDir and is lost
+with the pod.
+{{- end }}
+{{- if not .Values.backups.persistence.enabled }}
+
+WARNING: backups.persistence.enabled is false: archives of the "Local disk" target
+are lost with the pod. Add an S3 storage target and make it the default.
+{{- end }}
+
+Documentation: https://github.com/YigitCittan/mongorescue/blob/main/docs/kubernetes.md

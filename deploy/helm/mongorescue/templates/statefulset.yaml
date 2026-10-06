@@ -1,0 +1,209 @@
+{{- $secretName := include "mongorescue.secretKeySecret" . -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mongorescue.fullname" . }}
+  labels:
+    {{- include "mongorescue.labels" . | nindent 4 }}
+spec:
+  # The data directory is locked by one process: never more than one replica.
+  replicas: 1
+  serviceName: {{ include "mongorescue.fullname" . }}-headless
+  # The old pod must be gone (its runs finished or cancelled, its lock released)
+  # before the new one starts.
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "mongorescue.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mongorescue.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mongorescue.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mongorescue
+          image: {{ include "mongorescue.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - -log-level={{ .Values.config.logLevel }}
+          env:
+            - name: MONGORESCUE_DATA_DIR
+              value: /data
+            - name: MONGORESCUE_SERVER_HOST
+              value: "0.0.0.0"
+            - name: MONGORESCUE_SERVER_PORT
+              value: "8080"
+            - name: MONGORESCUE_DASHBOARD
+              value: {{ .Values.config.dashboard | quote }}
+            - name: MONGORESCUE_SHUTDOWN_GRACE
+              value: {{ include "mongorescue.shutdownGrace" . | quote }}
+            {{- with .Values.config.toolsDir }}
+            - name: MONGORESCUE_TOOLS_DIR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if $secretName }}
+            - name: MONGORESCUE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.secretKey.existingSecretKey }}
+            {{- end }}
+            - name: TMPDIR
+              value: /tmp
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: backups
+              mountPath: /backups
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmp.sizeLimit }}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- if not .Values.backups.persistence.enabled }}
+        - name: backups
+          emptyDir: {}
+        {{- else if .Values.backups.persistence.existingClaim }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ .Values.backups.persistence.existingClaim }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- $dataClaim := and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  {{- $backupsClaim := and .Values.backups.persistence.enabled (not .Values.backups.persistence.existingClaim) }}
+  {{- if or $dataClaim $backupsClaim }}
+  # Claims are kept when the release is deleted (persistentVolumeClaimRetentionPolicy
+  # Retain): they hold the database and, with the local target, the archives.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  volumeClaimTemplates:
+    {{- if $dataClaim }}
+    - metadata:
+        name: data
+        labels:
+          {{- include "mongorescue.selectorLabels" . | nindent 10 }}
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+    {{- end }}
+    {{- if $backupsClaim }}
+    - metadata:
+        name: backups
+        labels:
+          {{- include "mongorescue.selectorLabels" . | nindent 10 }}
+        {{- with .Values.backups.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.backups.persistence.accessModes | nindent 10 }}
+        {{- with .Values.backups.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.backups.persistence.size }}
+    {{- end }}
+  {{- end }}

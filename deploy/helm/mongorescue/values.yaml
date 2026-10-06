@@ -1,0 +1,227 @@
+# Default values for the MongoRescue chart. See docs/kubernetes.md.
+#
+# MongoRescue is a single process with a locked data directory: the StatefulSet
+# always runs one replica. Everything except the bootstrap options below
+# (connections, storage targets, schedules, encryption, users) is configured in the
+# dashboard or the REST API and stored in the database on the data volume.
+
+image:
+  repository: ghcr.io/yigitcittan/mongorescue
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pin an image digest ("sha256:...") for reproducible deployments; it takes
+  # precedence over the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Bootstrap options (see docs/configuration.md#bootstrap-options).
+config:
+  # Serve the embedded web dashboard at "/". The REST API, MCP and metrics work
+  # without it.
+  dashboard: true
+  # debug, info, warn or error.
+  logLevel: info
+  # How long a shutdown (pod deletion, rolling update, node drain) waits for running
+  # backups and restores before it cancels them (MONGORESCUE_SHUTDOWN_GRACE). Empty
+  # derives it from terminationGracePeriodSeconds minus 60 seconds, which MongoRescue
+  # needs to cancel the runs left, remove their partial archives and stop.
+  shutdownGrace: ""
+  # Directory searched first for mongodump and mongorestore (MONGORESCUE_TOOLS_DIR);
+  # empty uses the tools bundled in the image.
+  toolsDir: ""
+
+# The key encrypting stored credentials (connection strings, S3 keys, notification
+# secrets, the age identity) in the database. LOSING IT MAKES THEM UNRECOVERABLE.
+secretKey:
+  # Name of an existing Secret holding the key (base64 of 32 random bytes, e.g.
+  # `openssl rand -base64 32`). Recommended: create it from your secret manager.
+  existingSecret: ""
+  # Key inside existingSecret (and inside the generated Secret).
+  existingSecretKey: secret-key
+  # Without existingSecret: generate a random key into a Secret named
+  # <fullname>-secret-key. The Secret is kept on `helm uninstall` and reused on
+  # upgrades; back it up (or download the recovery kit) right after the install.
+  # false stores the key as secret.key on the data volume instead.
+  generate: true
+
+# Grace period of the pod. A rolling update or a node drain waits this long for
+# running backups and restores (see config.shutdownGrace) before the pod is killed.
+terminationGracePeriodSeconds: 600
+
+# Extra environment variables and sources for the container (e.g. AWS_* for the
+# default credential chain of S3 targets, or proxy settings).
+extraEnv: []
+#  - name: AWS_REGION
+#    value: eu-central-1
+extraEnvFrom: []
+#  - secretRef:
+#      name: mongorescue-aws
+
+# The data directory: mongorescue.db, secret.key (unless secretKey is set), the
+# instance lock and the run logs.
+persistence:
+  enabled: true
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  annotations: {}
+  # Use an existing PersistentVolumeClaim instead of the StatefulSet's claim template.
+  existingClaim: ""
+
+# The default "Local disk" storage target at /backups. For production prefer an S3
+# target (Settings → Storage): archives on a volume next to MongoRescue share its
+# failure domain. Disabled, /backups is an emptyDir and its archives are lost with
+# the pod.
+backups:
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+    annotations: {}
+    existingClaim: ""
+
+# Scratch space for temporary files (the private mongodump/mongorestore config
+# files); the root filesystem is read-only.
+tmp:
+  sizeLimit: 256Mi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    # mongodump and mongorestore run inside this container. Each S3 upload buffers
+    # its part size × 2 (32 MiB by default); add that per concurrent backup.
+    memory: 1Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # MongoRescue does not call the Kubernetes API.
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# Probes on GET /api/v1/health (public). It answers 503 when the scheduler is stale
+# (its last tick is older than 90 seconds), so liveness restarts a hung process; it
+# stays 200 while a shutdown waits for running backups. The startup probe allows
+# database migrations on the first start of a new release.
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 3
+    # 120 × 5 s = 10 minutes.
+    failureThreshold: 120
+  liveness:
+    enabled: true
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readiness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  #  nginx.ingress.kubernetes.io/proxy-body-size: 16m
+  hosts:
+    - host: mongorescue.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: mongorescue-tls
+  #    hosts:
+  #      - mongorescue.example.com
+
+networkPolicy:
+  enabled: false
+  # Who may reach the HTTP port (dashboard, API, metrics), as NetworkPolicy peers;
+  # empty allows every pod and namespace. Add your ingress controller and
+  # Prometheus here.
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: ingress-nginx
+  # Where MongoRescue may connect, as NetworkPolicy egress rules: DNS is always
+  # allowed. Empty allows every destination (MongoDB servers, S3, notification
+  # webhooks, SSO); narrow it to your MongoDB pods, S3 endpoint and webhook hosts.
+  egressTo: []
+  #  - to:
+  #      - podSelector:
+  #          matchLabels:
+  #            app.kubernetes.io/name: mongodb
+  #    ports:
+  #      - port: 27017
+  #  - to:
+  #      - ipBlock:
+  #          cidr: 0.0.0.0/0
+  #    ports:
+  #      - port: 443
+
+# Prometheus Operator integration. /metrics needs an API key unless Settings →
+# Security → Public metrics is on.
+serviceMonitor:
+  enabled: false
+  interval: 60s
+  scrapeTimeout: 10s
+  labels: {}
+  # Secret holding an API key (read scope) sent as a bearer token.
+  authorization:
+    secretName: ""
+    secretKey: api-key
+  # Prometheus' default honor_labels: false keeps MongoRescue's job label as
+  # exported_job; the shipped rules work either way.
+  honorLabels: false
+
+# The alert rules of deploy/prometheus/alerts.yml as a PrometheusRule.
+prometheusRule:
+  enabled: false
+  labels: {}
+
+# Extra volumes and mounts, e.g. a CA bundle for MongoDB TLS.
+extraVolumes: []
+extraVolumeMounts: []
