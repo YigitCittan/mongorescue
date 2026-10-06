@@ -906,7 +906,7 @@ func (e *Engine) deleteArtifact(ctx context.Context, record *models.BackupRecord
 	case err != nil && !errors.Is(err, storage.ErrNotFound):
 		e.logger.Warn("failed to delete partial backup artifact",
 			logsafe.Attr("storage_key", key),
-			slog.Any("error", err),
+			logsafe.Error(err),
 		)
 		// On a locked target the artifact may still exist: the purge retries.
 		if l, ok := e.storage.(storage.ObjectLocker); ok && (l.ObjectLockEnabled() || record.StorageVersionID != "") {

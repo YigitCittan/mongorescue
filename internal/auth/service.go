@@ -1088,21 +1088,35 @@ func (s *Service) legacyImportedRecord(ctx context.Context) (*APIKey, error) {
 // HMAC for keys imported by this release, a SHA-256 digest otherwise.
 // macKey is the MAC key the record was found under (nil: the current one).
 func (s *Service) apiKeyMatches(presented, storedHash string, macKey []byte) bool {
-	if rest, ok := strings.CutPrefix(storedHash, importedKeyMACScheme); ok {
-		if macKey == nil {
-			macKey = s.macKey()
-		}
-		mac := rest
-		if kid, m, found := strings.Cut(rest, ":"); found {
-			// The hash names its MAC key; another key never verifies it.
-			if kid != ImportedKeyMACID(macKey) {
-				return false
-			}
-			mac = m
-		}
-		return equalHashes(importedKeyMAC(macKey, presented), mac)
+	if strings.HasPrefix(storedHash, importedKeyMACScheme) {
+		return s.importedKeyMatches(presented, storedHash, macKey)
 	}
 	return equalHashes(HashToken(presented), storedHash)
+}
+
+// importedKeyMatches compares a key with the stored HMAC of an imported key in
+// constant time ("hmac-sha256:[<kid>:]<mac>", with or without the MAC key ID). Any
+// other form of stored hash never matches: the key is only ever keyed with the MAC
+// key, never hashed with plain SHA-256, so a user-chosen key cannot end up in a fast
+// unkeyed digest. macKey is the MAC key the record was found under (nil: the
+// current one).
+func (s *Service) importedKeyMatches(key, storedHash string, macKey []byte) bool {
+	rest, ok := strings.CutPrefix(storedHash, importedKeyMACScheme)
+	if !ok {
+		return false
+	}
+	if macKey == nil {
+		macKey = s.macKey()
+	}
+	mac := rest
+	if kid, m, found := strings.Cut(rest, ":"); found {
+		// The hash names its MAC key; another key never verifies it.
+		if kid != ImportedKeyMACID(macKey) {
+			return false
+		}
+		mac = m
+	}
+	return equalHashes(importedKeyMAC(macKey, key), mac)
 }
 
 // ImportAPIKey stores key, taken from the deprecated MONGORESCUE_API_KEY environment
@@ -1122,8 +1136,9 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 			return false, err
 		}
 	} else if stored, mac, err := s.findImportedKey(ctx, key); err == nil {
-		// Imported before a secret key rotation: bring it under the current key.
-		if s.apiKeyMatches(key, stored.Hash, mac) {
+		// Imported before a secret key rotation: bring it under the current key. The
+		// record was found by its MAC prefix, so it is verified as a MAC only.
+		if s.importedKeyMatches(key, stored.Hash, mac) {
 			s.rehashImportedKey(ctx, stored, key, mac)
 		}
 		return false, nil

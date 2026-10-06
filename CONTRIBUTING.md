@@ -120,7 +120,7 @@ Examples: `MR_TEST_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com` with 
 
 ### Automated checks
 
-Beyond `ci.yml`, every pull request is checked by CodeQL (Go and the web UI), dependency review (fails on new high-severity advisories), a Conventional Commits title check and path-based area labels. The CI `security` job runs `govulncheck`, `actionlint` and `shellcheck` (`make vulncheck lint-ci` locally), and the Docker smoke job fails on fixable HIGH/CRITICAL findings from Trivy. OpenSSF Scorecard runs weekly. Workflow actions are pinned to commit SHAs and Dependabot keeps Go modules, actions and base images current. Releases ship SPDX SBOMs and GitHub build provenance attestations for archives and container images (`gh attestation verify <file> --repo YigitCittan/mongorescue`).
+Beyond `ci.yml`, every pull request is checked by CodeQL (Go and the web UI; a full analysis of the merged result, not only the changed lines, and the `Analyze` job fails on any result, since main carries no open alert), dependency review (fails on new high-severity advisories), a Conventional Commits title check and path-based area labels. The CI `security` job runs `govulncheck`, `actionlint` and `shellcheck` (`make vulncheck lint-ci` locally), and the Docker smoke job fails on fixable HIGH/CRITICAL findings from Trivy. OpenSSF Scorecard runs weekly. Workflow actions are pinned to commit SHAs and Dependabot keeps Go modules, actions and base images current. Releases ship SPDX SBOMs and GitHub build provenance attestations for archives and container images (`gh attestation verify <file> --repo YigitCittan/mongorescue`).
 
 ## Engineering standards
 

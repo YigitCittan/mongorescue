@@ -713,7 +713,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = source.StorageTargetID, source.StorageTargetName, req.SourceFallback
 	if req.SourceFallback != "" {
 		s.logger.Warn("restore falls back to a copy of the backup", logsafe.Attr("backup_id", source.ID),
-			logsafe.Attr("storage_target_id", source.StorageTargetID), slog.String("reason", req.SourceFallback))
+			logsafe.Attr("storage_target_id", source.StorageTargetID), logsafe.Attr("reason", req.SourceFallback))
 	}
 	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
 	if source.ConnectionID != "" && s.cfg.Connections != nil {
