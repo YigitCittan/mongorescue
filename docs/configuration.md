@@ -13,11 +13,12 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 
 | Flag | Environment variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key`, the instance lock, the run logs (`logs/`) and `tmp/` (0700), where the short-lived files that pass connection strings and [TLS material](connections.md#tls-settings) to the Database Tools live while they run |
+| `-data-dir` | `MONGORESCUE_DATA_DIR` | `./data` (`/data` in the image) | Holds `mongorescue.db`, `secret.key`, the instance lock and the run logs (`logs/`) |
 | `-host` | `MONGORESCUE_SERVER_HOST` | `0.0.0.0` | Listen address |
 | `-port` | `MONGORESCUE_SERVER_PORT` | `8080` | Listen port |
 | `-dashboard` | `MONGORESCUE_DASHBOARD` | `false` (`true` in the image) | Serve the web dashboard at `/`. Without it the server answers only the REST API, `/mcp` and `/metrics`, and `GET /` returns 404 |
 | `-tools-dir` | `MONGORESCUE_TOOLS_DIR` | none | Absolute directory searched first for `mongodump` and `mongorestore` (see [MongoDB Database Tools](#mongodb-database-tools)) |
+| `-tmp-dir` | `MONGORESCUE_TMP_DIR` | the system temporary directory (`TMPDIR`) | Absolute directory of the short-lived files that pass connection strings and [TLS material](connections.md#temporary-credentials-on-disk) to `mongodump` and `mongorestore` while they run; created `0700` when missing. Without it, `<data dir>/tmp` (`0700`) is used only when the system temporary directory is not writable. Leftovers are removed at startup |
 | `-shutdown-grace` | `MONGORESCUE_SHUTDOWN_GRACE` | `0s` | How long a shutdown (SIGTERM) waits for running backups and restores before it cancels them: a duration such as `9m` or a number of seconds, up to `24h`. New runs are refused meanwhile. Keep it about a minute below the stop timeout of your process manager; see [kubernetes.md](kubernetes.md#graceful-shutdown) |
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |

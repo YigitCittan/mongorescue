@@ -55,3 +55,9 @@ are lost with the pod. Add an S3 storage target and make it the default.
 {{- end }}
 
 Documentation: https://github.com/YigitCittan/mongorescue/blob/main/docs/kubernetes.md
+
+Temporary credentials: while a backup or restore runs, its connection string and
+TLS material are in short-lived files under /run/mongorescue-tmp, an emptyDir
+{{- if eq .Values.credentialsTmp.medium "Memory" }} in memory (tmpfs): they never reach the node's disk.
+{{- else }} on the node's DISK (credentialsTmp.medium is not "Memory"); set it to "Memory" to keep them in RAM.
+{{- end }}

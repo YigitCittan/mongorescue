@@ -42,6 +42,16 @@ func TestFromEnvAndValidate(t *testing.T) {
 			t.Errorf("Validate(ToolsDir=%q) = %v", dir, err)
 		}
 	}
+	if c, err := FromEnv(env(map[string]string{EnvTmpDir: " /run/mongorescue/ "})); err != nil || c.TmpDir != filepath.FromSlash("/run/mongorescue") {
+		t.Fatalf("tmp dir env = %+v, %v", c, err)
+	}
+	for dir, ok := range map[string]bool{"": true, t.TempDir(): true, ".": false, "tmp": false} {
+		c := Default()
+		c.TmpDir = dir
+		if err := c.Validate(); ok != (err == nil) || !ok && !errors.Is(err, ErrInvalidTmpDir) {
+			t.Errorf("Validate(TmpDir=%q) = %v", dir, err)
+		}
+	}
 	if c, err := FromEnv(env(map[string]string{EnvDashboard: "1"})); err != nil || !c.Dashboard {
 		t.Fatalf("dashboard env = %+v, %v", c, err)
 	}

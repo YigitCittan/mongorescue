@@ -22,7 +22,8 @@ Open http://localhost:8080, enter the setup code and create the admin account. T
 | StatefulSet | Always **one replica**: the data directory is locked by one process, so a second replica could not start. `OrderedReady` stops the old pod before the new one starts. | |
 | Data volume `/data` | A 2 GiB claim (`data-<release>-0`) holding `mongorescue.db`, the run logs and, without `secretKey`, `secret.key` | `persistence.*`, `persistence.existingClaim` |
 | Archive volume `/backups` | A 20 GiB claim for the default "Local disk" storage target | `backups.persistence.*` |
-| `/tmp` | An `emptyDir` (256 MiB) for the private `mongodump`/`mongorestore` config files | `tmp.sizeLimit` |
+| `/tmp` | An `emptyDir` (256 MiB) for temporary files | `tmp.sizeLimit` |
+| `/run/mongorescue-tmp` | A memory-backed `emptyDir` (16 MiB) for the short-lived files that pass connection strings and TLS material to `mongodump`/`mongorestore` (`MONGORESCUE_TMP_DIR`); credentials never reach the node's disk. See [connections.md](connections.md#temporary-credentials-on-disk) | `credentialsTmp.medium`, `credentialsTmp.sizeLimit` |
 | Secret key | A generated Secret `<release>-secret-key`, kept on uninstall | `secretKey.*` |
 | Probes | Startup, liveness and readiness on `GET /api/v1/health` | `probes.*` |
 | Resources | Requests 100m CPU and 256 MiB, limit 1 GiB | `resources` |

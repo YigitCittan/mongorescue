@@ -46,6 +46,11 @@ const (
 	// and restores to finish before it cancels them: a Go duration such as "9m" or a
 	// number of seconds.
 	EnvShutdownGrace = "MONGORESCUE_SHUTDOWN_GRACE"
+	// EnvTmpDir sets the directory of the short-lived files that pass connection
+	// strings and TLS material to mongodump and mongorestore. Empty uses the
+	// system temporary directory (TMPDIR), or <data_dir>/tmp when that is not
+	// writable.
+	EnvTmpDir = "MONGORESCUE_TMP_DIR"
 )
 
 // Defaults.
@@ -81,6 +86,9 @@ var (
 	// ErrInvalidToolsDir is returned for a tools directory that is not an absolute
 	// path (a relative one would let the working directory supply the binaries).
 	ErrInvalidToolsDir = errors.New("config: tools directory must be an absolute path")
+	// ErrInvalidTmpDir is returned for a temporary directory that is not an
+	// absolute path.
+	ErrInvalidTmpDir = errors.New("config: temporary directory must be an absolute path")
 	// ErrInvalidShutdownGrace is returned for a shutdown grace period that is not a
 	// duration from 0 to MaxShutdownGrace.
 	ErrInvalidShutdownGrace = errors.New("config: shutdown grace must be a duration from 0s to 24h (such as 9m) or a number of seconds")
@@ -111,6 +119,10 @@ type Config struct {
 	// (Kubernetes terminationGracePeriodSeconds, docker stop -t), leaving about a
 	// minute for the cancellation.
 	ShutdownGrace time.Duration
+	// TmpDir is the absolute directory of the short-lived files that pass
+	// connection strings and TLS material to the Database Tools. Empty means the
+	// system temporary directory, or <DataDir>/tmp when that is not writable.
+	TmpDir string
 }
 
 // Default returns the defaults of the binary.
@@ -140,6 +152,9 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	}
 	if v := strings.TrimSpace(getenv(EnvToolsDir)); v != "" {
 		cfg.ToolsDir = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(getenv(EnvTmpDir)); v != "" {
+		cfg.TmpDir = filepath.Clean(v)
 	}
 	if v := strings.TrimSpace(getenv(EnvDashboard)); v != "" {
 		b, err := strconv.ParseBool(v)
@@ -187,6 +202,8 @@ func (c *Config) Validate() error {
 		return ErrInvalidHost
 	case c.ToolsDir != "" && !filepath.IsAbs(c.ToolsDir):
 		return fmt.Errorf("%s: %w", EnvToolsDir, ErrInvalidToolsDir)
+	case c.TmpDir != "" && !filepath.IsAbs(c.TmpDir):
+		return fmt.Errorf("%s: %w", EnvTmpDir, ErrInvalidTmpDir)
 	case c.ShutdownGrace < 0 || c.ShutdownGrace > MaxShutdownGrace:
 		return fmt.Errorf("%s: %w", EnvShutdownGrace, ErrInvalidShutdownGrace)
 	}

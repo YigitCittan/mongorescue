@@ -47,9 +47,21 @@ Rules:
 How the material is used:
 
 - **The driver** builds its TLS configuration in memory (TLS 1.2 or later). No file is written.
-- **The tools** get the material as files in a private directory (`0700`) under `<data dir>/tmp`: `ca.pem` and `client.pem` (certificate followed by the key), each `0600`. They are named by `--ssl`, `--sslCAFile` and `--sslPEMKeyFile`, and the loosened checks by `--sslAllowInvalidHostnames` and `--sslAllowInvalidCertificates`. The key password goes into the `--config` file with the URI as `sslPEMKeyPassword`, because the tools' configuration file accepts only `uri`, `password` and `sslPEMKeyPassword`. The directory is removed when the tool exits, also after a failure or a panic. Directories left by a crash are removed at the next start.
+- **The tools** get the material as files in a private directory (`0700`) in the [temporary directory](#temporary-credentials-on-disk): `ca.pem` and `client.pem` (certificate followed by the key), each `0600`. They are named by `--ssl`, `--sslCAFile` and `--sslPEMKeyFile`, and the loosened checks by `--sslAllowInvalidHostnames` and `--sslAllowInvalidCertificates`. The key password goes into the `--config` file with the URI as `sslPEMKeyPassword`, because the tools' configuration file accepts only `uri`, `password` and `sslPEMKeyPassword`. The directory is removed when the tool exits, also after a failure or a panic. Directories left by a crash are removed at the next start.
 - **Neither is logged.** PEM contents and passwords never appear in logs, errors, run logs or API responses.
 - **The client key and its password are sealed with `secret.key`**, bound to their connection, and re-sealed by a [key rotation](encryption.md#key-rotation). The CA and the client certificate are public and stored in plain form.
+
+## Temporary credentials on disk
+
+While `mongodump` or `mongorestore` runs, the connection string (with its password) and, for TLS connections, the CA, the client certificate with its key and the key's password are in files the tool reads. They are in a private directory (`0700`, files `0600`, readable by MongoRescue's user only) that is removed as soon as the tool exits, also after a failure. Directories left by a crash or `SIGKILL` are removed at the next start.
+
+The directory is the system temporary directory (`TMPDIR`), or `MONGORESCUE_TMP_DIR` / `-tmp-dir` when set; `<data dir>/tmp` is used only when the system one is not writable. Keep it off persistent and backed-up disks:
+
+- **Kubernetes:** the Helm chart mounts a memory-backed `emptyDir` (`credentialsTmp.medium: Memory`) at `/run/mongorescue-tmp` and sets `MONGORESCUE_TMP_DIR` to it, so these files never reach a node's disk. See [kubernetes.md](kubernetes.md).
+- **Docker:** `/tmp` is in the container's writable layer. To keep the files in RAM, add a tmpfs, for example `--tmpfs /run/mongorescue-tmp:mode=0700,uid=10001` with `-e MONGORESCUE_TMP_DIR=/run/mongorescue-tmp`.
+- **Linux and macOS:** a `tmpfs` `/tmp` (the default on many distributions) keeps them in RAM. Otherwise point `MONGORESCUE_TMP_DIR` at one.
+- **Windows:** `0700`/`0600` modes do not apply. The files inherit the ACL of their directory: the default `%TEMP%` (`C:\Users\<user>\AppData\Local\Temp`) is readable only by that user, administrators and SYSTEM. If you set `MONGORESCUE_TMP_DIR`, choose a directory whose inherited ACL grants no one else access.
+- **Swap and backups:** exclude the directory from file-level backups and antivirus uploads, and use encrypted swap if memory-backed directories can be swapped out.
 
 ## TLS with a custom CA
 

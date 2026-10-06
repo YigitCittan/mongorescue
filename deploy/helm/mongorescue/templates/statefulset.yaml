@@ -72,6 +72,8 @@ spec:
             {{- end }}
             - name: TMPDIR
               value: /tmp
+            - name: MONGORESCUE_TMP_DIR
+              value: /run/mongorescue-tmp
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -121,6 +123,8 @@ spec:
               mountPath: /backups
             - name: tmp
               mountPath: /tmp
+            - name: credentials-tmp
+              mountPath: /run/mongorescue-tmp
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -128,6 +132,12 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: {{ .Values.tmp.sizeLimit }}
+        - name: credentials-tmp
+          emptyDir:
+            {{- with .Values.credentialsTmp.medium }}
+            medium: {{ . }}
+            {{- end }}
+            sizeLimit: {{ .Values.credentialsTmp.sizeLimit }}
         {{- if not .Values.persistence.enabled }}
         - name: data
           emptyDir: {}
