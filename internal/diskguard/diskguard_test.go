@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -149,8 +150,76 @@ func TestDiskFullEpisode(t *testing.T) {
 	if err := g.Check(); !errors.Is(err, diskguard.ErrLowSpace) || !strings.Contains(err.Error(), "disk is full") {
 		t.Fatalf("Check while full = %v", err)
 	}
+	// Within the event interval (an hour) a new episode is not announced again.
+	if got := pub.types(); len(got) != 1 {
+		t.Fatalf("a second episode within the hour published %v", got)
+	}
+	if !warn.Load() {
+		t.Fatal("the second episode raised no warning")
+	}
+}
+
+// After the event interval a new episode is announced again.
+func TestDiskFullEventInterval(t *testing.T) {
+	pub := &publisher{}
+	sp := &space{}
+	g := diskguard.New(diskguard.Config{Dir: "/data", Free: sp.probe, Publisher: pub, EventInterval: 20 * time.Millisecond})
+	ctx := context.Background()
+	g.Observe(ctx, errSQLiteFull)
+	sp.free.Store(1 << 30)
+	_ = g.Check()
+	g.Observe(ctx, errSQLiteFull) // too soon
+	sp.free.Store(1 << 30)
+	_ = g.Check()
+	time.Sleep(30 * time.Millisecond)
+	g.Observe(ctx, errSQLiteFull)
 	if got := pub.types(); len(got) != 2 {
-		t.Fatalf("a second episode published %v", got)
+		t.Fatalf("events %v, want 2 (the second within the interval debounced)", got)
+	}
+}
+
+// When the free space cannot be read, a full episode ends once a write succeeds:
+// the write probe, or a deferred save.
+func TestFullEpisodeEndsWhenAWriteSucceeds(t *testing.T) {
+	unreadable := func(string) (uint64, error) { return 0, errors.New("statfs: permission denied") }
+	ctx := context.Background()
+
+	var probeOK atomic.Bool
+	g := diskguard.New(diskguard.Config{Dir: "/data", MinFree: 100 << 20, Free: unreadable,
+		Probe: func(string) error {
+			if probeOK.Load() {
+				return nil
+			}
+			return syscall.ENOSPC
+		}})
+	g.Observe(ctx, errSQLiteFull)
+	if err := g.Check(); !errors.Is(err, diskguard.ErrLowSpace) {
+		t.Fatalf("Check while the probe fails = %v", err)
+	}
+	probeOK.Store(true)
+	time.Sleep(5100 * time.Millisecond) // the probe runs at most every 5 s
+	if err := g.Check(); err != nil || g.Full() {
+		t.Fatalf("Check after a successful probe = %v (full %v)", err, g.Full())
+	}
+
+	// A deferred save that succeeds ends the episode too.
+	g2 := diskguard.New(diskguard.Config{Dir: "/data", Free: unreadable, Probe: func(string) error { return syscall.ENOSPC }})
+	g2.Observe(ctx, errSQLiteFull)
+	g2.Defer("backup bkp_1", func(context.Context) error { return nil })
+	g2.RetryDeferred(ctx)
+	if g2.Full() || g2.Pending() != 0 {
+		t.Fatalf("full %v, pending %d after a successful save", g2.Full(), g2.Pending())
+	}
+
+	// The default probe writes and removes a file in the directory.
+	dir := t.TempDir()
+	g3 := diskguard.New(diskguard.Config{Dir: dir, Free: unreadable})
+	g3.Observe(ctx, errSQLiteFull)
+	if err := g3.Check(); err != nil || g3.Full() {
+		t.Fatalf("Check with the default probe = %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("the probe left %v", entries)
 	}
 }
 

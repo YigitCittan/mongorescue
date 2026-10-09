@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,6 +35,14 @@ const (
 	DefaultMinFree = 100 << 20
 	// DefaultPollInterval is how often a full data directory is checked for space.
 	DefaultPollInterval = 30 * time.Second
+	// DefaultEventInterval is the shortest time between two system.disk_full
+	// events: an episode that starts sooner after the last event is only logged.
+	DefaultEventInterval = time.Hour
+	// probeInterval spaces the write probes of a full data directory whose free
+	// space cannot be read.
+	probeInterval = 5 * time.Second
+	// probeSize is the size of the file a write probe writes.
+	probeSize = 64 << 10
 	// recoverMinFree is the free space that ends a disk-full episode when the
 	// pre-run check is off (MinFree 0).
 	recoverMinFree = 1 << 20
@@ -91,6 +100,12 @@ type Config struct {
 	// PollInterval is how often Run checks a full data directory for space
 	// (DefaultPollInterval when <= 0).
 	PollInterval time.Duration
+	// Probe tries a small write to Dir; it ends a disk-full episode when Free
+	// cannot be read (writeProbe, a file written, synced and removed, when nil).
+	Probe func(dir string) error
+	// EventInterval is the shortest time between two system.disk_full events
+	// (DefaultEventInterval when <= 0).
+	EventInterval time.Duration
 	// SaveRetryDelays are the waits between the attempts of SaveFinal (250ms,
 	// 500ms, 1s and 2s when nil; empty for a single attempt).
 	SaveRetryDelays []time.Duration
@@ -118,10 +133,12 @@ type Guard struct {
 	cfg  Config
 	wake chan struct{}
 
-	mu       sync.Mutex
-	full     bool
-	fullErr  string
-	deferred []deferredSave
+	mu        sync.Mutex
+	full      bool
+	fullErr   string
+	deferred  []deferredSave
+	lastEvent time.Time
+	lastProbe time.Time
 }
 
 // New returns a Guard. Run its Run method to retry deferred saves and end a
@@ -132,6 +149,12 @@ func New(cfg Config) *Guard {
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = DefaultPollInterval
+	}
+	if cfg.EventInterval <= 0 {
+		cfg.EventInterval = DefaultEventInterval
+	}
+	if cfg.Probe == nil {
+		cfg.Probe = writeProbe
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -160,15 +183,21 @@ func (g *Guard) Admit() error {
 // while the data directory has less free space than the minimum, or after a
 // metadata write failed because the disk was full until space is available again
 // (which ends the episode). A data directory whose free space cannot be read is
-// accepted unless a write failed.
+// accepted unless a write failed; while it is full, a small write probe (at most
+// every few seconds) ends the episode once it succeeds.
 func (g *Guard) Check() error {
 	if g == nil {
 		return nil
 	}
 	free, probeErr := g.cfg.Free(g.cfg.Dir)
 	known := probeErr == nil
-	if known && g.Full() && free >= max(g.cfg.MinFree, recoverMinFree) {
-		g.recovered(free)
+	switch {
+	case known && g.Full() && free >= max(g.cfg.MinFree, recoverMinFree):
+		g.recovered(fmt.Sprintf("%s free", mib(free)))
+	case !known && g.Full() && g.probeDue():
+		if err := g.cfg.Probe(g.cfg.Dir); err == nil {
+			g.recovered("a write succeeded")
+		}
 	}
 	if g.Full() {
 		return fmt.Errorf("%w: a write to the metadata database failed because the disk is full (%s); new backups and restores start again once space is freed",
@@ -193,6 +222,11 @@ func (g *Guard) Observe(ctx context.Context, err error) bool {
 	started := !g.full
 	g.full = true
 	g.fullErr = redact.Text(err.Error())
+	now := time.Now()
+	notify := started && (g.lastEvent.IsZero() || now.Sub(g.lastEvent) >= g.cfg.EventInterval)
+	if notify {
+		g.lastEvent = now
+	}
 	g.mu.Unlock()
 	if !started {
 		return true
@@ -202,7 +236,7 @@ func (g *Guard) Observe(ctx context.Context, err error) bool {
 	if g.cfg.Warn != nil {
 		g.cfg.Warn(true)
 	}
-	if g.cfg.Publisher != nil {
+	if g.cfg.Publisher != nil && notify {
 		g.cfg.Publisher.Publish(ctx, events.Event{
 			Type: events.SystemDiskFull, Time: time.Now().UTC(), Status: "full",
 			Error:  redact.Text(err.Error()),
@@ -213,8 +247,42 @@ func (g *Guard) Observe(ctx context.Context, err error) bool {
 	return true
 }
 
-// recovered ends a disk-full episode.
-func (g *Guard) recovered(free uint64) {
+// probeDue reports whether a write probe may run now, and records it.
+func (g *Guard) probeDue() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.lastProbe.IsZero() && time.Since(g.lastProbe) < probeInterval {
+		return false
+	}
+	g.lastProbe = time.Now()
+	return true
+}
+
+// writeProbe writes, syncs and removes a small file in dir.
+func writeProbe(dir string) (err error) {
+	f, err := os.CreateTemp(dir, ".diskguard-probe-*")
+	if err != nil {
+		return fmt.Errorf("diskguard: probe: %w", err)
+	}
+	defer func() {
+		if rmErr := os.Remove(f.Name()); rmErr != nil && err == nil {
+			err = fmt.Errorf("diskguard: probe: %w", rmErr)
+		}
+	}()
+	if _, err = f.Write(make([]byte, probeSize)); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("diskguard: probe: %w", err)
+	}
+	return nil
+}
+
+// recovered ends a disk-full episode; why says what showed space again.
+func (g *Guard) recovered(why string) {
 	g.mu.Lock()
 	was := g.full
 	g.full, g.fullErr = false, ""
@@ -230,7 +298,7 @@ func (g *Guard) recovered(free uint64) {
 		return
 	}
 	g.cfg.Logger.Info("the data directory has free space again; backups and restores start again",
-		slog.String("data_dir", g.cfg.Dir), slog.String("free", mib(free)))
+		slog.String("data_dir", g.cfg.Dir), slog.String("evidence", why))
 	if g.cfg.Warn != nil {
 		g.cfg.Warn(false)
 	}
@@ -341,7 +409,9 @@ func (g *Guard) retryDeferred(ctx context.Context, all bool) {
 	var keep []deferredSave
 	now := time.Now()
 	for i, d := range list {
-		if ctx.Err() != nil || g.Full() {
+		// While the disk is full only the first save runs, as a probe: when it
+		// succeeds the episode ends (the free space may be unreadable).
+		if ctx.Err() != nil || (g.Full() && i > 0) {
 			keep = append(keep, list[i:]...)
 			break
 		}
@@ -355,6 +425,9 @@ func (g *Guard) retryDeferred(ctx context.Context, all bool) {
 			d.next = time.Now().Add(d.backoff)
 			keep = append(keep, d)
 			continue
+		}
+		if g.Full() {
+			g.recovered("a write succeeded")
 		}
 		g.cfg.Logger.Info("saved a record that could not be saved before", slog.String("record", d.what))
 	}

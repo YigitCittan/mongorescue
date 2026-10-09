@@ -42,7 +42,7 @@ A rule connects events to channels:
 - `job_ids`: optional. Empty means every job, including on-demand backups.
 - `channel_ids`: channels that receive matching events.
 
-Security alerts are not tied to rules: *Backup encryption is off* (`security.encryption_off_after_upgrade`, see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)) is sent once to every enabled channel, and so is *Data directory full* (`system.disk_full`: a write to the metadata database failed because its disk is full; new backups and restores are refused until space is freed, see [production.md](production.md#disk-space); `error`, `detail`), once per episode.
+Security alerts are not tied to rules: *Backup encryption is off* (`security.encryption_off_after_upgrade`, see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)) is sent once to every enabled channel, and so is *Data directory full* (`system.disk_full`: a write to the metadata database failed because its disk is full; new backups and restores are refused until space is freed, see [production.md](production.md#disk-space); `error`, `detail`), once per episode and at most once an hour.
 
 ## Delivery
 
