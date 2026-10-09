@@ -60,7 +60,7 @@ func TestDefaultsAndMaskedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{`"backup_timeout":"6h0m0s"`, `"restore_verify_policy":"auto"`, `"session_idle_timeout":"12h0m0s"`,
-		`"secure_cookies":"auto"`, `"cors_origins":[]`, `"mcp_enabled":true`, `"identity":""`, `"retired_keys":[]`, `"mode":"x25519"`, `"default_gzip":true`} {
+		`"secure_cookies":"auto"`, `"cors_origins":[]`, `"mcp_enabled":true`, `"identity":""`, `"retired_keys":[]`, `"mode":"x25519"`, `"default_gzip":true`, `"storage_stall_timeout":"5m0s"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("defaults JSON lacks %s: %s", want, raw)
 		}
@@ -103,6 +103,8 @@ func TestUpdateValidatesPersistsAndAppliesLive(t *testing.T) {
 	for name, p := range map[string]Patch{
 		"negative retention": {General: &GeneralPatch{DefaultRetentionDays: ptr(-1)}},
 		"negative timeout":   {General: &GeneralPatch{BackupTimeout: ptr(Duration(-time.Second))}},
+		"short stall":        {General: &GeneralPatch{StorageStallTimeout: ptr(Duration(59 * time.Second))}},
+		"long stall":         {General: &GeneralPatch{StorageStallTimeout: ptr(Duration(61 * time.Minute))}},
 		"verify policy":      {General: &GeneralPatch{RestoreVerifyPolicy: ptr(models.VerifyPolicy("sometimes"))}},
 		"short session":      {Security: &SecurityPatch{SessionIdleTimeout: ptr(Duration(time.Second))}},
 		"absolute < idle":    {Security: &SecurityPatch{SessionAbsoluteTimeout: ptr(Duration(time.Hour))}},
@@ -342,7 +344,7 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyHeartbeatURL) || IsSecret(KeyHeartbeatInterval) {
 		t.Fatal("monitoring secret classification is wrong")
 	}
-	if len(Keys()) != 54 || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if len(Keys()) != 55 || IsSecret(KeyStorageStallTimeout) || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,6 +80,34 @@ func TestHealthWithAStartedScheduler(t *testing.T) {
 		t.Fatalf("draining: %d %v", code, data)
 	}
 	srv.scheduler.Stop()
+}
+
+// TestHealthSurvivesABackwardClockStep covers #137 end to end: with the wall clock
+// set back an hour, the scheduler keeps ticking and the health check stays 200.
+func TestHealthSurvivesABackwardClockStep(t *testing.T) {
+	srv, metaStore, mockStorage := setupTestServer(t)
+	var offset atomic.Int64
+	wall := func() time.Time { return time.Now().Round(0).Add(time.Duration(offset.Load())) }
+	sched := scheduler.NewScheduler(metaStore, nil, mockStorage, nil,
+		scheduler.WithClock(wall), scheduler.WithTickInterval(5*time.Millisecond))
+	srv.livenessSource = sched
+	if err := sched.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer sched.Stop()
+
+	offset.Store(int64(-time.Hour))
+	before := sched.LastTick()
+	deadline := time.Now().Add(10 * time.Second)
+	for !sched.LastTick().After(before) {
+		if time.Now().After(deadline) {
+			t.Fatal("the liveness tick stopped after the clock step")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if code, data := getHealth(t, srv); code != http.StatusOK || data["scheduler"] != schedulerOK {
+		t.Fatalf("after a backward clock step: %d %v", code, data)
+	}
 }
 
 func serveJSON(t *testing.T, h http.Handler, method, path string, body any) (int, map[string]any, string) {

@@ -892,6 +892,14 @@
                 </div>
                 <span class="form-hint" id="set-post-restore-timeout-hint" data-i18n="postrestore.timeout_hint">Maximum run time of each post-restore command of a connection (1s to 24h); a command that takes longer fails the restore.</span>
               </div>
+              <div class="form-group">
+                <label class="form-label" for="set-storage-stall-timeout" data-i18n="settings.storage_stall_timeout">Upload stall timeout</label>
+                <div class="input-inline">
+                  <input type="text" id="set-storage-stall-timeout" class="form-input mono duration-input" data-duration placeholder="5m" autocomplete="off" spellcheck="false" aria-describedby="set-storage-stall-timeout-hint set-storage-stall-timeout-preview">
+                  <span class="duration-preview" id="set-storage-stall-timeout-preview" aria-live="polite"></span>
+                </div>
+                <span class="form-hint" id="set-storage-stall-timeout-hint" data-i18n="settings.storage_stall_timeout_hint">Fail an upload when the storage target accepts no data for this long (1m to 1h).</span>
+              </div>
             </div>
             <p class="form-hint" data-i18n="settings.duration_help">Durations use Go syntax: 90s, 45m, 6h, 1h30m. There is no day unit: use 168h for 7 days.</p>
           </fieldset>
@@ -3217,6 +3225,7 @@
   <script src="/throttle.js"></script>
   <script src="/postrestore.js"></script>
   <script src="/tls.js"></script>
+  <script src="/stall.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

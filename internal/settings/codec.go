@@ -21,50 +21,53 @@ const (
 	KeyMaxUploadMbps         = "general.max_upload_mbps"
 	// KeyPostRestoreCommandTimeout bounds each post-restore command of a restore.
 	KeyPostRestoreCommandTimeout = "general.post_restore_command_timeout"
-	KeySessionIdleTimeout        = "security.session_idle_timeout"
-	KeySessionAbsoluteTimeout    = "security.session_absolute_timeout"
-	KeySecureCookies             = "security.secure_cookies"
-	KeyTrustProxyHeaders         = "security.trust_proxy_headers"
-	KeyCORSOrigins               = "security.cors_origins"
-	KeyMetricsPublic             = "security.metrics_public"
-	KeyMCPEnabled                = "security.mcp_enabled"
-	KeyDeleteGraceDays           = "security.delete_grace_days"
-	KeyRequireSecondApprover     = "security.require_second_approver"
-	KeyEncryptionEnabled         = "encryption.enabled"
-	KeyEncryptionMode            = "encryption.mode"
-	KeyEncryptionRecipients      = "encryption.recipients"
-	KeyEncryptionIdentity        = "encryption.identity"
-	KeyEncryptionPassphrase      = "encryption.passphrase"
-	KeyEncryptionRetiredKeys     = "encryption.retired_keys"
-	KeyVerifyAfterBackup         = "integrity.verify_after_backup"
-	KeyVerifyDecrypt             = "integrity.verify_decrypt"
-	KeySweepSchedule             = "integrity.sweep_schedule"
-	KeySweepBandwidthLimit       = "integrity.sweep_bandwidth_limit"
-	KeyStorageScan               = "integrity.storage_scan"
-	KeyMetadataBackupEnabled     = "metadata_backup.enabled"
-	KeyMetadataBackupInterval    = "metadata_backup.interval"
-	KeyMetadataBackupTarget      = "metadata_backup.target_id"
-	KeyMetadataBackupKeep        = "metadata_backup.retention_count"
-	KeyAuditRetentionDays        = "audit.retention_days"
-	KeyAuditWebhookURL           = "audit.webhook_url"
-	KeyAuditWebhookSecret        = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCEnabled               = "oidc.enabled"
-	KeyOIDCDisplayName           = "oidc.display_name"
-	KeyOIDCIssuer                = "oidc.issuer"
-	KeyOIDCClientID              = "oidc.client_id"
-	KeyOIDCClientSecret          = "oidc.client_secret" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCScopes                = "oidc.scopes"
-	KeyOIDCRedirectURL           = "oidc.redirect_url" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCUsernameClaim         = "oidc.username_claim"
-	KeyOIDCGroupsClaim           = "oidc.groups_claim"
-	KeyOIDCRoleMappings          = "oidc.role_mappings"
-	KeyOIDCDefaultRole           = "oidc.default_role"
-	KeyOIDCAllowedDomains        = "oidc.allowed_email_domains"
-	KeyOIDCAutoCreateUsers       = "oidc.auto_create_users"
-	KeyOIDCLocalLogin            = "oidc.local_login"
-	KeyOIDCRPLogout              = "oidc.rp_logout"
-	KeyHeartbeatURL              = "monitoring.heartbeat_url"
-	KeyHeartbeatInterval         = "monitoring.heartbeat_interval"
+	// KeyStorageStallTimeout fails an upload whose storage target accepts no bytes
+	// for this long.
+	KeyStorageStallTimeout    = "general.storage_stall_timeout"
+	KeySessionIdleTimeout     = "security.session_idle_timeout"
+	KeySessionAbsoluteTimeout = "security.session_absolute_timeout"
+	KeySecureCookies          = "security.secure_cookies"
+	KeyTrustProxyHeaders      = "security.trust_proxy_headers"
+	KeyCORSOrigins            = "security.cors_origins"
+	KeyMetricsPublic          = "security.metrics_public"
+	KeyMCPEnabled             = "security.mcp_enabled"
+	KeyDeleteGraceDays        = "security.delete_grace_days"
+	KeyRequireSecondApprover  = "security.require_second_approver"
+	KeyEncryptionEnabled      = "encryption.enabled"
+	KeyEncryptionMode         = "encryption.mode"
+	KeyEncryptionRecipients   = "encryption.recipients"
+	KeyEncryptionIdentity     = "encryption.identity"
+	KeyEncryptionPassphrase   = "encryption.passphrase"
+	KeyEncryptionRetiredKeys  = "encryption.retired_keys"
+	KeyVerifyAfterBackup      = "integrity.verify_after_backup"
+	KeyVerifyDecrypt          = "integrity.verify_decrypt"
+	KeySweepSchedule          = "integrity.sweep_schedule"
+	KeySweepBandwidthLimit    = "integrity.sweep_bandwidth_limit"
+	KeyStorageScan            = "integrity.storage_scan"
+	KeyMetadataBackupEnabled  = "metadata_backup.enabled"
+	KeyMetadataBackupInterval = "metadata_backup.interval"
+	KeyMetadataBackupTarget   = "metadata_backup.target_id"
+	KeyMetadataBackupKeep     = "metadata_backup.retention_count"
+	KeyAuditRetentionDays     = "audit.retention_days"
+	KeyAuditWebhookURL        = "audit.webhook_url"
+	KeyAuditWebhookSecret     = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCEnabled            = "oidc.enabled"
+	KeyOIDCDisplayName        = "oidc.display_name"
+	KeyOIDCIssuer             = "oidc.issuer"
+	KeyOIDCClientID           = "oidc.client_id"
+	KeyOIDCClientSecret       = "oidc.client_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCScopes             = "oidc.scopes"
+	KeyOIDCRedirectURL        = "oidc.redirect_url" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCUsernameClaim      = "oidc.username_claim"
+	KeyOIDCGroupsClaim        = "oidc.groups_claim"
+	KeyOIDCRoleMappings       = "oidc.role_mappings"
+	KeyOIDCDefaultRole        = "oidc.default_role"
+	KeyOIDCAllowedDomains     = "oidc.allowed_email_domains"
+	KeyOIDCAutoCreateUsers    = "oidc.auto_create_users"
+	KeyOIDCLocalLogin         = "oidc.local_login"
+	KeyOIDCRPLogout           = "oidc.rp_logout"
+	KeyHeartbeatURL           = "monitoring.heartbeat_url"
+	KeyHeartbeatInterval      = "monitoring.heartbeat_interval"
 )
 
 // markerPrefix prefixes the keys recording one-time imports of deprecated
@@ -109,6 +112,7 @@ var keyDefs = []keyDef{
 	field(KeyLogRetentionDays, false, func(s *Settings) *int { return &s.General.LogRetentionDays }),
 	field(KeyMaxUploadMbps, false, func(s *Settings) *float64 { return &s.General.MaxUploadMbps }),
 	field(KeyPostRestoreCommandTimeout, false, func(s *Settings) *Duration { return &s.General.PostRestoreCommandTimeout }),
+	field(KeyStorageStallTimeout, false, func(s *Settings) *Duration { return &s.General.StorageStallTimeout }),
 	field(KeySessionIdleTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionIdleTimeout }),
 	field(KeySessionAbsoluteTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionAbsoluteTimeout }),
 	field(KeySecureCookies, false, func(s *Settings) *CookiePolicy { return &s.Security.SecureCookies }),

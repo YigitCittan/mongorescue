@@ -43,6 +43,15 @@ The suffix is appended to the URL's path; a query string is kept (`https://push.
 
 `GET /api/v1/health` (no authentication) answers `503` with `"scheduler": "stale"` when the scheduler's last liveness tick is older than 90 seconds (three ticks), and `200` with `"scheduler": "ok"` and `scheduler_last_tick` otherwise; `status` keeps its value, so checks must read the HTTP status or `scheduler` (see [api.md](api.md#health)). The Docker image's `HEALTHCHECK` uses it, so a container with a hung scheduler is reported unhealthy; point load balancer and uptime checks at it too.
 
+### Clock steps
+
+The liveness tick runs every 30 seconds on a monotonic timer of its own, not on the cron that starts jobs, and its age is measured on the monotonic clock. A wall clock step (an NTP correction, a restored VM snapshot, a manual change) therefore never delays the tick nor makes the scheduler stale: the health check stays `200`, the heartbeat keeps pinging and `MongoRescueSchedulerStale` does not fire. Only a scheduler that cannot take its own lock (a deadlock) or a stopped one stops ticking.
+
+Scheduled jobs follow the wall clock, since cron expressions name wall-clock times:
+
+- **Forward step.** Every job whose next run the clock jumped over runs once, late, when the scheduler next wakes up (within about a minute: its own checks run every minute), and then on its schedule from the new time. Missed runs are not caught up one by one.
+- **Backward step.** Jobs wait until the clock reaches their next run again, so their runs are delayed by the size of the step. A step never repeats a run by itself. A job whose schedule is rebuilt after the step (it is edited or re-enabled, or MongoRescue restarts) could be due again at a time that already ran; MongoRescue skips such a trigger when the job's previous scheduled run started less than half its interval earlier (measured on the monotonic clock, or after a restart on the start time of the newest scheduled run on record), and logs `skipping a repeated scheduled run`. After a restart at most one trigger is skipped this way.
+
 ## Prometheus alert rules
 
 [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) holds alerting rules over the [metrics](metrics.md), unit-tested with `promtool test rules` in CI ([`alerts_test.yml`](../deploy/prometheus/alerts_test.yml); run them with `make test-prometheus-rules`):

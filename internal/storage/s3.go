@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -58,6 +61,42 @@ type S3Config struct {
 	// Logger receives warnings the driver cannot return (a failed cleanup of an
 	// aborted upload); nil means slog.Default().
 	Logger *slog.Logger
+
+	// Stall configures the upload watchdog (see StallWatch).
+	Stall StallWatch
+}
+
+// Bounds of the S3 HTTP client. The SDK's defaults leave the wait for response
+// headers unlimited, so a request whose answer never comes would hang until the
+// caller's deadline; the stall watchdog (see StallWatch) covers uploads on top.
+const (
+	// s3DialTimeout bounds establishing a TCP connection.
+	s3DialTimeout = 30 * time.Second
+	// s3KeepAlive is the TCP keep-alive probe interval, which detects a dead peer
+	// on an idle connection.
+	s3KeepAlive = 30 * time.Second
+	// s3TLSHandshakeTimeout bounds the TLS handshake.
+	s3TLSHandshakeTimeout = 10 * time.Second
+	// s3ResponseHeaderTimeout bounds the wait for response headers once a request,
+	// body included, is sent. S3 answers a CompleteMultipartUpload with its headers
+	// right away and keeps the connection alive while it assembles the object.
+	s3ResponseHeaderTimeout = 2 * time.Minute
+	// s3IdleConnTimeout closes pooled connections idle this long.
+	s3IdleConnTimeout = 90 * time.Second
+)
+
+// newS3HTTPClient returns the HTTP client of the S3 driver, with the bounds above.
+func newS3HTTPClient() *awshttp.BuildableClient {
+	return awshttp.NewBuildableClient().
+		WithDialerOptions(func(d *net.Dialer) {
+			d.Timeout = s3DialTimeout
+			d.KeepAlive = s3KeepAlive
+		}).
+		WithTransportOptions(func(t *http.Transport) {
+			t.TLSHandshakeTimeout = s3TLSHandshakeTimeout
+			t.ResponseHeaderTimeout = s3ResponseHeaderTimeout
+			t.IdleConnTimeout = s3IdleConnTimeout
+		})
 }
 
 // S3Storage provides a stream-first storage driver for AWS S3 and S3-compatible backends
@@ -73,6 +112,8 @@ type S3Storage struct {
 	partSize int64
 	// lock is the Object Lock applied to uploads.
 	lock ObjectLock
+	// stall is the upload watchdog.
+	stall StallWatch
 }
 
 // Compile-time check that S3Storage reports its archive size limit.
@@ -115,7 +156,7 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 
 	// 1. Build AWS configuration options
 	var loadOpts []func(*awsconfig.LoadOptions) error
-	loadOpts = append(loadOpts, awsconfig.WithRegion(region))
+	loadOpts = append(loadOpts, awsconfig.WithRegion(region), awsconfig.WithHTTPClient(newS3HTTPClient()))
 
 	if cfg.AccessKey != "" && cfg.SecretKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
@@ -134,6 +175,8 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
 		o.UsePathStyle = cfg.UsePathStyle
+		// Request and response bytes of an upload count as its progress.
+		o.HTTPClient = progressClient{next: o.HTTPClient}
 
 		// aws-sdk-go-v2 (since early 2025) adds CRC32 integrity checksums to every request
 		// and validates them on responses by default. Several S3-compatible providers
@@ -169,6 +212,7 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		logger:   logger,
 		partSize: partSize,
 		lock:     cfg.ObjectLock,
+		stall:    cfg.Stall,
 	}, nil
 }
 
@@ -178,8 +222,17 @@ func (s *S3Storage) MaxArchiveSize() int64 {
 	return s.partSize * int64(manager.MaxUploadParts)
 }
 
-// Save streams data from the reader directly to S3 using multipart upload without buffering into memory.
+// Save streams data from the reader directly to S3 using multipart upload without
+// buffering into memory. An upload that makes no progress for the stall timeout is
+// cancelled and aborted, and fails with an error wrapping ErrStorageStalled.
 func (s *S3Storage) Save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
+	ctx, r, finish := s.stall.Start(ctx, r)
+	obj, err := s.save(ctx, key, r)
+	return obj, finish(err)
+}
+
+// save is Save without the watchdog.
+func (s *S3Storage) save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
 	objKey, err := s.objectKey(key)
 	if err != nil {
 		return nil, err
