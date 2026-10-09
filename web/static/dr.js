@@ -23,6 +23,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Require locked copies for new jobs",
       settings_locked_hint: "The default of new jobs: every copy target needs S3 Object Lock. Turning it off waits for the delete grace period, and for a second administrator under the two-person rule.",
       pending_locked: "Locked copies no longer required from {when}",
+      pending_job_locked: "Job {job} stops requiring locked copies from {when}",
+      require_locked_forced: "Locked by the security setting: every job requires locked copies.",
       region: "Region label (disaster recovery)",
       region_hint: "Where this target's data lives, for the cross-region checks. Optional for S3 (the bucket's region is used); set it for a local disk, NAS or MinIO, for example dc-frankfurt.",
       drill_source: "Read the archive from (DR drill)",
@@ -54,6 +56,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Yeni işlerde kilitli kopya zorunlu",
       settings_locked_hint: "Yeni işlerin varsayılanı: her kopya hedefinde S3 Object Lock gerekir. Kapatmak silme bekleme süresini, iki kişi kuralında ikinci bir yöneticiyi de bekler.",
       pending_locked: "Kilitli kopya zorunluluğu {when} itibarıyla kalkıyor",
+      pending_job_locked: "{job} işinde kilitli kopya zorunluluğu {when} itibarıyla kalkıyor",
+      require_locked_forced: "Güvenlik ayarı gereği: her iş kilitli kopya gerektirir.",
       region: "Bölge etiketi (felaket kurtarma)",
       region_hint: "Bu hedefin verisinin bulunduğu yer, bölgeler arası denetimler için. S3 için isteğe bağlı (kovanın bölgesi kullanılır); yerel disk, NAS ya da MinIO için girin, örneğin dc-frankfurt.",
       drill_source: "Arşivin okunacağı yer (DR tatbikatı)",
@@ -85,6 +89,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Gesperrte Kopien für neue Jobs verlangen",
       settings_locked_hint: "Vorgabe für neue Jobs: jedes Kopieziel braucht S3 Object Lock. Das Abschalten wartet die Löschfrist ab, mit der Zwei-Personen-Regel auch auf einen zweiten Administrator.",
       pending_locked: "Gesperrte Kopien ab {when} nicht mehr verlangt",
+      pending_job_locked: "Job {job} verlangt ab {when} keine gesperrten Kopien mehr",
+      require_locked_forced: "Durch die Sicherheitseinstellung festgelegt: jeder Job verlangt gesperrte Kopien.",
       region: "Regionsbezeichnung (Disaster Recovery)",
       region_hint: "Wo die Daten dieses Ziels liegen, für die regionsübergreifenden Prüfungen. Für S3 optional (die Region des Buckets gilt); für eine lokale Platte, ein NAS oder MinIO setzen, zum Beispiel dc-frankfurt.",
       drill_source: "Archiv lesen von (DR-Übung)",
@@ -116,6 +122,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Exigir copias bloqueadas en tareas nuevas",
       settings_locked_hint: "Valor por defecto de las tareas nuevas: cada destino de copia necesita S3 Object Lock. Desactivarlo espera el periodo de gracia de borrado y, con la regla de dos personas, a un segundo administrador.",
       pending_locked: "Las copias bloqueadas dejan de exigirse el {when}",
+      pending_job_locked: "La tarea {job} deja de exigir copias bloqueadas el {when}",
+      require_locked_forced: "Fijado por el ajuste de seguridad: toda tarea exige copias bloqueadas.",
       region: "Etiqueta de región (recuperación ante desastres)",
       region_hint: "Dónde están los datos de este destino, para las comprobaciones entre regiones. Opcional en S3 (se usa la región del bucket); indíquela para un disco local, un NAS o MinIO, por ejemplo dc-frankfurt.",
       drill_source: "Leer el archivo de (simulacro DR)",
@@ -147,6 +155,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Exiger des copies verrouillées pour les nouvelles tâches",
       settings_locked_hint: "Valeur par défaut des nouvelles tâches : chaque cible de copie doit avoir S3 Object Lock. La désactivation attend le délai de grâce de suppression et, avec la règle des deux personnes, un second administrateur.",
       pending_locked: "Copies verrouillées plus exigées à partir du {when}",
+      pending_job_locked: "La tâche {job} n'exige plus de copies verrouillées à partir du {when}",
+      require_locked_forced: "Imposé par le réglage de sécurité : chaque tâche exige des copies verrouillées.",
       region: "Libellé de région (reprise après sinistre)",
       region_hint: "L'endroit où se trouvent les données de cette cible, pour les contrôles inter-régions. Facultatif pour S3 (la région du bucket est utilisée) ; à renseigner pour un disque local, un NAS ou MinIO, par exemple dc-frankfurt.",
       drill_source: "Lire l'archive depuis (exercice DR)",
@@ -178,6 +188,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "新任务要求副本加锁",
       settings_locked_hint: "新任务的默认值：每个副本目标都需要 S3 Object Lock。关闭它需等待删除宽限期，启用双人规则时还需第二位管理员批准。",
       pending_locked: "自 {when} 起不再要求副本加锁",
+      pending_job_locked: "任务 {job} 自 {when} 起不再要求副本加锁",
+      require_locked_forced: "由安全设置锁定：每个任务都要求副本加锁。",
       region: "区域标签（灾难恢复）",
       region_hint: "该目标数据所在的位置，用于跨区域检查。S3 可选（使用存储桶的区域）；本地磁盘、NAS 或 MinIO 请填写，例如 dc-frankfurt。",
       drill_source: "读取归档的位置（DR 演练）",
@@ -209,6 +221,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "新しいジョブでロックされたコピーを必須にする",
       settings_locked_hint: "新しいジョブの既定値: すべてのコピー先に S3 Object Lock が必要です。オフにするには削除猶予期間を待ち、二人承認ルールでは 2 人目の管理者の承認も必要です。",
       pending_locked: "{when} からロックされたコピーは必須でなくなります",
+      pending_job_locked: "ジョブ {job} は {when} からロックされたコピーを必須にしなくなります",
+      require_locked_forced: "セキュリティ設定により固定: すべてのジョブでロックされたコピーが必須です。",
       region: "リージョンラベル（災害復旧）",
       region_hint: "このターゲットのデータがある場所。クロスリージョンのチェックに使います。S3 では任意（バケットのリージョンを使用）。ローカルディスク、NAS、MinIO では dc-frankfurt のように設定してください。",
       drill_source: "アーカイブの読み取り元（DR 訓練）",
@@ -240,6 +254,8 @@ const DR_TRANSLATIONS = {
       settings_locked: "Требовать заблокированные копии для новых заданий",
       settings_locked_hint: "Значение по умолчанию для новых заданий: каждой цели копирования нужен S3 Object Lock. Отключение ждёт окончания льготного периода удаления, а при правиле двух лиц — и второго администратора.",
       pending_locked: "Заблокированные копии перестают требоваться с {when}",
+      pending_job_locked: "Задание {job} перестаёт требовать заблокированные копии с {when}",
+      require_locked_forced: "Задано настройкой безопасности: каждое задание требует заблокированные копии.",
       region: "Метка региона (аварийное восстановление)",
       region_hint: "Где хранятся данные этой цели, для межрегиональных проверок. Для S3 необязательно (берётся регион бакета); укажите для локального диска, NAS или MinIO, например dc-frankfurt.",
       drill_source: "Читать архив из (учения DR)",
@@ -344,9 +360,12 @@ function drRenderJob() {
   drJobFields();
   const box = document.getElementById("job-require-locked");
   if (box) {
-    box.checked = drForm.locked;
+    // With security.require_locked_copies on, no job can opt out.
+    const forced = !!(state.settings && state.settings.security && state.settings.security.require_locked_copies);
+    box.checked = drForm.locked || forced;
+    box.disabled = forced;
     setText("job-require-locked-title", t("dr.require_locked"));
-    setText("job-require-locked-hint", t("dr.require_locked_hint"));
+    setText("job-require-locked-hint", forced ? t("dr.require_locked_forced") : t("dr.require_locked_hint"));
   }
   const select = document.getElementById("job-rt-source");
   if (!select) return;
@@ -384,7 +403,8 @@ function drJobCopiesChanged() {
 
 // drJobPayload adds the DR fields to a job save payload (app.js).
 function drJobPayload(payload) {
-  payload.require_locked_copies = drForm.locked;
+  const sec = (state.settings && state.settings.security) || {};
+  payload.require_locked_copies = drForm.locked || !!sec.require_locked_copies;
   const copies = Array.isArray(payload.copy_targets) ? payload.copy_targets : [];
   if (payload.restore_test) payload.restore_test.source_target_id = copies.includes(drForm.drill) ? drForm.drill : "";
 }
@@ -473,6 +493,7 @@ function drCollectSecurity() {
 // drPendingText describes a pending change that turns locked copies off, or
 // returns "" for another kind (protection.js).
 function drPendingText(c, when) {
+  if (c && c.kind === "job_locked_copies") return tf("dr.pending_job_locked", { job: String(c.job_id || ""), when });
   return c && c.kind === "disable_locked_copies" ? tf("dr.pending_locked", { when }) : "";
 }
 

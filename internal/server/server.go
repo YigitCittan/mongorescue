@@ -562,6 +562,13 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		s.writeJobError(w, err)
 		return
 	}
+	// Turning require_locked_copies off is refused while the setting is on, and
+	// stored later (after the delete grace period) otherwise.
+	lockedHold, lockedErr := s.ops.HoldLockedCopies(r.Context(), existing, &job)
+	if lockedErr != nil {
+		s.writeJobError(w, lockedErr)
+		return
+	}
 	// A shorter retention is stored later, after the delete grace period.
 	hold, holdErr := s.ops.HoldRetention(r.Context(), existing, &job)
 	if holdErr != nil {
@@ -607,6 +614,10 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	changed := existing != nil && (job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount)
 	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
 	if holdErr != nil {
+		s.writeOperationError(w, holdErr)
+		return
+	}
+	if holdErr = s.ops.ApplyLockedCopiesHold(r.Context(), lockedHold, job.ID, prot); holdErr != nil {
 		s.writeOperationError(w, holdErr)
 		return
 	}

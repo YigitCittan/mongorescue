@@ -906,7 +906,7 @@ function renderPendingChanges() {
     // A lowered S3 Object Lock of a storage target (objectlock.js).
     if (c.kind === "object_lock" && typeof objectLockPendingText === "function") text = objectLockPendingText(c, when);
     // Locked copies no longer required (dr.js).
-    if (c.kind === "disable_locked_copies" && typeof drPendingText === "function") text = drPendingText(c, when);
+    if ((c.kind === "disable_locked_copies" || c.kind === "job_locked_copies") && typeof drPendingText === "function") text = drPendingText(c, when);
     const by = c.requested_by ? ` <span class="muted">(${escapeHtml(tf("protection.pending_by", { who: String(c.requested_by) }))})</span>` : "";
     return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}
       <button type="button" class="btn btn-secondary btn-sm" data-action="pending-cancel" data-id="${escapeHtml(c.id)}">${escapeHtml(t("protection.pending_cancel"))}</button></li>`;

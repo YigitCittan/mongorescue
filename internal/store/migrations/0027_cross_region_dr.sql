@@ -1,9 +1,10 @@
 -- 0027_cross_region_dr: cross-region disaster recovery (see docs/production.md,
 -- "Region failure").
 --
--- pending_changes accepts the kind 'disable_locked_copies': turning the setting
--- security.require_locked_copies off takes effect only after the delete grace
--- period, like the other lowered protections. SQLite cannot change a CHECK
+-- pending_changes accepts the kinds 'disable_locked_copies' and 'job_locked_copies':
+-- turning the setting security.require_locked_copies, or a job's
+-- require_locked_copies (subject the job ID), off takes effect only after the delete
+-- grace period, like the other lowered protections. SQLite cannot change a CHECK
 -- constraint in place, so the table is rebuilt with every row kept.
 --
 -- oplog_chunk_copies holds the copies of oplog chunks on the copy targets of their
@@ -35,7 +36,7 @@ CREATE INDEX oplog_chunk_copies_by_target ON oplog_chunk_copies (target_id, stat
 
 CREATE TABLE pending_changes_0027 (
     id           TEXT    PRIMARY KEY NOT NULL,
-    kind         TEXT    NOT NULL CHECK (kind IN ('retention', 'delete_grace_days', 'metadata_backup_retention', 'disable_second_approver', 'object_lock', 'disable_locked_copies')),
+    kind         TEXT    NOT NULL CHECK (kind IN ('retention', 'delete_grace_days', 'metadata_backup_retention', 'disable_second_approver', 'object_lock', 'disable_locked_copies', 'job_locked_copies')),
     subject      TEXT    NOT NULL,
     effective_at INTEGER NOT NULL,
     data         TEXT    NOT NULL CHECK (json_valid(data)),

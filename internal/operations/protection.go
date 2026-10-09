@@ -541,6 +541,15 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "metadata snapshot retention change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalJobLockedCopies:
+		if a.SubjectCreatedAt == nil {
+			return "", public("the request is not bound to a job; request it again", ErrInvalid)
+		}
+		c, err := s.scheduleJobLockedCopies(ctx, a.Subject, a.SubjectCreatedAt)
+		if err != nil {
+			return "", err
+		}
+		return "turning off locked copies of job " + a.Subject + " scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
 	case models.ApprovalDisableLockedCopies:
 		c, err := s.scheduleDisableLockedCopies(ctx)
 		if err != nil {
@@ -995,6 +1004,8 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			applyErr = s.applyObjectLockChange(ctx, c)
 		case models.PendingDisableLockedCopies:
 			applyErr = s.applyDisableLockedCopies(ctx, c)
+		case models.PendingJobLockedCopies:
+			applyErr = s.applyJobLockedCopiesChange(ctx, c)
 		case models.PendingDisableSecondApprover:
 			// Only while the lockout lasts: with two administrators again, turning the
 			// rule off needs an approval like before.
@@ -1401,6 +1412,11 @@ type JobProtection struct {
 	// Approval is the request for a second administrator, if the shortening waits
 	// for one.
 	Approval *models.Approval `json:"approval,omitempty"`
+	// PendingLockedCopies is the scheduled turning off of the job's
+	// require_locked_copies, if any; LockedCopiesApproval the request for a second
+	// administrator that comes first under the two-person rule.
+	PendingLockedCopies  *models.PendingChange `json:"pending_locked_copies,omitempty"`
+	LockedCopiesApproval *models.Approval      `json:"locked_copies_approval,omitempty"`
 }
 
 // shorter reports whether retention value v (0 keeps forever) keeps less than old.

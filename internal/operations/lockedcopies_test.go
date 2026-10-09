@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -35,6 +36,87 @@ func TestRequireLockedCopiesRefusesUnlockedCopyTargets(t *testing.T) {
 	job.CopyTargets, job.RequireLockedCopies = []string{plain.ID}, false
 	if err = env.svc.ValidateJob(ctx, job); err != nil {
 		t.Fatalf("unlocked copy target without the policy = %v", err)
+	}
+	// With security.require_locked_copies on the policy applies to every job.
+	on := true
+	if _, err = env.svc.UpdateSettings(asUser("alice", auth.ScopeAdmin), settings.Patch{Security: &settings.SecurityPatch{RequireLockedCopies: &on}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = env.svc.ValidateJob(ctx, job); !errors.Is(err, models.ErrUnlockedCopyTarget) {
+		t.Fatalf("unlocked copy target under the setting = %v; want ErrUnlockedCopyTarget", err)
+	}
+}
+
+// saveLockedJob stores job_l requiring locked copies, created an hour ago.
+func saveLockedJob(t *testing.T, env *protEnv) *models.Job {
+	t.Helper()
+	job := &models.Job{ID: "job_l", Name: "l", Database: "shop", ConnectionID: "conn_ok", CronExpression: "@daily",
+		RequireLockedCopies: true, CreatedAt: env.clock.Now().Add(-time.Hour)}
+	if err := env.st.SaveJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+// lockedUpdate is the update of job_l with require_locked_copies set to v.
+func lockedUpdate(v bool) operations.JobUpdate {
+	return operations.JobUpdate{Name: "l", Database: "shop", ConnectionID: "conn_ok", CronExpression: "@daily", RequireLockedCopies: &v}
+}
+
+// TestNoJobOptsOutWhileTheSettingIsOn proves that with
+// security.require_locked_copies on, a new job without the policy and a job turning
+// it off are refused.
+func TestNoJobOptsOutWhileTheSettingIsOn(t *testing.T) {
+	env := newProtEnv(t)
+	alice := asUser("alice", auth.ScopeAdmin)
+	saveLockedJob(t, env)
+	on := true
+	if _, err := env.svc.UpdateSettings(alice, settings.Patch{Security: &settings.SecurityPatch{RequireLockedCopies: &on}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.UpdateJob(alice, "job_l", lockedUpdate(false)); !errors.Is(err, operations.ErrInvalid) || !errors.Is(err, operations.ErrLockedCopiesRequired) {
+		t.Fatalf("opting out under the setting = %v; want ErrLockedCopiesRequired", err)
+	}
+	if _, err := env.svc.HoldLockedCopies(context.Background(), nil, &models.Job{ID: "job_new"}); !errors.Is(err, operations.ErrLockedCopiesRequired) {
+		t.Fatalf("a new job without the policy = %v; want ErrLockedCopiesRequired", err)
+	}
+}
+
+// TestTurningAJobsLockedCopiesOffIsDelayed proves that a job turning
+// require_locked_copies off keeps it until the grace period ended.
+func TestTurningAJobsLockedCopiesOffIsDelayed(t *testing.T) {
+	env := newProtEnv(t)
+	alice := asUser("alice", auth.ScopeAdmin)
+	saveLockedJob(t, env)
+	res, err := env.svc.UpdateJob(alice, "job_l", lockedUpdate(false))
+	if err != nil || !res.RequireLockedCopies || res.PendingLockedCopies == nil || res.PendingLockedCopies.Kind != models.PendingJobLockedCopies {
+		t.Fatalf("update = %+v, %v; want the policy kept and a pending change", res, err)
+	}
+	env.clock.Advance(models.GraceDuration(models.DefaultDeleteGraceDays))
+	env.svc.ApplyDueChanges(context.Background())
+	if job, _ := env.st.GetJob(context.Background(), "job_l"); job.RequireLockedCopies {
+		t.Fatal("the job still requires locked copies after the grace period")
+	}
+}
+
+// TestTurningAJobsLockedCopiesOffNeedsApproval proves that under the two-person
+// rule a job turning require_locked_copies off waits for a second administrator,
+// then for the grace period.
+func TestTurningAJobsLockedCopiesOffNeedsApproval(t *testing.T) {
+	env := newAdminEnv(t)
+	aliceCtx := env.ctxOf(t, "alice")
+	saveLockedJob(t, env.protEnv)
+	res, err := env.svc.UpdateJob(aliceCtx, "job_l", lockedUpdate(false))
+	if err != nil || res.LockedCopiesApproval == nil || res.LockedCopiesApproval.Action != models.ApprovalJobLockedCopies || !res.RequireLockedCopies {
+		t.Fatalf("update = %+v, %v; want an approval request", res, err)
+	}
+	if _, err = env.svc.Approve(env.ctxOf(t, "bob"), res.LockedCopiesApproval.ID); err != nil {
+		t.Fatal(err)
+	}
+	env.clock.Advance(models.GraceDuration(models.DefaultDeleteGraceDays))
+	env.svc.ApplyDueChanges(context.Background())
+	if job, _ := env.st.GetJob(context.Background(), "job_l"); job.RequireLockedCopies {
+		t.Fatal("the job still requires locked copies after the approval and the grace period")
 	}
 }
 

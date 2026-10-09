@@ -176,7 +176,7 @@ Copies read storage, not MongoDB, so they run outside backup windows too; they u
 
 ### Locked copies
 
-A job with **Require locked copies** (`require_locked_copies` in the API) is refused (`400`) unless every one of its copy targets has [S3 Object Lock](configuration.md#immutable-backups-s3-object-lock), so a copy is never left deletable. **Settings → Security → Require locked copies** (`security.require_locked_copies`) is the default for new jobs; a job can still opt out. Turning the setting off is a lowered protection: it takes effect after the [delete grace period](security.md#lowering-a-protection-takes-the-grace-period-too) and, under the [two-person rule](security.md#the-two-person-rule), only once a second administrator approved it.
+A job with **Require locked copies** (`require_locked_copies` in the API) is refused (`400`) unless every one of its copy targets has [S3 Object Lock](configuration.md#immutable-backups-s3-object-lock), so a copy is never left deletable. **Settings → Security → Require locked copies** (`security.require_locked_copies`) applies to every job while it is on: no job can opt out (a new job without the policy, or a job turning it off, is refused with `400`), and the copy targets of every job and PITR stream must have Object Lock. Turning the setting off, or a job's policy while the setting is off, is a lowered protection: it takes effect after the [delete grace period](security.md#lowering-a-protection-takes-the-grace-period-too) and, under the [two-person rule](security.md#the-two-person-rule), only once a second administrator approved it (pending change and approval kinds `disable_locked_copies` and `job_locked_copies`).
 
 ### Region awareness
 

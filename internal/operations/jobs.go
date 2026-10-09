@@ -240,7 +240,7 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if err != nil {
 		return err
 	}
-	if job.RequireLockedCopies {
+	if job.RequireLockedCopies || s.requireLockedCopiesSetting() {
 		if err = s.checkLockedCopies(ctx, resolved); err != nil {
 			return err
 		}
@@ -458,6 +458,10 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	if err = s.ValidateJob(ctx, job); err != nil {
 		return nil, err
 	}
+	lockedHold, err := s.HoldLockedCopies(ctx, existing, job)
+	if err != nil {
+		return nil, err
+	}
 	hold, err := s.HoldRetention(ctx, existing, job)
 	if err != nil {
 		return nil, err
@@ -494,6 +498,9 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	changed := job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
 	if err != nil {
+		return nil, err
+	}
+	if err = s.ApplyLockedCopiesHold(ctx, lockedHold, job.ID, prot); err != nil {
 		return nil, err
 	}
 	return &JobSaveResult{Job: job, JobProtection: *prot, Warnings: s.JobWarnings(ctx, job)}, nil

@@ -45,6 +45,8 @@ const (
 	PendingObjectLock PendingChangeKind = "object_lock"
 	// PendingDisableLockedCopies turns security.require_locked_copies off.
 	PendingDisableLockedCopies PendingChangeKind = "disable_locked_copies"
+	// PendingJobLockedCopies turns off require_locked_copies of job JobID.
+	PendingJobLockedCopies PendingChangeKind = "job_locked_copies"
 )
 
 // PendingChange is a lowered protection that takes effect only at EffectiveAt (the
@@ -55,7 +57,8 @@ type PendingChange struct {
 	ID string `json:"id"`
 	// Kind is what the change lowers.
 	Kind PendingChangeKind `json:"kind"`
-	// JobID is the job whose retention is shortened (PendingRetention).
+	// JobID is the job whose retention is shortened (PendingRetention) or that
+	// stops requiring locked copies (PendingJobLockedCopies).
 	JobID string `json:"job_id,omitempty"`
 	// JobCreatedAt binds the change to that job: a job deleted and recreated under
 	// the same ID is a different job, and the change is dropped.
@@ -93,7 +96,7 @@ type PendingChange struct {
 // change, the storage target of an object lock change, "" for the grace period.
 func (c *PendingChange) Subject() string {
 	switch c.Kind {
-	case PendingRetention:
+	case PendingRetention, PendingJobLockedCopies:
 		return c.JobID
 	case PendingObjectLock:
 		return c.TargetID
@@ -162,6 +165,9 @@ const (
 	// ApprovalDisableLockedCopies turns security.require_locked_copies off (then
 	// delayed by the grace period too).
 	ApprovalDisableLockedCopies ApprovalAction = "disable_locked_copies"
+	// ApprovalJobLockedCopies turns off require_locked_copies of job Subject (then
+	// delayed by the grace period too).
+	ApprovalJobLockedCopies ApprovalAction = "job_locked_copies"
 )
 
 // ApprovalStatus is the state of an approval request.
