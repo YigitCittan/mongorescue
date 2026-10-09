@@ -51,9 +51,17 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, in targets.Input)
 		}
 		return nil, err
 	}
+	// A copy target of a job or stream requiring locked copies keeps its lock.
+	var wanted models.ObjectLockSettings
+	if in.Type == models.StorageS3 && in.S3 != nil {
+		wanted = models.ObjectLockSettings{Mode: in.S3.ObjectLock, RetentionDays: in.S3.RetentionDays, LegalHoldOnPin: in.S3.LegalHoldOnPin}
+	}
+	if err = s.checkLockRemoval(ctx, existing, wanted); err != nil {
+		return nil, err
+	}
 	var held *models.ObjectLockSettings
 	if existing.Type == models.StorageS3 && existing.S3 != nil && in.Type == models.StorageS3 && in.S3 != nil {
-		requested := models.ObjectLockSettings{Mode: in.S3.ObjectLock, RetentionDays: in.S3.RetentionDays, LegalHoldOnPin: in.S3.LegalHoldOnPin}
+		requested := wanted
 		if requested.Valid() {
 			now, h := models.SplitLockChange(existing.S3.LockSettings(), requested)
 			s3 := *in.S3

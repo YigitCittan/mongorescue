@@ -324,6 +324,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	}
 
 	targets := s.targetsByID(ctx)
+	requireAll := s.cfg.RequireLockedCopies != nil && s.cfg.RequireLockedCopies()
 	rows := map[rowKey]*rowAcc{}
 	for _, p := range points {
 		rk := rowKey{p.job.ConnectionID, p.database}
@@ -336,7 +337,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			rows[rk] = acc
 		}
 		s.addJob(acc, p, now, since, byConn[rk.connection])
-		addDR(acc, p.job, targets)
+		addDR(acc, p.job, targets, requireAll)
 		addDrills(acc, p, drills[p.job.ID])
 		addEvidence(acc, p, verified[p.job.ID], tests[p.job.ID])
 	}

@@ -125,6 +125,9 @@ type Config struct {
 	// whose jobs have copy targets may be before the row warns with
 	// ReasonDRDrillStale (default DefaultDRDrillMaxAge).
 	DRDrillMaxAge time.Duration
+	// RequireLockedCopies reports security.require_locked_copies (every job then
+	// requires locked copies, see ReasonDRUnlockedCopy); nil means off.
+	RequireLockedCopies func() bool
 }
 
 // DefaultCopyMissingAfter is the default of Config.CopyMissingAfter.

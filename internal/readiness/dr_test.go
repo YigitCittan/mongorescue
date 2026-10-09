@@ -131,3 +131,31 @@ func TestReportShowsDrillsAndWarnsWhenStale(t *testing.T) {
 		t.Fatalf("fresh drill: dr %+v, reasons %v", r.DR, r.Reasons)
 	}
 }
+
+// TestReportWarnsAboutUnlockedCopiesOfRequiringJobs proves dr_unlocked_copy: a job
+// that requires locked copies, itself or through the setting, with a copy target
+// without Object Lock.
+func TestReportWarnsAboutUnlockedCopiesOfRequiringJobs(t *testing.T) {
+	row := func(require, setting bool) readiness.Row {
+		t.Helper()
+		st := storetest.New(t)
+		svc := readiness.New(readiness.Config{Store: unedited{st}, Now: func() time.Time { return t0.Add(time.Hour) },
+			Targets:             func(context.Context) ([]*models.StorageTarget, error) { return drTargets(), nil },
+			RequireLockedCopies: func() bool { return setting }})
+		saveJob(t, st, &models.Job{ID: "job_dr", Name: "dr", Database: "shop", CronExpression: "@daily", Enabled: true,
+			ConnectionID: "c1", StorageTargetID: "tgt_primary", CopyTargets: []string{"tgt_same", "tgt_far"}, RequireLockedCopies: require})
+		report, err := svc.Report(context.Background())
+		if err != nil || len(report.Rows) != 1 {
+			t.Fatalf("report = %+v, %v", report, err)
+		}
+		return report.Rows[0]
+	}
+	if r := row(false, false); slices.Contains(r.Reasons, readiness.ReasonDRUnlockedCopy) {
+		t.Fatalf("no policy: reasons %v", r.Reasons)
+	}
+	for _, r := range []readiness.Row{row(true, false), row(false, true)} {
+		if !slices.Contains(r.Reasons, readiness.ReasonDRUnlockedCopy) || !slices.Equal(r.DR.UnlockedCopies, []string{"tgt_same"}) {
+			t.Fatalf("policy: dr %+v, reasons %v; want tgt_same unlocked", r.DR, r.Reasons)
+		}
+	}
+}

@@ -240,11 +240,6 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if err != nil {
 		return err
 	}
-	if job.RequireLockedCopies || s.requireLockedCopiesSetting() {
-		if err = s.checkLockedCopies(ctx, resolved); err != nil {
-			return err
-		}
-	}
 	job.CopyTargets = nil
 	for _, c := range resolved {
 		job.CopyTargets = append(job.CopyTargets, c.ID)

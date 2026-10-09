@@ -12,38 +12,102 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
-// TestRequireLockedCopiesRefusesUnlockedCopyTargets proves that a job requiring
-// locked copies is refused (ErrInvalid, ErrUnlockedCopyTarget) while a copy target
-// has no Object Lock, and accepted with a locked one.
-func TestRequireLockedCopiesRefusesUnlockedCopyTargets(t *testing.T) {
-	env, locked := newLockTargetEnv(t, models.ObjectLockCompliance, 30)
-	ctx := context.Background()
+// newPlainTarget adds the S3 target "plain" without Object Lock to env.
+func newPlainTarget(t *testing.T, env *protEnv) *models.StorageTarget {
+	t.Helper()
 	in := lockTargetInput("", 0, false)
 	in.Name, in.S3.Bucket, in.S3.SecretAccessKey = "plain", "plain", "secret"
-	plain, err := env.targets.Create(ctx, in)
+	plain, err := env.targets.Create(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := &models.Job{Name: "j", Database: "shop", ConnectionID: "conn_ok", CopyTargets: []string{plain.ID}, RequireLockedCopies: true}
-	err = env.svc.ValidateJob(ctx, job)
+	return plain
+}
+
+// checkNew validates job as a new job and checks its locked copies.
+func checkNew(env *protEnv, job *models.Job) error {
+	ctx := context.Background()
+	if err := env.svc.ValidateJob(ctx, job); err != nil {
+		return err
+	}
+	_, err := env.svc.HoldLockedCopies(ctx, nil, job)
+	return err
+}
+
+// TestRequireLockedCopiesRefusesUnlockedCopyTargets proves that a job requiring
+// locked copies is refused (ErrInvalid, ErrUnlockedCopyTarget) while a copy target
+// has no Object Lock, and accepted with a locked one; with
+// security.require_locked_copies on, the policy applies to every job.
+func TestRequireLockedCopiesRefusesUnlockedCopyTargets(t *testing.T) {
+	env, locked := newLockTargetEnv(t, models.ObjectLockCompliance, 30)
+	plain := newPlainTarget(t, env)
+	job := &models.Job{ID: "job_n", Name: "j", Database: "shop", ConnectionID: "conn_ok", CopyTargets: []string{plain.ID}, RequireLockedCopies: true}
+	err := checkNew(env, job)
 	if !errors.Is(err, operations.ErrInvalid) || !errors.Is(err, models.ErrUnlockedCopyTarget) {
 		t.Fatalf("unlocked copy target = %v; want ErrInvalid wrapping ErrUnlockedCopyTarget", err)
 	}
 	job.CopyTargets = []string{locked}
-	if err = env.svc.ValidateJob(ctx, job); err != nil {
+	if err = checkNew(env, job); err != nil {
 		t.Fatalf("locked copy target = %v", err)
 	}
 	job.CopyTargets, job.RequireLockedCopies = []string{plain.ID}, false
-	if err = env.svc.ValidateJob(ctx, job); err != nil {
-		t.Fatalf("unlocked copy target without the policy = %v", err)
+	if err = checkNew(env, job); err != nil {
+		t.Fatalf("unlocked copy target without the policy and the setting = %v", err)
 	}
-	// With security.require_locked_copies on the policy applies to every job.
 	on := true
 	if _, err = env.svc.UpdateSettings(asUser("alice", auth.ScopeAdmin), settings.Patch{Security: &settings.SecurityPatch{RequireLockedCopies: &on}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = env.svc.ValidateJob(ctx, job); !errors.Is(err, models.ErrUnlockedCopyTarget) {
+	job.RequireLockedCopies = true
+	if err = checkNew(env, job); !errors.Is(err, models.ErrUnlockedCopyTarget) {
 		t.Fatalf("unlocked copy target under the setting = %v; want ErrUnlockedCopyTarget", err)
+	}
+}
+
+// TestPausingAJobWithUnlockedCopiesWorks proves that the locked copies check only
+// runs when the copy targets or the policy change: a job stored with an unlocked
+// copy target before the setting was turned on can still be paused and renamed.
+func TestPausingAJobWithUnlockedCopiesWorks(t *testing.T) {
+	env, _ := newLockTargetEnv(t, models.ObjectLockCompliance, 30)
+	plain := newPlainTarget(t, env)
+	alice := asUser("alice", auth.ScopeAdmin)
+	if err := env.st.SaveJob(context.Background(), &models.Job{ID: "job_o", Name: "old", Database: "shop", ConnectionID: "conn_ok",
+		CronExpression: "@daily", Enabled: true, CopyTargets: []string{plain.ID}, CreatedAt: env.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	on, off := true, false
+	if _, err := env.svc.UpdateSettings(alice, settings.Patch{Security: &settings.SecurityPatch{RequireLockedCopies: &on}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.UpdateJob(alice, "job_o", operations.JobUpdate{Name: "renamed", Database: "shop", ConnectionID: "conn_ok",
+		CronExpression: "@daily", Enabled: &off}); err != nil {
+		t.Fatalf("pausing and renaming = %v", err)
+	}
+	if _, err := env.svc.UpdateJob(alice, "job_o", operations.JobUpdate{Name: "renamed", Database: "shop", ConnectionID: "conn_ok",
+		CronExpression: "@daily", CopyTargets: &[]string{plain.ID}, RequireLockedCopies: &on}); !errors.Is(err, models.ErrUnlockedCopyTarget) {
+		t.Fatalf("requiring locked copies = %v; want ErrUnlockedCopyTarget", err)
+	}
+}
+
+// TestRemovingTheLockOfARequiredCopyTargetFails proves that the Object Lock of a
+// copy target of a job requiring locked copies cannot be removed, before any
+// pending change is created.
+func TestRemovingTheLockOfARequiredCopyTargetFails(t *testing.T) {
+	env, locked := newLockTargetEnv(t, models.ObjectLockCompliance, 30)
+	alice := asUser("alice", auth.ScopeAdmin)
+	if err := env.st.SaveJob(context.Background(), &models.Job{ID: "job_r", Name: "r", Database: "shop", ConnectionID: "conn_ok",
+		CronExpression: "@daily", CopyTargets: []string{locked}, RequireLockedCopies: true, CreatedAt: env.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := env.svc.UpdateTarget(alice, locked, lockTargetInput(models.ObjectLockNone, 0, false))
+	if !errors.Is(err, operations.ErrInvalid) || !errors.Is(err, operations.ErrLockedCopyTargetInUse) {
+		t.Fatalf("removing the lock = %v; want ErrLockedCopyTargetInUse", err)
+	}
+	if list, _ := env.svc.PendingChanges(alice); len(list) != 0 {
+		t.Fatalf("pending changes = %+v; want none", list)
+	}
+	if _, err = env.svc.UpdateTarget(alice, locked, lockTargetInput(models.ObjectLockGovernance, 10, false)); err != nil {
+		t.Fatalf("lowering to governance (still locked) = %v", err)
 	}
 }
 

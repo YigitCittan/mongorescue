@@ -1,9 +1,12 @@
 package operations
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/events"
@@ -31,22 +34,88 @@ func (s *Service) requireLockedCopiesSetting() bool {
 	return s.settings().Security.RequireLockedCopies
 }
 
-// HoldLockedCopies checks the require_locked_copies of job, about to be stored,
-// against existing (nil for a new job) and the security.require_locked_copies
-// setting. With the setting on, a new job without it and a job turning it off are
-// refused (ErrInvalid wrapping ErrLockedCopiesRequired). With the setting off, a
-// job turning it off keeps it on in job and gets a hold, applied with
-// ApplyLockedCopiesHold once job is stored; nil means nothing was held.
-func (s *Service) HoldLockedCopies(_ context.Context, existing, job *models.Job) (*LockedCopiesHold, error) {
+// HoldLockedCopies checks the require_locked_copies of job, validated (ValidateJob)
+// and about to be stored, against existing (nil for a new job) and the
+// security.require_locked_copies setting. With the setting on, a new job without
+// it and a job turning it off are refused (ErrInvalid wrapping
+// ErrLockedCopiesRequired). A job that requires locked copies (itself or through
+// the setting) must have Object Lock on every copy target (ErrInvalid wrapping
+// models.ErrUnlockedCopyTarget); that is checked only when the job is new or its
+// copy targets or policy change, so pausing or renaming a job never fails on it.
+// With the setting off, a job turning the policy off keeps it on in job and gets
+// a hold, applied with ApplyLockedCopiesHold once job is stored; nil means
+// nothing was held.
+func (s *Service) HoldLockedCopies(ctx context.Context, existing, job *models.Job) (*LockedCopiesHold, error) {
 	lowered := existing != nil && existing.RequireLockedCopies && !job.RequireLockedCopies
-	if s.requireLockedCopiesSetting() && !job.RequireLockedCopies && (existing == nil || lowered) {
+	setting := s.requireLockedCopiesSetting()
+	if setting && !job.RequireLockedCopies && (existing == nil || lowered) {
 		return nil, invalid(ErrLockedCopiesRequired)
+	}
+	changed := existing == nil || !slices.Equal(existing.CopyTargets, job.CopyTargets) || existing.RequireLockedCopies != job.RequireLockedCopies
+	if changed && !lowered && (job.RequireLockedCopies || setting) {
+		copies := make([]models.CopyTarget, 0, len(job.CopyTargets))
+		for _, id := range job.CopyTargets {
+			copies = append(copies, models.CopyTarget{ID: id})
+		}
+		if err := s.checkLockedCopies(ctx, copies); err != nil {
+			return nil, err
+		}
 	}
 	if !lowered {
 		return nil, nil
 	}
 	job.RequireLockedCopies = true
 	return &LockedCopiesHold{JobID: job.ID}, nil
+}
+
+// lockedCopyUsers returns the jobs that require locked copies (themselves or
+// through security.require_locked_copies) and, under the setting, the PITR
+// streams that list storage target id as a copy target, as "job <name>" or
+// "PITR stream <id>".
+func (s *Service) lockedCopyUsers(ctx context.Context, id string) ([]string, error) {
+	setting := s.requireLockedCopiesSetting()
+	jobs, err := s.store.ListJobs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	var out []string
+	for _, j := range jobs {
+		if (j.RequireLockedCopies || setting) && slices.Contains(j.CopyTargets, id) {
+			out = append(out, "job "+cmp.Or(j.Name, j.ID))
+		}
+	}
+	if setting && s.cfg.PITR != nil {
+		streams, listErr := s.cfg.PITR.ListStreams(ctx)
+		if listErr != nil {
+			return nil, fmt.Errorf("list PITR streams: %w", listErr)
+		}
+		for _, st := range streams {
+			if slices.Contains(st.CopyTargets, id) {
+				out = append(out, "PITR stream "+st.ID)
+			}
+		}
+	}
+	return out, nil
+}
+
+// ErrLockedCopyTargetInUse is returned (wrapped in ErrInvalid) for removing the
+// S3 Object Lock of a storage target that a job or stream requiring locked copies
+// copies to.
+var ErrLockedCopyTargetInUse = errors.New("the storage target is a copy target that must keep its Object Lock")
+
+// checkLockRemoval refuses removing the Object Lock of storage target t (requested
+// is its new lock) while a job or stream requiring locked copies uses it as a copy
+// target (lockedCopyUsers), before any pending change is created.
+func (s *Service) checkLockRemoval(ctx context.Context, t *models.StorageTarget, requested models.ObjectLockSettings) error {
+	if !t.ObjectLocked() || requested.Mode == models.ObjectLockGovernance || requested.Mode == models.ObjectLockCompliance {
+		return nil
+	}
+	users, err := s.lockedCopyUsers(ctx, t.ID)
+	if err != nil || len(users) == 0 {
+		return err
+	}
+	return public(fmt.Sprintf("storage target %s keeps its Object Lock: it is a copy target of %s, which requires locked copies; remove it from those copy targets first",
+		targetLabel(t.Name, t.ID), strings.Join(users, ", ")), ErrInvalid, ErrLockedCopyTargetInUse)
 }
 
 // ApplyLockedCopiesHold schedules turning off require_locked_copies of the job of h

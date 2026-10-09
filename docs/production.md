@@ -183,7 +183,8 @@ A job with **Require locked copies** (`require_locked_copies` in the API) is ref
 Every storage target has a **region**: an S3 target takes its `s3.region`, or, when that is empty or `auto`, the bucket's location (`GetBucketLocation`, needs `s3:GetBucketLocation`); a local target takes an optional label you give it (for example `dc-frankfurt`). Set the label on any target whose region MongoRescue cannot tell, such as a MinIO server or a NAS. For a database whose jobs have copy targets the readiness report then warns:
 
 - `dr_same_region` when no copy target is in a known region other than the primary's (an unknown region never counts as another one);
-- `dr_same_credentials` when every copy target is reachable with the primary's credentials or account, where this is detectable (see [copy targets in another account](#copy-targets-in-another-account)).
+- `dr_same_credentials` when every copy target is reachable with the primary's credentials or account, where this is detectable (see [copy targets in another account](#copy-targets-in-another-account));
+- `dr_unlocked_copy` when a job that requires locked copies has a copy target without Object Lock (a job saved before the setting was turned on). The check of a job's copy targets runs when they or its policy change, so pausing or renaming such a job still works; removing the Object Lock of a copy target that a requiring job or stream uses is refused (`400`).
 
 ### DR drills
 

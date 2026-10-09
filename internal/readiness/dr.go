@@ -23,6 +23,10 @@ const (
 	// target, models.RestoreTestPolicy.SourceTargetID) of the database passed in the
 	// last Config.DRDrillMaxAge.
 	ReasonDRDrillStale = "dr_drill_stale"
+	// ReasonDRUnlockedCopy: a job of the row requires locked copies (itself, or
+	// through security.require_locked_copies) and a copy target has no S3 Object
+	// Lock, such as a job stored before the setting was turned on.
+	ReasonDRUnlockedCopy = "dr_unlocked_copy"
 )
 
 // DR levels of a row (DRStatus.Level).
@@ -65,6 +69,9 @@ type DRStatus struct {
 	// DrillCrossRegion reports that LastGoodDrill read a locked copy target in
 	// another region than the primary.
 	DrillCrossRegion bool `json:"drill_cross_region"`
+	// UnlockedCopies lists the copy targets without S3 Object Lock of the jobs
+	// that require locked copies (ReasonDRUnlockedCopy), sorted.
+	UnlockedCopies []string `json:"unlocked_copies,omitempty"`
 }
 
 // drAcc collects the disaster recovery posture of a row.
@@ -146,8 +153,9 @@ func (s *Service) targetsByID(ctx context.Context) map[string]*models.StorageTar
 }
 
 // addDR adds the copy targets of job to acc's disaster recovery posture; targets
-// maps the storage targets by ID (nil skips the check).
-func addDR(acc *rowAcc, job *models.Job, targets map[string]*models.StorageTarget) {
+// maps the storage targets by ID (nil skips the check). requireAll is
+// security.require_locked_copies: every job then requires locked copies.
+func addDR(acc *rowAcc, job *models.Job, targets map[string]*models.StorageTarget, requireAll bool) {
 	if targets == nil || len(job.CopyTargets) == 0 {
 		return
 	}
@@ -171,6 +179,9 @@ func addDR(acc *rowAcc, job *models.Job, targets map[string]*models.StorageTarge
 		}
 		if r := c.DRRegion(); r != "" && !slices.Contains(d.status.CopyRegions, r) {
 			d.status.CopyRegions = append(d.status.CopyRegions, r)
+		}
+		if (job.RequireLockedCopies || requireAll) && !c.ObjectLocked() && !slices.Contains(d.status.UnlockedCopies, c.ID) {
+			d.status.UnlockedCopies = append(d.status.UnlockedCopies, c.ID)
 		}
 		if primary == nil {
 			continue
@@ -197,7 +208,11 @@ func finishDR(acc *rowAcc, now time.Time) []string {
 	st := d.status
 	slices.Sort(st.PrimaryRegions)
 	slices.Sort(st.CopyRegions)
+	slices.Sort(st.UnlockedCopies)
 	var warn []string
+	if len(st.UnlockedCopies) > 0 {
+		warn = append(warn, ReasonDRUnlockedCopy)
+	}
 	st.Level = DRLevelSameRegion
 	if st.CrossRegion {
 		st.Level = DRLevelCrossRegion

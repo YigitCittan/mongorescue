@@ -562,6 +562,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Streams:      pitrStreams(&pitrSvc, &chainTestFailed),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
+		// Every job requires locked copies while the setting is on.
+		RequireLockedCopies: func() bool { return settingsSvc.Current().Security.RequireLockedCopies },
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
 			for i, s := range samples {

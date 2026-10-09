@@ -47,6 +47,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "No copy in another region",
       reason_dr_same_credentials: "Copies share the primary's credentials",
       reason_dr_drill_stale: "No recent DR drill",
+      reason_dr_unlocked_copy: "A required locked copy has no Object Lock",
     },
   },
   tr: {
@@ -80,6 +81,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "Başka bölgede kopya yok",
       reason_dr_same_credentials: "Kopyalar birincilin kimlik bilgilerini paylaşıyor",
       reason_dr_drill_stale: "Yakın tarihli DR tatbikatı yok",
+      reason_dr_unlocked_copy: "Zorunlu kilitli kopyada Object Lock yok",
     },
   },
   de: {
@@ -113,6 +115,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "Keine Kopie in einer anderen Region",
       reason_dr_same_credentials: "Kopien teilen die Zugangsdaten des Primärziels",
       reason_dr_drill_stale: "Keine aktuelle DR-Übung",
+      reason_dr_unlocked_copy: "Einer verlangten gesperrten Kopie fehlt Object Lock",
     },
   },
   es: {
@@ -146,6 +149,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "Ninguna copia en otra región",
       reason_dr_same_credentials: "Las copias comparten las credenciales del principal",
       reason_dr_drill_stale: "Ningún simulacro DR reciente",
+      reason_dr_unlocked_copy: "Una copia que debe estar bloqueada no tiene Object Lock",
     },
   },
   fr: {
@@ -179,6 +183,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "Aucune copie dans une autre région",
       reason_dr_same_credentials: "Les copies partagent les identifiants de la cible principale",
       reason_dr_drill_stale: "Aucun exercice DR récent",
+      reason_dr_unlocked_copy: "Une copie qui doit être verrouillée n'a pas d'Object Lock",
     },
   },
   zh: {
@@ -212,6 +217,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "其他区域没有副本",
       reason_dr_same_credentials: "副本与主目标共用凭据",
       reason_dr_drill_stale: "近期没有 DR 演练",
+      reason_dr_unlocked_copy: "要求加锁的副本未启用 Object Lock",
     },
   },
   ja: {
@@ -245,6 +251,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "別リージョンにコピーがありません",
       reason_dr_same_credentials: "コピーがプライマリの認証情報を共有しています",
       reason_dr_drill_stale: "最近の DR 訓練がありません",
+      reason_dr_unlocked_copy: "ロック必須のコピーに Object Lock がありません",
     },
   },
   ru: {
@@ -278,6 +285,7 @@ const DR_TRANSLATIONS = {
       reason_dr_same_region: "Нет копии в другом регионе",
       reason_dr_same_credentials: "Копии используют учётные данные основной цели",
       reason_dr_drill_stale: "Нет недавних учений DR",
+      reason_dr_unlocked_copy: "У копии, которая должна быть заблокирована, нет Object Lock",
     },
   },
 };
