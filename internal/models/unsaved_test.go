@@ -11,10 +11,10 @@ func TestFailUnsaved(t *testing.T) {
 	done := &BackupRecord{Status: StatusCompleted, StorageKey: "shop/1.archive.gz",
 		Copies: []BackupCopy{{TargetID: "s3", Status: CopyPending}}}
 	done.FailUnsaved("database or disk is full", now)
-	if done.Status != StatusFailed || !done.ArchiveCleanupPending || done.CompletedAt == nil || !done.CompletedAt.Equal(now) {
-		t.Fatalf("completed backup: %+v", done)
+	if done.Status != StatusFailed || done.ArchiveCleanupPending || done.CompletedAt == nil || !done.CompletedAt.Equal(now) {
+		t.Fatalf("completed backup: %+v; want failed with its archive kept", done)
 	}
-	if done.ErrorMessage != ErrRecordNotSaved+" (database or disk is full)" {
+	if done.ErrorMessage != ErrRecordNotSaved+" (data disk full: database or disk is full)"+ArchiveKeptNote {
 		t.Fatalf("error %q", done.ErrorMessage)
 	}
 	if done.Copies[0].Status != CopyFailed {

@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 	"log/slog"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 

@@ -37,8 +37,8 @@ func (f *fullDiskStore) SaveBackupRecord(ctx context.Context, rec *models.Backup
 
 // A backup whose final record cannot be saved never reports success: no
 // backup.succeeded event, a failed run for the observer (the heartbeat sends
-// /fail, not success), a system.disk_full alert, and the failed record (its
-// archive marked for the purge) saved once writes work again.
+// /fail, not success), a system.disk_full alert, and the failed record saved
+// once writes work again, its archive kept in storage.
 func TestUnsavedFinalRecordIsNotASuccess(t *testing.T) {
 	metaStore := &fullDiskStore{SQLiteStore: storetest.New(t)}
 	metaStore.full.Store(true)
@@ -63,7 +63,7 @@ func TestUnsavedFinalRecordIsNotASuccess(t *testing.T) {
 	if !errors.Is(err, diskguard.ErrNotSaved) {
 		t.Fatalf("TriggerJob = %v, want ErrNotSaved", err)
 	}
-	if rec == nil || rec.Status != models.StatusFailed || !rec.ArchiveCleanupPending {
+	if rec == nil || rec.Status != models.StatusFailed || rec.ArchiveCleanupPending {
 		t.Fatalf("record %+v", rec)
 	}
 
@@ -93,7 +93,7 @@ func TestUnsavedFinalRecordIsNotASuccess(t *testing.T) {
 	_ = guard.Check()
 	guard.RetryDeferred(ctx)
 	stored, err := metaStore.GetBackupRecord(ctx, rec.ID)
-	if err != nil || stored.Status != models.StatusFailed || !stored.ArchiveCleanupPending ||
+	if err != nil || stored.Status != models.StatusFailed || stored.ArchiveCleanupPending || !strings.Contains(stored.ErrorMessage, models.ArchiveKeptNote) ||
 		!strings.HasPrefix(stored.ErrorMessage, models.ErrRecordNotSaved) {
 		t.Fatalf("settled record %+v, %v", stored, err)
 	}

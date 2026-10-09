@@ -469,7 +469,7 @@ func (g *Guard) SaveFinal(ctx context.Context, save func(context.Context) error)
 // FinishBackup saves rec, the final record of a backup run, with save (see
 // SaveFinal). When it cannot be saved because the disk is full (IsFull), the run
 // must not report success: rec is marked failed (models.BackupRecord.FailUnsaved,
-// so its archive goes to the purge), the failure is logged to logger and to run's
+// which keeps the archive of a completed run), the failure is logged to logger and to run's
 // log, and saving rec is deferred until writes work again; it then returns an
 // error wrapping ErrNotSaved and the caller publishes the event of rec as it is
 // now (failed). Any other failure (a busy or locked database, a timeout) is
@@ -500,7 +500,7 @@ func (g *Guard) FinishBackup(ctx context.Context, rec *models.BackupRecord, save
 	logger.Error("the final record of a backup could not be saved; the backup is reported as failed",
 		logsafe.Attr("backup_id", rec.ID), slog.String("outcome", string(outcome)),
 		slog.Bool("archive_cleanup_pending", rec.ArchiveCleanupPending), logsafe.Error(err))
-	run.Printf("ERROR: the backup record could not be saved (%s); the backup is reported as failed and its archive is deleted by the next purge",
+	run.Printf("ERROR: the backup record could not be saved (%s); the backup is reported as failed and its archive is kept for import",
 		redact.Text(err.Error()))
 	g.Defer("backup "+rec.ID, saveCopy(rec, save))
 	return fmt.Errorf("%w: backup %s: %w", ErrNotSaved, rec.ID, err)

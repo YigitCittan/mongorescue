@@ -250,7 +250,8 @@ func TestRunsAdmission(t *testing.T) {
 }
 
 // A backup whose final record cannot be saved is reported as failed, its archive
-// goes to the purge, and the failed record is saved once writes work again.
+// is kept (never sent to the purge), and the failed record is saved once writes
+// work again.
 func TestFinishBackupUnsaved(t *testing.T) {
 	g, _, _, _ := newGuard(t, 1<<30)
 	ctx := context.Background()
@@ -269,7 +270,8 @@ func TestFinishBackupUnsaved(t *testing.T) {
 	if !errors.Is(err, diskguard.ErrNotSaved) {
 		t.Fatalf("FinishBackup = %v, want ErrNotSaved", err)
 	}
-	if rec.Status != models.StatusFailed || !rec.ArchiveCleanupPending || !strings.HasPrefix(rec.ErrorMessage, models.ErrRecordNotSaved) {
+	if rec.Status != models.StatusFailed || rec.ArchiveCleanupPending || !strings.HasPrefix(rec.ErrorMessage, models.ErrRecordNotSaved) ||
+		!strings.Contains(rec.ErrorMessage, models.ArchiveKeptNote) {
 		t.Fatalf("record %+v", rec)
 	}
 	if e := events.BackupEvent(rec, nil, "", ""); e.Type != events.BackupFailed {
@@ -286,7 +288,7 @@ func TestFinishBackupUnsaved(t *testing.T) {
 	full.Store(false)
 	_ = g.Check() // space is back: ends the episode
 	g.RetryDeferred(ctx)
-	if g.Pending() != 0 || len(saved) != 1 || saved[0].Status != models.StatusFailed || !saved[0].ArchiveCleanupPending {
+	if g.Pending() != 0 || len(saved) != 1 || saved[0].Status != models.StatusFailed || saved[0].ArchiveCleanupPending {
 		t.Fatalf("saved %+v, pending %d", saved, g.Pending())
 	}
 
