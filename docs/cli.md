@@ -119,7 +119,7 @@ The [restore preflight](api.md#restore-preflight) runs first (`POST /api/v1/rest
 
 With `--wait` it exits `1` when the restore failed or was cancelled, and also when `--verify-restore` found a mismatch (the data is restored, but it does not match what the backup recorded).
 
-#### Point in time (experimental)
+#### Point in time
 
 ```bash
 mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database a,b]

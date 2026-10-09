@@ -13,7 +13,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 )
 
-// PITR stream routes (experimental).
+// PITR stream routes.
 const (
 	pitrStreamsRoute      = "GET /api/v1/pitr/streams"
 	pitrCreateStreamRoute = "POST /api/v1/pitr/streams"

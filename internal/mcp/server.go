@@ -49,7 +49,7 @@ const ServerName = "mongorescue"
 const instructions = `MongoRescue backs up and restores MongoDB databases.
 Use the read tools (list_*, get_*) to inspect connections, jobs, backups, restores and storage targets; get_status gives an overview.
 start_backup, run_job, restore_to_safe_clone and pitr_restore start asynchronous operations and return a record with status "in_progress": poll get_backup or get_restore until the status is "completed" or "failed".
-pitr_status shows the point-in-time windows of PITR streams; pitr_restore (operator keys, experimental) restores a replica set, or some of its databases, to a moment in a window, into new databases ending in _rescue_<timestamp>_<id>.
+pitr_status shows the point-in-time windows of PITR streams; pitr_restore (operator keys) restores a replica set, or some of its databases, to a moment in a window, into new databases ending in _rescue_<timestamp>_<id>.
 Restores through MCP always go into new databases named <db>_rescue_<timestamp>_<id>; nothing is overwritten and nothing can be deleted through MCP. In-place restores, deletions and configuration changes are done by a person in the MongoRescue dashboard.`
 
 // ConnectionService is the part of connections.Service the MCP tools use.
