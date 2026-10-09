@@ -71,10 +71,15 @@ type StorageTarget struct {
 	S3 *S3Target `json:"s3,omitempty"`
 
 	// Region is the region (failure domain) holding the target's data, for the
-	// disaster recovery checks of the readiness report: for S3 the bucket's region
-	// (from the target's region or GetBucketLocation when not set), for a local
-	// target an optional label such as "dc-frankfurt". See DRRegion.
+	// disaster recovery checks of the readiness report: a label the operator set
+	// (such as "dc-frankfurt"), or, with RegionDetected, the location AWS S3
+	// reported for the bucket. See DRRegion.
 	Region string `json:"region,omitempty"`
+
+	// RegionDetected reports that Region was detected (GetBucketLocation on AWS
+	// S3), not set by the operator; it is cleared when the endpoint, bucket or S3
+	// region changes.
+	RegionDetected bool `json:"region_detected,omitempty"`
 
 	// CreatedAt is when the target was added.
 	CreatedAt time.Time `json:"created_at"`

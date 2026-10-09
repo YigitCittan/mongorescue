@@ -825,11 +825,21 @@ func (s *Service) checkObjectLock(ctx context.Context, t *models.StorageTarget) 
 	return nil
 }
 
-// detectRegion sets the Region of an S3 target that names none (here or in its S3
-// settings) to the location of its bucket, when storage tells it. It is best effort:
-// a failure leaves the region unknown, which the readiness report warns about.
+// sameRegionSource reports whether a and b are S3 targets on the same endpoint and
+// bucket with the same S3 region, so a region detected for a holds for b.
+func sameRegionSource(a, b *models.StorageTarget) bool {
+	return a.S3 != nil && b.S3 != nil && a.S3.Endpoint == b.S3.Endpoint && a.S3.Bucket == b.S3.Bucket &&
+		strings.EqualFold(strings.TrimSpace(a.S3.Region), strings.TrimSpace(b.S3.Region))
+}
+
+// detectRegion sets the Region of an AWS S3 target whose region is unknown (no
+// label, and its S3 region empty or "auto") to the location of its bucket, when
+// storage tells it, and marks it detected. Other endpoints are left alone: only an
+// operator's label tells where their data is (see models.StorageTarget.DRRegion).
+// It is best effort: a failure leaves the region unknown, which the readiness
+// report warns about.
 func (s *Service) detectRegion(ctx context.Context, t *models.StorageTarget) {
-	if t.Type != models.StorageS3 || t.DRRegion() != "" {
+	if !t.IsAWSS3() || t.DRRegion() != "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
@@ -847,8 +857,8 @@ func (s *Service) detectRegion(ctx context.Context, t *models.StorageTarget) {
 		s.logger.Debug("the bucket region of a storage target is unknown", logsafe.Attr("location", t.Location()), logsafe.Error(err))
 		return
 	}
-	if len(region) <= models.MaxRegionLength && !strings.ContainsFunc(region, isControl) {
-		t.Region = region
+	if region != "" && len(region) <= models.MaxRegionLength && !strings.ContainsFunc(region, isControl) {
+		t.Region, t.RegionDetected = region, true
 	}
 }
 
@@ -880,8 +890,6 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 			return nil, fmt.Errorf("%w: region must be printable and at most %d characters", ErrInvalid, models.MaxRegionLength)
 		}
 		t.Region = region
-	case existing != nil:
-		t.Region = existing.Region
 	}
 	switch in.Type {
 	case models.StorageLocal:
@@ -922,6 +930,13 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		t.S3 = &s3
 	default:
 		return nil, fmt.Errorf("%w: type must be local or s3", ErrInvalid)
+	}
+	if in.Region == nil && existing != nil {
+		t.Region, t.RegionDetected = existing.Region, existing.RegionDetected
+		// A detected region belongs to the bucket it was read from.
+		if t.RegionDetected && !sameRegionSource(existing, t) {
+			t.Region, t.RegionDetected = "", false
+		}
 	}
 	return t, nil
 }

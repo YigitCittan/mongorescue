@@ -9,21 +9,30 @@ import (
 const MaxRegionLength = 64
 
 // DRRegion returns the region (failure domain) of t for the disaster recovery
-// checks, lower-cased: Region when set, else the region of an S3 target unless it
-// is "auto" (Cloudflare R2 picks one), else "" (unknown).
+// checks, lower-cased, or "" when it is unknown. A label the operator set always
+// counts. On AWS S3 (no endpoint) the detected bucket location or the target's
+// S3 region counts too ("auto" is unknown). On other endpoints (MinIO, other
+// providers) the S3 region is only a signing parameter and says nothing about
+// where the data is: only a label counts.
 func (t *StorageTarget) DRRegion() string {
 	if t == nil {
 		return ""
 	}
-	if r := strings.ToLower(strings.TrimSpace(t.Region)); r != "" {
+	aws := t.IsAWSS3()
+	if r := strings.ToLower(strings.TrimSpace(t.Region)); r != "" && (!t.RegionDetected || aws) {
 		return r
 	}
-	if t.Type == StorageS3 && t.S3 != nil {
+	if aws {
 		if r := strings.ToLower(strings.TrimSpace(t.S3.Region)); r != "auto" {
 			return r
 		}
 	}
 	return ""
+}
+
+// IsAWSS3 reports whether t is an S3 target on AWS (no custom endpoint).
+func (t *StorageTarget) IsAWSS3() bool {
+	return t != nil && t.Type == StorageS3 && t.S3 != nil && strings.TrimSpace(t.S3.Endpoint) == ""
 }
 
 // CrossRegion reports whether copy target cp and primary are in known, different

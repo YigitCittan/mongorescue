@@ -22,6 +22,11 @@ func TestDRRegion(t *testing.T) {
 		{&models.StorageTarget{Type: models.StorageS3, Region: " US-East-1 ", S3: &models.S3Target{Region: "auto"}}, "us-east-1"},
 		{&models.StorageTarget{Type: models.StorageLocal, Local: &models.LocalTarget{Path: "/b"}}, ""},
 		{&models.StorageTarget{Type: models.StorageLocal, Region: "dc-ams"}, "dc-ams"},
+		// On other endpoints only a label counts, not the S3 region or a detected value.
+		{s3Target("https://minio.example.com", "us-east-1", "A"), ""},
+		{&models.StorageTarget{Type: models.StorageS3, Region: "us-east-1", RegionDetected: true, S3: &models.S3Target{Endpoint: "https://minio.example.com"}}, ""},
+		{&models.StorageTarget{Type: models.StorageS3, Region: "dc-ams", S3: &models.S3Target{Endpoint: "https://minio.example.com"}}, "dc-ams"},
+		{&models.StorageTarget{Type: models.StorageS3, Region: "eu-west-3", RegionDetected: true, S3: &models.S3Target{}}, "eu-west-3"},
 		{nil, ""},
 	}
 	for i, c := range cases {

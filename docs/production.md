@@ -180,7 +180,7 @@ A job with **Require locked copies** (`require_locked_copies` in the API) is ref
 
 ### Region awareness
 
-Every storage target has a **region**: an S3 target takes its `s3.region`, or, when that is empty or `auto`, the bucket's location (`GetBucketLocation`, needs `s3:GetBucketLocation`); a local target takes an optional label you give it (for example `dc-frankfurt`). Set the label on any target whose region MongoRescue cannot tell, such as a MinIO server or a NAS. For a database whose jobs have copy targets the readiness report then warns:
+Every storage target has a **region**: an AWS S3 target takes its `s3.region`, or, when that is empty or `auto`, the bucket's location (`GetBucketLocation`, needs `s3:GetBucketLocation`); any other target (MinIO, another S3 provider, a local disk or NAS) only has the label you give it (for example `dc-frankfurt`), since its `s3.region` says nothing about where the data is. Set the label on every such target. For a database whose jobs have copy targets the readiness report then warns:
 
 - `dr_same_region` when no copy target is in a known region other than the primary's (an unknown region never counts as another one);
 - `dr_same_credentials` when every copy target is reachable with the primary's credentials or account, where this is detectable (see [copy targets in another account](#copy-targets-in-another-account));

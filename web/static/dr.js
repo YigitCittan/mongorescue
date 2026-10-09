@@ -26,7 +26,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "Job {job} stops requiring locked copies from {when}",
       require_locked_forced: "Locked by the security setting: every job requires locked copies.",
       region: "Region label (disaster recovery)",
-      region_hint: "Where this target's data lives, for the cross-region checks. Optional for S3 (the bucket's region is used); set it for a local disk, NAS or MinIO, for example dc-frankfurt.",
+      region_hint: "Where this target's data lives, for the cross-region checks. Optional on AWS S3 (the bucket's region is used); set it for MinIO, other S3 providers, a local disk or a NAS, for example dc-frankfurt: their region is not known otherwise.",
       drill_source: "Read the archive from (DR drill)",
       drill_primary: "The primary storage target",
       drill_copy: "Copy target: {name}",
@@ -60,7 +60,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "{job} işinde kilitli kopya zorunluluğu {when} itibarıyla kalkıyor",
       require_locked_forced: "Güvenlik ayarı gereği: her iş kilitli kopya gerektirir.",
       region: "Bölge etiketi (felaket kurtarma)",
-      region_hint: "Bu hedefin verisinin bulunduğu yer, bölgeler arası denetimler için. S3 için isteğe bağlı (kovanın bölgesi kullanılır); yerel disk, NAS ya da MinIO için girin, örneğin dc-frankfurt.",
+      region_hint: "Bu hedefin verisinin bulunduğu yer, bölgeler arası denetimler için. AWS S3'te isteğe bağlı (kovanın bölgesi kullanılır); MinIO, diğer S3 sağlayıcıları, yerel disk ya da NAS için girin, örneğin dc-frankfurt: aksi hâlde bölgeleri bilinmez.",
       drill_source: "Arşivin okunacağı yer (DR tatbikatı)",
       drill_primary: "Birincil depolama hedefi",
       drill_copy: "Kopya hedefi: {name}",
@@ -94,7 +94,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "Job {job} verlangt ab {when} keine gesperrten Kopien mehr",
       require_locked_forced: "Durch die Sicherheitseinstellung festgelegt: jeder Job verlangt gesperrte Kopien.",
       region: "Regionsbezeichnung (Disaster Recovery)",
-      region_hint: "Wo die Daten dieses Ziels liegen, für die regionsübergreifenden Prüfungen. Für S3 optional (die Region des Buckets gilt); für eine lokale Platte, ein NAS oder MinIO setzen, zum Beispiel dc-frankfurt.",
+      region_hint: "Wo die Daten dieses Ziels liegen, für die regionsübergreifenden Prüfungen. Bei AWS S3 optional (die Region des Buckets gilt); für MinIO, andere S3-Anbieter, eine lokale Platte oder ein NAS setzen, zum Beispiel dc-frankfurt: sonst ist ihre Region unbekannt.",
       drill_source: "Archiv lesen von (DR-Übung)",
       drill_primary: "Das primäre Speicherziel",
       drill_copy: "Kopieziel: {name}",
@@ -128,7 +128,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "La tarea {job} deja de exigir copias bloqueadas el {when}",
       require_locked_forced: "Fijado por el ajuste de seguridad: toda tarea exige copias bloqueadas.",
       region: "Etiqueta de región (recuperación ante desastres)",
-      region_hint: "Dónde están los datos de este destino, para las comprobaciones entre regiones. Opcional en S3 (se usa la región del bucket); indíquela para un disco local, un NAS o MinIO, por ejemplo dc-frankfurt.",
+      region_hint: "Dónde están los datos de este destino, para las comprobaciones entre regiones. Opcional en AWS S3 (se usa la región del bucket); indíquela para MinIO, otros proveedores S3, un disco local o un NAS, por ejemplo dc-frankfurt: si no, su región es desconocida.",
       drill_source: "Leer el archivo de (simulacro DR)",
       drill_primary: "El destino de almacenamiento principal",
       drill_copy: "Destino de copia: {name}",
@@ -162,7 +162,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "La tâche {job} n'exige plus de copies verrouillées à partir du {when}",
       require_locked_forced: "Imposé par le réglage de sécurité : chaque tâche exige des copies verrouillées.",
       region: "Libellé de région (reprise après sinistre)",
-      region_hint: "L'endroit où se trouvent les données de cette cible, pour les contrôles inter-régions. Facultatif pour S3 (la région du bucket est utilisée) ; à renseigner pour un disque local, un NAS ou MinIO, par exemple dc-frankfurt.",
+      region_hint: "L'endroit où se trouvent les données de cette cible, pour les contrôles inter-régions. Facultatif sur AWS S3 (la région du bucket est utilisée) ; à renseigner pour MinIO, les autres fournisseurs S3, un disque local ou un NAS, par exemple dc-frankfurt : sinon leur région est inconnue.",
       drill_source: "Lire l'archive depuis (exercice DR)",
       drill_primary: "La cible de stockage principale",
       drill_copy: "Cible de copie : {name}",
@@ -196,7 +196,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "任务 {job} 自 {when} 起不再要求副本加锁",
       require_locked_forced: "由安全设置锁定：每个任务都要求副本加锁。",
       region: "区域标签（灾难恢复）",
-      region_hint: "该目标数据所在的位置，用于跨区域检查。S3 可选（使用存储桶的区域）；本地磁盘、NAS 或 MinIO 请填写，例如 dc-frankfurt。",
+      region_hint: "该目标数据所在的位置，用于跨区域检查。AWS S3 可选（使用存储桶的区域）；MinIO、其他 S3 服务商、本地磁盘或 NAS 请填写，例如 dc-frankfurt，否则其区域未知。",
       drill_source: "读取归档的位置（DR 演练）",
       drill_primary: "主存储目标",
       drill_copy: "副本目标：{name}",
@@ -230,7 +230,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "ジョブ {job} は {when} からロックされたコピーを必須にしなくなります",
       require_locked_forced: "セキュリティ設定により固定: すべてのジョブでロックされたコピーが必須です。",
       region: "リージョンラベル（災害復旧）",
-      region_hint: "このターゲットのデータがある場所。クロスリージョンのチェックに使います。S3 では任意（バケットのリージョンを使用）。ローカルディスク、NAS、MinIO では dc-frankfurt のように設定してください。",
+      region_hint: "このターゲットのデータがある場所。クロスリージョンのチェックに使います。AWS S3 では任意（バケットのリージョンを使用）。MinIO、他の S3 プロバイダー、ローカルディスク、NAS では dc-frankfurt のように設定してください。設定しないとリージョンは不明です。",
       drill_source: "アーカイブの読み取り元（DR 訓練）",
       drill_primary: "プライマリのストレージターゲット",
       drill_copy: "コピー先: {name}",
@@ -264,7 +264,7 @@ const DR_TRANSLATIONS = {
       pending_job_locked: "Задание {job} перестаёт требовать заблокированные копии с {when}",
       require_locked_forced: "Задано настройкой безопасности: каждое задание требует заблокированные копии.",
       region: "Метка региона (аварийное восстановление)",
-      region_hint: "Где хранятся данные этой цели, для межрегиональных проверок. Для S3 необязательно (берётся регион бакета); укажите для локального диска, NAS или MinIO, например dc-frankfurt.",
+      region_hint: "Где хранятся данные этой цели, для межрегиональных проверок. Для AWS S3 необязательно (берётся регион бакета); укажите для MinIO, других S3-провайдеров, локального диска или NAS, например dc-frankfurt: иначе их регион неизвестен.",
       drill_source: "Читать архив из (учения DR)",
       drill_primary: "Основная цель хранения",
       drill_copy: "Цель копирования: {name}",
@@ -455,7 +455,11 @@ function drRegionInput() {
 function drFillTargetForm(target) {
   const input = drRegionInput();
   if (!input) return;
-  input.value = (target && target.region) || "";
+  // A detected region (AWS bucket location) is shown as a hint, not as a label:
+  // saving the form must not turn it into one.
+  const detected = !!(target && target.region_detected);
+  input.value = detected ? "" : (target && target.region) || "";
+  input.placeholder = detected ? String(target.region || "") : "";
   setText("storage-dr-region-label", t("dr.region"));
   setText("storage-dr-region-hint", t("dr.region_hint"));
 }
