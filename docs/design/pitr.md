@@ -189,7 +189,7 @@ The rule "the MongoDB driver only in `internal/mongoconn`" keeps every database 
 | 5 | The base's consistent point is recorded through `hello` (`T_before`/`T_after`). |
 | 6 | A gap triggers an automatic base backup and a critical alert. It can be turned off per stream. |
 | 7 | Encryption is required for PITR streams. |
-| 8 | PITR restore is admin-only in the first release. Operators for safe clones are reconsidered later. |
+| 8 | PITR restore is admin-only in the first release. Operators for safe clones are reconsidered later. Revised with #141: operators may run safe-clone PITR restores into the stream's own connection; another target connection and chain tests stay admin. |
 | 9 | The default chunk interval is 60 s (15–900 s). |
 | 10 | The collector's read preference is `secondaryPreferred`. |
 | 11 | Base retention keeps 7 bases or 14 days, plus pins. `oplog_max_days` is unset by default. |

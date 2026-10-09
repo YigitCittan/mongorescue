@@ -48,7 +48,7 @@ func (s *Server) registerPITRTools() {
 		Name: ToolPITRRestore,
 		Description: "Restore a replica set, or some of its databases, to a point in time: every database is restored into a NEW " +
 			"database named <db>_rescue_<timestamp>_<id> from a base backup, and the oplog is replayed up to the time. Existing data is " +
-			"never overwritten; admin, config and local are never restored. Admin API keys only; experimental. The time must lie in " +
+			"never overwritten; admin, config and local are never restored. Operator or admin API keys; experimental. The time must lie in " +
 			"a window of pitr_status. A preflight runs first (chain, privileges, disk space, tools version): its result is in the output, " +
 			"and a failed check refuses the restore unless force is set. Poll get_restore until completed or failed.",
 		Annotations: additive("Point-in-time restore to safe clones"),

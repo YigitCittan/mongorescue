@@ -58,13 +58,13 @@ Last, the target connection's [post-restore commands](api.md#post-restore-comman
 
 **Where it goes.** Every restored database is a new database named `<db>_rescue_<YYYYMMDD_HHMMSS>_<id>` (the start of the restore in UTC and a random 4-character ID, so two restores in the same second never collide with each other or with a backup's safe clone); nothing that exists is overwritten, and the restore refuses to start when such a name is taken. In-place point-in-time restores are refused in this release. A clone name may not exceed MongoDB's 63 bytes, so databases longer than 35 bytes cannot be restored this way: the preflight computes every clone name from the base's database list and refuses the restore, naming them; restore those databases from a database backup instead. Databases MongoRescue restored into (names containing `_rescue_`) are never cloned again: a whole-instance restore leaves them out of both passes, and they cannot be selected. `mongodump --oplog` cannot exclude databases, so they still take room in base backups; drop clones you no longer need. A database selected in `databases` must be one the base holds; to get a database created after the base, restore the whole instance.
 
-**Who may.** Point-in-time restores and their preflight are admin-only in this release. They only add databases, so the two-person rule of [delete protection](security.md) does not hold them back, like other safe-clone restores.
+**Who may.** Point-in-time restores and their preflight need the **operator** role or an operator API key, like other safe-clone restores; a restore into another connection than the stream's (`target_connection_id`) needs admin, and chain tests stay admin. A caller limited to some connections only sees, and restores, the streams of those connections. They only add databases, so the two-person rule of [delete protection](security.md) does not hold them back, like other safe-clone restores.
 
 **Dashboard.** In **Connections → Point-in-time recovery**, **Restore to a time** on a stream opens the wizard: choose a window and a time inside it (UTC) and optionally the databases, then **Check** runs the preflight and shows the base it chose, the number and size of the chunks and the estimated duration, and **Restore** asks for a confirmation and starts the restore.
 
 **CLI.** `mongorescue restore --pitr <stream-or-connection> --at <RFC3339> [--database a,b]` runs the preflight and starts the restore; `--wait` waits for it. See [cli.md](cli.md).
 
-**API and MCP.** `POST /api/v1/restore` and `POST /api/v1/restores/preflight` take `"pitr": {"stream_id": "…", "at": "…"}` (or `"ts": {"t": …, "i": …}`) and an optional `"databases"`; see [api.md](api.md#point-in-time-restores-experimental). MCP offers `pitr_status` (read) and `pitr_restore` (admin keys); see [mcp.md](mcp.md).
+**API and MCP.** `POST /api/v1/restore` and `POST /api/v1/restores/preflight` take `"pitr": {"stream_id": "…", "at": "…"}` (or `"ts": {"t": …, "i": …}`) and an optional `"databases"`; see [api.md](api.md#point-in-time-restores-experimental). MCP offers `pitr_status` (read) and `pitr_restore` (operator keys); see [mcp.md](mcp.md).
 
 **Preflight.** Besides the connection and the server versions, the preflight of a point-in-time restore checks:
 
@@ -124,6 +124,6 @@ A stream's `copy_targets` (up to three storage targets other than its own) keep 
 
 ## Not there yet
 
-- In-place point-in-time restores, and point-in-time restores by operators (admin only for now).
+- In-place point-in-time restores (#142).
 - The operation browser (restoring to just before one oplog entry is possible through the API with `ts`).
 - Sharded clusters (#58) and high availability of the collector.

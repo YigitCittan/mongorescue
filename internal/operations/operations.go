@@ -690,10 +690,10 @@ func runError(err error, busyMessage string) error {
 // ErrBusy and ErrShuttingDown.
 //
 // A request with PITR is a point-in-time restore of a PITR stream (by stream or
-// connection ID): admin only, into safe clones only (an in-place request is an
-// ErrInvalid wrapping models.ErrPITRInPlace), refused with ErrPITRNotRestorable when
-// no base and unbroken chain reach the target and with ErrPITRUnavailable without
-// PITR support.
+// connection ID): operator (admin into another connection than the stream's), into
+// safe clones only (an in-place request is an ErrInvalid wrapping
+// models.ErrPITRInPlace), refused with ErrPITRNotRestorable when no base and
+// unbroken chain reach the target and with ErrPITRUnavailable without PITR support.
 func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
 	if req.PITR != nil || len(req.Databases) > 0 {
 		if req.PITR == nil {

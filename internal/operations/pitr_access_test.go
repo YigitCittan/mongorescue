@@ -39,14 +39,27 @@ func TestPITRRestoresFollowConnectionAccess(t *testing.T) {
 			t.Errorf("chain test of another connection's stream: %v; want ErrNotFound", err)
 		}
 	}
-	// The stream's own connection: the usual admin refusal.
-	if _, err := svc.StartRestore(limitedTo(auth.ScopeOperator, "conn_a"), pitrAt(125)); !errors.Is(err, auth.ErrForbidden) {
-		t.Errorf("operator on the stream's connection: %v; want ErrForbidden", err)
+	// The stream's own connection: the usual scope rules. A reader may not restore,
+	// an operator may (safe clones), a chain test needs admin.
+	if _, err := svc.StartRestore(limitedTo(auth.ScopeRead, "conn_a"), pitrAt(125)); !errors.Is(err, auth.ErrForbidden) {
+		t.Errorf("reader on the stream's connection: %v; want ErrForbidden", err)
 	}
-	// A restore into a connection outside the caller's access is not found either.
+	if _, err := svc.StartChainTest(limitedTo(auth.ScopeOperator, "conn_a"), "str_a"); !errors.Is(err, auth.ErrForbidden) {
+		t.Errorf("operator chain test on the stream's connection: %v; want ErrForbidden", err)
+	}
+	if rec, err := svc.StartRestore(limitedTo(auth.ScopeOperator, "conn_a"), pitrAt(125)); err != nil || rec.PITR == nil {
+		t.Errorf("operator on the stream's connection: %+v, %v; want a point-in-time restore", rec, err)
+	}
+	// A restore into a connection outside the caller's access is not found either,
+	// for the restore and for its preflight.
 	into := pitrAt(125)
 	into.TargetConnectionID = "conn_b"
-	if _, err := svc.PreflightRestore(limitedTo(auth.ScopeAdmin, "conn_a"), into); !errors.Is(err, operations.ErrNotFound) {
-		t.Errorf("restore into another connection: %v; want ErrNotFound", err)
+	for _, scope := range []auth.Scope{auth.ScopeOperator, auth.ScopeAdmin} {
+		if _, err := svc.PreflightRestore(limitedTo(scope, "conn_a"), into); !errors.Is(err, operations.ErrNotFound) {
+			t.Errorf("%s preflight into another connection: %v; want ErrNotFound", scope, err)
+		}
+		if _, err := svc.StartRestore(limitedTo(scope, "conn_a"), into); !errors.Is(err, operations.ErrNotFound) {
+			t.Errorf("%s restore into another connection: %v; want ErrNotFound", scope, err)
+		}
 	}
 }

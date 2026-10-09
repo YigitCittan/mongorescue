@@ -20,7 +20,7 @@ the CLI never prompts. The restore preflight runs first: a failed check prints t
 checks and exits 1 unless --force is given. Safe clones need an operator key;
 in-place and cross-connection restores need an admin key.
 
-With --pitr (experimental, admin key) it restores a replica set to a point in
+With --pitr (experimental, operator key) it restores a replica set to a point in
 time from its PITR stream (a stream or connection ID): every database, or those
 given with --database, goes into a new <db>_rescue_<timestamp>_<id> database, and
 writes up to and including the second --at are replayed. Point-in-time restores
@@ -43,7 +43,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 	verifyRestore := fs.Bool("verify-restore", false, "Compare the restored database with the backup's manifest afterwards")
 	skipPreflight := fs.Bool("skip-preflight", false, "Do not run the preflight first (the server still checks; --force overrides it)")
 	force := fs.Bool("force", false, "Restore although a preflight check failed")
-	stream := fs.String("pitr", "", "Restore to a point in time from this PITR stream or connection (admin; experimental)")
+	stream := fs.String("pitr", "", "Restore to a point in time from this PITR stream or connection (operator; experimental)")
 	at := fs.String("at", "", "With --pitr: the RFC 3339 time to restore to, e.g. 2026-10-05T14:30:00Z")
 	databases := fs.String("database", "", "With --pitr: restore only these databases, comma-separated (default: all but admin, config and local)")
 	pos, err := s.parse(fs, args)

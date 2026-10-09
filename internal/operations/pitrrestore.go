@@ -75,7 +75,7 @@ func (s *Service) resolveStream(ctx context.Context, id string) (*pitr.Stream, e
 
 // visibleStreamFirst answers a caller limited to some connections ErrNotFound for
 // a stream outside them before any other check, so it learns nothing about the
-// stream (not even that restoring it needs the admin role). Callers that may touch
+// stream (not even which role restoring it needs). Callers that may touch
 // every connection get nil: their checks run in the usual order.
 func (s *Service) visibleStreamFirst(ctx context.Context, id string) error {
 	if !auth.ConnectionFilter(ctx).Limited() || s.cfg.PITR == nil {
@@ -118,9 +118,10 @@ func pitrPlanError(err error) error {
 	return fmt.Errorf("plan the point-in-time restore: %w", err)
 }
 
-// planPITR validates a point-in-time request, which needs the admin scope, loads
-// its stream (by stream or connection ID), plans the restore and resolves the
-// target connection (the stream's unless req names another). A preflight
+// planPITR validates a point-in-time request, which needs the operator scope (admin
+// for another target connection than the stream's), loads its stream (by stream or
+// connection ID), plans the restore and resolves the target connection (the
+// stream's unless req names another). A preflight
 // (forPreflight) keeps a plan refusal in planErr instead of failing.
 func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPreflight bool) (*pitrPlan, error) {
 	if req.PITR != nil {
@@ -128,8 +129,14 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 			return nil, err
 		}
 	}
-	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
-		return nil, fmt.Errorf("point-in-time restores need the admin role or an admin API key: %w", err)
+	// Safe-clone point-in-time restores need operator (design decision 8); they only
+	// add databases. Restoring into another connection than the stream's writes to
+	// a server the oplog did not come from and needs admin, as for backups.
+	if err := auth.RequireScope(ctx, auth.ScopeOperator); err != nil {
+		return nil, fmt.Errorf("point-in-time restores need the operator role or an operator API key: %w", err)
+	}
+	if req.TargetConnectionID != "" && !auth.ConnectionAllowed(ctx, req.TargetConnectionID) {
+		return nil, connectionNotFound()
 	}
 	if err := req.ValidatePITR(); err != nil {
 		return nil, invalid(err)
@@ -177,6 +184,11 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if targetID == "" {
 		targetID = stream.ConnectionID
 	}
+	if targetID != stream.ConnectionID {
+		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
+			return nil, fmt.Errorf("point-in-time restores into another connection than the stream's need the admin role or an admin API key: %w", scopeErr)
+		}
+	}
 	conn, err := s.ResolveConnection(ctx, targetID)
 	if err != nil {
 		return nil, err
@@ -202,8 +214,9 @@ func missingDatabases(base, selected []string) []string {
 	return out
 }
 
-// startPITRRestore is StartRestore for a point-in-time request (req.PITR): an
-// admin-only restore into safe clones, refused in place (models.ErrPITRInPlace).
+// startPITRRestore is StartRestore for a point-in-time request (req.PITR): a
+// restore into safe clones (operator; admin into another connection than the
+// stream's), refused in place (models.ErrPITRInPlace).
 // Since it never overwrites data, the two-person rule does not hold it back.
 func (s *Service) startPITRRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
 	pp, err := s.planPITR(ctx, req, false)

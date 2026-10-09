@@ -7,7 +7,7 @@
  * and the chain breaks, with actions to enable or disable a stream (PATCH, admin),
  * take a base backup now (POST .../base, operator) and delete a disabled stream
  * (DELETE, admin). The form below creates the stream of a connection (POST, admin).
- * The restore wizard (admin) picks a time inside a window, runs the restore
+ * The restore wizard (operator) picks a time inside a window, runs the restore
  * preflight (POST /api/v1/restores/preflight with "pitr") to show the chosen base,
  * the chunks and the estimated duration, and starts the restore into safe clones
  * (POST /api/v1/restore) after a confirmation.
@@ -1199,7 +1199,7 @@ function pitrReadinessRto(row) {
 
 function pitrSetup() {
   if (typeof ROLE_ACTION_SCOPES === "object") {
-    Object.assign(ROLE_ACTION_SCOPES, { "pitr-toggle": "admin", "pitr-delete": "admin", "pitr-base": "operator", "pitr-restore": "admin" });
+    Object.assign(ROLE_ACTION_SCOPES, { "pitr-toggle": "admin", "pitr-delete": "admin", "pitr-base": "operator", "pitr-restore": "operator" });
   }
   const restoreForm = document.getElementById("form-pitr-restore");
   if (restoreForm) {

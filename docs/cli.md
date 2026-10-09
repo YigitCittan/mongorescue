@@ -30,7 +30,7 @@ The key is sent as `Authorization: Bearer` to the URL's origin only. Redirects a
 
 `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are honoured; with an `http://` URL the request, API key included, reaches the proxy in clear text (with `https://` the proxy only tunnels it).
 
-Use the smallest scope that does the job ([scopes](api.md#api-key-scopes)): `read` for `list` and `status`, `operator` for `backup`, `verify` and restores into a safe clone, `admin` only for in-place, cross-connection and point-in-time restores.
+Use the smallest scope that does the job ([scopes](api.md#api-key-scopes)): `read` for `list` and `status`, `operator` for `backup`, `verify`, restores into a safe clone and point-in-time restores, `admin` only for in-place and cross-connection restores.
 
 ## Shared flags
 
@@ -127,7 +127,7 @@ mongorescue restore --pitr STREAM_OR_CONNECTION --at RFC3339 [--database a,b]
 mongorescue restore --pitr conn_rs0 --at 2026-10-05T14:29:59Z --wait
 ```
 
-Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time) from its PITR stream (a stream ID or the ID of its connection), with an **admin** key. Every database, or those given with `--database`, goes into a new database `<db>_rescue_<timestamp>_<id>`; writes up to and including the second `--at` (the primary's clock) are replayed. Point-in-time restores are never in place: `--in-place`, `--confirm`, `--target-database`, `--drop`, `--collections`, `--dry-run` and the verify flags are refused with exit `2`, as is a backup ID next to `--pitr`. The preflight runs first like for every restore and also checks the oplog chain, the replay privileges, the disk space for the base and the oplog and the `mongorestore` version; a time outside every window is refused by the server (exit `1`, `422`).
+Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time) from its PITR stream (a stream ID or the ID of its connection), with an **operator** key (admin for `--target-connection` to another connection than the stream's). Every database, or those given with `--database`, goes into a new database `<db>_rescue_<timestamp>_<id>`; writes up to and including the second `--at` (the primary's clock) are replayed. Point-in-time restores are never in place: `--in-place`, `--confirm`, `--target-database`, `--drop`, `--collections`, `--dry-run` and the verify flags are refused with exit `2`, as is a backup ID next to `--pitr`. The preflight runs first like for every restore and also checks the oplog chain, the replay privileges, the disk space for the base and the oplog and the `mongorestore` version; a time outside every window is refused by the server (exit `1`, `422`).
 
 | Flag | Request field |
 | :--- | :--- |

@@ -9,13 +9,22 @@ import (
 )
 
 // TestPITRRestoreAPI checks the point-in-time body of POST /api/v1/restore and its
-// preflight: admin only, safe clones only, and unavailable without PITR restores.
+// preflight: operator (read is refused), safe clones only, and unavailable without
+// PITR restores; chain tests stay admin.
 func TestPITRRestoreAPI(t *testing.T) {
 	f := newPITRFixture(t)
 	body := `{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"databases":["shop"]}`
 	for _, path := range []string{"/api/v1/restore", "/api/v1/restores/preflight"} {
-		if code, out := f.do(auth.ScopeOperator, "POST", path, body); code != http.StatusForbidden {
+		if code, out := f.do(auth.ScopeRead, "POST", path, body); code != http.StatusForbidden {
+			t.Fatalf("%s as reader: %d %s", path, code, out)
+		}
+		// An operator passes the scope checks; this fixture has no PITR restores.
+		if code, out := f.do(auth.ScopeOperator, "POST", path, body); code != http.StatusServiceUnavailable {
 			t.Fatalf("%s as operator: %d %s", path, code, out)
+		}
+		if code, out := f.do(auth.ScopeOperator, "POST", path,
+			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "safe clones only") {
+			t.Fatalf("%s in place as operator: %d %s", path, code, out)
 		}
 		if code, out := f.do(auth.ScopeAdmin, "POST", path,
 			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "safe clones only") {
