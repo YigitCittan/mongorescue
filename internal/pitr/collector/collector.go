@@ -173,6 +173,10 @@ type Config struct {
 	// ResolveTarget resolves the storage target of a stream; nil keeps the given
 	// ID.
 	ResolveTarget TargetResolver
+	// CheckCopyTarget checks a resolved copy target of a stream: with
+	// security.require_locked_copies on it must have S3 Object Lock (an error
+	// wrapping models.ErrUnlockedCopyTarget otherwise); nil accepts every target.
+	CheckCopyTarget func(ctx context.Context, id string) error
 	// NextRun returns the first activation of a cron expression after from
 	// (implemented with scheduler.NextRuns); nil disables the base schedule.
 	NextRun func(expr string, from time.Time) (time.Time, bool)

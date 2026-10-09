@@ -69,6 +69,13 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		return nil, err
 	}
 	opts.CopyMode = models.CopyAsync
+	// With security.require_locked_copies on, the copies need Object Lock like a
+	// job's.
+	if s.requireLockedCopiesSetting() {
+		if err = s.checkLockedCopies(ctx, opts.Copies); err != nil {
+			return nil, err
+		}
+	}
 	for _, c := range opts.Copies {
 		opts.CopyTargets = append(opts.CopyTargets, c.ID)
 	}

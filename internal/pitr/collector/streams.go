@@ -173,7 +173,8 @@ func (s *Service) checkCollectable(ctx context.Context, connectionID string) (st
 }
 
 // resolveTarget resolves the stream's storage target and copy targets: at most
-// models.MaxCopyTargets distinct targets other than the primary.
+// models.MaxCopyTargets distinct targets other than the primary, each accepted by
+// Config.CheckCopyTarget (locked copies).
 func (s *Service) resolveTarget(ctx context.Context, st *pitr.Stream) error {
 	if s.cfg.ResolveTarget != nil {
 		id, err := s.cfg.ResolveTarget(ctx, st.TargetID)
@@ -197,6 +198,11 @@ func (s *Service) resolveTarget(ctx context.Context, st *pitr.Stream) error {
 		}
 		if id == st.TargetID || slices.Contains(st.CopyTargets, id) {
 			return invalidf("copy_targets must name distinct storage targets other than target_id")
+		}
+		if s.cfg.CheckCopyTarget != nil {
+			if checkErr := s.cfg.CheckCopyTarget(ctx, id); checkErr != nil {
+				return fmt.Errorf("%w: %w", ErrInvalid, checkErr)
+			}
 		}
 		st.CopyTargets = append(st.CopyTargets, id)
 	}

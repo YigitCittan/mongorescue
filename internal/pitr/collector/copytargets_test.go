@@ -3,8 +3,11 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
+
+	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 // TestStreamCopyTargets proves that a stream stores its copy targets, refuses
@@ -37,5 +40,27 @@ func TestStreamCopyTargets(t *testing.T) {
 	}
 	if st, _ = fx.repo.GetStream(ctx, fx.stream.ID); len(st.CopyTargets) != 0 {
 		t.Fatalf("copy targets after removing them = %v", st.CopyTargets)
+	}
+}
+
+// TestStreamCopyTargetsNeedLockedCopies proves that a copy target the locked
+// copies check refuses cannot be added to a stream.
+func TestStreamCopyTargetsNeedLockedCopies(t *testing.T) {
+	fx := newFixture(t)
+	fx.svc.cfg.CheckCopyTarget = func(_ context.Context, id string) error {
+		if id == "tgt_open" {
+			return fmt.Errorf("%w: copy target %s has no S3 Object Lock", models.ErrUnlockedCopyTarget, id)
+		}
+		return nil
+	}
+	off := false
+	list := []string{"tgt_locked", "tgt_open"}
+	_, err := fx.svc.UpdateStream(context.Background(), fx.stream.ID, StreamRequest{Enabled: &off, CopyTargets: &list})
+	if !errors.Is(err, ErrInvalid) || !errors.Is(err, models.ErrUnlockedCopyTarget) {
+		t.Fatalf("an unlocked copy target = %v; want ErrInvalid wrapping ErrUnlockedCopyTarget", err)
+	}
+	list = list[:1]
+	if _, err = fx.svc.UpdateStream(context.Background(), fx.stream.ID, StreamRequest{Enabled: &off, CopyTargets: &list}); err != nil {
+		t.Fatalf("a locked copy target = %v", err)
 	}
 }

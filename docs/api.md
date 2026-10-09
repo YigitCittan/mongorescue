@@ -749,7 +749,7 @@ A PITR stream collects the oplog of one replica set connection into encrypted ch
 | `read_preference` | `secondaryPreferred` | Read preference of oplog reads |
 | `chain_test_cron` | empty (off) | Schedule of [chain tests](pitr.md#chain-tests); `""` turns them off |
 | `chain_test_connection_id` | empty (the stream's connection) | Connection chain tests restore into; another server spares production the load of a full restore |
-| `copy_targets` | none | Up to 3 further storage targets the stream's oplog chunks and base backups are copied to (not `target_id`); `[]` removes them |
+| `copy_targets` | none | Up to 3 further storage targets the stream's oplog chunks and base backups are copied to (not `target_id`); `[]` removes them. While `security.require_locked_copies` is on, each must have S3 Object Lock (else `400`), and a base backup whose copy target has none is refused |
 
 With `copy_targets`, base backups get copies like a job's backups, and the copy queue copies every live oplog chunk to each copy target, checks it against the chunk's SHA-256, and purges the copy once the chunk is purged (and the copy's Object Lock ended). A point-in-time restore (`POST /api/v1/restores` with `pitr`) takes `source_target_id`: a copy target where the base and every chunk of the range have a completed copy (a copy chain), else `400` naming the first gap. Without it the restore reads the primary, and reads the first complete copy chain instead when the primary base or a chunk is missing or cannot be read; the restore record then has `source_target_id` and `source_fallback`.
 
