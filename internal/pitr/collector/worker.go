@@ -249,7 +249,12 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 	w.mu.Unlock()
 
 	if st == nil {
-		// A new stream starts at the newest majority-committed entry.
+		// A new stream starts at the newest majority-committed entry. A replica set
+		// just initiated has none yet (a zero majority optime): wait for it rather
+		// than start at 0:0, which the next tick would take for an overrun window.
+		if win.MajorityOpTime.TS.IsZero() {
+			return w.interval, nil
+		}
 		if startErr := w.startChain(ctx, win.MajorityOpTime); startErr != nil {
 			return 0, startErr
 		}
