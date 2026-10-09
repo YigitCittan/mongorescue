@@ -49,6 +49,9 @@ type pitrPlan struct {
 	cloneErr error
 	// chainTest marks the restore of a chain test.
 	chainTest bool
+	// fallback explains why the restore reads a copy chain instead of the
+	// primary (see pitrSource).
+	fallback string
 }
 
 // resolveStream returns the PITR stream id, or the stream of connection id. A
@@ -83,13 +86,15 @@ func (s *Service) visibleStreamFirst(ctx context.Context, id string) error {
 }
 
 // pitrBases returns the bases of records that can start a point-in-time restore
-// (completed instance-scope backups with T_before and T_after), and the records by
-// ID.
+// (completed instance-scope backups with T_before and T_after, or missing ones
+// with a usable copy, which a restore reads instead, see pitrSource), and the
+// records by ID.
 func pitrBases(records []*models.BackupRecord) ([]pitr.Base, map[string]*models.BackupRecord) {
 	var out []pitr.Base
 	byID := map[string]*models.BackupRecord{}
 	for _, r := range records {
-		if r.Status != models.StatusCompleted || !r.InstanceScope() || r.TBefore == nil || r.TAfter == nil {
+		usable := r.Status == models.StatusCompleted || (r.Status == models.StatusMissing && hasUsableCopy(r))
+		if !usable || !r.InstanceScope() || r.TBefore == nil || r.TAfter == nil {
 			continue
 		}
 		byID[r.ID] = r
@@ -158,6 +163,14 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 			return nil, public(fmt.Sprintf("databases: %s not in base backup %s; restore the whole instance to get databases created after the base",
 				strings.Join(missing, ", "), base.ID), ErrInvalid)
 		}
+		fallback, srcErr := s.pitrSource(ctx, out, req.SourceTargetID)
+		switch {
+		case srcErr != nil && !forPreflight:
+			return nil, srcErr
+		case srcErr != nil:
+			out.planErr = srcErr
+		}
+		out.fallback = fallback
 	}
 
 	targetID := req.TargetConnectionID
@@ -209,6 +222,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		return nil, public(redact.Text(err.Error()), ErrInvalid, err)
 	}
 	record.PITR.BaseBytes, record.PITR.ChainTest = pp.run.Base.SizeBytes, pp.chainTest
+	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = pp.run.Base.StorageTargetID, pp.run.Base.StorageTargetName, pp.fallback
 	if s.cfg.Inspector != nil {
 		pre := s.preflightPITR(ctx, pp, record)
 		if !pre.OK && !req.Force {
