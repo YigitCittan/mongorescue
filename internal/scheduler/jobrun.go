@@ -401,6 +401,7 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	plan.trackers = make([]*runs.Run, len(plan.Records))
 	for i, rec := range plan.Records {
 		if err := s.metadataStore.SaveBackupRecord(ctx, rec); err != nil {
+			s.diskGuard.Observe(ctx, err)
 			s.logger.Warn("failed to record a queued backup of the job run",
 				logsafe.Attr("job_id", jobID), logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}

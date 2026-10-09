@@ -705,6 +705,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{
 		Repo: metaStore,
+		OnWriteError: func(ctx context.Context, err error) {
+			diskGuard.Observe(ctx, err)
+		},
 		Open: func(ctx context.Context, st *pitr.Stream) (collector.Session, error) {
 			conn, err := connSvc.Resolve(ctx, st.ConnectionID)
 			if err != nil {

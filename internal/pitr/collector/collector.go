@@ -127,6 +127,9 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 type Config struct {
 	// Repo persists streams, chains, chunks and the collector state.
 	Repo pitr.Repository
+	// OnWriteError, when set, is told every failed chunk commit, so a full data
+	// directory is detected early (internal/diskguard).
+	OnWriteError func(ctx context.Context, err error)
 	// Open opens the session of a stream.
 	Open Opener
 	// Storage resolves storage drivers.

@@ -865,6 +865,7 @@ func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, can
 	record := plan.First()
 	opts := plan.options[0]
 	if saveErr := s.metadataStore.SaveBackupRecord(ctx, record); saveErr != nil {
+		s.diskGuard.Observe(ctx, saveErr)
 		s.logger.Warn("failed to record the scheduled backup as in progress",
 			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
 	}
