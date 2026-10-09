@@ -125,6 +125,8 @@ type JobUpdate struct {
 	CopyTargets *[]string `json:"copy_targets"`
 	// CopyMode, when set, replaces the job's copy mode ("async" or "sync").
 	CopyMode *models.CopyMode `json:"copy_mode"`
+	// RequireLockedCopies, when set, replaces the job's locked copies policy.
+	RequireLockedCopies *bool `json:"require_locked_copies"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -237,6 +239,11 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	resolved, err := s.resolveCopyTargets(ctx, job.CopyTargets, target.ID, job.CopyMode)
 	if err != nil {
 		return err
+	}
+	if job.RequireLockedCopies {
+		if err = s.checkLockedCopies(ctx, resolved); err != nil {
+			return err
+		}
 	}
 	job.CopyTargets = nil
 	for _, c := range resolved {
@@ -416,6 +423,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		job.CopyTargets = slices.Clone(*u.CopyTargets)
 	}
 	job.CopyMode = derefOr(u.CopyMode, existing.CopyMode)
+	job.RequireLockedCopies = derefOr(u.RequireLockedCopies, existing.RequireLockedCopies)
 	CarryKnownDatabases(job, existing)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
 	switch {

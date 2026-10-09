@@ -480,6 +480,9 @@ type jobRequest struct {
 	RetentionDays  *int  `json:"retention_days"`
 	RetentionCount *int  `json:"retention_count"`
 	Gzip           *bool `json:"gzip"`
+	// RequireLockedCopies, when omitted, keeps an existing job's policy and takes
+	// the security.require_locked_copies setting for a new job.
+	RequireLockedCopies *bool `json:"require_locked_copies"`
 }
 
 func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
@@ -544,6 +547,14 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 			s.writeJobError(w, err)
 			return
 		}
+	}
+	switch {
+	case req.RequireLockedCopies != nil:
+		job.RequireLockedCopies = *req.RequireLockedCopies
+	case existing != nil:
+		job.RequireLockedCopies = existing.RequireLockedCopies
+	default:
+		job.RequireLockedCopies = s.currentSettings().Security.RequireLockedCopies
 	}
 	// Known databases are server-managed: never taken from the client.
 	operations.CarryKnownDatabases(&job, existing)

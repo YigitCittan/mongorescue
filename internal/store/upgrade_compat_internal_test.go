@@ -1144,6 +1144,36 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 27,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			// The rebuilt pending_changes keeps every row and accepts turning
+			// security.require_locked_copies off, once.
+			list, err := s.ListPendingChanges(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept := false
+			for _, c := range list {
+				kept = kept || c.ID == "chg_v22"
+			}
+			if !kept {
+				t.Errorf("pending changes after the rebuild = %+v; want chg_v22 kept", list)
+			}
+			c := &models.PendingChange{ID: "chg_v26b", Kind: models.PendingDisableLockedCopies, EffectiveAt: compatT0}
+			if _, err = s.ReplacePendingChange(ctx, c); err != nil {
+				t.Fatalf("store a locked copies change: %v", err)
+			}
+			if _, err = s.db.Exec(`INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES ('chg_z', 'disable_locked_copies', '', 1, '{}')`); err == nil {
+				t.Error("two pending locked copies changes were stored")
+			}
+			if err = s.DeletePendingChange(ctx, "chg_v26b"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

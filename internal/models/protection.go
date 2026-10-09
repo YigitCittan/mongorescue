@@ -43,6 +43,8 @@ const (
 	PendingDisableSecondApprover PendingChangeKind = "disable_second_approver"
 	// PendingObjectLock lowers the S3 Object Lock of storage target TargetID.
 	PendingObjectLock PendingChangeKind = "object_lock"
+	// PendingDisableLockedCopies turns security.require_locked_copies off.
+	PendingDisableLockedCopies PendingChangeKind = "disable_locked_copies"
 )
 
 // PendingChange is a lowered protection that takes effect only at EffectiveAt (the
@@ -157,6 +159,9 @@ const (
 	// ApprovalLowerObjectLock lowers the S3 Object Lock of storage target Subject to
 	// ObjectLock (then delayed by the grace period).
 	ApprovalLowerObjectLock ApprovalAction = "lower_object_lock"
+	// ApprovalDisableLockedCopies turns security.require_locked_copies off (then
+	// delayed by the grace period too).
+	ApprovalDisableLockedCopies ApprovalAction = "disable_locked_copies"
 )
 
 // ApprovalStatus is the state of an approval request.
