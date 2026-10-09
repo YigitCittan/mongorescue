@@ -124,7 +124,6 @@ func TestFullDiskOnStorageTarget(t *testing.T) {
 // not record and none stays in progress; the metadata database passes an
 // integrity check; once space is freed, the next backup completes and restores.
 func TestFullDiskOnDataDir(t *testing.T) {
-	t.Skip("known failing: a backup whose record cannot be saved stays in progress and reports success, https://github.com/YigitCittan/mongorescue/issues/152")
 	e := requireEnv(t)
 	small := requireSmallDir(t)
 	r := newRig(t, e, rigOptions{dataDir: filepath.Join(small, "data")})
@@ -157,7 +156,7 @@ func TestFullDiskOnDataDir(t *testing.T) {
 			t.Fatal("the server exited with the disk full")
 		}
 	}
-	t.Logf("with the disk full: responses %v", statuses)
+	t.Logf("with the disk full: responses %v, started %v", statuses, started)
 	if code, _, err := r.api.try("GET", "/api/v1/health", nil); err != nil || code >= 500 && code != http.StatusServiceUnavailable {
 		t.Fatalf("health with the disk full: %d %v", code, err)
 	}
