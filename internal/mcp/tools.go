@@ -108,9 +108,9 @@ var ToolScopes = map[string]auth.Scope{
 	ToolPreviewJobDatabases:   auth.ScopeRead,
 	ToolListJobRuns:           auth.ScopeRead,
 	ToolPITRStatus:            auth.ScopeRead,
-	// Point-in-time restores are admin only in this release (docs/design/pitr.md,
-	// decision 8); they still only add safe clones.
-	ToolPITRRestore: auth.ScopeAdmin,
+	// Point-in-time restores only add safe clones: operator, like
+	// restore_safe_clone (docs/design/pitr.md, decision 8).
+	ToolPITRRestore: auth.ScopeOperator,
 }
 
 // ptr returns a pointer to v.

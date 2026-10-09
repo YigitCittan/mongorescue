@@ -1,0 +1,43 @@
+# A three-member replica set (rs0) for the PITR replica set scenarios and the soak
+# test, started by scripts/test-replset-docker.sh. The members share one network,
+# authenticate with a keyfile (RS_KEY) and are reached by their service names;
+# only m1 creates the root user, m2 and m3 get it by initial sync after
+# rs.initiate. Nothing is published to the host: the tests run in a container on
+# the same network (scripts/replset/runner.Dockerfile).
+name: ${RS_PROJECT:-mongorescue-rs}
+
+x-member: &member
+  image: ${MONGO_IMAGE:-mongo:8.0}
+  entrypoint: ["bash", "-c"]
+  # $$ escapes compose interpolation: RS_KEY is expanded inside the container.
+  command:
+    - |
+      set -e
+      printf '%s' "$$RS_KEY" > /tmp/rs.key
+      chmod 400 /tmp/rs.key
+      chown mongodb:mongodb /tmp/rs.key
+      exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all --oplogSize ${RS_OPLOG_MB:-1024}
+  networks: [rs]
+  restart: "no"
+
+services:
+  m1:
+    <<: *member
+    hostname: m1
+    environment:
+      RS_KEY: ${RS_KEY:?RS_KEY is required}
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${RS_PASSWORD:?RS_PASSWORD is required}
+  m2:
+    <<: *member
+    hostname: m2
+    environment:
+      RS_KEY: ${RS_KEY:?RS_KEY is required}
+  m3:
+    <<: *member
+    hostname: m3
+    environment:
+      RS_KEY: ${RS_KEY:?RS_KEY is required}
+
+networks:
+  rs: {}

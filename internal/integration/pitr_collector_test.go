@@ -79,7 +79,7 @@ func TestPITRCollectorSurvivesARestart(t *testing.T) {
 	inserted := 0
 	insert := func(n int) {
 		for range n {
-			if _, insertErr := coll.InsertOne(ctx, bson.D{{Key: "n", Value: int32(inserted)}}); err != nil { //nolint:gosec // a few dozen inserts
+			if _, insertErr := coll.InsertOne(ctx, bson.D{{Key: "n", Value: int32(inserted)}}); insertErr != nil { //nolint:gosec // a few dozen inserts
 				t.Fatal(insertErr)
 			}
 			inserted++

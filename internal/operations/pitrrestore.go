@@ -75,7 +75,7 @@ func (s *Service) resolveStream(ctx context.Context, id string) (*pitr.Stream, e
 
 // visibleStreamFirst answers a caller limited to some connections ErrNotFound for
 // a stream outside them before any other check, so it learns nothing about the
-// stream (not even that restoring it needs the admin role). Callers that may touch
+// stream (not even which role restoring it needs). Callers that may touch
 // every connection get nil: their checks run in the usual order.
 func (s *Service) visibleStreamFirst(ctx context.Context, id string) error {
 	if !auth.ConnectionFilter(ctx).Limited() || s.cfg.PITR == nil {
@@ -118,9 +118,10 @@ func pitrPlanError(err error) error {
 	return fmt.Errorf("plan the point-in-time restore: %w", err)
 }
 
-// planPITR validates a point-in-time request, which needs the admin scope, loads
-// its stream (by stream or connection ID), plans the restore and resolves the
-// target connection (the stream's unless req names another). A preflight
+// planPITR validates a point-in-time request, which needs the operator scope (admin
+// for another target connection than the stream's), loads its stream (by stream or
+// connection ID), plans the restore and resolves the target connection (the
+// stream's unless req names another). A preflight
 // (forPreflight) keeps a plan refusal in planErr instead of failing.
 func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPreflight bool) (*pitrPlan, error) {
 	if req.PITR != nil {
@@ -128,8 +129,14 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 			return nil, err
 		}
 	}
-	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
-		return nil, fmt.Errorf("point-in-time restores need the admin role or an admin API key: %w", err)
+	// Safe-clone point-in-time restores need operator (design decision 8); they only
+	// add databases. Restoring into another connection than the stream's writes to
+	// a server the oplog did not come from and needs admin, as for backups.
+	if err := auth.RequireScope(ctx, auth.ScopeOperator); err != nil {
+		return nil, fmt.Errorf("point-in-time restores need the operator role or an operator API key: %w", err)
+	}
+	if req.TargetConnectionID != "" && !auth.ConnectionAllowed(ctx, req.TargetConnectionID) {
+		return nil, connectionNotFound()
 	}
 	if err := req.ValidatePITR(); err != nil {
 		return nil, invalid(err)
@@ -177,6 +184,11 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if targetID == "" {
 		targetID = stream.ConnectionID
 	}
+	if targetID != stream.ConnectionID {
+		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
+			return nil, fmt.Errorf("point-in-time restores into another connection than the stream's need the admin role or an admin API key: %w", scopeErr)
+		}
+	}
 	conn, err := s.ResolveConnection(ctx, targetID)
 	if err != nil {
 		return nil, err
@@ -202,8 +214,9 @@ func missingDatabases(base, selected []string) []string {
 	return out
 }
 
-// startPITRRestore is StartRestore for a point-in-time request (req.PITR): an
-// admin-only restore into safe clones, refused in place (models.ErrPITRInPlace).
+// startPITRRestore is StartRestore for a point-in-time request (req.PITR): a
+// restore into safe clones (operator; admin into another connection than the
+// stream's), refused in place (models.ErrPITRInPlace).
 // Since it never overwrites data, the two-person rule does not hold it back.
 func (s *Service) startPITRRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
 	pp, err := s.planPITR(ctx, req, false)
@@ -302,25 +315,150 @@ func (s *Service) preflightPITREndpoint(ctx context.Context, req models.RestoreR
 	return s.preflightPITR(ctx, pp, record), nil
 }
 
-// Default rates of the RTO estimate without a chain test: restoring a base archive
-// and replaying the oplog, which mongorestore does on one thread.
+// Default rates of the RTO estimate without a measurement: restoring a base
+// archive, and replaying the oplog, which mongorestore does on one thread, one
+// entry at a time with majority write concern. The replay is bounded by bytes
+// for large entries and by entries for small ones: the test suites measured about
+// 2,300 to 2,700 small entries per second (a few hundredths of a MiB per second
+// of stored oplog), on one member and on three.
 const (
-	defaultBaseRate   = 50 << 20 // bytes per second
-	defaultReplayRate = 4 << 20  // bytes per second
+	defaultBaseRate        = 50 << 20 // bytes per second
+	defaultReplayRate      = 4 << 20  // bytes per second
+	defaultReplayEntryRate = 2000     // oplog entries per second
+	rateSamples            = 5        // the restores the measured rates average
 )
 
-// estimatePITR returns the estimated duration of restoring baseBytes and replaying
-// oplogBytes, from the rate of the stream's newest completed chain test, or from
-// the default rates.
-func (s *Service) estimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes int64) (float64, string) {
-	completed := func(r *models.RestoreRecord) bool { return r.Status == models.RestoreStatusCompleted }
-	if test := s.lastChainTest(ctx, streamID, completed); test != nil && test.DurationSeconds > 0 {
-		if bytes := test.PITR.BaseBytes + test.PITR.OplogBytes; bytes > 0 {
-			rate := float64(bytes) / test.DurationSeconds
-			return float64(baseBytes+oplogBytes) / rate, "chain_test"
+// estimatePITR returns the estimated duration of the restore of plan and where
+// its rates come from (see EstimatePITR).
+func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.RestorePlan) (float64, string) {
+	var entries int64
+	for _, c := range plan.Chunks {
+		entries += c.Entries
+	}
+	e := s.EstimatePITR(ctx, streamID, plan.Base.SizeBytes, plan.OplogBytes, entries)
+	return e.Seconds, e.Source
+}
+
+// EstimatePITR estimates the duration (RTO) of a point-in-time restore of stream
+// streamID that restores baseBytes of base archive and replays oplogEntries
+// entries in oplogBytes of stored oplog: the base at its rate plus the replay.
+//
+// The rates come from the passes of the stream's newest completed restores and
+// chain tests (up to five that timed them). The base rate is their total bytes
+// over total seconds. The replay is a fit of the measured replay times to their
+// entries and stored bytes (see fitReplay): per entry and per byte when both
+// explain the runs, per entry alone when the bytes add nothing (they grow with
+// the entries in the runs), or per byte alone when that fits better; with
+// measurements, the replay is never the larger of two rates that measured the
+// same runs. A pass without a measurement falls back to the overall rate of the
+// newest chain test of an earlier release, then to the default rates (50 MiB/s
+// for the base; the slower of 4 MiB/s and 2,000 entries per second for the
+// oplog). It reads restore records only, never MongoDB.
+func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate {
+	out := models.PITREstimate{BaseBytes: baseBytes, OplogBytes: oplogBytes, OplogEntries: oplogEntries,
+		Source: models.PITREstimateDefault, BaseBytesPerSecond: defaultBaseRate, ReplayBytesPerSecond: defaultReplayRate,
+		ReplayEntriesPerSecond: defaultReplayEntryRate}
+	var baseB, baseS float64
+	var runs []replayRun
+	samples := 0
+	var legacy *models.RestoreRecord
+	if recs, err := s.store.ListRestoreRecords(ctx); err == nil {
+		for _, r := range recs {
+			if samples == rateSamples {
+				break
+			}
+			if r.PITR == nil || r.PITR.StreamID != streamID || r.Status != models.RestoreStatusCompleted {
+				continue
+			}
+			if r.PITR.BaseSeconds <= 0 && r.PITR.ReplaySeconds <= 0 {
+				if legacy == nil && r.PITR.ChainTest && r.DurationSeconds > 0 && r.PITR.BaseBytes+r.PITR.OplogBytes > 0 {
+					legacy = r
+				}
+				continue
+			}
+			samples++
+			if r.PITR.BaseSeconds > 0 && r.PITR.BaseBytes > 0 {
+				baseB, baseS = baseB+float64(r.PITR.BaseBytes), baseS+r.PITR.BaseSeconds
+			}
+			if r.PITR.ReplaySeconds > 0 && r.PITR.OplogBytes > 0 && r.PITR.OpsReplayed > 0 {
+				runs = append(runs, replayRun{entries: float64(r.PITR.OpsReplayed), bytes: float64(r.PITR.OplogBytes), seconds: r.PITR.ReplaySeconds})
+			}
 		}
 	}
-	return float64(baseBytes)/defaultBaseRate + float64(oplogBytes)/defaultReplayRate, "default"
+	replay := func() float64 { // the defaults: the slower of the two rates
+		t := float64(oplogBytes) / out.ReplayBytesPerSecond
+		if oplogEntries > 0 {
+			t = max(t, float64(oplogEntries)/out.ReplayEntriesPerSecond)
+		}
+		return t
+	}
+	switch {
+	case baseS > 0 || len(runs) > 0:
+		out.Source, out.Samples = models.PITREstimateMeasured, samples
+		if baseS > 0 {
+			out.BaseBytesPerSecond = baseB / baseS
+		}
+		if len(runs) > 0 {
+			fit := fitReplay(runs)
+			var e, b, t float64
+			for _, r := range runs {
+				e, b, t = e+r.entries, b+r.bytes, t+r.seconds
+			}
+			out.ReplayBytesPerSecond, out.ReplayEntriesPerSecond, out.ReplayModel = b/t, e/t, fit.model
+			replay = func() float64 {
+				if oplogEntries <= 0 && fit.perEntry > 0 && fit.perByte == 0 {
+					// No entry count (an older caller): the measured byte rate.
+					return float64(oplogBytes) / out.ReplayBytesPerSecond
+				}
+				return fit.perEntry*float64(oplogEntries) + fit.perByte*float64(oplogBytes)
+			}
+		}
+	case legacy != nil:
+		rate := float64(legacy.PITR.BaseBytes+legacy.PITR.OplogBytes) / legacy.DurationSeconds
+		out.Source, out.Samples = models.PITREstimateChainTest, 1
+		out.BaseBytesPerSecond, out.ReplayBytesPerSecond = rate, rate
+	}
+	out.Seconds = float64(baseBytes)/out.BaseBytesPerSecond + replay()
+	return out
+}
+
+// replayRun is one measured oplog replay: its entries, stored bytes and seconds.
+type replayRun struct{ entries, bytes, seconds float64 }
+
+// replayFit is a replay time model: seconds per entry plus seconds per stored
+// byte, and its name (models.PITRReplayModel*).
+type replayFit struct {
+	perEntry, perByte float64
+	model             string
+}
+
+// fitReplay fits seconds = perEntry*entries + perByte*bytes to runs by least
+// squares. When the runs cannot tell entries and bytes apart (they grow together,
+// as with one workload) or the fit gives a negative cost, it falls back to the
+// one-term model that fits best, entries on a tie: mongorestore applies the oplog
+// one entry at a time, so entries carry the cost unless the bytes explain the
+// runs better.
+func fitReplay(runs []replayRun) replayFit {
+	var ee, bb, eb, es, bs, ss, sumE, sumB, sumS float64
+	for _, r := range runs {
+		ee, bb, eb = ee+r.entries*r.entries, bb+r.bytes*r.bytes, eb+r.entries*r.bytes
+		es, bs, ss = es+r.entries*r.seconds, bs+r.bytes*r.seconds, ss+r.seconds*r.seconds
+		sumE, sumB, sumS = sumE+r.entries, sumB+r.bytes, sumS+r.seconds
+	}
+	if det := ee*bb - eb*eb; len(runs) >= 2 && det > 1e-9*ee*bb {
+		a, b := (es*bb-bs*eb)/det, (bs*ee-es*eb)/det
+		// Both costs must carry part of the measured time, not a rounding error.
+		if a*sumE > 1e-6*sumS && b*sumB > 1e-6*sumS {
+			return replayFit{perEntry: a, perByte: b, model: models.PITRReplayModelEntriesAndBytes}
+		}
+	}
+	// One term: the least-squares slope through the origin and its squared error.
+	a, b := es/ee, bs/bb
+	sseEntries, sseBytes := ss-a*es, ss-b*bs
+	if sseBytes < sseEntries*(1-1e-9) {
+		return replayFit{perByte: b, model: models.PITRReplayModelBytes}
+	}
+	return replayFit{perEntry: a, model: models.PITRReplayModelEntries}
 }
 
 // lastChainTest returns the newest chain test restore of streamID that accept takes
@@ -397,7 +535,7 @@ func (p *preflightRun) pitrChain(pp *pitrPlan, record *models.RestoreRecord) {
 	if record == nil {
 		return
 	}
-	secs, from := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan.Base.SizeBytes, plan.OplogBytes)
+	secs, from := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan)
 	p.res.PITR = &models.PITRPreflight{
 		BaseID: plan.Base.ID, BaseStartedAt: plan.Base.StartedAt, BaseConsistentAt: plan.Base.TAfter.TS.Time(),
 		BaseBytes: plan.Base.SizeBytes, OplogBytes: plan.OplogBytes,

@@ -278,6 +278,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	// Pass 1: the base.
 	tracker.Phase(models.PhaseRestoring, record.Phases)
 	tracker.Printf("pass 1 of 2: restoring base backup %s", base.ID)
+	baseStart := time.Now()
 	started, err := e.restorePITRBase(ctx, uri, run, info)
 	// A database the base held beyond its manifest has a clone too: record it (the
 	// suffix carries this restore's random clone ID, so no other database matches).
@@ -301,13 +302,20 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	if c := runs.CancellationOf(ctx); c != nil {
 		return failAfterStart(c, false)
 	}
+	info.BaseSeconds = time.Since(baseStart).Seconds()
 
 	// Pass 2: the oplog.
 	tracker.Printf("pass 2 of 2: replaying %d oplog chunk(s) up to %d:%d", info.Chunks, info.Limit.T, info.Limit.I)
+	replayStart := time.Now()
 	ops, applied, err := e.replayPITROplog(ctx, uri, version, run, info, clones)
 	info.OpsReplayed, info.OpsApplied = ops, applied
 	if err != nil {
 		return failAfterStart(err, false)
+	}
+	info.ReplaySeconds = time.Since(replayStart).Seconds()
+	if perSec, bytesPerSec, ok := info.PITRReplayRate(); ok {
+		tracker.Printf("pass 1 took %.1fs; pass 2 replayed %d oplog entries (%d stored bytes) in %.1fs: %.0f entries/s, %.2f MiB/s",
+			info.BaseSeconds, ops, info.OplogBytes, info.ReplaySeconds, perSec, bytesPerSec/(1<<20))
 	}
 	if applied == nil {
 		info.OpsUnverified = true

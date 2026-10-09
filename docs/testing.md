@@ -9,8 +9,10 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Unit | `*_test.go` next to the code | every push and pull request, with `-race`, on Linux, macOS (Go 1.26 and 1.27) and Windows; 60% coverage gate | Engines, storage drivers, auth, scheduler, API and MCP behave as specified with fakes. Hermetic: no network, no external binaries. The [trust features](verification.md) are covered there too: post-upload verification ok and mismatch, the sweep order, restore tests (success, count mismatch, missing privileges, an existing temporary database, two concurrent tests of one database dropping only their own temporary database, and the temporary database dropped after a failure, a cancellation and a panic, never the source), parallel imports of one key, the revival of a pruned record's archive, shared archives kept on delete and retention, the last verified backup re-checked when pruning, the manifest capture, a retention preview that equals the actual deletion, pins respected by retention and deletion, storage drift (orphans, import, missing) and the route scope matrix. |
 | Security | unit tests in `internal/auth`, `internal/server`, `internal/notify`, `internal/redact`, `internal/storage`, `internal/secretbox`; every integration test | every push and pull request | Credentials never reach logs, errors, records or API responses; path traversal is refused; sessions, CSRF, scopes and login throttling hold; secrets are sealed at rest. The integration tests use a random MongoDB password and fail if it appears anywhere. |
 | Fuzz | `Fuzz*` targets, `make fuzz` | nightly, `make fuzz FUZZTIME=5m` (the job fails if the target is missing) | Parsers of untrusted input do not panic or misbehave on arbitrary bytes. |
-| Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, an 8.0 replica set, MinIO and LocalStack | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
+| Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, each standalone and as a single-node replica set (which runs the point-in-time recovery tests), MinIO and LocalStack, Database Tools 100.12.2 and, on the 8.0 replica set, 100.19.1 | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
+| PITR replica set | `internal/replset`, `replset3` build tag, `make test-pitr-replset` | nightly, 03:00 UTC (job "PITR replica set" of the Nightly workflow, not required): MongoDB 5.0 and 8.0, Database Tools 100.12.2 and 100.19.1 | On a three-member replica set: failovers during collection and during a restore, a rollback through network isolation and divergence after a forced reconfiguration keep the oplog chain unbroken (or end it exactly where the surviving history ends), lose and duplicate no entry, and never store a rolled-back write. See [below](#pitr-on-a-three-member-replica-set). |
+| PITR soak | `TestSoak`, build tags `replset3` and `soak`, `make test-pitr-soak` | weekly, Sunday 04:00 UTC, 5.5 hours (job "PITR soak" of the Nightly workflow, not required); 7 days by hand with `scripts/soak-pitr.sh` | Hours of collection under a write load: no gap and no false break, a bounded number of chunk objects and bases, retention deleting and purging what falls out of the window, and a passing chain test. See [below](#pitr-soak-test). |
 | Large data | `TestThroughputAndMemory` with `MONGORESCUE_TEST_LARGE=1` | nightly, 03:00 UTC, on every MongoDB version | About 2 GiB streams through backup and restore with peak process memory below 256 MiB; throughput is reported. |
 | Fault injection | `internal/chaos`, `chaos` build tag, `make test-chaos-docker` | nightly, job "Chaos" (not required, not on pull requests) | A storage outage or partition, a MongoDB connection drop, a primary stepdown (during dumps and PITR collection), a full disk, SIGKILL (backup, purge, migration, key rotation) and clock steps never leave a broken run `completed` or an object that looks complete; the next run succeeds and the alert fires; see [below](#fault-injection-suite). |
 | Load | `internal/load`, `load` build tag, `make test-load-docker` | weekly, job "Load" (not required) | 5 GiB, 500 connections and 10,000 scheduled jobs: scheduler tick latency, memory, API p95, SQLite contention, backup throughput and the impact of a dump on a busy primary stay within the committed baseline; see [below](#load-test). |
@@ -180,6 +182,47 @@ What the numbers say:
 - **Primary impact.** A full dump at about 64 MB/s triples the p95 of the probe on the primary; throttling to 80 Mbit/s with one collection at a time keeps it at 1.24×. Reading from the secondary did not help here because both members share one machine's CPU and disk (the secondary even replays the probe's writes); on separate hosts it takes the dump's reads off the primary.
 - The weekly job runs the `ci` profile on a GitHub-hosted runner, which is slower than the laptop; the tolerances absorb that, and its report (artifact `load-report`) is where the baseline is refreshed from.
 
+## PITR on a three-member replica set
+
+`make test-pitr-replset` (`scripts/test-replset-docker.sh`) needs only Docker (with compose v2) and Go. For every scenario it starts a fresh replica set from [scripts/replset/compose.yml](../scripts/replset/compose.yml): `m1`, `m2` and `m3` on one network, with a keyfile and a random root password, initiated with `rs.initiate`. The tests inject failures with the docker CLI (kill, network disconnect), so they run in a container on that network with the docker socket mounted ([runner.Dockerfile](../scripts/replset/runner.Dockerfile): Ubuntu, the Database Tools and the docker CLI); the test binary is built on the host. Each test runs a real collector with one-second chunks, the backup and restore engines and the operations service in the test process.
+
+| Test | Failure | Asserts |
+| :--- | :--- | :--- |
+| `TestFailoverDuringCollection` | The primary steps down, then the new primary is killed, while a writer inserts with majority write concern | One open chain, no superseded chunk, no `pitr.chain_broken` or `pitr.diverged`; the chunks hold exactly the final primary's oplog (no entry lost, added or duplicated, same terms), and every acknowledged insert exactly once. |
+| `TestFailoverDuringRestore` | The primary is killed while a point-in-time restore restores the base, and again while it replays the oplog | The restore completes with clones identical to the target state, or fails with a message and no unrecorded clone; a retry restores the target state exactly; the chain survives. |
+| `TestRollbackThroughNetworkIsolation` | The primary is cut off the network, takes 50 `w:1` writes, the others elect a new primary and take more writes, then it rejoins and rolls back | The rolled-back writes appear in no chunk; the chain is unbroken and equals the new primary's oplog. |
+| `TestDivergenceAfterForcedReconfig` | A secondary is cut off, the other two commit and the collector stores 50 writes, both die, and the cut-off member is forced into a one-member set | The chain ends where the survivor's history ends (`diverged`, one `pitr.diverged`), the chunks with the lost writes are superseded, the new chain continues from that point, both together equal the survivor's oplog, and a point-in-time restore from the new chain's base matches the survivor's data. |
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MONGO_IMAGE` | `mongo:8.0` | Server image of the three members |
+| `TOOLS_VERSION` | `100.12.2` | Database Tools in the runner |
+| `RS_RUN` | all | Regular expression of the tests to run |
+| `RS_LOG_DIR` | | Where the member logs of failed tests go (otherwise their last lines are printed) |
+| `RS_OPLOG_MB` | `1024` | Oplog size of each member |
+
+## PITR soak test
+
+`make test-pitr-soak` (`RS_SUITE=soak`) runs `TestSoak` on the same replica set: the collector with base backups on a schedule and retention (by count only, `MONGORESCUE_SOAK_KEEP_BASES`; the 14-day rule is off), under a steady load of inserts and deletes (the data stays bounded, the oplog does not), for `MONGORESCUE_SOAK_DURATION`. Every `MONGORESCUE_SOAK_SAMPLE` it checks that the collector is running without an error and no more than max(5 min, 5 × the interval) behind, that the stream still has its one chain without a superseded chunk or a break event, and that the chunk objects in storage and the live bases stay within what retention keeps. At the end it applies retention, checks that every remaining chunk object belongs to a live chunk and that no live chunk ends before the oldest kept base's `t_before`, compares the stored entries with the primary's oplog where both still have them, and runs a chain test.
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MONGORESCUE_SOAK_DURATION` | `10m` | How long the collector runs under load |
+| `MONGORESCUE_SOAK_CHUNK_SECONDS` | `15` | Chunk interval |
+| `MONGORESCUE_SOAK_BASE_EVERY` | a fifth of the duration, at least `2m` | Base interval (a cron schedule in whole minutes or hours) |
+| `MONGORESCUE_SOAK_KEEP_BASES` | `2` | Bases retention keeps |
+| `MONGORESCUE_SOAK_RATE` | `200` | Writes per second |
+| `MONGORESCUE_SOAK_SAMPLE` | `30s` | How often the invariants are checked |
+| `MONGORESCUE_SOAK_REPORT` | | A file for the JSON report (samples, largest object count and lag, chain test rates) |
+
+The weekly CI run collects for 5.5 hours, the most a GitHub-hosted job allows with the set-up and the final checks. **The 7-day run is manual:** on a machine with Docker that stays up for a week, run
+
+```bash
+nohup ./scripts/soak-pitr.sh > soak.log 2>&1 &
+```
+
+It collects for 168 hours with 60-second chunks, a base every 6 hours, 4 bases kept, 400 writes per second and an 8 GiB oplog per member, samples every 5 minutes, and writes `pitr-soak-<date>.json` and, for a failure, the member logs to `pitr-soak-logs/`. Override any `MONGORESCUE_SOAK_*` variable, `SOAK_DURATION`, `MONGO_IMAGE` or `TOOLS_VERSION`. It stops at the first broken invariant with the reason in `soak.log`; a passing run ends with `all 1 test(s) of the soak suite passed` and the report.
+
 ## Performance
 
 `TestThroughputAndMemory` generates incompressible 256 KiB documents, backs them up without gzip, restores them into a clone and checks the clone with `dbHash`. It logs throughput and the peak memory of the test process (RSS on Linux, memory held by the Go runtime elsewhere), sampled every 20 ms while each phase runs; in CI the numbers are also written to the job summary. `mongodump` and `mongorestore` run as separate processes and are not included.
@@ -192,8 +235,8 @@ Streaming keeps MongoRescue's memory flat: on a laptop (Apple silicon, MongoDB 7
 - **Multipart uploads of killed processes** cannot be aborted by the dead process: their parts stay in the bucket until a lifecycle rule removes them ([production.md](production.md#least-privilege-storage-credentials)).
 - **Failover is a single-node stepdown.** The stepdown scenarios run against a single-node replica set; a three-member set with an election onto another member is not tested.
 - **Users and roles** are not part of backups by default: a backup covers one database and runs `mongodump --db` without `--dumpDbUsersAndRoles` unless the job or backup sets `include_users_and_roles`, and they are restored only in place with `restore_users_and_roles` (see [api.md](api.md#users-and-roles)). Without it, users and roles defined on the database (and everything in `admin`) must be recreated or backed up separately after a disaster.
-- **No point-in-time recovery.** Backups are `mongodump` snapshots; the oplog is not captured (`--oplog` needs a full-instance dump), so a restore returns the data as of the backup and writes that happen during a backup of a busy database may be partially included.
-- **Sharded clusters** and `mongos` are not tested; the matrix covers standalone servers and a single-node replica set.
+- **Database backups are snapshots.** A job backup is a `mongodump` of one database without the oplog (`--oplog` needs a full-instance dump), so its restore returns the data as of the backup and writes that happen during a backup of a busy database may be partially included. Point-in-time recovery needs a [PITR stream](pitr.md) of the replica set.
+- **Sharded clusters** and `mongos` are not tested; the matrix covers standalone servers and single-node replica sets, and the nightly PITR job a three-member replica set.
 - **Restore privileges.** With the `bypassDocumentValidation` privilege (the `restore`, `dbAdmin`, `dbOwner` or `root` role) documents are restored even when a validator would reject them; with only `readWrite` such a document fails the restore.
 - **Restore tests compare counts and indexes, not documents.** The manifest records `estimatedDocumentCount` (metadata-based) and index specifications per collection; document contents are covered by the archive checksum, which every restore checks while it streams. Views, `system.*` collections and time-series buckets are not in the manifest.
 - **Views on excluded collections** are still backed up (a view is excluded only by its own name) and restore as views on a missing collection.

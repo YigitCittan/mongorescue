@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -173,23 +174,32 @@ func TestPITRRestoreRefusals(t *testing.T) {
 	inPlace := pitrAt(125)
 	no := false
 	inPlace.SafeClone, inPlace.ConfirmInPlace = &no, true
+	elsewhere := pitrAt(125)
+	elsewhere.TargetConnectionID = "conn_b"
 	for name, c := range map[string]struct {
 		ctx  context.Context
 		req  models.RestoreRequest
 		want error
 	}{
-		"operator":         {operator(), pitrAt(125), nil},
-		"in place":         {admin(), inPlace, models.ErrPITRInPlace},
-		"before the base":  {admin(), pitrAt(107), operations.ErrPITRNotRestorable},
-		"after the window": {admin(), pitrAt(130), operations.ErrPITRNotRestorable},
-		"unknown stream":   {admin(), models.RestoreRequest{PITR: &models.PITRTarget{StreamID: "nope", At: pitrAt(1).PITR.At}}, operations.ErrNotFound},
-		"system database":  {admin(), pitrAt(125, "admin"), operations.ErrInvalid},
-		"databases alone":  {admin(), models.RestoreRequest{BackupID: "b1", Databases: []string{"shop"}}, operations.ErrInvalid},
+		"reader":                       {readerCtx(), pitrAt(125), auth.ErrForbidden},
+		"operator into another server": {operator(), elsewhere, auth.ErrForbidden},
+		"operator in place":            {operator(), inPlace, models.ErrPITRInPlace},
+		"in place":                     {admin(), inPlace, models.ErrPITRInPlace},
+		"before the base":              {admin(), pitrAt(107), operations.ErrPITRNotRestorable},
+		"after the window":             {admin(), pitrAt(130), operations.ErrPITRNotRestorable},
+		"unknown stream":               {admin(), models.RestoreRequest{PITR: &models.PITRTarget{StreamID: "nope", At: pitrAt(1).PITR.At}}, operations.ErrNotFound},
+		"system database":              {admin(), pitrAt(125, "admin"), operations.ErrInvalid},
+		"databases alone":              {admin(), models.RestoreRequest{BackupID: "b1", Databases: []string{"shop"}}, operations.ErrInvalid},
 	} {
 		_, err := svc.StartRestore(c.ctx, c.req)
 		if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
 			t.Errorf("%s: err = %v, want %v", name, err, c.want)
 		}
+	}
+	// Design decision 8: an operator restores into safe clones of the stream's
+	// connection.
+	if rec, err := svc.StartRestore(operator(), pitrAt(125)); err != nil || rec.PITR == nil || rec.TargetConnectionID != "conn_a" {
+		t.Errorf("operator: %+v, %v; want a point-in-time restore into conn_a", rec, err)
 	}
 	fake.keys = false
 	if _, err := svc.StartRestore(admin(), pitrAt(125)); !errors.Is(err, operations.ErrKeyRequired) {
@@ -248,7 +258,15 @@ func TestPreflightPITR(t *testing.T) {
 	if len(fake.runs) != 0 {
 		t.Fatal("a preflight started a restore")
 	}
-	if _, err := svc.PreflightRestore(operator(), pitrAt(125)); err == nil {
-		t.Fatal("an operator ran a point-in-time preflight")
+	if res, err := svc.PreflightRestore(operator(), pitrAt(125)); err != nil || res.PITR == nil {
+		t.Fatalf("an operator's point-in-time preflight: %+v, %v", res, err)
 	}
+	if _, err := svc.PreflightRestore(readerCtx(), pitrAt(125)); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("a reader's point-in-time preflight: %v; want ErrForbidden", err)
+	}
+}
+
+// readerCtx is a context with a read-scope principal.
+func readerCtx() context.Context {
+	return auth.WithPrincipal(context.Background(), &auth.Principal{Method: auth.MethodAPIKey, APIKeyID: "key_read", Scope: auth.ScopeRead})
 }

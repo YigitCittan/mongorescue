@@ -167,6 +167,36 @@ func TestCopyOplogContinuity(t *testing.T) {
 	}
 }
 
+// TestCopyOplogEntryWithoutTerm is the regression test of a false divergence on
+// MongoDB 5.0: the "initiating set" entry of a new replica set has no t field,
+// and hello reports its optime with term -1 (the uninitialized term), which the
+// collector stores. A range read from it, and the terms it records, must use -1
+// too, as internal/oplog does, instead of 0.
+func TestCopyOplogEntryWithoutTerm(t *testing.T) {
+	initiate, err := bson.Marshal(bson.D{{Key: "op", Value: "n"}, {Key: "ns", Value: ""},
+		{Key: "o", Value: bson.D{{Key: "msg", Value: "initiating set"}}}, {Key: "ts", Value: bson.Timestamp{T: 10, I: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entryTerm(initiate); got != -1 {
+		t.Fatalf("entryTerm of an entry without t = %d; want -1", got)
+	}
+	if got := entryTerm(entry(t, 11, 1, 1)); got != 1 {
+		t.Fatalf("entryTerm = %d; want 1", got)
+	}
+	e11 := entry(t, 11, 1, 1)
+	at := func(sec, ord uint32) pitr.Timestamp { return pitr.Timestamp{T: sec, I: ord} }
+	var buf bytes.Buffer
+	stats, err := copyOplog(context.Background(), &fakeCursor{docs: []bson.Raw{initiate, e11}},
+		pitr.OplogRange{From: at(10, 1), To: at(11, 1), CheckTerm: true, FromTerm: -1, StartInclusive: true}, &buf)
+	if err != nil {
+		t.Fatalf("a range from the initiate entry in term -1: %v", err)
+	}
+	if stats.Entries != 2 || stats.First.Term != -1 || stats.Last.Term != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 // TestOplogUnreachableIsRedacted uses a local closed port, so it needs no network
 // and no MongoDB.
 func TestOplogUnreachableIsRedacted(t *testing.T) {

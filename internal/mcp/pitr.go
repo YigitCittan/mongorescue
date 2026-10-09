@@ -40,7 +40,7 @@ func (s *Server) registerPITRTools() {
 	addTool(s, &sdk.Tool{
 		Name: ToolPITRStatus,
 		Description: "Show the PITR (point-in-time recovery) streams: the collector's state, lag and the windows of times that can be " +
-			"restored (a gap splits them), with the base backups. Experimental.",
+			"restored (a gap splits them), with the base backups.",
 		Annotations: readOnly("PITR status"),
 		InputSchema: schemaFor[pitrStatusInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "stream_id") }),
 	}, s.pitrStatus)
@@ -48,7 +48,7 @@ func (s *Server) registerPITRTools() {
 		Name: ToolPITRRestore,
 		Description: "Restore a replica set, or some of its databases, to a point in time: every database is restored into a NEW " +
 			"database named <db>_rescue_<timestamp>_<id> from a base backup, and the oplog is replayed up to the time. Existing data is " +
-			"never overwritten; admin, config and local are never restored. Admin API keys only; experimental. The time must lie in " +
+			"never overwritten; admin, config and local are never restored. Operator or admin API keys. The time must lie in " +
 			"a window of pitr_status. A preflight runs first (chain, privileges, disk space, tools version): its result is in the output, " +
 			"and a failed check refuses the restore unless force is set. Poll get_restore until completed or failed.",
 		Annotations: additive("Point-in-time restore to safe clones"),
@@ -96,7 +96,7 @@ func (s *Server) pitrStatus(ctx context.Context, in pitrStatusInput) (pitrStatus
 	if len(parts) == 0 {
 		return out, "No PITR streams.", nil
 	}
-	return out, fmt.Sprintf("%d PITR stream(s) (experimental): %s.", len(parts), strings.Join(parts, "; ")), nil
+	return out, fmt.Sprintf("%d PITR stream(s): %s.", len(parts), strings.Join(parts, "; ")), nil
 }
 
 func (s *Server) pitrRestore(ctx context.Context, in pitrRestoreInput) (restoreStarted, string, error) {

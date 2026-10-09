@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
+	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -58,10 +60,14 @@ type pitrRig struct {
 	stream  *pitr.Stream
 	backups *backup.Engine
 	ops     *operations.Service
+	// scheduled is ops for the collector's chain test schedule, set once built.
+	scheduled atomic.Pointer[operations.Service]
 }
 
 // newPITRRig starts a collector with one-second chunks and waits for its chain.
-func newPITRRig(t *testing.T) *pitrRig {
+// A chainTestCron schedules chain tests through the collector, as internal/app
+// wires it.
+func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 	t.Helper()
 	env := requireMongo(t)
 	requireReplicaSet(t, env)
@@ -91,10 +97,36 @@ func newPITRRig(t *testing.T) *pitrRig {
 	}
 	r.stream = &pitr.Stream{ID: "str_it", ConnectionID: "conn_it", ReplicaSet: win.ReplicaSet, TargetID: "tgt_it", Enabled: true,
 		BaseCron: "@daily", BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 1}
+	if len(chainTestCron) > 0 {
+		r.stream.ChainTestCron = chainTestCron[0]
+	}
 	if err = r.repo.CreateStream(ctx, r.stream); err != nil {
 		t.Fatal(err)
 	}
 	col := collector.New(collector.Config{
+		// Scheduled chain tests run as the application itself, once r.ops exists.
+		StartChainTest: func(ctx context.Context, id string) error {
+			svc := r.scheduled.Load()
+			if svc == nil {
+				return operations.ErrPITRUnavailable
+			}
+			_, chainErr := svc.StartChainTest(auth.WithPrincipal(ctx, auth.SystemPrincipal()), id)
+			return chainErr
+		},
+		LastChainTest: func(ctx context.Context, id string) time.Time {
+			svc := r.scheduled.Load()
+			if svc == nil {
+				return time.Time{}
+			}
+			return svc.LastChainTestStart(ctx, id)
+		},
+		NextRun: func(expr string, from time.Time) (time.Time, bool) {
+			next := scheduler.NextRuns(expr, from, 1)
+			if len(next) == 0 {
+				return time.Time{}, false
+			}
+			return next[0], true
+		},
 		Repo: r.repo,
 		Open: func(ctx context.Context, s *pitr.Stream) (collector.Session, error) {
 			sess, openErr := r.prober.OpenOplogSession(ctx, env.URI, s.ReadPreference)
@@ -147,6 +179,7 @@ func newPITRRig(t *testing.T) *pitrRig {
 		},
 		Logger: discardLogger,
 	})
+	r.scheduled.Store(r.ops)
 	return r
 }
 
@@ -429,15 +462,30 @@ func TestPITRRestoreStopsInsideATransaction(t *testing.T) {
 	}
 }
 
-// TestPITRChainTest takes two bases and runs a chain test: base one restored to the
-// consistent point of base two matches base two's manifest, and the clones go.
+// TestPITRChainTest takes two bases and lets the stream's chain_test_cron run a
+// chain test: base one is restored to the consistent point of base two (every
+// write up to and including its t_after), the clones match base two's manifest,
+// and they go. The test's measured replay rate then drives the RTO estimate.
 func TestPITRChainTest(t *testing.T) {
-	r := newPITRRig(t)
+	r := newPITRRig(t, "* * * * *")
 	env, ctx := r.env, r.ctx
 	db := env.uniqueDB(t, "pitrct")
 	env.seed(t, db, "orders", 20)
-	r.base(t)
+	first := r.base(t)
 	if _, err := env.Client.Database(db).Collection("orders").InsertMany(ctx, []any{bson.D{{Key: "seq", Value: 500}}, bson.D{{Key: "seq", Value: 501}}}); err != nil {
+		t.Fatal(err)
+	}
+	// A typical write-heavy oplog between the bases, for the measured replay rate:
+	// 5,000 small inserts and an update of each.
+	events := env.Client.Database(db).Collection("events")
+	batch := make([]any, 0, 5000)
+	for i := range 5000 {
+		batch = append(batch, bson.D{{Key: "n", Value: int64(i)}, {Key: "status", Value: "new"}, {Key: "pad", Value: strings.Repeat("e", 200)}})
+	}
+	if _, err := events.InsertMany(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.UpdateMany(ctx, bson.D{}, bson.D{{Key: "$set", Value: bson.D{{Key: "status", Value: "done"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	second := r.base(t)
@@ -445,29 +493,46 @@ func TestPITRChainTest(t *testing.T) {
 		t.Fatal("the base has no instance manifest")
 	}
 	r.waitCovered(t)
-	rec, err := r.ops.StartChainTest(auth.WithPrincipal(ctx, auth.SystemPrincipal()), r.stream.ID)
-	if err != nil {
-		t.Fatalf("StartChainTest: %v", err)
-	}
-	deadline := time.Now().Add(5 * time.Minute)
+	// The schedule fires once a minute; a run before both bases were eligible
+	// found nothing to test and waits for the next minute.
+	deadline := time.Now().Add(4 * time.Minute)
 	var res *operations.ChainTestResult
 	for res == nil {
 		if time.Now().After(deadline) {
-			t.Fatal("the chain test did not finish")
+			t.Fatal("no scheduled chain test finished")
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Second)
 		res = r.ops.LastChainTest(ctx, r.stream.ID)
 	}
-	final, err := r.repo.GetRestoreRecord(ctx, rec.ID)
+	final, err := r.repo.GetRestoreRecord(ctx, res.RestoreID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Failed || res.Verification != models.RestoreVerificationPassed {
 		t.Fatalf("chain test %+v: %s %s %+v", res, final.ErrorMessage, final.Warning, final.Verification)
 	}
+	limit := pitr.Timestamp{T: second.TAfter.TS.T, I: second.TAfter.TS.I + 1}
+	if !final.PITR.ChainTest || final.PITR.BaseID != first.ID || final.PITR.Limit != limit {
+		t.Fatalf("the chain test restored base %s up to %s; want base %s up to %s", final.PITR.BaseID, final.PITR.Limit, first.ID, limit)
+	}
+	if v := final.Verification; v.Collections == 0 || len(v.Mismatches) != 0 {
+		t.Fatalf("the comparison with the manifest of %s: %+v", second.ID, v)
+	}
 	for _, name := range r.databases(t) {
 		if strings.HasSuffix(name, final.PITR.CloneSuffix) {
 			t.Errorf("the chain test left clone %s", name)
 		}
+	}
+
+	// Measured RTO: both passes were timed, and the estimate uses them.
+	perSec, bytesPerSec, ok := final.PITR.PITRReplayRate()
+	if !ok || final.PITR.BaseSeconds <= 0 {
+		t.Fatalf("the chain test did not time its passes: %+v", final.PITR)
+	}
+	t.Logf("chain test replay: %d entries, %d stored bytes in %.2fs (%.0f entries/s, %.2f MiB/s); base %d bytes in %.2fs",
+		final.PITR.OpsReplayed, final.PITR.OplogBytes, final.PITR.ReplaySeconds, perSec, bytesPerSec/(1<<20),
+		final.PITR.BaseBytes, final.PITR.BaseSeconds)
+	if e := r.ops.EstimatePITR(ctx, r.stream.ID, 1<<30, 1<<30, 1_000_000); e.Source != models.PITREstimateMeasured || e.Samples != 1 {
+		t.Fatalf("the estimate after a timed chain test: %+v", e)
 	}
 }

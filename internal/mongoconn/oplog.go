@@ -35,6 +35,31 @@ const (
 // preference mode.
 var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 
+// memberOpTimeout bounds one small round trip of an oplog session to a member
+// (hello, an entry lookup, and one call of OplogWindow, a few round trips). The
+// driver has no socket timeout of its own, so a member that stops answering
+// without closing its connections (a crash, a power loss, a network partition)
+// would otherwise hold the collector's tick until the operating system gives up
+// on the connection, minutes later. Range reads, whose batches can be large, are
+// bounded by progress instead (memberIdleTimeout). A variable for tests.
+var memberOpTimeout = time.Minute
+
+// entryTerm returns the term (t) of oplog entry doc, or -1, MongoDB's
+// uninitialized term, for an entry without one: the "initiating set" entry of a
+// new replica set has none, while hello reports its optime with term -1. The
+// oplog codec (internal/oplog) reads it the same way.
+func entryTerm(doc bson.Raw) int64 {
+	if term, ok := doc.Lookup("t").AsInt64OK(); ok {
+		return term
+	}
+	return -1
+}
+
+// memberCtx returns ctx bounded by memberOpTimeout.
+func memberCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, memberOpTimeout)
+}
+
 // OplogSession is one long-lived client to a replica set, opened once per PITR
 // stream so the collector does not reconnect at every tick. Its own reads (the
 // promoted OplogMember methods) use the session's read preference, so each one
@@ -90,7 +115,7 @@ func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference strin
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidReadPreference, readPreference)
 	}
-	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp))
+	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp).SetDialer(newIdleDialer()))
 	if err != nil {
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return nil, errors.New("invalid connection string")
@@ -170,6 +195,8 @@ type oplogHello struct {
 
 // hello runs hello on the member rp selects.
 func (s *OplogSession) hello(ctx context.Context, rp *readpref.ReadPref) (oplogHello, error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	var h oplogHello
 	if err := s.client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}},
 		options.RunCmd().SetReadPreference(rp)).Decode(&h); err != nil {
@@ -188,7 +215,8 @@ func (s *OplogSession) memberClient(ctx context.Context, host string) (*mongo.Cl
 	if c, ok := s.members[host]; ok {
 		return c, nil
 	}
-	opts := clientOptions(mongotls.NewContext(ctx, s.tls), s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest())
+	opts := clientOptions(mongotls.NewContext(ctx, s.tls), s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest()).
+		SetDialer(newIdleDialer())
 	opts.SRVMaxHosts, opts.SRVServiceName = nil, nil
 	c, err := mongo.Connect(opts)
 	if err != nil {
@@ -257,6 +285,8 @@ func (p *Prober) withOplogSession(ctx context.Context, uri string, fn func(*Oplo
 // and the replica set name and ID. It returns pitr.ErrNotReplicaSet for a server
 // that is not a replica set member. Errors are redacted.
 func (s *OplogMember) OplogWindow(ctx context.Context) (pitr.OplogWindow, error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	var w pitr.OplogWindow
 	var hello struct {
 		SetName   string `bson:"setName"`
@@ -374,6 +404,9 @@ func (s *OplogMember) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Wri
 		{Key: "$gte", Value: bson.Timestamp{T: r.From.T, I: r.From.I}},
 		{Key: "$lte", Value: bson.Timestamp{T: r.To.T, I: r.To.I}},
 	}}}
+	// No overall deadline: a batch of up to 16 MiB takes as long as the link
+	// needs, and the session's connections fail a read only after
+	// memberIdleTimeout without any byte (idleConn).
 	cur, err := s.oplog().Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
@@ -413,7 +446,7 @@ func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Wri
 			return stats, errors.New("an oplog entry has no ts timestamp")
 		}
 		op := pitr.OpTime{TS: pitr.Timestamp{T: t, I: i}}
-		op.Term, _ = doc.Lookup("t").AsInt64OK()
+		op.Term = entryTerm(doc)
 		switch {
 		case !started:
 			if op.TS != r.From {
@@ -455,6 +488,8 @@ func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Wri
 // the member that answered has no entry there (it was truncated, rolled back or
 // never replicated). Errors are redacted.
 func (s *OplogMember) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	raw, err := s.oplog().FindOne(ctx,
 		bson.D{{Key: "ts", Value: bson.Timestamp{T: ts.T, I: ts.I}}},
 		options.FindOne().SetProjection(bson.D{{Key: "t", Value: 1}, {Key: "_id", Value: 0}})).Raw()
@@ -464,7 +499,7 @@ func (s *OplogMember) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int6
 	if err != nil {
 		return 0, false, redactErr(fmt.Errorf("find oplog entry %s: %w", ts, err))
 	}
-	term, _ = raw.Lookup("t").AsInt64OK()
+	term = entryTerm(raw)
 	return term, true, nil
 }
 
