@@ -124,7 +124,10 @@ type App struct {
 	pitr          *collector.Service
 	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
 	// or chain test (operations.Service.CleanupInterruptedPITR).
-	cleanupPITR  func(ctx context.Context, rec *models.RestoreRecord) string
+	cleanupPITR func(ctx context.Context, rec *models.RestoreRecord) string
+	// storages opens the storage driver of a target, for the startup recovery's
+	// look at the archives of interrupted backups (targets.Service.Storage).
+	storages     func(ctx context.Context, targetID string) (storage.Storage, error)
 	readiness    *readiness.Service
 	auditLog     *auditlog.Service
 	auditForward *auditlog.Forwarder
@@ -832,6 +835,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		reencrypt:     reencryptSvc,
 		pitr:          pitrSvc,
 		cleanupPITR:   ops.CleanupInterruptedPITR,
+		storages:      targetSvc.Storage,
 		readiness:     readinessSvc,
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
@@ -1443,17 +1447,24 @@ func (a *App) shutdownRuns() {
 func (a *App) failInterruptedRuns(ctx context.Context) {
 	const msg = "interrupted: the server stopped before this run finished"
 	var failed []*models.BackupRecord
+	const keptMsg = "interrupted before the record was saved; the archive was kept"
 	if backups, err := a.metaStore.ListBackupRecords(ctx, ""); err == nil {
 		for _, b := range backups {
 			if b.Status == models.StatusInProgress {
-				b.Status, b.ErrorMessage, b.SizeBytes, b.SHA256 = models.StatusFailed, msg, 0, ""
+				// Its archive may be complete and good (a run whose final save never
+				// succeeded): an archive that exists is kept, and the storage scan
+				// reports it as an importable orphan. Only a partial one goes to the
+				// purge (archive_cleanup_pending).
+				kept, partial := a.interruptedArchive(ctx, b)
+				b.Status, b.ErrorMessage = models.StatusFailed, msg
+				if kept {
+					b.ErrorMessage = keptMsg
+				}
+				b.SizeBytes, b.SHA256 = 0, ""
 				// Copies it never made leave the queue; copies a synchronous run made
 				// already go to the purge (archive_cleanup_pending).
 				b.AbandonCopies()
-				// So does an archive it may have uploaded, such as the complete one of
-				// a run whose final record could not be saved (a full data
-				// directory): the purge deletes it instead of leaving an orphan.
-				if b.StorageKey != "" {
+				if partial {
 					b.ArchiveCleanupPending = true
 				}
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
@@ -1539,6 +1550,36 @@ func (a *App) publishInterrupted(ctx context.Context, e events.Event) {
 	if a.bus != nil {
 		a.bus.Publish(ctx, e)
 	}
+}
+
+// interruptedArchive looks at the archive of b, a backup left in progress by a
+// previous process. kept reports an archive that exists and may be complete: it
+// is left in storage (the storage scan lists it as an importable orphan).
+// partial reports one that is smaller than the size recorded for it, which the
+// purge deletes. A missing archive, or one whose target cannot be read, is
+// neither: nothing is deleted on a guess.
+func (a *App) interruptedArchive(ctx context.Context, b *models.BackupRecord) (kept, partial bool) {
+	if b.StorageKey == "" || a.storages == nil {
+		return false, false
+	}
+	driver, err := a.storages(ctx, b.StorageTargetID)
+	if err != nil {
+		a.logger.Warn("cannot check the archive of an interrupted backup; it is kept", logsafe.Attr("backup_id", b.ID), logsafe.Error(err))
+		return false, false
+	}
+	obj, err := driver.Stat(ctx, b.StorageKey)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return false, false
+	case err != nil:
+		a.logger.Warn("cannot check the archive of an interrupted backup; it is kept", logsafe.Attr("backup_id", b.ID), logsafe.Error(err))
+		return false, false
+	case obj != nil && b.SizeBytes > 0 && obj.SizeBytes < b.SizeBytes:
+		return false, true
+	}
+	a.logger.Warn("an interrupted backup left an archive whose record was never saved; it is kept for import",
+		logsafe.Attr("backup_id", b.ID), logsafe.Attr("storage_key", b.StorageKey))
+	return true, false
 }
 
 // isLoopbackHost reports whether host binds only to the local loopback interface.
