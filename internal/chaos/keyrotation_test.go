@@ -99,8 +99,8 @@ func TestKillDuringKeyRotation(t *testing.T) {
 		r.restart()
 
 		now := r.fingerprint()
-		switch {
-		case now == old:
+		switch now {
+		case old:
 			if answered == http.StatusOK {
 				t.Fatalf("kill at %.0f%%: the rotation answered 200 but the old key is back", frac*100)
 			}

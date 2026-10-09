@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -244,12 +245,6 @@ func (tp *toxiproxy) toxic(t *testing.T, proxy, name, typ, stream string, attrs 
 	})
 }
 
-// removeToxic removes a toxic; a missing one is ignored.
-func (tp *toxiproxy) removeToxic(t *testing.T, proxy, name string) {
-	t.Helper()
-	tp.call(t, "DELETE", "/proxies/"+proxy+"/toxics/"+name, nil, http.StatusNotFound)
-}
-
 // setEnabled enables or disables a proxy; disabling closes its connections and
 // refuses new ones (an outage).
 func (tp *toxiproxy) setEnabled(t *testing.T, proxy string, enabled bool) {
@@ -287,16 +282,28 @@ func binary(t *testing.T) string {
 	return binPath
 }
 
-// syncBuffer is a goroutine-safe buffer for process output.
+// syncBuffer is a goroutine-safe buffer for process output. With killWhen set, the
+// process is killed from inside the Write that makes killWhen true, so the kill
+// follows the output that triggered it within microseconds.
 type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	killWhen  func(output string) bool
+	process   atomic.Pointer[os.Process]
+	killFired bool
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	n, err := b.buf.Write(p)
+	if b.killWhen != nil && !b.killFired && b.killWhen(b.buf.String()) {
+		if pr := b.process.Load(); pr != nil {
+			_ = pr.Signal(syscall.SIGKILL)
+			b.killFired = true
+		}
+	}
+	return n, err
 }
 
 func (b *syncBuffer) String() string {
@@ -344,7 +351,14 @@ func cleanEnv() []string {
 // launch starts bin on dataDir without waiting for it to be healthy.
 func launch(t *testing.T, bin, dataDir string, port int) *proc {
 	t.Helper()
-	p := &proc{t: t, bin: bin, dataDir: dataDir, port: port, logs: &syncBuffer{}, done: make(chan error, 1)}
+	return launchKilling(t, bin, dataDir, port, nil)
+}
+
+// launchKilling starts bin like launch and kills it as soon as its output makes
+// killWhen true (nil: never).
+func launchKilling(t *testing.T, bin, dataDir string, port int, killWhen func(output string) bool) *proc {
+	t.Helper()
+	p := &proc{t: t, bin: bin, dataDir: dataDir, port: port, logs: &syncBuffer{killWhen: killWhen}, done: make(chan error, 1)}
 	p.base = fmt.Sprintf("http://127.0.0.1:%d", port)
 	p.cmd = exec.Command(bin, "-data-dir", dataDir, "-host", "127.0.0.1", "-port", strconv.Itoa(port))
 	p.cmd.Env = cleanEnv()
@@ -352,6 +366,7 @@ func launch(t *testing.T, bin, dataDir string, port int) *proc {
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	p.logs.process.Store(p.cmd.Process)
 	go func() { p.done <- p.cmd.Wait() }()
 	t.Cleanup(func() {
 		p.stop()

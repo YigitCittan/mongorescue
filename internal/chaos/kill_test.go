@@ -107,7 +107,7 @@ func TestPurgeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.OpenSQLite(ctx, filepath.Join(dir, "mongorescue.db"), logger)
 	if err != nil {

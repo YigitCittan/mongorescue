@@ -147,8 +147,8 @@ func TestFullDiskOnDataDir(t *testing.T) {
 			_ = json.Unmarshal(env.Data, &b)
 			started = append(started, b.ID)
 			waitFor(t, runTimeout, "the backup to end", func() bool {
-				code, body, err := r.api.try("GET", "/api/v1/backups?database="+db, nil)
-				return err == nil && code == http.StatusOK && !strings.Contains(string(body), `"in_progress"`)
+				c, list, listErr := r.api.try("GET", "/api/v1/backups?database="+db, nil)
+				return listErr == nil && c == http.StatusOK && !strings.Contains(string(list), `"in_progress"`)
 			})
 		} else if code < 400 {
 			t.Fatalf("backup with a full disk answered %d: %s", code, body)
