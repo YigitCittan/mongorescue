@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -400,6 +401,7 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	plan.trackers = make([]*runs.Run, len(plan.Records))
 	for i, rec := range plan.Records {
 		if err := s.metadataStore.SaveBackupRecord(ctx, rec); err != nil {
+			s.diskGuard.Observe(ctx, err)
 			s.logger.Warn("failed to record a queued backup of the job run",
 				logsafe.Attr("job_id", jobID), logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}
@@ -542,9 +544,12 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	if err != nil {
 		now := time.Now().UTC()
 		rec.Status = models.StatusFailed
-		if errors.Is(err, runs.ErrBusy) {
+		switch {
+		case errors.Is(err, runs.ErrBusy):
 			rec.ErrorMessage = fmt.Sprintf("another backup of database %s was still running after %s; skipped by this job run", rec.Database, s.lockWait())
-		} else {
+		case errors.Is(err, diskguard.ErrLowSpace):
+			rec.ErrorMessage = "backup not started: " + redact.Text(err.Error())
+		default:
 			rec.ErrorMessage = fmt.Sprintf("the run lock of database %s could not be taken: %s", rec.Database, redact.Text(err.Error()))
 		}
 		rec.CompletedAt, rec.Phases.Finished = &now, models.Stamp(now)
@@ -571,15 +576,16 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
-	if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, rec); saveErr != nil {
-		s.logger.Error("failed to persist backup record",
-			logsafe.Attr("job_id", plan.jobID()), logsafe.Attr("backup_id", rec.ID), logsafe.Error(saveErr))
+	// A record that cannot be saved fails the database (and so the run).
+	saveErr := s.diskGuard.FinishBackup(persistCtx, rec, s.metadataStore.SaveBackupRecord, s.logger, tracked)
+	if err == nil {
+		err = saveErr
 	}
 	if s.publisher != nil {
 		e := events.BackupEvent(rec, err, plan.jobID(), rec.Database)
 		e.RunID, e.InRun = plan.Run.ID, true
 		s.publisher.Publish(persistCtx, e)
-		if ve, ok := events.VerificationEvent(rec, events.VerificationAfterUpload); ok {
+		if ve, ok := events.VerificationEvent(rec, events.VerificationAfterUpload); ok && saveErr == nil {
 			s.publisher.Publish(persistCtx, ve)
 		}
 	}

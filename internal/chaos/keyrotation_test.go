@@ -118,7 +118,6 @@ func TestKillDuringKeyRotation(t *testing.T) {
 
 	// Every committed rotation, the last one included, is announced.
 	t.Run("alert for every committed rotation", func(t *testing.T) {
-		t.Skip("known failing: notifications queued in memory are lost when the process dies, https://github.com/YigitCittan/mongorescue/issues/150")
 		want := rotatedEvents + committed + 1
 		waitFor(t, 60*time.Second, "security.key_rotated for every committed rotation", func() bool {
 			return len(r.hook.find("security.key_rotated", "", "")) >= want

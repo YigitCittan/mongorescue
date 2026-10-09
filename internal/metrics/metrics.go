@@ -159,7 +159,7 @@ func New(info BuildInfo) *Metrics {
 		notificationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "notifications_total",
-			Help:      "Total number of notification deliveries by channel type and outcome (success|failure|dropped).",
+			Help:      "Total number of notification deliveries by channel type and outcome (success|failure|dropped|expired).",
 		}, []string{"channel_type", "status"}),
 		eventsDropped: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,

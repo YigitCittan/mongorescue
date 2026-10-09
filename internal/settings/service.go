@@ -48,8 +48,13 @@ type Service struct {
 	oidcRoleKept string
 	// previousKey shows WarningPreviousKey (not stored; see SetPreviousKeyWarning).
 	previousKey bool
-	enc         *encryption.Encryptor
-	dec         *encryption.Decryptor
+	// diskFull shows WarningDiskFull (not stored; see SetDiskFullWarning).
+	diskFull bool
+	// unreadableChannels holds the channels of WarningChannelUnreadable and why
+	// (not stored; see SetChannelUnreadable).
+	unreadableChannels map[string]string
+	enc                *encryption.Encryptor
+	dec                *encryption.Decryptor
 
 	// oidcGuard checks and applies changes of the OIDC section (see OIDCGuard);
 	// guarded by writeMu.

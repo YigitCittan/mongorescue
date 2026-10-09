@@ -21,6 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -234,6 +235,9 @@ type Config struct {
 	Reencrypter Reencrypter
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
+	// DiskGuard settles a backup whose final record cannot be saved (a full data
+	// directory) as failed and retries its save; nil only retries the save briefly.
+	DiskGuard *diskguard.Guard
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
 	// ErrUnavailable.
 	Verifier Verifier
@@ -527,19 +531,24 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 	jobID := s.knownJobID(ctx, opts.JobID)
 	return s.startBackup(ctx, record, func(runCtx context.Context) {
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		if saveErr := s.store.SaveBackupRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist backup metadata record",
-				logsafe.Attr("backup_id", final.ID),
-				logsafe.Error(saveErr),
-			)
-		}
-		s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, opts.Database))
-		if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
-			s.publish(persistCtx, ve)
-		}
+		s.finishBackup(runCtx, final, runErr, jobID, opts.Database)
 	})
+}
+
+// finishBackup persists final, the record of a finished on-demand backup run, and
+// publishes its outcome. A record that cannot be saved is reported as failed
+// (diskguard.Guard.FinishBackup), never as succeeded.
+func (s *Service) finishBackup(runCtx context.Context, final *models.BackupRecord, runErr error, jobID, database string) {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
+	defer cancel()
+	saveErr := s.cfg.DiskGuard.FinishBackup(persistCtx, final, s.store.SaveBackupRecord, s.logger, runs.FromContext(runCtx))
+	s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, database))
+	if saveErr != nil {
+		return
+	}
+	if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
+		s.publish(persistCtx, ve)
+	}
 }
 
 // RunJob runs the stored job jobID now, in the background. For a single-database job
@@ -610,7 +619,7 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 	snapshot := *record
 	if err := s.store.SaveBackupRecord(ctx, &snapshot); err != nil {
 		release()
-		return nil, fmt.Errorf("save backup record: %w", err)
+		return nil, s.startSaveError(ctx, "backup", err)
 	}
 	tracked := s.track(models.RunBackup, record.ID, record.JobID, record.Database)
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
@@ -624,6 +633,16 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 		return nil, runError(err, "")
 	}
 	return &snapshot, nil
+}
+
+// startSaveError maps a failure to store the in-progress record of a run of kind
+// (backup or restore) to the error of the start call, reporting it to the disk
+// guard first: a full data directory answers ErrUnavailable (503).
+func (s *Service) startSaveError(ctx context.Context, kind string, err error) error {
+	if s.cfg.DiskGuard.Observe(ctx, err) {
+		return public("the "+kind+" record could not be saved: the data directory is full", ErrUnavailable, diskguard.ErrLowSpace, err)
+	}
+	return fmt.Errorf("save %s record: %w", kind, err)
 }
 
 // abandonBackup marks a persisted in-progress record failed when its run never started.
@@ -642,6 +661,8 @@ func runError(err error, busyMessage string) error {
 		return public(busyMessage, err)
 	case errors.Is(err, runs.ErrShuttingDown):
 		return public("MongoRescue is shutting down", err)
+	case errors.Is(err, diskguard.ErrLowSpace):
+		return public(redact.Text(err.Error()), ErrUnavailable, err)
 	default:
 		return fmt.Errorf("start background run: %w", err)
 	}
@@ -734,7 +755,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	snapshot := *record
 	if err := s.store.SaveRestoreRecord(ctx, &snapshot); err != nil {
 		release()
-		return nil, fmt.Errorf("save restore record: %w", err)
+		return nil, s.startSaveError(ctx, "restore", err)
 	}
 
 	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
@@ -750,26 +771,16 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 			s.verifyRestore(runCtx, req, source, final)
 			final, runErr = s.cfg.Restore.RunPostRestore(runCtx, req, final)
 		}
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
 		// An archive that does not match its checksum is recorded as such, so the
 		// next restore reads a healthy copy instead; this one is not retried.
 		if errors.Is(runErr, restore.ErrChecksumMismatch) {
-			s.recordArchiveMismatch(persistCtx, source, runErr)
+			mismatchCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
+			s.recordArchiveMismatch(mismatchCtx, source, runErr)
+			cancel()
 		}
-		// The outcome events are published before the final record is stored, so a
-		// client that sees the restore finished (GET /api/v1/restores) can rely on its
-		// events having been published. Publishing never blocks.
-		s.publish(persistCtx, events.RestoreEvent(final, runErr, req.BackupID))
-		if ve, ok := events.RestoreVerificationEvent(final); ok {
-			s.publish(persistCtx, ve)
-		}
-		if saveErr := s.store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist restore metadata record",
-				logsafe.Attr("restore_id", final.ID),
-				logsafe.Error(saveErr),
-			)
-		}
+		// The record is stored first: the outcome is published only once it is
+		// recorded (a record that cannot be saved fails the restore).
+		s.finishRestore(runCtx, final, runErr, req.BackupID, true)
 	}); err != nil {
 		tracked.End()
 		release()

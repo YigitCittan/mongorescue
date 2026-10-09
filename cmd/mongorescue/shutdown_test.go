@@ -35,3 +35,20 @@ func TestShutdownGraceFlagAndEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// TestMinFreeSpaceFlag proves -min-free-space-mb overrides
+// MONGORESCUE_MIN_FREE_SPACE_MB and refuses invalid values.
+func TestMinFreeSpaceFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, _, _, err := parseFlags(nil, env(nil), &stderr)
+	if err != nil || cfg.MinFreeSpaceMB != config.DefaultMinFreeSpaceMB {
+		t.Fatalf("default = %d, %v", cfg.MinFreeSpaceMB, err)
+	}
+	cfg, _, _, err = parseFlags([]string{"-min-free-space-mb", "0"}, env(map[string]string{config.EnvMinFreeSpace: "500"}), &stderr)
+	if err != nil || cfg.MinFreeSpaceMB != 0 {
+		t.Fatalf("flag over env = %d, %v; want 0", cfg.MinFreeSpaceMB, err)
+	}
+	if _, _, _, err = parseFlags([]string{"-min-free-space-mb", "lots"}, env(nil), &stderr); err == nil || !strings.Contains(err.Error(), "min-free-space-mb") {
+		t.Fatalf("bad flag = %v", err)
+	}
+}

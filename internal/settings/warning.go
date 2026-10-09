@@ -28,6 +28,8 @@ type Warning struct {
 	Databases []string `json:"databases,omitempty"`
 	// Connections names the connections of a WarningConnectionTLSLoosened.
 	Connections []WarningConnection `json:"connections,omitempty"`
+	// Channels names the notification channels of a WarningChannelUnreadable.
+	Channels []string `json:"channels,omitempty"`
 }
 
 // WarningConnection is a connection a warning is about.
@@ -111,6 +113,12 @@ func (s *Service) Warnings() []Warning {
 	}
 	if s.previousKey {
 		out = append(out, Warning{ID: WarningPreviousKey, Message: previousKeyMessage, Setting: "security"})
+	}
+	if w, ok := s.channelUnreadableWarning(); ok {
+		out = append(out, w)
+	}
+	if s.diskFull {
+		out = append(out, Warning{ID: WarningDiskFull, Message: diskFullMessage, Setting: "general"})
 	}
 	return out
 }

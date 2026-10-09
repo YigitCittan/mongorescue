@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -164,5 +166,57 @@ func TestFailInterruptedRunsPublishesFailures(t *testing.T) {
 	}
 	if e := find(func(e events.Event) bool { return e.BackupID == "bkp_a" }); e != nil {
 		t.Fatalf("a completed backup published an event: %+v", e)
+	}
+}
+
+// A backup left in progress whose archive exists in storage (its final record
+// was never saved: a full data disk or a save still being retried, then a
+// restart) is failed at the next start, but its archive is kept, without
+// archive_cleanup_pending, so the storage scan offers it for import. Only an
+// archive smaller than its recorded size goes to the purge; a missing one is
+// left alone.
+func TestFailInterruptedRunsKeepsAnExistingArchive(t *testing.T) {
+	ctx := context.Background()
+	fs := storetest.New(t)
+	mem := storage.NewMockStorage()
+	for key, data := range map[string]string{
+		"d/2026/10/uploaded.archive.gz": "a complete archive",
+		"d/2026/10/partial.archive.gz":  "short",
+	} {
+		if _, err := mem.Save(ctx, key, strings.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range []*models.BackupRecord{
+		{ID: "uploaded", Database: "d", Status: models.StatusInProgress, StorageTargetID: "local", StorageKey: "d/2026/10/uploaded.archive.gz"},
+		{ID: "partial", Database: "d", Status: models.StatusInProgress, StorageTargetID: "local", StorageKey: "d/2026/10/partial.archive.gz", SizeBytes: 1000},
+		{ID: "never", Database: "d", Status: models.StatusInProgress, StorageTargetID: "local", StorageKey: "d/2026/10/never.archive.gz"},
+	} {
+		if err := fs.SaveBackupRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &App{metaStore: fs, logger: slog.Default(),
+		storages: func(context.Context, string) (storage.Storage, error) { return mem, nil }}
+	a.failInterruptedRuns(ctx)
+
+	kept, err := fs.GetBackupRecord(ctx, "uploaded")
+	if err != nil || kept.Status != models.StatusFailed || kept.ArchiveCleanupPending ||
+		kept.ErrorMessage != "interrupted before the record was saved; the archive was kept" {
+		t.Fatalf("interrupted backup with its archive = %+v, %v", kept, err)
+	}
+	if _, err = mem.Stat(ctx, kept.StorageKey); err != nil {
+		t.Fatalf("the archive was not kept: %v", err)
+	}
+	if p, _ := fs.GetBackupRecord(ctx, "partial"); p.Status != models.StatusFailed || !p.ArchiveCleanupPending {
+		t.Fatalf("partial archive = %+v; want it sent to the purge", p)
+	}
+	if n, _ := fs.GetBackupRecord(ctx, "never"); n.Status != models.StatusFailed || n.ArchiveCleanupPending ||
+		strings.Contains(n.ErrorMessage, "kept") {
+		t.Fatalf("backup without an archive = %+v", n)
+	}
+	pending, err := fs.PendingArchiveCleanups(ctx)
+	if err != nil || len(pending) != 1 || pending[0].ID != "partial" {
+		t.Fatalf("pending cleanups %+v, %v; want only the partial archive", pending, err)
 	}
 }

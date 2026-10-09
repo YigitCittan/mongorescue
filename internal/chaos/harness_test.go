@@ -361,7 +361,9 @@ func launchKilling(t *testing.T, bin, dataDir string, port int, killWhen func(ou
 	p := &proc{t: t, bin: bin, dataDir: dataDir, port: port, logs: &syncBuffer{killWhen: killWhen}, done: make(chan error, 1)}
 	p.base = fmt.Sprintf("http://127.0.0.1:%d", port)
 	p.cmd = exec.Command(bin, "-data-dir", dataDir, "-host", "127.0.0.1", "-port", strconv.Itoa(port))
-	p.cmd.Env = cleanEnv()
+	// The full-disk scenarios run on a 48 MiB filesystem: a 1 MiB minimum keeps
+	// the pre-run free-space check on without refusing every run there.
+	p.cmd.Env = append(cleanEnv(), "MONGORESCUE_MIN_FREE_SPACE_MB=1")
 	p.cmd.Stdout, p.cmd.Stderr = p.logs, p.logs
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)

@@ -10,7 +10,6 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
-	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
@@ -230,7 +229,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 	snapshot := *record
 	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
 		release()
-		return nil, fmt.Errorf("save restore record: %w", err)
+		return nil, s.startSaveError(ctx, "restore", err)
 	}
 	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
 	// The clones a restore discovers as it runs are stored before they are written
@@ -240,6 +239,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 		defer cancel()
 		if saveErr := s.cfg.Store.SaveRestoreRecord(saveCtx, r); saveErr != nil {
+			s.cfg.DiskGuard.Observe(saveCtx, saveErr)
 			s.logger.Error("failed to record the clones of a point-in-time restore",
 				logsafe.Attr("restore_id", r.ID), logsafe.Error(saveErr))
 		}
@@ -250,13 +250,8 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.PITRRestore.ExecutePITR(runCtx, req, run, record)
 		done(runCtx, final)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		s.publish(persistCtx, events.RestoreEvent(final, runErr, final.BackupID))
-		if saveErr := s.cfg.Store.SaveRestoreRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist point-in-time restore record",
-				logsafe.Attr("restore_id", final.ID), logsafe.Error(saveErr))
-		}
+		// Stored first, then published (see finishRestore).
+		s.finishRestore(runCtx, final, runErr, final.BackupID, false)
 	}); err != nil {
 		tracked.End()
 		release()
