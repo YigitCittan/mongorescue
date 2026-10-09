@@ -123,7 +123,8 @@ func TestPurgeHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	purged, err := scheduler.PurgeDeleted(ctx, time.Now().Add(365*24*time.Hour), 7*24*time.Hour, st,
-		func(context.Context, string) (storage.Storage, error) { return s3st, nil }, logger, nil)
+		func(context.Context, string) (storage.Storage, error) { return s3st, nil }, logger,
+		func(_ context.Context, o scheduler.PurgeOutcome) { fmt.Printf("purged-backup %s\n", o.Backup.ID) })
 	fmt.Printf("purged %d: %v\n", len(purged), err)
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +132,8 @@ func TestPurgeHelper(t *testing.T) {
 }
 
 // runPurgeHelper runs TestPurgeHelper on dataDir; with killAfter > 0 it sends
-// SIGKILL once that much time has passed.
-func runPurgeHelper(t *testing.T, dataDir, prefix string, killAfter time.Duration) {
+// SIGKILL once that many backups are purged.
+func runPurgeHelper(t *testing.T, dataDir, prefix string, killAfter int) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPurgeHelper$", "-test.count=1")
 	cmd.Env = append(os.Environ(), envPurgeHelperDir+"="+dataDir, envPurgeHelperPrefix+"="+prefix)
@@ -144,15 +145,20 @@ func runPurgeHelper(t *testing.T, dataDir, prefix string, killAfter time.Duratio
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	if killAfter > 0 {
-		select {
-		case err := <-done:
-			t.Fatalf("the purge finished before it was killed (%v): %s", err, out.String())
-		case <-time.After(killAfter):
-			_ = cmd.Process.Kill()
-			<-done
-			t.Logf("purge killed after %s", killAfter)
-			return
+		deadline := time.After(runTimeout)
+		for strings.Count(out.String(), "purged-backup ") < killAfter {
+			select {
+			case err := <-done:
+				t.Fatalf("the purge finished before it was killed (%v): %s", err, out.String())
+			case <-deadline:
+				t.Fatalf("the purge did not progress: %s", out.String())
+			case <-time.After(20 * time.Millisecond):
+			}
 		}
+		_ = cmd.Process.Kill()
+		<-done
+		t.Logf("purge killed after %d purged backups", strings.Count(out.String(), "purged-backup "))
+		return
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("purge helper: %v\n%s", err, out.String())
@@ -160,8 +166,9 @@ func runPurgeHelper(t *testing.T, dataDir, prefix string, killAfter time.Duratio
 }
 
 // TestKillDuringPurge deletes ten backups (soft deletes, as retention does), then
-// kills the purge that removes their archives in the middle (each S3 request is
-// slowed down to about a second) and starts the server again.
+// kills the purge that removes their archives once three are purged (each S3
+// request is slowed down by a second, so the kill lands in the next one) and starts
+// the server again.
 //
 // Expected: the metadata database passes an integrity check; no record that holds
 // an archive (completed, deleted) has lost it except deleted ones whose purge was
@@ -189,7 +196,7 @@ func TestKillDuringPurge(t *testing.T) {
 	r.proc.stop()
 
 	e.Toxi.toxic(t, proxyMinio, "latency", "latency", "downstream", map[string]any{"latency": 1000})
-	runPurgeHelper(t, r.dataDir, r.prefix, 4*time.Second)
+	runPurgeHelper(t, r.dataDir, r.prefix, 3)
 	e.Toxi.reset(t)
 	integrityCheck(t, r.dataDir)
 
@@ -200,8 +207,20 @@ func TestKillDuringPurge(t *testing.T) {
 		_, err := e.S3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(e.Bucket), Key: aws.String(r.objectKey(storageKey))})
 		return err == nil
 	}
-	var list []*models.BackupRecord
-	r.api.data("GET", "/api/v1/backups?database="+db, nil, http.StatusOK, &list)
+	// Listings without a status hide deleted and purged backups.
+	all := func() []*models.BackupRecord {
+		var out []*models.BackupRecord
+		for _, st := range []string{"completed", "deleted", "purged", "missing", "failed"} {
+			var page []*models.BackupRecord
+			r.api.data("GET", "/api/v1/backups?database="+db+"&status="+st, nil, http.StatusOK, &page)
+			out = append(out, page...)
+		}
+		if len(out) != len(ids) {
+			t.Fatalf("%d backups listed, want %d", len(out), len(ids))
+		}
+		return out
+	}
+	list := all()
 	purged, cut := 0, 0
 	for _, b := range list {
 		switch {
@@ -223,8 +242,8 @@ func TestKillDuringPurge(t *testing.T) {
 		}
 	}
 	t.Logf("after the kill: %d purged, %d deleted with the object already gone", purged, cut)
-	if purged == len(ids)-1 {
-		t.Fatal("the purge was not interrupted: every backup is purged")
+	if purged == 0 || purged == len(ids)-1 {
+		t.Fatalf("the purge was not interrupted in the middle: %d of %d purged", purged, len(ids)-1)
 	}
 	if cut > 1 {
 		t.Fatalf("%d deleted backups lost their object; a purge runs one backup at a time", cut)
@@ -233,8 +252,7 @@ func TestKillDuringPurge(t *testing.T) {
 	r.proc.stop()
 	runPurgeHelper(t, r.dataDir, r.prefix, 0)
 	r.restart()
-	r.api.data("GET", "/api/v1/backups?database="+db, nil, http.StatusOK, &list)
-	for _, b := range list {
+	for _, b := range all() {
 		if b.ID != keep && (b.Status != models.StatusPurged || exists(b.StorageKey)) {
 			t.Fatalf("after the second purge: %+v (object: %v)", b, exists(b.StorageKey))
 		}

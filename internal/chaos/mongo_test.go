@@ -40,13 +40,16 @@ func TestMongoDropDuringDump(t *testing.T) {
 	r.assertNextBackupSucceeds(db, "blobs")
 }
 
-// TestMongoDropDuringRestore closes every connection to MongoDB in the middle of a
-// restore into a safe clone.
+// TestMongoDropDuringRestore cuts MongoDB off in the middle of restores into safe
+// clones (every connection closed, new ones refused). mongorestore rides out an
+// outage while its server selection waits, so the outcome of a 5 s outage may be
+// either; then, with restore_timeout at 30 s, a 45 s outage.
 //
-// Expected: the restore ends failed with the reason, restore.failed fires, the
-// source database is untouched, and the partial clone is either dropped or named
-// by the failed restore record (marked, so it can be dropped from the dashboard).
-// The next restore of the same backup completes with every document.
+// Expected: a restore never ends completed with missing documents: either it
+// completes with every document, or it ends failed with the reason (no password in
+// it) and restore.failed. With the 45 s outage it fails on the timeout, the source
+// is untouched and the partial clone is dropped or named by the failed record
+// (marked, so it can be dropped). The next restore completes with every document.
 func TestMongoDropDuringRestore(t *testing.T) {
 	e := requireEnv(t)
 	r := newRig(t, e, rigOptions{})
@@ -66,14 +69,32 @@ func TestMongoDropDuringRestore(t *testing.T) {
 	e.Toxi.setEnabled(t, proxyMongo, false)
 	time.Sleep(5 * time.Second)
 	e.Toxi.setEnabled(t, proxyMongo, true)
+	blip := r.waitRestore(accepted.ID)
+	if blip.Status == models.RestoreStatusCompleted {
+		if n := e.count(t, blip.TargetDatabase, "blobs"); n != want {
+			t.Fatalf("a restore across a 5 s outage completed with %d of %d documents", n, want)
+		}
+		t.Log("a 5 s outage was ridden out: the restore completed with every document")
+	} else {
+		t.Logf("a 5 s outage failed the restore: %s", blip.ErrorMessage)
+	}
+
+	r.settings(map[string]any{"general": map[string]any{"restore_timeout": "30s"}})
+	r.api.data("POST", "/api/v1/restore", map[string]any{"backup_id": b.ID}, http.StatusAccepted, &accepted)
+	r.waitBytes(accepted.ID, 12<<20)
+	e.Toxi.setEnabled(t, proxyMongo, false)
+	time.Sleep(45 * time.Second)
+	e.Toxi.setEnabled(t, proxyMongo, true)
 
 	rst := r.waitRestore(accepted.ID)
 	if rst.Status == models.RestoreStatusCompleted {
-		t.Fatalf("a broken restore ended completed: %+v", rst)
+		n := e.count(t, rst.TargetDatabase, "blobs")
+		t.Fatalf("a restore across a 45 s outage with a 30 s timeout ended completed (%d of %d documents): %+v", n, want, rst)
 	}
 	if rst.Status != models.RestoreStatusFailed || rst.ErrorMessage == "" {
 		t.Fatalf("broken restore = %+v; want failed with a reason", rst)
 	}
+	t.Logf("the restore failed: %s", rst.ErrorMessage)
 	assertNoSecret(t, e.MongoPassword, "restore error", rst.ErrorMessage)
 	r.hook.wait(t, "restore.failed", "restore_id", rst.ID)
 	if got := e.count(t, db, "blobs"); got != want {
@@ -87,6 +108,7 @@ func TestMongoDropDuringRestore(t *testing.T) {
 	}
 
 	r.env.Toxi.reset(t)
+	r.settings(map[string]any{"general": map[string]any{"restore_timeout": "12h"}})
 	r.api.data("POST", "/api/v1/restore", map[string]any{"backup_id": b.ID}, http.StatusAccepted, &accepted)
 	next := r.waitRestore(accepted.ID)
 	if next.Status != models.RestoreStatusCompleted {
