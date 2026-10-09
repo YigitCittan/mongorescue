@@ -125,6 +125,9 @@ type rigOptions struct {
 	baseCron string
 	// keepBases is the base retention by count (default 7).
 	keepBases int
+	// countOnly turns base retention by age off, so only keepBases counts (the
+	// stream default also keeps every base younger than 14 days).
+	countOnly bool
 	// retention is how often retention runs (default: the collector's).
 	retention time.Duration
 }
@@ -192,6 +195,9 @@ func newRig(t *testing.T, c *cluster, o rigOptions) *rig {
 	}
 	r.stream = &pitr.Stream{ID: streamID, ConnectionID: connectionID, ReplicaSet: win.ReplicaSet, TargetID: targetID, Enabled: true,
 		BaseCron: o.baseCron, BaseKeepCount: o.keepBases, BaseKeepDays: 14, ChunkSeconds: o.chunkSeconds, BaseOnGap: true}
+	if o.countOnly {
+		r.stream.BaseKeepDays = 0
+	}
 	if r.stream.BaseCron == "" {
 		// Never due on its own within a test.
 		r.stream.BaseCron = "0 0 1 1 *"

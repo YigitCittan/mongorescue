@@ -12,6 +12,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, an 8.0 replica set, MinIO and LocalStack | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
 | PITR replica set | `internal/replset`, `replset3` build tag, `make test-pitr-replset` | nightly, 02:30 UTC (workflow "PITR", not required): MongoDB 5.0 and 8.0, Database Tools 100.12.2 and 100.19.1 | On a three-member replica set: failovers during collection and during a restore, a rollback through network isolation and divergence after a forced reconfiguration keep the oplog chain unbroken (or end it exactly where the surviving history ends), lose and duplicate no entry, and never store a rolled-back write. See [below](#pitr-on-a-three-member-replica-set). |
+| PITR soak | `TestSoak`, build tags `replset3` and `soak`, `make test-pitr-soak` | weekly, Saturday 01:00 UTC, 5.5 hours (workflow "PITR", not required); 7 days by hand with `scripts/soak-pitr.sh` | Hours of collection under a write load: no gap and no false break, a bounded number of chunk objects and bases, retention deleting and purging what falls out of the window, and a passing chain test. See [below](#pitr-soak-test). |
 | Large data | `TestThroughputAndMemory` with `MONGORESCUE_TEST_LARGE=1` | nightly, 03:00 UTC, on every MongoDB version | About 2 GiB streams through backup and restore with peak process memory below 256 MiB; throughput is reported. |
 | Fault injection | `internal/chaos`, `chaos` build tag, `make test-chaos-docker` | nightly, job "Chaos" (not required, not on pull requests) | A storage outage or partition, a MongoDB connection drop, a primary stepdown (during dumps and PITR collection), a full disk, SIGKILL (backup, purge, migration, key rotation) and clock steps never leave a broken run `completed` or an object that looks complete; the next run succeeds and the alert fires; see [below](#fault-injection-suite). |
 | Load | `internal/load`, `load` build tag, `make test-load-docker` | weekly, job "Load" (not required) | 5 GiB, 500 connections and 10,000 scheduled jobs: scheduler tick latency, memory, API p95, SQLite contention, backup throughput and the impact of a dump on a busy primary stay within the committed baseline; see [below](#load-test). |
@@ -199,6 +200,28 @@ What the numbers say:
 | `RS_RUN` | all | Regular expression of the tests to run |
 | `RS_LOG_DIR` | | Where the member logs of failed tests go (otherwise their last lines are printed) |
 | `RS_OPLOG_MB` | `1024` | Oplog size of each member |
+
+## PITR soak test
+
+`make test-pitr-soak` (`RS_SUITE=soak`) runs `TestSoak` on the same replica set: the collector with base backups on a schedule and retention (by count only, `MONGORESCUE_SOAK_KEEP_BASES`; the 14-day rule is off), under a steady load of inserts and deletes (the data stays bounded, the oplog does not), for `MONGORESCUE_SOAK_DURATION`. Every `MONGORESCUE_SOAK_SAMPLE` it checks that the collector is running without an error and no more than max(5 min, 5 × the interval) behind, that the stream still has its one chain without a superseded chunk or a break event, and that the chunk objects in storage and the live bases stay within what retention keeps. At the end it applies retention, checks that every remaining chunk object belongs to a live chunk and that no live chunk ends before the oldest kept base's `t_before`, compares the stored entries with the primary's oplog where both still have them, and runs a chain test.
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MONGORESCUE_SOAK_DURATION` | `10m` | How long the collector runs under load |
+| `MONGORESCUE_SOAK_CHUNK_SECONDS` | `15` | Chunk interval |
+| `MONGORESCUE_SOAK_BASE_EVERY` | a fifth of the duration, at least `2m` | Base interval (a cron schedule in whole minutes or hours) |
+| `MONGORESCUE_SOAK_KEEP_BASES` | `2` | Bases retention keeps |
+| `MONGORESCUE_SOAK_RATE` | `200` | Writes per second |
+| `MONGORESCUE_SOAK_SAMPLE` | `30s` | How often the invariants are checked |
+| `MONGORESCUE_SOAK_REPORT` | | A file for the JSON report (samples, largest object count and lag, chain test rates) |
+
+The weekly CI run collects for 5.5 hours, the most a GitHub-hosted job allows with the set-up and the final checks. **The 7-day run is manual:** on a machine with Docker that stays up for a week, run
+
+```bash
+nohup ./scripts/soak-pitr.sh > soak.log 2>&1 &
+```
+
+It collects for 168 hours with 60-second chunks, a base every 6 hours, 4 bases kept, 400 writes per second and an 8 GiB oplog per member, samples every 5 minutes, and writes `pitr-soak-<date>.json` and, for a failure, the member logs to `pitr-soak-logs/`. Override any `MONGORESCUE_SOAK_*` variable, `SOAK_DURATION`, `MONGO_IMAGE` or `TOOLS_VERSION`. It stops at the first broken invariant with the reason in `soak.log`; a passing run ends with `all 1 test(s) of the soak suite passed` and the report.
 
 ## Performance
 

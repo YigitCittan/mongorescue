@@ -62,7 +62,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-e2e test-prometheus-rules test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-pitr-soak test-e2e test-prometheus-rules test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -119,6 +119,10 @@ test-load-docker:
 ## test-pitr-replset: Runs the PITR scenarios on a disposable three-member replica set (failover, rollback, divergence)
 test-pitr-replset:
 	./scripts/test-replset-docker.sh
+
+## test-pitr-soak: Runs the PITR soak test (MONGORESCUE_SOAK_DURATION, default 10m) on a three-member replica set
+test-pitr-soak:
+	RS_SUITE=soak ./scripts/test-replset-docker.sh
 
 ## test-e2e: Runs the Playwright browser suite (e2e/) against the built binary, MongoDB and MinIO in Docker
 test-e2e:
