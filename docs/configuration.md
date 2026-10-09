@@ -60,6 +60,7 @@ Only administrators (the `admin` dashboard role, or an `admin` API key of an adm
 | `backup_timeout` | `6h` | Maximum duration of one backup (`0s` = unlimited) |
 | `backup_stall_timeout` | `10m` | Abort a backup when `mongodump` produces no output for this long (`0s` = off) |
 | `restore_timeout` | `12h` | Maximum duration of one restore, verification included (`0s` = unlimited) |
+| `storage_stall_timeout` | `5m` | Fail an upload when its storage target accepts no bytes for this long, 1m to 1h; see [stalled uploads](#stalled-uploads) |
 | `post_restore_command_timeout` | `60s` | Maximum duration of each [post-restore command](api.md#post-restore-commands) of a connection, 1s to 24h; a command that takes longer fails the restore |
 | `restore_verify_policy` | `auto` | `always`, `auto` or `never`; decides for safe clones only, in-place restores are always verified; see [encryption.md](encryption.md#verify-before-restore) |
 | `log_retention_days` | `30` | Keep the log of every backup and restore run (`<data_dir>/logs/<id>.log`, redacted, at most 5 MiB each) for this many days; `0` keeps them until their backup is purged. See [api.md](api.md#run-logs) |
@@ -197,6 +198,12 @@ A storage target is where backup archives are written: a directory on the MongoR
 | `s3.legal_hold_on_pin` | Set an S3 legal hold on a backup's archive while the backup is pinned (needs a lock mode) |
 
 Each target gets its own driver, built on first use and rebuilt after the target changes.
+
+### Stalled uploads
+
+Every upload to a storage target (backup archives, PITR base backups and oplog chunks, copies, metadata snapshots, re-encrypted archives and the connection probe) runs under a progress watchdog. When the target accepts no bytes for `general.storage_stall_timeout` (default `5m`), the upload is cancelled and fails with `storage: upload stalled: no upload progress for 5m0s to target "<name>"`: a backup is recorded `failed` (never `completed`), its partial multipart upload is aborted and the partial artifact removed, and the next run starts afresh. Progress is any byte the uploader takes from the stream and, for S3, any byte of a request body sent or of a response received. Time spent waiting for the source (a slow `mongodump`, which `backup_stall_timeout` covers, or the upload cap `max_upload_mbps`) never counts, so a throttled but steady upload is not a stall. The setting applies to every target and to the next upload after a change. A local target on a hung network mount fails once its blocked write returns; a write blocked in the kernel cannot be interrupted.
+
+The S3 driver bounds its HTTP client as well, where the AWS SDK leaves the wait for response headers unlimited: connections are established within 30 seconds, TCP keep-alive probes run every 30 seconds, the TLS handshake is bounded to 10 seconds, response headers must arrive within 2 minutes of a fully sent request, and idle pooled connections close after 90 seconds.
 
 ### Immutable backups (S3 Object Lock)
 

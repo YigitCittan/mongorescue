@@ -257,7 +257,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
-	targetSvc := targets.NewService(metaStore, storage.NewForTarget, cfg.DataDir, targets.WithLogger(logger))
+	// Every driver reads the live upload stall timeout at the start of each upload.
+	storageFactory := storage.TargetFactory(func() time.Duration { return settingsSvc.Current().General.StorageStallTimeout.Std() })
+	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger))
 	prober := mongoconn.New()
 	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger))
 	importedKeySecret, err := secretbox.DeriveSubkey(key.Key, auth.ImportedKeySubkeyPurpose)

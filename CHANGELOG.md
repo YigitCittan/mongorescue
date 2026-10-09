@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A storage partition during an upload is caught within `general.storage_stall_timeout` (new, default `5m`, 1m to 1h; #136) instead of hanging until the backup timeout: every upload (backups, PITR base backups and oplog chunks, copies, metadata snapshots, re-encryption) fails with `ErrStorageStalled` ("no upload progress for 5m0s to target …") when its target accepts no bytes for that long, the multipart upload is aborted and the run is recorded `failed`; waiting for a slow or throttled source does not count. The S3 HTTP client now bounds the wait for response headers (2 minutes) and sets explicit dial (30 s), TCP keep-alive (30 s), TLS handshake (10 s) and idle connection (90 s) timeouts. See [docs/configuration.md](docs/configuration.md#stalled-uploads).
+
 ## [0.25.1] - 2026-10-09
 
 ### Security

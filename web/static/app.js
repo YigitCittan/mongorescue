@@ -5002,6 +5002,7 @@ function fillGeneral(g) {
   setValue("set-backup-stall-timeout", g.backup_stall_timeout || "");
   setValue("set-restore-timeout", g.restore_timeout || "");
   setValue("set-post-restore-timeout", g.post_restore_command_timeout || "");
+  setValue("set-storage-stall-timeout", g.storage_stall_timeout || "");
   setValue("set-verify-policy", ["always", "auto", "never"].includes(g.restore_verify_policy) ? g.restore_verify_policy : "auto");
   setValue("set-log-retention-days", g.log_retention_days ?? 30);
   setValue("set-max-upload-mbps", g.max_upload_mbps || 0);
@@ -5175,6 +5176,7 @@ function collectGeneral() {
     backup_stall_timeout: durationSetting("set-backup-stall-timeout").raw,
     restore_timeout: durationSetting("set-restore-timeout").raw,
     post_restore_command_timeout: durationSetting("set-post-restore-timeout", 1000).raw,
+    storage_stall_timeout: durationSetting("set-storage-stall-timeout", 60000).raw,
     restore_verify_policy: getValue("set-verify-policy"),
     log_retention_days: intSetting("set-log-retention-days"),
     max_upload_mbps: Math.max(parseFloat(String(getValue("set-max-upload-mbps")).replace(",", ".")) || 0, 0)

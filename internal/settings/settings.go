@@ -159,12 +159,23 @@ type General struct {
 	// PostRestoreCommandTimeout bounds each post-restore command of a restore
 	// (MinPostRestoreCommandTimeout to MaxPostRestoreCommandTimeout).
 	PostRestoreCommandTimeout Duration `json:"post_restore_command_timeout"`
+	// StorageStallTimeout fails an upload (backup, oplog chunk, copy, metadata
+	// snapshot, re-encryption) whose storage target accepts no bytes for this long
+	// (MinStorageStallTimeout to MaxStorageStallTimeout).
+	StorageStallTimeout Duration `json:"storage_stall_timeout"`
 }
 
 // Limits of General.PostRestoreCommandTimeout.
 const (
 	MinPostRestoreCommandTimeout = time.Second
 	MaxPostRestoreCommandTimeout = 24 * time.Hour
+)
+
+// Default and limits of General.StorageStallTimeout.
+const (
+	DefaultStorageStallTimeout = 5 * time.Minute
+	MinStorageStallTimeout     = time.Minute
+	MaxStorageStallTimeout     = time.Hour
 )
 
 // Security holds session, cookie, proxy, CORS and metrics options.
@@ -243,6 +254,7 @@ func Defaults() Settings {
 			RestoreVerifyPolicy:       models.VerifyAuto,
 			LogRetentionDays:          30,
 			PostRestoreCommandTimeout: Duration(time.Minute),
+			StorageStallTimeout:       Duration(DefaultStorageStallTimeout),
 		},
 		Security: Security{
 			SessionIdleTimeout:     Duration(12 * time.Hour),
@@ -336,6 +348,7 @@ type GeneralPatch struct {
 	LogRetentionDays          *int                 `json:"log_retention_days,omitempty"`
 	MaxUploadMbps             *float64             `json:"max_upload_mbps,omitempty"`
 	PostRestoreCommandTimeout *Duration            `json:"post_restore_command_timeout,omitempty"`
+	StorageStallTimeout       *Duration            `json:"storage_stall_timeout,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -377,6 +390,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.LogRetentionDays, g.LogRetentionDays)
 		setIf(&next.General.MaxUploadMbps, g.MaxUploadMbps)
 		setIf(&next.General.PostRestoreCommandTimeout, g.PostRestoreCommandTimeout)
+		setIf(&next.General.StorageStallTimeout, g.StorageStallTimeout)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -486,6 +500,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.%w", ErrInvalid, models.ErrInvalidUploadRate)
 	case g.PostRestoreCommandTimeout.Std() < MinPostRestoreCommandTimeout || g.PostRestoreCommandTimeout.Std() > MaxPostRestoreCommandTimeout:
 		return fmt.Errorf("%w: general.post_restore_command_timeout must be between 1s and 24h", ErrInvalid)
+	case g.StorageStallTimeout.Std() < MinStorageStallTimeout || g.StorageStallTimeout.Std() > MaxStorageStallTimeout:
+		return fmt.Errorf("%w: general.storage_stall_timeout must be between 1m and 1h", ErrInvalid)
 	}
 
 	sec := &s.Security
