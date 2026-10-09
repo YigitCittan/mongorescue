@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -15,9 +16,10 @@ import (
 
 // finishRestore stores final, the record of a finished restore, and only then
 // publishes its outcome, so restore.succeeded is never sent for a restore the
-// metadata does not record. A record that cannot be saved (after the retries of
-// diskguard.Guard.SaveFinal, which also detects a full data directory) makes the
-// restore fail (see failUnsavedRestore). withVerification also publishes the
+// metadata does not record. A record that cannot be saved because the data
+// directory is full (after the retries of diskguard.Guard.SaveFinal) makes the
+// restore fail (see failUnsavedRestore); after any other failure the record is
+// kept as it is and saved in the background. withVerification also publishes the
 // outcome of the restore's verification.
 func (s *Service) finishRestore(runCtx context.Context, final *models.RestoreRecord, runErr error, backupID string, withVerification bool) {
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
@@ -25,6 +27,17 @@ func (s *Service) finishRestore(runCtx context.Context, final *models.RestoreRec
 	saveErr := s.cfg.DiskGuard.SaveFinal(persistCtx, func(ctx context.Context) error {
 		return s.store.SaveRestoreRecord(ctx, final)
 	})
+	if saveErr != nil && !diskguard.IsFull(saveErr) {
+		// Transient (a busy database, a timeout): the record is kept as it is and
+		// saved in the background, so a good clone is never dropped over a lock.
+		s.logger.Warn("the final record of a restore could not be saved yet; it is saved in the background",
+			logsafe.Attr("restore_id", final.ID), logsafe.Error(saveErr))
+		runs.FromContext(runCtx).Printf("WARNING: the restore record could not be saved yet (%s); it is retried in the background",
+			redact.Text(saveErr.Error()))
+		kept := *final
+		s.cfg.DiskGuard.Defer("restore "+final.ID, func(ctx context.Context) error { return s.store.SaveRestoreRecord(ctx, &kept) })
+		saveErr = nil
+	}
 	if saveErr != nil {
 		s.failUnsavedRestore(persistCtx, final, saveErr, runs.FromContext(runCtx))
 	}

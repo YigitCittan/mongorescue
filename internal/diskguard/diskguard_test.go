@@ -228,6 +228,60 @@ func TestFinishBackupUnsaved(t *testing.T) {
 	}
 }
 
+// A transient failure (a database locked for 4 s) never fails the backup nor
+// sends its archive to the purge: the completed record is kept as it is and
+// saved in the background once the lock is gone.
+func TestFinishBackupTransientLock(t *testing.T) {
+	g := diskguard.New(diskguard.Config{Dir: "/data", Free: func(string) (uint64, error) { return 1 << 30, nil }, PollInterval: 10 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() { g.Run(ctx) })
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+	lockedUntil := time.Now().Add(4 * time.Second)
+	var mu sync.Mutex
+	var saved []models.BackupRecord
+	save := func(_ context.Context, rec *models.BackupRecord) error {
+		if time.Now().Before(lockedUntil) {
+			return errors.New("database is locked (5) (SQLITE_BUSY)")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		saved = append(saved, *rec)
+		return nil
+	}
+	rec := &models.BackupRecord{ID: "bkp_1", Status: models.StatusCompleted, StorageKey: "shop/1.archive.gz", SizeBytes: 10}
+	saveCtx, cancelSave := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSave()
+	if err := g.FinishBackup(saveCtx, rec, save, nil, nil); err != nil {
+		t.Fatalf("FinishBackup = %v; a lock is not a failure", err)
+	}
+	if rec.Status != models.StatusCompleted || rec.ArchiveCleanupPending || rec.ErrorMessage != "" {
+		t.Fatalf("record changed by a lock: %+v", rec)
+	}
+	if e := events.BackupEvent(rec, nil, "", ""); e.Type != events.BackupSucceeded {
+		t.Fatalf("event %s, want backup.succeeded", e.Type)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		n := len(saved)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the record was not saved after the lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if saved[0].Status != models.StatusCompleted || saved[0].ArchiveCleanupPending || g.Full() {
+		t.Fatalf("saved %+v (full %v); want the completed record, no cleanup", saved[0], g.Full())
+	}
+}
+
 // Run retries the deferred saves and ends an episode once space is available.
 func TestRunSettlesWhenSpaceReturns(t *testing.T) {
 	sp := &space{}

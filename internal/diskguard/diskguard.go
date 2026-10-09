@@ -98,11 +98,19 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// deferredSave is a save waiting for space.
+// deferredSave is a save waiting to be retried at next, with its current backoff.
 type deferredSave struct {
-	what string
-	save func(ctx context.Context) error
+	what    string
+	save    func(ctx context.Context) error
+	next    time.Time
+	backoff time.Duration
 }
+
+// Backoff of the deferred saves.
+const (
+	deferredBackoff    = time.Second
+	deferredMaxBackoff = time.Minute
+)
 
 // Guard tracks the space of the data directory. A nil Guard admits every run and
 // only retries saves (see SaveFinal). It is safe for concurrent use.
@@ -210,6 +218,13 @@ func (g *Guard) recovered(free uint64) {
 	g.mu.Lock()
 	was := g.full
 	g.full, g.fullErr = false, ""
+	if was {
+		// The saves that waited for space are due now.
+		now := time.Now()
+		for i := range g.deferred {
+			g.deferred[i].next = now
+		}
+	}
 	g.mu.Unlock()
 	if !was {
 		return
@@ -235,7 +250,7 @@ func (g *Guard) Defer(what string, save func(ctx context.Context) error) {
 			slog.String("dropped", g.deferred[0].what))
 		g.deferred = g.deferred[1:]
 	}
-	g.deferred = append(g.deferred, deferredSave{what: what, save: save})
+	g.deferred = append(g.deferred, deferredSave{what: what, save: save, next: time.Now().Add(deferredBackoff), backoff: deferredBackoff})
 	g.mu.Unlock()
 	g.signal()
 }
@@ -259,51 +274,85 @@ func (g *Guard) signal() {
 }
 
 // Run checks a full data directory for space every poll interval (ending the
-// episode once there is enough) and retries the deferred saves, until ctx ends.
+// episode once there is enough) and retries the deferred saves as they fall due,
+// until ctx ends.
 func (g *Guard) Run(ctx context.Context) {
 	if g == nil {
 		return
 	}
-	ticker := time.NewTicker(g.cfg.PollInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(g.cfg.PollInterval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		case <-g.wake:
 		}
 		if g.Full() {
 			// Check ends the episode once space is available.
 			_ = g.Check()
 		}
-		g.retryDeferred(ctx)
+		g.retryDeferred(ctx, false)
+		wait := g.cfg.PollInterval
+		if next, ok := g.nextDeferred(); ok {
+			wait = max(min(wait, time.Until(next)), time.Millisecond)
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
 	}
 }
 
-// RetryDeferred retries the deferred saves once (Run does it every poll interval).
+// nextDeferred returns when the next deferred save is due.
+func (g *Guard) nextDeferred() (time.Time, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var next time.Time
+	for _, d := range g.deferred {
+		if next.IsZero() || d.next.Before(next) {
+			next = d.next
+		}
+	}
+	return next, !next.IsZero()
+}
+
+// RetryDeferred retries every deferred save once, due or not (Run retries them as
+// they fall due).
 func (g *Guard) RetryDeferred(ctx context.Context) {
 	if g == nil {
 		return
 	}
-	g.retryDeferred(ctx)
+	g.retryDeferred(ctx, true)
 }
 
-// retryDeferred runs the deferred saves in order and keeps those that fail; it
-// stops at the first failure while the disk is full.
-func (g *Guard) retryDeferred(ctx context.Context) {
+// retryDeferred runs the due (or, with all, every) deferred saves in order and
+// keeps those that fail, with their backoff doubled; while the disk is full it
+// leaves them for later.
+func (g *Guard) retryDeferred(ctx context.Context, all bool) {
 	g.mu.Lock()
 	list := g.deferred
 	g.deferred = nil
 	g.mu.Unlock()
 	var keep []deferredSave
+	now := time.Now()
 	for i, d := range list {
 		if ctx.Err() != nil || g.Full() {
 			keep = append(keep, list[i:]...)
 			break
 		}
+		if !all && d.next.After(now) {
+			keep = append(keep, d)
+			continue
+		}
 		if err := d.save(ctx); err != nil {
 			g.Observe(ctx, err)
+			d.backoff = min(2*d.backoff, deferredMaxBackoff)
+			d.next = time.Now().Add(d.backoff)
 			keep = append(keep, d)
 			continue
 		}
@@ -345,12 +394,15 @@ func (g *Guard) SaveFinal(ctx context.Context, save func(context.Context) error)
 }
 
 // FinishBackup saves rec, the final record of a backup run, with save (see
-// SaveFinal). When it cannot be saved, the run must not report success: rec is
-// marked failed (models.BackupRecord.FailUnsaved, so its archive goes to the
-// purge), the failure is logged to logger and to run's log, and saving rec is
-// deferred until writes work again. It returns nil when rec was saved unchanged,
-// and otherwise an error wrapping ErrNotSaved; the caller then publishes the
-// event of rec as it is now (failed).
+// SaveFinal). When it cannot be saved because the disk is full (IsFull), the run
+// must not report success: rec is marked failed (models.BackupRecord.FailUnsaved,
+// so its archive goes to the purge), the failure is logged to logger and to run's
+// log, and saving rec is deferred until writes work again; it then returns an
+// error wrapping ErrNotSaved and the caller publishes the event of rec as it is
+// now (failed). Any other failure (a busy or locked database, a timeout) is
+// transient: rec is kept as it is, its save is retried in the background with
+// backoff until it succeeds (see Defer), and FinishBackup returns nil, so a good
+// archive is never deleted over a lock.
 func (g *Guard) FinishBackup(ctx context.Context, rec *models.BackupRecord, save func(context.Context, *models.BackupRecord) error,
 	logger *slog.Logger, run *runs.Run) error {
 	if rec == nil {
@@ -363,6 +415,13 @@ func (g *Guard) FinishBackup(ctx context.Context, rec *models.BackupRecord, save
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if !IsFull(err) {
+		logger.Warn("the final record of a backup could not be saved yet; it is saved in the background",
+			logsafe.Attr("backup_id", rec.ID), slog.String("status", string(rec.Status)), logsafe.Error(err))
+		run.Printf("WARNING: the backup record could not be saved yet (%s); it is retried in the background", redact.Text(err.Error()))
+		g.Defer("backup "+rec.ID, saveCopy(rec, save))
+		return nil
+	}
 	outcome := rec.Status
 	rec.FailUnsaved(redact.Text(err.Error()), time.Now())
 	logger.Error("the final record of a backup could not be saved; the backup is reported as failed",
@@ -370,10 +429,16 @@ func (g *Guard) FinishBackup(ctx context.Context, rec *models.BackupRecord, save
 		slog.Bool("archive_cleanup_pending", rec.ArchiveCleanupPending), logsafe.Error(err))
 	run.Printf("ERROR: the backup record could not be saved (%s); the backup is reported as failed and its archive is deleted by the next purge",
 		redact.Text(err.Error()))
-	failed := *rec
-	failed.Copies = append([]models.BackupCopy(nil), rec.Copies...)
-	g.Defer("backup "+rec.ID, func(ctx context.Context) error { return save(ctx, &failed) })
+	g.Defer("backup "+rec.ID, saveCopy(rec, save))
 	return fmt.Errorf("%w: backup %s: %w", ErrNotSaved, rec.ID, err)
+}
+
+// saveCopy returns a save of a copy of rec as it is now, which later changes of
+// rec do not affect.
+func saveCopy(rec *models.BackupRecord, save func(context.Context, *models.BackupRecord) error) func(context.Context) error {
+	c := *rec
+	c.Copies = append([]models.BackupCopy(nil), rec.Copies...)
+	return func(ctx context.Context) error { return save(ctx, &c) }
 }
 
 // mib formats bytes in MiB.
