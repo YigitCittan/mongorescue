@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -139,6 +140,63 @@ func TestOutboxFailedRemovalIsNotResent(t *testing.T) {
 	svc.flightMu.Unlock()
 	if held != 0 {
 		t.Fatalf("%d held states left", held)
+	}
+}
+
+// brokenRepo cannot load its channels (a decryption failure).
+type brokenRepo struct{ *memRepo }
+
+func (brokenRepo) GetChannel(context.Context, string) (*Channel, error) {
+	return nil, errors.New("store: decrypt channel ch1: secretbox: message authentication failed")
+}
+
+// A channel that cannot be loaded counts rounds like a failed send, is given up
+// after the round limit (so it never blocks the channel for good) and is named
+// in the settings warning.
+func TestOutboxUnreadableChannelIsGivenUp(t *testing.T) {
+	repo := newMemRepo()
+	_ = repo.SaveChannel(context.Background(), &Channel{ID: "ch1", Name: "one", Type: ChannelWebhook, Enabled: true,
+		Webhook: &WebhookConfig{URL: "https://hooks.example.com/x"}})
+	_ = repo.SaveRule(context.Background(), &Rule{ID: "r1", Name: "r", Enabled: true,
+		Events: []events.EventType{events.BackupFailed}, ChannelIDs: []string{"ch1"}})
+	ob := &memOutbox{}
+	fake := &fakeNotifier{}
+	var mu sync.Mutex
+	warned := map[string]string{}
+	failures := 0
+	svc := NewService(brokenRepo{repo}, WithOutbox(ob),
+		WithOutboxRetry(3, 10*time.Millisecond, 20*time.Millisecond),
+		WithChannelWarning(func(id, problem string) {
+			mu.Lock()
+			defer mu.Unlock()
+			warned[id] = problem
+		}),
+		WithObserver(func(_ ChannelType, outcome string) {
+			if outcome == OutcomeFailure {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
+		}),
+		WithNotifierFactory(func(*Channel) (Notifier, error) { return fake, nil }))
+	_, _ = ob.EnqueueDeliveries(context.Background(), []OutboxEntry{{ChannelID: "ch1", ChannelType: ChannelWebhook,
+		Event: events.Event{Type: events.BackupFailed, ID: "evt_1"}, NextAttemptAt: time.Now()}}, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = svc.Run(ctx) })
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+	waitUntil(t, "the delivery to be given up", func() bool { rows, _, _ := ob.counts(); return rows == 0 })
+	_, _, retries := ob.counts()
+	mu.Lock()
+	defer mu.Unlock()
+	if retries != 2 || failures != 1 || fake.count() != 0 {
+		t.Fatalf("%d reschedules, %d failures, %d sent; want 2, 1, 0", retries, failures, fake.count())
+	}
+	if p := warned["ch1"]; p == "" || !strings.Contains(p, "message authentication failed") {
+		t.Fatalf("warning for ch1 = %q", p)
 	}
 }
 

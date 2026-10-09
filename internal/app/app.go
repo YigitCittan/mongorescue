@@ -409,6 +409,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// (notification_outbox), so a crash or a kill does not lose them.
 	notifySvc := notify.NewService(metaStore,
 		notify.WithOutbox(metaStore),
+		notify.WithChannelWarning(settingsSvc.SetChannelUnreadable),
 		notify.WithLogger(logger),
 		notify.WithObserver(func(t notify.ChannelType, outcome string) {
 			metricSet.ObserveNotification(string(t), outcome)

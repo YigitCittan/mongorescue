@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
 // Outbox defaults.
@@ -71,6 +72,13 @@ type Outbox interface {
 // process dies.
 func WithOutbox(o Outbox) Option {
 	return func(s *Service) { s.outbox = o }
+}
+
+// WithChannelWarning registers warn, told when a channel with queued deliveries
+// cannot be loaded (problem says why, redacted) and again with an empty problem
+// once it delivers or is deleted; the application shows it as a settings warning.
+func WithChannelWarning(warn func(channelID, problem string)) Option {
+	return func(s *Service) { s.channelWarning = warn }
 }
 
 // WithOutboxLimit caps the deliveries waiting in the outbox (DefaultOutboxLimit);
@@ -212,10 +220,13 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 		ch, chErr := s.repo.GetChannel(ctx, h.ChannelID)
 		switch {
 		case errors.Is(chErr, ErrChannelNotFound):
+			s.channelReadable(h.ChannelID)
 			wait = min(wait, s.discard(ctx, h, "channel deleted"))
 			continue
+		case chErr != nil && ctx.Err() != nil:
+			return 0
 		case chErr != nil:
-			s.logger.Warn("notification channel unavailable", slog.String("channel_id", h.ChannelID), slog.Any("error", chErr))
+			wait = min(wait, s.unreadableChannel(ctx, h, chErr))
 			continue
 		case !ch.Enabled:
 			wait = min(wait, s.discard(ctx, h, "channel disabled"))
@@ -231,6 +242,36 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 		}
 	}
 	return max(wait, time.Millisecond)
+}
+
+// unreadableChannel counts a round of outbox entry h whose channel cannot be
+// loaded (its secrets cannot be decrypted, its row is damaged): it follows the
+// round limit like a failed send, so it never blocks the channel for good, and the
+// settings warning names the channel until it delivers again. It returns how long
+// the dispatcher may wait.
+func (s *Service) unreadableChannel(ctx context.Context, h OutboxEntry, chErr error) time.Duration {
+	attempts := h.Attempts + 1
+	msg := truncate(singleLine(redact.Text("channel unreadable: "+chErr.Error())), maxErrorLength)
+	s.logger.Warn("notification channel unreadable", slog.String("channel_id", h.ChannelID),
+		slog.String("event", string(h.Event.Type)), slog.Int("rounds", attempts), slog.String("error", msg))
+	if s.channelWarning != nil {
+		s.channelWarning(h.ChannelID, msg)
+	}
+	if attempts >= s.outboxAttempts {
+		s.logger.Warn("notification given up", slog.String("channel_id", h.ChannelID), slog.String("event", string(h.Event.Type)),
+			slog.Int("rounds", attempts))
+		s.observe(h.ChannelType, OutcomeFailure)
+		return s.remove(ctx, h.ID)
+	}
+	s.reschedule(ctx, h.ID, attempts, msg)
+	return s.outboxDelay(attempts)
+}
+
+// channelReadable clears the settings warning about channel id, if any.
+func (s *Service) channelReadable(id string) {
+	if s.channelWarning != nil {
+		s.channelWarning(id, "")
+	}
 }
 
 // discard removes outbox entry h that can no longer be delivered and returns how
@@ -339,6 +380,7 @@ func (s *Service) settle(ctx context.Context, d delivery, sendErr error) {
 	attempts := d.attempts + 1
 	switch {
 	case sendErr == nil:
+		s.channelReadable(d.channel.ID)
 		s.remove(ctx, d.outboxID)
 	case ctx.Err() != nil:
 		// Shutdown: the delivery stays queued for the next start.

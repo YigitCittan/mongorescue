@@ -82,6 +82,9 @@ type Service struct {
 	outboxAttempts   int
 	outboxBackoff    time.Duration
 	outboxMaxBackoff time.Duration
+	// channelWarning is told about channels that cannot be loaded (see
+	// WithChannelWarning).
+	channelWarning func(channelID, problem string)
 	// wake wakes the outbox dispatcher.
 	wake chan struct{}
 	// flight holds the channels with an outbox delivery being sent, so the

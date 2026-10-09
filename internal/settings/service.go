@@ -50,8 +50,11 @@ type Service struct {
 	previousKey bool
 	// diskFull shows WarningDiskFull (not stored; see SetDiskFullWarning).
 	diskFull bool
-	enc      *encryption.Encryptor
-	dec      *encryption.Decryptor
+	// unreadableChannels holds the channels of WarningChannelUnreadable and why
+	// (not stored; see SetChannelUnreadable).
+	unreadableChannels map[string]string
+	enc                *encryption.Encryptor
+	dec                *encryption.Decryptor
 
 	// oidcGuard checks and applies changes of the OIDC section (see OIDCGuard);
 	// guarded by writeMu.
