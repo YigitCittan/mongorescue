@@ -350,11 +350,15 @@ type PITREstimate struct {
 	// Samples is the number of restores the measured rates average.
 	Samples int `json:"samples,omitempty"`
 	// BaseBytesPerSecond is the rate used for the base; ReplayBytesPerSecond
-	// (stored bytes) and ReplayEntriesPerSecond those of the oplog, which takes
-	// the longer of the two.
+	// (stored bytes) and ReplayEntriesPerSecond are the oplog's: the defaults
+	// (the replay takes the longer of the two) or the averages of the measured
+	// replays.
 	BaseBytesPerSecond     float64 `json:"base_bytes_per_second"`
 	ReplayBytesPerSecond   float64 `json:"replay_bytes_per_second"`
 	ReplayEntriesPerSecond float64 `json:"replay_entries_per_second"`
+	// ReplayModel says how measured replays were fitted (PITRReplayModel*):
+	// what the replay time is proportional to. Empty without measured replays.
+	ReplayModel string `json:"replay_model,omitempty"`
 }
 
 // Sources of a PITREstimate.
@@ -365,6 +369,16 @@ const (
 	PITREstimateChainTest = "chain_test"
 	// PITREstimateDefault: default rates.
 	PITREstimateDefault = "default"
+)
+
+// Replay models of a measured PITREstimate.
+const (
+	// PITRReplayModelEntries: a cost per oplog entry (the bytes add nothing).
+	PITRReplayModelEntries = "entries"
+	// PITRReplayModelBytes: a cost per stored byte.
+	PITRReplayModelBytes = "bytes"
+	// PITRReplayModelEntriesAndBytes: a cost per entry plus a cost per byte.
+	PITRReplayModelEntriesAndBytes = "entries_and_bytes"
 )
 
 // IsSafeClone reports whether the restore targets a fresh clone namespace. An omitted

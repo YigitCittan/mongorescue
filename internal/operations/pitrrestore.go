@@ -341,19 +341,25 @@ func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.
 
 // EstimatePITR estimates the duration (RTO) of a point-in-time restore of stream
 // streamID that restores baseBytes of base archive and replays oplogEntries
-// entries in oplogBytes of stored oplog: the base at its rate, plus the replay at
-// the slower of its byte rate and its entry rate. The rates are rolling averages
-// over the passes of the stream's newest completed restores and chain tests (up
-// to five that timed their passes: totals over total seconds); a pass without a
-// measurement falls back to the overall rate of the newest chain test of an
-// earlier release, then to the default rates (50 MiB/s for the base; 4 MiB/s and
-// 2,000 entries per second for the oplog). It reads restore records only, never
-// MongoDB.
+// entries in oplogBytes of stored oplog: the base at its rate plus the replay.
+//
+// The rates come from the passes of the stream's newest completed restores and
+// chain tests (up to five that timed them). The base rate is their total bytes
+// over total seconds. The replay is a fit of the measured replay times to their
+// entries and stored bytes (see fitReplay): per entry and per byte when both
+// explain the runs, per entry alone when the bytes add nothing (they grow with
+// the entries in the runs), or per byte alone when that fits better; with
+// measurements, the replay is never the larger of two rates that measured the
+// same runs. A pass without a measurement falls back to the overall rate of the
+// newest chain test of an earlier release, then to the default rates (50 MiB/s
+// for the base; the slower of 4 MiB/s and 2,000 entries per second for the
+// oplog). It reads restore records only, never MongoDB.
 func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate {
 	out := models.PITREstimate{BaseBytes: baseBytes, OplogBytes: oplogBytes, OplogEntries: oplogEntries,
 		Source: models.PITREstimateDefault, BaseBytesPerSecond: defaultBaseRate, ReplayBytesPerSecond: defaultReplayRate,
 		ReplayEntriesPerSecond: defaultReplayEntryRate}
-	var baseB, baseS, replayB, replayS, ops float64
+	var baseB, baseS float64
+	var runs []replayRun
 	samples := 0
 	var legacy *models.RestoreRecord
 	if recs, err := s.store.ListRestoreRecords(ctx); err == nil {
@@ -375,31 +381,84 @@ func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, 
 				baseB, baseS = baseB+float64(r.PITR.BaseBytes), baseS+r.PITR.BaseSeconds
 			}
 			if r.PITR.ReplaySeconds > 0 && r.PITR.OplogBytes > 0 && r.PITR.OpsReplayed > 0 {
-				replayB, replayS = replayB+float64(r.PITR.OplogBytes), replayS+r.PITR.ReplaySeconds
-				ops += float64(r.PITR.OpsReplayed)
+				runs = append(runs, replayRun{entries: float64(r.PITR.OpsReplayed), bytes: float64(r.PITR.OplogBytes), seconds: r.PITR.ReplaySeconds})
 			}
 		}
 	}
+	replay := func() float64 { // the defaults: the slower of the two rates
+		t := float64(oplogBytes) / out.ReplayBytesPerSecond
+		if oplogEntries > 0 {
+			t = max(t, float64(oplogEntries)/out.ReplayEntriesPerSecond)
+		}
+		return t
+	}
 	switch {
-	case baseS > 0 || replayS > 0:
+	case baseS > 0 || len(runs) > 0:
 		out.Source, out.Samples = models.PITREstimateMeasured, samples
 		if baseS > 0 {
 			out.BaseBytesPerSecond = baseB / baseS
 		}
-		if replayS > 0 {
-			out.ReplayBytesPerSecond, out.ReplayEntriesPerSecond = replayB/replayS, ops/replayS
+		if len(runs) > 0 {
+			fit := fitReplay(runs)
+			var e, b, t float64
+			for _, r := range runs {
+				e, b, t = e+r.entries, b+r.bytes, t+r.seconds
+			}
+			out.ReplayBytesPerSecond, out.ReplayEntriesPerSecond, out.ReplayModel = b/t, e/t, fit.model
+			replay = func() float64 {
+				if oplogEntries <= 0 && fit.perEntry > 0 && fit.perByte == 0 {
+					// No entry count (an older caller): the measured byte rate.
+					return float64(oplogBytes) / out.ReplayBytesPerSecond
+				}
+				return fit.perEntry*float64(oplogEntries) + fit.perByte*float64(oplogBytes)
+			}
 		}
 	case legacy != nil:
 		rate := float64(legacy.PITR.BaseBytes+legacy.PITR.OplogBytes) / legacy.DurationSeconds
 		out.Source, out.Samples = models.PITREstimateChainTest, 1
 		out.BaseBytesPerSecond, out.ReplayBytesPerSecond = rate, rate
 	}
-	replay := float64(oplogBytes) / out.ReplayBytesPerSecond
-	if oplogEntries > 0 {
-		replay = max(replay, float64(oplogEntries)/out.ReplayEntriesPerSecond)
-	}
-	out.Seconds = float64(baseBytes)/out.BaseBytesPerSecond + replay
+	out.Seconds = float64(baseBytes)/out.BaseBytesPerSecond + replay()
 	return out
+}
+
+// replayRun is one measured oplog replay: its entries, stored bytes and seconds.
+type replayRun struct{ entries, bytes, seconds float64 }
+
+// replayFit is a replay time model: seconds per entry plus seconds per stored
+// byte, and its name (models.PITRReplayModel*).
+type replayFit struct {
+	perEntry, perByte float64
+	model             string
+}
+
+// fitReplay fits seconds = perEntry*entries + perByte*bytes to runs by least
+// squares. When the runs cannot tell entries and bytes apart (they grow together,
+// as with one workload) or the fit gives a negative cost, it falls back to the
+// one-term model that fits best, entries on a tie: mongorestore applies the oplog
+// one entry at a time, so entries carry the cost unless the bytes explain the
+// runs better.
+func fitReplay(runs []replayRun) replayFit {
+	var ee, bb, eb, es, bs, ss, sumE, sumB, sumS float64
+	for _, r := range runs {
+		ee, bb, eb = ee+r.entries*r.entries, bb+r.bytes*r.bytes, eb+r.entries*r.bytes
+		es, bs, ss = es+r.entries*r.seconds, bs+r.bytes*r.seconds, ss+r.seconds*r.seconds
+		sumE, sumB, sumS = sumE+r.entries, sumB+r.bytes, sumS+r.seconds
+	}
+	if det := ee*bb - eb*eb; len(runs) >= 2 && det > 1e-9*ee*bb {
+		a, b := (es*bb-bs*eb)/det, (bs*ee-es*eb)/det
+		// Both costs must carry part of the measured time, not a rounding error.
+		if a*sumE > 1e-6*sumS && b*sumB > 1e-6*sumS {
+			return replayFit{perEntry: a, perByte: b, model: models.PITRReplayModelEntriesAndBytes}
+		}
+	}
+	// One term: the least-squares slope through the origin and its squared error.
+	a, b := es/ee, bs/bb
+	sseEntries, sseBytes := ss-a*es, ss-b*bs
+	if sseBytes < sseEntries*(1-1e-9) {
+		return replayFit{perByte: b, model: models.PITRReplayModelBytes}
+	}
+	return replayFit{perEntry: a, model: models.PITRReplayModelEntries}
 }
 
 // lastChainTest returns the newest chain test restore of streamID that accept takes

@@ -63,30 +63,55 @@ func TestEstimatePITRUsesMeasuredRates(t *testing.T) {
 		t.Fatalf("from an older chain test: %+v", e)
 	}
 
-	// Timed restores: the base at 20 and 60 MiB/s (rolling: 160 MiB in 4 s), the
-	// replay at 1 and 3 MiB/s (8 MiB in 4 s), 1,000 + 5,000 entries in 4 s.
-	save(models.RestoreStatusCompleted, models.PITRRestore{BaseBytes: 40 << 20, BaseSeconds: 2, OplogBytes: 2 << 20, ReplaySeconds: 2, OpsReplayed: 1000}, 5)
-	save(models.RestoreStatusCompleted, models.PITRRestore{ChainTest: true, BaseBytes: 120 << 20, BaseSeconds: 2, OplogBytes: 6 << 20, ReplaySeconds: 2, OpsReplayed: 5000}, 5)
-	// Ignored: a failed restore and another stream's.
-	save(models.RestoreStatusFailed, models.PITRRestore{BaseBytes: 1, BaseSeconds: 100, OplogBytes: 1, ReplaySeconds: 100}, 200)
-	save(models.RestoreStatusCompleted, models.PITRRestore{StreamID: "other", BaseBytes: 1, BaseSeconds: 100, OplogBytes: 1, ReplaySeconds: 100}, 200)
-	e = svc.EstimatePITR(ctx, "str_a", 400<<20, 20<<20, 0)
-	if e.Source != models.PITREstimateMeasured || e.Samples != 2 || !near(e.BaseBytesPerSecond, 40<<20) ||
-		!near(e.ReplayBytesPerSecond, 2<<20) || !near(e.ReplayEntriesPerSecond, 1500) || !near(e.Seconds, 10+10) {
-		t.Fatalf("measured: %+v", e)
-	}
-	// 30,000 entries at the measured 1,500 per second outlast the bytes.
-	if e = svc.EstimatePITR(ctx, "str_a", 400<<20, 20<<20, 30_000); !near(e.Seconds, 10+20) {
-		t.Fatalf("measured, by entries: %+v", e)
+	// Timed restores whose replays tell entries and bytes apart: 1,000 entries in
+	// 1 MiB took 1.5 s, 1,000 entries in 3 MiB 2.5 s, so 1 ms per entry plus 0.5 s
+	// per MiB. The base: 160 MiB in 4 s. Ignored: a failed restore and another
+	// stream's.
+	save(models.RestoreStatusCompleted, models.PITRRestore{BaseBytes: 40 << 20, BaseSeconds: 2, OplogBytes: 1 << 20, ReplaySeconds: 1.5, OpsReplayed: 1000}, 5)
+	save(models.RestoreStatusCompleted, models.PITRRestore{ChainTest: true, BaseBytes: 120 << 20, BaseSeconds: 2, OplogBytes: 3 << 20, ReplaySeconds: 2.5, OpsReplayed: 1000}, 5)
+	save(models.RestoreStatusFailed, models.PITRRestore{BaseBytes: 1, BaseSeconds: 100, OplogBytes: 1, ReplaySeconds: 100, OpsReplayed: 1}, 200)
+	save(models.RestoreStatusCompleted, models.PITRRestore{StreamID: "other", BaseBytes: 1, BaseSeconds: 100, OplogBytes: 1, ReplaySeconds: 100, OpsReplayed: 1}, 200)
+	e = svc.EstimatePITR(ctx, "str_a", 400<<20, 20<<20, 30_000)
+	if e.Source != models.PITREstimateMeasured || e.Samples != 2 || e.ReplayModel != models.PITRReplayModelEntriesAndBytes ||
+		!near(e.BaseBytesPerSecond, 40<<20) || !near(e.Seconds, 10+30+10) {
+		t.Fatalf("measured, entries and bytes: %+v", e)
 	}
 
-	// Only the five newest timed restores count: five slow ones push the fast
-	// ones out.
+	// Large entries after small ones. Five replays of one workload (200-byte
+	// entries, 2,500 per second, 0.5 MB/s) cannot tell entries from bytes, so the
+	// fit keeps the entries: a 1 GiB oplog of 10 KB entries takes its 104,858
+	// entries at 2,500 per second (about 42 s), not 1 GiB at 0.5 MB/s, which the
+	// larger of the two rates gave (about 2,150 s, 50 times too long). The five
+	// newest replace the older ones.
 	for range 5 {
-		save(models.RestoreStatusCompleted, models.PITRRestore{BaseBytes: 10 << 20, BaseSeconds: 1, OplogBytes: 1 << 20, ReplaySeconds: 1, OpsReplayed: 100}, 2)
+		save(models.RestoreStatusCompleted, models.PITRRestore{BaseBytes: 10 << 20, BaseSeconds: 1, OplogBytes: 500_000, ReplaySeconds: 1, OpsReplayed: 2500}, 2)
 	}
-	e = svc.EstimatePITR(ctx, "str_a", 100<<20, 10<<20, 0)
-	if e.Samples != 5 || !near(e.BaseBytesPerSecond, 10<<20) || !near(e.ReplayBytesPerSecond, 1<<20) || !near(e.Seconds, 10+10) {
-		t.Fatalf("rolling window: %+v", e)
+	e = svc.EstimatePITR(ctx, "str_a", 0, 1<<30, 104_858)
+	if e.Samples != 5 || e.ReplayModel != models.PITRReplayModelEntries || !near(e.Seconds, 104_858.0/2500) {
+		t.Fatalf("large entries after small ones: %+v", e)
+	}
+	if !near(e.ReplayEntriesPerSecond, 2500) || !near(e.ReplayBytesPerSecond, 500_000) || !near(e.BaseBytesPerSecond, 10<<20) {
+		t.Fatalf("averages of the five newest: %+v", e)
+	}
+	// Without an entry count (an older caller), the measured byte rate.
+	if e = svc.EstimatePITR(ctx, "str_a", 0, 5_000_000, 0); !near(e.Seconds, 10) {
+		t.Fatalf("without an entry count: %+v", e)
+	}
+}
+
+// TestFitReplayPrefersTheModelThatFits checks the one-term fallbacks of the
+// replay fit: bytes when they explain the runs better than entries, entries on a
+// tie.
+func TestFitReplayPrefersTheModelThatFits(t *testing.T) {
+	near := func(got, want float64) bool { return math.Abs(got-want) <= math.Abs(want)*1e-6 }
+	// Time follows the bytes; the entries go against it.
+	byBytes := []operations.ReplayRunForTest{{Entries: 1000, Bytes: 1 << 20, Seconds: 1}, {Entries: 4000, Bytes: 2 << 20, Seconds: 2},
+		{Entries: 500, Bytes: 3 << 20, Seconds: 3}}
+	if model, perEntry, perByte := operations.FitReplayForTest(byBytes); model != models.PITRReplayModelBytes || perEntry != 0 || !near(perByte, 1.0/(1<<20)) {
+		t.Fatalf("by bytes: %s %v %v", model, perEntry, perByte)
+	}
+	// One run: both one-term models fit exactly; entries win the tie.
+	if model, perEntry, _ := operations.FitReplayForTest(byBytes[:1]); model != models.PITRReplayModelEntries || !near(perEntry, 1.0/1000) {
+		t.Fatalf("one run: %s %v", model, perEntry)
 	}
 }
