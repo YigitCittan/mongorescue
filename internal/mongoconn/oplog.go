@@ -43,6 +43,17 @@ var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 // A variable for tests.
 var memberOpTimeout = time.Minute
 
+// entryTerm returns the term (t) of oplog entry doc, or -1, MongoDB's
+// uninitialized term, for an entry without one: the "initiating set" entry of a
+// new replica set has none, while hello reports its optime with term -1. The
+// oplog codec (internal/oplog) reads it the same way.
+func entryTerm(doc bson.Raw) int64 {
+	if term, ok := doc.Lookup("t").AsInt64OK(); ok {
+		return term
+	}
+	return -1
+}
+
 // memberCtx returns ctx bounded by memberOpTimeout.
 func memberCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, memberOpTimeout)
@@ -443,7 +454,7 @@ func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Wri
 			return stats, errors.New("an oplog entry has no ts timestamp")
 		}
 		op := pitr.OpTime{TS: pitr.Timestamp{T: t, I: i}}
-		op.Term, _ = doc.Lookup("t").AsInt64OK()
+		op.Term = entryTerm(doc)
 		switch {
 		case !started:
 			if op.TS != r.From {
@@ -496,7 +507,7 @@ func (s *OplogMember) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int6
 	if err != nil {
 		return 0, false, redactErr(fmt.Errorf("find oplog entry %s: %w", ts, err))
 	}
-	term, _ = raw.Lookup("t").AsInt64OK()
+	term = entryTerm(raw)
 	return term, true, nil
 }
 

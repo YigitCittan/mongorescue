@@ -82,6 +82,6 @@ func (s *OplogMember) EntryAtOrAfter(ctx context.Context, ts pitr.Timestamp) (op
 		return pitr.OpTime{}, false, errors.New("an oplog entry has no ts timestamp")
 	}
 	op.TS = pitr.Timestamp{T: t, I: i}
-	op.Term, _ = raw.Lookup("t").AsInt64OK()
+	op.Term = entryTerm(raw)
 	return op, true, nil
 }
