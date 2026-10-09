@@ -2,11 +2,24 @@ name: Nightly
 
 # Long-running checks that do not fit the pull request budget: the integration
 # matrix with about 2 GiB of generated data (throughput and a 256 MiB memory limit,
-# see docs/testing.md) and the fuzz targets.
+# see docs/testing.md), the fuzz targets and the fault-injection suite (nightly),
+# and the load test (weekly). None of them runs on pull requests or is required.
 on:
   schedule:
     - cron: '0 3 * * *'
+    # Weekly: the load test only.
+    - cron: '0 4 * * 0'
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Which jobs to run
+        type: choice
+        default: nightly
+        options:
+          - nightly
+          - chaos
+          - load
+          - all
 
 permissions:
   contents: read
@@ -22,6 +35,9 @@ env:
 jobs:
   large-data:
     name: Large data (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }})
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -71,6 +87,9 @@ jobs:
 
   fuzz:
     name: Fuzz
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -92,3 +111,111 @@ jobs:
             exit 1
           fi
           make fuzz FUZZTIME=5m
+
+  chaos:
+    name: Chaos
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'chaos' || inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      # The clock scenarios step the system clock of this disposable runner; time
+      # synchronisation would undo the steps.
+      - name: Stop time synchronisation
+        run: sudo systemctl stop chrony systemd-timesyncd 2>/dev/null || true
+
+      - name: Run the fault-injection suite
+        env:
+          MONGORESCUE_CHAOS_CLOCK: '1'
+          CHAOS_REPORT_DIR: ${{ runner.temp }}/chaos-report
+          GOTESTFLAGS: -v
+        run: ./scripts/test-chaos-docker.sh
+
+      - name: Restore time synchronisation
+        if: always()
+        run: sudo systemctl start chrony systemd-timesyncd 2>/dev/null || true
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chaos-report
+          path: ${{ runner.temp }}/chaos-report
+          retention-days: 30
+          if-no-files-found: warn
+
+  load:
+    name: Load
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'load' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # 5 GiB in MongoDB and its secondary, plus the archive in MinIO.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Run the load test
+        env:
+          SUITE: load
+          MONGORESCUE_LOAD_PROFILE: ci
+          CHAOS_REPORT_DIR: ${{ runner.temp }}/load-report
+          GOTESTFLAGS: -v
+        run: ./scripts/test-chaos-docker.sh
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: load-report
+          path: ${{ runner.temp }}/load-report
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Disk usage
+        if: always()
+        run: df -h /

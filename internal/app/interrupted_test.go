@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
@@ -97,5 +99,70 @@ func TestInterruptedJobRunKeepsCompletedDatabases(t *testing.T) {
 	}
 	if b, _ := fs.GetBackupRecord(ctx, "bkp_a"); b.Status != models.StatusCompleted {
 		t.Errorf("completed backup changed: %+v", b)
+	}
+}
+
+// TestFailInterruptedRunsPublishesFailures pins that runs a killed process left in
+// progress are reported: each interrupted backup and restore publishes its failure
+// event, and a run of several databases its summary (its databases' events are
+// InRun, for the metrics only). The chaos suite found that a SIGKILL during a backup
+// marked it failed at the next start without any alert.
+func TestFailInterruptedRunsPublishesFailures(t *testing.T) {
+	ctx := context.Background()
+	fs := storetest.New(t)
+	_ = fs.SaveBackupRecord(ctx, &models.BackupRecord{ID: "single", Database: "d", JobID: "job1", Status: models.StatusInProgress})
+	_ = fs.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_a", Database: "a", JobID: "job2", RunID: "run_1", Status: models.StatusCompleted})
+	_ = fs.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_b", Database: "b", JobID: "job2", RunID: "run_1", Status: models.StatusInProgress})
+	_ = fs.SaveRestoreRecord(ctx, &models.RestoreRecord{ID: "rst", BackupID: "single", Status: models.RestoreStatusInProgress})
+	run := &models.JobRun{ID: "run_1", JobID: "job2", Status: models.JobRunRunning, StartedAt: time.Now().Add(-time.Hour),
+		Databases: []models.JobRunDatabase{
+			{Database: "a", BackupID: "bkp_a", Status: models.StatusCompleted},
+			{Database: "b", BackupID: "bkp_b", Status: models.StatusInProgress},
+		}}
+	if err := fs.SaveJobRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	bus := events.NewBus()
+	var mu sync.Mutex
+	var got []events.Event
+	bus.Subscribe(func(_ context.Context, e events.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, e)
+	})
+	a := &App{metaStore: fs, logger: slog.Default(), bus: bus}
+	// Published before the bus runs, as at startup: the bus queues them.
+	a.failInterruptedRuns(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = bus.Run(runCtx) })
+	cancel()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	find := func(match func(events.Event) bool) *events.Event {
+		for i := range got {
+			if match(got[i]) {
+				return &got[i]
+			}
+		}
+		return nil
+	}
+	if e := find(func(e events.Event) bool { return e.Type == events.BackupFailed && e.BackupID == "single" }); e == nil || e.InRun || e.JobID != "job1" || e.Error == "" {
+		t.Fatalf("no backup.failed for the interrupted backup: %+v", got)
+	}
+	if e := find(func(e events.Event) bool { return e.Type == events.BackupFailed && e.BackupID == "bkp_b" }); e == nil || !e.InRun || e.RunID != "run_1" {
+		t.Fatalf("the interrupted database of a multi-database run must publish an InRun event: %+v", got)
+	}
+	if e := find(func(e events.Event) bool { return e.Type == events.BackupFailed && e.RunID == "run_1" && e.Run != nil }); e == nil {
+		t.Fatalf("no summary event for the interrupted run: %+v", got)
+	}
+	if e := find(func(e events.Event) bool { return e.Type == events.RestoreFailed && e.RestoreID == "rst" }); e == nil || e.Error == "" {
+		t.Fatalf("no restore.failed for the interrupted restore: %+v", got)
+	}
+	if e := find(func(e events.Event) bool { return e.BackupID == "bkp_a" }); e != nil {
+		t.Fatalf("a completed backup published an event: %+v", e)
 	}
 }

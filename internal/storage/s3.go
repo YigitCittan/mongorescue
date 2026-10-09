@@ -317,8 +317,27 @@ func (s *S3Storage) save(ctx context.Context, key string, r io.Reader) (*models.
 	}, versionID, retainUntil), nil
 }
 
-// abortTimeout bounds the abort of a failed multipart upload.
+// abortTimeout bounds the abort of a failed multipart upload, retries included.
 const abortTimeout = 30 * time.Second
+
+// abortRetryFirst and abortRetryMax bound the delay between two attempts to abort a
+// failed multipart upload (variables for tests).
+var (
+	abortRetryFirst = 500 * time.Millisecond
+	abortRetryMax   = 5 * time.Second
+)
+
+// abortRetryable reports whether an abort that failed with err may succeed later:
+// the storage was unreachable or answered 408, 429 or 5xx. Other answers (access
+// denied, no such upload) are final.
+func abortRetryable(err error) bool {
+	var resp *awshttp.ResponseError
+	if !errors.As(err, &resp) || resp.Response == nil {
+		return true
+	}
+	code := resp.HTTPStatusCode()
+	return code == 0 || code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
+}
 
 // abortFailedUpload aborts the multipart upload behind a failed Upload. The uploader
 // aborts it itself, but with the upload's context: after a cancellation (a cancelled
@@ -333,11 +352,28 @@ func (s *S3Storage) abortFailedUpload(ctx context.Context, objKey string, upload
 	}
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortTimeout)
 	defer cancel()
-	_, err := s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
-		Bucket:   aws.String(s.bucket),
-		Key:      aws.String(objKey),
-		UploadId: aws.String(failure.UploadID()),
-	})
+	// The client gives up after a few attempts within seconds, while an upload
+	// usually fails because the storage is unreachable: keep trying for the whole
+	// abort window, so an outage shorter than it leaves no parts behind.
+	var err error
+	for delay := abortRetryFirst; ; delay = min(2*delay, abortRetryMax) {
+		_, err = s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(s.bucket),
+			Key:      aws.String(objKey),
+			UploadId: aws.String(failure.UploadID()),
+		})
+		if err == nil || !abortRetryable(err) {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-abortCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+			continue
+		}
+		break
+	}
 	var apiErr smithy.APIError
 	if err != nil && (!errors.As(err, &apiErr) || apiErr.ErrorCode() != "NoSuchUpload") {
 		s.logger.Warn("failed to abort the multipart upload of a failed backup; its parts stay in the bucket until a lifecycle rule removes them",

@@ -100,7 +100,7 @@ On every push and pull request (`.github/workflows/ci.yml`):
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
 - **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum and release toolchain) and 1.27.x; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
-- **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, and the fuzz targets; see [docs/testing.md](docs/testing.md).
+- **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets and the fault-injection suite, and weekly the load test; see [docs/testing.md](docs/testing.md).
 - **E2E (Playwright)**: the browser suite in `e2e/` against MongoDB 7 and MinIO; the report and traces are uploaded when it fails.
 - **Docker smoke test**: builds the image and checks health, auth, dashboard and bundled tools.
 
@@ -225,6 +225,8 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | `make test-coverage` + `make coverage-check` | Unit tests with coverage; fails below 60% | Go |
 | `make test-integration` | Unit + `integration`-tagged tests against the services in your `MONGORESCUE_TEST_*` env; missing services are skipped | Go, MongoDB Database Tools |
 | `make test-integration-docker` | Same, against disposable MongoDB 7, MinIO and LocalStack containers | Docker, curl, Go, MongoDB Database Tools |
+| `make test-chaos-docker` | Fault-injection suite (`internal/chaos`, `chaos` tag) against MongoDB, MinIO and Toxiproxy containers; scenarios in [docs/testing.md](docs/testing.md#fault-injection-suite) | Docker, curl, Go, MongoDB Database Tools 100.12+ |
+| `make test-load-docker` | Load test (`internal/load`, `load` tag) against a MongoDB primary and secondary and MinIO; `MONGORESCUE_LOAD_*` sets the scale ([docs/testing.md](docs/testing.md#load-test)) | Docker, curl, Go, MongoDB Database Tools |
 | `make test-e2e` | Playwright browser suite (`e2e/`) against the built binary and disposable MongoDB 7 and MinIO containers | Docker, curl 7.75+, Go, Node.js 20+ and npm, MongoDB Database Tools |
 | `make test-desktop-update-e2e` | Desktop app in-app update, end to end, on the host OS: two Wails builds, the release's packaging, a fake GitHub release; an update and a tampered archive | Go, Wails CLI, jq, the webview build dependencies (7z and Git Bash on Windows) |
 | `make fuzz` | Each fuzz target in `FUZZ_TARGETS` for `FUZZTIME` (default `30s`), one after another | Go |

@@ -1,0 +1,415 @@
+{
+  "note": "Load test baselines per profile (internal/load). A lower-is-better metric fails above value x tolerance + slack, a higher-is-better one below value / tolerance. Record a profile with MONGORESCUE_LOAD_UPDATE_BASELINE=1; see docs/testing.md.",
+  "profiles": {
+    "ci": {
+      "recorded": "2026-10-09 on darwin/arm64, 8 CPUs",
+      "config": {
+        "profile": "ci",
+        "data_mb": 5120,
+        "jobs": 10000,
+        "connections": 500,
+        "concurrent_backups": 20
+      },
+      "metrics": {
+        "api.backups_page.p95_ms": {
+          "value": 0.229,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.backups_page_x16.p95_ms": {
+          "value": 2.543,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.connections.p95_ms": {
+          "value": 7.107,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.connections_x16.p95_ms": {
+          "value": 40.118,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.health.p95_ms": {
+          "value": 0.09,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.health_x16.p95_ms": {
+          "value": 0.22,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.history.p95_ms": {
+          "value": 1454.266,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.history_x16.p95_ms": {
+          "value": 6443.381,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_all.p95_ms": {
+          "value": 84.12,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_all_x16.p95_ms": {
+          "value": 1337.635,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_page.p95_ms": {
+          "value": 80.934,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_page_x16.p95_ms": {
+          "value": 1487.195,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.overview.p95_ms": {
+          "value": 83.45,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.overview_x16.p95_ms": {
+          "value": 1371.28,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.readiness.p95_ms": {
+          "value": 207.2,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.readiness_x16.p95_ms": {
+          "value": 1710.648,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "backup.size_mb": {
+          "value": 5369.303544,
+          "better": "lower",
+          "tolerance": 1.2
+        },
+        "backup.throughput_mb_s": {
+          "value": 63.677666103656996,
+          "better": "higher",
+          "tolerance": 3
+        },
+        "concurrent.api_p95_ms": {
+          "value": 156.723,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "concurrent.sqlite_busy_errors": {
+          "value": 0,
+          "better": "lower",
+          "tolerance": 1
+        },
+        "concurrent.wall_s": {
+          "value": 13.591864459,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "memory.backup_heap_inuse_peak_mib": {
+          "value": 257.953125,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.backup_rss_peak_mib": {
+          "value": 291,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.concurrent_heap_inuse_peak_mib": {
+          "value": 305.484375,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.concurrent_rss_peak_mib": {
+          "value": 414.03125,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.idle_heap_inuse_peak_mib": {
+          "value": 463.3671875,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.idle_rss_peak_mib": {
+          "value": 539.109375,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "primary.dump_primary.p95_ms": {
+          "value": 17.424,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "primary.dump_secondary.p95_ms": {
+          "value": 19.676,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "primary.dump_throttled.p95_ms": {
+          "value": 7.064,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "scheduler.tick_lag_max_s": {
+          "value": 0.0755820000000007,
+          "better": "lower",
+          "tolerance": 1,
+          "slack": 5
+        },
+        "setup.connections_per_second": {
+          "value": 6407.990364125466,
+          "better": "higher",
+          "tolerance": 3
+        },
+        "setup.jobs_per_second": {
+          "value": 1902.4148535228044,
+          "better": "higher",
+          "tolerance": 3
+        }
+      }
+    },
+    "small": {
+      "recorded": "2026-10-09 on darwin/arm64, 8 CPUs",
+      "config": {
+        "profile": "small",
+        "data_mb": 512,
+        "jobs": 1000,
+        "connections": 50,
+        "concurrent_backups": 8
+      },
+      "metrics": {
+        "api.backups_page.p95_ms": {
+          "value": 0.311,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.backups_page_x16.p95_ms": {
+          "value": 2.705,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.connections.p95_ms": {
+          "value": 0.399,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.connections_x16.p95_ms": {
+          "value": 6.887,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.health.p95_ms": {
+          "value": 0.086,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.health_x16.p95_ms": {
+          "value": 0.501,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.history.p95_ms": {
+          "value": 137.8,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.history_x16.p95_ms": {
+          "value": 586.664,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_all.p95_ms": {
+          "value": 7.405,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_all_x16.p95_ms": {
+          "value": 132.69,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_page.p95_ms": {
+          "value": 7.577,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.jobs_page_x16.p95_ms": {
+          "value": 125.566,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.overview.p95_ms": {
+          "value": 6.102,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.overview_x16.p95_ms": {
+          "value": 124.214,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.readiness.p95_ms": {
+          "value": 23.487,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "api.readiness_x16.p95_ms": {
+          "value": 173.89,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "backup.size_mb": {
+          "value": 536.930808,
+          "better": "lower",
+          "tolerance": 1.2
+        },
+        "backup.throughput_mb_s": {
+          "value": 85.97732596234957,
+          "better": "higher",
+          "tolerance": 3
+        },
+        "concurrent.api_p95_ms": {
+          "value": 13.238,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "concurrent.sqlite_busy_errors": {
+          "value": 0,
+          "better": "lower",
+          "tolerance": 1
+        },
+        "concurrent.wall_s": {
+          "value": 3.0209690829999998,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "memory.backup_heap_inuse_peak_mib": {
+          "value": 121.7578125,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.backup_rss_peak_mib": {
+          "value": 194.046875,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.concurrent_heap_inuse_peak_mib": {
+          "value": 139.9140625,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.concurrent_rss_peak_mib": {
+          "value": 259.578125,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.idle_heap_inuse_peak_mib": {
+          "value": 54,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "memory.idle_rss_peak_mib": {
+          "value": 99.09375,
+          "better": "lower",
+          "tolerance": 2,
+          "slack": 32
+        },
+        "primary.dump_primary.p95_ms": {
+          "value": 10.279,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "primary.dump_secondary.p95_ms": {
+          "value": 10.91,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "primary.dump_throttled.p95_ms": {
+          "value": 6.027,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10
+        },
+        "scheduler.tick_lag_max_s": {
+          "value": 0.00009199999999864872,
+          "better": "lower",
+          "tolerance": 1,
+          "slack": 5
+        },
+        "setup.connections_per_second": {
+          "value": 5490.885130683067,
+          "better": "higher",
+          "tolerance": 3
+        },
+        "setup.jobs_per_second": {
+          "value": 2266.092088140477,
+          "better": "higher",
+          "tolerance": 3
+        }
+      }
+    }
+  }
+}
