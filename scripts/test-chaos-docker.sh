@@ -53,7 +53,7 @@ cleanup() {
     done
   fi
   for c in "${CONTAINERS[@]:-}"; do
-    if [ -n "$c" ]; then docker rm -f "$c" >/dev/null 2>&1 || true; fi
+    if [ -n "$c" ]; then docker rm -f -v "$c" >/dev/null 2>&1 || true; fi
   done
   docker network rm "$NET" >/dev/null 2>&1 || true
   if [ -n "$SMALL_DIR" ]; then
@@ -90,20 +90,29 @@ wait_for() {
 
 docker network create "$NET" >/dev/null
 
-# --- MongoDB: a single-node replica set -----------------------------------------
-# The member is known as 127.0.0.1:27017 inside the container; clients outside use
-# directConnection=true, through Toxiproxy or the mapped port.
-log "starting $MONGO_IMAGE (single-node replica set)"
+# --- MongoDB ------------------------------------------------------------------
+# chaos: a single-node replica set, the member known as 127.0.0.1:27017.
+# load: a primary and a secondary (priority 0) known by their network aliases, so a
+# dump can read from the secondary while the primary's latency is measured.
+# Clients outside use directConnection=true, through Toxiproxy or a mapped port.
+RS_KEY="$(head -c 756 /dev/urandom | base64 | tr -d '\n')"
 # shellcheck disable=SC2016 # expanded inside the container
+MONGO_CMD='
+  set -e
+  printf "%s" "$RS_KEY" > /tmp/rs.key
+  chmod 400 /tmp/rs.key
+  chown mongodb:mongodb /tmp/rs.key
+  exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all'
+log "starting $MONGO_IMAGE ($SUITE)"
 docker run -d --name "$PREFIX-mongo" --network "$NET" --network-alias mongo -p 127.0.0.1::27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-  --entrypoint bash "$MONGO_IMAGE" -c '
-    set -e
-    head -c 756 /dev/urandom | base64 -w0 > /tmp/rs.key
-    chmod 400 /tmp/rs.key
-    chown mongodb:mongodb /tmp/rs.key
-    exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all' >/dev/null
+  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" -e RS_KEY="$RS_KEY" \
+  --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
 CONTAINERS+=("$PREFIX-mongo")
+if [ "$SUITE" = load ]; then
+  docker run -d --name "$PREFIX-mongo2" --network "$NET" --network-alias mongo2 -p 127.0.0.1::27017 \
+    -e RS_KEY="$RS_KEY" --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
+  CONTAINERS+=("$PREFIX-mongo2")
+fi
 
 mongo_eval() {
   docker exec "$PREFIX-mongo" mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval "$1"
@@ -114,9 +123,19 @@ mongo_init_done() {
   [[ $logs == *"MongoDB init process complete"* ]] && mongo_eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)'
 }
 wait_for "mongodb" 180 mongo_init_done
-mongo_eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})' >/dev/null
+if [ "$SUITE" = load ]; then
+  mongo_eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017", priority: 2}, {_id: 1, host: "mongo2:27017", priority: 0}]})' >/dev/null
+else
+  mongo_eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})' >/dev/null
+fi
 primary_ready() { mongo_eval 'quit(db.hello().isWritablePrimary ? 0 : 1)'; }
 wait_for "replica set primary" 60 primary_ready
+if [ "$SUITE" = load ]; then
+  secondary_ready() { mongo_eval 'quit(rs.status().members.some(m => m.stateStr === "SECONDARY") ? 0 : 1)'; }
+  wait_for "replica set secondary" 120 secondary_ready
+  secondary_port="$(host_port "$PREFIX-mongo2" 27017)"
+  export MONGORESCUE_LOAD_SECONDARY_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${secondary_port}/?authSource=admin&directConnection=true"
+fi
 mongo_port="$(host_port "$PREFIX-mongo" 27017)"
 
 # --- MinIO ----------------------------------------------------------------------
@@ -144,9 +163,11 @@ done
 
 export MONGORESCUE_CHAOS_TOXIPROXY_URL="$TOXIPROXY_URL"
 export MONGORESCUE_CHAOS_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?authSource=admin&directConnection=true"
-export MONGORESCUE_CHAOS_MONGO_PROXY_URI="mongodb://root:${MONGO_PW}@127.0.0.1:$(host_port "$PREFIX-toxiproxy" 21017)/?authSource=admin&directConnection=true"
+mongo_proxy_port="$(host_port "$PREFIX-toxiproxy" 21017)"
+minio_proxy_port="$(host_port "$PREFIX-toxiproxy" 29000)"
+export MONGORESCUE_CHAOS_MONGO_PROXY_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_proxy_port}/?authSource=admin&directConnection=true"
 export MONGORESCUE_CHAOS_S3_ENDPOINT="$MINIO_URL"
-export MONGORESCUE_CHAOS_S3_PROXY_ENDPOINT="http://127.0.0.1:$(host_port "$PREFIX-toxiproxy" 29000)"
+export MONGORESCUE_CHAOS_S3_PROXY_ENDPOINT="http://127.0.0.1:${minio_proxy_port}"
 export MONGORESCUE_CHAOS_S3_BUCKET="mongorescue-chaos"
 export MONGORESCUE_CHAOS_S3_ACCESS_KEY="minioadmin"
 export MONGORESCUE_CHAOS_S3_SECRET_KEY="minioadmin"
