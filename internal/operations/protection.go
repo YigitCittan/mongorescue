@@ -1232,8 +1232,8 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 			out.Pending = append(out.Pending, c)
 		}
 	}
-	if err = s.holdLockedCopies(ctx, cur, next.Security, lowerLocked, out); err != nil {
-		return nil, err
+	if lockErr := s.holdLockedCopies(ctx, cur, next.Security, lowerLocked, out); lockErr != nil {
+		return nil, lockErr
 	}
 	if disable {
 		// Without two administrators nobody could approve: turning the rule off then

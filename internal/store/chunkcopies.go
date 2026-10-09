@@ -48,7 +48,7 @@ func (s *SQLiteStore) PlanChunkCopies(ctx context.Context, streamID string, targ
 			AND coalesce(json_extract(data, '$.written'), 0) = 0 AND json_extract(data, '$.retain_until') IS NULL`
 		args := []any{streamID}
 		if len(keep) > 0 {
-			query += " AND target_id NOT IN (" + placeholders(len(keep)) + ")"
+			query += " AND target_id NOT IN (" + placeholders(len(keep)) + ")" //nolint:gosec // placeholders only, the IDs are arguments
 			for _, id := range keep {
 				args = append(args, id)
 			}

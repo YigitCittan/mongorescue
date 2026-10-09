@@ -18,7 +18,7 @@ const (
 	ReasonDRSameRegion = "dr_same_region"
 	// ReasonDRSameCredentials: every copy target of the row's jobs is reachable with
 	// the credentials or account of its primary target (models.SameCredentials).
-	ReasonDRSameCredentials = "dr_same_credentials"
+	ReasonDRSameCredentials = "dr_same_credentials" //nolint:gosec // a reason code, not a credential
 	// ReasonDRDrillStale: no disaster recovery drill (a restore test reading a copy
 	// target, models.RestoreTestPolicy.SourceTargetID) of the database passed in the
 	// last Config.DRDrillMaxAge.

@@ -26,10 +26,10 @@ func (t *StorageTarget) DRRegion() string {
 	return ""
 }
 
-// CrossRegion reports whether copy and primary are in known, different regions
-// (see DRRegion). Unknown regions never count as different.
-func CrossRegion(primary, copy *StorageTarget) bool {
-	a, b := primary.DRRegion(), copy.DRRegion()
+// CrossRegion reports whether copy target cp and primary are in known, different
+// regions (see DRRegion). Unknown regions never count as different.
+func CrossRegion(primary, cp *StorageTarget) bool {
+	a, b := primary.DRRegion(), cp.DRRegion()
 	return a != "" && b != "" && a != b
 }
 
