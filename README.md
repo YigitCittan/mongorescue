@@ -202,6 +202,8 @@ You need Go 1.26 or newer.
 make build        # build ./bin/mongorescue
 make test-race    # unit tests
 make test-integration-docker   # integration tests against MongoDB, MinIO and LocalStack in Docker
+make test-chaos-docker         # fault-injection suite (Toxiproxy, SIGKILL, full disk, clock steps)
+make test-load-docker          # load test: scheduler, memory, API p95 and primary impact at scale
 make desktop      # desktop app for this OS (needs the Wails CLI and CGO, see docs/desktop.md)
 ```
 
