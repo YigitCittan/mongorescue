@@ -124,7 +124,6 @@ func TestClockStepForward(t *testing.T) {
 // runs twice (at most one run in the three minutes: the job's next slot is an hour
 // away on the stepped clock, as with cron); and job.rpo_missed does not fire.
 func TestClockStepBack(t *testing.T) {
-	t.Skip("known failing: a backward clock step stalls the scheduler liveness tick, https://github.com/YigitCittan/mongorescue/issues/137")
 	clock := requireClock(t)
 	r, job := clockRig(t)
 	before := len(r.jobRuns(job.ID))

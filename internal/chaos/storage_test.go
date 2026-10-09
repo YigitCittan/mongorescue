@@ -3,6 +3,7 @@
 package chaos
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,20 +40,21 @@ func TestStorageOutageMidUpload(t *testing.T) {
 	r.assertNextBackupSucceeds(db, "blobs")
 }
 
-// TestStoragePartitionLongerThanTimeout black-holes the storage (packets are
-// swallowed, connections stay open) for longer than the backup's stall timeout.
+// TestStoragePartitionLongerThanTimeout partitions the storage for longer than
+// storage_stall_timeout (1m, its minimum): connections stay open but no byte gets
+// through in either direction, so writes block once the socket buffers are full,
+// as when packets are dropped.
 //
-// Expected: the backup does not hang: it ends failed after the stall timeout (plus
-// the bounded abort of its upload), carries no checksum or size, no object exists
+// Expected: the backup does not hang: it ends failed with the storage stall after
+// that timeout (plus the bounded abort of its upload), carries no checksum or size, no object exists
 // under its key, backup.failed fires, and the next backup after the partition
 // completes. The parts of an upload that could not be aborted during the partition
 // are not an object; they stay until a lifecycle rule removes them (see
 // docs/production.md).
 func TestStoragePartitionLongerThanTimeout(t *testing.T) {
-	t.Skip("known failing: a storage partition is not caught until the backup timeout, https://github.com/YigitCittan/mongorescue/issues/136")
 	e := requireEnv(t)
 	r := newRig(t, e, rigOptions{})
-	r.settings(map[string]any{"general": map[string]any{"backup_stall_timeout": "15s", "backup_timeout": "5m"}})
+	r.settings(map[string]any{"general": map[string]any{"storage_stall_timeout": "1m", "backup_timeout": "10m"}})
 	db := e.uniqueDB(t, "partit")
 	e.seedBlobs(t, db, "blobs", 48)
 
@@ -60,16 +62,21 @@ func TestStoragePartitionLongerThanTimeout(t *testing.T) {
 	b := r.startBackup(db)
 	r.waitBytes(b.ID, 12<<20)
 	start := time.Now()
-	// timeout 0: data is held back and the connections never close.
-	e.Toxi.toxic(t, proxyMinio, "blackhole-up", "timeout", "upstream", map[string]any{"timeout": 0})
-	e.Toxi.toxic(t, proxyMinio, "blackhole-down", "timeout", "downstream", map[string]any{"timeout": 0})
+	// An hour of latency holds every byte back and, unlike Toxiproxy's timeout
+	// toxic (which keeps reading and buffering), pushes back on the sender.
+	e.Toxi.toxic(t, proxyMinio, "partition-up", "latency", "upstream", map[string]any{"latency": 3600000})
+	e.Toxi.toxic(t, proxyMinio, "partition-down", "latency", "downstream", map[string]any{"latency": 3600000})
 
 	got := r.waitBackup(db, b.ID)
 	took := time.Since(start)
 	t.Logf("failed after %s: %s", took.Round(time.Second), got.ErrorMessage)
 	r.assertBrokenBackup(got, true)
-	// Stall timeout (15 s) plus the abort window (30 s) plus slack.
-	if took > 2*time.Minute {
+	if !strings.Contains(got.ErrorMessage, "no upload progress") {
+		t.Fatalf("the backup failed for another reason than the storage stall: %s", got.ErrorMessage)
+	}
+	// Socket buffers draining, the stall timeout (1 min), the abort window (30 s)
+	// and slack.
+	if took > 3*time.Minute {
 		t.Fatalf("the backup took %s to fail during the partition", took)
 	}
 	r.assertNextBackupSucceeds(db, "blobs")
