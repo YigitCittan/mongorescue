@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Documentation (#145): the README's *Known limitations* match v0.25.0 (shipped features dropped, every remaining gap linked to its issue), a new *Security model* summary links the threat model, delete protection, Object Lock, roles, the audit log and TLS, [docs/production.md](docs/production.md#production-checklist) has a *Production checklist* (Object Lock, separate credentials and a cross-region copy, heartbeats, the offline recovery kit, the two-person rule, secondaries and windows, restore and chain tests, TLS, per-connection access, key rotation, a separate failure domain), and the release steps in CONTRIBUTING.md review both at every release.
 - A backup or restore that a crash or SIGKILL interrupted now publishes `backup.failed` or `restore.failed` when the next start marks it failed (a job run of several databases its run summary), so the alerts fire; before, the run was marked failed silently (#103).
+- Creating or moving a storage target onto or inside the location of another answers `409` with the reason, as documented, instead of `500` "internal error" (#103).
 
 ## [0.25.0] - 2026-10-06
 
