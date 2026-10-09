@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A storage partition during an upload is caught within `general.storage_stall_timeout` (new, default `5m`, 1m to 1h; #136) instead of hanging until the backup timeout: every upload (backups, PITR base backups and oplog chunks, copies, metadata snapshots, re-encryption) fails with `ErrStorageStalled` ("no upload progress for 5m0s to target …") when its target accepts no bytes for that long, the multipart upload is aborted and the run is recorded `failed`; waiting for a slow or throttled source does not count. The S3 HTTP client now bounds the wait for response headers (2 minutes) and sets explicit dial (30 s), TCP keep-alive (30 s), TLS handshake (10 s) and idle connection (90 s) timeouts. See [docs/configuration.md](docs/configuration.md#stalled-uploads).
 - A backward wall clock step (NTP, a restored VM) no longer makes `/api/v1/health` answer `503` (scheduler stale) for up to the size of the step (#137): the scheduler's liveness tick runs on a monotonic `time.Ticker` bound to the scheduler's lifecycle instead of the cron. Scheduled jobs stay on cron; a trigger that repeats a job's previous scheduled run within half its interval, possible when a job's schedule is rebuilt (edit or restart) after a backward step, is skipped and logged. See [docs/monitoring.md](docs/monitoring.md#clock-steps).
 
+### Changed
+- Documentation (#145): the README's *Known limitations* match v0.25.0 (shipped features dropped, every remaining gap linked to its issue), a new *Security model* summary links the threat model, delete protection, Object Lock, roles, the audit log and TLS, [docs/production.md](docs/production.md#production-checklist) has a *Production checklist* (Object Lock, separate credentials and a cross-region copy, heartbeats, the offline recovery kit, the two-person rule, secondaries and windows, restore and chain tests, TLS, per-connection access, key rotation, a separate failure domain), and the release steps in CONTRIBUTING.md review both at every release.
+
 ## [0.25.1] - 2026-10-09
 
 ### Security
@@ -20,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Container images reported their version as `v1.0.0` (the build had no Git metadata). The image now reports the release version on tagged builds and `dev` otherwise, so the dashboard and update checks show the real version.
+### Changed
+- Documentation (#145): the README's *Known limitations* match v0.25.0 (shipped features dropped, every remaining gap linked to its issue), a new *Security model* summary links the threat model, delete protection, Object Lock, roles, the audit log and TLS, [docs/production.md](docs/production.md#production-checklist) has a *Production checklist* (Object Lock, separate credentials and a cross-region copy, heartbeats, the offline recovery kit, the two-person rule, secondaries and windows, restore and chain tests, TLS, per-connection access, key rotation, a separate failure domain), and the release steps in CONTRIBUTING.md review both at every release.
 
 ## [0.25.0] - 2026-10-06
 

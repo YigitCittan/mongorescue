@@ -58,8 +58,8 @@ This changes the backup model, so it starts with a design document that has to b
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. Implemented for the next release (#59), see [configuration.md](configuration.md#immutable-backups-s3-object-lock). |
-| 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. Implemented for the next release (#60), see [configuration.md](configuration.md#copies-on-a-second-target-3-2-1). |
+| 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. Shipped in v0.24.0 (#59), see [configuration.md](configuration.md#immutable-backups-s3-object-lock). |
+| 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. Shipped in v0.25.0 (#60); cross-region policy and drills in #143, see [configuration.md](configuration.md#copies-on-a-second-target-3-2-1). |
 | 4.3 | **KMS** | M–L | Keep `secret.key` and age identities wrapped by AWS KMS, Google Cloud KMS or Azure Key Vault (envelope encryption), so the key material on disk is useless on its own. |
 | 4.4 | **HashiCorp Vault** | M–L | Read connection credentials and storage keys from Vault instead of storing them, with lease renewal. |
 | 4.5 | **Cost tracking** | S–M | Stored size per job, database and target over time, an estimated monthly cost per target from a price you enter, and egress used by verification and copies. |
