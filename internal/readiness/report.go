@@ -146,6 +146,9 @@ type Row struct {
 	// targets, of CopyTargets planned (3-2-1).
 	Copies      int `json:"copies"`
 	CopyTargets int `json:"copy_targets,omitempty"`
+	// DR is the disaster recovery posture of the row's jobs that copy their
+	// backups to other storage targets; nil when none does.
+	DR *DRStatus `json:"dr,omitempty"`
 	// Status is the overall readiness; Reasons explain it (see the Reason
 	// constants), fail reasons first.
 	Status  Status   `json:"status"`
@@ -244,6 +247,8 @@ type rowAcc struct {
 	verifyKO bool
 	// copyMissing: the newest good backup's copies are overdue.
 	copyMissing bool
+	// dr collects the disaster recovery posture (nil: no job with copy targets).
+	dr *drAcc
 }
 
 // latestBackups returns the newest (verified) backup of every job and database
@@ -312,6 +317,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		byConn[streams[i].ConnectionID] = &streams[i]
 	}
 
+	targets := s.targetsByID(ctx)
 	rows := map[rowKey]*rowAcc{}
 	for _, p := range points {
 		rk := rowKey{p.job.ConnectionID, p.database}
@@ -324,6 +330,7 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			rows[rk] = acc
 		}
 		s.addJob(acc, p, now, since, byConn[rk.connection])
+		addDR(acc, p.job, targets)
 		addEvidence(acc, p, verified[p.job.ID], tests[p.job.ID])
 	}
 	restores, err := s.cfg.Store.LatestCompletedRestores(ctx)
@@ -500,6 +507,7 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	if acc.copyMissing {
 		warn = append(warn, ReasonCopyMissing)
 	}
+	warn = append(warn, finishDR(acc)...)
 	if stream != nil {
 		sf, sw := streamReasons(*stream)
 		fail, warn = append(fail, sf...), append(warn, sw...)

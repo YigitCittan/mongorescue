@@ -70,6 +70,12 @@ type StorageTarget struct {
 	// S3 configures a StorageS3 target.
 	S3 *S3Target `json:"s3,omitempty"`
 
+	// Region is the region (failure domain) holding the target's data, for the
+	// disaster recovery checks of the readiness report: for S3 the bucket's region
+	// (from the target's region or GetBucketLocation when not set), for a local
+	// target an optional label such as "dc-frankfurt". See DRRegion.
+	Region string `json:"region,omitempty"`
+
 	// CreatedAt is when the target was added.
 	CreatedAt time.Time `json:"created_at"`
 
