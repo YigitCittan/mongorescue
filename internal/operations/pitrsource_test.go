@@ -8,6 +8,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
@@ -89,6 +90,35 @@ func TestPITRRestoreFromACopyChain(t *testing.T) {
 		if c.TargetID != "tgt_dr" || c.VersionID != "v-"+c.ID {
 			t.Fatalf("chunk %+v is not read from its copy", c)
 		}
+	}
+}
+
+// TestPITRRestoreSkipsAMissingBaseWithoutACopyChain proves that a newest base
+// missing on its primary target, whose copy chain is incomplete, is passed over:
+// the restore starts from the older completed base, as without copies.
+func TestPITRRestoreSkipsAMissingBaseWithoutACopyChain(t *testing.T) {
+	before, after := pitr.OpTime{TS: pitr.Timestamp{T: 101, I: 1}, Term: 1}, pitr.OpTime{TS: pitr.Timestamp{T: 103, I: 1}, Term: 1}
+	older := &models.BackupRecord{ID: "b0", Scope: models.ScopeInstance, PITRStreamID: "str_a", ConnectionID: "conn_a",
+		StorageTargetID: "tgt", StorageKey: "_mongorescue/base/conn_a/rs0/2026/10/b0.archive.gz.age", Status: models.StatusCompleted,
+		StartedAt: time.Unix(100, 0), SizeBytes: 900, Encrypted: true, EncryptionMode: "x25519", ServerVersion: "8.0.4",
+		TBefore: &before, TAfter: &after, InstanceDatabases: b1Databases}
+	svc, fake := pitrService(t, nil, older)
+	withCopyChain(t, svc, "k110") // two chunks have no copy: the chain is incomplete
+	if _, err := svcStore(t, svc).UpdateBackupRecord(context.Background(), "b1", func(r *models.BackupRecord) error {
+		r.Status = models.StatusMissing
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := svc.StartRestore(admin(), pitrAt(125, "shop"))
+	if err != nil {
+		t.Fatalf("restore with a missing newest base: %v", err)
+	}
+	if rec.PITR == nil || rec.PITR.BaseID != "b0" || rec.SourceFallback != "" || rec.SourceTargetID != "tgt" {
+		t.Fatalf("record base %+v from %q (%q); want the older base b0 on the primary", rec.PITR, rec.SourceTargetID, rec.SourceFallback)
+	}
+	if run := lastRun(t, fake); run.Base.ID != "b0" || run.Base.StorageTargetID != "tgt" {
+		t.Fatalf("run base %s on %s; want b0 on tgt", run.Base.ID, run.Base.StorageTargetID)
 	}
 }
 

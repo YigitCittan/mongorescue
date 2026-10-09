@@ -70,6 +70,42 @@ func hasUsableCopy(r *models.BackupRecord) bool {
 	return false
 }
 
+// planWithUsableBase plans the restore of stream to target from bases (byID maps
+// them to their records). A plan whose base is missing on its primary target is
+// only kept when a complete copy chain exists for it (on want, the request's
+// source target, when that is a copy target, else on any copy target of the
+// stream); otherwise that base is left out and the restore is planned again from
+// the remaining ones, so it falls back to an older completed base.
+func (s *Service) planWithUsableBase(ctx context.Context, stream *pitr.Stream, bases []pitr.Base, byID map[string]*models.BackupRecord,
+	target pitr.Target, want string) (*pitr.RestorePlan, error) {
+	for {
+		plan, err := pitr.PlanRestore(ctx, stream, pitr.PlanSource{Repo: s.cfg.PITR, Bases: bases, HasKey: s.cfg.PITRRestore.CanDecryptMode}, target)
+		if err != nil {
+			return nil, err
+		}
+		base := byID[plan.Base.ID]
+		if base == nil || base.Status != models.StatusMissing || s.hasCopyChain(ctx, restore.PITRRun{Plan: plan, Base: base}, stream, want) {
+			return plan, nil
+		}
+		bases = slices.DeleteFunc(bases, func(b pitr.Base) bool { return b.ID == plan.Base.ID })
+	}
+}
+
+// hasCopyChain reports whether run can read a complete copy chain: on want when
+// that is not the base's own target, else on any copy target of stream.
+func (s *Service) hasCopyChain(ctx context.Context, run restore.PITRRun, stream *pitr.Stream, want string) bool {
+	candidates := stream.CopyTargets
+	if want = strings.TrimSpace(want); want != "" && want != run.Base.StorageTargetID {
+		candidates = []string{want}
+	}
+	for _, t := range candidates {
+		if _, err := s.copyChain(ctx, run, t); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // onTarget reports whether every chunk is stored on target.
 func onTarget(chunks []*pitr.Chunk, target string) bool {
 	for _, c := range chunks {

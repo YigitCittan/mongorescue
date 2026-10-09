@@ -87,8 +87,8 @@ func (s *Service) visibleStreamFirst(ctx context.Context, id string) error {
 
 // pitrBases returns the bases of records that can start a point-in-time restore
 // (completed instance-scope backups with T_before and T_after, or missing ones
-// with a usable copy, which a restore reads instead, see pitrSource), and the
-// records by ID.
+// with a usable copy, which a restore reads instead, see pitrSource and
+// planWithUsableBase), and the records by ID.
 func pitrBases(records []*models.BackupRecord) ([]pitr.Base, map[string]*models.BackupRecord) {
 	var out []pitr.Base
 	byID := map[string]*models.BackupRecord{}
@@ -150,7 +150,7 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	}
 	bases, byID := pitrBases(records)
 	out := &pitrPlan{stream: stream}
-	plan, err := pitr.PlanRestore(ctx, stream, pitr.PlanSource{Repo: s.cfg.PITR, Bases: bases, HasKey: s.cfg.PITRRestore.CanDecryptMode}, target.Target())
+	plan, err := s.planWithUsableBase(ctx, stream, bases, byID, target.Target(), req.SourceTargetID)
 	switch {
 	case err != nil && (!forPreflight || errors.Is(err, pitr.ErrInvalidTarget)):
 		return nil, pitrPlanError(err)
