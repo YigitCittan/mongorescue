@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Builds use Go 1.27.2 (the container image) and the latest Go 1.26 patch (release binaries, 1.26.9 or later), which fix CVE-2026-78667 (net/http: denial of service via crafted Range headers) and CVE-2026-97031 (crypto/tls: denial of service via repeated ECH outer extension references).
+
+### Fixed
+- Container images reported their version as `v1.0.0` (the build had no Git metadata). The image now reports the release version on tagged builds and `dev` otherwise, so the dashboard and update checks show the real version.
+
 ## [0.25.0] - 2026-10-06
 
 ### Added

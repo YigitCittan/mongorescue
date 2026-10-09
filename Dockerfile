@@ -2,7 +2,7 @@
 # Produces a self-contained image (<30MB) with pre-installed MongoDB database tools.
 
 # Stage 1: Build static Go binary
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27-alpine@sha256:738d1cf061836894ff6bb8c33881080ac66de8cf0586615012a0c8f592649cfa AS builder
 
 WORKDIR /src
 
@@ -13,9 +13,14 @@ RUN go mod download
 # Copy source tree
 COPY . .
 
+# Version metadata comes from the build (.git is not in the context): the release
+# workflow passes the tag's version, other builds report "dev".
+ARG VERSION=dev
+ARG COMMIT=unknown
+
 # Build stripped static binary
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.Version=$(git describe --tags --always 2>/dev/null || echo '1.0.0') -X main.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo 'release') -X main.Date=$(date -u +%Y-%m-%d)" \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=$(date -u +%Y-%m-%d)" \
     -o /bin/mongorescue ./cmd/mongorescue
 
 # Stage 2: Minimal runtime image
