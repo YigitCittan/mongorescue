@@ -1402,9 +1402,13 @@ func (a *App) shutdownRuns() {
 }
 
 // failInterruptedRuns marks backup and restore records left in progress by a previous
-// process (crash, SIGKILL) as failed, since nothing will ever complete them.
+// process (crash, SIGKILL) as failed, since nothing will ever complete them, and
+// publishes their backup.failed and restore.failed events: the run that died with
+// the process never did, so without them a crash would go unnoticed by the alerts.
+// The bus queues the events until Start runs it.
 func (a *App) failInterruptedRuns(ctx context.Context) {
 	const msg = "interrupted: the server stopped before this run finished"
+	var failed []*models.BackupRecord
 	if backups, err := a.metaStore.ListBackupRecords(ctx, ""); err == nil {
 		for _, b := range backups {
 			if b.Status == models.StatusInProgress {
@@ -1414,7 +1418,9 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 				b.AbandonCopies()
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), logsafe.Error(err))
+					continue
 				}
+				failed = append(failed, b)
 			}
 		}
 	}
@@ -1430,10 +1436,13 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 				r.Status, r.ErrorMessage = models.RestoreStatusFailed, msg+note
 				if err := a.metaStore.SaveRestoreRecord(ctx, r); err != nil {
 					a.logger.Warn("failed to mark interrupted restore", slog.String("restore_id", r.ID), logsafe.Error(err))
+					continue
 				}
+				a.publishInterrupted(ctx, events.RestoreEvent(r, nil, r.BackupID))
 			}
 		}
 	}
+	var multiRuns []*models.JobRun
 	// Job runs end with their databases. Each database's outcome is rebuilt from the
 	// backup records of the run (marked above): completed ones stay completed, those
 	// still waiting or running failed with the interruption.
@@ -1461,8 +1470,34 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 			run.Finish(time.Now())
 			if err := a.metaStore.SaveJobRun(ctx, run); err != nil {
 				a.logger.Warn("failed to mark interrupted job run", slog.String("run_id", run.ID), logsafe.Error(err))
+				continue
+			}
+			// A run of several databases is reported once, by its summary, as when
+			// it finishes normally; its databases' events only feed the metrics.
+			if len(run.Databases) > 1 {
+				multiRuns = append(multiRuns, run)
 			}
 		}
+	}
+	inMulti := map[string]bool{}
+	for _, run := range multiRuns {
+		inMulti[run.ID] = true
+	}
+	for _, b := range failed {
+		e := events.BackupEvent(b, nil, b.JobID, b.Database)
+		e.RunID, e.InRun = b.RunID, inMulti[b.RunID]
+		a.publishInterrupted(ctx, e)
+	}
+	for _, run := range multiRuns {
+		a.publishInterrupted(ctx, events.JobRunEvent(run))
+	}
+}
+
+// publishInterrupted publishes an event of a run failInterruptedRuns ended; it is a
+// no-op without an event bus.
+func (a *App) publishInterrupted(ctx context.Context, e events.Event) {
+	if a.bus != nil {
+		a.bus.Publish(ctx, e)
 	}
 }
 
