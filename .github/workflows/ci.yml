@@ -166,11 +166,13 @@ jobs:
         run: make cross-compile
 
   # 4. Integration Tests against real MongoDB, mongodump/mongorestore and S3 emulators
-  #    Every supported MongoDB release runs the full suite with MinIO; 7.0 also runs
-  #    with LocalStack and 8.0 also as a single-node replica set. The jobs run in
-  #    parallel, so the wall time stays that of one job.
+  #    Every supported MongoDB release runs the full suite with MinIO, standalone
+  #    and as a single-node replica set (which runs the point-in-time recovery
+  #    tests); 7.0 also runs with LocalStack, and the 8.0 replica set also with the
+  #    newest Database Tools (the others use the oldest supported, 100.12.2). The
+  #    jobs run in parallel, so the wall time stays that of one job.
   integration:
-    name: Integration (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }}, ${{ matrix.emulator }})
+    name: Integration (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }}, ${{ matrix.emulator }}${{ matrix.tools && format(', tools {0}', matrix.tools) || '' }})
     runs-on: ubuntu-latest
     needs: [test]
     timeout-minutes: 30
@@ -179,13 +181,17 @@ jobs:
       matrix:
         include:
           - { mongo: '5.0', topology: standalone, emulator: minio }
+          - { mongo: '5.0', topology: replset, emulator: minio }
           - { mongo: '6.0', topology: standalone, emulator: minio }
+          - { mongo: '6.0', topology: replset, emulator: minio }
           - { mongo: '7.0', topology: standalone, emulator: minio }
+          - { mongo: '7.0', topology: replset, emulator: minio }
           - { mongo: '7.0', topology: standalone, emulator: localstack }
           - { mongo: '8.0', topology: standalone, emulator: minio }
           - { mongo: '8.0', topology: replset, emulator: minio }
+          - { mongo: '8.0', topology: replset, emulator: minio, tools: '100.19.1' }
     env:
-      MONGO_TOOLS_VERSION: '100.12.2'
+      MONGO_TOOLS_VERSION: ${{ matrix.tools || '100.12.2' }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -220,7 +226,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: integration-coverage-${{ matrix.mongo }}-${{ matrix.topology }}-${{ matrix.emulator }}
+          name: integration-coverage-${{ matrix.mongo }}-${{ matrix.topology }}-${{ matrix.emulator }}${{ matrix.tools && format('-{0}', matrix.tools) || '' }}
           path: integration-coverage.out
           if-no-files-found: ignore
 

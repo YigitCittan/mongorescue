@@ -22,7 +22,7 @@ A window runs from the consistent point of the oldest base the chain covers to t
   | Point-in-time restores | `restore`, `readWriteAnyDatabase` and `dbAdminAnyDatabase` on `admin` (or `anyAction`, e.g. `root`) on the target, ideally through a separate user and connection. Replaying the oplog checks privileges per operation: `restore` alone fails at the first update, and `restore` + `readWriteAnyDatabase` fails at `dropDatabase`. |
 
   Creating or enabling a stream checks the oplog access through `connectionStatus` and refuses it with a clear message otherwise.
-- **MongoDB Database Tools** as for every backup; point-in-time restores need **100.12 or newer** (tested with 100.12.2 and 100.16.0).
+- **MongoDB Database Tools** as for every backup; point-in-time restores need **100.12 or newer**. CI tests point-in-time recovery with 100.12.2 and 100.19.1, on single-node replica sets of MongoDB 5.0, 6.0, 7.0 and 8.0 (every pull request) and on three-member replica sets of 5.0 and 8.0 (nightly).
 
 ## Enabling a stream
 
