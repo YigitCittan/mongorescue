@@ -11,6 +11,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Fuzz | `Fuzz*` targets, `make fuzz` | nightly, `make fuzz FUZZTIME=5m` (the job fails if the target is missing) | Parsers of untrusted input do not panic or misbehave on arbitrary bytes. |
 | Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, an 8.0 replica set, MinIO and LocalStack | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
+| PITR replica set | `internal/replset`, `replset3` build tag, `make test-pitr-replset` | nightly, 02:30 UTC (workflow "PITR", not required): MongoDB 5.0 and 8.0, Database Tools 100.12.2 and 100.19.1 | On a three-member replica set: failovers during collection and during a restore, a rollback through network isolation and divergence after a forced reconfiguration keep the oplog chain unbroken (or end it exactly where the surviving history ends), lose and duplicate no entry, and never store a rolled-back write. See [below](#pitr-on-a-three-member-replica-set). |
 | Large data | `TestThroughputAndMemory` with `MONGORESCUE_TEST_LARGE=1` | nightly, 03:00 UTC, on every MongoDB version | About 2 GiB streams through backup and restore with peak process memory below 256 MiB; throughput is reported. |
 | Fault injection | `internal/chaos`, `chaos` build tag, `make test-chaos-docker` | nightly, job "Chaos" (not required, not on pull requests) | A storage outage or partition, a MongoDB connection drop, a primary stepdown (during dumps and PITR collection), a full disk, SIGKILL (backup, purge, migration, key rotation) and clock steps never leave a broken run `completed` or an object that looks complete; the next run succeeds and the alert fires; see [below](#fault-injection-suite). |
 | Load | `internal/load`, `load` build tag, `make test-load-docker` | weekly, job "Load" (not required) | 5 GiB, 500 connections and 10,000 scheduled jobs: scheduler tick latency, memory, API p95, SQLite contention, backup throughput and the impact of a dump on a busy primary stay within the committed baseline; see [below](#load-test). |
@@ -179,6 +180,25 @@ What the numbers say:
 - **The job list is not paged**: `GET /api/v1/jobs` ignores `limit`, so `limit=50` costs as much as the whole list (81 against 84 ms at 10,000 jobs, 1.5 s with 16 clients). The overview (`/stats`) and readiness grow with the number of jobs in the same way, and the overview history is the slowest call (1.5 s alone, 6.4 s with 16 clients). Every other call stays in single-digit milliseconds. The idle memory peak (539 MiB RSS) comes from 16 clients reading the 10,000 jobs at once; the large backup itself peaked at 291 MiB.
 - **Primary impact.** A full dump at about 64 MB/s triples the p95 of the probe on the primary; throttling to 80 Mbit/s with one collection at a time keeps it at 1.24×. Reading from the secondary did not help here because both members share one machine's CPU and disk (the secondary even replays the probe's writes); on separate hosts it takes the dump's reads off the primary.
 - The weekly job runs the `ci` profile on a GitHub-hosted runner, which is slower than the laptop; the tolerances absorb that, and its report (artifact `load-report`) is where the baseline is refreshed from.
+
+## PITR on a three-member replica set
+
+`make test-pitr-replset` (`scripts/test-replset-docker.sh`) needs only Docker (with compose v2) and Go. For every scenario it starts a fresh replica set from [scripts/replset/compose.yml](../scripts/replset/compose.yml): `m1`, `m2` and `m3` on one network, with a keyfile and a random root password, initiated with `rs.initiate`. The tests inject failures with the docker CLI (kill, network disconnect), so they run in a container on that network with the docker socket mounted ([runner.Dockerfile](../scripts/replset/runner.Dockerfile): Ubuntu, the Database Tools and the docker CLI); the test binary is built on the host. Each test runs a real collector with one-second chunks, the backup and restore engines and the operations service in the test process.
+
+| Test | Failure | Asserts |
+| :--- | :--- | :--- |
+| `TestFailoverDuringCollection` | The primary steps down, then the new primary is killed, while a writer inserts with majority write concern | One open chain, no superseded chunk, no `pitr.chain_broken` or `pitr.diverged`; the chunks hold exactly the final primary's oplog (no entry lost, added or duplicated, same terms), and every acknowledged insert exactly once. |
+| `TestFailoverDuringRestore` | The primary is killed while a point-in-time restore restores the base, and again while it replays the oplog | The restore completes with clones identical to the target state, or fails with a message and no unrecorded clone; a retry restores the target state exactly; the chain survives. |
+| `TestRollbackThroughNetworkIsolation` | The primary is cut off the network, takes 50 `w:1` writes, the others elect a new primary and take more writes, then it rejoins and rolls back | The rolled-back writes appear in no chunk; the chain is unbroken and equals the new primary's oplog. |
+| `TestDivergenceAfterForcedReconfig` | A secondary is cut off, the other two commit and the collector stores 50 writes, both die, and the cut-off member is forced into a one-member set | The chain ends where the survivor's history ends (`diverged`, one `pitr.diverged`), the chunks with the lost writes are superseded, the new chain continues from that point, both together equal the survivor's oplog, and a point-in-time restore from the new chain's base matches the survivor's data. |
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MONGO_IMAGE` | `mongo:8.0` | Server image of the three members |
+| `TOOLS_VERSION` | `100.12.2` | Database Tools in the runner |
+| `RS_RUN` | all | Regular expression of the tests to run |
+| `RS_LOG_DIR` | | Where the member logs of failed tests go (otherwise their last lines are printed) |
+| `RS_OPLOG_MB` | `1024` | Oplog size of each member |
 
 ## Performance
 

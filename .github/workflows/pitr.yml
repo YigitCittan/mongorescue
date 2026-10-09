@@ -1,0 +1,61 @@
+name: PITR
+
+# Point-in-time recovery checks that need a three-member replica set and do not fit
+# the pull request budget (scripts/test-replset-docker.sh, docs/testing.md): every
+# night, the failure scenarios (failovers during collection and during a restore,
+# a rollback through network isolation, divergence after a forced
+# reconfiguration) against MongoDB 5.0 and 8.0 and Database Tools 100.12.2 and the
+# latest release. It is not a required check.
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.schedule }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26'
+
+jobs:
+  replset:
+    name: PITR replica set (MongoDB ${{ matrix.mongo }}, tools ${{ matrix.tools }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mongo: '5.0', tools: '100.12.2' }
+          - { mongo: '8.0', tools: '100.12.2' }
+          - { mongo: '8.0', tools: '100.19.1' }
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run the replica set scenarios
+        env:
+          MONGO_IMAGE: mongo:${{ matrix.mongo }}
+          TOOLS_VERSION: ${{ matrix.tools }}
+          RS_LOG_DIR: ${{ runner.temp }}/replset-logs
+        run: ./scripts/test-replset-docker.sh
+
+      - name: Upload member logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replset-logs-${{ matrix.mongo }}-${{ matrix.tools }}
+          path: ${{ runner.temp }}/replset-logs
+          retention-days: 14
