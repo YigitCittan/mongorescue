@@ -37,6 +37,8 @@ func (p *Prober) WriteOpTimes(ctx context.Context, uri string) (lastWrite, major
 // preference selects. It returns pitr.ErrNotReplicaSet for a server that is not a
 // replica set member. Errors are redacted.
 func (s *OplogMember) LastWrite(ctx context.Context) (pitr.OpTime, error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	var hello struct {
 		SetName   string `bson:"setName"`
 		LastWrite struct {
@@ -63,6 +65,8 @@ func (s *OplogMember) LastWrite(ctx context.Context) (pitr.OpTime, error) {
 // collector uses it to end a catch-up chunk after one interval. Errors are
 // redacted.
 func (s *OplogMember) EntryAtOrAfter(ctx context.Context, ts pitr.Timestamp) (op pitr.OpTime, found bool, err error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	raw, err := s.oplog().FindOne(ctx,
 		bson.D{{Key: "ts", Value: bson.D{{Key: "$gte", Value: bson.Timestamp{T: ts.T, I: ts.I}}}}},
 		options.FindOne().SetSort(bson.D{{Key: "$natural", Value: 1}}).

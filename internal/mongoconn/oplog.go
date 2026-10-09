@@ -35,6 +35,19 @@ const (
 // preference mode.
 var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 
+// memberOpTimeout bounds one round trip of an oplog session to a member (and one
+// call of OplogWindow, a few round trips). The driver has no socket timeout of
+// its own, so a member that stops answering without closing its connections (a
+// crash, a power loss, a network partition) would otherwise hold the collector's
+// tick until the operating system gives up on the connection, minutes later.
+// A variable for tests.
+var memberOpTimeout = time.Minute
+
+// memberCtx returns ctx bounded by memberOpTimeout.
+func memberCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, memberOpTimeout)
+}
+
 // OplogSession is one long-lived client to a replica set, opened once per PITR
 // stream so the collector does not reconnect at every tick. Its own reads (the
 // promoted OplogMember methods) use the session's read preference, so each one
@@ -170,6 +183,8 @@ type oplogHello struct {
 
 // hello runs hello on the member rp selects.
 func (s *OplogSession) hello(ctx context.Context, rp *readpref.ReadPref) (oplogHello, error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	var h oplogHello
 	if err := s.client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}},
 		options.RunCmd().SetReadPreference(rp)).Decode(&h); err != nil {
@@ -257,6 +272,8 @@ func (p *Prober) withOplogSession(ctx context.Context, uri string, fn func(*Oplo
 // and the replica set name and ID. It returns pitr.ErrNotReplicaSet for a server
 // that is not a replica set member. Errors are redacted.
 func (s *OplogMember) OplogWindow(ctx context.Context) (pitr.OplogWindow, error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	var w pitr.OplogWindow
 	var hello struct {
 		SetName   string `bson:"setName"`
@@ -374,7 +391,9 @@ func (s *OplogMember) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Wri
 		{Key: "$gte", Value: bson.Timestamp{T: r.From.T, I: r.From.I}},
 		{Key: "$lte", Value: bson.Timestamp{T: r.To.T, I: r.To.I}},
 	}}}
-	cur, err := s.oplog().Find(ctx, filter,
+	findCtx, cancel := memberCtx(ctx)
+	defer cancel()
+	cur, err := s.oplog().Find(findCtx, filter,
 		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
 		return pitr.OplogStats{}, redactErr(fmt.Errorf("find oplog entries: %w", err))
@@ -394,6 +413,17 @@ type oplogCursor interface {
 
 // driverCursor adapts *mongo.Cursor to oplogCursor.
 type driverCursor struct{ *mongo.Cursor }
+
+// Next advances the cursor; a call that has to fetch the next batch (a getMore)
+// is bounded by memberOpTimeout, like every round trip to a member.
+func (c driverCursor) Next(ctx context.Context) bool {
+	if c.RemainingBatchLength() > 0 {
+		return c.Cursor.Next(ctx)
+	}
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
+	return c.Cursor.Next(ctx)
+}
 
 // Doc returns the current document.
 func (c driverCursor) Doc() bson.Raw { return c.Current }
@@ -455,6 +485,8 @@ func copyOplog(ctx context.Context, cur oplogCursor, r pitr.OplogRange, w io.Wri
 // the member that answered has no entry there (it was truncated, rolled back or
 // never replicated). Errors are redacted.
 func (s *OplogMember) EntryAt(ctx context.Context, ts pitr.Timestamp) (term int64, found bool, err error) {
+	ctx, cancel := memberCtx(ctx)
+	defer cancel()
 	raw, err := s.oplog().FindOne(ctx,
 		bson.D{{Key: "ts", Value: bson.Timestamp{T: ts.T, I: ts.I}}},
 		options.FindOne().SetProjection(bson.D{{Key: "t", Value: 1}, {Key: "_id", Value: 0}})).Raw()
