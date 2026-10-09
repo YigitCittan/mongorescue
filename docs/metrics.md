@@ -20,7 +20,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_runs_total` | counter | `job`, `status` | Finished job runs over all their databases (`status`: `ok`, `partial`, `failed`, `cancelled`, or `skipped` for a scheduled run outside its backup window, which backs nothing up) |
 | `mongorescue_job_run_duration_seconds` | histogram | `job` | Duration of job runs (all databases) |
 | `mongorescue_restores_total` | counter | `status` | Finished restores (`succeeded`, `failed`) |
-| `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure`, `dropped`) |
+| `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure` (given up), `dropped` (the queue was full)) |
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
 | `mongorescue_audit_write_failures_total` | counter | | Audit log entries that could not be stored (see [audit.md](audit.md)) |
 | `mongorescue_audit_sync_writes_total` | counter | | Audit log entries written on the request path because the write queue was full |

@@ -1120,6 +1120,30 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 26,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO notification_outbox (channel_id, channel_type, event, attempts, next_attempt_at, created_at, last_error)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"ch_hook", "webhook", `{"type":"security.key_rotated","id":"evt_v26","time":"2026-09-26T13:00:00Z","action":"secret_key","duration":0}`,
+				2, ns(38*time.Hour), ns(37*time.Hour), "webhook: status 503")
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			heads, err := s.OutboxHeads(ctx)
+			if err != nil || len(heads) != 1 {
+				t.Fatalf("queued notifications = %+v, %v; want the one queued before the upgrade", heads, err)
+			}
+			h := heads[0]
+			if h.ChannelID != "ch_hook" || h.ChannelType != "webhook" || h.Event.Type != "security.key_rotated" || h.Event.ID != "evt_v26" ||
+				h.Attempts != 2 || !h.NextAttemptAt.Equal(compatT0.Add(38*time.Hour)) {
+				t.Fatalf("queued notification = %+v", h)
+			}
+			if err = s.DeleteDelivery(ctx, h.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

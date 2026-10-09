@@ -233,6 +233,10 @@ func (t EventType) Failed() bool {
 type Event struct {
 	// Type identifies the kind of event.
 	Type EventType `json:"type"`
+	// ID identifies the event across deliveries, for de-duplication by receivers:
+	// the notification service sets it when it queues the event (the same for
+	// every channel and every attempt, also after a restart). Empty until then.
+	ID string `json:"id,omitempty"`
 	// Time is when the operation finished (UTC).
 	Time time.Time `json:"time"`
 	// JobID is the scheduled job that produced a backup event; empty for manual runs.

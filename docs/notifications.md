@@ -46,7 +46,17 @@ Security alerts are not tied to rules: *Backup encryption is off* (`security.enc
 
 ## Delivery
 
-Delivery is asynchronous and never blocks or fails a backup. Events go into a bounded queue served by a small worker pool. Each attempt has a 10 second timeout; failed attempts are retried 3 times with exponential backoff (1s, 2s, 4s). Permanent failures such as an HTTP 4xx other than 408/429 are not retried. If the queue is full, the event is dropped and counted in `mongorescue_events_dropped_total`; every delivery outcome is counted in `mongorescue_notifications_total` (see [metrics.md](metrics.md)).
+Delivery is asynchronous and never blocks or fails a backup. Every delivery (one per event and channel) is stored in the metadata database (`notification_outbox`) before it is sent, and removed once the channel accepted it or it was given up, so a crash, a `SIGKILL`, an OOM kill or a power loss does not lose it: the next start sends it.
+
+- **At least once.** A delivery interrupted after the channel accepted it but before it was removed is sent again after the restart. Every event carries an ID (`event_id` in [webhook payloads](#webhook-payload), the same for every channel and every attempt); receivers that must not act twice drop IDs they have seen.
+- **Retries.** Each round makes up to 4 attempts (10 second timeout each, backoff 1s, 2s, 4s). A failed round is retried after 1 minute, doubling up to 1 hour, for 8 rounds (about 2 hours), also across restarts; then the delivery is given up and counted as `failure`. Permanent failures such as an HTTP 4xx other than 408/429 are given up at once.
+- **Order.** The deliveries of a channel are sent one at a time, oldest first: a channel that is down holds its later notifications back until the oldest one is delivered or given up. Channels do not wait for each other.
+- **Cap.** At most 10,000 deliveries wait; beyond that the oldest are dropped, logged as a warning and counted as `dropped`.
+- **What is stored.** The event (its fields are redacted like every event: no connection credentials) and the channel ID. The message is rendered, and the channel's URL, token or password read, only when it is sent, so the queue holds no channel secret. A delivery for a channel that was deleted or disabled meanwhile is dropped.
+- **The remaining window.** An event reaches the queue through the in-process event bus, a few milliseconds after the action it reports was committed; a crash inside that window loses the event (the action itself is in the audit log). Backup and restore runs interrupted by a crash are reported as failed at the next start.
+- **Without the database.** If the queue cannot be written (a full data disk, see [production.md](production.md#disk-space)), deliveries are sent from memory, as before this queue existed, and are lost if the process dies; if that in-memory queue is full, the delivery is dropped.
+
+Every delivery outcome is counted in `mongorescue_notifications_total{status}` (`success`, `failure`, `dropped`); events the bus itself had to drop are counted in `mongorescue_events_dropped_total` (see [metrics.md](metrics.md)).
 
 Error messages in notifications are redacted: MongoDB credentials never appear in a payload.
 
@@ -57,6 +67,7 @@ Every webhook request is a `POST` with `Content-Type: application/json`, an `X-M
 ```json
 {
   "version": 1,
+  "event_id": "evt_3f9a1c2e5b7d9f01",
   "event": "backup.failed",
   "time": "2026-09-24T03:00:00Z",
   "job_id": "nightly-shop",
@@ -73,6 +84,7 @@ Every webhook request is a `POST` with `Content-Type: application/json`, an `X-M
 | Field | Notes |
 | :--- | :--- |
 | `version` | Payload schema version, currently `1`. Breaking changes will bump it. |
+| `event_id` | Identifies the event: the same for every channel, every retry and a re-delivery after a restart. Deliveries are at least once, so use it to drop duplicates. Omitted for test messages |
 | `event` | `backup.succeeded`, `backup.failed`, `backup.cancelled`, `backup.skipped`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, `job.databases_added`, `metadata_backup.failed`, `restore.verification_failed`, `job.rpo_missed`, `job.rpo_recovered`, `security.destructive_action`, `security.approval_requested`, `security.key_rotated`, `pitr.chain_broken`, `pitr.diverged`, `pitr.lag_high`, `pitr.lag_recovered`, `pitr.window_low`, `pitr.collector_failed`, `pitr.collector_recovered`, `backup.copy_failed`, `backup.copy_recovered`, `backup.copy_exhausted`, `security.encryption_off_after_upgrade`, `system.disk_full`, or `notification.test` |
 | `action`, `actor`, `approval_id` | Security events: the destructive action (such as `delete_backup` or `purge`), who took or requested it, and the approval request |
 | `stream`, `connection_id` | `pitr.*` events: the [PITR stream](pitr.md) and its connection |

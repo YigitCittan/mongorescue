@@ -405,7 +405,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// notification service (the metadata store doubles as its repository).
 	metricSet := metrics.New(metrics.BuildInfo{Version: o.version, Commit: o.commit, GoVersion: runtime.Version()})
 	bus := events.NewBus(events.WithLogger(logger), events.WithDropHook(metricSet.IncEventsDropped))
+	// Deliveries are stored in the metadata database before they are sent
+	// (notification_outbox), so a crash or a kill does not lose them.
 	notifySvc := notify.NewService(metaStore,
+		notify.WithOutbox(metaStore),
 		notify.WithLogger(logger),
 		notify.WithObserver(func(t notify.ChannelType, outcome string) {
 			metricSet.ObserveNotification(string(t), outcome)

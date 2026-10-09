@@ -48,10 +48,13 @@ type Observer func(channelType ChannelType, outcome string)
 // NotifierFactory builds the Notifier for a channel.
 type NotifierFactory func(ch *Channel) (Notifier, error)
 
-// delivery is one queued channel send.
+// delivery is one queued channel send. outboxID is its outbox entry (0 for a
+// delivery queued in memory only) and attempts the rounds it failed before.
 type delivery struct {
-	channel *Channel
-	msg     Message
+	channel  *Channel
+	msg      Message
+	outboxID int64
+	attempts int
 }
 
 // Service manages channels and rules and dispatches events to channels. Construct it
@@ -72,6 +75,19 @@ type Service struct {
 	queue        chan delivery
 	drainTimeout time.Duration
 	observer     Observer
+
+	// outbox makes deliveries durable (see WithOutbox); nil queues in memory only.
+	outbox           Outbox
+	outboxLimit      int
+	outboxAttempts   int
+	outboxBackoff    time.Duration
+	outboxMaxBackoff time.Duration
+	// wake wakes the outbox dispatcher.
+	wake chan struct{}
+	// flight holds the channels with an outbox delivery being sent, so the
+	// deliveries of a channel go out one at a time, in order.
+	flightMu sync.Mutex
+	flight   map[string]struct{}
 
 	// mu serialises configuration mutations (check-then-write sequences).
 	mu sync.Mutex
@@ -167,6 +183,13 @@ func NewService(repo Repository, opts ...Option) *Service {
 		workers:      DefaultWorkers,
 		queue:        make(chan delivery, DefaultQueueSize),
 		drainTimeout: DefaultDrainTimeout,
+
+		outboxLimit:      DefaultOutboxLimit,
+		outboxAttempts:   DefaultOutboxAttempts,
+		outboxBackoff:    DefaultOutboxBackoff,
+		outboxMaxBackoff: DefaultOutboxMaxBackoff,
+		wake:             make(chan struct{}, 1),
+		flight:           make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -316,7 +339,7 @@ func (s *Service) TestChannel(ctx context.Context, id string) (*DeliveryStatus, 
 	msg := Render(events.Event{Type: events.NotificationTest, Time: time.Now().UTC()})
 	policy := s.retry
 	policy.Retries = 0
-	status, sendErr := s.send(ctx, ch, msg, policy)
+	status, sendErr := s.send(ctx, ch, msg, policy, true)
 	return status, sendErr
 }
 
@@ -434,7 +457,9 @@ func dedupe[T comparable](in []T) []T {
 
 // HandleEvent is the events.Handler for the Bus: it matches e against enabled rules
 // and enqueues one delivery per distinct enabled channel without blocking; broadcast
-// events (security alerts) go to every enabled channel. Deliveries
+// events (security alerts) go to every enabled channel. With an outbox the
+// deliveries are stored first (one transaction, see WithOutbox); otherwise, or
+// when the outbox cannot be written, they are queued in memory, and deliveries
 // that do not fit in the queue are dropped and reported to the observer.
 func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
 	if e.Type.Broadcast() {
@@ -469,16 +494,28 @@ func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
 		return
 	}
 
-	msg := Render(e)
+	var channels []*Channel
 	for _, id := range channelIDs {
 		ch, err := s.repo.GetChannel(ctx, id)
 		if err != nil {
 			s.logger.Warn("notification channel unavailable", slog.String("channel_id", id), slog.Any("error", err))
 			continue
 		}
-		if !ch.Enabled {
-			continue
+		if ch.Enabled {
+			channels = append(channels, ch)
 		}
+	}
+	s.deliver(ctx, e, channels)
+}
+
+// deliver queues e for channels: in the outbox when there is one, else (or when
+// it cannot be written) in memory.
+func (s *Service) deliver(ctx context.Context, e events.Event, channels []*Channel) {
+	if s.outbox != nil && s.persist(ctx, e, channels) {
+		return
+	}
+	msg := Render(e)
+	for _, ch := range channels {
 		s.enqueue(delivery{channel: ch, msg: msg})
 	}
 }
@@ -491,12 +528,13 @@ func (s *Service) broadcast(ctx context.Context, e events.Event) {
 		s.logger.Error("notification channels unavailable", slog.Any("error", err))
 		return
 	}
-	msg := Render(e)
+	var enabled []*Channel
 	for _, ch := range channels {
 		if ch.Enabled {
-			s.enqueue(delivery{channel: ch, msg: msg})
+			enabled = append(enabled, ch)
 		}
 	}
+	s.deliver(ctx, e, enabled)
 }
 
 // enqueue adds d to the queue without blocking.
@@ -530,9 +568,11 @@ func (s *Service) observe(t ChannelType, outcome string) {
 	}
 }
 
-// Run starts the delivery worker pool and blocks until ctx is cancelled. Queued and
-// in-flight deliveries then continue for at most the drain timeout before being
-// aborted. Run may be called at most once.
+// Run starts the delivery worker pool (and, with an outbox, the dispatcher that
+// sends the stored deliveries, including those left by a previous process) and
+// blocks until ctx is cancelled. Queued and in-flight deliveries then continue for
+// at most the drain timeout before being aborted; outbox deliveries that were not
+// sent stay stored for the next start. Run may be called at most once.
 func (s *Service) Run(ctx context.Context) error {
 	if !s.started.CompareAndSwap(false, true) {
 		return ErrServiceRunning
@@ -550,6 +590,9 @@ func (s *Service) Run(ctx context.Context) error {
 			defer wg.Done()
 			s.worker(ctx, workCtx)
 		}()
+	}
+	if s.outbox != nil {
+		wg.Go(func() { s.dispatch(ctx) })
 	}
 
 	<-ctx.Done()
@@ -582,13 +625,21 @@ func (s *Service) worker(ctx, workCtx context.Context) {
 	}
 }
 
-// process sends one queued delivery with the configured retry policy.
+// process sends one queued delivery with the configured retry policy. An outbox
+// delivery is then settled (see settle).
 func (s *Service) process(ctx context.Context, d delivery) {
-	_, _ = s.send(ctx, d.channel, d.msg, s.retry) // outcome is logged and recorded by send
+	if d.outboxID == 0 {
+		_, _ = s.send(ctx, d.channel, d.msg, s.retry, true) // outcome is logged and recorded by send
+		return
+	}
+	_, err := s.send(ctx, d.channel, d.msg, s.retry, false)
+	s.settle(ctx, d, err)
 }
 
-// send delivers msg to ch with retries, records the outcome and reports it.
-func (s *Service) send(ctx context.Context, ch *Channel, msg Message, policy RetryPolicy) (*DeliveryStatus, error) {
+// send delivers msg to ch with retries, records the outcome and reports it; a
+// failure is reported to the observer only with observeFailure (an outbox
+// delivery reports it once it is given up).
+func (s *Service) send(ctx context.Context, ch *Channel, msg Message, policy RetryPolicy, observeFailure bool) (*DeliveryStatus, error) {
 	status := DeliveryStatus{Event: msg.Event.Type}
 
 	n, err := s.factory(ch)
@@ -607,7 +658,9 @@ func (s *Service) send(ctx context.Context, ch *Channel, msg Message, policy Ret
 			slog.Int("attempts", status.Attempts),
 			slog.String("error", status.Error),
 		)
-		s.observe(ch.Type, OutcomeFailure)
+		if observeFailure {
+			s.observe(ch.Type, OutcomeFailure)
+		}
 	} else {
 		s.logger.Info("notification delivered",
 			slog.String("channel_id", ch.ID),
