@@ -188,7 +188,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
 - [Monitoring: heartbeats, health check and alert rules](docs/monitoring.md)
-- [Running in production](docs/production.md)
+- [Running in production](docs/production.md) and the [production checklist](docs/production.md#production-checklist)
 - [Kubernetes (Helm chart)](docs/kubernetes.md)
 - [Troubleshooting: unreadable records](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)
@@ -207,16 +207,22 @@ make desktop      # desktop app for this OS (needs the Wails CLI and CGO, see do
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to send a pull request, and [docs/testing.md](docs/testing.md) for what the suites guarantee.
 
+## Security model
+
+MongoRescue holds the credentials of your databases and your storage, so it is built to limit what one stolen credential can do. Deletes through MongoRescue are soft and wait out a grace period, lowered protections wait too, and an optional two-person rule needs a second administrator for destructive actions ([delete protection](docs/security.md#delete-protection)). S3 targets can lock every object in compliance mode, so not even the bucket's credentials can delete an archive early ([Object Lock](docs/security.md#immutable-backups-s3-object-lock)). Users and API keys get a role (viewer, operator, admin) and can be limited to some connections ([roles](docs/design/roles.md), [per-connection access](docs/security.md#per-connection-access)); every action lands in a hash-chained [audit log](docs/audit.md); connections to MongoDB can use [TLS and x509](docs/connections.md#tls-settings). What this does and does not protect against is in the [threat model](docs/security.md#what-this-protects-against).
+
 ## Known limitations
 
-- **Point-in-time recovery is experimental.** For replica sets, a PITR stream collects the oplog and base backups of the whole instance, and a point-in-time restore (admin only) restores the instance or some of its databases to a moment in a window into new `<db>_rescue_<timestamp>_<id>` databases ([docs/pitr.md](docs/pitr.md)). In-place point-in-time restores and sharded clusters are not supported. Users and roles can be included per job (`include_users_and_roles`).
-- **Single instance.** Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`); the data directory is locked, so a second instance refuses to start. MongoRescue backs up its own metadata on a schedule and the recovery kit holds what a rebuild needs. High availability is planned (#64, #65); until then the instance is a single point of failure, and nothing alerts when it is down unless you monitor it from outside (#97).
-- **Delete protection stops at MongoRescue.** Deletes are soft (a grace period of 7 days by default, with undo), lowered protections wait for the grace period, and an optional two-person rule needs a second administrator ([docs/security.md](docs/security.md)). Whoever holds the bucket's credentials can still delete archives directly: use least-privilege credentials without `s3:DeleteObject`; S3 Object Lock is planned (#59).
-- **Roles are global.** Users have a dashboard role (viewer, operator or admin, see [docs/design/roles.md](docs/design/roles.md)), but no per-connection access yet: an operator may back up and restore every connection (#98). Single sign-on sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on.
-- **`secret.key` is the root of trust.** Losing it (or `MONGORESCUE_SECRET_KEY`) makes the stored connection strings, notification secrets, storage credentials and encryption keys unrecoverable. Download the recovery kit and keep it apart from the backups. `secret.key`, the backup encryption key and storage credentials can be rotated (Settings → Security → Key rotation, [runbook](docs/encryption.md#key-rotation-runbook)); a key set by `MONGORESCUE_SECRET_KEY` is rotated by hand.
-- **Backups read from wherever the connection string points**, normally the primary, without throttling or backup windows (#100).
-- Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only. The macOS app is not signed or notarized yet (see [docs/desktop.md](docs/desktop.md)).
-- The standalone server binary needs the MongoDB Database Tools (`mongodump`, `mongorestore`) installed on the host. The Docker image and the desktop app packages already include them.
+As of v0.25.0. Run through the [production checklist](docs/production.md#production-checklist) before you rely on MongoRescue.
+
+- **Single instance, no high availability** ([#65](https://github.com/YigitCittan/mongorescue/issues/65)). Jobs, history, users and settings live in an embedded SQLite database (`mongorescue.db`) whose data directory is locked by one process, so a second instance refuses to start (the Helm chart always runs one replica). A shared metadata store is not available ([#64](https://github.com/YigitCittan/mongorescue/issues/64)). Scheduled metadata snapshots and the recovery kit make a rebuild possible, and the [heartbeat](docs/monitoring.md) tells you when the instance is down.
+- **`secret.key` is the root of trust; no KMS or Vault** ([#61](https://github.com/YigitCittan/mongorescue/issues/61), [#62](https://github.com/YigitCittan/mongorescue/issues/62)). Stored credentials and encryption keys are sealed with a local key: losing it makes them unrecoverable, and whoever reads it together with `mongorescue.db` holds every credential. Keep the recovery kit offline. Keys can be [rotated](docs/encryption.md#key-rotation-runbook); a key set by `MONGORESCUE_SECRET_KEY` is rotated by hand.
+- **Sharded clusters are not supported** ([#58](https://github.com/YigitCittan/mongorescue/issues/58)). Dumps through `mongos` are not tested and not consistent across shards; point-in-time recovery needs a replica set.
+- **Point-in-time recovery is experimental** ([#141](https://github.com/YigitCittan/mongorescue/issues/141)). Its API and dashboard may change without a deprecation period, point-in-time restores are admin only and go into new safe-clone databases, and in-place point-in-time restores are not offered ([#142](https://github.com/YigitCittan/mongorescue/issues/142)). See [docs/pitr.md](docs/pitr.md#not-there-yet).
+- **No cross-region DR policy** ([#143](https://github.com/YigitCittan/mongorescue/issues/143)). [Copies](docs/production.md#3-2-1-backups) go to any second target, but MongoRescue does not know regions or accounts: it does not check that a copy is locked, in another region or under other credentials, PITR oplog chunks and base backups are not copied, and there is no DR drill that restores from the other region.
+- **No independent security audit** ([#144](https://github.com/YigitCittan/mongorescue/issues/144)). The threat model is [docs/security.md](docs/security.md); there has been no third-party review or pentest yet.
+- **Single sign-on** sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on ([docs/sso.md](docs/sso.md)).
+- **Platforms.** The macOS app is not signed or notarized yet, a [1.0 criterion](docs/versioning.md#what-10-means) ([desktop](docs/desktop.md#install)). Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only. The standalone server binary needs the [MongoDB Database Tools](docs/configuration.md#mongodb-database-tools) on the host; the Docker image and the desktop app include them.
 
 The full list of production gaps is tracked with the [production-gap](https://github.com/YigitCittan/mongorescue/issues?q=is%3Aissue+is%3Aopen+label%3Aproduction-gap) label.
 

@@ -38,4 +38,4 @@ Rules that follow from the table:
 
 ## How to cut a release
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md#versioning-and-releases).
+See [CONTRIBUTING.md](../CONTRIBUTING.md#versioning-and-releases). Its first step reviews the README's [known limitations](../README.md#known-limitations) and the [production checklist](production.md#production-checklist), so they match what the release ships.

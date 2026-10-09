@@ -17,6 +17,23 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] An [RPO](#rpo-and-rto) set on every job whose default does not match what you promised, a `job.rpo_missed` notification rule, and no `fail` row under Overview → *Recovery readiness*.
 - [ ] Busy replica sets backed up from a secondary, with an upload cap and a backup window where the dump competes with production traffic; databases past the [practical limits of mongodump](#large-databases) covered by snapshots or your cloud provider's backups instead.
 
+## Production checklist
+
+The checklist above secures the instance. This one makes sure you can still restore after losing a database, a bucket, a cloud account or MongoRescue itself. Review it at every minor release, together with the README's [known limitations](../README.md#known-limitations).
+
+- [ ] **Object Lock in compliance mode, with versioning**, on every S3 target that holds backups ([Object Lock](configuration.md#immutable-backups-s3-object-lock), [threat model](security.md#immutable-backups-s3-object-lock)). Why: without it, anyone holding the bucket's credentials can delete every archive, and governance mode can be bypassed.
+- [ ] **A separate IAM account and credentials for copy targets** ([least-privilege credentials](#least-privilege-storage-credentials), [copies](configuration.md#copies-on-a-second-target-3-2-1)). Why: one leaked key, or one compromised account, must not reach the primary and its copies at once.
+- [ ] **A cross-region copy** of every important job, on its own locked target ([3-2-1 backups](#3-2-1-backups)). Why: a region outage or a lost account takes the primary target with it; restores then fall back to a healthy copy by themselves.
+- [ ] **A heartbeat and the alert rules** ([heartbeats](monitoring.md#global-heartbeat), [Prometheus alert rules](monitoring.md#prometheus-alert-rules)). Why: a crashed instance or a hung scheduler cannot report its own failure.
+- [ ] **The recovery kit downloaded and stored offline**, apart from the backups, with metadata backups on ([recovery kit](#recovery-kit), [metadata backups](#metadata-backups)). Why: without `secret.key` the stored credentials and encryption keys are unrecoverable.
+- [ ] **The two-person rule on, with at least two administrators** ([two-person rule](security.md#the-two-person-rule)). Why: one stolen administrator credential then cannot delete backups, lower protections or make another administrator alone; the rule cannot be turned on with fewer than two.
+- [ ] **Read preference `secondary` (or `secondaryPreferred`), an upload cap and a backup window** on busy replica sets ([reading from a secondary](#reading-from-a-secondary), [throttling](#throttling), [backup windows](#backup-windows)). Why: a dump from the primary competes with production traffic and evicts its working set.
+- [ ] **Scheduled restore tests, and chain tests for PITR streams** ([restore tests](verification.md#automated-restore-tests), [chain tests](pitr.md#chain-tests)). Why: a checksum proves the archive is intact, only a restore proves it is usable, and its duration is your measured RTO.
+- [ ] **TLS to MongoDB**, with certificate and hostname verification on ([TLS settings](connections.md#tls-settings)). Why: the dump carries all your data and the connection carries its credentials.
+- [ ] **Per-connection access** for every user and API key that is not an administrator, and few administrators ([per-connection access](security.md#per-connection-access), [roles](design/roles.md#roles-and-scopes)). Why: one team's credential should not read or restore another team's databases.
+- [ ] **A key rotation runbook** you have walked through once: `secret.key`, the backup encryption key and the storage credentials ([key rotation](#key-rotation), [runbook](encryption.md#key-rotation-runbook)). Why: after a leak or a departure you rotate under pressure, and every rotation needs a new recovery kit.
+- [ ] **MongoRescue in another failure domain than the databases**: another cloud account, region or cluster, with its metadata backups on a target outside the instance's own ([metadata backups](#metadata-backups), [Kubernetes](kubernetes.md#what-the-chart-runs)). Why: an incident that takes the databases must not take the tool that restores them.
+
 ## TLS and the reverse proxy
 
 MongoRescue serves plain HTTP. Put it behind a proxy that terminates TLS, and make the MongoRescue port reachable only from the proxy: publish it on loopback (`-p 127.0.0.1:8080:8080`), or keep it on a private Docker network that only the proxy joins.
@@ -104,7 +121,7 @@ Since v0.14.0 the database records a checksum of every schema migration applied 
 
 A single damaged row (a record whose stored JSON no longer fits, or whose credentials cannot be decrypted) does not take a list down: it is skipped, logged with its table and ID, shown to administrators in a dashboard banner and left unchanged on disk. [troubleshooting.md](troubleshooting.md#unreadable-records) shows how to back up the database, inspect the row with `sqlite3`, and repair, export or remove it.
 
-Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#json-file)). Job connection strings from those releases become managed connections.
+Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#upgrading-deprecated-environment-variables-and-configjson)). Job connection strings from those releases become managed connections.
 
 ## RPO and RTO
 

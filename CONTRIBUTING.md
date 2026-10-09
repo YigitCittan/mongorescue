@@ -196,8 +196,9 @@ MongoRescue follows [Semantic Versioning](https://semver.org). [docs/versioning.
 
 To cut a release:
 
-1. Move the `## [Unreleased]` entries in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section (leave an empty `## [Unreleased]` above it) and merge that to `main`. The section becomes the GitHub release notes: `scripts/changelog-section.sh x.y.z` prints it, and the release fails when it is missing or empty.
-2. Tag `vX.Y.Z` with an **annotated** tag and push it:
+1. Review the README's [Known limitations](README.md#known-limitations) and the [production checklist](docs/production.md#production-checklist) against what the release ships (for a minor release at least): drop what shipped, link what is still missing to its issue, and update the "As of" version.
+2. Move the `## [Unreleased]` entries in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section (leave an empty `## [Unreleased]` above it) and merge that to `main`. The section becomes the GitHub release notes: `scripts/changelog-section.sh x.y.z` prints it, and the release fails when it is missing or empty.
+3. Tag `vX.Y.Z` with an **annotated** tag and push it:
 
 ```bash
 git tag -a v0.2.0 -m "Release v0.2.0"

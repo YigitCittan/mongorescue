@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Container images reported their version as `v1.0.0` (the build had no Git metadata). The image now reports the release version on tagged builds and `dev` otherwise, so the dashboard and update checks show the real version.
+### Changed
+- Documentation (#145): the README's *Known limitations* match v0.25.0 (shipped features dropped, every remaining gap linked to its issue), a new *Security model* summary links the threat model, delete protection, Object Lock, roles, the audit log and TLS, [docs/production.md](docs/production.md#production-checklist) has a *Production checklist* (Object Lock, separate credentials and a cross-region copy, heartbeats, the offline recovery kit, the two-person rule, secondaries and windows, restore and chain tests, TLS, per-connection access, key rotation, a separate failure domain), and the release steps in CONTRIBUTING.md review both at every release.
 
 ## [0.25.0] - 2026-10-06
 
