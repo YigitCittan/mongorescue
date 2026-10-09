@@ -20,6 +20,7 @@
 #   SUITE            chaos (default) or load
 #   MONGO_IMAGE      MongoDB image (default: mongo:8.0)
 #   CHAOS_SMALL_FS_MB  size of the small filesystem in MiB (default: 48)
+#   MONGO_CACHE_GB   WiredTiger cache of each load suite member in GiB (default: 1)
 #   CHAOS_REPORT_DIR where reports and server logs are written (default: ./chaos-report)
 #   GOTESTFLAGS      extra flags for go test (e.g. "-run TestStorageOutage -v")
 #   MONGORESCUE_LOAD_*  load test knobs (see docs/testing.md)
@@ -31,6 +32,7 @@ MONGO_IMAGE="${MONGO_IMAGE:-mongo:8.0}"
 MINIO_IMAGE="${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1}"
 TOXIPROXY_IMAGE="${TOXIPROXY_IMAGE:-ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e}"
 CHAOS_SMALL_FS_MB="${CHAOS_SMALL_FS_MB:-48}"
+MONGO_CACHE_GB="${MONGO_CACHE_GB:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHAOS_REPORT_DIR="${CHAOS_REPORT_DIR:-$ROOT/chaos-report}"
 
@@ -96,21 +98,25 @@ docker network create "$NET" >/dev/null
 # dump can read from the secondary while the primary's latency is measured.
 # Clients outside use directConnection=true, through Toxiproxy or a mapped port.
 RS_KEY="$(head -c 756 /dev/urandom | base64 | tr -d '\n')"
+# Two members share one machine in the load suite: each gets a bounded cache
+# instead of half of the machine's memory.
+CACHE_FLAG=""
+if [ "$SUITE" = load ]; then CACHE_FLAG="--wiredTigerCacheSizeGB ${MONGO_CACHE_GB}"; fi
 # shellcheck disable=SC2016 # expanded inside the container
 MONGO_CMD='
   set -e
   printf "%s" "$RS_KEY" > /tmp/rs.key
   chmod 400 /tmp/rs.key
   chown mongodb:mongodb /tmp/rs.key
-  exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all'
+  exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all $CACHE_FLAG'
 log "starting $MONGO_IMAGE ($SUITE)"
 docker run -d --name "$PREFIX-mongo" --network "$NET" --network-alias mongo -p 127.0.0.1::27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" -e RS_KEY="$RS_KEY" \
+  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" -e RS_KEY="$RS_KEY" -e CACHE_FLAG="$CACHE_FLAG" \
   --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
 CONTAINERS+=("$PREFIX-mongo")
 if [ "$SUITE" = load ]; then
   docker run -d --name "$PREFIX-mongo2" --network "$NET" --network-alias mongo2 -p 127.0.0.1::27017 \
-    -e RS_KEY="$RS_KEY" --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
+    -e RS_KEY="$RS_KEY" -e CACHE_FLAG="$CACHE_FLAG" --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
   CONTAINERS+=("$PREFIX-mongo2")
 fi
 
