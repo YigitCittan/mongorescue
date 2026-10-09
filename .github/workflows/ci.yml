@@ -44,12 +44,17 @@ jobs:
       - name: Run go vet (integration build tag)
         run: go vet -tags=integration ./...
 
+      # The PITR replica set scenarios and soak test only run nightly and weekly;
+      # type-check them on every pull request.
+      - name: Run go vet (replset3 and soak build tags)
+        run: go vet -tags=replset3,soak ./...
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.13.2
-          # The integration tag only adds test files, so this lints everything.
-          args: --build-tags=integration
+          # These tags only add test files, so this lints everything.
+          args: --build-tags=integration,replset3,soak
 
       - name: Verify the MongoDB driver is confined to internal/mongoconn
         run: |
