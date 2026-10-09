@@ -168,6 +168,11 @@ type Stream struct {
 	// ChainTestConnectionID is the connection chain tests restore into; empty means
 	// the stream's own connection. Another server spares production the load.
 	ChainTestConnectionID string `json:"chain_test_connection_id,omitempty"`
+	// CopyTargets lists the storage targets (IDs, at most three) the stream's
+	// oplog chunks and base backups are copied to besides TargetID, for
+	// cross-region recovery: the copy queue copies them, checked against their
+	// checksums, and purges the copies with the originals.
+	CopyTargets []string `json:"copy_targets,omitempty"`
 	// CreatedAt and UpdatedAt are set by the repository.
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

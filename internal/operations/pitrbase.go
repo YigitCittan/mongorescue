@@ -63,6 +63,22 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		Gzip: true, Trigger: trigger,
 		ReadPreference: conn.ReadPref(), MaxConcurrentBackups: conn.MaxConcurrentBackups,
 	}
+	// A base is copied to the stream's copy targets like a job's backup (async),
+	// so a restore can start from it in another region.
+	if opts.Copies, err = s.resolveCopyTargets(ctx, stream.CopyTargets, target.ID, models.CopyAsync); err != nil {
+		return nil, err
+	}
+	opts.CopyMode = models.CopyAsync
+	// With security.require_locked_copies on, the copies need Object Lock like a
+	// job's.
+	if s.requireLockedCopiesSetting() {
+		if err = s.checkLockedCopies(ctx, opts.Copies); err != nil {
+			return nil, err
+		}
+	}
+	for _, c := range opts.Copies {
+		opts.CopyTargets = append(opts.CopyTargets, c.ID)
+	}
 	record, err := s.cfg.Backup.Prepare(opts)
 	if err != nil {
 		return nil, invalid(err)

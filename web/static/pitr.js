@@ -836,6 +836,8 @@ function pitrFillConnections() {
     select.appendChild(opt);
   });
   if (current) select.value = current;
+  // The copy targets of a new stream (dr.js).
+  if (typeof drRenderStreamForm === "function") drRenderStreamForm();
 }
 
 async function pitrLoad() {
@@ -888,7 +890,8 @@ async function pitrCreate(e) {
     base_keep_count: num("pitr-keep-count"),
     base_keep_days: num("pitr-keep-days"),
     base_on_gap: !!(document.getElementById("pitr-base-on-gap") || {}).checked,
-    chain_test_cron: getValue("pitr-chain-test-cron").trim()
+    chain_test_cron: getValue("pitr-chain-test-cron").trim(),
+    ...(typeof drStreamPayload === "function" ? drStreamPayload() : {})
   };
   if (!body.base_cron || !(body.chunk_seconds >= 15 && body.chunk_seconds <= 900) || isNaN(body.base_keep_count) || isNaN(body.base_keep_days)) {
     showFormError("pitr-error", t("pitr.invalid"));
@@ -1040,6 +1043,8 @@ function pitrOpenRestore(id) {
   });
   select.value = String(Math.max(0, pitrRestore.windows.length - 1));
   setValue("pitr-restore-databases", "");
+  // The copy chains the restore may read (dr.js).
+  if (typeof drFillPITRRestore === "function") drFillPITRRestore(s);
   form.hidden = false;
   pitrRestoreWindow();
   form.scrollIntoView({ block: "nearest" });
@@ -1065,6 +1070,7 @@ function pitrRestoreRequest() {
   const body = { pitr: { stream_id: pitrRestore.stream.stream.id, at: pitrUTC(at) } };
   const dbs = getValue("pitr-restore-databases").split(",").map(x => x.trim()).filter(Boolean);
   if (dbs.length) body.databases = dbs;
+  if (typeof drPITRRestorePayload === "function") Object.assign(body, drPITRRestorePayload());
   return body;
 }
 

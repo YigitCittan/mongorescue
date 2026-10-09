@@ -259,6 +259,21 @@ func (s *SQLiteStore) DeleteStorageTargetIgnoring(ctx context.Context, id string
 			OR EXISTS (SELECT 1 FROM json_each(jobs.data, '$.copy_targets') WHERE value = ?)`, id, id).Scan(&jobs); err != nil {
 			return fmt.Errorf("store: count jobs of storage target: %w", err)
 		}
+		var streams int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pitr_streams
+			WHERE EXISTS (SELECT 1 FROM json_each(pitr_streams.data, '$.copy_targets') WHERE value = ?)`, id).Scan(&streams); err != nil {
+			return fmt.Errorf("store: count PITR streams copying to storage target: %w", err)
+		}
+		var chunkCopies int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oplog_chunk_copies WHERE target_id = ? AND status <> 'purged'
+			AND (status IN ('pending', 'done') OR coalesce(json_extract(data, '$.written'), 0) <> 0 OR json_extract(data, '$.retain_until') IS NOT NULL)`,
+			id).Scan(&chunkCopies); err != nil {
+			return fmt.Errorf("store: count chunk copies on storage target: %w", err)
+		}
+		if streams > 0 || chunkCopies > 0 {
+			return fmt.Errorf("%w by %d PITR streams (as a copy target) and %d oplog chunk copies; remove it from the streams and wait for the purge of their chunk copies first",
+				targets.ErrInUse, streams, chunkCopies)
+		}
 		backups, err := countLiveBackups(ctx, tx, id, ignore...)
 		if err != nil {
 			return err

@@ -13,6 +13,10 @@ const MaxCopyTargets = 3
 // ErrInvalidCopyTargets is returned for an invalid list of copy targets or copy mode.
 var ErrInvalidCopyTargets = errors.New("invalid copy targets")
 
+// ErrUnlockedCopyTarget is returned when a job that requires locked copies names a
+// copy target without S3 Object Lock. It wraps ErrInvalidCopyTargets.
+var ErrUnlockedCopyTarget = fmt.Errorf("%w: the job requires locked copies", ErrInvalidCopyTargets)
+
 // CopyMode says when a backup with copy targets counts as completed.
 type CopyMode string
 

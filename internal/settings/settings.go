@@ -204,6 +204,10 @@ type Security struct {
 	// for a second administrator's approval. It can only be turned on while at least
 	// two administrators exist, and turning it off needs an approval too.
 	RequireSecondApprover bool `json:"require_second_approver"`
+	// RequireLockedCopies is the default of models.Job.RequireLockedCopies for new
+	// jobs: every copy target of the job must have S3 Object Lock. Turning it off is
+	// a lowered protection, delayed like the grace period (see protection.go).
+	RequireLockedCopies bool `json:"require_locked_copies"`
 }
 
 // DeleteGrace returns the delete grace period as a duration.
@@ -362,6 +366,7 @@ type SecurityPatch struct {
 	MCPEnabled             *bool         `json:"mcp_enabled,omitempty"`
 	DeleteGraceDays        *int          `json:"delete_grace_days,omitempty"`
 	RequireSecondApprover  *bool         `json:"require_second_approver,omitempty"`
+	RequireLockedCopies    *bool         `json:"require_locked_copies,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -404,6 +409,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
 		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
 		setIf(&next.Security.RequireSecondApprover, sec.RequireSecondApprover)
+		setIf(&next.Security.RequireLockedCopies, sec.RequireLockedCopies)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)

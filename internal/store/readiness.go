@@ -163,6 +163,31 @@ func (s *SQLiteStore) LatestRestoreTestsAll(ctx context.Context) (map[string][]*
 	return out, nil
 }
 
+// LatestDRDrillsAll returns, per job, the newest disaster recovery drill (a
+// restore test that read a copy target, see models.RestoreTestResult.SourceTargetID)
+// of each of its databases and the newest passed one (when that is older), newest
+// first, in one query.
+func (s *SQLiteStore) LatestDRDrillsAll(ctx context.Context) (map[string][]*models.RestoreTestResult, error) {
+	const db = `coalesce(json_extract(data, '$.database'), '')`
+	query := `SELECT id, data FROM (
+			SELECT id, data, job_id, started_at, status,
+				ROW_NUMBER() OVER (PARTITION BY job_id, ` + db + ` ORDER BY started_at DESC, id DESC) AS rn,
+				ROW_NUMBER() OVER (PARTITION BY job_id, ` + db + `, status = ? ORDER BY started_at DESC, id DESC) AS rn_status
+			FROM restore_tests
+			WHERE coalesce(json_extract(data, '$.source_target_id'), '') <> ''
+		) WHERE rn = 1 OR (status = ? AND rn_status = 1) ORDER BY job_id, started_at DESC, id DESC`
+	ok := string(models.RestoreTestOK)
+	list, err := listRecords[models.RestoreTestResult](ctx, s, tableRestoreTests, nil, query, ok, ok)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]*models.RestoreTestResult{}
+	for _, t := range list {
+		out[t.JobID] = append(out[t.JobID], t)
+	}
+	return out, nil
+}
+
 // LatestCompletedRestores returns the newest completed restore of every source
 // connection and database that restored the whole database for real: dry runs and
 // restores of selected collections are left out, as they say little about how long

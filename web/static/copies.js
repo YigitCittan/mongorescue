@@ -386,6 +386,8 @@ function copiesRenderJob() {
   hint.textContent = candidates.length === 0 ? t("copies.none_available")
     : full ? `${t("copies.targets_hint")} ${t("copies.max_reached")}` : t("copies.targets_hint");
   document.getElementById("job-copy-mode-wrap").hidden = copiesForm.selected.length === 0;
+  // The DR drill source follows the copy targets (dr.js).
+  if (typeof drJobCopiesChanged === "function") drJobCopiesChanged();
 }
 
 // copiesFillJobForm shows job's copy targets (none for a new job).
@@ -503,8 +505,9 @@ function copiesRestoreDetailRows(r, row) {
 // copiesReadinessCell returns the copy count of readiness row r as HTML ("" when
 // its newest backup has no copy targets).
 function copiesReadinessCell(r) {
-  if (!r || !(r.copy_targets > 0)) return "";
-  return ` <span class="muted rd-copies">· ${escapeHtml(copiesCount(r.copies || 0, r.copy_targets))}</span>`;
+  const dr = typeof drReadinessCell === "function" ? drReadinessCell(r) : "";
+  if (!r || !(r.copy_targets > 0)) return dr;
+  return ` <span class="muted rd-copies">· ${escapeHtml(copiesCount(r.copies || 0, r.copy_targets))}</span>${dr}`;
 }
 
 document.addEventListener("DOMContentLoaded", () => {

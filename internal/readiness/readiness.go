@@ -121,10 +121,20 @@ type Config struct {
 	// may still be missing before its row warns with ReasonCopyMissing (default
 	// DefaultCopyMissingAfter).
 	CopyMissingAfter time.Duration
+	// DRDrillMaxAge is how old the newest passed disaster recovery drill of a row
+	// whose jobs have copy targets may be before the row warns with
+	// ReasonDRDrillStale (default DefaultDRDrillMaxAge).
+	DRDrillMaxAge time.Duration
+	// RequireLockedCopies reports security.require_locked_copies (every job then
+	// requires locked copies, see ReasonDRUnlockedCopy); nil means off.
+	RequireLockedCopies func() bool
 }
 
 // DefaultCopyMissingAfter is the default of Config.CopyMissingAfter.
 const DefaultCopyMissingAfter = 6 * time.Hour
+
+// DefaultDRDrillMaxAge is the default of Config.DRDrillMaxAge: 30 days.
+const DefaultDRDrillMaxAge = 30 * 24 * time.Hour
 
 // Service computes readiness reports and runs the RPO checker. It is safe for
 // concurrent use.
@@ -162,6 +172,9 @@ func New(cfg Config) *Service {
 	}
 	if cfg.CopyMissingAfter <= 0 {
 		cfg.CopyMissingAfter = DefaultCopyMissingAfter
+	}
+	if cfg.DRDrillMaxAge <= 0 {
+		cfg.DRDrillMaxAge = DefaultDRDrillMaxAge
 	}
 	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1)}
 }

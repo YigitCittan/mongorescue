@@ -255,6 +255,12 @@ type RestoreTestPolicy struct {
 	// is due: RestoreTestRotate (also when empty) tests one per run, taking turns,
 	// RestoreTestAllDatabases tests each of them. Single-database jobs ignore it.
 	Databases RestoreTestScope `json:"databases,omitempty"`
+	// SourceTargetID, when set, makes the test a disaster recovery drill: it reads
+	// the archive from the job's copy on this copy target (one of the job's copy
+	// targets) instead of the primary, so it proves a restore works with the
+	// primary's region gone. A drill tests the newest backup whose copy there is
+	// complete.
+	SourceTargetID string `json:"source_target_id,omitempty"`
 }
 
 // RestoreTestScope says which databases of a multi-database job run a restore test
@@ -275,6 +281,7 @@ func (p *RestoreTestPolicy) Validate() error {
 		return nil
 	}
 	p.ConnectionID = strings.TrimSpace(p.ConnectionID)
+	p.SourceTargetID = strings.TrimSpace(p.SourceTargetID)
 	switch p.Databases {
 	case "", RestoreTestRotate, RestoreTestAllDatabases:
 	default:
@@ -341,6 +348,11 @@ type RestoreTestResult struct {
 	ConnectionName string `json:"connection_name,omitempty"`
 	// TempDatabase is the temporary database the backup was restored into.
 	TempDatabase string `json:"temp_database,omitempty"`
+	// SourceTargetID and SourceTargetName name the copy target a disaster recovery
+	// drill read the archive from (RestoreTestPolicy.SourceTargetID); empty when the
+	// test read the primary.
+	SourceTargetID   string `json:"source_target_id,omitempty"`
+	SourceTargetName string `json:"source_target_name,omitempty"`
 	// Trigger is "scheduled" (after a scheduled backup) or "manual".
 	Trigger string `json:"trigger"`
 	// Status is the outcome.

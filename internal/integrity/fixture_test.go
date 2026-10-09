@@ -132,8 +132,10 @@ func (a *fakeAdmin) touched() []string {
 
 // fakeRestorer records restores; execute decides their outcome.
 type fakeRestorer struct {
-	mu         sync.Mutex
-	requests   []models.RestoreRequest
+	mu       sync.Mutex
+	requests []models.RestoreRequest
+	// sources are the storage targets the prepared restores read from.
+	sources    []string
 	canDecrypt bool
 	execute    func(ctx context.Context, req models.RestoreRequest) error
 	// postRestore, when set, runs the deferred post-restore commands.
@@ -143,6 +145,9 @@ type fakeRestorer struct {
 func (r *fakeRestorer) CanDecrypt() bool { return r.canDecrypt }
 
 func (r *fakeRestorer) Prepare(req models.RestoreRequest, src *models.BackupRecord) (*models.RestoreRecord, error) {
+	r.mu.Lock()
+	r.sources = append(r.sources, src.StorageTargetID)
+	r.mu.Unlock()
 	target := req.CloneDatabase
 	if target == "" {
 		id, err := models.NewCloneID()

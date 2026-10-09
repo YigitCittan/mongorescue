@@ -541,6 +541,21 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "metadata snapshot retention change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalJobLockedCopies:
+		if a.SubjectCreatedAt == nil {
+			return "", public("the request is not bound to a job; request it again", ErrInvalid)
+		}
+		c, err := s.scheduleJobLockedCopies(ctx, a.Subject, a.SubjectCreatedAt)
+		if err != nil {
+			return "", err
+		}
+		return "turning off locked copies of job " + a.Subject + " scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalDisableLockedCopies:
+		c, err := s.scheduleDisableLockedCopies(ctx)
+		if err != nil {
+			return "", err
+		}
+		return "turning security.require_locked_copies off scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
 	case models.ApprovalLowerObjectLock:
 		if a.ObjectLock == nil {
 			return "", public("the request names no object lock", ErrInvalid)
@@ -987,6 +1002,10 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			applyErr = s.applyMetadataRetentionChange(ctx, c)
 		case models.PendingObjectLock:
 			applyErr = s.applyObjectLockChange(ctx, c)
+		case models.PendingDisableLockedCopies:
+			applyErr = s.applyDisableLockedCopies(ctx, c)
+		case models.PendingJobLockedCopies:
+			applyErr = s.applyJobLockedCopiesChange(ctx, c)
 		case models.PendingDisableSecondApprover:
 			// Only while the lockout lasts: with two administrators again, turning the
 			// rule off needs an approval like before.
@@ -1117,7 +1136,8 @@ type SettingsUpdate struct {
 // take effect after the current grace period (or, with the two-person rule, waits for
 // a second administrator first), turning security.require_second_approver off
 // always waits for a second administrator, and turning it on needs at least two
-// administrators (ErrTooFewAdmins). A higher grace period applies at once and
+// administrators (ErrTooFewAdmins), and turning security.require_locked_copies off
+// is delayed like a lower grace period. A higher grace period applies at once and
 // cancels a pending lowering. Expected failures: ErrUnavailable, ErrTooFewAdmins and
 // the settings errors.
 func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*SettingsUpdate, error) {
@@ -1126,7 +1146,7 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 	}
 	cur := s.settings().Security
 	var lowerGrace *int
-	disable := false
+	disable, lowerLocked := false, false
 	if p.Security != nil {
 		sec := *p.Security
 		if v := sec.DeleteGraceDays; v != nil && *v < cur.DeleteGraceDays {
@@ -1148,6 +1168,9 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 			case !*v && cur.RequireSecondApprover:
 				disable, sec.RequireSecondApprover = true, nil
 			}
+		}
+		if v := sec.RequireLockedCopies; v != nil && !*v && cur.RequireLockedCopies {
+			lowerLocked, sec.RequireLockedCopies = true, nil
 		}
 		p.Security = &sec
 	}
@@ -1220,6 +1243,9 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 			out.Pending = append(out.Pending, c)
 		}
 	}
+	if lockErr := s.holdLockedCopies(ctx, cur, next.Security, lowerLocked, out); lockErr != nil {
+		return nil, lockErr
+	}
 	if disable {
 		// Without two administrators nobody could approve: turning the rule off then
 		// waits for the grace period instead, so a lockout always ends.
@@ -1245,6 +1271,64 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		out.Approvals = append(out.Approvals, a)
 	}
 	return out, nil
+}
+
+// holdLockedCopies cancels a pending turning off of security.require_locked_copies
+// when it was turned on again (cur is the security settings before the update, next
+// after it) and, for lower (the update turns it off), schedules turning it off after
+// the grace period or, with the two-person rule, asks a second administrator first.
+func (s *Service) holdLockedCopies(ctx context.Context, cur, next settings.Security, lower bool, out *SettingsUpdate) error {
+	if next.RequireLockedCopies && !cur.RequireLockedCopies {
+		if st, ok := s.cfg.Store.(pendingStore); ok {
+			if _, err := st.DeletePendingChangesOf(ctx, models.PendingDisableLockedCopies, ""); err != nil {
+				return fmt.Errorf("cancel the pending locked copies change: %w", err)
+			}
+		}
+	}
+	if !lower {
+		return nil
+	}
+	if s.needsApproval(ctx) {
+		a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalDisableLockedCopies,
+			Summary: "stop requiring Object Lock on the copy targets of new jobs (security.require_locked_copies)"})
+		if err != nil {
+			return err
+		}
+		out.Approvals = append(out.Approvals, a)
+		return nil
+	}
+	c, err := s.scheduleDisableLockedCopies(ctx)
+	if err != nil {
+		return err
+	}
+	out.Pending = append(out.Pending, c)
+	return nil
+}
+
+// scheduleDisableLockedCopies schedules turning security.require_locked_copies off
+// after the grace period in force.
+func (s *Service) scheduleDisableLockedCopies(ctx context.Context) (*models.PendingChange, error) {
+	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingDisableLockedCopies})
+	if err != nil {
+		return nil, err
+	}
+	s.destructive(ctx, "disable_locked_copies", "security.require_locked_copies is turned off at "+c.EffectiveAt.Format(time.RFC3339), nil)
+	return c, nil
+}
+
+// applyDisableLockedCopies turns security.require_locked_copies off, unless it
+// already is.
+func (s *Service) applyDisableLockedCopies(ctx context.Context, c *models.PendingChange) error {
+	if s.cfg.SettingsUpdater == nil || !s.settings().Security.RequireLockedCopies {
+		return nil
+	}
+	off := false
+	if _, _, err := s.cfg.SettingsUpdater.UpdateChanged(settings.WithLoweredProtection(ctx), settings.Patch{Security: &settings.SecurityPatch{RequireLockedCopies: &off}}); err != nil {
+		return err
+	}
+	ctx = withApproval(ctx, &models.Approval{RequestedBy: c.RequestedBy}, c.ApprovedBy)
+	s.destructive(ctx, "apply_disable_locked_copies", "security.require_locked_copies is off", nil)
+	return nil
 }
 
 // scheduleMetadataRetention schedules lowering metadata_backup.retention_count to n
@@ -1328,6 +1412,11 @@ type JobProtection struct {
 	// Approval is the request for a second administrator, if the shortening waits
 	// for one.
 	Approval *models.Approval `json:"approval,omitempty"`
+	// PendingLockedCopies is the scheduled turning off of the job's
+	// require_locked_copies, if any; LockedCopiesApproval the request for a second
+	// administrator that comes first under the two-person rule.
+	PendingLockedCopies  *models.PendingChange `json:"pending_locked_copies,omitempty"`
+	LockedCopiesApproval *models.Approval      `json:"locked_copies_approval,omitempty"`
 }
 
 // shorter reports whether retention value v (0 keeps forever) keeps less than old.

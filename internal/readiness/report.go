@@ -146,6 +146,9 @@ type Row struct {
 	// targets, of CopyTargets planned (3-2-1).
 	Copies      int `json:"copies"`
 	CopyTargets int `json:"copy_targets,omitempty"`
+	// DR is the disaster recovery posture of the row's jobs that copy their
+	// backups to other storage targets; nil when none does.
+	DR *DRStatus `json:"dr,omitempty"`
 	// Status is the overall readiness; Reasons explain it (see the Reason
 	// constants), fail reasons first.
 	Status  Status   `json:"status"`
@@ -200,6 +203,9 @@ type RestoreTestRef struct {
 	Status models.RestoreTestStatus `json:"status"`
 	// DurationSeconds is how long it took.
 	DurationSeconds float64 `json:"duration_seconds"`
+	// SourceTargetID is the copy target a disaster recovery drill read from ("" for
+	// a test of the primary).
+	SourceTargetID string `json:"source_target_id,omitempty"`
 }
 
 // RPOStatus summarises the objectives of a row's enabled jobs.
@@ -244,6 +250,8 @@ type rowAcc struct {
 	verifyKO bool
 	// copyMissing: the newest good backup's copies are overdue.
 	copyMissing bool
+	// dr collects the disaster recovery posture (nil: no job with copy targets).
+	dr *drAcc
 }
 
 // latestBackups returns the newest (verified) backup of every job and database
@@ -292,11 +300,14 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: restore tests: %w", ErrUnavailable, err)
 	}
+	drills := s.drills(ctx)
 	// A restore test into a test server the caller may not touch is not its evidence.
-	for id, list := range tests {
-		tests[id] = slices.DeleteFunc(list, func(t *models.RestoreTestResult) bool {
-			return t.ConnectionID != "" && !auth.ConnectionAllowed(ctx, t.ConnectionID)
-		})
+	for _, m := range []map[string][]*models.RestoreTestResult{tests, drills} {
+		for id, list := range m {
+			m[id] = slices.DeleteFunc(list, func(t *models.RestoreTestResult) bool {
+				return t.ConnectionID != "" && !auth.ConnectionAllowed(ctx, t.ConnectionID)
+			})
+		}
 	}
 
 	var streams []StreamInfo
@@ -312,6 +323,8 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		byConn[streams[i].ConnectionID] = &streams[i]
 	}
 
+	targets := s.targetsByID(ctx)
+	requireAll := s.cfg.RequireLockedCopies != nil && s.cfg.RequireLockedCopies()
 	rows := map[rowKey]*rowAcc{}
 	for _, p := range points {
 		rk := rowKey{p.job.ConnectionID, p.database}
@@ -324,6 +337,8 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 			rows[rk] = acc
 		}
 		s.addJob(acc, p, now, since, byConn[rk.connection])
+		addDR(acc, p.job, targets, requireAll)
+		addDrills(acc, p, drills[p.job.ID])
 		addEvidence(acc, p, verified[p.job.ID], tests[p.job.ID])
 	}
 	restores, err := s.cfg.Store.LatestCompletedRestores(ctx)
@@ -348,6 +363,9 @@ func (s *Service) Report(ctx context.Context) (*Report, error) {
 		}
 	}
 	for rk, acc := range rows {
+		if acc.dr != nil {
+			acc.dr.maxAge = s.cfg.DRDrillMaxAge
+		}
 		finishRow(acc, byDB[rk], now, byConn[rk.connection])
 		switch acc.row.Status {
 		case StatusOK:
@@ -425,10 +443,7 @@ func addEvidence(acc *rowAcc, p point, verified map[string]*models.BackupRecord,
 		if db != p.database {
 			continue
 		}
-		ref := &RestoreTestRef{ID: t.ID, JobID: p.job.ID, At: t.StartedAt.UTC(), Status: t.Status, DurationSeconds: t.DurationSeconds}
-		if t.CompletedAt != nil {
-			ref.At = t.CompletedAt.UTC()
-		}
+		ref := testRef(p.job.ID, t)
 		if cur := acc.row.LastRestoreTest; cur == nil || ref.At.After(cur.At) {
 			acc.row.LastRestoreTest = ref
 		}
@@ -439,6 +454,16 @@ func addEvidence(acc *rowAcc, p point, verified map[string]*models.BackupRecord,
 			break // older successes cannot be newer than this one
 		}
 	}
+}
+
+// testRef returns the reference of restore test t of job jobID.
+func testRef(jobID string, t *models.RestoreTestResult) *RestoreTestRef {
+	ref := &RestoreTestRef{ID: t.ID, JobID: jobID, At: t.StartedAt.UTC(), Status: t.Status, DurationSeconds: t.DurationSeconds,
+		SourceTargetID: t.SourceTargetID}
+	if t.CompletedAt != nil {
+		ref.At = t.CompletedAt.UTC()
+	}
+	return ref
 }
 
 // finishRow sets acc's RPO summary, RTO estimate (restore is the newest completed
@@ -500,6 +525,7 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	if acc.copyMissing {
 		warn = append(warn, ReasonCopyMissing)
 	}
+	warn = append(warn, finishDR(acc, now)...)
 	if stream != nil {
 		sf, sw := streamReasons(*stream)
 		fail, warn = append(fail, sf...), append(warn, sw...)

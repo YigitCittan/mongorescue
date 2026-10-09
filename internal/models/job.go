@@ -135,6 +135,11 @@ type Job struct {
 
 	// CopyMode says when a backup with copies is completed (CopyAsync by default).
 	CopyMode CopyMode `json:"copy_mode,omitempty"`
+
+	// RequireLockedCopies refuses to save the job unless every copy target has S3
+	// Object Lock, so no copy is ever left deletable. New jobs take the
+	// security.require_locked_copies setting when they do not set it.
+	RequireLockedCopies bool `json:"require_locked_copies,omitempty"`
 }
 
 // Clone returns a deep copy of the job.

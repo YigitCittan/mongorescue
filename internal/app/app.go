@@ -562,6 +562,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Streams:      pitrStreams(&pitrSvc, &chainTestFailed),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
+		// Every job requires locked copies while the setting is on.
+		RequireLockedCopies: func() bool { return settingsSvc.Current().Security.RequireLockedCopies },
 		Observe: func(started time.Time, samples []readiness.Sample) {
 			out := make([]metrics.RPOSample, len(samples))
 			for i, s := range samples {
@@ -756,6 +758,21 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 				return "", err
 			}
 			return t.ID, nil
+		},
+		// With security.require_locked_copies on, a stream's copy targets need
+		// Object Lock like a job's.
+		CheckCopyTarget: func(ctx context.Context, id string) error {
+			if !settingsSvc.Current().Security.RequireLockedCopies {
+				return nil
+			}
+			t, err := targetSvc.Resolve(ctx, id)
+			if err != nil {
+				return err
+			}
+			if !t.ObjectLocked() {
+				return fmt.Errorf("%w: copy target %s has no S3 Object Lock (security.require_locked_copies is on)", models.ErrUnlockedCopyTarget, t.Name)
+			}
+			return nil
 		},
 		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
 		UpdateBase:  metaStore.UpdateBackupRecord,

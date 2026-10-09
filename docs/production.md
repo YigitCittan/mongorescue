@@ -24,6 +24,9 @@ The checklist above secures the instance. This one makes sure you can still rest
 - [ ] **Object Lock in compliance mode, with versioning**, on every S3 target that holds backups ([Object Lock](configuration.md#immutable-backups-s3-object-lock), [threat model](security.md#immutable-backups-s3-object-lock)). Why: without it, anyone holding the bucket's credentials can delete every archive, and governance mode can be bypassed.
 - [ ] **A separate IAM account and credentials for copy targets** ([least-privilege credentials](#least-privilege-storage-credentials), [copies](configuration.md#copies-on-a-second-target-3-2-1)). Why: one leaked key, or one compromised account, must not reach the primary and its copies at once.
 - [ ] **A cross-region copy** of every important job, on its own locked target ([3-2-1 backups](#3-2-1-backups)). Why: a region outage or a lost account takes the primary target with it; restores then fall back to a healthy copy by themselves.
+- [ ] **Locked copies required** with **Settings → Security → Require locked copies** (`security.require_locked_copies`) and on every job with copies ([cross-region disaster recovery](#cross-region-disaster-recovery)). Why: a copy target without Object Lock leaves the copy deletable by whoever holds its key, and the policy refuses such a job instead of letting it slip.
+- [ ] **A DR drill from the cross-region copy** on every important job, passing at least monthly, and the [region failure runbook](#region-failure) walked through once with the recovery kit stored outside the primary's region ([DR drills](#dr-drills)). Why: a copy you never restored from is a hope, not a plan; the drill proves it restores without region A.
+- [ ] **No `dr_same_region` or `dr_same_credentials` warning** under Overview → *Recovery readiness*, and a region set on every storage target ([region awareness](#region-awareness)). Why: a copy in the primary's region, or reachable with the primary's key, fails together with it.
 - [ ] **A heartbeat and the alert rules** ([heartbeats](monitoring.md#global-heartbeat), [Prometheus alert rules](monitoring.md#prometheus-alert-rules)). Why: a crashed instance or a hung scheduler cannot report its own failure.
 - [ ] **The recovery kit downloaded and stored offline**, apart from the backups, with metadata backups on ([recovery kit](#recovery-kit), [metadata backups](#metadata-backups)). Why: without `secret.key` the stored credentials and encryption keys are unrecoverable.
 - [ ] **The two-person rule on, with at least two administrators** ([two-person rule](security.md#the-two-person-rule)). Why: one stolen administrator credential then cannot delete backups, lower protections or make another administrator alone; the rule cannot be turned on with fewer than two.
@@ -167,6 +170,44 @@ What you get:
 
 Copies read storage, not MongoDB, so they run outside backup windows too; they upload at the job's (or the general) `max_upload_mbps`. Size the copy target like the primary: it holds the same archives for as long as the primary does.
 
+## Cross-region disaster recovery
+
+"We use S3" is not disaster recovery: a region outage, a lost account or one leaked key can take the primary bucket and every copy in the same failure domain with it. Real DR keeps an **immutable copy in another region, behind other credentials**, and proves regularly that a restore works **from that copy alone**. MongoRescue checks each part and sums it up per database under Overview → *Recovery readiness* (*DR: cross-region ✓* or *DR: same region ✗*).
+
+### Locked copies
+
+A job with **Require locked copies** (`require_locked_copies` in the API) is refused (`400`) unless every one of its copy targets has [S3 Object Lock](configuration.md#immutable-backups-s3-object-lock), so a copy is never left deletable. **Settings → Security → Require locked copies** (`security.require_locked_copies`) applies to every job while it is on: no job can opt out (a new job without the policy, or a job turning it off, is refused with `400`), and the copy targets of every job and PITR stream must have Object Lock. Turning the setting off, or a job's policy while the setting is off, is a lowered protection: it takes effect after the [delete grace period](security.md#lowering-a-protection-takes-the-grace-period-too) and, under the [two-person rule](security.md#the-two-person-rule), only once a second administrator approved it (pending change and approval kinds `disable_locked_copies` and `job_locked_copies`).
+
+### Region awareness
+
+Every storage target has a **region**: an AWS S3 target takes its `s3.region`, or, when that is empty or `auto`, the bucket's location (`GetBucketLocation`, needs `s3:GetBucketLocation`); any other target (MinIO, another S3 provider, a local disk or NAS) only has the label you give it (for example `dc-frankfurt`), since its `s3.region` says nothing about where the data is. Set the label on every such target. For a database whose jobs have copy targets the readiness report then warns:
+
+- `dr_same_region` when no copy target is in a known region other than the primary's (an unknown region never counts as another one);
+- `dr_same_credentials` when every copy target is reachable with the primary's credentials or account, where this is detectable (see [copy targets in another account](#copy-targets-in-another-account));
+- `dr_unlocked_copy` when a job that requires locked copies has a copy target without Object Lock (a job saved before the setting was turned on). The check of a job's copy targets runs when they or its policy change, so pausing or renaming such a job still works; removing the Object Lock of a copy target that a requiring job or stream uses is refused (`400`).
+
+### DR drills
+
+A **DR drill** is a [restore test](verification.md#automated-restore-tests) that reads the archive from a copy target instead of the primary: in the job form, *Restore test* → *Read from* a copy target (`restore_test.source_target_id`, one of the job's `copy_targets`). Pick the copy in the other region. A drill tests the newest backup whose copy on that target is complete (with async copies that may be the previous backup); a scheduled drill is skipped while no backup has a complete copy there yet, and a manual one is refused. The result names the target it read (`source_target_id`), and the readiness row shows the last drill and its result. `dr_drill_stale` warns when no drill passed in the last 30 days.
+
+**DR: cross-region.** A database's readiness row shows *DR: cross-region* once one of its jobs has a copy target in another region with Object Lock, and a drill from such a copy passed within the last 30 days. Otherwise it shows what is missing (*same region*, *not locked*, *no recent drill*).
+
+### Region failure
+
+The runbook for "region A is gone" (the primary target, maybe the databases and MongoRescue with it). Prepare it before you need it:
+
+- The **recovery kit** (and its passphrase) and the backup **encryption key** are stored **outside region A**: in another region, another account, or offline. Without `secret.key` the stored credentials are unreadable, and without the private key encrypted archives are.
+- [Metadata backups](#metadata-backups) go to a target in region B, so the instance's own database survives too.
+- A drill from the region B copy passed recently (no `dr_drill_stale`).
+
+When region A fails:
+
+1. **Start MongoRescue in region B** (or anywhere with access to region B). If the instance in region A is gone, restore it from the metadata backup in region B with the recovery kit ([restore MongoRescue from a snapshot](#restore-mongorescue-from-a-snapshot)), or start a fresh instance and add the region B copy target with its own credentials.
+2. **Check what region B holds.** Every backup lists its copies; the region B target must show them *done*. Copies that were still pending when region A went are lost with it: the newest restorable backup is the newest one with a done copy in region B.
+3. **Restore from region B.** A restore falls back to a healthy copy by itself when the primary archive cannot be read; to be explicit, choose the region B target under *Read the archive from* (`source_target_id`, `--from-target` on the CLI). Restore into a new cluster in region B, as a safe clone first.
+4. **Point the jobs at region B.** Until region A is back, make the region B target the primary of the jobs (and add a new copy target in a third region), so new backups do not fail against the lost one.
+5. **After region A returns**, run the integrity sweep: it verifies every copy and copies missing or damaged ones again.
+
 ## Large databases
 
 MongoRescue streams `mongodump --archive`: a logical copy that reads every document through the query layer of the member it connects to. That is simple, portable across versions and restorable into any database, but its cost grows with the data:
@@ -259,6 +300,17 @@ Give MongoRescue a key limited to its bucket and prefix, with only the actions i
 ```
 
 Use a separate key per installation, so revoking one never stops another.
+
+#### Copy targets in another account
+
+A copy only protects against a leaked key or a compromised account if that key or account cannot reach it. Put every copy target in **another account** (AWS account, Cloudflare account, MinIO tenant) than the primary, with **its own key** that MongoRescue alone holds:
+
+1. Create the copy bucket in the second account, in another region than the primary, with **Object Lock (compliance mode) and versioning** enabled at creation.
+2. Create a user (or role) in that account whose policy allows only what copies need on that bucket and prefix: `s3:PutObject`, `s3:GetObject` and `s3:ListBucket` (copies, verification, restores and drills), `s3:DeleteObject` (the purge, which Object Lock holds back until the retention ends), `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` (large copies), plus `s3:GetBucketObjectLockConfiguration`, `s3:GetBucketVersioning`, `s3:PutObjectRetention` (and `s3:PutObjectLegalHold` with *legal hold on pin*) for Object Lock, and `s3:GetBucketLocation` so the target's region is detected. Never give it `s3:BypassGovernanceRetention`, `s3:PutBucketObjectLockConfiguration` or `s3:DeleteBucket`.
+3. Do not reuse the primary's access key, and do not rely on the default credentials (instance profile, environment) for both: two targets without keys on one endpoint share the process's credentials.
+4. Keep the second account's root and administrator credentials out of the place that runs MongoRescue, and out of region A.
+
+The readiness report checks the part it can see: `dr_same_credentials` warns when every copy of a job uses the primary's access key ID, both use the default credentials on the same endpoint, or both are on the same Cloudflare R2 account (the account is part of the endpoint). It cannot see AWS account IDs or role trust, so a different key in the same account passes the check: the account split is yours to keep.
 
 ## Container images
 

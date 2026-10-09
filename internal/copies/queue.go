@@ -260,6 +260,11 @@ func (s *Service) RunDue(ctx context.Context) error {
 			}
 		}
 	}
+	if cs := s.chunkStore(); cs != nil {
+		if err := s.runChunks(ctx, cs); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	s.updateDepth(ctx)
 	return errors.Join(errs...)
 }
@@ -276,6 +281,11 @@ func (s *Service) updateDepth(ctx context.Context) {
 			if waiting(&rec.Copies[i]) {
 				n++
 			}
+		}
+	}
+	if cs := s.chunkStore(); cs != nil {
+		if chunks, countErr := cs.CountWaitingChunkCopies(ctx); countErr == nil {
+			n += int(chunks)
 		}
 	}
 	s.depth.Store(int64(n))

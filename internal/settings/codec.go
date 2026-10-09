@@ -33,6 +33,7 @@ const (
 	KeyMCPEnabled             = "security.mcp_enabled"
 	KeyDeleteGraceDays        = "security.delete_grace_days"
 	KeyRequireSecondApprover  = "security.require_second_approver"
+	KeyRequireLockedCopies    = "security.require_locked_copies"
 	KeyEncryptionEnabled      = "encryption.enabled"
 	KeyEncryptionMode         = "encryption.mode"
 	KeyEncryptionRecipients   = "encryption.recipients"
@@ -122,6 +123,7 @@ var keyDefs = []keyDef{
 	field(KeyMCPEnabled, false, func(s *Settings) *bool { return &s.Security.MCPEnabled }),
 	field(KeyDeleteGraceDays, false, func(s *Settings) *int { return &s.Security.DeleteGraceDays }),
 	field(KeyRequireSecondApprover, false, func(s *Settings) *bool { return &s.Security.RequireSecondApprover }),
+	field(KeyRequireLockedCopies, false, func(s *Settings) *bool { return &s.Security.RequireLockedCopies }),
 	field(KeyEncryptionEnabled, false, func(s *Settings) *bool { return &s.Encryption.Enabled }),
 	field(KeyEncryptionMode, false, func(s *Settings) *EncryptionMode { return &s.Encryption.Mode }),
 	field(KeyEncryptionRecipients, false, func(s *Settings) *[]string { return &s.Encryption.Recipients }),
