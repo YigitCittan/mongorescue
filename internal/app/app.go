@@ -410,6 +410,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	notifySvc := notify.NewService(metaStore,
 		notify.WithOutbox(metaStore),
 		notify.WithChannelWarning(settingsSvc.SetChannelUnreadable),
+		notify.WithOutboxMaxAge(cfg.NotificationMaxAge),
 		notify.WithLogger(logger),
 		notify.WithObserver(func(t notify.ChannelType, outcome string) {
 			metricSet.ObserveNotification(string(t), outcome)

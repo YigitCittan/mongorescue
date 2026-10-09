@@ -54,6 +54,9 @@ const (
 	// EnvMinFreeSpace sets the free space, in MiB, the data directory needs for a
 	// backup or restore to start (0 turns the check off).
 	EnvMinFreeSpace = "MONGORESCUE_MIN_FREE_SPACE_MB"
+	// EnvNotificationMaxAge sets how long a notification may wait in the delivery
+	// queue before it is dropped as stale: a Go duration such as "24h".
+	EnvNotificationMaxAge = "MONGORESCUE_NOTIFICATION_MAX_AGE"
 )
 
 // Defaults.
@@ -76,6 +79,11 @@ const (
 	DefaultMinFreeSpaceMB = 100
 	// MaxMinFreeSpaceMB is the largest minimum free space (1 TiB).
 	MaxMinFreeSpaceMB = 1 << 20
+	// DefaultNotificationMaxAge is how long a notification may wait to be sent.
+	DefaultNotificationMaxAge = 24 * time.Hour
+	// MinNotificationMaxAge and MaxNotificationMaxAge bound it.
+	MinNotificationMaxAge = 10 * time.Minute
+	MaxNotificationMaxAge = 30 * 24 * time.Hour
 )
 
 // Sentinel errors.
@@ -103,6 +111,9 @@ var (
 	// ErrInvalidMinFreeSpace is returned for a minimum free space that is not a
 	// whole number of MiB from 0 to MaxMinFreeSpaceMB.
 	ErrInvalidMinFreeSpace = errors.New("config: minimum free space must be a whole number of MiB from 0 to 1048576")
+	// ErrInvalidNotificationMaxAge is returned for a notification maximum age that
+	// is not a duration from 10m to 720h.
+	ErrInvalidNotificationMaxAge = errors.New("config: notification max age must be a duration from 10m to 720h (such as 24h)")
 )
 
 // Config is the bootstrap configuration.
@@ -139,12 +150,16 @@ type Config struct {
 	// because the disk is full stops new runs whatever the value, until space is
 	// freed (see internal/diskguard).
 	MinFreeSpaceMB int
+	// NotificationMaxAge is how long a notification may wait in the delivery
+	// queue (behind older ones of its channel, or across a downtime) before it is
+	// dropped as stale.
+	NotificationMaxAge time.Duration
 }
 
 // Default returns the defaults of the binary.
 func Default() *Config {
 	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo,
-		MinFreeSpaceMB: DefaultMinFreeSpaceMB}
+		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge}
 }
 
 // FromEnv returns the defaults overridden by the bootstrap environment variables.
@@ -194,7 +209,24 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 		cfg.MinFreeSpaceMB = n
 	}
+	if v := strings.TrimSpace(getenv(EnvNotificationMaxAge)); v != "" {
+		d, err := ParseNotificationMaxAge(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvNotificationMaxAge, err)
+		}
+		cfg.NotificationMaxAge = d
+	}
 	return cfg, nil
+}
+
+// ParseNotificationMaxAge parses a notification maximum age: a Go duration from
+// MinNotificationMaxAge to MaxNotificationMaxAge.
+func ParseNotificationMaxAge(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d < MinNotificationMaxAge || d > MaxNotificationMaxAge {
+		return 0, ErrInvalidNotificationMaxAge
+	}
+	return d, nil
 }
 
 // ParseMinFreeSpace parses a minimum free space: a whole number of MiB from 0 to
@@ -242,6 +274,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s: %w", EnvShutdownGrace, ErrInvalidShutdownGrace)
 	case c.MinFreeSpaceMB < 0 || c.MinFreeSpaceMB > MaxMinFreeSpaceMB:
 		return fmt.Errorf("%s: %w", EnvMinFreeSpace, ErrInvalidMinFreeSpace)
+	case c.NotificationMaxAge != 0 && (c.NotificationMaxAge < MinNotificationMaxAge || c.NotificationMaxAge > MaxNotificationMaxAge):
+		return fmt.Errorf("%s: %w", EnvNotificationMaxAge, ErrInvalidNotificationMaxAge)
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {

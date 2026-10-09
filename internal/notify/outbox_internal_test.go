@@ -200,6 +200,49 @@ func TestOutboxUnreadableChannelIsGivenUp(t *testing.T) {
 	}
 }
 
+// A delivery older than the maximum age is dropped as stale, never sent, and
+// counted as expired; the younger one behind it is sent.
+func TestOutboxExpiresStaleDeliveries(t *testing.T) {
+	ob := &memOutbox{}
+	now := time.Now()
+	_, _ = ob.EnqueueDeliveries(context.Background(), []OutboxEntry{
+		{ChannelID: "ch1", ChannelType: ChannelWebhook, Event: events.Event{Type: events.BackupFailed, Detail: "stale"},
+			NextAttemptAt: now, CreatedAt: now.Add(-25 * time.Hour)},
+		{ChannelID: "ch1", ChannelType: ChannelWebhook, Event: events.Event{Type: events.BackupFailed, Detail: "fresh"},
+			NextAttemptAt: now, CreatedAt: now},
+	}, 0)
+	fake := &fakeNotifier{}
+	var mu sync.Mutex
+	expired := 0
+	repo := newMemRepo()
+	_ = repo.SaveChannel(context.Background(), &Channel{ID: "ch1", Name: "one", Type: ChannelWebhook, Enabled: true,
+		Webhook: &WebhookConfig{URL: "https://hooks.example.com/x"}})
+	svc := NewService(repo, WithOutbox(ob), WithOutboxMaxAge(24*time.Hour),
+		WithObserver(func(_ ChannelType, outcome string) {
+			if outcome == OutcomeExpired {
+				mu.Lock()
+				expired++
+				mu.Unlock()
+			}
+		}),
+		WithNotifierFactory(func(*Channel) (Notifier, error) { return fake, nil }))
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = svc.Run(ctx) })
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+	waitUntil(t, "the outbox to empty", func() bool { rows, _, _ := ob.counts(); return rows == 0 })
+	mu.Lock()
+	defer mu.Unlock()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if expired != 1 || len(fake.sent) != 1 || fake.sent[0].Event.Detail != "fresh" {
+		t.Fatalf("expired %d, sent %+v; want the stale one expired and the fresh one sent", expired, fake.sent)
+	}
+}
+
 // A failed reschedule keeps the next attempt in memory: the delivery waits for
 // its backoff instead of being retried at once, and succeeds later.
 func TestOutboxFailedRescheduleKeepsBackoff(t *testing.T) {

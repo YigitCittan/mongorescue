@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -103,6 +104,20 @@ func TestMinFreeSpace(t *testing.T) {
 	c.MinFreeSpaceMB = -1
 	if err := c.Validate(); !errors.Is(err, ErrInvalidMinFreeSpace) {
 		t.Fatalf("Validate(MinFreeSpaceMB=-1) = %v", err)
+	}
+}
+
+func TestNotificationMaxAge(t *testing.T) {
+	if c, err := FromEnv(env(nil)); err != nil || c.NotificationMaxAge != DefaultNotificationMaxAge {
+		t.Fatalf("default = %+v, %v", c, err)
+	}
+	if c, err := FromEnv(env(map[string]string{EnvNotificationMaxAge: "6h"})); err != nil || c.NotificationMaxAge != 6*time.Hour || c.Validate() != nil {
+		t.Fatalf("6h = %+v, %v", c, err)
+	}
+	for _, in := range []string{"1m", "721h", "soon", "24"} {
+		if _, err := FromEnv(env(map[string]string{EnvNotificationMaxAge: in})); !errors.Is(err, ErrInvalidNotificationMaxAge) {
+			t.Errorf("%s=%q accepted: %v", EnvNotificationMaxAge, in, err)
+		}
 	}
 }
 

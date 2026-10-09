@@ -23,6 +23,10 @@ const (
 	DefaultOutboxBackoff = time.Minute
 	// DefaultOutboxMaxBackoff caps the wait between rounds.
 	DefaultOutboxMaxBackoff = time.Hour
+	// DefaultOutboxMaxAge is how long a delivery may wait in the outbox (behind
+	// the older deliveries of its channel, or across a long downtime) before it is
+	// dropped as stale.
+	DefaultOutboxMaxAge = 24 * time.Hour
 	// outboxIdle is the longest the dispatcher sleeps without a wake-up.
 	outboxIdle = time.Minute
 	// outboxWriteTimeout bounds every outbox write.
@@ -79,6 +83,16 @@ func WithOutbox(o Outbox) Option {
 // once it delivers or is deleted; the application shows it as a settings warning.
 func WithChannelWarning(warn func(channelID, problem string)) Option {
 	return func(s *Service) { s.channelWarning = warn }
+}
+
+// WithOutboxMaxAge sets how long a delivery may wait in the outbox before it is
+// dropped as stale (DefaultOutboxMaxAge); non-positive values are ignored.
+func WithOutboxMaxAge(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.outboxMaxAge = d
+		}
+	}
 }
 
 // WithOutboxLimit caps the deliveries waiting in the outbox (DefaultOutboxLimit);
@@ -208,6 +222,14 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 				continue
 			}
 			h.Attempts, h.NextAttemptAt = held.attempts, held.next
+		}
+		if !h.CreatedAt.IsZero() && now.Sub(h.CreatedAt) > s.outboxMaxAge {
+			s.logger.Warn("notification expired: it waited in the outbox longer than allowed",
+				slog.String("channel_id", h.ChannelID), slog.String("event", string(h.Event.Type)),
+				slog.Duration("age", now.Sub(h.CreatedAt).Round(time.Second)), slog.Duration("max_age", s.outboxMaxAge))
+			s.observe(h.ChannelType, OutcomeExpired)
+			wait = min(wait, s.remove(ctx, h.ID))
+			continue
 		}
 		if h.Event.Type == "" {
 			wait = min(wait, s.discard(ctx, h, "unreadable"))

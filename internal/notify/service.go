@@ -37,6 +37,9 @@ const (
 	OutcomeFailure = "failure"
 	// OutcomeDropped means the delivery queue was full or the service had stopped.
 	OutcomeDropped = "dropped"
+	// OutcomeExpired means the delivery waited in the outbox longer than its
+	// maximum age (see WithOutboxMaxAge).
+	OutcomeExpired = "expired"
 )
 
 // ErrServiceRunning is returned by Run when the Service is already running or has run.
@@ -82,6 +85,7 @@ type Service struct {
 	outboxAttempts   int
 	outboxBackoff    time.Duration
 	outboxMaxBackoff time.Duration
+	outboxMaxAge     time.Duration
 	// channelWarning is told about channels that cannot be loaded (see
 	// WithChannelWarning).
 	channelWarning func(channelID, problem string)
@@ -195,6 +199,7 @@ func NewService(repo Repository, opts ...Option) *Service {
 		outboxAttempts:   DefaultOutboxAttempts,
 		outboxBackoff:    DefaultOutboxBackoff,
 		outboxMaxBackoff: DefaultOutboxMaxBackoff,
+		outboxMaxAge:     DefaultOutboxMaxAge,
 		wake:             make(chan struct{}, 1),
 		flight:           make(map[string]struct{}),
 		held:             make(map[int64]*heldDelivery),
