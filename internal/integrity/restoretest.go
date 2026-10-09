@@ -12,6 +12,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -80,6 +81,9 @@ func (s *Service) StartRestoreTest(ctx context.Context, jobID string) (*models.B
 	if err != nil {
 		return nil, err
 	}
+	if backup, err = s.drillSource(ctx, job, backup); err != nil {
+		return nil, err
+	}
 	if err := s.cfg.Runs.Go(keyPrefixRestoreTest+jobID, func(runCtx context.Context) {
 		s.runRestoreTest(runCtx, job, backup, TriggerManual)
 	}); err != nil {
@@ -108,7 +112,12 @@ func (s *Service) AfterBackup(ctx context.Context, job *models.Job, record *mode
 		return
 	}
 	defer release()
-	s.runRestoreTest(ctx, current, record, TriggerScheduled)
+	source, err := s.drillSource(ctx, current, record)
+	if err != nil {
+		s.logger.Info("skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID), logsafe.Error(err))
+		return
+	}
+	s.runRestoreTest(ctx, current, source, TriggerScheduled)
 }
 
 // restoreTestDue reports whether job's restore test policy asks for a test now.
@@ -168,7 +177,13 @@ func (s *Service) AfterRun(ctx context.Context, job *models.Job, records []*mode
 		if ctx.Err() != nil {
 			return
 		}
-		s.runRestoreTest(ctx, current, rec, TriggerScheduled)
+		source, err := s.drillSource(ctx, current, rec)
+		if err != nil {
+			s.logger.Info("skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID),
+				slog.String("database", rec.Database), logsafe.Error(err))
+			continue
+		}
+		s.runRestoreTest(ctx, current, source, TriggerScheduled)
 	}
 }
 
@@ -202,6 +217,43 @@ func RestoreTestTargets(job *models.Job, records []*models.BackupRecord) []*mode
 	return done[:1]
 }
 
+// drillTarget returns the copy target job's restore tests read from (a disaster
+// recovery drill), or "".
+func drillTarget(job *models.Job) string {
+	if job == nil || job.RestoreTest == nil {
+		return ""
+	}
+	return job.RestoreTest.SourceTargetID
+}
+
+// drillSource returns the backup a restore test of job reads: backup itself, or,
+// for a disaster recovery drill (RestoreTestPolicy.SourceTargetID), a view of the
+// copy on the drill's target (models.BackupRecord.AtCopy) of backup or, while that
+// copy is not complete, of the newest backup of the same database whose copy is.
+// It fails with ErrNoBackup when no backup has a usable copy there yet.
+func (s *Service) drillSource(ctx context.Context, job *models.Job, backup *models.BackupRecord) (*models.BackupRecord, error) {
+	src := drillTarget(job)
+	if src == "" || backup.StorageTargetID == src {
+		return backup, nil
+	}
+	if c := backup.Copy(src); backup.CopyUsable(c) {
+		return backup.AtCopy(c), nil
+	}
+	records, err := s.cfg.Store.ListBackupRecords(ctx, backup.Database)
+	if err != nil {
+		return nil, fmt.Errorf("list backups: %w", err)
+	}
+	for _, r := range records { // newest first
+		if r.JobID != job.ID || r.Database != backup.Database || (r.Status != models.StatusCompleted && r.Status != models.StatusMissing) || !auth.ConnectionAllowed(ctx, r.ConnectionID) {
+			continue
+		}
+		if c := r.Copy(src); r.CopyUsable(c) {
+			return r.AtCopy(c), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: no backup of %s by job %s has a completed copy on storage target %s yet", ErrNoBackup, backup.Database, job.ID, src)
+}
+
 // runRestoreTest tests backup of job and records the result; it never returns an
 // error (failures are the result) and never panics.
 func (s *Service) runRestoreTest(ctx context.Context, job *models.Job, backup *models.BackupRecord, trigger string) (res *models.RestoreTestResult) {
@@ -209,7 +261,11 @@ func (s *Service) runRestoreTest(ctx context.Context, job *models.Job, backup *m
 		ID: newRestoreTestID(backup.Database, s.now()), JobID: job.ID, BackupID: backup.ID, Database: backup.Database,
 		Trigger: trigger, Status: models.RestoreTestError, StartedAt: s.now(),
 	}
-	s.logger.Info("restore test started", slog.String("job_id", job.ID), slog.String("backup_id", backup.ID), slog.String("trigger", trigger))
+	if src := drillTarget(job); src != "" && backup.StorageTargetID == src {
+		res.SourceTargetID, res.SourceTargetName = backup.StorageTargetID, backup.StorageTargetName
+	}
+	s.logger.Info("restore test started", slog.String("job_id", job.ID), slog.String("backup_id", backup.ID), slog.String("trigger", trigger),
+		slog.String("source_target_id", res.SourceTargetID))
 	defer s.finishRestoreTest(ctx, job, res)
 	defer func() {
 		if p := recover(); p != nil {

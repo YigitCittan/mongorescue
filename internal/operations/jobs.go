@@ -252,6 +252,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if len(job.CopyTargets) == 0 {
 		job.CopyMode = ""
 	}
+	if rt := job.RestoreTest; rt != nil && rt.SourceTargetID != "" && !slices.Contains(job.CopyTargets, rt.SourceTargetID) {
+		return invalid(fmt.Errorf("%w: restore_test.source_target_id must be one of the job's copy targets", models.ErrInvalidRestoreTest))
+	}
 	s.snapshotKnownDatabases(ctx, job)
 	return nil
 }

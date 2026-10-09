@@ -1,8 +1,10 @@
 package readiness
 
 import (
+	"cmp"
 	"context"
 	"slices"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -17,6 +19,10 @@ const (
 	// ReasonDRSameCredentials: every copy target of the row's jobs is reachable with
 	// the credentials or account of its primary target (models.SameCredentials).
 	ReasonDRSameCredentials = "dr_same_credentials"
+	// ReasonDRDrillStale: no disaster recovery drill (a restore test reading a copy
+	// target, models.RestoreTestPolicy.SourceTargetID) of the database passed in the
+	// last Config.DRDrillMaxAge.
+	ReasonDRDrillStale = "dr_drill_stale"
 )
 
 // DR levels of a row (DRStatus.Level).
@@ -43,6 +49,13 @@ type DRStatus struct {
 	// copy targets, sorted ("" regions are left out).
 	PrimaryRegions []string `json:"primary_regions,omitempty"`
 	CopyRegions    []string `json:"copy_regions,omitempty"`
+	// LastDrill is the newest disaster recovery drill of the database, LastGoodDrill
+	// the newest one that passed; nil without one.
+	LastDrill     *RestoreTestRef `json:"last_drill,omitempty"`
+	LastGoodDrill *RestoreTestRef `json:"last_good_drill,omitempty"`
+	// DrillStale reports that no drill passed within the drill age limit
+	// (ReasonDRDrillStale).
+	DrillStale bool `json:"drill_stale"`
 }
 
 // drAcc collects the disaster recovery posture of a row.
@@ -51,6 +64,57 @@ type drAcc struct {
 	// cross holds the copy targets in another region than their primary.
 	cross map[string]bool
 	jobs  map[string]bool
+	// maxAge is Config.DRDrillMaxAge.
+	maxAge time.Duration
+}
+
+// drillLister lists the newest disaster recovery drills (implemented by
+// *store.SQLiteStore).
+type drillLister interface {
+	LatestDRDrillsAll(ctx context.Context) (map[string][]*models.RestoreTestResult, error)
+}
+
+// drills returns the newest drills of every job (see drillLister); a store without
+// them or a failed listing gives none.
+func (s *Service) drills(ctx context.Context) map[string][]*models.RestoreTestResult {
+	l, ok := s.cfg.Store.(drillLister)
+	if !ok {
+		return map[string][]*models.RestoreTestResult{}
+	}
+	out, err := l.LatestDRDrillsAll(ctx)
+	if err != nil {
+		s.logger.Warn("readiness: cannot list the disaster recovery drills", logsafe.Error(err))
+		return map[string][]*models.RestoreTestResult{}
+	}
+	return out
+}
+
+// addDrills adds the drills (newest first) of p's job for p's database to acc's
+// disaster recovery posture, if it has one.
+func addDrills(acc *rowAcc, p point, list []*models.RestoreTestResult) {
+	d := acc.dr
+	if d == nil {
+		return
+	}
+	for _, t := range list {
+		db := t.Database
+		if db == "" && !p.job.MultiDatabase() {
+			db = p.job.Database
+		}
+		if db != p.database {
+			continue
+		}
+		ref := testRef(p.job.ID, t)
+		if cur := d.status.LastDrill; cur == nil || ref.At.After(cur.At) {
+			d.status.LastDrill = ref
+		}
+		if t.Status == models.RestoreTestOK {
+			if cur := d.status.LastGoodDrill; cur == nil || ref.At.After(cur.At) {
+				d.status.LastGoodDrill = ref
+			}
+			break
+		}
+	}
 }
 
 // targetsByID lists the storage targets by ID; nil without Config.Targets or when
@@ -115,7 +179,7 @@ func addDR(acc *rowAcc, job *models.Job, targets map[string]*models.StorageTarge
 }
 
 // finishDR sets the row's DR status and returns its warnings.
-func finishDR(acc *rowAcc) []string {
+func finishDR(acc *rowAcc, now time.Time) []string {
 	d := acc.dr
 	if d == nil {
 		return nil
@@ -132,6 +196,11 @@ func finishDR(acc *rowAcc) []string {
 	}
 	if !st.SeparateCredentials {
 		warn = append(warn, ReasonDRSameCredentials)
+	}
+	maxAge := cmp.Or(d.maxAge, DefaultDRDrillMaxAge)
+	if g := st.LastGoodDrill; g == nil || now.Sub(g.At) > maxAge {
+		st.DrillStale = true
+		warn = append(warn, ReasonDRDrillStale)
 	}
 	acc.row.DR = &st
 	return warn

@@ -38,6 +38,22 @@ func TestRequireLockedCopiesRefusesUnlockedCopyTargets(t *testing.T) {
 	}
 }
 
+// TestDrillSourceMustBeACopyTarget proves that a restore test may only read from
+// one of the job's copy targets.
+func TestDrillSourceMustBeACopyTarget(t *testing.T) {
+	env, locked := newLockTargetEnv(t, models.ObjectLockCompliance, 30)
+	ctx := context.Background()
+	job := &models.Job{Name: "j", Database: "shop", ConnectionID: "conn_ok",
+		RestoreTest: &models.RestoreTestPolicy{Enabled: true, SourceTargetID: locked}}
+	if err := env.svc.ValidateJob(ctx, job); !errors.Is(err, operations.ErrInvalid) || !errors.Is(err, models.ErrInvalidRestoreTest) {
+		t.Fatalf("drill from a target that is no copy target = %v; want ErrInvalid", err)
+	}
+	job.CopyTargets = []string{locked}
+	if err := env.svc.ValidateJob(ctx, job); err != nil {
+		t.Fatalf("drill from a copy target = %v", err)
+	}
+}
+
 // TestTurningRequireLockedCopiesOffIsDelayed proves that turning
 // security.require_locked_copies on applies at once, while turning it off waits
 // for the grace period.
