@@ -35,12 +35,13 @@ const (
 // preference mode.
 var ErrInvalidReadPreference = errors.New("mongoconn: invalid read preference")
 
-// memberOpTimeout bounds one round trip of an oplog session to a member (and one
-// call of OplogWindow, a few round trips). The driver has no socket timeout of
-// its own, so a member that stops answering without closing its connections (a
-// crash, a power loss, a network partition) would otherwise hold the collector's
-// tick until the operating system gives up on the connection, minutes later.
-// A variable for tests.
+// memberOpTimeout bounds one small round trip of an oplog session to a member
+// (hello, an entry lookup, and one call of OplogWindow, a few round trips). The
+// driver has no socket timeout of its own, so a member that stops answering
+// without closing its connections (a crash, a power loss, a network partition)
+// would otherwise hold the collector's tick until the operating system gives up
+// on the connection, minutes later. Range reads, whose batches can be large, are
+// bounded by progress instead (memberIdleTimeout). A variable for tests.
 var memberOpTimeout = time.Minute
 
 // entryTerm returns the term (t) of oplog entry doc, or -1, MongoDB's
@@ -114,7 +115,7 @@ func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference strin
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidReadPreference, readPreference)
 	}
-	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp))
+	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp).SetDialer(newIdleDialer()))
 	if err != nil {
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return nil, errors.New("invalid connection string")
@@ -214,7 +215,8 @@ func (s *OplogSession) memberClient(ctx context.Context, host string) (*mongo.Cl
 	if c, ok := s.members[host]; ok {
 		return c, nil
 	}
-	opts := clientOptions(mongotls.NewContext(ctx, s.tls), s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest())
+	opts := clientOptions(mongotls.NewContext(ctx, s.tls), s.uri).SetHosts([]string{host}).SetDirect(true).SetReadPreference(readpref.Nearest()).
+		SetDialer(newIdleDialer())
 	opts.SRVMaxHosts, opts.SRVServiceName = nil, nil
 	c, err := mongo.Connect(opts)
 	if err != nil {
@@ -402,9 +404,10 @@ func (s *OplogMember) ReadOplog(ctx context.Context, r pitr.OplogRange, w io.Wri
 		{Key: "$gte", Value: bson.Timestamp{T: r.From.T, I: r.From.I}},
 		{Key: "$lte", Value: bson.Timestamp{T: r.To.T, I: r.To.I}},
 	}}}
-	findCtx, cancel := memberCtx(ctx)
-	defer cancel()
-	cur, err := s.oplog().Find(findCtx, filter,
+	// No overall deadline: a batch of up to 16 MiB takes as long as the link
+	// needs, and the session's connections fail a read only after
+	// memberIdleTimeout without any byte (idleConn).
+	cur, err := s.oplog().Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
 		return pitr.OplogStats{}, redactErr(fmt.Errorf("find oplog entries: %w", err))
@@ -424,17 +427,6 @@ type oplogCursor interface {
 
 // driverCursor adapts *mongo.Cursor to oplogCursor.
 type driverCursor struct{ *mongo.Cursor }
-
-// Next advances the cursor; a call that has to fetch the next batch (a getMore)
-// is bounded by memberOpTimeout, like every round trip to a member.
-func (c driverCursor) Next(ctx context.Context) bool {
-	if c.RemainingBatchLength() > 0 {
-		return c.Cursor.Next(ctx)
-	}
-	ctx, cancel := memberCtx(ctx)
-	defer cancel()
-	return c.Cursor.Next(ctx)
-}
 
 // Doc returns the current document.
 func (c driverCursor) Doc() bson.Raw { return c.Current }
