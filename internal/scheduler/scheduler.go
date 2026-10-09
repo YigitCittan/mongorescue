@@ -13,6 +13,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -117,6 +118,9 @@ type Scheduler struct {
 	lastTrigger map[string]time.Time
 	// observer is told when job runs start and finish (see RunObserver).
 	observer RunObserver
+	// diskGuard settles the backups whose final record cannot be saved (see
+	// WithDiskGuard).
+	diskGuard *diskguard.Guard
 }
 
 // TickInterval is how often a running scheduler records a liveness tick (see
@@ -146,6 +150,13 @@ type RunObserver interface {
 // WithRunObserver tells o about every job run, scheduled or on demand.
 func WithRunObserver(o RunObserver) Option {
 	return func(s *Scheduler) { s.observer = o }
+}
+
+// WithDiskGuard makes g settle a backup whose final record cannot be saved (a
+// full data directory) as failed and retry its save once writes work again.
+// Without it the save is only retried briefly.
+func WithDiskGuard(g *diskguard.Guard) Option {
+	return func(s *Scheduler) { s.diskGuard = g }
 }
 
 // runStarted tells the observer that run of job started.
@@ -740,6 +751,12 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	// A multi-database run takes the run lock of each database itself.
 	if s.guard != nil && !job.MultiDatabase() {
 		release, err := s.guard(job.ConnectionID, job.Database)
+		if errors.Is(err, diskguard.ErrLowSpace) {
+			// Not enough space for the metadata: the run fails, so its alerts fire.
+			s.logger.Error("scheduled backup not started", slog.String("job_id", job.ID), logsafe.Error(err))
+			_, _ = s.finishJobRun(ctx, job, s.newScheduledRun(job), nil, err, true)
+			return
+		}
 		if err != nil {
 			s.logger.Warn("skipping scheduled backup: another backup of this database is running",
 				slog.String("job_id", job.ID),
@@ -881,6 +898,17 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 
 	s.recordRunTimes(persistCtx, job)
 
+	// Persist the backup record before the run: a record that cannot be saved
+	// makes the run fail (diskguard.Guard.FinishBackup), so neither the run, its
+	// observer (heartbeat) nor the event reports a success the metadata lacks.
+	var saveErr error
+	if record != nil {
+		if run != nil {
+			record.RunID = run.ID
+		}
+		saveErr = s.diskGuard.FinishBackup(persistCtx, record, s.metadataStore.SaveBackupRecord, s.logger, s.registry.Get(record.ID))
+	}
+
 	if run != nil {
 		switch {
 		case record != nil:
@@ -900,18 +928,6 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 		s.runFinished(ctx, job, run)
 	}
 
-	// Persist the backup record last: once a client sees the final status, the
-	// job's run timestamps are already stored.
-	if record != nil {
-		if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, record); saveErr != nil {
-			s.logger.Error("failed to persist backup record",
-				logsafe.Attr("job_id", job.ID),
-				logsafe.Attr("backup_id", record.ID),
-				logsafe.Error(saveErr),
-			)
-		}
-	}
-
 	// Emit the outcome once it is persisted; publishing is non-blocking by contract.
 	if s.publisher != nil {
 		e := events.BackupEvent(record, err, job.ID, job.Database)
@@ -919,11 +935,14 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 			e.RunID, e.Run = run.ID, events.RunSummaryOf(run, false)
 		}
 		s.publisher.Publish(persistCtx, e)
-		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok {
+		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok && saveErr == nil {
 			s.publisher.Publish(persistCtx, ve)
 		}
 	}
 
+	if err == nil && saveErr != nil {
+		err = saveErr
+	}
 	if err != nil {
 		s.logger.Error("backup job execution failed",
 			logsafe.Attr("job_id", job.ID),

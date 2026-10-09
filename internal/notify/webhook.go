@@ -36,7 +36,7 @@ const (
 //	                                     // restore.failed|restore.cancelled|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
 //	                                     // restore.verification_failed|job.rpo_missed|job.rpo_recovered|
-//	                                     // storage.drift_detected|retention.deleted|pitr.*|notification.test
+//	                                     // storage.drift_detected|retention.deleted|pitr.*|system.disk_full|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs
 //	  "backup_id": "bkp_shop_...",       // omitted when unknown

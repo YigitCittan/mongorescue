@@ -42,7 +42,7 @@ A rule connects events to channels:
 - `job_ids`: optional. Empty means every job, including on-demand backups.
 - `channel_ids`: channels that receive matching events.
 
-Security alerts are not tied to rules: *Backup encryption is off* (`security.encryption_off_after_upgrade`, see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)) is sent once to every enabled channel.
+Security alerts are not tied to rules: *Backup encryption is off* (`security.encryption_off_after_upgrade`, see [encryption.md](encryption.md#encryption-turned-off-by-an-upgrade)) is sent once to every enabled channel, and so is *Data directory full* (`system.disk_full`: a write to the metadata database failed because its disk is full; new backups and restores are refused until space is freed, see [production.md](production.md#disk-space); `error`, `detail`), once per episode.
 
 ## Delivery
 
@@ -73,7 +73,7 @@ Every webhook request is a `POST` with `Content-Type: application/json`, an `X-M
 | Field | Notes |
 | :--- | :--- |
 | `version` | Payload schema version, currently `1`. Breaking changes will bump it. |
-| `event` | `backup.succeeded`, `backup.failed`, `backup.cancelled`, `backup.skipped`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, `job.databases_added`, `metadata_backup.failed`, `restore.verification_failed`, `job.rpo_missed`, `job.rpo_recovered`, `security.destructive_action`, `security.approval_requested`, `security.key_rotated`, `pitr.chain_broken`, `pitr.diverged`, `pitr.lag_high`, `pitr.lag_recovered`, `pitr.window_low`, `pitr.collector_failed`, `pitr.collector_recovered`, `backup.copy_failed`, `backup.copy_recovered`, `backup.copy_exhausted`, or `notification.test` |
+| `event` | `backup.succeeded`, `backup.failed`, `backup.cancelled`, `backup.skipped`, `restore.succeeded`, `restore.failed`, `verification.failed`, `restore_test.succeeded`, `restore_test.failed`, `storage.drift_detected`, `retention.deleted`, `job.databases_added`, `metadata_backup.failed`, `restore.verification_failed`, `job.rpo_missed`, `job.rpo_recovered`, `security.destructive_action`, `security.approval_requested`, `security.key_rotated`, `pitr.chain_broken`, `pitr.diverged`, `pitr.lag_high`, `pitr.lag_recovered`, `pitr.window_low`, `pitr.collector_failed`, `pitr.collector_recovered`, `backup.copy_failed`, `backup.copy_recovered`, `backup.copy_exhausted`, `security.encryption_off_after_upgrade`, `system.disk_full`, or `notification.test` |
 | `action`, `actor`, `approval_id` | Security events: the destructive action (such as `delete_backup` or `purge`), who took or requested it, and the approval request |
 | `stream`, `connection_id` | `pitr.*` events: the [PITR stream](pitr.md) and its connection |
 | `run_id`, `run` | Backup events of a job run: the run and its summary (`status`: `ok`, `partial`, `failed`, `cancelled`, `skipped`; `multi`, `databases`, `succeeded`, `failed`, `cancelled`, `failed_databases`, `new_databases`) |

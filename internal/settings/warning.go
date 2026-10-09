@@ -112,6 +112,9 @@ func (s *Service) Warnings() []Warning {
 	if s.previousKey {
 		out = append(out, Warning{ID: WarningPreviousKey, Message: previousKeyMessage, Setting: "security"})
 	}
+	if s.diskFull {
+		out = append(out, Warning{ID: WarningDiskFull, Message: diskFullMessage, Setting: "general"})
+	}
 	return out
 }
 

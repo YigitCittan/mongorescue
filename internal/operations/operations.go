@@ -21,6 +21,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -234,6 +235,9 @@ type Config struct {
 	Reencrypter Reencrypter
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
+	// DiskGuard settles a backup whose final record cannot be saved (a full data
+	// directory) as failed and retries its save; nil only retries the save briefly.
+	DiskGuard *diskguard.Guard
 	// Verifier verifies archives on demand; nil makes VerifyBackup fail with
 	// ErrUnavailable.
 	Verifier Verifier
@@ -527,19 +531,24 @@ func (s *Service) startManualBackup(ctx context.Context, req BackupRequest, retr
 	jobID := s.knownJobID(ctx, opts.JobID)
 	return s.startBackup(ctx, record, func(runCtx context.Context) {
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		if saveErr := s.store.SaveBackupRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist backup metadata record",
-				logsafe.Attr("backup_id", final.ID),
-				logsafe.Error(saveErr),
-			)
-		}
-		s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, opts.Database))
-		if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
-			s.publish(persistCtx, ve)
-		}
+		s.finishBackup(runCtx, final, runErr, jobID, opts.Database)
 	})
+}
+
+// finishBackup persists final, the record of a finished on-demand backup run, and
+// publishes its outcome. A record that cannot be saved is reported as failed
+// (diskguard.Guard.FinishBackup), never as succeeded.
+func (s *Service) finishBackup(runCtx context.Context, final *models.BackupRecord, runErr error, jobID, database string) {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
+	defer cancel()
+	saveErr := s.cfg.DiskGuard.FinishBackup(persistCtx, final, s.store.SaveBackupRecord, s.logger, runs.FromContext(runCtx))
+	s.publish(persistCtx, events.BackupEvent(final, runErr, jobID, database))
+	if saveErr != nil {
+		return
+	}
+	if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
+		s.publish(persistCtx, ve)
+	}
 }
 
 // RunJob runs the stored job jobID now, in the background. For a single-database job
@@ -610,6 +619,9 @@ func (s *Service) startBackup(ctx context.Context, record *models.BackupRecord, 
 	snapshot := *record
 	if err := s.store.SaveBackupRecord(ctx, &snapshot); err != nil {
 		release()
+		if s.cfg.DiskGuard.Observe(ctx, err) {
+			return nil, public("the backup record could not be saved: the data directory is full", ErrUnavailable, diskguard.ErrLowSpace, err)
+		}
 		return nil, fmt.Errorf("save backup record: %w", err)
 	}
 	tracked := s.track(models.RunBackup, record.ID, record.JobID, record.Database)
@@ -642,6 +654,8 @@ func runError(err error, busyMessage string) error {
 		return public(busyMessage, err)
 	case errors.Is(err, runs.ErrShuttingDown):
 		return public("MongoRescue is shutting down", err)
+	case errors.Is(err, diskguard.ErrLowSpace):
+		return public(redact.Text(err.Error()), ErrUnavailable, err)
 	default:
 		return fmt.Errorf("start background run: %w", err)
 	}

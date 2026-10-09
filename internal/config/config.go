@@ -51,6 +51,9 @@ const (
 	// system temporary directory (TMPDIR), or <data_dir>/tmp when that is not
 	// writable.
 	EnvTmpDir = "MONGORESCUE_TMP_DIR"
+	// EnvMinFreeSpace sets the free space, in MiB, the data directory needs for a
+	// backup or restore to start (0 turns the check off).
+	EnvMinFreeSpace = "MONGORESCUE_MIN_FREE_SPACE_MB"
 )
 
 // Defaults.
@@ -68,6 +71,11 @@ const (
 	DefaultBackupsDirName = "backups"
 	// MaxShutdownGrace is the longest shutdown grace period.
 	MaxShutdownGrace = 24 * time.Hour
+	// DefaultMinFreeSpaceMB is the free space (MiB) the data directory needs for a
+	// backup or restore to start.
+	DefaultMinFreeSpaceMB = 100
+	// MaxMinFreeSpaceMB is the largest minimum free space (1 TiB).
+	MaxMinFreeSpaceMB = 1 << 20
 )
 
 // Sentinel errors.
@@ -92,6 +100,9 @@ var (
 	// ErrInvalidShutdownGrace is returned for a shutdown grace period that is not a
 	// duration from 0 to MaxShutdownGrace.
 	ErrInvalidShutdownGrace = errors.New("config: shutdown grace must be a duration from 0s to 24h (such as 9m) or a number of seconds")
+	// ErrInvalidMinFreeSpace is returned for a minimum free space that is not a
+	// whole number of MiB from 0 to MaxMinFreeSpaceMB.
+	ErrInvalidMinFreeSpace = errors.New("config: minimum free space must be a whole number of MiB from 0 to 1048576")
 )
 
 // Config is the bootstrap configuration.
@@ -123,11 +134,17 @@ type Config struct {
 	// connection strings and TLS material to the Database Tools. Empty means the
 	// system temporary directory, or <DataDir>/tmp when that is not writable.
 	TmpDir string
+	// MinFreeSpaceMB is the free space (MiB) the data directory needs for a backup
+	// or restore to start; 0 turns the check off. A metadata write that fails
+	// because the disk is full stops new runs whatever the value, until space is
+	// freed (see internal/diskguard).
+	MinFreeSpaceMB int
 }
 
 // Default returns the defaults of the binary.
 func Default() *Config {
-	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo}
+	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo,
+		MinFreeSpaceMB: DefaultMinFreeSpaceMB}
 }
 
 // FromEnv returns the defaults overridden by the bootstrap environment variables.
@@ -170,7 +187,24 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 		cfg.ShutdownGrace = d
 	}
+	if v := strings.TrimSpace(getenv(EnvMinFreeSpace)); v != "" {
+		n, err := ParseMinFreeSpace(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvMinFreeSpace, err)
+		}
+		cfg.MinFreeSpaceMB = n
+	}
 	return cfg, nil
+}
+
+// ParseMinFreeSpace parses a minimum free space: a whole number of MiB from 0 to
+// MaxMinFreeSpaceMB.
+func ParseMinFreeSpace(v string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 || n > MaxMinFreeSpaceMB {
+		return 0, ErrInvalidMinFreeSpace
+	}
+	return n, nil
 }
 
 // ParseShutdownGrace parses a shutdown grace period: a Go duration ("9m", "540s")
@@ -206,6 +240,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s: %w", EnvTmpDir, ErrInvalidTmpDir)
 	case c.ShutdownGrace < 0 || c.ShutdownGrace > MaxShutdownGrace:
 		return fmt.Errorf("%s: %w", EnvShutdownGrace, ErrInvalidShutdownGrace)
+	case c.MinFreeSpaceMB < 0 || c.MinFreeSpaceMB > MaxMinFreeSpaceMB:
+		return fmt.Errorf("%s: %w", EnvMinFreeSpace, ErrInvalidMinFreeSpace)
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {
@@ -214,6 +250,14 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// MinFreeSpaceBytes returns MinFreeSpaceMB in bytes (0 when the check is off).
+func (c *Config) MinFreeSpaceBytes() uint64 {
+	if c.MinFreeSpaceMB <= 0 {
+		return 0
+	}
+	return uint64(min(c.MinFreeSpaceMB, MaxMinFreeSpaceMB)) << 20 //nolint:gosec // G115: positive and at most MaxMinFreeSpaceMB.
 }
 
 // MetadataDBPath returns the metadata database file inside the data directory.

@@ -100,6 +100,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	toolsDir := fs.String("tools-dir", "", "Directory searched first for mongodump and mongorestore (env "+config.EnvToolsDir+", default <executable dir>/tools, then PATH)")
 	tmpDir := fs.String("tmp-dir", "", "Directory of the short-lived files that pass connection strings and TLS material to mongodump and mongorestore (env "+config.EnvTmpDir+", default the system temporary directory, or <data-dir>/tmp when it is not writable)")
 	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
+	minFreeSpace := fs.String("min-free-space-mb", "", fmt.Sprintf("Free space (MiB) the data directory needs for a backup or restore to start, 0 to turn the check off (env %s, default %d)", config.EnvMinFreeSpace, config.DefaultMinFreeSpaceMB))
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -119,7 +120,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr error
+	var graceErr, spaceErr error
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "data-dir":
@@ -143,10 +144,15 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			}
 		case "shutdown-grace":
 			cfg.ShutdownGrace, graceErr = config.ParseShutdownGrace(*shutdownGrace)
+		case "min-free-space-mb":
+			cfg.MinFreeSpaceMB, spaceErr = config.ParseMinFreeSpace(*minFreeSpace)
 		}
 	})
 	if graceErr != nil {
 		return nil, 0, false, fmt.Errorf("-shutdown-grace: %w", graceErr)
+	}
+	if spaceErr != nil {
+		return nil, 0, false, fmt.Errorf("-min-free-space-mb: %w", spaceErr)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, 0, false, err

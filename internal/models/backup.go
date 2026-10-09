@@ -411,6 +411,39 @@ func (r *BackupRecord) SetStorageObject(obj *StorageObject) {
 	}
 }
 
+// ErrRecordNotSaved starts the error of a backup whose final record could not be
+// saved (see FailUnsaved).
+const ErrRecordNotSaved = "the backup record could not be saved"
+
+// FailUnsaved marks r failed because its final record could not be saved (cause,
+// already redacted, says why), so the run never reports a success the metadata
+// does not record; a cancelled backup stays cancelled. An archive it uploaded
+// goes to the purge (ArchiveCleanupPending), so it is not left behind as an
+// orphan, and its copies are settled as for any failed backup (AbandonCopies).
+func (r *BackupRecord) FailUnsaved(cause string, now time.Time) {
+	if !strings.HasPrefix(r.ErrorMessage, ErrRecordNotSaved) {
+		msg := ErrRecordNotSaved
+		if cause != "" {
+			msg += " (" + cause + ")"
+		}
+		if r.ErrorMessage != "" {
+			msg += "; the run itself ended with: " + r.ErrorMessage
+		}
+		r.ErrorMessage = msg
+	}
+	if r.Status != StatusCancelled {
+		r.Status = StatusFailed
+	}
+	if r.CompletedAt == nil {
+		at := now.UTC()
+		r.CompletedAt = &at
+	}
+	if r.StorageKey != "" {
+		r.ArchiveCleanupPending = true
+	}
+	r.AbandonCopies()
+}
+
 // InstanceScope reports whether r is a PITR base backup of a whole instance.
 func (r *BackupRecord) InstanceScope() bool { return r.Scope == ScopeInstance }
 

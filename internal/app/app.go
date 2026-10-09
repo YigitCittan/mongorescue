@@ -28,6 +28,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/copies"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
@@ -128,6 +129,7 @@ type App struct {
 	auditLog     *auditlog.Service
 	auditForward *auditlog.Forwarder
 	heartbeat    *heartbeat.Service
+	diskGuard    *diskguard.Guard
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -563,6 +565,20 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	})
 	bus.Subscribe(readinessSvc.HandleEvent)
 
+	// The data directory's space guard: backups and restores start only with
+	// cfg.MinFreeSpaceMB free in the data directory, and not at all after a
+	// metadata write failed because the disk was full (system.disk_full), until
+	// space is freed. A backup whose final record cannot be saved is reported as
+	// failed, never as succeeded.
+	diskGuard := diskguard.New(diskguard.Config{
+		Dir:       cfg.DataDir,
+		MinFree:   cfg.MinFreeSpaceBytes(),
+		Publisher: bus,
+		Warn:      settingsSvc.SetDiskFullWarning,
+		Logger:    logger,
+	})
+	runManager.SetAdmission(diskGuard.Admit)
+
 	// The outbound heartbeat: the global ping while the scheduler is healthy and the
 	// per-job start/success/fail pings. sched is assigned below, before Start runs
 	// the service.
@@ -590,6 +606,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 		scheduler.WithPublisher(bus),
 		scheduler.WithRunObserver(heartbeatSvc),
+		scheduler.WithDiskGuard(diskGuard),
 		scheduler.WithConnectionResolver(connSvc),
 		scheduler.WithStorageTargets(targetSvc),
 		scheduler.WithRunRegistry(registry),
@@ -656,6 +673,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		KeyRotator:          keyRotator,
 		Reencrypter:         reencryptSvc,
 		Publisher:           bus,
+		DiskGuard:           diskGuard,
 		Verifier:            integritySvc,
 		Inspector:           prober,
 		Dropper:             prober,
@@ -810,6 +828,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		auditLog:      auditLog,
 		auditForward:  auditForwarder,
 		heartbeat:     heartbeatSvc,
+		diskGuard:     diskGuard,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 	}, nil
@@ -908,10 +927,17 @@ func (a *App) startBackground() (stop func()) {
 	if a.heartbeat != nil {
 		heartbeatWG.Go(func() { a.heartbeat.Run(heartbeatCtx) })
 	}
+	// The space guard retries the saves a full data directory failed; it stops
+	// after the runs too, before the metadata database closes.
+	guardCtx, cancelGuard := context.WithCancel(context.Background())
+	var guardWG sync.WaitGroup
+	guardWG.Go(func() { a.diskGuard.Run(guardCtx) })
 
 	return func() {
 		cancelHeartbeat()
 		heartbeatWG.Wait()
+		cancelGuard()
+		guardWG.Wait()
 		cancelPrune()
 		pruneWG.Wait()
 		cancelAudit()
@@ -1416,6 +1442,12 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 				// Copies it never made leave the queue; copies a synchronous run made
 				// already go to the purge (archive_cleanup_pending).
 				b.AbandonCopies()
+				// So does an archive it may have uploaded, such as the complete one of
+				// a run whose final record could not be saved (a full data
+				// directory): the purge deletes it instead of leaving an orphan.
+				if b.StorageKey != "" {
+					b.ArchiveCleanupPending = true
+				}
 				if err := a.metaStore.SaveBackupRecord(ctx, b); err != nil {
 					a.logger.Warn("failed to mark interrupted backup", slog.String("backup_id", b.ID), logsafe.Error(err))
 					continue

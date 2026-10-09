@@ -77,6 +77,16 @@ Connection strings and channel secrets are encrypted with AES-256-GCM. **Losing 
 
 Losing the database does not lose the backup archives, but it loses the records that point to them, your schedules, users and connections. Back it up with [metadata backups](#metadata-backups) and keep `secret.key` in a [recovery kit](#recovery-kit).
 
+### Disk space
+
+Keep the data directory on a filesystem with room to spare: every run writes its record to `mongorescue.db` and its log under `logs/`, and a full disk stops both.
+
+- **Before every run** (backups, job runs, restores, PITR base backups) MongoRescue checks the free space of the data directory. Below `MONGORESCUE_MIN_FREE_SPACE_MB` (`-min-free-space-mb`, 100 MiB by default, `0` turns the check off) the run does not start: the API answers `503` with the free space and the minimum, and a scheduled run is recorded as failed, so `backup.failed` and the job's heartbeat `/fail` ping fire.
+- **When a metadata write fails because the disk is full** (SQLite `database or disk is full`, `ENOSPC`), MongoRescue publishes the critical event `system.disk_full` (sent to every enabled notification channel, whatever the rules), shows the `data_dir_full` warning in the settings (`GET /api/v1/settings`, counted by `mongorescue_settings_warnings`), and refuses new backups and restores until there is enough free space again; it checks every 30 seconds and resumes on its own.
+- **A backup whose final record cannot be saved never reports success.** The save is retried for a few seconds; if it still fails, the backup is reported as failed (`backup.failed`, a failed job run, the heartbeat's `/fail` ping, no copies, no retention), the failure is logged and written to the run's log, and the failed record is saved as soon as writes work again (at the latest by the next start, which fails every run left in progress). Its uploaded archive is marked `archive_cleanup_pending`, so the next purge deletes it instead of leaving an orphan in storage.
+
+The rest of the server copes with a full data directory: requests that must write fail with an error, the database stays consistent (SQLite rolls back the failed transaction), and nothing needs repairing once space is freed. Alert on the filesystem itself as well (node exporter's `node_filesystem_avail_bytes`), well before the minimum.
+
 ### Metadata backups
 
 Settings → Recovery → *Metadata backups* (the `metadata_backup` settings, off by default) takes a snapshot of `mongorescue.db` on a schedule (every 24 hours by default) and on demand (*Back up now*, `POST /api/v1/metadata-backup/run`):

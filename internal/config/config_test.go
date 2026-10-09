@@ -85,6 +85,27 @@ func TestFromEnvAndValidate(t *testing.T) {
 	}
 }
 
+func TestMinFreeSpace(t *testing.T) {
+	if c, err := FromEnv(env(nil)); err != nil || c.MinFreeSpaceMB != DefaultMinFreeSpaceMB {
+		t.Fatalf("default min free space = %+v, %v", c, err)
+	}
+	for in, want := range map[string]int{"0": 0, " 512 ": 512, "1048576": MaxMinFreeSpaceMB} {
+		if c, err := FromEnv(env(map[string]string{EnvMinFreeSpace: in})); err != nil || c.MinFreeSpaceMB != want || c.Validate() != nil {
+			t.Errorf("%s=%q = %+v, %v", EnvMinFreeSpace, in, c, err)
+		}
+	}
+	for _, in := range []string{"-1", "1.5", "100MiB", "1048577"} {
+		if _, err := FromEnv(env(map[string]string{EnvMinFreeSpace: in})); !errors.Is(err, ErrInvalidMinFreeSpace) {
+			t.Errorf("%s=%q accepted: %v", EnvMinFreeSpace, in, err)
+		}
+	}
+	c := Default()
+	c.MinFreeSpaceMB = -1
+	if err := c.Validate(); !errors.Is(err, ErrInvalidMinFreeSpace) {
+		t.Fatalf("Validate(MinFreeSpaceMB=-1) = %v", err)
+	}
+}
+
 func settingValue(l *Legacy, key string) (any, string, bool) {
 	for _, it := range l.Settings {
 		if it.Key == key {

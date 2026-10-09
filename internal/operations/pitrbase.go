@@ -6,8 +6,6 @@ import (
 	"fmt"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
-	"github.com/yigitcittan/mongorescue/internal/events"
-	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -85,16 +83,7 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		if saveErr := s.cfg.Store.SaveBackupRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist the record of a PITR base backup",
-				logsafe.Attr("backup_id", final.ID), logsafe.Error(saveErr))
-		}
-		s.publish(persistCtx, events.BackupEvent(final, runErr, "", ""))
-		if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
-			s.publish(persistCtx, ve)
-		}
+		s.finishBackup(runCtx, final, runErr, "", "")
 	}); err != nil {
 		tracked.End()
 		release()

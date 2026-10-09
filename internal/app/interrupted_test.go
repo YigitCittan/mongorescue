@@ -166,3 +166,27 @@ func TestFailInterruptedRunsPublishesFailures(t *testing.T) {
 		t.Fatalf("a completed backup published an event: %+v", e)
 	}
 }
+
+// A backup left in progress because its final record could not be saved (a full
+// data disk, then a restart) is failed at the next start, and its uploaded archive
+// goes to the purge instead of staying behind as an orphan.
+func TestFailInterruptedRunsSendsTheArchiveToThePurge(t *testing.T) {
+	ctx := context.Background()
+	fs := storetest.New(t)
+	uploaded := &models.BackupRecord{ID: "uploaded", Database: "d", Status: models.StatusInProgress,
+		StorageTargetID: "local", StorageKey: "d/2026/10/uploaded.archive.gz", SizeBytes: 42, SHA256: "abcd"}
+	if err := fs.SaveBackupRecord(ctx, uploaded); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{metaStore: fs, logger: slog.Default()}
+	a.failInterruptedRuns(ctx)
+
+	b, err := fs.GetBackupRecord(ctx, "uploaded")
+	if err != nil || b.Status != models.StatusFailed || !b.ArchiveCleanupPending {
+		t.Fatalf("interrupted backup %+v, %v; want failed with its archive pending cleanup", b, err)
+	}
+	pending, err := fs.PendingArchiveCleanups(ctx)
+	if err != nil || len(pending) != 1 || pending[0].ID != "uploaded" {
+		t.Fatalf("pending cleanups %+v, %v", pending, err)
+	}
+}
