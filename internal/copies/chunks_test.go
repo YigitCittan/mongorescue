@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,5 +160,78 @@ func TestChunkCopiesArePurgedWithTheirChunks(t *testing.T) {
 	}
 	if c := env.copiesOf(t)["chk_2"]; c.Status != models.CopyDone {
 		t.Fatalf("the live chunk's copy = %+v; want done", c)
+	}
+}
+
+// countingStorage fails every Save and counts them.
+type countingStorage struct {
+	*storage.MockStorage
+	saves atomic.Int64
+}
+
+func (c *countingStorage) Save(context.Context, string, io.Reader) (*models.StorageObject, error) {
+	c.saves.Add(1)
+	return nil, errors.New("copy target unreachable")
+}
+
+// TestAFailedChunkCopyIsTriedOncePerRun proves that a run tries each due chunk
+// copy at most once, even across more than one batch and when the run lasts
+// longer than the backoff of its failures, and that the failures back off.
+func TestAFailedChunkCopyIsTriedOncePerRun(t *testing.T) {
+	const n = 150 // more than one batch
+	ctx := context.Background()
+	st := storetest.New(t)
+	src, dst := storage.NewMockStorage(), &countingStorage{MockStorage: storage.NewMockStorage()}
+	var mu sync.Mutex
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	if err := st.CreateStream(ctx, &pitr.Stream{ID: "pst_a", ConnectionID: "conn_a", ReplicaSet: "rs0", TargetID: "tgt_a", Enabled: true,
+		BaseCron: "0 3 * * *", BaseKeepCount: 7, ChunkSeconds: 60, CopyTargets: []string{"tgt_b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartChain(ctx, "pst_a", "ch1", pitr.OpTime{TS: pitr.Timestamp{T: 100, I: 1}, Term: 1}, now); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("oplog")
+	from := pitr.Timestamp{T: 100, I: 1}
+	for i := range n {
+		to := pitr.Timestamp{T: from.T + 1, I: 1}
+		k := "_mongorescue/oplog/conn_a/rs0/ch1/" + to.String()
+		if _, err := src.Save(ctx, k, bytes.NewReader(body)); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CommitChunk(ctx, &pitr.Chunk{ID: fmt.Sprintf("chk_%03d", i), StreamID: "pst_a", ChainID: "ch1", TargetID: "tgt_a",
+			StorageKey: k, From: from, To: to, FirstTerm: 1, LastTerm: 1, SizeBytes: int64(len(body)), SHA256: sum(body), CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		from = to
+	}
+	svc := copies.New(copies.Config{Store: st, Logger: slog.New(slog.DiscardHandler),
+		Storages: func(_ context.Context, id string) (storage.Storage, error) {
+			if id == "tgt_a" {
+				return src, nil
+			}
+			return dst, nil
+		},
+		// Every reading of the clock is an hour later: failures are due again
+		// long before the run ends.
+		Now: func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			now = now.Add(time.Hour)
+			return now
+		},
+	})
+	if err := svc.RunDue(ctx); err == nil {
+		t.Fatal("RunDue reported no error for the failing copies")
+	}
+	if got := dst.saves.Load(); got != n {
+		t.Fatalf("uploads in one run = %d; want %d (one per copy)", got, n)
+	}
+	list, err := st.ChunkCopiesOf(ctx, []string{"chk_000"})
+	if err != nil || len(list["chk_000"]) != 1 {
+		t.Fatalf("copies = %+v, %v", list, err)
+	}
+	if c := list["chk_000"][0]; c.Status != models.CopyFailed || c.Attempts != 1 || c.NextAttemptAt == nil {
+		t.Fatalf("failed copy = %+v; want one attempt and a next attempt", c)
 	}
 }

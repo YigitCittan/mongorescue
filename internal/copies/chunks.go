@@ -35,8 +35,10 @@ type ChunkStore interface {
 	// PlanChunkCopies queues the missing copies of the live chunks of a stream on
 	// targets and drops its queued copies on other targets.
 	PlanChunkCopies(ctx context.Context, streamID string, targets []models.CopyTarget) (int64, error)
-	// DueChunkCopies returns up to limit live chunks with a copy due at now.
-	DueChunkCopies(ctx context.Context, now time.Time, limit int) ([]*pitr.Chunk, error)
+	// DueChunkCopies returns up to limit live chunks with a copy due at now, oldest
+	// first, after the chunk created at afterCreated with ID afterID (a cursor; the
+	// zero time and "" start at the beginning).
+	DueChunkCopies(ctx context.Context, now, afterCreated time.Time, afterID string, limit int) ([]*pitr.Chunk, error)
 	// ChunkCopiesOf returns the copies of chunks by chunk ID.
 	ChunkCopiesOf(ctx context.Context, ids []string) (map[string][]*models.ChunkCopy, error)
 	// UpdateChunkCopy applies fn to one copy in a transaction.
@@ -70,11 +72,17 @@ func (s *Service) runChunks(ctx context.Context, cs ChunkStore) error {
 			errs = append(errs, err)
 		}
 	}
+	// One pass over the queue: a cursor moves through it, and a copy tried in this
+	// run is never tried again in it (a failure waits for its backoff, even when
+	// the run lasts longer than that).
+	var afterCreated time.Time
+	afterID := ""
+	tried := map[string]bool{}
 	for range maxChunkBatches {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		chunks, listErr := cs.DueChunkCopies(ctx, s.now(), chunkBatch)
+		chunks, listErr := cs.DueChunkCopies(ctx, s.now(), afterCreated, afterID, chunkBatch)
 		if listErr != nil {
 			errs = append(errs, fmt.Errorf("list the due chunk copies: %w", listErr))
 			break
@@ -93,9 +101,11 @@ func (s *Service) runChunks(ctx context.Context, cs ChunkStore) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if !models.CopyDue(&cp.BackupCopy, s.now()) {
+				key := c.ID + "\x00" + cp.TargetID
+				if tried[key] || !models.CopyDue(&cp.BackupCopy, s.now()) {
 					continue
 				}
+				tried[key] = true
 				if err = s.attemptChunk(ctx, cs, c, cp.TargetID); err != nil {
 					errs = append(errs, err)
 				}
@@ -104,6 +114,8 @@ func (s *Service) runChunks(ctx context.Context, cs ChunkStore) error {
 		if len(chunks) < chunkBatch {
 			break
 		}
+		last := chunks[len(chunks)-1]
+		afterCreated, afterID = last.CreatedAt, last.ID
 	}
 	if err = s.purgeChunkCopies(ctx, cs); err != nil {
 		errs = append(errs, err)

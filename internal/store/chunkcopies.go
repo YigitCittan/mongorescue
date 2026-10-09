@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -67,14 +68,21 @@ func placeholders(n int) string {
 }
 
 // DueChunkCopies returns up to limit chunks with a copy that is due at now
-// (models.CopyDue) and still live, oldest first.
-func (s *SQLiteStore) DueChunkCopies(ctx context.Context, now time.Time, limit int) ([]*pitr.Chunk, error) {
+// (models.CopyDue) and still live, oldest first, after the chunk created at
+// afterCreated with ID afterID (a page cursor; the zero time and "" start at the
+// beginning).
+func (s *SQLiteStore) DueChunkCopies(ctx context.Context, now, afterCreated time.Time, afterID string, limit int) ([]*pitr.Chunk, error) {
+	after := timeKey(afterCreated)
+	if afterCreated.IsZero() && afterID == "" {
+		after = math.MinInt64
+	}
 	return s.queryChunks(ctx, "SELECT "+chunkColumns+` FROM oplog_chunks WHERE id IN (
 			SELECT cc.chunk_id FROM oplog_chunk_copies cc
 			WHERE ((cc.status = 'pending' AND (cc.next_attempt_at IS NULL OR cc.next_attempt_at <= ?))
 				OR (cc.status = 'failed' AND cc.next_attempt_at IS NOT NULL AND cc.next_attempt_at <= ?))
 				AND `+chunkCopyWhereLive+`)
-		ORDER BY created_at, id LIMIT ?`, timeKey(now), timeKey(now), limit)
+			AND (created_at > ? OR (created_at = ? AND id > ?))
+		ORDER BY created_at, id LIMIT ?`, timeKey(now), timeKey(now), after, after, afterID, limit)
 }
 
 // CountWaitingChunkCopies returns how many chunk copies wait in the copy queue
