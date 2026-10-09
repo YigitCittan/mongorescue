@@ -184,12 +184,12 @@ func TestPITRRestoreRefusals(t *testing.T) {
 		"reader":                       {readerCtx(), pitrAt(125), auth.ErrForbidden},
 		"operator into another server": {operator(), elsewhere, auth.ErrForbidden},
 		"operator in place":            {operator(), inPlace, models.ErrPITRInPlace},
-		"in place":         {admin(), inPlace, models.ErrPITRInPlace},
-		"before the base":  {admin(), pitrAt(107), operations.ErrPITRNotRestorable},
-		"after the window": {admin(), pitrAt(130), operations.ErrPITRNotRestorable},
-		"unknown stream":   {admin(), models.RestoreRequest{PITR: &models.PITRTarget{StreamID: "nope", At: pitrAt(1).PITR.At}}, operations.ErrNotFound},
-		"system database":  {admin(), pitrAt(125, "admin"), operations.ErrInvalid},
-		"databases alone":  {admin(), models.RestoreRequest{BackupID: "b1", Databases: []string{"shop"}}, operations.ErrInvalid},
+		"in place":                     {admin(), inPlace, models.ErrPITRInPlace},
+		"before the base":              {admin(), pitrAt(107), operations.ErrPITRNotRestorable},
+		"after the window":             {admin(), pitrAt(130), operations.ErrPITRNotRestorable},
+		"unknown stream":               {admin(), models.RestoreRequest{PITR: &models.PITRTarget{StreamID: "nope", At: pitrAt(1).PITR.At}}, operations.ErrNotFound},
+		"system database":              {admin(), pitrAt(125, "admin"), operations.ErrInvalid},
+		"databases alone":              {admin(), models.RestoreRequest{BackupID: "b1", Databases: []string{"shop"}}, operations.ErrInvalid},
 	} {
 		_, err := svc.StartRestore(c.ctx, c.req)
 		if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
