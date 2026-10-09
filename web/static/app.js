@@ -2415,6 +2415,8 @@ function setupForms() {
       ...(typeof copiesJobPayload === "function" ? copiesJobPayload() : {}),
       enabled: document.getElementById("job-enabled").checked
     };
+    // Locked copies and the DR drill source (dr.js).
+    if (typeof drJobPayload === "function") drJobPayload(payload);
     // Editing replaces the job in place (PUT keeps its id, history and gzip setting);
     // updated_at makes the server refuse the save if the job changed since it opened.
     const editing = editingJobId;
@@ -2614,6 +2616,8 @@ function openJobModal(jobID) {
   if (typeof throttleFillJobForm === "function") throttleFillJobForm(job);
   // Copy targets and copy mode (copies.js), once the primary target is selected.
   if (typeof copiesFillJobForm === "function") copiesFillJobForm(job);
+  // Locked copies and the DR drill source (dr.js), after the copy targets.
+  if (typeof drFillJobForm === "function") drFillJobForm(job);
   // Single / Selected / All / Pattern database selection (jobdbs.js).
   if (typeof jobDbsFill === "function") jobDbsFill(job);
   openModal("modal-new-job");
@@ -5743,6 +5747,8 @@ function openStorageModal(id) {
   setValue("storage-part-size", String(s3.part_size_mb || S3_PART_SIZE_DEFAULT));
   updatePartSizeHint();
   if (typeof objectLockFillForm === "function") objectLockFillForm(s3);
+  // The region label (dr.js).
+  if (typeof drFillTargetForm === "function") drFillTargetForm(target);
   const provider = target ? inferProvider(target) : state.storageTargets.some(s => s.type === "local") ? "aws" : "local";
   setValue("storage-provider", provider);
   applyProvider(provider, !target);
@@ -5922,7 +5928,7 @@ async function saveStorageTarget(e) {
     const json = await apiJSON(url, {
       method: id ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(typeof drTargetPayload === "function" ? { ...payload, ...drTargetPayload() } : payload)
     });
     if (!json.success) {
       showToast(json.error || t("notify.toast_save_failed"), "error");

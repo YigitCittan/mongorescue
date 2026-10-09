@@ -26,6 +26,7 @@ func drTargets() []*models.StorageTarget {
 		s3("tgt_primary", "eu-west-1", "AKIA_PRIMARY", ""),
 		s3("tgt_same", "eu-west-1", "AKIA_PRIMARY", ""),
 		s3("tgt_far", "us-east-2", "AKIA_DR", models.ObjectLockCompliance),
+		s3("tgt_far_open", "ap-south-1", "AKIA_DR2", ""),
 	}
 }
 
@@ -65,7 +66,7 @@ func TestReportWarnsAboutSameRegionAndSameCredentials(t *testing.T) {
 		t.Fatalf("same region copy: dr %+v, reasons %v", r.DR, r.Reasons)
 	}
 	r = drRow(t, "tgt_same", "tgt_far")
-	if r.DR == nil || r.DR.Level != readiness.DRLevelCrossRegion || !r.DR.CrossRegion || !r.DR.SeparateCredentials || !r.DR.LockedCopy ||
+	if r.DR == nil || r.DR.Level != readiness.DRLevelCrossRegionUnproven || !r.DR.CrossRegion || !r.DR.SeparateCredentials || !r.DR.LockedCopy ||
 		slices.Contains(r.Reasons, readiness.ReasonDRSameRegion) || slices.Contains(r.Reasons, readiness.ReasonDRSameCredentials) {
 		t.Fatalf("cross-region copy: dr %+v, reasons %v", r.DR, r.Reasons)
 	}
@@ -74,6 +75,28 @@ func TestReportWarnsAboutSameRegionAndSameCredentials(t *testing.T) {
 	}
 	if r = drRow(t); r.DR != nil {
 		t.Fatalf("a job without copies has DR %+v", r.DR)
+	}
+}
+
+// TestReportShowsDRCrossRegion is the acceptance check: a job with a locked copy
+// in another region and a passing drill from that copy shows "DR: cross-region";
+// a drill from a same-region or an unlocked copy does not prove it.
+func TestReportShowsDRCrossRegion(t *testing.T) {
+	now := t0.Add(60 * 24 * time.Hour)
+	cases := []struct {
+		source string
+		want   string
+	}{
+		{"tgt_far", readiness.DRLevelCrossRegion},
+		{"tgt_same", readiness.DRLevelCrossRegionUnproven},
+		{"tgt_far_open", readiness.DRLevelCrossRegionUnproven},
+	}
+	for _, c := range cases {
+		d := drill("rt_"+c.source, c.source, now.Add(-24*time.Hour), models.RestoreTestOK)
+		r := drRowWith(t, now, []*models.RestoreTestResult{d}, "tgt_same", "tgt_far", "tgt_far_open")
+		if r.DR == nil || r.DR.Level != c.want || r.DR.DrillStale || slices.Contains(r.Reasons, readiness.ReasonDRDrillStale) {
+			t.Errorf("drill from %s: dr %+v, reasons %v; want level %s", c.source, r.DR, r.Reasons, c.want)
+		}
 	}
 }
 

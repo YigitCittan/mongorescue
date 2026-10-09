@@ -27,8 +27,13 @@ const (
 
 // DR levels of a row (DRStatus.Level).
 const (
-	// DRLevelCrossRegion: a copy target in another region than the primary.
+	// DRLevelCrossRegion: a copy target in another region than the primary, with
+	// S3 Object Lock, from which a disaster recovery drill passed within
+	// Config.DRDrillMaxAge ("DR: cross-region").
 	DRLevelCrossRegion = "cross_region"
+	// DRLevelCrossRegionUnproven: a copy target in another region, but none that
+	// is locked and passed a recent drill.
+	DRLevelCrossRegionUnproven = "cross_region_unproven"
 	// DRLevelSameRegion: copies, but none in another region.
 	DRLevelSameRegion = "same_region"
 )
@@ -36,7 +41,8 @@ const (
 // DRStatus is the disaster recovery posture of a row whose jobs copy their backups
 // to other storage targets.
 type DRStatus struct {
-	// Level is DRLevelCrossRegion or DRLevelSameRegion.
+	// Level is DRLevelCrossRegion, DRLevelCrossRegionUnproven or
+	// DRLevelSameRegion.
 	Level string `json:"level"`
 	// CrossRegion reports a copy target in a known region other than its primary's.
 	CrossRegion bool `json:"cross_region"`
@@ -56,12 +62,16 @@ type DRStatus struct {
 	// DrillStale reports that no drill passed within the drill age limit
 	// (ReasonDRDrillStale).
 	DrillStale bool `json:"drill_stale"`
+	// DrillCrossRegion reports that LastGoodDrill read a locked copy target in
+	// another region than the primary.
+	DrillCrossRegion bool `json:"drill_cross_region"`
 }
 
 // drAcc collects the disaster recovery posture of a row.
 type drAcc struct {
 	status DRStatus
-	// cross holds the copy targets in another region than their primary.
+	// cross holds the copy targets in another region than their primary, true for
+	// those with S3 Object Lock.
 	cross map[string]bool
 	jobs  map[string]bool
 	// maxAge is Config.DRDrillMaxAge.
@@ -167,7 +177,7 @@ func addDR(acc *rowAcc, job *models.Job, targets map[string]*models.StorageTarge
 		}
 		if models.CrossRegion(primary, c) {
 			d.status.CrossRegion = true
-			d.cross[c.ID] = true
+			d.cross[c.ID] = d.cross[c.ID] || c.ObjectLocked()
 			if c.ObjectLocked() {
 				d.status.LockedCopy = true
 			}
@@ -201,6 +211,14 @@ func finishDR(acc *rowAcc, now time.Time) []string {
 	if g := st.LastGoodDrill; g == nil || now.Sub(g.At) > maxAge {
 		st.DrillStale = true
 		warn = append(warn, ReasonDRDrillStale)
+	} else {
+		st.DrillCrossRegion = d.cross[g.SourceTargetID]
+	}
+	switch {
+	case st.DrillCrossRegion:
+		st.Level = DRLevelCrossRegion
+	case st.CrossRegion:
+		st.Level = DRLevelCrossRegionUnproven
 	}
 	acc.row.DR = &st
 	return warn
