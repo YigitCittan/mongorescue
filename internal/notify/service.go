@@ -88,6 +88,10 @@ type Service struct {
 	// deliveries of a channel go out one at a time, in order.
 	flightMu sync.Mutex
 	flight   map[string]struct{}
+	// held holds the outbox entries whose last write failed (see heldDelivery).
+	held map[int64]*heldDelivery
+	// heldBackoff and heldMaxBackoff bound the retries of a failed outbox write.
+	heldBackoff, heldMaxBackoff time.Duration
 
 	// mu serialises configuration mutations (check-then-write sequences).
 	mu sync.Mutex
@@ -190,6 +194,9 @@ func NewService(repo Repository, opts ...Option) *Service {
 		outboxMaxBackoff: DefaultOutboxMaxBackoff,
 		wake:             make(chan struct{}, 1),
 		flight:           make(map[string]struct{}),
+		held:             make(map[int64]*heldDelivery),
+		heldBackoff:      defaultHeldBackoff,
+		heldMaxBackoff:   defaultHeldMaxBackoff,
 	}
 	for _, opt := range opts {
 		opt(s)

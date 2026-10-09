@@ -173,7 +173,9 @@ func (s *Service) dispatch(ctx context.Context) {
 }
 
 // dispatchDue queues the due heads of the outbox whose channel has no delivery in
-// flight, and returns how long to wait before the next check.
+// flight, and returns how long to wait before the next check. A head whose last
+// outbox write failed follows its in-memory state (see heldDelivery): one that was
+// delivered or given up is never sent again, only its removal is retried.
 func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 	heads, err := s.outbox.OutboxHeads(ctx)
 	if err != nil {
@@ -188,9 +190,19 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 		if s.inFlight(h.ChannelID) {
 			continue
 		}
+		if held, ok := s.heldState(h.ID); ok {
+			if until := held.next.Sub(now); until > 0 {
+				wait = min(wait, until)
+				continue
+			}
+			if held.removeOnly {
+				wait = min(wait, s.remove(ctx, h.ID))
+				continue
+			}
+			h.Attempts, h.NextAttemptAt = held.attempts, held.next
+		}
 		if h.Event.Type == "" {
-			s.discard(ctx, h, "unreadable")
-			wait = 0
+			wait = min(wait, s.discard(ctx, h, "unreadable"))
 			continue
 		}
 		if until := h.NextAttemptAt.Sub(now); until > 0 {
@@ -200,15 +212,13 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 		ch, chErr := s.repo.GetChannel(ctx, h.ChannelID)
 		switch {
 		case errors.Is(chErr, ErrChannelNotFound):
-			s.discard(ctx, h, "channel deleted")
-			wait = 0
+			wait = min(wait, s.discard(ctx, h, "channel deleted"))
 			continue
 		case chErr != nil:
 			s.logger.Warn("notification channel unavailable", slog.String("channel_id", h.ChannelID), slog.Any("error", chErr))
 			continue
 		case !ch.Enabled:
-			s.discard(ctx, h, "channel disabled")
-			wait = 0
+			wait = min(wait, s.discard(ctx, h, "channel disabled"))
 			continue
 		}
 		s.setInFlight(h.ChannelID, true)
@@ -223,13 +233,78 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 	return max(wait, time.Millisecond)
 }
 
-// discard removes outbox entry h that can no longer be delivered.
-func (s *Service) discard(ctx context.Context, h OutboxEntry, reason string) {
+// discard removes outbox entry h that can no longer be delivered and returns how
+// long the dispatcher may wait before the channel's next entry (see remove).
+func (s *Service) discard(ctx context.Context, h OutboxEntry, reason string) time.Duration {
 	s.logger.Info("queued notification dropped",
 		slog.String("channel_id", h.ChannelID), slog.String("event", string(h.Event.Type)), slog.String("reason", reason))
-	if err := s.outbox.DeleteDelivery(ctx, h.ID); err != nil {
-		s.logger.Warn("failed to remove a queued notification", slog.Any("error", err))
+	return s.remove(ctx, h.ID)
+}
+
+// Backoff of a failed outbox write (see heldDelivery).
+const (
+	defaultHeldBackoff    = time.Second
+	defaultHeldMaxBackoff = 5 * time.Minute
+)
+
+// heldDelivery is the in-memory state of an outbox entry whose last write failed,
+// so the dispatcher never acts on the stale row in a tight loop. removeOnly marks
+// an entry that was delivered (or given up or discarded): it is never sent again,
+// only its removal is retried at next, with backoff. Otherwise attempts and next
+// replace the row's, whose update failed.
+type heldDelivery struct {
+	removeOnly bool
+	attempts   int
+	next       time.Time
+	backoff    time.Duration
+}
+
+// heldState returns the in-memory state of entry id, if any.
+func (s *Service) heldState(id int64) (heldDelivery, bool) {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	h, ok := s.held[id]
+	if !ok {
+		return heldDelivery{}, false
 	}
+	return *h, true
+}
+
+// release forgets the in-memory state of entry id.
+func (s *Service) release(id int64) {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	delete(s.held, id)
+}
+
+// remove deletes entry id. When the delete fails the entry is held for removal
+// only, retried with a backoff doubling from one second to five minutes. It
+// returns how long the dispatcher may wait before looking at the channel again.
+func (s *Service) remove(ctx context.Context, id int64) time.Duration {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outboxWriteTimeout)
+	defer cancel()
+	err := s.outbox.DeleteDelivery(writeCtx, id)
+	if err == nil {
+		s.release(id)
+		return 0
+	}
+	s.flightMu.Lock()
+	h := s.held[id]
+	if h == nil || !h.removeOnly {
+		h = &heldDelivery{removeOnly: true}
+		s.held[id] = h
+	}
+	if h.backoff == 0 {
+		h.backoff = s.heldBackoff
+	} else {
+		h.backoff = min(2*h.backoff, s.heldMaxBackoff)
+	}
+	h.next = time.Now().Add(h.backoff)
+	wait := h.backoff
+	s.flightMu.Unlock()
+	s.logger.Warn("failed to remove a sent or dropped notification from the outbox; it is not sent again, the removal is retried",
+		slog.Int64("outbox_id", id), slog.Duration("retry_in", wait), slog.Any("error", err))
+	return wait
 }
 
 // inFlight reports whether a delivery of channel id is being sent.
@@ -253,36 +328,51 @@ func (s *Service) setInFlight(id string, on bool) {
 
 // settle records the outcome of outbox delivery d: delivered or given up removes
 // it, a failed round schedules the next one with backoff. A round cut short by the
-// end of the shutdown drain leaves it as it was, to be sent after the restart.
+// end of the shutdown drain leaves it as it was, to be sent after the restart. A
+// write that fails is retried from memory (see heldDelivery), never by sending a
+// delivered notification again.
 func (s *Service) settle(ctx context.Context, d delivery, sendErr error) {
 	defer func() {
 		s.setInFlight(d.channel.ID, false)
 		s.signal()
 	}()
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outboxWriteTimeout)
-	defer cancel()
 	attempts := d.attempts + 1
 	switch {
 	case sendErr == nil:
-		if err := s.outbox.DeleteDelivery(writeCtx, d.outboxID); err != nil {
-			s.logger.Warn("failed to remove a delivered notification; it may be sent again", slog.Any("error", err))
-		}
+		s.remove(ctx, d.outboxID)
 	case ctx.Err() != nil:
 		// Shutdown: the delivery stays queued for the next start.
 	case isPermanent(sendErr) || attempts >= s.outboxAttempts:
-		s.logger.Warn("notification given up",
-			slog.String("channel_id", d.channel.ID), slog.String("event", string(d.msg.Event.Type)), slog.Int("rounds", attempts))
-		s.observe(d.channel.Type, OutcomeFailure)
-		if err := s.outbox.DeleteDelivery(writeCtx, d.outboxID); err != nil {
-			s.logger.Warn("failed to remove a notification that was given up", slog.Any("error", err))
-		}
+		s.giveUp(ctx, d.channel, d.outboxID, d.msg.Event.Type, attempts)
 	default:
-		next := time.Now().UTC().Add(s.outboxDelay(attempts))
 		msg := truncate(singleLine(scrub(sendErr, secretsOf(d.channel)...).Error()), maxErrorLength)
-		if err := s.outbox.RetryDelivery(writeCtx, d.outboxID, attempts, next, msg); err != nil {
-			s.logger.Warn("failed to reschedule a notification", slog.Any("error", err))
-		}
+		s.reschedule(ctx, d.outboxID, attempts, msg)
 	}
+}
+
+// giveUp ends the delivery of outbox entry id to ch after rounds failed rounds.
+func (s *Service) giveUp(ctx context.Context, ch *Channel, id int64, event events.EventType, rounds int) {
+	s.logger.Warn("notification given up",
+		slog.String("channel_id", ch.ID), slog.String("event", string(event)), slog.Int("rounds", rounds))
+	s.observe(ch.Type, OutcomeFailure)
+	s.remove(ctx, id)
+}
+
+// reschedule records failed round number attempts of outbox entry id and when it
+// is due again; when the write fails the new state is held in memory.
+func (s *Service) reschedule(ctx context.Context, id int64, attempts int, lastError string) {
+	next := time.Now().UTC().Add(s.outboxDelay(attempts))
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outboxWriteTimeout)
+	defer cancel()
+	if err := s.outbox.RetryDelivery(writeCtx, id, attempts, next, lastError); err != nil {
+		s.logger.Warn("failed to reschedule a notification; its next attempt is kept in memory",
+			slog.Int64("outbox_id", id), slog.Any("error", err))
+		s.flightMu.Lock()
+		s.held[id] = &heldDelivery{attempts: attempts, next: next}
+		s.flightMu.Unlock()
+		return
+	}
+	s.release(id)
 }
 
 // outboxDelay is the wait after failed round number attempts (1-based).
