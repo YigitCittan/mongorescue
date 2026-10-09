@@ -108,7 +108,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "No PITR window yet",
       reason_pitr_chain_test_failed: "PITR chain test failed",
       rpo_pitr: "PITR: oplog captured",
-      rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured and can be restored to a point in time (experimental)."
+      rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured and can be restored to a point in time (experimental).",
+      rto_pitr_measured: "PITR: {d}, measured on {n} restore(s)",
+      rto_pitr_default: "PITR: {d}, at default rates"
     }
   },
   tr: {
@@ -198,7 +200,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Henüz PITR penceresi yok",
       reason_pitr_chain_test_failed: "PITR zincir testi başarısız",
       rpo_pitr: "PITR: oplog kaydediliyor",
-      rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi ve zamana noktasal olarak geri yüklenebilir (deneysel)."
+      rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi ve zamana noktasal olarak geri yüklenebilir (deneysel).",
+      rto_pitr_measured: "PITR: {d}, {n} geri yüklemede ölçüldü",
+      rto_pitr_default: "PITR: {d}, varsayılan hızlarla"
     }
   },
   de: {
@@ -288,7 +292,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Noch kein PITR-Fenster",
       reason_pitr_chain_test_failed: "PITR-Kettentest fehlgeschlagen",
       rpo_pitr: "PITR: Oplog erfasst",
-      rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst und kann auf einen Zeitpunkt wiederhergestellt werden (experimentell)."
+      rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst und kann auf einen Zeitpunkt wiederhergestellt werden (experimentell).",
+      rto_pitr_measured: "PITR: {d}, gemessen an {n} Wiederherstellung(en)",
+      rto_pitr_default: "PITR: {d}, mit Standardraten"
     }
   },
   es: {
@@ -378,7 +384,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Aún sin ventana PITR",
       reason_pitr_chain_test_failed: "Prueba de cadena PITR fallida",
       rpo_pitr: "PITR: oplog capturado",
-      rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él y se puede restaurar a un punto en el tiempo (experimental)."
+      rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él y se puede restaurar a un punto en el tiempo (experimental).",
+      rto_pitr_measured: "PITR: {d}, medido en {n} restauración(es)",
+      rto_pitr_default: "PITR: {d}, con tasas por defecto"
     }
   },
   fr: {
@@ -468,7 +476,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Pas encore de fenêtre PITR",
       reason_pitr_chain_test_failed: "Test de chaîne PITR en échec",
       rpo_pitr: "PITR : oplog capturé",
-      rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui et peut être restauré à un instant donné (expérimental)."
+      rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui et peut être restauré à un instant donné (expérimental).",
+      rto_pitr_measured: "PITR : {d}, mesuré sur {n} restauration(s)",
+      rto_pitr_default: "PITR : {d}, aux débits par défaut"
     }
   },
   zh: {
@@ -558,7 +568,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "尚无 PITR 窗口",
       reason_pitr_chain_test_failed: "PITR 链测试失败",
       rpo_pitr: "PITR：oplog 已捕获",
-      rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，可以进行时间点恢复（实验性）。"
+      rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，可以进行时间点恢复（实验性）。",
+      rto_pitr_measured: "PITR：{d}，基于 {n} 次恢复的测量",
+      rto_pitr_default: "PITR：{d}，按默认速率"
     }
   },
   ja: {
@@ -648,7 +660,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "PITR ウィンドウがまだありません",
       reason_pitr_chain_test_failed: "PITR チェーンテストが失敗",
       rpo_pitr: "PITR：oplog を取得済み",
-      rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みで、ポイントインタイム復元が可能です（実験的）。"
+      rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みで、ポイントインタイム復元が可能です（実験的）。",
+      rto_pitr_measured: "PITR: {d}（{n} 回の復元で計測）",
+      rto_pitr_default: "PITR: {d}（既定のレート）"
     }
   },
   ru: {
@@ -738,7 +752,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Окна PITR пока нет",
       reason_pitr_chain_test_failed: "Тест цепочки PITR не пройден",
       rpo_pitr: "PITR: oplog сохраняется",
-      rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, и возможно восстановление на момент времени (экспериментально)."
+      rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, и возможно восстановление на момент времени (экспериментально).",
+      rto_pitr_measured: "PITR: {d}, измерено на {n} восстановлениях",
+      rto_pitr_default: "PITR: {d}, по скоростям по умолчанию"
     }
   }
 };
@@ -1159,6 +1175,22 @@ async function pitrRestoreSubmit(e) {
     showFormError("pitr-restore-error", err.message);
     submit.disabled = false;
   }
+}
+
+// The estimated time of a point-in-time restore of the row's connection to the
+// newest point of its stream's window (readiness streams[].rto), as a sub-line of
+// the readiness RTO cell: measured on the stream's recent restores and chain
+// tests, or at default rates. Empty without a stream or an estimate.
+function pitrReadinessRto(row) {
+  const streams = (readiness.data && Array.isArray(readiness.data.streams)) ? readiness.data.streams : [];
+  const st = streams.find(s => s.connection_id === row.connection_id && s.rto);
+  if (!st) return "";
+  const rto = st.rto;
+  const d = readinessDuration(Math.max(Number(rto.seconds) || 0, 60));
+  const text = rto.source === "measured"
+    ? tf("readiness.rto_pitr_measured", { d, n: rto.samples || 0 })
+    : tf("readiness.rto_pitr_default", { d });
+  return `<div class="cell-sub">${escapeHtml(text)}</div>`;
 }
 
 // ---------------------------------------------------------------------------

@@ -465,7 +465,7 @@ func TestPITRRestoreStopsInsideATransaction(t *testing.T) {
 // TestPITRChainTest takes two bases and lets the stream's chain_test_cron run a
 // chain test: base one is restored to the consistent point of base two (every
 // write up to and including its t_after), the clones match base two's manifest,
-// and they go.
+// and they go. The test's measured replay rate then drives the RTO estimate.
 func TestPITRChainTest(t *testing.T) {
 	r := newPITRRig(t, "* * * * *")
 	env, ctx := r.env, r.ctx
@@ -473,6 +473,19 @@ func TestPITRChainTest(t *testing.T) {
 	env.seed(t, db, "orders", 20)
 	first := r.base(t)
 	if _, err := env.Client.Database(db).Collection("orders").InsertMany(ctx, []any{bson.D{{Key: "seq", Value: 500}}, bson.D{{Key: "seq", Value: 501}}}); err != nil {
+		t.Fatal(err)
+	}
+	// A typical write-heavy oplog between the bases, for the measured replay rate:
+	// 5,000 small inserts and an update of each.
+	events := env.Client.Database(db).Collection("events")
+	batch := make([]any, 0, 5000)
+	for i := range 5000 {
+		batch = append(batch, bson.D{{Key: "n", Value: int64(i)}, {Key: "status", Value: "new"}, {Key: "pad", Value: strings.Repeat("e", 200)}})
+	}
+	if _, err := events.InsertMany(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.UpdateMany(ctx, bson.D{}, bson.D{{Key: "$set", Value: bson.D{{Key: "status", Value: "done"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	second := r.base(t)
@@ -511,4 +524,15 @@ func TestPITRChainTest(t *testing.T) {
 		}
 	}
 
+	// Measured RTO: both passes were timed, and the estimate uses them.
+	perSec, bytesPerSec, ok := final.PITR.PITRReplayRate()
+	if !ok || final.PITR.BaseSeconds <= 0 {
+		t.Fatalf("the chain test did not time its passes: %+v", final.PITR)
+	}
+	t.Logf("chain test replay: %d entries, %d stored bytes in %.2fs (%.0f entries/s, %.2f MiB/s); base %d bytes in %.2fs",
+		final.PITR.OpsReplayed, final.PITR.OplogBytes, final.PITR.ReplaySeconds, perSec, bytesPerSec/(1<<20),
+		final.PITR.BaseBytes, final.PITR.BaseSeconds)
+	if e := r.ops.EstimatePITR(ctx, r.stream.ID, 1<<30, 1<<30, 1_000_000); e.Source != models.PITREstimateMeasured || e.Samples != 1 {
+		t.Fatalf("the estimate after a timed chain test: %+v", e)
+	}
 }

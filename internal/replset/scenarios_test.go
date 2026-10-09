@@ -211,6 +211,14 @@ func (r *rig) restoreThroughFailover(t *testing.T, req models.RestoreRequest, db
 	if again.PITR.OpsApplied == nil || *again.PITR.OpsApplied != again.PITR.OpsReplayed {
 		t.Fatalf("mongorestore applied %v operations, the filter wrote %d", again.PITR.OpsApplied, again.PITR.OpsReplayed)
 	}
+	// The measured rates of a three-member replica set (docs/pitr.md#restore-time-rto).
+	perSec, bytesPerSec, ok := again.PITR.PITRReplayRate()
+	if !ok || again.PITR.BaseSeconds <= 0 {
+		t.Fatalf("the restore did not time its passes: %+v", again.PITR)
+	}
+	t.Logf("replay: %d entries, %d stored bytes in %.1fs (%.0f entries/s, %.2f MiB/s); base: %d bytes in %.1fs (%.2f MiB/s)",
+		again.PITR.OpsReplayed, again.PITR.OplogBytes, again.PITR.ReplaySeconds, perSec, bytesPerSec/(1<<20),
+		again.PITR.BaseBytes, again.PITR.BaseSeconds, float64(again.PITR.BaseBytes)/again.PITR.BaseSeconds/(1<<20))
 }
 
 // TestRollbackThroughNetworkIsolation cuts the primary off the network, writes to

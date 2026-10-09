@@ -202,6 +202,13 @@ func TestPITRRestoreWholeInstance(t *testing.T) {
 	if rec.Status != models.RestoreStatusCompleted || rec.PITR.OpsReplayed != 3 || rec.PITR.OpsApplied == nil || *rec.PITR.OpsApplied != 3 {
 		t.Fatalf("record = %+v, pitr = %+v", rec, rec.PITR)
 	}
+	// Both passes are timed for the measured RTO, within the restore's duration.
+	if p := rec.PITR; p.BaseSeconds <= 0 || p.ReplaySeconds <= 0 || p.BaseSeconds+p.ReplaySeconds > rec.DurationSeconds {
+		t.Fatalf("passes took %vs and %vs of %vs", p.BaseSeconds, p.ReplaySeconds, rec.DurationSeconds)
+	}
+	if perSec, _, ok := rec.PITR.PITRReplayRate(); !ok || perSec <= 0 {
+		t.Fatalf("replay rate %v, %v", perSec, ok)
+	}
 	if len(r.calls) != 2 {
 		t.Fatalf("%d mongorestore runs, want 2", len(r.calls))
 	}

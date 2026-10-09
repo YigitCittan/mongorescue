@@ -316,7 +316,56 @@ type PITRRestore struct {
 	OpsUnverified bool `json:"ops_unverified,omitempty"`
 	// ChainTest marks the restore of a scheduled chain test.
 	ChainTest bool `json:"chain_test,omitempty"`
+	// BaseSeconds and ReplaySeconds are the measured durations of pass 1 (the
+	// base) and pass 2 (the oplog replay) of a completed restore; zero when the
+	// pass did not complete. They give the measured rates of the RTO estimate
+	// (see PITRReplayRate).
+	BaseSeconds   float64 `json:"base_seconds,omitempty"`
+	ReplaySeconds float64 `json:"replay_seconds,omitempty"`
 }
+
+// PITRReplayRate returns the replay throughput of pass 2 in oplog entries and
+// stored bytes per second; ok is false when the replay was not measured.
+func (p *PITRRestore) PITRReplayRate() (entriesPerSec, bytesPerSec float64, ok bool) {
+	if p == nil || p.ReplaySeconds <= 0 {
+		return 0, 0, false
+	}
+	return float64(p.OpsReplayed) / p.ReplaySeconds, float64(p.OplogBytes) / p.ReplaySeconds, true
+}
+
+// PITREstimate is the estimated duration (RTO) of a point-in-time restore and the
+// rates it comes from.
+type PITREstimate struct {
+	// Seconds is the estimate; BaseBytes and OplogBytes are the stored sizes and
+	// OplogEntries the number of oplog entries it is computed for.
+	Seconds      float64 `json:"seconds"`
+	BaseBytes    int64   `json:"base_bytes"`
+	OplogBytes   int64   `json:"oplog_bytes"`
+	OplogEntries int64   `json:"oplog_entries"`
+	// Source is PITREstimateMeasured (a rolling average of the stream's recent
+	// restores and chain tests), PITREstimateChainTest (the whole duration of the
+	// newest chain test, from a release that did not time the passes) or
+	// PITREstimateDefault (default rates).
+	Source string `json:"source"`
+	// Samples is the number of restores the measured rates average.
+	Samples int `json:"samples,omitempty"`
+	// BaseBytesPerSecond is the rate used for the base; ReplayBytesPerSecond
+	// (stored bytes) and ReplayEntriesPerSecond those of the oplog, which takes
+	// the longer of the two.
+	BaseBytesPerSecond     float64 `json:"base_bytes_per_second"`
+	ReplayBytesPerSecond   float64 `json:"replay_bytes_per_second"`
+	ReplayEntriesPerSecond float64 `json:"replay_entries_per_second"`
+}
+
+// Sources of a PITREstimate.
+const (
+	// PITREstimateMeasured: rolling averages of the passes of recent restores.
+	PITREstimateMeasured = "measured"
+	// PITREstimateChainTest: the overall rate of the newest chain test.
+	PITREstimateChainTest = "chain_test"
+	// PITREstimateDefault: default rates.
+	PITREstimateDefault = "default"
+)
 
 // IsSafeClone reports whether the restore targets a fresh clone namespace. An omitted
 // SafeClone defaults to true.

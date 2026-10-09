@@ -402,9 +402,16 @@ func (r *rig) soakChainTest(t *testing.T) *chainTestReport {
 		t.Fatalf("chain test %s: %s %s %+v", final.ID, final.Status, final.ErrorMessage, final.Verification)
 	}
 	out := &chainTestReport{ID: final.ID, Verification: string(final.Verification.Status), DurationSeconds: final.DurationSeconds,
-		BaseBytes: final.PITR.BaseBytes, OplogBytes: final.PITR.OplogBytes, OpsReplayed: final.PITR.OpsReplayed}
-	t.Logf("chain test %s passed in %.1fs: base %d bytes, oplog %d bytes, %d entries", final.ID, final.DurationSeconds,
-		final.PITR.BaseBytes, final.PITR.OplogBytes, final.PITR.OpsReplayed)
+		BaseBytes: final.PITR.BaseBytes, OplogBytes: final.PITR.OplogBytes, OpsReplayed: final.PITR.OpsReplayed,
+		ReplaySeconds: final.PITR.ReplaySeconds}
+	perSec, bytesPerSec, ok := final.PITR.PITRReplayRate()
+	if !ok || final.PITR.BaseSeconds <= 0 {
+		t.Fatalf("the chain test did not time its passes: %+v", final.PITR)
+	}
+	out.EntriesPerSecond, out.MiBPerSecond = perSec, bytesPerSec/(1<<20)
+	t.Logf("chain test %s passed in %.1fs: base %d bytes in %.1fs, oplog %d bytes and %d entries replayed in %.1fs (%.0f entries/s, %.2f MiB/s)",
+		final.ID, final.DurationSeconds, final.PITR.BaseBytes, final.PITR.BaseSeconds, final.PITR.OplogBytes, final.PITR.OpsReplayed,
+		final.PITR.ReplaySeconds, perSec, bytesPerSec/(1<<20))
 	return out
 }
 

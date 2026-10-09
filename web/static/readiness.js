@@ -576,9 +576,11 @@ function readinessRpoCell(row) {
 
 function readinessRtoCell(row) {
   const rto = row.rto;
-  if (!rto) return escapeHtml(t("readiness.rto_unknown"));
+  // The PITR estimate of the row's connection (pitr.js), under the database's.
+  const pitr = typeof pitrReadinessRto === "function" ? pitrReadinessRto(row) : "";
+  if (!rto) return escapeHtml(t("readiness.rto_unknown")) + pitr;
   const key = rto.source === "restore_test" ? "readiness.rto_restore_test" : "readiness.rto_restore";
-  return escapeHtml(tf(key, { d: readinessDuration(Math.max(Number(rto.seconds) || 0, 60)) }));
+  return escapeHtml(tf(key, { d: readinessDuration(Math.max(Number(rto.seconds) || 0, 60)) })) + pitr;
 }
 
 function readinessRestoreTestCell(row) {

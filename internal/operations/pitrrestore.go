@@ -302,25 +302,91 @@ func (s *Service) preflightPITREndpoint(ctx context.Context, req models.RestoreR
 	return s.preflightPITR(ctx, pp, record), nil
 }
 
-// Default rates of the RTO estimate without a chain test: restoring a base archive
-// and replaying the oplog, which mongorestore does on one thread.
+// Default rates of the RTO estimate without a measurement: restoring a base
+// archive, and replaying the oplog, which mongorestore does on one thread, one
+// entry at a time with majority write concern. The replay is bounded by bytes
+// for large entries and by entries for small ones: the test suites measured about
+// 2,300 to 2,700 small entries per second (a few hundredths of a MiB per second
+// of stored oplog), on one member and on three.
 const (
-	defaultBaseRate   = 50 << 20 // bytes per second
-	defaultReplayRate = 4 << 20  // bytes per second
+	defaultBaseRate        = 50 << 20 // bytes per second
+	defaultReplayRate      = 4 << 20  // bytes per second
+	defaultReplayEntryRate = 2000     // oplog entries per second
+	rateSamples            = 5        // the restores the measured rates average
 )
 
-// estimatePITR returns the estimated duration of restoring baseBytes and replaying
-// oplogBytes, from the rate of the stream's newest completed chain test, or from
-// the default rates.
-func (s *Service) estimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes int64) (float64, string) {
-	completed := func(r *models.RestoreRecord) bool { return r.Status == models.RestoreStatusCompleted }
-	if test := s.lastChainTest(ctx, streamID, completed); test != nil && test.DurationSeconds > 0 {
-		if bytes := test.PITR.BaseBytes + test.PITR.OplogBytes; bytes > 0 {
-			rate := float64(bytes) / test.DurationSeconds
-			return float64(baseBytes+oplogBytes) / rate, "chain_test"
+// estimatePITR returns the estimated duration of the restore of plan and where
+// its rates come from (see EstimatePITR).
+func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.RestorePlan) (float64, string) {
+	var entries int64
+	for _, c := range plan.Chunks {
+		entries += c.Entries
+	}
+	e := s.EstimatePITR(ctx, streamID, plan.Base.SizeBytes, plan.OplogBytes, entries)
+	return e.Seconds, e.Source
+}
+
+// EstimatePITR estimates the duration (RTO) of a point-in-time restore of stream
+// streamID that restores baseBytes of base archive and replays oplogEntries
+// entries in oplogBytes of stored oplog: the base at its rate, plus the replay at
+// the slower of its byte rate and its entry rate. The rates are rolling averages
+// over the passes of the stream's newest completed restores and chain tests (up
+// to five that timed their passes: totals over total seconds); a pass without a
+// measurement falls back to the overall rate of the newest chain test of an
+// earlier release, then to the default rates (50 MiB/s for the base; 4 MiB/s and
+// 2,000 entries per second for the oplog). It reads restore records only, never
+// MongoDB.
+func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate {
+	out := models.PITREstimate{BaseBytes: baseBytes, OplogBytes: oplogBytes, OplogEntries: oplogEntries,
+		Source: models.PITREstimateDefault, BaseBytesPerSecond: defaultBaseRate, ReplayBytesPerSecond: defaultReplayRate,
+		ReplayEntriesPerSecond: defaultReplayEntryRate}
+	var baseB, baseS, replayB, replayS, ops float64
+	samples := 0
+	var legacy *models.RestoreRecord
+	if recs, err := s.store.ListRestoreRecords(ctx); err == nil {
+		for _, r := range recs {
+			if samples == rateSamples {
+				break
+			}
+			if r.PITR == nil || r.PITR.StreamID != streamID || r.Status != models.RestoreStatusCompleted {
+				continue
+			}
+			if r.PITR.BaseSeconds <= 0 && r.PITR.ReplaySeconds <= 0 {
+				if legacy == nil && r.PITR.ChainTest && r.DurationSeconds > 0 && r.PITR.BaseBytes+r.PITR.OplogBytes > 0 {
+					legacy = r
+				}
+				continue
+			}
+			samples++
+			if r.PITR.BaseSeconds > 0 && r.PITR.BaseBytes > 0 {
+				baseB, baseS = baseB+float64(r.PITR.BaseBytes), baseS+r.PITR.BaseSeconds
+			}
+			if r.PITR.ReplaySeconds > 0 && r.PITR.OplogBytes > 0 && r.PITR.OpsReplayed > 0 {
+				replayB, replayS = replayB+float64(r.PITR.OplogBytes), replayS+r.PITR.ReplaySeconds
+				ops += float64(r.PITR.OpsReplayed)
+			}
 		}
 	}
-	return float64(baseBytes)/defaultBaseRate + float64(oplogBytes)/defaultReplayRate, "default"
+	switch {
+	case baseS > 0 || replayS > 0:
+		out.Source, out.Samples = models.PITREstimateMeasured, samples
+		if baseS > 0 {
+			out.BaseBytesPerSecond = baseB / baseS
+		}
+		if replayS > 0 {
+			out.ReplayBytesPerSecond, out.ReplayEntriesPerSecond = replayB/replayS, ops/replayS
+		}
+	case legacy != nil:
+		rate := float64(legacy.PITR.BaseBytes+legacy.PITR.OplogBytes) / legacy.DurationSeconds
+		out.Source, out.Samples = models.PITREstimateChainTest, 1
+		out.BaseBytesPerSecond, out.ReplayBytesPerSecond = rate, rate
+	}
+	replay := float64(oplogBytes) / out.ReplayBytesPerSecond
+	if oplogEntries > 0 {
+		replay = max(replay, float64(oplogEntries)/out.ReplayEntriesPerSecond)
+	}
+	out.Seconds = float64(baseBytes)/out.BaseBytesPerSecond + replay
+	return out
 }
 
 // lastChainTest returns the newest chain test restore of streamID that accept takes
@@ -397,7 +463,7 @@ func (p *preflightRun) pitrChain(pp *pitrPlan, record *models.RestoreRecord) {
 	if record == nil {
 		return
 	}
-	secs, from := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan.Base.SizeBytes, plan.OplogBytes)
+	secs, from := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan)
 	p.res.PITR = &models.PITRPreflight{
 		BaseID: plan.Base.ID, BaseStartedAt: plan.Base.StartedAt, BaseConsistentAt: plan.Base.TAfter.TS.Time(),
 		BaseBytes: plan.Base.SizeBytes, OplogBytes: plan.OplogBytes,
