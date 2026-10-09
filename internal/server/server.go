@@ -23,6 +23,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
@@ -735,6 +736,10 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	if errors.As(err, &preflight) {
 		writeErrorData(w, http.StatusConflict, err.Error(), preflight.Result)
 		return
+	}
+	// A run refused for space (503) may be retried once the guard looks again.
+	if errors.Is(err, diskguard.ErrLowSpace) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(diskguard.DefaultPollInterval.Seconds())))
 	}
 	// A destructive action that waits for a second administrator answers 202.
 	if writeApprovalPending(w, err) {

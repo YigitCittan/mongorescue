@@ -4946,6 +4946,8 @@ function renderWarnings() {
   if (typeof postRestoreRenderWarnings === "function") postRestoreRenderWarnings(list);
   // Connections whose TLS checks are loosened (tls.js).
   if (typeof tlsRenderWarnings === "function") tlsRenderWarnings(list);
+  // Every other warning, such as a full data directory (runtimewarnings.js).
+  if (typeof runtimeRenderWarnings === "function") runtimeRenderWarnings(list);
 }
 
 async function dismissEncryptionWarning() {
