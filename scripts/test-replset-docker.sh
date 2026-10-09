@@ -18,6 +18,8 @@
 # Environment knobs:
 #   MONGO_IMAGE     MongoDB image (default: mongo:8.0)
 #   TOOLS_VERSION   MongoDB Database Tools in the runner (default: 100.12.2)
+#   TOOLS_SHA256    SHA-256 of its Ubuntu 24.04 package, for a version the runner
+#                   image does not know (100.12.2 and 100.19.1 are built in)
 #   RS_SUITE        scenarios (default) or soak
 #   RS_RUN          regular expression of the tests to run (default: all of the suite)
 #   RS_LOG_DIR      where the member logs of failed tests go (default: their last
@@ -89,7 +91,7 @@ log "building the test binary (tag $TAG, linux/$GOARCH_DOCKER)"
   go test -c -tags "$TAG" -o "$WORK/replset.test" ./internal/replset)
 
 log "building the runner image (Database Tools $TOOLS_VERSION)"
-docker build -q --build-arg TOOLS_VERSION="$TOOLS_VERSION" -t "$RUNNER_IMAGE" \
+docker build -q --build-arg TOOLS_VERSION="$TOOLS_VERSION" --build-arg TOOLS_SHA256="${TOOLS_SHA256:-}" -t "$RUNNER_IMAGE" \
   -f "$ROOT/scripts/replset/runner.Dockerfile" "$ROOT/scripts/replset" >/dev/null
 
 # member_eval runs a script through mongosh in a member, authenticated as root
