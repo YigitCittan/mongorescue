@@ -127,6 +127,37 @@ func TestHistoryCacheSharesAndInvalidates(t *testing.T) {
 	}
 }
 
+// Deleting a backup (a soft delete, which publishes only
+// security.destructive_action) drops the cached history, with
+// and without an event bus.
+func TestHistoryCacheDropsDeletedBackups(t *testing.T) {
+	svc, st, _ := newCachedService(t, time.Hour)
+	ctx := admin()
+	if err := st.SaveJob(ctx, &models.Job{ID: "job_a", Name: "a", Database: "shop", CronExpression: "0 3 * * *", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "bkp_1", JobID: "job_a", Database: "shop", Status: models.StatusCompleted,
+		StartedAt: time.Now().UTC().Add(-time.Hour), SizeBytes: 5}); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := svc.History(ctx, operations.HistoryRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.DeleteBackup(ctx, "bkp_1", "duplicate"); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete, err := svc.History(ctx, operations.HistoryRequest{})
+	if err != nil || afterDelete == cached {
+		t.Fatalf("deleting a backup kept the cached history (%v)", err)
+	}
+	// The event of a deletion elsewhere (another service, the purge) drops it too.
+	svc.HandleEvent(ctx, events.Event{Type: events.SecurityDestructiveAction})
+	if h, _ := svc.History(ctx, operations.HistoryRequest{}); h == afterDelete {
+		t.Fatal("security.destructive_action kept the cached history")
+	}
+}
+
 func TestHistoryCacheComputesOnceForConcurrentCallers(t *testing.T) {
 	svc, _, cs := newCachedService(t, time.Hour)
 	cs.gate = make(chan struct{})

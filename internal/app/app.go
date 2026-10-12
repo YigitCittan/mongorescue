@@ -667,8 +667,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithAuditor(auditSvc),
 		scheduler.WithAfterBackup(integritySvc.AfterBackup),
 		scheduler.WithAfterRun(integritySvc.AfterRun),
-		// Job edits, pauses and resumes re-evaluate the RPOs at once.
-		scheduler.WithJobChanged(func(string) { readinessSvc.Kick() }),
+		// Job edits, pauses and resumes re-evaluate the RPOs at once and drop the
+		// cached history (also the writes that reach only the scheduler, such as
+		// applied pending changes and approvals; ops is set before it starts).
+		scheduler.WithJobChanged(func(string) {
+			readinessSvc.Kick()
+			if ops != nil {
+				ops.InvalidateHistory()
+			}
+		}),
 		// Multi-database jobs resolve their selection against the connection's
 		// databases (system ones included; selections exclude them themselves).
 		scheduler.WithDatabaseLister(func(ctx context.Context, connectionID string) ([]string, error) {

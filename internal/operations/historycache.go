@@ -141,18 +141,20 @@ func (s *Service) InvalidateHistory() {
 
 // historyEvents are the events after which the cached History is out of date: a
 // backup or job run ended, a verification or retention changed what is stored, a
-// job's databases changed, or a bulk action ran.
+// job's databases changed, a bulk action ran, or a destructive action (a deleted
+// backup or job, a purge) went through.
 var historyEvents = map[events.EventType]bool{
-	events.BackupSucceeded:       true,
-	events.BackupFailed:          true,
-	events.BackupCancelled:       true,
-	events.BackupSkipped:         true,
-	events.VerificationSucceeded: true,
-	events.VerificationFailed:    true,
-	events.DriftDetected:         true,
-	events.RetentionDeleted:      true,
-	events.JobDatabasesAdded:     true,
-	events.BulkCompleted:         true,
+	events.SecurityDestructiveAction: true,
+	events.BackupSucceeded:           true,
+	events.BackupFailed:              true,
+	events.BackupCancelled:           true,
+	events.BackupSkipped:             true,
+	events.VerificationSucceeded:     true,
+	events.VerificationFailed:        true,
+	events.DriftDetected:             true,
+	events.RetentionDeleted:          true,
+	events.JobDatabasesAdded:         true,
+	events.BulkCompleted:             true,
 }
 
 // HandleEvent drops the cached History after the events that change it (subscribe
