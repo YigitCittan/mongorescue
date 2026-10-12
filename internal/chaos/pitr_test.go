@@ -5,6 +5,7 @@ package chaos
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
 type pitrTS struct {
@@ -239,5 +242,41 @@ func TestPrimaryStepdownDuringPITR(t *testing.T) {
 	if err := e.Mongo.Database(clone).Collection("events").FindOne(ctx, bson.D{},
 		options.FindOne().SetSort(bson.D{{Key: "_id", Value: -1}})).Decode(&maxDoc); err != nil || maxDoc.ID != written-1 {
 		t.Fatalf("the newest document of the clone is %d (%v); want %d", maxDoc.ID, err, written-1)
+	}
+}
+
+// TestOplogPinDuringStepdown pins the PITR collector's oplog reader while the
+// member is a secondary (stepped down for ten seconds), through the suite's
+// directConnection=true URI on a mapped port. The member advertises its address
+// inside the container (127.0.0.1:27017), which is not reachable from here.
+//
+// Expected: the reader is bound to the connected address and reads the oplog
+// window; it never dials the advertised one.
+func TestOplogPinDuringStepdown(t *testing.T) {
+	e := requireEnv(t)
+	u, err := url.Parse(e.MongoURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	s, err := mongoconn.New().OpenOplogSession(ctx, e.MongoURI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e.stepDown(t, 10)
+	t.Cleanup(func() { e.waitPrimary(t) })
+	// The stepdown closes connections: retry until a pin lands on the secondary.
+	var m *mongoconn.OplogMember
+	waitFor(t, 8*time.Second, "a pin on the stepped-down member", func() bool {
+		m, err = s.Pin(ctx, pitr.Timestamp{})
+		return err == nil && m.Host() != ""
+	})
+	if m.Host() != u.Host {
+		t.Fatalf("pinned to %q; want the connected address %q", m.Host(), u.Host)
+	}
+	if _, err = m.OplogWindow(ctx); err != nil {
+		t.Fatalf("read the oplog window of the pinned secondary: %v", err)
 	}
 }

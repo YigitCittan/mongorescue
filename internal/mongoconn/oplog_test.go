@@ -125,6 +125,37 @@ func TestOplogReadsUseTheReadersPreference(t *testing.T) {
 	}
 }
 
+// TestPinMemberAddress checks the member a non-primary pin is bound to: on a
+// directConnection=true session the connected address, read through the session's
+// client, never the address the member advertises (unreachable through a port
+// mapping); otherwise the advertised member, with a client of its own.
+func TestPinMemberAddress(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		uri, me  string
+		wantHost string
+		wantOwn  bool
+	}{
+		{"mongodb://127.0.0.1:32771/?directConnection=true", "127.0.0.1:27017", "127.0.0.1:32771", false},
+		{"mongodb://u:p@db.example.net:27018/admin?directConnection=true&authSource=admin", "mongo-0:27017", "db.example.net:27018", false},
+		{"mongodb://127.0.0.1:32771/?directConnection=true", "", "127.0.0.1:32771", false},
+		{"mongodb://127.0.0.1:32771/?directConnection=false", "127.0.0.1:27017", "127.0.0.1:27017", true},
+		{"mongodb://m1:27017,m2:27017/?replicaSet=rs0", "m2:27017", "m2:27017", true},
+		{"mongodb://m1:27017/?replicaSet=rs0", "", "", true},
+	}
+	for _, c := range cases {
+		s, err := New().OpenOplogSession(ctx, c.uri, "")
+		if err != nil {
+			t.Fatalf("%s: %v", c.uri, err)
+		}
+		host, own := s.memberAddress(c.me)
+		s.Close()
+		if host != c.wantHost || own != c.wantOwn {
+			t.Errorf("%s, me %q: member %q (own client %v); want %q (%v)", c.uri, c.me, host, own, c.wantHost, c.wantOwn)
+		}
+	}
+}
+
 // fakeCursor serves documents to copyOplog without a server.
 type fakeCursor struct {
 	docs []bson.Raw
