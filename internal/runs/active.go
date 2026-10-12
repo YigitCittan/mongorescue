@@ -185,12 +185,12 @@ func (r *Registry) Register(meta Meta) (*Run, error) {
 	run := &Run{meta: meta, reg: r, queuedAt: r.now().UTC(), phase: models.PhaseQueued, done: make(chan struct{})}
 	run.updatedAt = run.queuedAt
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, dup := r.active[meta.ID]; dup {
-		r.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrBusy, meta.ID)
 	}
-	r.active[meta.ID] = run
-	r.mu.Unlock()
+	// The log is opened before the run is published: once it is in r.active, a
+	// concurrent Cancel or Get reads run.log without a lock.
 	if r.logs != nil {
 		w, err := r.logs.Create(meta.ID)
 		if err != nil {
@@ -199,6 +199,7 @@ func (r *Registry) Register(meta Meta) (*Run, error) {
 			run.log = w
 		}
 	}
+	r.active[meta.ID] = run
 	return run, nil
 }
 

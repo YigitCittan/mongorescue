@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cancelling a run at the moment it starts no longer races with the opening of its log (found by the race detector on Windows CI).
+
+## [0.26.0] - 2026-10-12
+
 ### Added
 - Fault-injection and load tests (#103): a nightly suite (`internal/chaos`, `make test-chaos-docker`, job "Chaos") breaks backups, restores, purges, migrations, key rotations and PITR collection with Toxiproxy (storage outage and partition, MongoDB connection drops), a primary stepdown, a full disk, SIGKILL and clock steps, and checks that no broken run ends completed, nothing that looks complete is left, the next run succeeds and the alerts fire; a weekly load test (`internal/load`, `make test-load-docker`, job "Load") measures scheduler tick latency, memory, API p95, SQLite contention, backup throughput and the impact of a dump on a busy primary with hundreds of connections and thousands of jobs, writes a JSON report and fails on regressions against `internal/load/testdata/baseline.json`; scenarios, expected outcomes and numbers are in [docs/testing.md](docs/testing.md).
 - Cross-region disaster recovery (#143). See [docs/production.md](docs/production.md#cross-region-disaster-recovery).
