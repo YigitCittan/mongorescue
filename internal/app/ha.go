@@ -90,6 +90,8 @@ type haRuntime struct {
 	// bits); takeoverFailures counts the takeovers given up.
 	lastTakeover     atomic.Uint64
 	takeoverFailures atomic.Uint64
+	// stepDowns counts the times this instance lost the lease while active.
+	stepDowns atomic.Uint64
 }
 
 // mgr returns the lease manager (nil before the bootstrap).
@@ -168,7 +170,7 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	ms := rt.status()
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
 		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
-		TakeoverFailures: rt.takeoverFailures.Load()}
+		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -498,16 +500,35 @@ func (s *haSupervisor) shutdownActive(app *App) error {
 // exits and its restart policy starts a fresh standby.
 func (s *haSupervisor) loseLease(app *App, epoch uint64) error {
 	st := s.rt.status()
+	s.rt.stepDowns.Add(1)
 	s.logger.Error("this instance lost the HA lease: cancelling its runs and stepping down to standby",
 		slog.Uint64("epoch", epoch), slog.String("error", st.LastError))
-	app.publishHA(context.Background(), events.HASteppedDown, fmt.Sprintf("instance %s (%s) lost the lease of HA cluster %s (epoch %d) and stepped down to standby; its running backups and restores were cancelled",
-		s.rt.name, s.rt.state.InstanceID, s.cfg.HA.Cluster, epoch))
+	// Work stops first; the alert follows before the App closes.
 	_ = app.server.Close()
 	app.ForceStop(LostLeaseReason)
+	s.notifyStepDown(app, epoch)
 	if app.runsAbandoned.Load() {
 		return errors.New("runs did not stop after the HA lease was lost; exiting so that the restart policy starts a fresh standby")
 	}
 	return app.Close()
+}
+
+// haStepDownNotifyTimeout bounds the direct delivery of the step-down alert.
+const haStepDownNotifyTimeout = 5 * time.Second
+
+// notifyStepDown sends the ha.stepped_down alert to every enabled channel at once,
+// best effort: an instance that lost the lease runs no notification outbox any
+// more, so the alert does not go through it.
+func (s *haSupervisor) notifyStepDown(app *App, epoch uint64) {
+	if app.notifications == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), haStepDownNotifyTimeout)
+	defer cancel()
+	sent := app.notifications.BroadcastNow(ctx, events.Event{Type: events.HASteppedDown, Time: time.Now().UTC(), Status: string(events.HASteppedDown),
+		Detail: fmt.Sprintf("instance %s (%s) lost the lease of HA cluster %s (epoch %d) and stepped down to standby; its running backups and restores were cancelled",
+			s.rt.name, s.rt.state.InstanceID, s.cfg.HA.Cluster, epoch)})
+	s.logger.Info("sent the HA step-down alert", slog.Int("channels", sent))
 }
 
 // recordActiveEpoch remembers the epoch under which this instance's database is

@@ -552,6 +552,41 @@ func (s *Service) broadcast(ctx context.Context, e events.Event) {
 	s.deliver(ctx, e, enabled)
 }
 
+// BroadcastNow sends e to every enabled channel right away, bypassing the outbox and
+// the queue: one attempt per channel, all at once, bounded by ctx. It is for an
+// alert that must leave before the process stops its notification workers, such as
+// an HA step-down (the instance that lost the lease no longer runs its outbox). It
+// returns how many channels received it. Outcomes are recorded like any delivery.
+func (s *Service) BroadcastNow(ctx context.Context, e events.Event) int {
+	channels, err := s.repo.ListChannels(ctx)
+	if err != nil {
+		s.logger.Error("notification channels unavailable", slog.Any("error", err))
+		return 0
+	}
+	msg := Render(e)
+	policy := s.retry
+	policy.Retries = 0
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		sent int
+	)
+	for _, ch := range channels {
+		if !ch.Enabled {
+			continue
+		}
+		wg.Go(func() {
+			if _, sendErr := s.send(ctx, ch, msg, policy, true); sendErr == nil {
+				mu.Lock()
+				sent++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return sent
+}
+
 // enqueue adds d to the queue without blocking.
 func (s *Service) enqueue(d delivery) {
 	if s.stopped.Load() {

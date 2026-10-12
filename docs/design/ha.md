@@ -101,7 +101,7 @@ If no snapshot can be used, the instance releases the lease, stays standby and t
 
 ### Step-down
 
-When the active instance loses the lease (or cannot renew in time), it publishes `ha.stepped_down`, cancels its runs (recorded as cancelled with the reason "lost the HA lease"), stops all components and reopens as standby. If runs do not stop within the shutdown budget, the process exits so that its restart policy starts it fresh.
+When the active instance loses the lease (or cannot renew in time), it cancels its runs (recorded as cancelled with the reason "lost the HA lease"), stops all components and reopens as standby. If runs do not stop within the shutdown budget, the process exits so that its restart policy starts it fresh. It then sends `ha.stepped_down` to every enabled channel directly, one attempt each within 5 seconds (it no longer runs the notification outbox), and counts it in `mongorescue_ha_step_downs_total`.
 
 A graceful shutdown of the active instance (`SIGTERM`) drains like a single instance, writes a last snapshot, and releases the lease, so the standby takes over at its next poll instead of after `ttl`.
 

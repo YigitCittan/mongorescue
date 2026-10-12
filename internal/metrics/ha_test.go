@@ -11,7 +11,7 @@ func TestHASeries(t *testing.T) {
 		t.Fatal("HA series are exported outside HA mode")
 	}
 	m.SetHASource(func() HAState {
-		return HAState{Cluster: "prod", Role: "active", Epoch: 4, LeaseHealthy: true, LeaseErrors: 2, Takeovers: 1, LastTakeoverSeconds: 1.5}
+		return HAState{Cluster: "prod", Role: "active", Epoch: 4, LeaseHealthy: true, LeaseErrors: 2, Takeovers: 1, LastTakeoverSeconds: 1.5, StepDowns: 3}
 	})
 	out := scrape(t, m)
 	for _, want := range []string{
@@ -22,6 +22,7 @@ func TestHASeries(t *testing.T) {
 		`mongorescue_ha_lease_errors_total{cluster="prod"} 2`,
 		`mongorescue_ha_takeovers_total{cluster="prod"} 1`,
 		`mongorescue_ha_takeover_duration_seconds{cluster="prod"} 1.5`,
+		`mongorescue_ha_step_downs_total{cluster="prod"} 3`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
