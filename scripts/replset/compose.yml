@@ -19,6 +19,15 @@ x-member: &member
       exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all --oplogSize ${RS_OPLOG_MB:-1024}
   networks: [rs]
   restart: "no"
+  # mongod logs synchronously; in the default blocking log mode a log driver that
+  # falls behind stalls every new connection's handshake (see
+  # scripts/test-integration-docker.sh). Non-blocking delivery buffers (and beyond
+  # max-buffer-size drops) lines instead.
+  logging:
+    driver: json-file
+    options:
+      mode: non-blocking
+      max-buffer-size: 8m
 
 services:
   m1:

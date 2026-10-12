@@ -40,6 +40,12 @@ PREFIX="mongorescue-chaos-$$"
 NET="$PREFIX-net"
 MONGO_PW="chPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 CONTAINERS=()
+
+# mongod logs synchronously; in docker's default blocking log mode a log driver
+# that falls behind stalls every new connection's handshake (see
+# scripts/test-integration-docker.sh). Non-blocking delivery buffers (and beyond
+# max-buffer-size drops) lines instead.
+MONGO_LOG_OPTS=(--log-opt mode=non-blocking --log-opt max-buffer-size=8m)
 SMALL_DIR=""
 SMALL_DEV=""
 
@@ -51,7 +57,7 @@ cleanup() {
     for c in "${CONTAINERS[@]:-}"; do
       [ -n "$c" ] || continue
       echo "---- logs: $c ----"
-      docker logs --tail 50 "$c" 2>&1 | sed "s/${MONGO_PW}/******/g" || true
+      docker logs --timestamps --tail 50 "$c" 2>&1 | sed "s/${MONGO_PW}/******/g" || true
     done
   fi
   for c in "${CONTAINERS[@]:-}"; do
@@ -110,12 +116,12 @@ MONGO_CMD='
   chown mongodb:mongodb /tmp/rs.key
   exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all $CACHE_FLAG'
 log "starting $MONGO_IMAGE ($SUITE)"
-docker run -d --name "$PREFIX-mongo" --network "$NET" --network-alias mongo -p 127.0.0.1::27017 \
+docker run -d --name "$PREFIX-mongo" --network "$NET" --network-alias mongo -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
   -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" -e RS_KEY="$RS_KEY" -e CACHE_FLAG="$CACHE_FLAG" \
   --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
 CONTAINERS+=("$PREFIX-mongo")
 if [ "$SUITE" = load ]; then
-  docker run -d --name "$PREFIX-mongo2" --network "$NET" --network-alias mongo2 -p 127.0.0.1::27017 \
+  docker run -d --name "$PREFIX-mongo2" --network "$NET" --network-alias mongo2 -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
     -e RS_KEY="$RS_KEY" -e CACHE_FLAG="$CACHE_FLAG" --entrypoint bash "$MONGO_IMAGE" -c "$MONGO_CMD" >/dev/null
   CONTAINERS+=("$PREFIX-mongo2")
 fi
