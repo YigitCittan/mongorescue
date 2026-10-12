@@ -10,10 +10,10 @@ import (
 
 // ErrProtectionLowered is returned by Update for a change that lowers a delete
 // protection directly: security.delete_grace_days lowered,
-// security.require_second_approver turned off, or (with it on) an oidc change that
-// can grant or take away admin. Those changes go through the
-// operations service, which delays them by the current grace period or asks a second
-// administrator (see operations.UpdateSettings); it applies them with
+// security.require_second_approver or security.require_locked_copies turned off, or
+// (with the two-person rule on) an oidc change that can grant or take away admin.
+// Those changes go through the operations service, which delays them by the
+// current grace period or asks a second administrator (see operations.UpdateSettings); it applies them with
 // WithLoweredProtection once they are due or approved. It wraps ErrInvalid.
 var ErrProtectionLowered = fmt.Errorf("%w: lowering a delete protection must be requested, not set", ErrInvalid)
 
@@ -36,6 +36,12 @@ func loweringAllowed(ctx context.Context) bool {
 // a shorter grace period, and the two-person rule turned off.
 func LowersProtection(cur, next Security) (grace, secondApprover bool) {
 	return next.DeleteGraceDays < cur.DeleteGraceDays, cur.RequireSecondApprover && !next.RequireSecondApprover
+}
+
+// LowersLockedCopies reports whether next turns security.require_locked_copies
+// off compared with cur.
+func LowersLockedCopies(cur, next Security) bool {
+	return cur.RequireLockedCopies && !next.RequireLockedCopies
 }
 
 // OIDCGrantsAdmin reports whether next can grant the admin role through single
@@ -134,13 +140,17 @@ func Preview(cur Settings, p Patch) (Settings, error) {
 // checkProtection refuses lowering a delete protection outside WithLoweredProtection.
 func checkProtection(ctx context.Context, cur, next Security) error {
 	grace, approver := LowersProtection(cur, next)
-	if (grace || approver) && !loweringAllowed(ctx) {
+	locked := LowersLockedCopies(cur, next)
+	if (grace || approver || locked) && !loweringAllowed(ctx) {
 		var errs []error
 		if grace {
 			errs = append(errs, fmt.Errorf("security.delete_grace_days goes down from %d to %d", cur.DeleteGraceDays, next.DeleteGraceDays))
 		}
 		if approver {
 			errs = append(errs, errors.New("security.require_second_approver is turned off"))
+		}
+		if locked {
+			errs = append(errs, errors.New("security.require_locked_copies is turned off"))
 		}
 		return fmt.Errorf("%w: %w", ErrProtectionLowered, errors.Join(errs...))
 	}

@@ -6,8 +6,6 @@ import (
 	"fmt"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
-	"github.com/yigitcittan/mongorescue/internal/events"
-	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/runs"
@@ -65,6 +63,22 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		Gzip: true, Trigger: trigger,
 		ReadPreference: conn.ReadPref(), MaxConcurrentBackups: conn.MaxConcurrentBackups,
 	}
+	// A base is copied to the stream's copy targets like a job's backup (async),
+	// so a restore can start from it in another region.
+	if opts.Copies, err = s.resolveCopyTargets(ctx, stream.CopyTargets, target.ID, models.CopyAsync); err != nil {
+		return nil, err
+	}
+	opts.CopyMode = models.CopyAsync
+	// With security.require_locked_copies on, the copies need Object Lock like a
+	// job's.
+	if s.requireLockedCopiesSetting() {
+		if err = s.checkLockedCopies(ctx, opts.Copies); err != nil {
+			return nil, err
+		}
+	}
+	for _, c := range opts.Copies {
+		opts.CopyTargets = append(opts.CopyTargets, c.ID)
+	}
 	record, err := s.cfg.Backup.Prepare(opts)
 	if err != nil {
 		return nil, invalid(err)
@@ -85,16 +99,7 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.Backup.Execute(runCtx, opts, record)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), persistTimeout)
-		defer cancel()
-		if saveErr := s.cfg.Store.SaveBackupRecord(persistCtx, final); saveErr != nil {
-			s.logger.Error("failed to persist the record of a PITR base backup",
-				logsafe.Attr("backup_id", final.ID), logsafe.Error(saveErr))
-		}
-		s.publish(persistCtx, events.BackupEvent(final, runErr, "", ""))
-		if ve, ok := events.VerificationEvent(final, events.VerificationAfterUpload); ok {
-			s.publish(persistCtx, ve)
-		}
+		s.finishBackup(runCtx, final, runErr, "", "")
 	}); err != nil {
 		tracked.End()
 		release()

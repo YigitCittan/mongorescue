@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,17 +13,30 @@ func TestStoppingACollectorDoesNotBlockReaders(t *testing.T) {
 	fx := newFixture(t)
 	ctx := context.Background()
 	entered := make(chan struct{})
+	cancelled := make(chan struct{})
 	release := make(chan struct{})
+	var enteredOnce, releaseOnce sync.Once
 	fx.svc.cfg.Clock = realClock{}
 	fx.svc.cfg.ReconcileInterval = 10 * time.Millisecond
-	// A collector stuck in a slow call that ignores cancellation for a while.
-	fx.svc.cfg.Open = func(context.Context, *pitr.Stream) (Session, error) {
-		close(entered)
+	// A collector stuck in a slow call that ignores cancellation until released;
+	// its first call reports when the supervisor cancelled it. Later calls (after
+	// a release on a failure) return at once.
+	fx.svc.cfg.Open = func(wctx context.Context, _ *pitr.Stream) (Session, error) {
+		enteredOnce.Do(func() {
+			close(entered)
+			go func() {
+				<-wctx.Done()
+				close(cancelled)
+			}()
+		})
 		<-release
 		return nil, context.Canceled
 	}
 	fx.svc.Start(ctx)
-	defer fx.svc.Stop()
+	// Cleanups run last in, first out: the hook is released before Stop waits
+	// for the collector, whatever fails in between.
+	t.Cleanup(fx.svc.Stop)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	<-entered
 
 	st, err := fx.repo.GetStream(ctx, fx.stream.ID)
@@ -34,7 +48,13 @@ func TestStoppingACollectorDoesNotBlockReaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	fx.svc.Reload()
-	time.Sleep(50 * time.Millisecond) // the supervisor now waits for the collector
+	// The supervisor cancelled the collector, so it took it out of the running
+	// set, and now waits for it (the hook ignores the cancellation).
+	select {
+	case <-cancelled:
+	case <-time.After(time.Minute):
+		t.Fatal("the supervisor did not stop the collector of the disabled stream")
+	}
 
 	done := make(chan bool, 1)
 	go func() {
@@ -47,8 +67,7 @@ func TestStoppingACollectorDoesNotBlockReaders(t *testing.T) {
 		if bad {
 			t.Fatal("the stopping collector is still reported running, or Status failed")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Minute):
 		t.Fatal("Running and Status wait for a collector to stop")
 	}
-	close(release)
 }

@@ -12,6 +12,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // multipartS3 is a minimal S3 endpoint for multipart uploads: it creates uploads,
@@ -21,6 +25,10 @@ type multipartS3 struct {
 	parts     int
 	aborted   []string
 	failAbort bool
+	// unavailable answers the first aborts with 503, like a storage that is
+	// recovering from an outage.
+	unavailable int
+	abortCalls  int
 }
 
 func (f *multipartS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +43,9 @@ func (f *multipartS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && q.Has("partNumber"):
 		f.parts++
 		w.Header().Set("ETag", fmt.Sprintf(`"part-%d"`, f.parts))
+	case r.Method == http.MethodDelete && q.Has("uploadId") && f.abortCalls < f.unavailable:
+		f.abortCalls++
+		writeS3Error(w, http.StatusServiceUnavailable, "ServiceUnavailable")
 	case r.Method == http.MethodDelete && q.Has("uploadId") && f.failAbort:
 		writeS3Error(w, http.StatusForbidden, "AccessDenied")
 	case r.Method == http.MethodDelete && q.Has("uploadId"):
@@ -146,5 +157,51 @@ func TestS3SaveLogsFailedAbort(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log %q does not contain %q", out, want)
 		}
+	}
+}
+
+// TestS3SaveKeepsAbortingThroughAnOutage pins that the abort of a failed upload is
+// retried for the whole abort window, not only for the client's few attempts. The
+// fault-injection suite found parts left behind after a ten-second storage outage:
+// the client gave up on the abort after three attempts within two seconds.
+func TestS3SaveKeepsAbortingThroughAnOutage(t *testing.T) {
+	isolateAWSEnv(t)
+	first, maxDelay := abortRetryFirst, abortRetryMax
+	abortRetryFirst, abortRetryMax = 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { abortRetryFirst, abortRetryMax = first, maxDelay })
+
+	// More failures than the client's own attempts for one call.
+	fake := &multipartS3{unavailable: 5}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	st, err := NewS3Storage(context.Background(), S3Config{
+		Endpoint: srv.URL, Bucket: fakeBucket, AccessKey: "a", SecretKey: "s", UsePathStyle: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := io.MultiReader(bytes.NewReader(make([]byte, 2*defaultPartSize+1<<20)), &errReader{err: errors.New("dump failed")})
+	if _, err := st.Save(context.Background(), "db/outage.archive", body); err == nil {
+		t.Fatal("Save must fail")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.aborted) == 0 || fake.abortCalls != fake.unavailable {
+		t.Fatalf("aborted = %v after %d unavailable answers; want the upload aborted once the storage answers", fake.aborted, fake.abortCalls)
+	}
+}
+
+// TestAbortRetryable pins which abort failures are retried.
+func TestAbortRetryable(t *testing.T) {
+	resp := func(code int) error {
+		return &awshttp.ResponseError{ResponseError: &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: code}}, Err: errors.New("x")}}
+	}
+	for code, want := range map[int]bool{403: false, 404: false, 400: false, 408: true, 429: true, 500: true, 503: true} {
+		if got := abortRetryable(resp(code)); got != want {
+			t.Errorf("abortRetryable(%d) = %v; want %v", code, got, want)
+		}
+	}
+	if !abortRetryable(errors.New("dial tcp: connection refused")) {
+		t.Error("an unreachable storage must be retried")
 	}
 }

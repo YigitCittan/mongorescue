@@ -67,6 +67,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # The binary reports the release version on tag builds and "dev" otherwise.
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'dev' }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # BuildKit SLSA provenance and SPDX SBOM, attached to the image index.

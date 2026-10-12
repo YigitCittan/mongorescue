@@ -72,6 +72,34 @@ func TestSteadyCollection(t *testing.T) {
 	}
 }
 
+// TestNewStreamWaitsForAMajorityCommitPoint is the regression test of a false
+// chain break on a replica set just initiated (MongoDB 5.0 in the three-member
+// scenarios): before its first majority commit, hello reports a zero majority
+// optime, and the collector started the chain at 0:0, so the next tick found the
+// window "overrun", ended the chain as a gap and raised pitr.chain_broken. It now
+// waits for a commit point.
+func TestNewStreamWaitsForAMajorityCommitPoint(t *testing.T) {
+	fx := newFixture(t)
+	fx.f.noMajority = true
+	w := fx.worker()
+	if d := fx.step(w); d != time.Minute {
+		t.Fatalf("delay %s without a commit point", d)
+	}
+	if _, err := fx.repo.LoadState(context.Background(), fx.stream.ID); !errors.Is(err, pitr.ErrNotFound) {
+		t.Fatalf("a chain started without a majority commit point: %v", err)
+	}
+	fx.f.noMajority = false
+	fx.step(w)
+	if st := fx.state(); st.Last.TS != fx.f.newest() {
+		t.Fatalf("the chain starts at %s, want %s", st.Last.TS, fx.f.newest())
+	}
+	fx.f.add(t, 3)
+	fx.step(w)
+	if n := len(fx.chains()); n != 1 || fx.events.count(events.PITRChainBroken) != 0 {
+		t.Fatalf("%d chains, %d breaks", n, fx.events.count(events.PITRChainBroken))
+	}
+}
+
 func TestCatchUpCapsChunksAtOneInterval(t *testing.T) {
 	fx := newFixture(t)
 	w := fx.worker()

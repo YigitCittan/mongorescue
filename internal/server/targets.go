@@ -62,7 +62,8 @@ func (s *Server) writeTargetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, targets.ErrNotFound):
 		writeError(w, http.StatusNotFound, "storage target not found")
 	case errors.Is(err, targets.ErrInUse), errors.Is(err, targets.ErrIsDefault), errors.Is(err, targets.ErrNoDefault),
-		errors.Is(err, targets.ErrConflict), errors.Is(err, targets.ErrLocationInUse), errors.Is(err, targets.ErrUnverifiedChange):
+		errors.Is(err, targets.ErrConflict), errors.Is(err, targets.ErrLocationInUse), errors.Is(err, targets.ErrUnverifiedChange),
+		errors.Is(err, targets.ErrLocationOverlap):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, targets.ErrInvalid), errors.Is(err, targets.ErrMaskedSecret):
 		writeError(w, http.StatusBadRequest, err.Error())

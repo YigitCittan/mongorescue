@@ -411,6 +411,57 @@ func (r *BackupRecord) SetStorageObject(obj *StorageObject) {
 	}
 }
 
+// ErrRecordNotSaved starts the error of a backup whose final record could not be
+// saved (see FailUnsaved).
+const ErrRecordNotSaved = "the backup record could not be saved"
+
+// ArchiveKeptNote ends the error of a completed backup whose record could not be
+// saved: its archive is complete and stays in storage, where the storage scan
+// offers it for import.
+const ArchiveKeptNote = "; the archive was kept"
+
+// FailUnsaved marks r failed because its final record could not be saved because
+// the data disk is full (cause, already redacted, says why), so the run never
+// reports a success the metadata does not record; a cancelled backup stays
+// cancelled. The archive of a completed backup is complete: it is kept (never
+// marked ArchiveCleanupPending) and the copies it already has stay, so a good
+// backup is not thrown away over its record; the storage scan lists the archive
+// as an orphan and an import revives the record. Copies not made yet are marked
+// failed. The artifact of a run that failed by itself was already settled by the
+// engine (ArchiveCleanupPending when it could not be deleted) and stays so.
+func (r *BackupRecord) FailUnsaved(cause string, now time.Time) {
+	kept := r.Status == StatusCompleted && r.StorageKey != ""
+	if !strings.HasPrefix(r.ErrorMessage, ErrRecordNotSaved) {
+		msg := ErrRecordNotSaved
+		if cause != "" {
+			msg += " (data disk full: " + cause + ")"
+		}
+		if kept {
+			msg += ArchiveKeptNote
+		}
+		if r.ErrorMessage != "" {
+			msg += "; the run itself ended with: " + r.ErrorMessage
+		}
+		r.ErrorMessage = msg
+	}
+	if r.Status != StatusCancelled {
+		r.Status = StatusFailed
+	}
+	if r.CompletedAt == nil {
+		at := now.UTC()
+		r.CompletedAt = &at
+	}
+	if kept {
+		// Copies already made belong to the kept archive: only the pending ones
+		// are settled, nothing goes to the purge.
+		pending := r.ArchiveCleanupPending
+		r.AbandonCopies()
+		r.ArchiveCleanupPending = pending
+		return
+	}
+	r.AbandonCopies()
+}
+
 // InstanceScope reports whether r is a PITR base backup of a whole instance.
 func (r *BackupRecord) InstanceScope() bool { return r.Scope == ScopeInstance }
 

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -65,6 +66,8 @@ type Manager struct {
 	closed bool
 	// refusing makes Acquire and Go return ErrShuttingDown until Accept.
 	refusing bool
+	// admit, when set, must accept every new backup and restore (see SetAdmission).
+	admit func() error
 	// started counts the operations started with Go that have not returned, keyed
 	// or not.
 	started int
@@ -90,6 +93,9 @@ func (m *Manager) Acquire(key string) (release func(), err error) {
 	if m.closed || m.refusing {
 		return nil, ErrShuttingDown
 	}
+	if err := m.checkAdmissionLocked(key); err != nil {
+		return nil, err
+	}
 	if err := m.reserveLocked(key); err != nil {
 		return nil, err
 	}
@@ -104,6 +110,10 @@ func (m *Manager) Go(key string, fn func(ctx context.Context)) error {
 	if m.closed || m.refusing {
 		m.mu.Unlock()
 		return ErrShuttingDown
+	}
+	if err := m.checkAdmissionLocked(key); err != nil {
+		m.mu.Unlock()
+		return err
 	}
 	if err := m.reserveLocked(key); err != nil {
 		m.mu.Unlock()
@@ -139,6 +149,30 @@ func (m *Manager) Refuse() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refusing = true
+}
+
+// SetAdmission installs admit, which every new backup, restore and PITR base
+// backup (an operation keyed by BackupKey, RestoreKey or PITRBaseKey) must pass:
+// Acquire and Go return its error instead of starting the operation. The data
+// directory's space guard (internal/diskguard) uses it. A nil admit accepts all.
+// admit is called with the Manager's lock held and must not call the Manager.
+func (m *Manager) SetAdmission(admit func() error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.admit = admit
+}
+
+// checkAdmissionLocked applies the admission check to key. Caller must hold m.mu.
+func (m *Manager) checkAdmissionLocked(key string) error {
+	if m.admit == nil || !isRunKey(key) {
+		return nil
+	}
+	return m.admit()
+}
+
+// isRunKey reports whether key is the key of a backup, restore or PITR base backup.
+func isRunKey(key string) bool {
+	return strings.HasPrefix(key, "backup:") || strings.HasPrefix(key, "restore:") || strings.HasPrefix(key, "pitr-base:")
 }
 
 // Accept undoes Refuse; it does not reopen a Manager after Shutdown.

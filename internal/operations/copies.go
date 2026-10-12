@@ -61,3 +61,20 @@ func (s *Service) resolveCopyTargets(ctx context.Context, ids []string, primary 
 	}
 	return out, nil
 }
+
+// checkLockedCopies refuses copy targets without S3 Object Lock for a job that
+// requires locked copies (models.Job.RequireLockedCopies). Expected failures:
+// ErrInvalid (wrapping models.ErrUnlockedCopyTarget) and ErrUnknownStorageTarget.
+func (s *Service) checkLockedCopies(ctx context.Context, copies []models.CopyTarget) error {
+	for _, c := range copies {
+		t, err := s.ResolveTarget(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		if !t.ObjectLocked() {
+			return invalid(fmt.Errorf("%w: copy target %s has no S3 Object Lock (set an object lock mode on it, or turn require_locked_copies off)",
+				models.ErrUnlockedCopyTarget, targetLabel(t.Name, t.ID)))
+		}
+	}
+	return nil
+}

@@ -136,6 +136,12 @@ const (
 	// failed: the copy queue gives up on it until an administrator retries it
 	// (POST /api/v1/backups/{id}/copies/retry).
 	BackupCopyExhausted EventType = "backup.copy_exhausted"
+	// SystemDiskFull is emitted once per episode when a write to the metadata
+	// database failed because the data directory's disk is full (Event.Error,
+	// Event.Detail): new backups and restores are refused until space is freed.
+	// It is a critical alert: every enabled channel receives it, whatever the
+	// rules (see Broadcast).
+	SystemDiskFull EventType = "system.disk_full"
 )
 
 // Sources of verification events.
@@ -170,7 +176,7 @@ type BulkSummary struct {
 // Broadcast reports whether t is delivered to every enabled notification channel
 // instead of the channels of matching rules.
 func (t EventType) Broadcast() bool {
-	return t == EncryptionOffAfterUpgrade
+	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull
 }
 
 // optInTypes lists the event types a notification rule receives only when it
@@ -215,7 +221,7 @@ func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
-		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted:
+		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull:
 		return true
 	default:
 		return false
@@ -227,6 +233,10 @@ func (t EventType) Failed() bool {
 type Event struct {
 	// Type identifies the kind of event.
 	Type EventType `json:"type"`
+	// ID identifies the event across deliveries, for de-duplication by receivers:
+	// the notification service sets it when it queues the event (the same for
+	// every channel and every attempt, also after a restart). Empty until then.
+	ID string `json:"id,omitempty"`
 	// Time is when the operation finished (UTC).
 	Time time.Time `json:"time"`
 	// JobID is the scheduled job that produced a backup event; empty for manual runs.

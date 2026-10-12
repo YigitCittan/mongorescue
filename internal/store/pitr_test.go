@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ func testPITRStreams(t *testing.T, s backend) {
 	a := newStream("pst_a", "conn_a")
 	a.ReadPreference = "secondary"
 	a.OplogMaxDays = 30
+	a.CopyTargets = []string{"tgt_dr"}
 	if err := s.CreateStream(ctx, a); err != nil {
 		t.Fatalf("CreateStream: %v", err)
 	}
@@ -47,7 +49,7 @@ func testPITRStreams(t *testing.T, s backend) {
 	if err != nil {
 		t.Fatalf("GetStream: %v", err)
 	}
-	if *got != *a {
+	if !reflect.DeepEqual(got, a) {
 		t.Errorf("GetStream = %+v; want %+v", got, a)
 	}
 	if byConn, connErr := s.GetStreamByConnection(ctx, "conn_b"); connErr != nil || byConn.ID != "pst_b" {
@@ -75,7 +77,7 @@ func testPITRStreams(t *testing.T, s backend) {
 	if !upd.CreatedAt.Equal(a.CreatedAt) {
 		t.Errorf("UpdateStream CreatedAt = %v; want the stored %v", upd.CreatedAt, a.CreatedAt)
 	}
-	if got, err = s.GetStream(ctx, "pst_a"); err != nil || *got != upd {
+	if got, err = s.GetStream(ctx, "pst_a"); err != nil || !reflect.DeepEqual(*got, upd) {
 		t.Errorf("GetStream after update = %+v, %v; want %+v", got, err, upd)
 	}
 	upd.ConnectionID = "conn_b"

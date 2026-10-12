@@ -16,6 +16,15 @@ import (
 // LocalStorage implements the Storage interface for local disk and mounted network paths.
 type LocalStorage struct {
 	baseDir string
+	// stall is the upload watchdog.
+	stall StallWatch
+}
+
+// WithStallWatch sets the upload watchdog (see StallWatch) and returns s. It must be
+// called before the driver is used.
+func (s *LocalStorage) WithStallWatch(w StallWatch) *LocalStorage {
+	s.stall = w
+	return s
 }
 
 // NewLocalStorage initializes a LocalStorage driver bound to the specified directory.
@@ -37,8 +46,18 @@ func NewLocalStorage(baseDir string) (*LocalStorage, error) {
 	return &LocalStorage{baseDir: absDir}, nil
 }
 
-// Save streams data from the reader to the destination key on disk atomically.
+// Save streams data from the reader to the destination key on disk atomically. An
+// upload whose writes make no progress for the stall timeout (a hung network mount)
+// fails with an error wrapping ErrStorageStalled once the blocked write returns; a
+// write blocked in the kernel cannot be interrupted.
 func (s *LocalStorage) Save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
+	ctx, r, finish := s.stall.Start(ctx, r)
+	obj, err := s.save(ctx, key, r)
+	return obj, finish(err)
+}
+
+// save is Save without the watchdog.
+func (s *LocalStorage) save(ctx context.Context, key string, r io.Reader) (*models.StorageObject, error) {
 	fullPath, err := s.resolvePath(key)
 	if err != nil {
 		return nil, err

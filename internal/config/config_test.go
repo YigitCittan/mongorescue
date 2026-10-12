@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -82,6 +83,41 @@ func TestFromEnvAndValidate(t *testing.T) {
 	}
 	if _, err := ParseLogLevel("loud"); !errors.Is(err, ErrInvalidLogLevel) {
 		t.Fatal("unknown log level accepted")
+	}
+}
+
+func TestMinFreeSpace(t *testing.T) {
+	if c, err := FromEnv(env(nil)); err != nil || c.MinFreeSpaceMB != DefaultMinFreeSpaceMB {
+		t.Fatalf("default min free space = %+v, %v", c, err)
+	}
+	for in, want := range map[string]int{"0": 0, " 512 ": 512, "1048576": MaxMinFreeSpaceMB} {
+		if c, err := FromEnv(env(map[string]string{EnvMinFreeSpace: in})); err != nil || c.MinFreeSpaceMB != want || c.Validate() != nil {
+			t.Errorf("%s=%q = %+v, %v", EnvMinFreeSpace, in, c, err)
+		}
+	}
+	for _, in := range []string{"-1", "1.5", "100MiB", "1048577"} {
+		if _, err := FromEnv(env(map[string]string{EnvMinFreeSpace: in})); !errors.Is(err, ErrInvalidMinFreeSpace) {
+			t.Errorf("%s=%q accepted: %v", EnvMinFreeSpace, in, err)
+		}
+	}
+	c := Default()
+	c.MinFreeSpaceMB = -1
+	if err := c.Validate(); !errors.Is(err, ErrInvalidMinFreeSpace) {
+		t.Fatalf("Validate(MinFreeSpaceMB=-1) = %v", err)
+	}
+}
+
+func TestNotificationMaxAge(t *testing.T) {
+	if c, err := FromEnv(env(nil)); err != nil || c.NotificationMaxAge != DefaultNotificationMaxAge {
+		t.Fatalf("default = %+v, %v", c, err)
+	}
+	if c, err := FromEnv(env(map[string]string{EnvNotificationMaxAge: "6h"})); err != nil || c.NotificationMaxAge != 6*time.Hour || c.Validate() != nil {
+		t.Fatalf("6h = %+v, %v", c, err)
+	}
+	for _, in := range []string{"1m", "721h", "soon", "24"} {
+		if _, err := FromEnv(env(map[string]string{EnvNotificationMaxAge: in})); !errors.Is(err, ErrInvalidNotificationMaxAge) {
+			t.Errorf("%s=%q accepted: %v", EnvNotificationMaxAge, in, err)
+		}
 	}
 }
 

@@ -41,6 +41,7 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
   - Only majority-committed entries are stored, so writes that are rolled back after a failover are never kept.
   - Read preference is `secondaryPreferred` by default.
   - One long-lived client per stream.
+  - Timeouts (#141). The driver has no socket timeout of its own, so a member that dies or is cut off without closing its connections would hold a tick until the operating system gives up. Small round trips (hello, the oplog's ends, entry lookups) get one minute each. Range reads have no overall deadline, since one batch can be 16 MiB and a cross-region link may need minutes for it; instead the session's connections fail a read after one minute without any byte received (a wrapped `net.Conn` that moves its read deadline forward with every read, under the driver's own deadline). Either failure fails the tick, which logs it and tries again with a member that answers.
 - **Chunks.**
   - The pipeline is the backup engine's: driver → pipe → scanner (counts entries, records the first and last `ts` and `t`) → gzip → age → SHA-256 → `Storage.Save`.
   - Key: `_mongorescue/oplog/<conn_id>/<rs>/<chain>/<from>-<to>.bson.gz.age`. Timestamps are written as `%010d.%010d`, so keys sort in time order.
@@ -189,7 +190,7 @@ The rule "the MongoDB driver only in `internal/mongoconn`" keeps every database 
 | 5 | The base's consistent point is recorded through `hello` (`T_before`/`T_after`). |
 | 6 | A gap triggers an automatic base backup and a critical alert. It can be turned off per stream. |
 | 7 | Encryption is required for PITR streams. |
-| 8 | PITR restore is admin-only in the first release. Operators for safe clones are reconsidered later. |
+| 8 | PITR restore is admin-only in the first release. Operators for safe clones are reconsidered later. Revised with #141: operators may run safe-clone PITR restores into the stream's own connection; another target connection and chain tests stay admin. |
 | 9 | The default chunk interval is 60 s (15–900 s). |
 | 10 | The collector's read preference is `secondaryPreferred`. |
 | 11 | Base retention keeps 7 bases or 14 days, plus pins. `oplog_max_days` is unset by default. |
