@@ -152,6 +152,9 @@ const (
 	// ApprovalRestoreDropTarget runs the in-place restore Restore that drops the
 	// target database first.
 	ApprovalRestoreDropTarget ApprovalAction = "restore_drop_target"
+	// ApprovalPITRInPlace runs the in-place point-in-time restore Restore of stream
+	// Subject, which replaces the original databases it names.
+	ApprovalPITRInPlace ApprovalAction = "pitr_in_place"
 	// ApprovalRotateSecretKey rotates secret.key (every session ends).
 	ApprovalRotateSecretKey ApprovalAction = "rotate_secret_key"
 	// ApprovalPostRestoreCommands replaces the post-restore commands of connection
@@ -220,7 +223,8 @@ type Approval struct {
 	Role string `json:"role,omitempty"`
 	// MetadataRetentionCount is the new count of ApprovalShortenMetadataRetention.
 	MetadataRetentionCount *int `json:"metadata_retention_count,omitempty"`
-	// Restore is the in-place restore of ApprovalRestoreDropTarget.
+	// Restore is the in-place restore of ApprovalRestoreDropTarget or
+	// ApprovalPITRInPlace.
 	Restore *RestoreRequest `json:"restore,omitempty"`
 	// ObjectLock is the new object lock of ApprovalLowerObjectLock.
 	ObjectLock *ObjectLockSettings `json:"object_lock,omitempty"`

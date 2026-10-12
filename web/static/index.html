@@ -664,7 +664,7 @@
         <!-- Point-in-time restore wizard: time, preflight, confirm (pitr.js) -->
         <form id="form-pitr-restore" class="pitr-form pitr-restore" novalidate hidden>
           <h4><span data-i18n="pitr.restore_title">Restore to a point in time</span> <span class="cell-sub" id="pitr-restore-conn"></span></h4>
-          <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;_&lt;id&gt;; existing data is never touched. Times are UTC on the primary's clock.</p>
+          <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;_&lt;id&gt;; existing data is untouched unless an administrator chooses to replace the original databases. Times are UTC on the primary's clock.</p>
           <div class="form-group">
             <label class="form-label" for="pitr-restore-window" data-i18n="pitr.restore_window">Window</label>
             <select class="form-select" id="pitr-restore-window"></select>
@@ -677,6 +677,16 @@
           <div class="form-group">
             <label class="form-label" for="pitr-restore-databases" data-i18n="pitr.restore_databases">Databases (optional, comma-separated)</label>
             <input type="text" class="form-input mono" id="pitr-restore-databases" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="all databases" data-i18n-placeholder="pitr.restore_all">
+          </div>
+          <!-- Replace the original databases instead of restoring into new clones (admins; pitrinplace.js) -->
+          <div class="form-group pitr-inplace" id="pitr-inplace-group" hidden>
+            <label class="check-inline"><input type="checkbox" id="pitr-restore-inplace" data-requires="admin"><span data-i18n="pitr_inplace.option">Replace the original databases</span></label>
+            <div class="notice notice-danger" id="pitr-inplace-notes" hidden>
+              <p data-i18n="pitr_inplace.downtime">Downtime: applications must stop writing to these databases until the restore has completed; anything written meanwhile is overwritten.</p>
+              <p data-i18n="pitr_inplace.safety">The databases are restored into clones and checked first. Then a safety backup of each original is taken (labelled pre-pitr-in-place), the PITR stream is paused, the clones are copied over the originals and dropped, and the stream starts a new chain with a new base backup. Plan for about three times the data: the originals, the clones and the safety backups.</p>
+              <p data-i18n="pitr_inplace.approval">With the two-person rule on, a second administrator must approve the restore before it starts.</p>
+              <label class="check-inline"><input type="checkbox" id="pitr-restore-keep-clone"><span data-i18n="pitr_inplace.keep_clone">Keep the restored clones afterwards</span></label>
+            </div>
           </div>
           <div class="pitr-plan" id="pitr-restore-plan" hidden></div>
           <p class="form-error" id="pitr-restore-error" role="alert" hidden></p>
@@ -3143,6 +3153,7 @@
               <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.cancelled"><span data-i18n="notify.events.backup_cancelled">Backup cancelled</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="backup.skipped"><span data-i18n="notify.events.backup_skipped">Backup skipped (outside window)</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.cancelled"><span data-i18n="notify.events.restore_cancelled">Restore cancelled</span></label>
+              <label class="check-inline"><input type="checkbox" name="rule-event" value="restore.in_place_pitr"><span data-i18n="notify.events.restore_in_place_pitr">In-place point-in-time restore</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="verification.failed"><span data-i18n="notify.events.verification_failed">Backup verification failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore_test.failed"><span data-i18n="notify.events.restore_test_failed">Restore test failed</span></label>
               <label class="check-inline"><input type="checkbox" name="rule-event" value="restore_test.succeeded"><span data-i18n="notify.events.restore_test_succeeded">Restore test passed</span></label>
@@ -3234,6 +3245,7 @@
   <script src="/monitoring.js"></script>
   <script src="/pitr.js"></script>
   <script src="/protection.js"></script>
+  <script src="/pitrinplace.js"></script>
   <script src="/keyrotation.js"></script>
   <script src="/objectlock.js"></script>
   <script src="/copies.js"></script>

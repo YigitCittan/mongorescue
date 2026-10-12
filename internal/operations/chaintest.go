@@ -217,7 +217,13 @@ func (s *Service) LastChainTestStart(ctx context.Context, streamID string) time.
 // are temporary, and a restore's are partial and cannot be trusted. It returns ""
 // for any other record.
 func (s *Service) CleanupInterruptedPITR(ctx context.Context, rec *models.RestoreRecord) string {
-	if rec == nil || rec.PITR == nil || len(rec.PITR.Clones) == 0 || s.cfg.PITRRestore == nil {
+	if rec == nil || rec.PITR == nil || s.cfg.PITRRestore == nil {
+		return ""
+	}
+	if ip := rec.PITR.InPlace; ip != nil && ip.Stage != models.PITRInPlaceRestoring {
+		return s.cleanupInterruptedInPlace(ctx, rec)
+	}
+	if len(rec.PITR.Clones) == 0 {
 		return ""
 	}
 	what := "partially restored clones"

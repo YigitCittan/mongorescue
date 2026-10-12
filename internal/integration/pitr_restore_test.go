@@ -60,6 +60,8 @@ type pitrRig struct {
 	stream  *pitr.Stream
 	backups *backup.Engine
 	ops     *operations.Service
+	// col is the running collector of the stream.
+	col *collector.Service
 	// scheduled is ops for the collector's chain test schedule, set once built.
 	scheduled atomic.Pointer[operations.Service]
 }
@@ -142,6 +144,7 @@ func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 	})
 	col.Start(ctx)
 	t.Cleanup(col.Stop)
+	r.col = col
 	deadline := time.Now().Add(time.Minute)
 	for {
 		if _, loadErr := r.repo.LoadState(ctx, r.stream.ID); loadErr == nil {
@@ -163,7 +166,7 @@ func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 	}
 	r.backups = newBackupEngine(env, st, backup.WithEncryptor(enc), backup.WithOpTimeReader(r.prober.WriteOpTimes),
 		backup.WithManifestCapturer(r.prober.Manifest), backup.WithDatabaseLister(names))
-	restores := newRestoreEngine(env, st, restore.WithDecryptor(dec), restore.WithDatabaseLister(names),
+	restores := newRestoreEngine(env, st, restore.WithDecryptor(dec), restore.WithDatabaseLister(names), restore.WithCollectionAdmin(r.prober),
 		restore.WithServerVersion(func(ctx context.Context, uri string) (string, error) {
 			info, pingErr := r.prober.Ping(ctx, uri)
 			return info.Version, pingErr
@@ -174,6 +177,7 @@ func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 		Store: r.repo, Backup: r.backups, Restore: restores, Runs: manager,
 		Connections: itConnections{"conn_it": {ID: "conn_it", Name: "replica set", URI: env.URI}},
 		PITR:        r.repo, PITRRestore: restores, PITRBases: r.repo.ListBaseBackups, Inspector: r.prober,
+		PITRStreams: col, PITRSwap: restores,
 		ToolsVersion: func(ctx context.Context) (string, error) {
 			return mongotools.NewResolver("").ToolVersion(ctx, "mongorestore")
 		},

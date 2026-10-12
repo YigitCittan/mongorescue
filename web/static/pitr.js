@@ -10,7 +10,9 @@
  * The restore wizard (operator) picks a time inside a window, runs the restore
  * preflight (POST /api/v1/restores/preflight with "pitr") to show the chosen base,
  * the chunks and the estimated duration, and starts the restore into safe clones
- * (POST /api/v1/restore) after a confirmation.
+ * (POST /api/v1/restore) after a confirmation. Administrators may instead replace
+ * the original databases (pitrinplace.js: "pitr.in_place" behind a typed danger
+ * confirmation); the default stays a restore into new clones.
  *
  * Loaded after app.js and trust.js (mergeTranslations). Server values reach the
  * DOM only through escapeHtml, textContent and form values.
@@ -1053,6 +1055,8 @@ function pitrOpenRestore(id) {
   setValue("pitr-restore-databases", "");
   // The copy chains the restore may read (dr.js).
   if (typeof drFillPITRRestore === "function") drFillPITRRestore(s);
+  // The in-place option, unticked (pitrinplace.js).
+  if (typeof pitrInPlaceFill === "function") pitrInPlaceFill(s);
   form.hidden = false;
   pitrRestoreWindow();
   form.scrollIntoView({ block: "nearest" });
@@ -1079,6 +1083,11 @@ function pitrRestoreRequest() {
   const dbs = getValue("pitr-restore-databases").split(",").map(x => x.trim()).filter(Boolean);
   if (dbs.length) body.databases = dbs;
   if (typeof drPITRRestorePayload === "function") Object.assign(body, drPITRRestorePayload());
+  if (typeof pitrInPlacePayload === "function") {
+    const inPlace = pitrInPlacePayload(dbs);
+    if (inPlace === null) return null;
+    Object.assign(body.pitr, inPlace);
+  }
   return body;
 }
 
@@ -1142,7 +1151,8 @@ async function pitrRestoreSubmit(e) {
   const body = pitrRestore.body;
   if (!body) return;
   const p = pitrRestore.plan || {};
-  const ok = typeof confirmDialog === "function"
+  const inPlace = !!body.pitr.in_place && typeof pitrInPlaceConfirm === "function";
+  const ok = inPlace ? await pitrInPlaceConfirm(body, p) : typeof confirmDialog === "function"
     ? await confirmDialog({
       title: t("pitr.restore_confirm_title"),
       body: tf("pitr.restore_confirm_body", { at: body.pitr.at, suffix: PITR_CLONE_PATTERN, duration: formatDuration(p.estimated_seconds || 0) }),
@@ -1161,7 +1171,13 @@ async function pitrRestoreSubmit(e) {
       submit.disabled = false;
       return;
     }
-    showToast(tf("pitr.restore_started", { id: (json.data || {}).id || "" }));
+    // With the two-person rule, an in-place restore waits for a second
+    // administrator (protection.js announces it).
+    if (typeof protectionApprovalPending === "function" && protectionApprovalPending(json)) {
+      pitrRestoreClose();
+      return;
+    }
+    showToast(tf(inPlace ? "pitr_inplace.started" : "pitr.restore_started", { id: (json.data || {}).id || "" }));
     pitrRestoreClose();
   } catch (err) {
     showFormError("pitr-restore-error", err.message);

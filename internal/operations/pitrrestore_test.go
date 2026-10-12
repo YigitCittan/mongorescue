@@ -70,28 +70,7 @@ func pitrServiceFor(t *testing.T, conn *models.Connection, inspector operations.
 	t.Helper()
 	ctx := context.Background()
 	st := storetest.New(t)
-	if err := st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: "conn_a", ReplicaSet: "rs0", TargetID: "tgt",
-		BaseCron: "@daily", BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 60}); err != nil {
-		t.Fatal(err)
-	}
-	ts := func(s uint32) pitr.Timestamp { return pitr.Timestamp{T: s, I: 1} }
-	if err := st.StartChain(ctx, "str_a", "ch1", pitr.OpTime{TS: ts(100), Term: 1}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	for _, to := range []uint32{110, 120, 130} {
-		if err := st.CommitChunk(ctx, &pitr.Chunk{ID: fmt.Sprintf("k%d", to), StreamID: "str_a", ChainID: "ch1", TargetID: "tgt",
-			StorageKey: fmt.Sprintf("_mongorescue/oplog/conn_a/rs0/ch1/%d.bson.gz.age", to), From: ts(to - 10), To: ts(to),
-			FirstTerm: 1, LastTerm: 1, SizeBytes: 100, SHA256: "ab", Encrypted: true, EncryptionMode: "x25519"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	before, after := pitr.OpTime{TS: ts(105), Term: 1}, pitr.OpTime{TS: ts(108), Term: 1}
-	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "b1", Scope: models.ScopeInstance, PITRStreamID: "str_a",
-		ConnectionID: "conn_a", StorageTargetID: "tgt", StorageKey: "_mongorescue/base/conn_a/rs0/2026/10/b1.archive.gz.age",
-		Status: models.StatusCompleted, StartedAt: time.Unix(104, 0), SizeBytes: 1000, Encrypted: true, EncryptionMode: "x25519",
-		ServerVersion: "8.0.4", TBefore: &before, TAfter: &after, InstanceDatabases: b1Databases}); err != nil {
-		t.Fatal(err)
-	}
+	seedPITRStream(t, st, "conn_a")
 	for _, b := range bases {
 		if err := st.SaveBackupRecord(ctx, b); err != nil {
 			t.Fatal(err)
@@ -114,6 +93,35 @@ func pitrServiceFor(t *testing.T, conn *models.Connection, inspector operations.
 	})
 	pitrStores[svc] = st
 	return svc, fake
+}
+
+// seedPITRStream stores stream str_a of connection connID in st: one chain of
+// chunks (100, 110], (110, 120], (120, 130] and base b1 consistent at 108.
+func seedPITRStream(t *testing.T, st *store.SQLiteStore, connID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.CreateStream(ctx, &pitr.Stream{ID: "str_a", ConnectionID: connID, ReplicaSet: "rs0", TargetID: "tgt",
+		BaseCron: "@daily", BaseKeepCount: 7, BaseKeepDays: 14, ChunkSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	ts := func(s uint32) pitr.Timestamp { return pitr.Timestamp{T: s, I: 1} }
+	if err := st.StartChain(ctx, "str_a", "ch1", pitr.OpTime{TS: ts(100), Term: 1}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, to := range []uint32{110, 120, 130} {
+		if err := st.CommitChunk(ctx, &pitr.Chunk{ID: fmt.Sprintf("k%d", to), StreamID: "str_a", ChainID: "ch1", TargetID: "tgt",
+			StorageKey: fmt.Sprintf("_mongorescue/oplog/%s/rs0/ch1/%d.bson.gz.age", connID, to), From: ts(to - 10), To: ts(to),
+			FirstTerm: 1, LastTerm: 1, SizeBytes: 100, SHA256: "ab", Encrypted: true, EncryptionMode: "x25519"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, after := pitr.OpTime{TS: ts(105), Term: 1}, pitr.OpTime{TS: ts(108), Term: 1}
+	if err := st.SaveBackupRecord(ctx, &models.BackupRecord{ID: "b1", Scope: models.ScopeInstance, PITRStreamID: "str_a",
+		ConnectionID: connID, StorageTargetID: "tgt", StorageKey: "_mongorescue/base/" + connID + "/rs0/2026/10/b1.archive.gz.age",
+		Status: models.StatusCompleted, StartedAt: time.Unix(104, 0), SizeBytes: 1000, Encrypted: true, EncryptionMode: "x25519",
+		ServerVersion: "8.0.4", TBefore: &before, TAfter: &after, InstanceDatabases: b1Databases}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // pitrStores are the stores of the services pitrService built.

@@ -92,6 +92,10 @@ type Engine struct {
 	timeout      time.Duration
 	canBypass    BypassCheck
 	admin        DatabaseAdmin
+	// collections and dumper serve the swap of in-place point-in-time restores
+	// (WithCollectionAdmin, WithDumpRunner).
+	collections CollectionAdmin
+	dumper      DumpRunner
 	// listDatabases lists the databases of a whole-instance PITR target.
 	listDatabases DatabaseLister
 	// serverVersion reads the target version for PITR archives (WithServerVersion).
@@ -306,6 +310,9 @@ func NewEngine(store storage.Storage, defaultURI string, opts ...Option) *Engine
 	}
 	if e.runner == nil {
 		e.runner = newProcessRunner(mongotools.NewResolver(e.toolsDir), e.logger)
+	}
+	if e.dumper == nil {
+		e.dumper = newDumpRunner(mongotools.NewResolver(e.toolsDir), e.logger)
 	}
 
 	return e

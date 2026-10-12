@@ -84,9 +84,20 @@ func (s *Service) StartBaseBackup(ctx context.Context, streamID string, trigger 
 		return nil, invalid(err)
 	}
 
-	release, err := s.cfg.Runs.Acquire(runs.PITRBaseKey(conn.ID))
+	releaseBase, err := s.cfg.Runs.Acquire(runs.PITRBaseKey(conn.ID))
 	if err != nil {
 		return nil, runError(err, "a base backup of this connection is already running")
+	}
+	// A whole-instance backup never runs while an in-place point-in-time restore
+	// replaces databases of the connection.
+	releaseInstance, err := s.cfg.Runs.AcquireShared(runs.InstanceKey(conn.ID))
+	if err != nil {
+		releaseBase()
+		return nil, runError(err, "an in-place point-in-time restore of this connection is running")
+	}
+	release := func() {
+		releaseInstance()
+		releaseBase()
 	}
 	snapshot := *record
 	if err := s.cfg.Store.SaveBackupRecord(ctx, &snapshot); err != nil {

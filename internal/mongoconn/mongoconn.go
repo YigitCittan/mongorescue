@@ -20,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 )
 
@@ -144,6 +145,60 @@ func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]c
 		return nil
 	})
 	return out, err
+}
+
+// CollectionCounts returns the collections and views of database (system
+// collections left out, see ListCollections) with the estimated document count of
+// each collection.
+func (p *Prober) CollectionCounts(ctx context.Context, uri, database string) ([]models.CollectionCount, error) {
+	var out []models.CollectionCount
+	err := withClient(ctx, uri, func(c *mongo.Client) error {
+		db := c.Database(database)
+		specs, err := db.ListCollectionSpecifications(ctx, bson.D{},
+			options.ListCollections().SetNameOnly(true).SetAuthorizedCollections(true))
+		if err != nil {
+			return fmt.Errorf("listCollections: %w", err)
+		}
+		out = make([]models.CollectionCount, 0, len(specs))
+		for _, s := range specs {
+			if strings.HasPrefix(s.Name, "system.") {
+				continue
+			}
+			cc := models.CollectionCount{Name: s.Name, View: countsAsView(s.Type)}
+			if !cc.View {
+				n, countErr := db.Collection(s.Name).EstimatedDocumentCount(ctx)
+				if countErr != nil {
+					// A time-series collection may refuse the metadata count:
+					// its measurements are counted instead.
+					if n, countErr = db.Collection(s.Name).CountDocuments(ctx, bson.D{}); countErr != nil {
+						return fmt.Errorf("count %s: %w", s.Name, countErr)
+					}
+				}
+				cc.Documents = n
+			}
+			out = append(out, cc)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// countsAsView reports whether a listCollections entry of type typ holds no
+// documents of its own: only views. Collections and time-series collections
+// (and any other type) are counted, so their copies are compared.
+func countsAsView(typ string) bool {
+	return typ == "view"
+}
+
+// DropCollection drops collection (or view) of database on the server at uri; a
+// collection that does not exist is not an error.
+func (p *Prober) DropCollection(ctx context.Context, uri, database, collection string) error {
+	return withClient(ctx, uri, func(c *mongo.Client) error {
+		if err := c.Database(database).Collection(collection).Drop(ctx); err != nil {
+			return fmt.Errorf("drop: %w", err)
+		}
+		return nil
+	})
 }
 
 // DatabaseSize returns the uncompressed data size of database from dbStats

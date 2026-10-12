@@ -30,6 +30,12 @@ const (
 	PhaseWaiting = "waiting"
 	// PhaseCancelling is a run whose cancellation was requested.
 	PhaseCancelling = "cancelling"
+	// PhaseSafetyBackup is an in-place point-in-time restore backing up the
+	// original databases before it replaces them.
+	PhaseSafetyBackup = "safety_backup"
+	// PhaseSwapping is an in-place point-in-time restore copying its clones over
+	// the original databases.
+	PhaseSwapping = "swapping"
 )
 
 // RunPhases holds the timestamps of a run's phases. Backups pass queued, started,

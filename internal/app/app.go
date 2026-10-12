@@ -398,6 +398,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
+		restore.WithCollectionAdmin(prober),
 		restore.WithDatabaseLister(databaseNames(prober)),
 		restore.WithServerVersion(func(ctx context.Context, uri string) (string, error) {
 			info, pingErr := prober.Ping(ctx, uri)
@@ -742,6 +743,12 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		PITR:                metaStore,
 		PITRRestore:         restoreEngine,
 		PITRBases:           metaStore.ListBaseBackups,
+		// In-place point-in-time restores pause the stream through the collector,
+		// which is built below.
+		PITRStreams: lazyStreamControl{svc: &pitrSvc},
+		PITRSwap:    restoreEngine,
+		// In-place point-in-time restores are refused in active-passive HA mode.
+		HAMode: o.ha != nil,
 		ToolsVersion: func(ctx context.Context) (string, error) {
 			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
 		},
@@ -1532,6 +1539,23 @@ func (a *App) shutdownRuns() {
 		a.logger.Info("in-flight backups and restores stopped")
 		return
 	case <-ctx.Done():
+	}
+
+	// The swap of an in-place point-in-time restore is not cancelled (it would
+	// leave a database half replaced): it is waited for, bounded by the swap's own
+	// limit, before any tool process is killed.
+	if n := a.runs.CriticalCount(); n > 0 {
+		a.logger.Warn("waiting for an in-place point-in-time restore to finish replacing databases before stopping",
+			slog.Int("swaps", n), slog.Duration("limit", operations.MaxSwapDuration))
+		swapCtx, cancelSwap := context.WithTimeout(context.Background(), operations.MaxSwapDuration)
+		a.runs.WaitCritical(swapCtx)
+		cancelSwap()
+		select {
+		case <-done:
+			a.logger.Info("in-flight backups and restores stopped")
+			return
+		case <-time.After(shutdownTimeout):
+		}
 	}
 
 	killed := mongotools.KillAll()

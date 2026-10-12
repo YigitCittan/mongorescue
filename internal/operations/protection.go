@@ -568,6 +568,15 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "object lock change scheduled for " + c.EffectiveAt.Format(time.RFC3339), nil
+	case models.ApprovalPITRInPlace:
+		if a.Restore == nil || !a.Restore.PITR.IsInPlace() {
+			return "", public("the request names no in-place point-in-time restore", ErrInvalid)
+		}
+		rec, err := s.StartRestore(ctx, *a.Restore)
+		if err != nil {
+			return "", err
+		}
+		return "in-place point-in-time restore " + rec.ID + " started", nil
 	case models.ApprovalRestoreDropTarget:
 		if a.Restore == nil {
 			return "", public("the request names no restore", ErrInvalid)

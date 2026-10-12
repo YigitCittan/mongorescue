@@ -59,6 +59,10 @@ const (
 	// storage target chosen for it (the primary or a copy). It runs only for
 	// backups with copies.
 	PreflightCheckSource = "source"
+	// PreflightCheckInPlace checks an in-place point-in-time restore: that no
+	// backup or restore holds the databases it replaces, and what it does to them
+	// (safety backup, paused stream, swap).
+	PreflightCheckInPlace = "in_place"
 )
 
 // PITRPreflight summarises the plan of a point-in-time restore for its preflight.

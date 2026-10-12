@@ -187,6 +187,15 @@ type BackupRecord struct {
 	// backups that are not retries. The original record is never modified by a retry.
 	RetryOf string `json:"retry_of,omitempty"`
 
+	// Label marks a backup MongoRescue took for a purpose of its own, such as
+	// BackupLabelPrePITRInPlace for the safety backup of an in-place
+	// point-in-time restore; empty for every other backup.
+	Label string `json:"label,omitempty"`
+
+	// RestoreID is the restore a labelled backup belongs to (the in-place
+	// point-in-time restore whose safety backup it is).
+	RestoreID string `json:"restore_id,omitempty"`
+
 	// CancelledBy names who cancelled the backup (a username, an API key or
 	// "system") when Status is StatusCancelled.
 	CancelledBy string `json:"cancelled_by,omitempty"`

@@ -262,6 +262,17 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		return 0, nil
 	}
 	if !w.checked {
+		// The stored position belongs to a chain that ended while no collector
+		// ran: a paused stream (PauseStream), or a break a stop interrupted after
+		// the chain ended and before the next one started. It is never continued.
+		ended, endedErr := w.endedChain(ctx, st.ChainID)
+		if endedErr != nil {
+			return 0, endedErr
+		}
+		if ended != nil {
+			w.lagSince, w.windowLow, w.rsID = st.LagSince, st.WindowLowSince != nil, st.ReplicaSetID
+			return w.resumeEnded(ctx, ended, win)
+		}
 		// The alerts already raised and the replica set first seen survive a
 		// restart.
 		w.lagSince = st.LagSince
@@ -481,6 +492,65 @@ func (w *worker) chainStartsAt(ctx context.Context, st *pitr.State) bool {
 		}
 	}
 	return false
+}
+
+// endedChain returns chain id of the stream when it has ended, or nil.
+func (w *worker) endedChain(ctx context.Context, id string) (*pitr.Chain, error) {
+	chains, err := w.svc.cfg.Repo.ListChains(ctx, w.stream.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list the chains: %w", err)
+	}
+	for _, c := range chains {
+		if c.ChainID == id && !c.Open() {
+			return c, nil
+		}
+	}
+	return nil, nil
+}
+
+// resumeEnded starts the next chain after chain c, which ended while no
+// collector ran:
+//   - stopped (a paused stream, see PauseStream): at the newest majority-committed
+//     entry, as for a new stream; whoever paused it takes the base backup;
+//   - diverged: at the divergence point the chain ended at (the oldest entry when
+//     it is gone), as diverge would have;
+//   - a gap, a replica set change or anything else: at the oldest entry, as
+//     breakChain would have.
+//
+// A break gets its base backup (Stream.BaseOnGap) like an uninterrupted one.
+func (w *worker) resumeEnded(ctx context.Context, c *pitr.Chain, win pitr.OplogWindow) (time.Duration, error) {
+	var err error
+	switch c.EndReason {
+	case pitr.EndStopped:
+		if win.MajorityOpTime.TS.IsZero() {
+			return w.interval, nil
+		}
+		err = w.startChain(ctx, win.MajorityOpTime)
+	case pitr.EndDiverged:
+		term, found, entryErr := w.m.EntryAt(ctx, c.End)
+		switch {
+		case entryErr != nil:
+			return 0, fmt.Errorf("read the divergence point: %w", entryErr)
+		case found:
+			err = w.startChain(ctx, pitr.OpTime{TS: c.End, Term: term})
+		default:
+			err = w.startAtOldest(ctx, win)
+		}
+	default:
+		err = w.startAtOldest(ctx, win)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if w.rsID == "" {
+		w.adoptReplicaSetID(ctx, win.ReplicaSetID)
+	}
+	if c.EndReason != pitr.EndStopped {
+		w.svc.logger.Warn("PITR chain break resumed after a restart", logsafe.Attr("stream_id", w.stream.ID),
+			logsafe.Attr("chain_id", c.ChainID), logsafe.Attr("reason", string(c.EndReason)))
+		w.baseAfterBreak(ctx)
+	}
+	return 0, nil
 }
 
 // startChain starts a new chain at start; its first chunk keeps the entry there.

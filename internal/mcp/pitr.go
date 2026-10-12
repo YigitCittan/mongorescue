@@ -99,6 +99,20 @@ func (s *Server) pitrStatus(ctx context.Context, in pitrStatusInput) (pitrStatus
 	return out, fmt.Sprintf("%d PITR stream(s): %s.", len(parts), strings.Join(parts, "; ")), nil
 }
 
+// pitrRestoreRequest builds the restore request of pitr_restore. It is always a
+// restore into safe clones: the input has no way to name an existing database,
+// and the in-place options (pitr.in_place, pitr.confirm_in_place,
+// pitr.keep_clone) are never set; in-place point-in-time restores are offered
+// only through the REST API and the dashboard.
+func pitrRestoreRequest(in pitrRestoreInput, at time.Time) models.RestoreRequest {
+	return models.RestoreRequest{
+		PITR:               &models.PITRTarget{StreamID: in.StreamID, At: &at},
+		Databases:          in.Databases,
+		TargetConnectionID: in.TargetConnectionID,
+		Force:              in.Force,
+	}
+}
+
 func (s *Server) pitrRestore(ctx context.Context, in pitrRestoreInput) (restoreStarted, string, error) {
 	if err := requireID("stream_id", in.StreamID); err != nil {
 		return restoreStarted{}, "", err
@@ -107,13 +121,7 @@ func (s *Server) pitrRestore(ctx context.Context, in pitrRestoreInput) (restoreS
 	if err != nil {
 		return restoreStarted{}, "", fmt.Errorf("%w: at must be an RFC 3339 time such as 2026-10-05T14:30:00Z", errInvalidInput)
 	}
-	// Always safe clones: the request has no way to name an existing database.
-	rec, err := s.cfg.Operations.StartRestore(ctx, models.RestoreRequest{
-		PITR:               &models.PITRTarget{StreamID: in.StreamID, At: &at},
-		Databases:          in.Databases,
-		TargetConnectionID: in.TargetConnectionID,
-		Force:              in.Force,
-	})
+	rec, err := s.cfg.Operations.StartRestore(ctx, pitrRestoreRequest(in, at))
 	if err != nil {
 		return restoreStarted{}, "", err
 	}

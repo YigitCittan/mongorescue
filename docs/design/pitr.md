@@ -115,6 +115,14 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
   - Chunk hashes are checked inline.
   - The filter counts the operations it emits, with `applyOps` expanded and skipped entries left out, and compares that with mongorestore's "applied N oplog entries". The chunk entry count is not comparable (S1).
   - A scheduled **chain test** PITR-restores base B1 up to the consistent point of B2 into a `_rescue_verify_` clone, compares the result with B2's manifest, then drops the clone.
+- **In place (#142): restore into a clone, verify, swap.** An opt-in (`pitr.in_place`, admin, two-person rule) for a list of databases confirmed by name (`pitr.confirm_in_place`):
+  - The restore into clones runs unchanged, with its verification, op-count cross-check and the post-restore commands (applied to the clones, so erased data never reaches the originals).
+  - A mandatory **safety backup** of each original (a regular backup labelled `pre-pitr-in-place`, linked to the restore) follows; its failure drops the clones and leaves the originals untouched.
+  - The stream is **paused**: disabled, its collector awaited, its open chain ended as `stopped`. The swap's writes therefore never join a chain that started before them; a collector whose stored position belongs to a `stopped` chain starts a new chain at the majority optime. A chain that ended for a gap, a replica set change or a divergence while no collector ran (a stop between ending it and starting the next) has its break resumed instead: the next chain starts at the oldest entry, or at the divergence point, and a base backup follows, so a gap is never hidden.
+  - The **swap** pipes `mongodump --archive --db=<clone>` into `mongorestore --archive --nsFrom=<clone>.* --nsTo=<db>.* --drop` (an OS pipe, no buffering) and drops the original's collections the clone lacks. Guards: the clones' collections and document counts are recorded right after the restore (`snapshots`); a clone that lists nothing ends the run before anything is touched, a clone that no longer lists its snapshot leaves its original untouched, and nothing is dropped unless the copy holds every collection of the snapshot with its count. A failure stops there and keeps the clones and the safety backups, which the record names with recovery steps.
+  - The clones are dropped (unless `keep_clone`), the stream is enabled again, and a base of the new chain is started once the collector opened it.
+  - The run holds the backup and restore keys of the replaced databases and the base key of the connection, so nothing else writes or dumps them meanwhile. Once the clones are complete it can no longer be cancelled.
+  - MCP never sets it.
 
 ## Spike results (S1–S3)
 
@@ -195,6 +203,7 @@ The rule "the MongoDB driver only in `internal/mongoconn`" keeps every database 
 | 10 | The collector's read preference is `secondaryPreferred`. |
 | 11 | Base retention keeps 7 bases or 14 days, plus pins. `oplog_max_days` is unset by default. |
 | 12 | Per-database jobs and PITR streams coexist, with a warning when their schedules overlap. |
+| 13 | In-place PITR restores (#142) restore into clones, verify, take a safety backup, pause the stream and swap; admin only, two-person rule, never through MCP. |
 
 ## Testing
 

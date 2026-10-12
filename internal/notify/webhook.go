@@ -34,7 +34,7 @@ const (
 //	  "version": 1,
 //	  "event_id": "evt_3f9a1c2e5b7d9f01", // the same for every attempt; de-duplicate on it
 //	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|backup.skipped|restore.succeeded|
-//	                                     // restore.failed|restore.cancelled|verification.failed|
+//	                                     // restore.failed|restore.cancelled|restore.in_place_pitr|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
 //	                                     // restore.verification_failed|job.rpo_missed|job.rpo_recovered|
 //	                                     // storage.drift_detected|retention.deleted|pitr.*|system.disk_full|ha.*|notification.test
@@ -105,6 +105,8 @@ type WebhookPayload struct {
 	// Stream and ConnectionID name the PITR stream of pitr.* events.
 	Stream       string `json:"stream,omitempty"`
 	ConnectionID string `json:"connection_id,omitempty"`
+	// SafetyBackupIDs are the safety backups of a restore.in_place_pitr event.
+	SafetyBackupIDs []string `json:"safety_backup_ids,omitempty"`
 	// Subject is the rendered one-line summary.
 	Subject string `json:"subject"`
 	// Text is the rendered human-readable body.
@@ -141,6 +143,7 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 		ApprovalID:      e.ApprovalID,
 		Stream:          e.Stream,
 		ConnectionID:    e.ConnectionID,
+		SafetyBackupIDs: e.SafetyBackupIDs,
 		Subject:         msg.Subject,
 		Text:            msg.Body,
 	}

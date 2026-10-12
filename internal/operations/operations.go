@@ -259,6 +259,16 @@ type Config struct {
 	// of a stream; nil makes point-in-time restores fail with ErrPITRUnavailable.
 	PITRRestore PITRRestorer
 	PITRBases   func(ctx context.Context, streamID string) ([]*models.BackupRecord, error)
+	// PITRStreams pauses and resumes PITR streams around the swap of an in-place
+	// point-in-time restore and PITRSwap performs the swap; nil refuses in-place
+	// point-in-time restores (ErrPITRUnavailable).
+	PITRStreams PITRStreamControl
+	PITRSwap    PITRSwapper
+	// HAMode reports that the instance runs in active-passive high availability:
+	// in-place point-in-time restores are refused (ErrInPlaceHAMode), since a
+	// swap that outlasts the leader's lease could overlap the next leader's
+	// startup sweep.
+	HAMode bool
 	// ArchiveSize estimates the archive size of a backup of database (from its last
 	// backup or the server's dbStats), for the size warnings of job previews; nil
 	// disables them. The backup engine's backup.SizeEstimator fits.
@@ -766,9 +776,24 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	// waits for nor blocks a restore into the same database.
 	release := func() {}
 	if !req.DryRun {
-		release, err = s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
-		if err != nil {
-			return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
+		// The archive of a backup without a database (an earlier release's dump
+		// of the whole instance) restores every database it holds: like other
+		// whole-instance runs it holds the connection-wide key shared, so it
+		// never runs during the swap of an in-place point-in-time restore.
+		releaseInstance := func() {}
+		if strings.TrimSpace(record.SourceDatabase) == "" {
+			if releaseInstance, err = s.cfg.Runs.AcquireShared(runs.InstanceKey(record.TargetConnectionID)); err != nil {
+				return nil, runError(err, "an in-place point-in-time restore of this connection is running")
+			}
+		}
+		releaseTarget, acqErr := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
+		if acqErr != nil {
+			releaseInstance()
+			return nil, runError(acqErr, "a restore into database "+record.TargetDatabase+" is already running")
+		}
+		release = func() {
+			releaseTarget()
+			releaseInstance()
 		}
 	}
 	snapshot := *record

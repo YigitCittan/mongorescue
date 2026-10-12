@@ -24,6 +24,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.RestoreSucceeded:          {"✅", "Restore succeeded"},
 	events.RestoreFailed:             {"❌", "Restore failed"},
 	events.RestoreCancelled:          {"⏹️", "Restore cancelled"},
+	events.RestoreInPlacePITR:        {"🛡️", "In-place point-in-time restore"},
 	events.NotificationTest:          {"🔔", "Test notification"},
 	events.EncryptionOffAfterUpgrade: {"⚠️", "Backup encryption is off"},
 	events.VerificationFailed:        {"❌", "Backup verification failed"},
@@ -91,6 +92,8 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("job %s (db %s)", e.JobID, e.Database)
 	case events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled, events.RestoreVerificationFailed:
 		target = fmt.Sprintf("backup %s → db %s", e.BackupID, e.Database)
+	case events.RestoreInPlacePITR:
+		target = fmt.Sprintf("%s: restore %s replaced db %s", e.Status, e.RestoreID, e.Database)
 	case events.NotificationTest:
 		target = "MongoRescue notification channel check"
 	case events.EncryptionOffAfterUpgrade:
