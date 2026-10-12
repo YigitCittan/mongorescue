@@ -48,6 +48,16 @@ PREFIX="mongorescue-it-$$"
 MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 CONTAINERS=()
 
+# mongod writes its log synchronously and logs every connection (accepted, client
+# metadata, authenticated, ended). In docker's default blocking log mode a log
+# driver that falls behind (dockerd writing json-file logs on a loaded CI runner)
+# blocks those writes, and with them the handshake of every new connection, while
+# open connections keep working: fresh clients then time out in server selection
+# with the member stuck in Unknown and no error. In non-blocking mode dockerd
+# buffers the output (and drops lines beyond max-buffer-size), so log delivery never
+# stalls the server under test.
+MONGO_LOG_OPTS=(--log-opt mode=non-blocking --log-opt max-buffer-size=8m)
+
 log() { printf '==> %s\n' "$*"; }
 
 cleanup() {
@@ -56,7 +66,9 @@ cleanup() {
     for c in "${CONTAINERS[@]:-}"; do
       [ -n "$c" ] || continue
       echo "---- logs: $c ----"
-      docker logs --tail 50 "$c" 2>&1 | sed "s/${MONGO_PW}/******/g" || true
+      # Docker's receive time precedes each line; compared with mongod's own "t" it
+      # shows whether log delivery lagged.
+      docker logs --timestamps --tail 50 "$c" 2>&1 | sed "s/${MONGO_PW}/******/g" || true
     done
   fi
   for c in "${CONTAINERS[@]:-}"; do
@@ -87,7 +99,7 @@ wait_for() {
 log "starting $MONGO_IMAGE ($MONGO_TOPOLOGY)"
 case "$MONGO_TOPOLOGY" in
   standalone)
-    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 \
+    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
       -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
       "$MONGO_IMAGE" >/dev/null
     ;;
@@ -95,7 +107,7 @@ case "$MONGO_TOPOLOGY" in
     # A replica set with authentication needs a keyfile owned by the mongodb user.
     # The entrypoint drops --replSet while it creates the root user.
     # shellcheck disable=SC2016 # expanded inside the container
-    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 \
+    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
       -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
       --entrypoint bash "$MONGO_IMAGE" -c '
         set -e
@@ -195,7 +207,7 @@ if [ "$IT_TLS" = 1 ]; then
   # user is created through the localhost exception below. Clients without a
   # certificate are allowed (password authentication over TLS); x509 clients
   # present theirs.
-  docker run -d --name "$PREFIX-mongotls" -p 127.0.0.1::27017 -v "$TLS_DIR:/certs:ro" \
+  docker run -d --name "$PREFIX-mongotls" -p 127.0.0.1::27017 -v "$TLS_DIR:/certs:ro" "${MONGO_LOG_OPTS[@]}" \
     --entrypoint mongod "$MONGO_IMAGE" --auth --bind_ip_all \
     --tlsMode requireTLS --tlsCertificateKeyFile /certs/server.pem --tlsCAFile /certs/ca.pem \
     --tlsAllowConnectionsWithoutCertificates >/dev/null
