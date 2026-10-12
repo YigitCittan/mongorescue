@@ -12,9 +12,11 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
@@ -140,6 +142,45 @@ func TestPITRRestoreInPlace(t *testing.T) {
 	if base.StartedAt.Before(restoreStart) || base.TBefore == nil || base.TBefore.TS.Compare(newChain.Start) < 0 {
 		t.Fatalf("base %s started %s (t_before %v), restore started %s, new chain starts %s",
 			base.ID, base.StartedAt, base.TBefore, restoreStart, newChain.Start)
+	}
+}
+
+// TestCollectionCountsCountsTimeSeries checks that the listing the swap of an
+// in-place restore compares counts a time-series collection's measurements (it
+// is no view), and leaves only real views uncounted.
+func TestCollectionCountsCountsTimeSeries(t *testing.T) {
+	env := requireMongo(t)
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	db := env.uniqueDB(t, "tscount")
+	d := env.Client.Database(db)
+	if err := d.CreateCollection(ctx, "metrics", options.CreateCollection().SetTimeSeriesOptions(options.TimeSeries().SetTimeField("ts"))); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	docs := make([]any, 0, 5)
+	for i := range 5 {
+		docs = append(docs, bson.D{{Key: "ts", Value: now.Add(time.Duration(i) * time.Second)}, {Key: "v", Value: i}})
+	}
+	if _, err := d.Collection("metrics").InsertMany(ctx, docs); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateView(ctx, "recent", "metrics", mongo.Pipeline{}); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := mongoconn.New().CollectionCounts(ctx, env.URI, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]models.CollectionCount{}
+	for _, c := range counts {
+		got[c.Name] = c
+	}
+	if c, ok := got["metrics"]; !ok || c.View || c.Documents != 5 {
+		t.Fatalf("metrics = %+v (%v); want a counted collection of 5", c, counts)
+	}
+	if c, ok := got["recent"]; !ok || !c.View {
+		t.Fatalf("recent = %+v; want a view", c)
 	}
 }
 

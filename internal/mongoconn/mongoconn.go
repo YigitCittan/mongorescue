@@ -164,11 +164,15 @@ func (p *Prober) CollectionCounts(ctx context.Context, uri, database string) ([]
 			if strings.HasPrefix(s.Name, "system.") {
 				continue
 			}
-			cc := models.CollectionCount{Name: s.Name, View: s.Type != "collection"}
+			cc := models.CollectionCount{Name: s.Name, View: countsAsView(s.Type)}
 			if !cc.View {
 				n, countErr := db.Collection(s.Name).EstimatedDocumentCount(ctx)
 				if countErr != nil {
-					return fmt.Errorf("count %s: %w", s.Name, countErr)
+					// A time-series collection may refuse the metadata count:
+					// its measurements are counted instead.
+					if n, countErr = db.Collection(s.Name).CountDocuments(ctx, bson.D{}); countErr != nil {
+						return fmt.Errorf("count %s: %w", s.Name, countErr)
+					}
 				}
 				cc.Documents = n
 			}
@@ -177,6 +181,13 @@ func (p *Prober) CollectionCounts(ctx context.Context, uri, database string) ([]
 		return nil
 	})
 	return out, err
+}
+
+// countsAsView reports whether a listCollections entry of type typ holds no
+// documents of its own: only views. Collections and time-series collections
+// (and any other type) are counted, so their copies are compared.
+func countsAsView(typ string) bool {
+	return typ == "view"
 }
 
 // DropCollection drops collection (or view) of database on the server at uri; a
