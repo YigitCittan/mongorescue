@@ -205,7 +205,7 @@ The history spent its time computing three months of activations per job to list
 
 #### After #169: overview, readiness and the jobs list's filters
 
-The same measurement (10,000 jobs, 500 connections, `MONGORESCUE_LOAD_DATA_MB=64`, `MONGORESCUE_LOAD_CONCURRENT=4`) on a laptop (Apple silicon, 8 CPUs, Docker Desktop) on 2026-10-13, before (`origin/main` after #168) and after the change. The committed `ci` baseline takes the *after* values of the overview, readiness and the jobs search, filter and last-status order, with 300 ms ceilings.
+The same measurement (10,000 jobs, 500 connections, `MONGORESCUE_LOAD_DATA_MB=64`, `MONGORESCUE_LOAD_CONCURRENT=4`) on a laptop (Apple silicon, 8 CPUs, Docker Desktop) on 2026-10-13, before (`origin/main` after #168) and after the change. All of them keep 300 ms ceilings. The committed `ci` baseline takes the worse of two runs of the weekly Load job on this branch (GitHub-hosted runners, 4 CPUs) for these metrics, the jobs list and the history (#156's laptop values failed there: the history took 91 to 201 ms with 16 clients against a limit of 83 ms), and for the throttled dump's probe. On the runners, p95 alone / 16 clients: overview 0.5 / 7.5 ms, readiness 6.4 / 33.6 ms, jobs search 9.6 / 158.0 ms, filtered jobs 7.3 / 159.7 ms, jobs by last status 2.6 / 41.2 ms, history 12.7 / 201.1 ms, jobs with `limit=50` 1.8 / 112.9 ms.
 
 | API p95, alone / 16 clients | Before | After |
 | :--- | :--- | :--- |
