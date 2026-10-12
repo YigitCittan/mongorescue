@@ -73,7 +73,7 @@ Restored clones are not covered by any retention: drop them once they have serve
 
 ### Point-in-time recovery and deleted data
 
-A [point-in-time recovery stream](pitr.md) (experimental) stores the oplog of a replica set: every write, including the documents of writes that were later deleted. Deleted data therefore survives in the stored oplog chunks until retention removes them:
+A [point-in-time recovery stream](pitr.md) stores the oplog of a replica set: every write, including the documents of writes that were later deleted. Deleted data therefore survives in the stored oplog chunks until retention removes them:
 
 - PITR streams require backup encryption: chunks and base backups are always age-encrypted.
 - `oplog_max_days` deletes chunks older than that many days, even when that shortens the point-in-time window. Deleted chunks keep their object until the delete grace period ends; the purge then removes it.

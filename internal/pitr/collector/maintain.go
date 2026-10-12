@@ -168,13 +168,20 @@ func hasOpenWindow(status *StreamStatus) bool {
 
 // awaitsCoverage reports whether completed base b belongs to the current chain
 // but the chain has not reached its T_after yet: it becomes eligible by itself.
+// That includes a base taken since the chain started that completed before the
+// chain stored its first chunk.
 func awaitsCoverage(status *StreamStatus, b *models.BackupRecord) bool {
 	if b.Status != models.StatusCompleted || b.TBefore == nil || b.TAfter == nil {
 		return false
 	}
 	for _, c := range status.Chains {
-		if !c.Open() || len(c.Segments) == 0 {
+		if !c.Open() {
 			continue
+		}
+		if len(c.Segments) == 0 {
+			// No usable chunk yet: none stored (a chunk that failed verification
+			// splits the chain instead), and the base is not older than the chain.
+			return c.Corrupt == 0 && c.lastTo == (pitr.Timestamp{}) && b.TBefore.TS.Compare(c.Start) >= 0
 		}
 		last := c.Segments[len(c.Segments)-1]
 		return last.To == c.lastTo && last.From.Compare(b.TBefore.TS) <= 0 && last.To.Compare(b.TAfter.TS) < 0

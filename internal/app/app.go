@@ -474,6 +474,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// chainTestFailed reports failed PITR chain tests to readiness once the
 	// operations service is built.
 	var chainTestFailed func(ctx context.Context, streamID string) bool
+	// pitrEstimate gives readiness the measured RTO of PITR streams, once the
+	// operations service is built.
+	var pitrEstimate pitrEstimator
 	var pitrSvc *collector.Service
 	integritySvc := integrity.New(integrity.Config{
 		ChunkKeys: metaStore.ChunkKeys,
@@ -559,7 +562,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
-		Streams:      pitrStreams(&pitrSvc, &chainTestFailed),
+		Streams:      pitrStreams(&pitrSvc, &chainTestFailed, metaStore, &pitrEstimate),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
 		// Every job requires locked copies while the setting is on.
@@ -789,6 +792,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		r := ops.LastChainTest(ctx, streamID)
 		return r != nil && r.Failed
 	}
+	pitrEstimate = ops.EstimatePITR
 	mcpSrv := mcp.New(mcp.Config{
 		Operations:  ops,
 		Connections: connSvc,

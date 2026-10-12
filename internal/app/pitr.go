@@ -3,17 +3,24 @@ package app
 import (
 	"context"
 
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
-
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 )
 
+// pitrEstimator estimates a point-in-time restore of a stream (see
+// operations.Service.EstimatePITR).
+type pitrEstimator func(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate
+
 // pitrStreams returns the PITR streams for the readiness report, from the
-// collector's status (*svc is set once the collector is built).
-func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Context, streamID string) bool) readiness.StreamLister {
+// collector's status (*svc is set once the collector is built), with the RTO
+// estimate of each open window (*estimate is set once the operations service is
+// built).
+func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Context, streamID string) bool,
+	repo pitr.Repository, estimate *pitrEstimator) readiness.StreamLister {
 	return func(ctx context.Context) ([]readiness.StreamInfo, error) {
 		if *svc == nil {
 			return nil, nil
@@ -28,10 +35,50 @@ func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Cont
 			if *chainTestFailed != nil {
 				info.ChainTestFailed = (*chainTestFailed)(ctx, info.ID)
 			}
+			if *estimate != nil && info.WindowOpen {
+				info.RTO = pitrRTO(ctx, repo, *estimate, st)
+			}
 			out = append(out, info)
 		}
 		return out, nil
 	}
+}
+
+// pitrRTO estimates the restore of the newest point of the current window of
+// stream st: its newest eligible base and the live chunks after the base's
+// t_before. It returns nil without an eligible base or when the chunks cannot be
+// listed.
+func pitrRTO(ctx context.Context, repo pitr.Repository, estimate pitrEstimator, st *collector.StreamStatus) *models.PITREstimate {
+	var current string
+	for _, c := range st.Chains {
+		if c.Open() {
+			current = c.ChainID
+		}
+	}
+	var base *collector.BaseStatus
+	for i := range st.Bases {
+		b := &st.Bases[i]
+		if !b.Eligible || b.ChainID != current || b.TBefore == nil || b.TAfter == nil {
+			continue
+		}
+		if base == nil || b.TAfter.TS.Compare(base.TAfter.TS) > 0 {
+			base = b
+		}
+	}
+	if base == nil {
+		return nil
+	}
+	chunks, err := repo.ListChunks(ctx, pitr.ChunkQuery{StreamID: st.Stream.ID, ChainID: current, After: base.TBefore.TS,
+		Status: pitr.ChunkCommitted, Live: true})
+	if err != nil {
+		return nil
+	}
+	var oplogBytes, entries int64
+	for _, c := range chunks {
+		oplogBytes, entries = oplogBytes+c.SizeBytes, entries+c.Entries
+	}
+	e := estimate(ctx, st.Stream.ID, base.SizeBytes, oplogBytes, entries)
+	return &e
 }
 
 // streamInfo turns a stream's status into what the readiness report needs.

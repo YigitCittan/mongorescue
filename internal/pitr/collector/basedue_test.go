@@ -79,6 +79,64 @@ func TestBaseDueFollowsEligibility(t *testing.T) {
 	}
 }
 
+// TestBaseDueWaitsForTheFirstChunkOfANewChain is the regression test of a burst
+// of base backups after a chain started (a new stream, a gap, a divergence): a
+// base that completed before the new chain stored its first chunk waits for it
+// like any base the chain has not reached yet, instead of making another base due
+// at every check (the replica set divergence scenario took five in a second).
+func TestBaseDueWaitsForTheFirstChunkOfANewChain(t *testing.T) {
+	fx := newFixture(t)
+	ctx := context.Background()
+	fx.svc.cfg.Bases = fx.repo.ListBaseBackups
+	fx.svc.cfg.NextRun = func(string, time.Time) (time.Time, bool) { return fx.clock.Now().Add(24 * time.Hour), true }
+	w := fx.worker()
+	fx.step(w) // the chain starts; no chunk yet
+	start := fx.state().Last.TS
+	if n := len(fx.chunks(fx.state().ChainID)); n != 0 {
+		t.Fatalf("%d chunks after the chain started", n)
+	}
+	due := func() bool {
+		t.Helper()
+		st, err := fx.repo.GetStream(ctx, fx.stream.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := fx.svc.Status(ctx, st.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bases, err := fx.repo.ListBaseBackups(ctx, st.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fx.svc.baseDue(st, status, bases, fx.clock.Now())
+	}
+	save := func(b *models.BackupRecord) {
+		t.Helper()
+		b.Scope, b.PITRStreamID = models.ScopeInstance, fx.stream.ID
+		if err := fx.repo.SaveBackupRecord(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !due() {
+		t.Fatal("no base yet: not due")
+	}
+	// A base from before the chain's start can never be eligible for it: due.
+	fx.clock.advance(time.Second)
+	save(&models.BackupRecord{ID: "b_before", Status: models.StatusCompleted, StartedAt: fx.clock.Now(),
+		TBefore: &pitr.OpTime{TS: pitr.Timestamp{T: start.T - 10}, Term: 1}, TAfter: &pitr.OpTime{TS: pitr.Timestamp{T: start.T - 5}, Term: 1}})
+	if !due() {
+		t.Fatal("a base from before the chain started: not due")
+	}
+	// The chain's own base completed before its first chunk: it waits for it.
+	fx.clock.advance(time.Second)
+	save(&models.BackupRecord{ID: "b_new", Status: models.StatusCompleted, StartedAt: fx.clock.Now(),
+		TBefore: &pitr.OpTime{TS: start, Term: 1}, TAfter: &pitr.OpTime{TS: pitr.Timestamp{T: start.T + 2, I: 1}, Term: 1}})
+	if due() {
+		t.Fatal("another base is due while the new chain has not stored its first chunk")
+	}
+}
+
 func TestBusyBaseAfterABreakIsRetriedBySchedule(t *testing.T) {
 	fx := newFixture(t)
 	ctx := context.Background()

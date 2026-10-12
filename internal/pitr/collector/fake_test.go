@@ -34,8 +34,10 @@ type fakeOplog struct {
 	mu       sync.Mutex
 	entries  []fakeEntry
 	majority pitr.Timestamp // zero: the newest entry
-	rs, rsID string
-	term     int64
+	// noMajority reports no majority commit point yet (a set just initiated).
+	noMajority bool
+	rs, rsID   string
+	term       int64
 	// failAfter makes the next ReadOplog fail after writing that many entries
 	// (a crash in the middle of a chunk); -1 disables it.
 	failAfter int
@@ -135,6 +137,9 @@ func (s member) OplogWindow(context.Context) (pitr.OplogWindow, error) {
 				w.MajorityOpTime = e.op
 			}
 		}
+	}
+	if f.noMajority {
+		w.MajorityOpTime = pitr.OpTime{Term: -1}
 	}
 	return w, nil
 }

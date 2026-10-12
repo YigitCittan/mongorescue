@@ -1,5 +1,5 @@
 /**
- * MongoRescue dashboard: the experimental "Point-in-time recovery" panel of the
+ * MongoRescue dashboard: the "Point-in-time recovery" panel of the
  * Connections tab.
  *
  * It lists the PITR streams (GET /api/v1/pitr/streams): per connection the
@@ -7,7 +7,7 @@
  * and the chain breaks, with actions to enable or disable a stream (PATCH, admin),
  * take a base backup now (POST .../base, operator) and delete a disabled stream
  * (DELETE, admin). The form below creates the stream of a connection (POST, admin).
- * The restore wizard (admin) picks a time inside a window, runs the restore
+ * The restore wizard (operator) picks a time inside a window, runs the restore
  * preflight (POST /api/v1/restores/preflight with "pitr") to show the chosen base,
  * the chunks and the estimated duration, and starts the restore into safe clones
  * (POST /api/v1/restore) after a confirmation.
@@ -24,7 +24,6 @@ const PITR_TRANSLATIONS = {
   en: {
     pitr: {
       title: "Point-in-time recovery",
-      experimental: "Experimental",
       desc: "Collects the oplog of a replica set connection into encrypted chunks and takes base backups of the whole instance, so it can be restored to any moment within its window, into new databases.",
       table_label: "Point-in-time recovery streams",
       col_connection: "Connection",
@@ -108,13 +107,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "No PITR window yet",
       reason_pitr_chain_test_failed: "PITR chain test failed",
       rpo_pitr: "PITR: oplog captured",
-      rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured and can be restored to a point in time (experimental)."
+      rpo_pitr_note: "The recovery point comes from the PITR stream: the oplog up to it is captured and can be restored to a point in time.",
+      rto_pitr_measured: "PITR: {d}, measured on {n} restore(s)",
+      rto_pitr_default: "PITR: {d}, at default rates"
     }
   },
   tr: {
     pitr: {
       title: "Zamana noktasal kurtarma",
-      experimental: "Deneysel",
       desc: "Bir replica set bağlantısının oplog'unu şifreli parçalara toplar ve tüm sunucunun temel yedeklerini alır; böylece penceresi içindeki herhangi bir ana, yeni veritabanlarına geri yüklenebilir.",
       table_label: "Zamana noktasal kurtarma akışları",
       col_connection: "Bağlantı",
@@ -198,13 +198,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Henüz PITR penceresi yok",
       reason_pitr_chain_test_failed: "PITR zincir testi başarısız",
       rpo_pitr: "PITR: oplog kaydediliyor",
-      rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi ve zamana noktasal olarak geri yüklenebilir (deneysel)."
+      rpo_pitr_note: "Kurtarma noktası PITR akışından gelir: oplog o ana kadar kaydedildi ve zamana noktasal olarak geri yüklenebilir.",
+      rto_pitr_measured: "PITR: {d}, {n} geri yüklemede ölçüldü",
+      rto_pitr_default: "PITR: {d}, varsayılan hızlarla"
     }
   },
   de: {
     pitr: {
       title: "Point-in-Time-Wiederherstellung",
-      experimental: "Experimentell",
       desc: "Sammelt das Oplog einer Replica-Set-Verbindung in verschlüsselten Blöcken und erstellt Basis-Backups der ganzen Instanz, damit sie zu jedem Zeitpunkt innerhalb ihres Fensters in neue Datenbanken wiederhergestellt werden kann.",
       table_label: "Point-in-Time-Streams",
       col_connection: "Verbindung",
@@ -288,13 +289,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Noch kein PITR-Fenster",
       reason_pitr_chain_test_failed: "PITR-Kettentest fehlgeschlagen",
       rpo_pitr: "PITR: Oplog erfasst",
-      rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst und kann auf einen Zeitpunkt wiederhergestellt werden (experimentell)."
+      rpo_pitr_note: "Der Wiederherstellungspunkt stammt aus dem PITR-Stream: Das Oplog ist bis dahin erfasst und kann auf einen Zeitpunkt wiederhergestellt werden.",
+      rto_pitr_measured: "PITR: {d}, gemessen an {n} Wiederherstellung(en)",
+      rto_pitr_default: "PITR: {d}, mit Standardraten"
     }
   },
   es: {
     pitr: {
       title: "Recuperación a un punto en el tiempo",
-      experimental: "Experimental",
       desc: "Recoge el oplog de una conexión de replica set en fragmentos cifrados y toma copias base de toda la instancia, para poder restaurarla a cualquier momento dentro de su ventana, en bases de datos nuevas.",
       table_label: "Flujos de recuperación a un punto en el tiempo",
       col_connection: "Conexión",
@@ -378,13 +380,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Aún sin ventana PITR",
       reason_pitr_chain_test_failed: "Prueba de cadena PITR fallida",
       rpo_pitr: "PITR: oplog capturado",
-      rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él y se puede restaurar a un punto en el tiempo (experimental)."
+      rpo_pitr_note: "El punto de recuperación viene del flujo PITR: el oplog está capturado hasta él y se puede restaurar a un punto en el tiempo.",
+      rto_pitr_measured: "PITR: {d}, medido en {n} restauración(es)",
+      rto_pitr_default: "PITR: {d}, con tasas por defecto"
     }
   },
   fr: {
     pitr: {
       title: "Restauration à un instant donné",
-      experimental: "Expérimental",
       desc: "Collecte l'oplog d'une connexion replica set en blocs chiffrés et réalise des sauvegardes de base de toute l'instance, pour pouvoir la restaurer à n'importe quel instant de sa fenêtre, dans de nouvelles bases.",
       table_label: "Flux de restauration à un instant donné",
       col_connection: "Connexion",
@@ -468,13 +471,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Pas encore de fenêtre PITR",
       reason_pitr_chain_test_failed: "Test de chaîne PITR en échec",
       rpo_pitr: "PITR : oplog capturé",
-      rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui et peut être restauré à un instant donné (expérimental)."
+      rpo_pitr_note: "Le point de récupération vient du flux PITR : l'oplog est capturé jusqu'à lui et peut être restauré à un instant donné.",
+      rto_pitr_measured: "PITR : {d}, mesuré sur {n} restauration(s)",
+      rto_pitr_default: "PITR : {d}, aux débits par défaut"
     }
   },
   zh: {
     pitr: {
       title: "时间点恢复",
-      experimental: "实验性",
       desc: "将副本集连接的 oplog 收集为加密的分块，并对整个实例进行基础备份，以便将其恢复到窗口内的任意时刻（恢复到新数据库）。",
       table_label: "时间点恢复流",
       col_connection: "连接",
@@ -558,13 +562,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "尚无 PITR 窗口",
       reason_pitr_chain_test_failed: "PITR 链测试失败",
       rpo_pitr: "PITR：oplog 已捕获",
-      rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，可以进行时间点恢复（实验性）。"
+      rpo_pitr_note: "恢复点来自 PITR 流：截至该点的 oplog 已捕获，可以进行时间点恢复。",
+      rto_pitr_measured: "PITR：{d}，基于 {n} 次恢复的测量",
+      rto_pitr_default: "PITR：{d}，按默认速率"
     }
   },
   ja: {
     pitr: {
       title: "ポイントインタイムリカバリ",
-      experimental: "実験的",
       desc: "レプリカセット接続の oplog を暗号化されたチャンクとして収集し、インスタンス全体のベースバックアップを取得します。これにより、ウィンドウ内の任意の時点に新しいデータベースとして復元できます。",
       table_label: "ポイントインタイムリカバリのストリーム",
       col_connection: "接続",
@@ -648,13 +653,14 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "PITR ウィンドウがまだありません",
       reason_pitr_chain_test_failed: "PITR チェーンテストが失敗",
       rpo_pitr: "PITR：oplog を取得済み",
-      rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みで、ポイントインタイム復元が可能です（実験的）。"
+      rpo_pitr_note: "復旧時点は PITR ストリームによるものです。その時点までの oplog は取得済みで、ポイントインタイム復元が可能です。",
+      rto_pitr_measured: "PITR: {d}（{n} 回の復元で計測）",
+      rto_pitr_default: "PITR: {d}（既定のレート）"
     }
   },
   ru: {
     pitr: {
       title: "Восстановление на момент времени",
-      experimental: "Экспериментально",
       desc: "Собирает oplog подключения к набору реплик в зашифрованные фрагменты и делает базовые резервные копии всего экземпляра, чтобы его можно было восстановить на любой момент внутри окна в новые базы данных.",
       table_label: "Потоки восстановления на момент времени",
       col_connection: "Подключение",
@@ -738,7 +744,9 @@ const PITR_TRANSLATIONS = {
       reason_pitr_no_window: "Окна PITR пока нет",
       reason_pitr_chain_test_failed: "Тест цепочки PITR не пройден",
       rpo_pitr: "PITR: oplog сохраняется",
-      rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, и возможно восстановление на момент времени (экспериментально)."
+      rpo_pitr_note: "Точка восстановления взята из потока PITR: oplog до неё сохранён, и возможно восстановление на момент времени.",
+      rto_pitr_measured: "PITR: {d}, измерено на {n} восстановлениях",
+      rto_pitr_default: "PITR: {d}, по скоростям по умолчанию"
     }
   }
 };
@@ -1161,13 +1169,29 @@ async function pitrRestoreSubmit(e) {
   }
 }
 
+// The estimated time of a point-in-time restore of the row's connection to the
+// newest point of its stream's window (readiness streams[].rto), as a sub-line of
+// the readiness RTO cell: measured on the stream's recent restores and chain
+// tests, or at default rates. Empty without a stream or an estimate.
+function pitrReadinessRto(row) {
+  const streams = (readiness.data && Array.isArray(readiness.data.streams)) ? readiness.data.streams : [];
+  const st = streams.find(s => s.connection_id === row.connection_id && s.rto);
+  if (!st) return "";
+  const rto = st.rto;
+  const d = readinessDuration(Math.max(Number(rto.seconds) || 0, 60));
+  const text = rto.source === "measured"
+    ? tf("readiness.rto_pitr_measured", { d, n: rto.samples || 0 })
+    : tf("readiness.rto_pitr_default", { d });
+  return `<div class="cell-sub">${escapeHtml(text)}</div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
 function pitrSetup() {
   if (typeof ROLE_ACTION_SCOPES === "object") {
-    Object.assign(ROLE_ACTION_SCOPES, { "pitr-toggle": "admin", "pitr-delete": "admin", "pitr-base": "operator", "pitr-restore": "admin" });
+    Object.assign(ROLE_ACTION_SCOPES, { "pitr-toggle": "admin", "pitr-delete": "admin", "pitr-base": "operator", "pitr-restore": "operator" });
   }
   const restoreForm = document.getElementById("form-pitr-restore");
   if (restoreForm) {

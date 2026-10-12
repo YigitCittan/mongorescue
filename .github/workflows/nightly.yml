@@ -2,12 +2,13 @@ name: Nightly
 
 # Long-running checks that do not fit the pull request budget: the integration
 # matrix with about 2 GiB of generated data (throughput and a 256 MiB memory limit,
-# see docs/testing.md), the fuzz targets and the fault-injection suite (nightly),
-# and the load test (weekly). None of them runs on pull requests or is required.
+# see docs/testing.md), the fuzz targets, the fault-injection suite and the PITR
+# scenarios on a three-member replica set (nightly), and the load test and the
+# PITR soak test (weekly). None of them runs on pull requests or is required.
 on:
   schedule:
     - cron: '0 3 * * *'
-    # Weekly: the load test only.
+    # Weekly: the load test and the PITR soak test only.
     - cron: '0 4 * * 0'
   workflow_dispatch:
     inputs:
@@ -18,8 +19,13 @@ on:
         options:
           - nightly
           - chaos
+          - pitr
           - load
+          - soak
           - all
+      soak_duration:
+        description: Collection time of the PITR soak test (a Go duration)
+        default: 5h30m
 
 permissions:
   contents: read
@@ -219,3 +225,91 @@ jobs:
       - name: Disk usage
         if: always()
         run: df -h /
+
+  # The PITR scenarios on a three-member replica set (scripts/test-replset-docker.sh):
+  # failovers during collection and during a restore, a rollback through network
+  # isolation and divergence after a forced reconfiguration, on MongoDB 5.0 and 8.0
+  # with the oldest supported and the newest Database Tools (in the runner image).
+  pitr-replset:
+    name: PITR replica set (MongoDB ${{ matrix.mongo }}, tools ${{ matrix.tools }})
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'pitr' || inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mongo: '5.0', tools: '100.12.2' }
+          - { mongo: '8.0', tools: '100.12.2' }
+          - { mongo: '8.0', tools: '100.19.1' }
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run the replica set scenarios
+        env:
+          MONGO_IMAGE: mongo:${{ matrix.mongo }}
+          TOOLS_VERSION: ${{ matrix.tools }}
+          RS_LOG_DIR: ${{ runner.temp }}/replset-logs
+        run: ./scripts/test-replset-docker.sh
+
+      - name: Upload member logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: replset-logs-${{ matrix.mongo }}-${{ matrix.tools }}
+          path: ${{ runner.temp }}/replset-logs
+          retention-days: 14
+
+  # The PITR soak test: collection under a write load on the three-member replica
+  # set. GitHub-hosted jobs end after 6 hours: 5.5 hours of collection, then the
+  # final checks and the chain test. The 7-day run is manual (scripts/soak-pitr.sh).
+  pitr-soak:
+    name: PITR soak
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'soak' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run the soak test
+        env:
+          MONGO_IMAGE: mongo:8.0
+          TOOLS_VERSION: ${{ env.MONGO_TOOLS_VERSION }}
+          RS_SUITE: soak
+          RS_LOG_DIR: ${{ runner.temp }}/replset-logs
+          MONGORESCUE_SOAK_DURATION: ${{ inputs.soak_duration || '5h30m' }}
+          MONGORESCUE_SOAK_REPORT: ${{ runner.temp }}/soak-report.json
+        run: ./scripts/test-replset-docker.sh
+
+      - name: Upload the report and member logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pitr-soak-report
+          path: |
+            ${{ runner.temp }}/soak-report.json
+            ${{ runner.temp }}/replset-logs
+          if-no-files-found: warn
+          retention-days: 90

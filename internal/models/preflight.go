@@ -81,8 +81,9 @@ type PITRPreflight struct {
 	// CloneSuffix is appended to every restored database's name.
 	CloneSuffix string `json:"clone_suffix"`
 	// EstimatedSeconds is the estimated duration of the restore (RTO); EstimateFrom
-	// says whether it comes from the last chain test ("chain_test") or default rates
-	// ("default").
+	// says where its rates come from: the stream's recent restores and chain tests
+	// ("measured"), a chain test of an earlier release ("chain_test") or default
+	// rates ("default"); see PITREstimate.
 	EstimatedSeconds float64 `json:"estimated_seconds"`
 	EstimateFrom     string  `json:"estimate_from"`
 }

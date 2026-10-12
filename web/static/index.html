@@ -623,11 +623,11 @@
         </table>
       </div>
 
-      <!-- Point-in-time recovery streams per connection (pitr.js, experimental) -->
+      <!-- Point-in-time recovery streams per connection (pitr.js) -->
       <div class="pitr-panel" id="pitr-panel">
         <div class="section-header">
           <div>
-            <h3 class="section-title"><span data-i18n="pitr.title">Point-in-time recovery</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span></h3>
+            <h3 class="section-title"><span data-i18n="pitr.title">Point-in-time recovery</span></h3>
             <p class="section-desc" data-i18n="pitr.desc">Collects the oplog of a replica set connection into encrypted chunks and takes base backups of the whole instance, so it can be restored to any moment within its window, into new databases.</p>
           </div>
         </div>
@@ -651,7 +651,7 @@
         </div>
         <!-- Point-in-time restore wizard: time, preflight, confirm (pitr.js) -->
         <form id="form-pitr-restore" class="pitr-form pitr-restore" novalidate hidden>
-          <h4><span data-i18n="pitr.restore_title">Restore to a point in time</span> <span class="badge badge-warn" data-i18n="pitr.experimental">Experimental</span> <span class="cell-sub" id="pitr-restore-conn"></span></h4>
+          <h4><span data-i18n="pitr.restore_title">Restore to a point in time</span> <span class="cell-sub" id="pitr-restore-conn"></span></h4>
           <p class="form-hint" data-i18n="pitr.restore_hint">Every database, or the ones you list, is restored into a new database named &lt;db&gt;_rescue_&lt;timestamp&gt;_&lt;id&gt;; existing data is never touched. Times are UTC on the primary's clock.</p>
           <div class="form-group">
             <label class="form-label" for="pitr-restore-window" data-i18n="pitr.restore_window">Window</label>
