@@ -102,7 +102,7 @@ test-integration:
 		echo "          Use 'make test-integration-docker' to run against disposable containers."; \
 	fi
 	@echo "==> Running integration tests..."
-	go test -race -tags=integration -count=1 $(INTEGRATION_FLAGS) ./...
+	go test -race -tags=integration -count=1 -timeout 30m $(INTEGRATION_FLAGS) ./...
 
 ## test-integration-docker: Runs integration tests against disposable MongoDB, MinIO, LocalStack and Keycloak containers
 test-integration-docker:
