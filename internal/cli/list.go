@@ -130,7 +130,7 @@ func runList(ctx context.Context, s *session, args []string) error {
 		}
 		return printList(s, res, "restores", restoresTable)
 	case "jobs":
-		res, err := client.ListJobs(ctx, q)
+		res, err := client.ListAllJobs(ctx, q)
 		if err != nil {
 			return err
 		}

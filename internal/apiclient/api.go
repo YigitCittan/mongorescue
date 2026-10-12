@@ -230,9 +230,63 @@ func (c *Client) ListRestores(ctx context.Context, query url.Values) (*Result[[]
 	return call[[]models.RestoreRecord](ctx, c, http.MethodGet, "/restores", query, nil)
 }
 
-// ListJobs calls GET /api/v1/jobs with the filters in query.
+// ListJobs calls GET /api/v1/jobs with the filters and the page (limit, after) in
+// query: one page of jobs, sorted by name; Meta.Next is the after of the next one.
 func (c *Client) ListJobs(ctx context.Context, query url.Values) (*Result[[]models.Job], error) {
 	return call[[]models.Job](ctx, c, http.MethodGet, "/jobs", query, nil)
+}
+
+// MaxJobPage is the largest limit of GET /api/v1/jobs, the page size of
+// ListAllJobs.
+const MaxJobPage = 500
+
+// maxJobPages bounds the pages ListAllJobs follows (a server that kept answering
+// a next cursor would otherwise be followed forever).
+const maxJobPages = 10000
+
+// ListAllJobs pages through GET /api/v1/jobs with the filters in query (any limit
+// or after in it is replaced) and returns every matching job, sorted by name. Raw
+// is the JSON array of all of them, as the server sent each one; Meta counts them.
+func (c *Client) ListAllJobs(ctx context.Context, query url.Values) (*Result[[]models.Job], error) {
+	q := url.Values{}
+	for k, v := range query {
+		q[k] = v
+	}
+	q.Set("limit", strconv.Itoa(MaxJobPage))
+	q.Del("after")
+	out := &Result[[]models.Job]{Value: []models.Job{}}
+	var raw []json.RawMessage
+	for range maxJobPages {
+		page, err := c.ListJobs(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		out.Value = append(out.Value, page.Value...)
+		if len(page.Raw) > 0 && string(page.Raw) != "null" {
+			var items []json.RawMessage
+			if err := json.Unmarshal(page.Raw, &items); err != nil {
+				return nil, fmt.Errorf("%w: GET /jobs: decode data: %w", ErrUnexpectedResponse, err)
+			}
+			raw = append(raw, items...)
+		}
+		if page.Meta == nil || page.Meta.Next == "" {
+			if raw == nil {
+				raw = []json.RawMessage{}
+			}
+			all, err := json.Marshal(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%w: GET /jobs: %w", ErrUnexpectedResponse, err)
+			}
+			out.Raw = all
+			out.Meta = &Meta{Total: len(out.Value), Limit: len(out.Value)}
+			return out, nil
+		}
+		if page.Meta.Next == q.Get("after") {
+			return nil, fmt.Errorf("%w: GET /jobs: the next cursor repeats the current page", ErrUnexpectedResponse)
+		}
+		q.Set("after", page.Meta.Next)
+	}
+	return nil, fmt.Errorf("%w: GET /jobs: more than %d pages", ErrUnexpectedResponse, maxJobPages)
 }
 
 // ListConnections calls GET /api/v1/connections.

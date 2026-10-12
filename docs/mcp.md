@@ -199,7 +199,7 @@ Every tool returns a one-line summary for the model and the full result as struc
 | `list_connections` | read | | Connections with hosts, description, last test (never the URI) |
 | `list_databases` | read | `connection_id` | Databases of a connection (admin, config and local hidden) |
 | `list_collections` | read | `connection_id`, `database` | Collections and views |
-| `list_jobs` | read | `limit` (≤ 100, default 50), `cursor` | Scheduled jobs with last and next run and their `database_selection` (one database, a list, all, or glob patterns) |
+| `list_jobs` | read | `limit` (≤ 100, default 50), `cursor` | Scheduled jobs, sorted by name, with last and next run and their `database_selection` (one database, a list, all, or glob patterns); the cursor is the REST list's `meta.next` |
 | `get_job` | read | `id` | One job |
 | `list_backups` | read | `database`, `connection_id`, `job_id`, `run_id`, `status`, `limit` (≤ 100, default 50), `cursor` | Backups, newest first |
 | `get_backup` | read | `id` | One backup record (status, size, SHA-256, target, error) |
