@@ -48,6 +48,27 @@ secretKey:
   # false stores the key as secret.key on the data volume instead.
   generate: true
 
+# Active-passive high availability (docs/production.md#high-availability). Run a
+# second release with the same values (and its own data volume): the instance
+# holding the lease on the HA storage target runs schedules and PITR collection,
+# the other waits as a read-only standby and takes over when the lease expires.
+# Both releases need the same secret key: set secretKey.existingSecret to one
+# Secret shared by them. replicas stays 1 per release.
+ha:
+  enabled: false
+  # The storage target of the lease and the metadata handover. Prefer a location
+  # URL, which a fresh standby can use before it has any metadata:
+  # s3://bucket/prefix?endpoint=https://minio:9000&region=us-east-1&path_style=true
+  # (credentials from the AWS default chain: extraEnv AWS_* or IRSA). A target
+  # ID or name must already exist in the instance's own database.
+  target: ""
+  # The cluster name, the same in both releases.
+  cluster: default
+  leaseTTL: 30s
+  # Below half the lease TTL.
+  renewInterval: 10s
+  snapshotInterval: 5m
+
 # Grace period of the pod. A rolling update or a node drain waits this long for
 # running backups and restores (see config.shutdownGrace) before the pod is killed.
 terminationGracePeriodSeconds: 600
