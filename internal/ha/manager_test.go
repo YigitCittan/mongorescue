@@ -48,6 +48,7 @@ type memStore struct {
 	mu          sync.Mutex
 	data        map[string][]byte
 	fail        bool
+	beforeRead  func()
 	beforeWrite func()
 	afterWrite  func()
 }
@@ -62,6 +63,13 @@ func memVersion(data []byte) string {
 }
 
 func (s *memStore) ReadVersioned(_ context.Context, key string) ([]byte, string, error) {
+	s.mu.Lock()
+	hook := s.beforeRead
+	s.beforeRead = nil
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.fail {

@@ -282,10 +282,13 @@ func (m *Manager) renew(ctx context.Context) {
 // observe reads the lease as a standby and takes it over when it is free or
 // expired.
 func (m *Manager) observe(ctx context.Context) {
-	now := m.cfg.Now()
 	rctx, cancel := context.WithTimeout(ctx, m.cfg.Renew)
 	data, version, err := m.cfg.Store.ReadVersioned(rctx, m.key)
 	cancel()
+	// The observation is stamped when the read returns, never when it was sent: a
+	// renewal may have committed while the read was in flight, and the expiry of
+	// what was read must not start before the read could have seen it.
+	now := m.cfg.Now()
 	if errors.Is(err, storage.ErrNotFound) {
 		m.mu.Lock()
 		m.healthy, m.lastErr = true, ""
