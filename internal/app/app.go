@@ -736,6 +736,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		// which is built below.
 		PITRStreams: lazyStreamControl{svc: &pitrSvc},
 		PITRSwap:    restoreEngine,
+		// In-place point-in-time restores are refused in active-passive HA mode.
+		HAMode: o.ha != nil,
 		ToolsVersion: func(ctx context.Context) (string, error) {
 			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
 		},
