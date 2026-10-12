@@ -38,6 +38,7 @@ func useManager(t *testing.T, sup *haSupervisor, now func() time.Time) *ha.Manag
 // TestOwnReleasedLeaseWithoutSnapshotIsRefused checks that a lease that existed,
 // even one this instance released itself, is never taken over without a snapshot.
 func TestOwnReleasedLeaseWithoutSnapshotIsRefused(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	sup := bootstrappedSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
 	m := sup.rt.mgr()
@@ -59,6 +60,7 @@ func TestOwnReleasedLeaseWithoutSnapshotIsRefused(t *testing.T) {
 // TestCorruptedLeaseWithoutSnapshotIsRefused checks that an unreadable lease counts
 // as a lease that had a holder: without a snapshot it is not taken over.
 func TestCorruptedLeaseWithoutSnapshotIsRefused(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	sup := bootstrappedSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
 	if _, err := sup.rt.storage().Save(ctx, ha.LeaseKey(sup.cfg.HA.Cluster), strings.NewReader("{corrupted")); err != nil {
@@ -82,6 +84,7 @@ func TestCorruptedLeaseWithoutSnapshotIsRefused(t *testing.T) {
 // database holds the metadata of its former cluster. It is kept, never swapped for
 // an empty one, and the epoch continues above the one it held.
 func TestNewHATargetKeepsAPopulatedDatabase(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
 	sup := newTestSupervisor(t, cfg)

@@ -17,6 +17,7 @@ import (
 // delivers ha.stepped_down to its channels itself, before its App closes, and counts
 // the step-down.
 func TestStepDownAlertIsDelivered(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	var (
 		mu     sync.Mutex

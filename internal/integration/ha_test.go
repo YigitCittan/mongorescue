@@ -264,7 +264,7 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	// Wait for a scheduled backup on A and for the snapshot written after it.
 	var first *models.BackupRecord
 	deadline := time.Now().Add(3 * time.Minute)
-	for first == nil && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
 		if done := completedBackups(apiA, db); len(done) > 0 {
 			first = done[0]
 			break

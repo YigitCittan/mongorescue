@@ -22,6 +22,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
+// appStartBudget bounds how long a member may take to open an App and serve it.
+// Opening an App takes well under a second normally, but about ten seconds with the
+// race detector on one slow CPU (CI runners), and a takeover opens two.
+const appStartBudget = 90 * time.Second
+
 // haTestKey is the secret key shared by the members of a test cluster.
 func haTestKey(t *testing.T) string {
 	t.Helper()
@@ -82,6 +87,7 @@ func TestRunHANeedsTheSharedKey(t *testing.T) {
 }
 
 func TestStandbyAppIsReadOnlyAndRunsNothing(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
 	sup := newTestSupervisor(t, cfg)
 	app, err := sup.open(false)
@@ -210,6 +216,7 @@ const haMarker = "ha_test.marker"
 // over at its next read with the first member's metadata (its own database kept as
 // .bak); a restarted member comes back as standby.
 func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	if testing.Short() {
 		t.Skip("runs two HA members for several seconds")
 	}
@@ -240,7 +247,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	waitRole(t, cfgA.Port, "active", 10*time.Second)
+	waitRole(t, cfgA.Port, "active", appStartBudget)
 	stopB := start(cfgB, func(app *App) {
 		var v map[string]string
 		ok, err := app.metaStore.(*store.SQLiteStore).LoadIntegrityState(context.Background(), haMarker, &v)
@@ -250,7 +257,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 		}
 		handedOver <- v["from"]
 	})
-	waitRole(t, cfgB.Port, "standby", 10*time.Second)
+	waitRole(t, cfgB.Port, "standby", appStartBudget)
 	if roleOf(cfgA.Port) != "active" {
 		t.Fatal("the first member lost the active role when the second joined")
 	}
@@ -259,7 +266,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 		t.Fatalf("graceful stop of the active member: %v", err)
 	}
 	// The lease was released: the standby takes over at its next read.
-	waitRole(t, cfgB.Port, "active", 3*cfgB.HA.RenewInterval+5*time.Second)
+	waitRole(t, cfgB.Port, "active", 3*cfgB.HA.RenewInterval+appStartBudget)
 	select {
 	case from := <-handedOver:
 		if from != "A" {
@@ -273,7 +280,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	}
 
 	stopA = start(cfgA, nil)
-	waitRole(t, cfgA.Port, "standby", 10*time.Second)
+	waitRole(t, cfgA.Port, "standby", appStartBudget)
 	time.Sleep(2 * cfgA.HA.RenewInterval)
 	if roleOf(cfgA.Port) != "standby" || roleOf(cfgB.Port) != "active" {
 		t.Fatalf("after the restart: A %q, B %q; want standby and active", roleOf(cfgA.Port), roleOf(cfgB.Port))
@@ -287,6 +294,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 }
 
 func TestStartupRefusesAnotherSecretKey(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	shared := t.TempDir()
 	cfgA := haTestConfig(t, shared, haTestKey(t))
 	supA := newTestSupervisor(t, cfgA)

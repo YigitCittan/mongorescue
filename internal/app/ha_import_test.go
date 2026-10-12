@@ -16,6 +16,7 @@ import (
 // an orphan archive written after the snapshot the instance took over from is
 // imported; an older orphan is left alone, and nothing is deleted.
 func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
 	sup := newTestSupervisor(t, cfg)
@@ -27,10 +28,9 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = standby.Close()
-	sup.rt.mgr().Step(ctx)
-	if sup.rt.mgr().Role() != ha.RoleActive {
-		t.Fatal("did not acquire the lease")
-	}
+	// The takeover imports under the lease, renewed by the manager's loop as in
+	// RunHA: acquire first, then import.
+	runManager(t, sup.rt.mgr())
 	app, err := sup.open(true)
 	if err != nil {
 		t.Fatal(err)
@@ -95,4 +95,27 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("the imported archive never completed")
+}
+
+// runManager runs m's lease loop until the test ends and waits until it holds the
+// lease.
+func runManager(t *testing.T, m *ha.Manager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	deadline := time.Now().Add(30 * time.Second)
+	for m.Check() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("did not acquire the lease")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

@@ -32,6 +32,7 @@ func bootstrappedSupervisor(t *testing.T, cfg *config.Config) *haSupervisor {
 // takeover without the holder's snapshot would lose its metadata, so it is refused
 // and counted.
 func TestTakeoverWithoutASnapshot(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
 	shared, key := t.TempDir(), haTestKey(t)
 
