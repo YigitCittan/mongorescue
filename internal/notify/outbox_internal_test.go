@@ -25,6 +25,9 @@ type memOutbox struct {
 	failRetries int
 	deletes     int
 	retries     int
+	// afterHeads, when set, runs once after OutboxHeads read its rows and before
+	// it returns them.
+	afterHeads func()
 }
 
 func (m *memOutbox) EnqueueDeliveries(_ context.Context, entries []OutboxEntry, _ int) ([]OutboxEntry, error) {
@@ -40,7 +43,6 @@ func (m *memOutbox) EnqueueDeliveries(_ context.Context, entries []OutboxEntry, 
 
 func (m *memOutbox) OutboxHeads(context.Context) ([]OutboxEntry, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	seen := map[string]bool{}
 	var out []OutboxEntry
 	for _, r := range m.rows {
@@ -49,7 +51,20 @@ func (m *memOutbox) OutboxHeads(context.Context) ([]OutboxEntry, error) {
 			out = append(out, r)
 		}
 	}
+	hook := m.afterHeads
+	m.afterHeads = nil
+	m.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return out, nil
+}
+
+// setAfterHeads installs a one-shot hook (see afterHeads).
+func (m *memOutbox) setAfterHeads(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.afterHeads = fn
 }
 
 func (m *memOutbox) DeleteDelivery(_ context.Context, id int64) error {
@@ -140,6 +155,49 @@ func TestOutboxFailedRemovalIsNotResent(t *testing.T) {
 	svc.flightMu.Unlock()
 	if held != 0 {
 		t.Fatalf("%d held states left", held)
+	}
+}
+
+// A read of the outbox taken while a delivery is being sent, and acted on only
+// after that delivery was sent and removed, still returns the delivered row as the
+// channel's head. The dispatcher must not send it again (it did: a duplicate
+// notification in normal operation, whenever a wake-up raced a settle).
+func TestOutboxStaleHeadIsNotResent(t *testing.T) {
+	ob := &memOutbox{}
+	sending, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	fake := &fakeNotifier{onSend: func() {
+		once.Do(func() {
+			close(sending)
+			<-release
+		})
+	}}
+	svc, stop := outboxService(t, ob, fake)
+	defer stop()
+	svc.HandleEvent(context.Background(), events.Event{Type: events.BackupFailed, Database: "shop"})
+	<-sending
+	// The next read sees the row in flight; it returns only once the send and
+	// the removal are done and the channel left flight.
+	settled := make(chan struct{})
+	ob.setAfterHeads(func() {
+		close(release)
+		// The dispatcher's goroutine: no t.Fatal here; the test times out instead.
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			rows, _, _ := ob.counts()
+			svc.flightMu.Lock()
+			_, busy := svc.flight["ch1"]
+			svc.flightMu.Unlock()
+			if rows == 0 && !busy {
+				break
+			}
+		}
+		close(settled)
+	})
+	svc.signal()
+	<-settled
+	time.Sleep(50 * time.Millisecond)
+	if n := fake.count(); n != 1 {
+		t.Fatalf("sent %d times, want 1", n)
 	}
 }
 
