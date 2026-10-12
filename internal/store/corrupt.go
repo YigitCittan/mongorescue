@@ -140,6 +140,19 @@ func (s *SQLiteStore) CorruptRecords(ctx context.Context) ([]CorruptRecord, erro
 	return out, nil
 }
 
+// corruptIDs returns the IDs of the rows of table known to be unreadable.
+func (s *SQLiteStore) corruptIDs(table string) []string {
+	s.corrupt.mu.Lock()
+	defer s.corrupt.mu.Unlock()
+	var ids []string
+	for k := range s.corrupt.rows {
+		if k.table == table {
+			ids = append(ids, k.id)
+		}
+	}
+	return ids
+}
+
 // forgetCorrupt drops a deleted row from the corrupt record log.
 func (s *SQLiteStore) forgetCorrupt(table, id string) {
 	s.corrupt.mu.Lock()

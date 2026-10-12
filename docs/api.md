@@ -126,7 +126,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `POST` | `/api/v1/security/rotate-secret-key` | Rotate `secret.key` `{current_password}` (admin, signed-in users only; everyone signs in again) | 200, 202 | 403, 409, 429 |
 | `POST` | `/api/v1/encryption/rotate` | Rotate the backup encryption key `{passphrase?, reencrypt?}` | 200 | 400, 409 |
 | `GET` | `/api/v1/encryption/reencryption` | The latest re-encryption job (`null` when none ran) | 200 | |
-| `GET` | `/api/v1/jobs` | One page of the scheduled jobs, by name (`limit` 1-500, default 100; `after` the previous page's `meta.next`); optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
+| `GET` | `/api/v1/jobs` | One page of the scheduled jobs (`sort` `name`, `next_run`, `last_status` or `created_at`, `order` `asc` or `desc`; `limit` 1-500, default 100; `after` the previous page's `meta.next`); optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated). A shorter retention of an existing job is answered as `pending_retention` (or `approval`) and applies later ([delete protection](#delete-protection)); `warnings` names a retention shorter than the [object lock](configuration.md#immutable-backups-s3-object-lock) of the job's storage target | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC), its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) and a pending retention shortening (`pending_retention`) | 200 | 404 |
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)); a shorter retention is answered as `pending_retention` (or `approval`) and applies after the grace period | 200 | 400, 404, 409 changed meanwhile |
@@ -630,24 +630,26 @@ curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25"
 
 ## Listing jobs
 
-`GET /api/v1/jobs` returns one page of the jobs, sorted by name and then ID, so the order is stable. Optional filters keep only the matching jobs, with the same matcher as the jobs [bulk filter](#bulk-actions), so selecting "all matching" there selects exactly the listed jobs. All given filters must match.
+`GET /api/v1/jobs` returns one page of the jobs in the order of `sort` and `order` (by name, ascending, by default), ties broken by ID, so the order is stable. Optional filters keep only the matching jobs, with the same matcher as the jobs [bulk filter](#bulk-actions), so selecting "all matching" there selects exactly the listed jobs. All given filters must match.
 
 > **Changed (API) after 0.26.0:** the list is paged by cursor. Without `limit` the answer is the first 100 jobs (earlier releases returned every job), with `meta.next` when more follow. Clients that read every job follow `meta.next` until it is absent, as the CLI, the MCP server and the dashboard do.
 
 | Parameter | Meaning |
 | --- | --- |
 | `limit` | Page size, 1 to 500 (default 100) |
-| `after` | The `meta.next` of the previous page (opaque; anything else: `400`). Without it the list starts at the first job |
+| `sort` | `name` (default), `next_run` (paused jobs and jobs without a next run last, in both directions), `last_status` (the outcome of the last run: `failed`, `partial`, `cancelled`, `in_progress`, `completed`, the newest run first within each; jobs that never ran last) or `created_at` |
+| `order` | `asc` (default) or `desc` |
+| `after` | The `meta.next` of the previous page in the same `sort` and `order` (opaque; anything else, also a cursor of another order: `400`). Without it the list starts at the first job |
 
 ```json
 {
   "success": true,
   "data": [{"id": "job_a1b2c3", "name": "nightly shop", "...": "..."}],
-  "meta": {"total": 10000, "limit": 100, "next": "ajE6eyJuIjoibmlnaHRseSBzaG9wIiwiaSI6ImpvYl9hMWIyYzMifQ"}
+  "meta": {"total": 10000, "limit": 100, "next": "ajE6eyJzIjoibmFtZSIsImsiOnsiayI6Im5pZ2h0bHkgc2hvcCIsImlkIjoiam9iX2ExYjJjMyJ9fQ"}
 }
 ```
 
-`total` counts every matching job; `next` is present while jobs follow the page and is the `after` of the next one. Paging is by key (the name and ID of the page's last job), not by position: a job created or deleted between two requests never makes the next page repeat or skip another job, and a cursor stays valid when its job is deleted. A cursor works with any filter, but pages of one filter are only consistent with that filter's cursors. The connection and state filters (`connection_id`, `enabled`) and the page itself are answered from indexes; the others are evaluated on the jobs of those filters to count the matches.
+`total` counts every matching job; `next` is present while jobs follow the page and is the `after` of the next one. Paging is by key (the order, its direction and the sort value and ID of the page's last job), not by position: a job created or deleted between two requests never makes the next page repeat or skip another job, and a cursor stays valid when its job is deleted. A cursor works with any filter, but pages of one filter are only consistent with that filter's cursors. `total` leaves out stored jobs that cannot be read, as the pages do. The connection and state filters (`connection_id`, `enabled`) and the pages by `name`, `created_at` and `next_run` are answered from indexes; the other filters and the `last_status` order are evaluated on the jobs of those filters.
 
 ```bash
 curl "http://localhost:8080/api/v1/jobs?enabled=true&limit=500" -H "X-API-Key: $MONGORESCUE_READ_KEY"
@@ -665,7 +667,7 @@ Filters:
 | `schedule` | Frequency of the cron expression: `hourly` (more than once a day, also `@every` under 24 h), `daily`, `weekly` (some weekdays), `monthly` (some days of the month) or `other` |
 | `last_status` | Outcome of the job's last run: `completed`, `failed`, `partial`, `in_progress`, `cancelled` or `never`. A single-database job's is its newest backup's (a pruned or missing archive still counts as `completed`); a multi-database job's is its newest run's (`ok`, `partial`, `failed`, `cancelled`, `running`), never one database's backup |
 
-An unknown `schedule` or `last_status` value, an over-long text, a `limit` outside 1-500 or an `after` that is not a `meta.next` answers `400`. Other orders are left to the client.
+An unknown `schedule` or `last_status` value, an over-long text, a `limit` outside 1-500, an unknown `sort` or `order`, or an `after` that is not a `meta.next` of the same order answers `400`.
 
 ## Overview history and schedule preview
 

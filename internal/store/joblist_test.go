@@ -31,7 +31,8 @@ func pageAll(t *testing.T, s *store.SQLiteStore, q store.JobQuery, size int) []s
 		if !w.More {
 			return ids
 		}
-		q.AfterName, q.AfterID = w.LastName, w.LastID
+		last := w.Last
+		q.After = &last
 	}
 	t.Fatal("paging did not end")
 	return nil
@@ -57,8 +58,8 @@ func TestQueryJobsPagesInNameOrder(t *testing.T) {
 		}
 	}
 	// A window ending exactly on the last job reports no more.
-	if w, _ := s.QueryJobs(ctx, store.JobQuery{Limit: 6}); w.More || len(w.Jobs) != 6 || w.LastID != "j6" {
-		t.Errorf("exact window = %d jobs, more %v, last %s", len(w.Jobs), w.More, w.LastID)
+	if w, _ := s.QueryJobs(ctx, store.JobQuery{Limit: 6}); w.More || len(w.Jobs) != 6 || w.Last.ID != "j6" {
+		t.Errorf("exact window = %d jobs, more %v, last %s", len(w.Jobs), w.More, w.Last.ID)
 	}
 	if got := pageAll(t, s, store.JobQuery{ConnectionID: "c1"}, 2); !slices.Equal(got, []string{"j2", "j1", "j3"}) {
 		t.Errorf("connection c1 = %v", got)
@@ -88,7 +89,7 @@ func TestQueryJobsPagesInNameOrder(t *testing.T) {
 	if err := s.DeleteJob(ctx, "j1"); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := s.QueryJobs(ctx, store.JobQuery{Limit: 2, AfterName: w.LastName, AfterID: w.LastID})
+	next, _ := s.QueryJobs(ctx, store.JobQuery{Limit: 2, After: &w.Last})
 	if ids := []string{next.Jobs[0].ID, next.Jobs[1].ID}; !slices.Equal(ids, []string{"j3", "j6"}) || next.More {
 		t.Errorf("window after deletions = %v, more %v", ids, next.More)
 	}
@@ -96,6 +97,78 @@ func TestQueryJobsPagesInNameOrder(t *testing.T) {
 		if _, err := s.QueryJobs(ctx, store.JobQuery{Limit: limit}); !errors.Is(err, store.ErrInvalidFilter) {
 			t.Errorf("limit %d: %v", limit, err)
 		}
+	}
+}
+
+// Every order pages stably in both directions, ties broken by ID, jobs without a
+// next run last, and the keys the store computes match JobKeyOf.
+func TestQueryJobsOrdersWithTies(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *time.Time { v := t0.Add(d); return &v }
+	ist := time.FixedZone("UTC+3", 3*3600)
+	next := t0.Add(time.Hour).In(ist) // the same instant as job b's, written with an offset
+	jobs := []*models.Job{
+		{ID: "a", Name: "same", Enabled: true, NextRun: at(time.Hour), CreatedAt: t0},
+		{ID: "b", Name: "same", Enabled: true, NextRun: &next, CreatedAt: t0},
+		{ID: "c", Name: "alpha", Enabled: true, NextRun: at(-time.Hour), CreatedAt: t0.Add(time.Minute)},
+		{ID: "d", Name: "zeta", Enabled: false, NextRun: at(-2 * time.Hour), CreatedAt: t0.Add(-time.Minute)},
+		{ID: "e", Name: "same", Enabled: true, CreatedAt: t0},
+		{ID: "f", Name: "Beta", Enabled: true, NextRun: at(90*time.Minute + 500*time.Millisecond), CreatedAt: t0.Add(time.Minute)},
+		{ID: "g", Name: "mid", Enabled: false, CreatedAt: t0.Add(time.Hour)},
+	}
+	for _, j := range jobs {
+		j.Database = "db"
+		if err := s.SaveJob(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// SaveJob sets CreatedAt only when zero; reread the jobs as stored.
+	stored, err := s.ListJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sort := range []store.JobSort{store.JobSortName, store.JobSortCreatedAt, store.JobSortNextRun} {
+		for _, desc := range []bool{false, true} {
+			want := slices.Clone(stored)
+			slices.SortFunc(want, func(x, y *models.Job) int {
+				return store.CompareJobKeys(store.JobKeyOf(x, sort), store.JobKeyOf(y, sort), desc)
+			})
+			wantIDs := make([]string, len(want))
+			for i, j := range want {
+				wantIDs[i] = j.ID
+			}
+			for _, size := range []int{1, 2, 3, len(jobs)} {
+				got := pageAll(t, s, store.JobQuery{Sort: sort, Desc: desc}, size)
+				if !slices.Equal(got, wantIDs) {
+					t.Errorf("%s desc=%v, windows of %d = %v; want %v", sort, desc, size, got, wantIDs)
+				}
+			}
+			// The cursor of each one-job window is the job's key.
+			q := store.JobQuery{Sort: sort, Desc: desc, Limit: 1}
+			for _, j := range want {
+				w, err := s.QueryJobs(ctx, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if k := store.JobKeyOf(j, sort); w.Last != k {
+					t.Errorf("%s desc=%v: cursor of %s = %+v; JobKeyOf %+v", sort, desc, j.ID, w.Last, k)
+				}
+				last := w.Last
+				q.After = &last
+			}
+		}
+	}
+	// Names: bytewise, ties by ID. Next run: the same instant in another zone ties.
+	if got := pageAll(t, s, store.JobQuery{}, 2); !slices.Equal(got, []string{"f", "c", "g", "a", "b", "e", "d"}) {
+		t.Errorf("by name = %v", got)
+	}
+	if got := pageAll(t, s, store.JobQuery{Sort: store.JobSortNextRun, Desc: true}, 2); !slices.Equal(got, []string{"f", "b", "a", "c", "g", "e", "d"}) {
+		t.Errorf("by next run, descending = %v", got)
+	}
+	if _, err := s.QueryJobs(ctx, store.JobQuery{Sort: "size"}); !errors.Is(err, store.ErrInvalidFilter) {
+		t.Errorf("unknown order: %v", err)
 	}
 }
 
@@ -113,11 +186,28 @@ func TestQueryJobsSkipsUnreadableRowsWithoutLosingTheCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The unreadable row ends the window: the cursor is past it, and c follows.
-	if len(w.Jobs) != 1 || w.LastID != "b" || !w.More {
-		t.Fatalf("window = %d jobs, last %s, more %v", len(w.Jobs), w.LastID, w.More)
+	if len(w.Jobs) != 1 || w.Last.ID != "b" || !w.More {
+		t.Fatalf("window = %d jobs, last %s, more %v", len(w.Jobs), w.Last.ID, w.More)
 	}
 	if got := pageAll(t, s, store.JobQuery{}, 1); !slices.Equal(got, []string{"a", "c"}) {
 		t.Errorf("readable jobs = %v", got)
+	}
+	// The count leaves the unreadable row out, as the pages do.
+	if n, err := s.CountJobs(ctx, store.JobQuery{}); err != nil || n != 2 {
+		t.Errorf("CountJobs = %d, %v; want 2", n, err)
+	}
+	if n, err := s.CountJobs(ctx, store.JobQuery{Enabled: new(bool)}); err != nil || n != 2 {
+		t.Errorf("CountJobs = %d, %v; want 2", n, err)
+	}
+	// Repaired, it counts again.
+	if err := s.SaveJob(ctx, &models.Job{ID: "b", Name: "b", Database: "db"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pageAll(t, s, store.JobQuery{}, 5); len(got) != 3 {
+		t.Fatalf("after the repair = %v", got)
+	}
+	if n, err := s.CountJobs(ctx, store.JobQuery{}); err != nil || n != 3 {
+		t.Errorf("CountJobs after the repair = %d, %v; want 3", n, err)
 	}
 }
 

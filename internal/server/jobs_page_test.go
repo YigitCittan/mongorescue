@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
@@ -35,7 +36,7 @@ func TestListJobsPagesWithCursor(t *testing.T) {
 	ctx := context.Background()
 	for i := range 230 {
 		if err := st.SaveJob(ctx, &models.Job{ID: fmt.Sprintf("job_%03d", i), Name: fmt.Sprintf("job %03d", i), Database: "db",
-			CronExpression: "0 3 * * *", Enabled: i%2 == 0}); err != nil {
+			CronExpression: "0 3 * * *", Enabled: i%2 == 0, CreatedAt: time.Date(2026, 9, 1, 0, 0, i, 0, time.UTC)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,8 +85,25 @@ func TestListJobsPagesWithCursor(t *testing.T) {
 		t.Fatalf("search, second page: %d, %v, meta %+v", code, p.Data, p.Meta)
 	}
 
+	// Server-side orders: descending by creation time pages from the newest job.
+	code, p = getJobsPage(t, h, "/api/v1/jobs?sort=created_at&order=desc&limit=2")
+	if code != http.StatusOK || len(p.Data) != 2 || p.Data[0].ID != "job_229" || p.Data[1].ID != "job_228" || p.Meta.Next == "" {
+		t.Fatalf("created_at desc: %d, %+v", code, p.Data)
+	}
+	code, p = getJobsPage(t, h, "/api/v1/jobs?sort=created_at&order=desc&limit=2&after="+url.QueryEscape(p.Meta.Next))
+	if code != http.StatusOK || len(p.Data) != 2 || p.Data[0].ID != "job_227" {
+		t.Fatalf("created_at desc, second page: %d, %+v", code, p.Data)
+	}
+	// A cursor of one order is refused by another.
+	if code, _ := getJobsPage(t, h, "/api/v1/jobs?sort=name&after="+url.QueryEscape(p.Meta.Next)); code != http.StatusBadRequest {
+		t.Errorf("a created_at cursor with sort=name = %d; want 400", code)
+	}
+	if code, _ := getJobsPage(t, h, "/api/v1/jobs?sort=created_at&order=asc&after="+url.QueryEscape(p.Meta.Next)); code != http.StatusBadRequest {
+		t.Errorf("a descending cursor with order=asc = %d; want 400", code)
+	}
 	for _, target := range []string{"/api/v1/jobs?limit=0", "/api/v1/jobs?limit=501", "/api/v1/jobs?limit=x",
-		"/api/v1/jobs?after=nonsense", "/api/v1/jobs?enabled=maybe", "/api/v1/jobs?schedule=yearly"} {
+		"/api/v1/jobs?after=nonsense", "/api/v1/jobs?enabled=maybe", "/api/v1/jobs?schedule=yearly",
+		"/api/v1/jobs?sort=size", "/api/v1/jobs?order=up", "/api/v1/jobs?sort=-name"} {
 		if code, p := getJobsPage(t, h, target); code != http.StatusBadRequest || p.Success {
 			t.Errorf("GET %s = %d; want 400", target, code)
 		}

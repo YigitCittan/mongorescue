@@ -1,12 +1,12 @@
 /**
  * MongoRescue dashboard: the pager of the Jobs table.
  *
- * GET /api/v1/jobs pages by name with a cursor (limit and after, the next page's
- * after in meta.next) and filters on the server; tables.js loads the page of the
- * Jobs filters (tvFetchJobs) and calls jobsPagerRender when it changes. The pager
- * shows the rows per page, the range of the total and Previous / Next (a cursor
- * pages forward one page at a time; going back reuses the cursors seen). Column
- * sorts order the jobs of the page shown.
+ * GET /api/v1/jobs pages with a cursor (limit and after, the next page's after in
+ * meta.next), filters and sorts on the server; tables.js loads the page of the
+ * Jobs filters and column sort (tvFetchJobs) and calls jobsPagerRender when it
+ * changes. The pager shows the rows per page, the range of the total and
+ * Previous / Next (a cursor pages forward one page at a time; going back reuses
+ * the cursors seen).
  *
  * Loaded after app.js and trust.js (mergeTranslations), before tables.js; uses
  * app.js's t, tf, escapeHtml, setText, formatCount, storageSet, pageSizeKey and
@@ -19,14 +19,14 @@
 // ---------------------------------------------------------------------------
 
 const JOBSPAGER_TRANSLATIONS = {
-  en: { pager: { jobs_label: "Job pages", jobs_sorted_page: "Sorted within this page" } },
-  tr: { pager: { jobs_label: "Görev sayfaları", jobs_sorted_page: "Bu sayfa içinde sıralı" } },
-  de: { pager: { jobs_label: "Job-Seiten", jobs_sorted_page: "Innerhalb dieser Seite sortiert" } },
-  es: { pager: { jobs_label: "Páginas de tareas", jobs_sorted_page: "Ordenado dentro de esta página" } },
-  fr: { pager: { jobs_label: "Pages des tâches", jobs_sorted_page: "Trié au sein de cette page" } },
-  zh: { pager: { jobs_label: "任务分页", jobs_sorted_page: "仅在本页内排序" } },
-  ja: { pager: { jobs_label: "ジョブのページ", jobs_sorted_page: "このページ内で並べ替え" } },
-  ru: { pager: { jobs_label: "Страницы заданий", jobs_sorted_page: "Сортировка в пределах страницы" } },
+  en: { pager: { jobs_label: "Job pages" } },
+  tr: { pager: { jobs_label: "Görev sayfaları" } },
+  de: { pager: { jobs_label: "Job-Seiten" } },
+  es: { pager: { jobs_label: "Páginas de tareas" } },
+  fr: { pager: { jobs_label: "Pages des tâches" } },
+  zh: { pager: { jobs_label: "任务分页" } },
+  ja: { pager: { jobs_label: "ジョブのページ" } },
+  ru: { pager: { jobs_label: "Страницы заданий" } },
 };
 
 if (typeof translations === "object" && typeof mergeTranslations === "function") {
@@ -52,8 +52,6 @@ function jobsPagerRender() {
   setText("jobs-pager-range", tf("pager.range", { from: formatCount(from), to: formatCount(to), total: formatCount(p.total) }));
   const size = document.getElementById("jobs-page-size");
   if (size && size.value !== String(p.size)) size.value = String(p.size);
-  const note = document.getElementById("jobs-pager-note");
-  if (note) note.hidden = !p.sorted || (p.index === 0 && !p.hasNext);
 
   const pages = document.getElementById("jobs-pager-pages");
   if (!pages) return;

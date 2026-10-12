@@ -461,8 +461,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// handleListJobs lists one page of the jobs, sorted by name and ID: limit jobs (100
-// by default, at most 500) after the cursor after, with the total number of matches
+// handleListJobs lists one page of the jobs in the order of sort (name, next_run,
+// last_status or created_at; name by default) and order (asc or desc), ties by ID:
+// limit jobs (100 by default, at most 500) after the cursor after, with the total number of matches
 // and the cursor of the next page in meta. The optional filters q, enabled,
 // connection_id, database, schedule and last_status (see jobListFilter) keep only
 // the matching jobs, with the matcher of the bulk job actions.
@@ -473,7 +474,15 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	req := operations.JobListRequest{Filter: f, After: q.Get("after")}
+	req := operations.JobListRequest{Filter: f, After: q.Get("after"), Sort: q.Get("sort")}
+	switch q.Get("order") {
+	case "", "asc":
+	case "desc":
+		req.Desc = true
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%v: order must be \"asc\" or \"desc\"", errBadParam))
+		return
+	}
 	if v := q.Get("limit"); v != "" {
 		n, convErr := strconv.Atoi(v)
 		if convErr != nil || n < 1 || n > operations.MaxJobPageSize {

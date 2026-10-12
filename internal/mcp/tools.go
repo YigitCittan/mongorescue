@@ -427,6 +427,15 @@ func pageProps(props map[string]*jsonschema.Schema) {
 	}
 }
 
+// jobPageProps constrains limit and cursor of list_jobs: its cursor is the REST
+// API's keyset cursor (the last job's sort value and ID), longer than an offset.
+func jobPageProps(props map[string]*jsonschema.Schema) {
+	pageProps(props)
+	if p := props["cursor"]; p != nil {
+		p.MaxLength = ptr(operations.MaxJobCursor)
+	}
+}
+
 // collectionProps constrains collection filters.
 func collectionProps(props map[string]*jsonschema.Schema, names ...string) {
 	for _, n := range names {
@@ -467,7 +476,7 @@ func (s *Server) registerTools() {
 			"or those matching glob patterns, optionally including new databases automatically. " +
 			"Sorted by name. Paginated (50 per page unless limit is set): pass next_cursor to get the next page.",
 		Annotations: readOnly("List jobs"),
-		InputSchema: schemaFor[pageInput](pageProps),
+		InputSchema: schemaFor[pageInput](jobPageProps),
 	}, s.listJobs)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetJob,

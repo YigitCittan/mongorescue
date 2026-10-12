@@ -1212,7 +1212,8 @@ var compatSteps = []compatStep{
 				if !w.More {
 					break
 				}
-				q.AfterName, q.AfterID = w.LastName, w.LastID
+				last := w.Last
+				q.After = &last
 			}
 			if len(paged) != len(all) {
 				t.Fatalf("paged %d jobs; ListJobs returns %d", len(paged), len(all))
@@ -1222,7 +1223,8 @@ var compatSteps = []compatStep{
 					t.Fatalf("page order %d = %s; ListJobs has %s", i, paged[i].ID, all[i].ID)
 				}
 			}
-			for _, name := range []string{"jobs_by_connection_name", "jobs_by_enabled_name", "backups_by_started_status_size",
+			for _, name := range []string{"jobs_by_connection_name", "jobs_by_enabled_name", "jobs_by_created", "jobs_by_connection_created",
+				"jobs_by_enabled_created", "jobs_by_next_run", "jobs_by_connection_next_run", "backups_by_started_status_size",
 				"backups_by_status_started_size", "backups_by_job_database"} {
 				var found int
 				if err := s.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&found); err != nil || found != 1 {

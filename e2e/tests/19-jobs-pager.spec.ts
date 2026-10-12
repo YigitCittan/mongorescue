@@ -42,6 +42,15 @@ test("pages and filters the jobs on the server", async ({ page, services }) => {
     await expect(pager).toContainText("1–25 of 30");
     await expect(panel.getByRole("row").filter({ hasText: "e2e-page-00" })).toHaveCount(1);
 
+    // A column sort orders every page on the server: by name, descending, the
+    // first page starts with the last job.
+    await panel.getByRole("columnheader", { name: "Name" }).getByRole("button").click();
+    await expect(panel.getByRole("row").filter({ hasText: "e2e-page-" }).first()).toContainText("e2e-page-29");
+    await expect(pager).toContainText("1–25 of 30");
+    await pager.getByRole("button", { name: /Next/ }).click();
+    await expect(pager).toContainText("26–30 of 30");
+    await expect(panel.getByRole("row").filter({ hasText: "e2e-page-" }).first()).toContainText("e2e-page-04");
+
     // A narrower search starts again at the first page.
     await panel.getByRole("searchbox", { name: "Search" }).fill("e2e-page-1");
     await expect(pager).toContainText("1–10 of 10");
