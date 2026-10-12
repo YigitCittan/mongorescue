@@ -168,6 +168,7 @@ func (k *killableRunner) kill() {
 // failed record carrying the reason and leave no object, temporary file or
 // incomplete multipart upload; retention must still keep the last good backup.
 func TestInterruptedBackupsLeaveNothingBehind(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "int")
 	env.seedBulk(t, db, 40)

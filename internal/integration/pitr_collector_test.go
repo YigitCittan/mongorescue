@@ -22,11 +22,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
-// TestPITRCollectorSurvivesARestart runs the collector against the replica set,
+// testPITRCollectorSurvivesARestart runs the collector against the replica set,
 // stops it while writes go on and starts it again: the chunks of the chain follow
 // each other and hold every insert exactly once.
-func TestPITRCollectorSurvivesARestart(t *testing.T) {
-	env := requireMongo(t)
+func testPITRCollectorSurvivesARestart(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	db := env.uniqueDB(t, "pitrcol")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -226,11 +226,11 @@ func (s itSession) Pin(ctx context.Context, notBefore pitr.Timestamp) (collector
 
 func (s itSession) Primary() collector.Member { return s.OplogSession.Primary() }
 
-// TestOplogSessionPinsOneMember checks the member readers the collector uses: a
+// testOplogSessionPinsOneMember checks the member readers the collector uses: a
 // pinned member and the primary's majority reader agree on the window and on the
 // entry at its newest position.
-func TestOplogSessionPinsOneMember(t *testing.T) {
-	env := requireMongo(t)
+func testOplogSessionPinsOneMember(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

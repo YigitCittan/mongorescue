@@ -26,6 +26,7 @@ const (
 // via --config), stores it on every storage target, and restores it with the real
 // mongorestore into a safe clone, a filtered target, and an uncompressed variant.
 func TestBackupRestoreRoundTrip(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 
 	for _, target := range storageTargets(t) {

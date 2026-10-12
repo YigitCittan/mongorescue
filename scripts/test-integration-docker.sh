@@ -3,7 +3,9 @@
 # Runs the MongoRescue integration suite against disposable containers:
 #   - MongoDB (MONGO_IMAGE, default 7) with a random root password (exercises
 #     redaction and --config), standalone or a single-node replica set
-#   - a second MongoDB with --tlsMode requireTLS and --auth, its certificates
+#   - for a replica set, a second one for the tests that act on the whole instance
+#     (TestWholeInstance), so they run in parallel with the other tests
+#   - a MongoDB with --tlsMode requireTLS and --auth, its certificates
 #     signed by a throwaway CA generated in Go (internal/integration/gencerts),
 #     for TLS with a custom CA and x509 client certificate authentication
 #   - MinIO and LocalStack as S3-compatible emulators
@@ -27,6 +29,13 @@
 #   IT_TLS         1 (default) starts the TLS MongoDB (MONGORESCUE_TEST_TLS_*); 0 skips it
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
+#   IT_WHOLE_INSTANCE 1 (default) starts the second replica set
+#                  (MONGORESCUE_TEST_WHOLE_INSTANCE_URI); 0 makes TestWholeInstance
+#                  run alone on the first one
+#   IT_PACKAGES    packages to test (default ./internal/integration/...); the unit
+#                  tests of the other packages are hermetic and run in CI's test job
+#   IT_PARALLEL    go test -parallel (default 8); the tests mostly wait on MongoDB,
+#                  the database tools and MinIO, so more than the CPU count
 #   GOTESTFLAGS    extra flags for go test (e.g. "-run TestStorageConformance -v")
 #   IT_TIMEOUT     go test -timeout per package (default 30m)
 # ==============================================================================
@@ -43,7 +52,13 @@ IT_PROVIDERS="${IT_PROVIDERS:-minio localstack keycloak}"
 MONGO_TOPOLOGY="${MONGO_TOPOLOGY:-standalone}"
 IT_RACE="${IT_RACE:-1}"
 IT_TLS="${IT_TLS:-1}"
+IT_WHOLE_INSTANCE="${IT_WHOLE_INSTANCE:-1}"
+IT_PACKAGES="${IT_PACKAGES:-./internal/integration/...}"
+IT_PARALLEL="${IT_PARALLEL:-8}"
 TLS_DIR=""
+PRECOMPILE_PID=""
+RACE_FLAG="-race"
+if [ "$IT_RACE" = 0 ]; then RACE_FLAG=""; fi
 
 PREFIX="mongorescue-it-$$"
 MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
@@ -76,6 +91,7 @@ cleanup() {
     if [ -n "$c" ]; then docker rm -f "$c" >/dev/null 2>&1 || true; fi
   done
   if [ -n "$TLS_DIR" ]; then rm -rf "$TLS_DIR"; fi
+  if [ -n "$PRECOMPILE_PID" ]; then kill "$PRECOMPILE_PID" 2>/dev/null || true; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -96,41 +112,57 @@ wait_for() {
   return 1
 }
 
-# --- MongoDB -------------------------------------------------------------------
-log "starting $MONGO_IMAGE ($MONGO_TOPOLOGY)"
-case "$MONGO_TOPOLOGY" in
-  standalone)
-    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
-      -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-      "$MONGO_IMAGE" >/dev/null
-    ;;
-  replset)
-    # A replica set with authentication needs a keyfile owned by the mongodb user.
-    # The entrypoint drops --replSet while it creates the root user.
-    # shellcheck disable=SC2016 # expanded inside the container
-    docker run -d --name "$PREFIX-mongo" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
-      -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-      --entrypoint bash "$MONGO_IMAGE" -c '
-        set -e
-        head -c 756 /dev/urandom | base64 -w0 > /tmp/rs.key
-        chmod 400 /tmp/rs.key
-        chown mongodb:mongodb /tmp/rs.key
-        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all' >/dev/null
-    ;;
-  *)
-    echo "unknown MONGO_TOPOLOGY: $MONGO_TOPOLOGY (standalone or replset)" >&2
-    exit 1
-    ;;
-esac
-CONTAINERS+=("$PREFIX-mongo")
+# Compile the tests while the containers start: the run at the end then finds them in
+# the build cache. The outcome does not matter, that run reports any error; -run '^$'
+# comes last, so a -run in GOTESTFLAGS cannot start tests before the services exist.
+log "compiling the tests in the background"
+# shellcheck disable=SC2086 # RACE_FLAG, GOTESTFLAGS and IT_PACKAGES are intentionally word-split
+go test $RACE_FLAG -tags=integration -count=1 ${GOTESTFLAGS:-} -run '^$' $IT_PACKAGES >/dev/null 2>&1 &
+PRECOMPILE_PID=$!
 
-# mongo_ping runs an authenticated ping through mongosh inside the container.
-mongo_ping() {
-  docker exec "$PREFIX-mongo" mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin \
-    --eval 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)' >/dev/null 2>&1
+# --- MongoDB -------------------------------------------------------------------
+# start_mongo NAME starts MONGO_IMAGE in MONGO_TOPOLOGY as the container NAME.
+start_mongo() {
+  local name=$1
+  log "starting $MONGO_IMAGE ($MONGO_TOPOLOGY) as $name"
+  case "$MONGO_TOPOLOGY" in
+    standalone)
+      docker run -d --name "$name" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
+        -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
+        "$MONGO_IMAGE" >/dev/null
+      ;;
+    replset)
+      # A replica set with authentication needs a keyfile owned by the mongodb user.
+      # The entrypoint drops --replSet while it creates the root user.
+      # shellcheck disable=SC2016 # expanded inside the container
+      docker run -d --name "$name" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
+        -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
+        --entrypoint bash "$MONGO_IMAGE" -c '
+          set -e
+          head -c 756 /dev/urandom | base64 -w0 > /tmp/rs.key
+          chmod 400 /tmp/rs.key
+          chown mongodb:mongodb /tmp/rs.key
+          exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /tmp/rs.key --bind_ip_all' >/dev/null
+      ;;
+    *)
+      echo "unknown MONGO_TOPOLOGY: $MONGO_TOPOLOGY (standalone or replset)" >&2
+      exit 1
+      ;;
+  esac
+  CONTAINERS+=("$name")
 }
 
-# wait_for_mongo waits until the final mongod answers MONGO_PINGS consecutive
+# mongo_eval NAME SCRIPT runs a script through mongosh inside the container as root.
+mongo_eval() {
+  docker exec "$1" mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval "$2"
+}
+
+# mongo_ping NAME runs an authenticated ping through mongosh inside the container.
+mongo_ping() {
+  mongo_eval "$1" 'quit(db.runCommand({ping: 1}).ok ? 0 : 1)' >/dev/null 2>&1
+}
+
+# wait_for_mongo NAME waits until the final mongod answers MONGO_PINGS consecutive
 # authenticated pings. The image entrypoint first runs a temporary, localhost-only
 # mongod to create the root user and then restarts it, so pings are only trusted
 # after "MongoDB init process complete" has been logged.
@@ -139,62 +171,72 @@ mongo_ping() {
 # grep matches, docker logs dies of SIGPIPE and, under pipefail, the check fails
 # forever once the line is present (the cause of earlier readiness timeouts).
 wait_for_mongo() {
-  local name="$PREFIX-mongo" timeout=180 pings_needed=3
+  local name=$1 timeout=180 pings_needed=3
   local deadline=$((SECONDS + timeout)) next_report=$((SECONDS + 10))
   local init_done=false streak=0 logs running
   while [ "$SECONDS" -lt "$deadline" ]; do
     running=$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo false)
     if [ "$running" != "true" ]; then
-      echo "mongodb container stopped unexpectedly" >&2
+      echo "mongodb container $name stopped unexpectedly" >&2
       break
     fi
     if ! $init_done; then
       logs=$(docker logs "$name" 2>&1 || true)
       if [[ $logs == *"MongoDB init process complete"* ]]; then
         init_done=true
-        log "mongodb: init finished after ${SECONDS}s, waiting for ${pings_needed} consecutive pings"
+        log "$name: init finished after ${SECONDS}s, waiting for ${pings_needed} consecutive pings"
       fi
     fi
-    if $init_done && mongo_ping; then
+    if $init_done && mongo_ping "$name"; then
       streak=$((streak + 1))
       if [ "$streak" -ge "$pings_needed" ]; then
-        log "mongodb ready"
+        log "$name ready"
         return 0
       fi
     else
       streak=0
     fi
     if [ "$SECONDS" -ge "$next_report" ]; then
-      log "waiting for mongodb (${SECONDS}s elapsed, init done: ${init_done}, consecutive pings: ${streak})"
+      log "waiting for $name (${SECONDS}s elapsed, init done: ${init_done}, consecutive pings: ${streak})"
       next_report=$((SECONDS + 10))
     fi
     sleep 1
   done
-  echo "timed out waiting for mongodb after ${timeout}s (init done: ${init_done})" >&2
+  echo "timed out waiting for $name after ${timeout}s (init done: ${init_done})" >&2
   echo "---- docker logs: $name ----" >&2
   docker logs "$name" 2>&1 | sed "s/${MONGO_PW}/******/g" >&2 || true
   return 1
 }
-SECONDS=0
-wait_for_mongo
-mongo_port="$(host_port "$PREFIX-mongo" 27017)"
-MONGO_URI_OPTIONS="authSource=admin"
 
-# mongo_eval runs a script through mongosh inside the container as root.
-mongo_eval() {
-  docker exec "$PREFIX-mongo" mongosh --quiet -u root -p "$MONGO_PW" --authenticationDatabase admin --eval "$1"
+# init_mongo NAME VAR waits for the server in the container NAME, initiates its
+# replica set in replset mode, and exports VAR as its root URI.
+init_mongo() {
+  local name=$1 var=$2 options="authSource=admin"
+  wait_for_mongo "$name"
+  if [ "$MONGO_TOPOLOGY" = replset ]; then
+    log "initiating the single-node replica set of $name"
+    mongo_eval "$name" 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})' >/dev/null
+    primary_ready() { mongo_eval "$name" 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1; }
+    wait_for "replica set primary of $name" 60 primary_ready
+    # The member is known as 127.0.0.1:27017 inside the container; the host reaches it
+    # through a mapped port, so clients must not follow the replica set topology.
+    options="${options}&directConnection=true"
+  fi
+  printf -v "$var" 'mongodb://root:%s@127.0.0.1:%s/?%s' "$MONGO_PW" "$(host_port "$name" 27017)" "$options"
+  export "${var?}"
 }
 
-if [ "$MONGO_TOPOLOGY" = replset ]; then
-  log "initiating the single-node replica set"
-  mongo_eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})' >/dev/null
-  primary_ready() { mongo_eval 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1; }
-  wait_for "replica set primary" 60 primary_ready
-  # The member is known as 127.0.0.1:27017 inside the container; the host reaches it
-  # through a mapped port, so clients must not follow the replica set topology.
-  MONGO_URI_OPTIONS="${MONGO_URI_OPTIONS}&directConnection=true"
-fi
-export MONGORESCUE_TEST_MONGO_URI="mongodb://root:${MONGO_PW}@127.0.0.1:${mongo_port}/?${MONGO_URI_OPTIONS}"
+# The tests that act on the whole instance (TestWholeInstance: point-in-time
+# recovery and oplog tests, all replica set only) get a second server of their own,
+# so they run in parallel with the other tests instead of alone before them.
+WHOLE_INSTANCE=false
+if [ "$MONGO_TOPOLOGY" = replset ] && [ "$IT_WHOLE_INSTANCE" = 1 ]; then WHOLE_INSTANCE=true; fi
+
+SECONDS=0
+start_mongo "$PREFIX-mongo"
+if $WHOLE_INSTANCE; then start_mongo "$PREFIX-mongo-instance"; fi
+init_mongo "$PREFIX-mongo" MONGORESCUE_TEST_MONGO_URI
+if $WHOLE_INSTANCE; then init_mongo "$PREFIX-mongo-instance" MONGORESCUE_TEST_WHOLE_INSTANCE_URI; fi
 
 # --- MongoDB over TLS (custom CA, x509 client certificates) ---------------------
 if [ "$IT_TLS" = 1 ]; then
@@ -291,10 +333,10 @@ if [[ " $IT_PROVIDERS " == *" keycloak "* ]]; then
   export MONGORESCUE_TEST_KEYCLOAK_URL="$KEYCLOAK_URL"
 fi
 
-RACE_FLAG="-race"
-if [ "$IT_RACE" = 0 ]; then RACE_FLAG=""; fi
-log "running integration suite (MongoDB $MONGO_IMAGE $MONGO_TOPOLOGY, providers: local ${IT_PROVIDERS}, race: ${IT_RACE})"
-# The integration package runs for about 10 minutes on a replica set with -race on a
-# GitHub runner, go test's default per-package limit, so the limit is explicit.
-# shellcheck disable=SC2086 # RACE_FLAG and GOTESTFLAGS are intentionally word-split
-go test $RACE_FLAG -tags=integration -count=1 -timeout "${IT_TIMEOUT:-30m}" ${GOTESTFLAGS:-} ./...
+wait "$PRECOMPILE_PID" || true
+PRECOMPILE_PID=""
+log "running integration suite (MongoDB $MONGO_IMAGE $MONGO_TOPOLOGY, providers: local ${IT_PROVIDERS}, race: ${IT_RACE}, packages: ${IT_PACKAGES})"
+# An explicit limit, with headroom over go test's default of 10 minutes for slow
+# runners; the nightly large-data run raises it through GOTESTFLAGS.
+# shellcheck disable=SC2086 # RACE_FLAG, GOTESTFLAGS and IT_PACKAGES are intentionally word-split
+go test $RACE_FLAG -tags=integration -count=1 -timeout "${IT_TIMEOUT:-30m}" -parallel "$IT_PARALLEL" ${GOTESTFLAGS:-} $IT_PACKAGES

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,19 +27,40 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
-// buildBinary compiles cmd/mongorescue into a temporary directory.
+// sharedBinary is the mongorescue binary every test that runs the real process
+// shares: it is built once per test run, into a directory TestMain removes.
+var sharedBinary struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+// buildBinary compiles cmd/mongorescue on first use and returns its path. Tests
+// running in parallel wait for the one build.
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "mongorescue")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+	b := &sharedBinary
+	b.once.Do(func() {
+		if b.dir, b.err = os.MkdirTemp("", "mongorescue-it-bin-"); b.err != nil {
+			return
+		}
+		bin := filepath.Join(b.dir, "mongorescue")
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
+		cmd := exec.Command("go", "build", "-o", bin, "github.com/yigitcittan/mongorescue/cmd/mongorescue")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
+			b.err = fmt.Errorf("build mongorescue: %w\n%s", buildErr, out)
+			return
+		}
+		b.path = bin
+	})
+	if b.err != nil {
+		t.Fatal(b.err)
 	}
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/yigitcittan/mongorescue/cmd/mongorescue")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build mongorescue: %v\n%s", err, out)
-	}
-	return bin
+	return b.path
 }
 
 // freePort returns a free loopback TCP port.
@@ -157,6 +179,7 @@ func mcpCall(t *testing.T, cs *sdk.ClientSession, tool string, args map[string]a
 // client: start_backup -> completed -> restore_to_safe_clone -> completed, and a
 // read-only key that cannot start a backup.
 func TestMCPStdioBridgeEndToEnd(t *testing.T) {
+	t.Parallel()
 	m := requireMongo(t)
 	db := m.uniqueDB(t, "mcp")
 	m.seed(t, db, "orders", 120)

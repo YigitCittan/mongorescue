@@ -120,6 +120,7 @@ func manifestBackup(t *testing.T, env *mongoEnv, st storage.Storage, meta *store
 // captured by a real backup, and that a damaged copy of the archive is reported as
 // a mismatch by an on-demand verification, on every storage target.
 func TestPostBackupVerification(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {
@@ -172,6 +173,7 @@ func rescueVerifyDatabases(t *testing.T, env *mongoEnv, db string) []string {
 // it with the manifest, drops it and leaves the source untouched; a manifest that
 // does not match is reported, and a user without the privileges is refused.
 func TestRestoreTestEndToEnd(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {
@@ -278,6 +280,7 @@ func TestRestoreTestEndToEnd(t *testing.T) {
 // TestOrphanImportEndToEnd stores an archive without a record, finds it with a
 // storage scan, imports it and restores the imported backup, on every target.
 func TestOrphanImportEndToEnd(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {

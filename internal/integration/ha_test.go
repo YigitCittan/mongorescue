@@ -159,6 +159,7 @@ func completedBackups(api *apiClient, db string) []*models.BackupRecord {
 // the killed one's metadata, run the next scheduled backup, and never complete two
 // backups for the same cron fire. The old process then comes back as standby.
 func TestHAActivePassiveFailover(t *testing.T) {
+	t.Parallel()
 	m := requireMongo(t)
 	var provider *s3Provider
 	for _, p := range configuredS3Providers() {

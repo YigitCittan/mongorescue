@@ -46,8 +46,13 @@ const (
 // peak exceeds 256 MiB (skipped under the race detector, which inflates memory);
 // otherwise it runs a 64 MiB smoke version that only reports.
 func TestThroughputAndMemory(t *testing.T) {
-	env := requireMongo(t)
 	large := os.Getenv(envLarge) == "1"
+	if !large {
+		// Only the large run checks the process's memory, so only it must run
+		// alone; the smoke run reports figures and shares the process.
+		t.Parallel()
+	}
+	env := requireMongo(t)
 	sizeMB := defaultSmokeMB
 	if large {
 		sizeMB = defaultLargeMB

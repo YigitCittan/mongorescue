@@ -17,6 +17,7 @@ import (
 // must enforce the conditions; another provider that does not is skipped, since HA
 // refuses to start on it anyway.
 func TestLeaseStoreConditionalWrites(t *testing.T) {
+	t.Parallel()
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {
 			ls, err := storage.AsLeaseStore(target.Storage)

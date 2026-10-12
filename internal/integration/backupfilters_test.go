@@ -23,6 +23,7 @@ import (
 // includes two), and checks what each archive holds and that each manifest covers
 // only the collections backed up.
 func TestBackupNowWithCollectionFiltersPerDatabase(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	base := env.uniqueDB(t, "filt")
 	first, second := base+"_a", base+"_b"
