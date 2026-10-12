@@ -33,6 +33,10 @@ type inPlaceFakes struct {
 	snapshotErr error
 	// resumeErr fails ResumeStream.
 	resumeErr error
+	// swapStarted, when set, is closed once the swap starts, which then waits
+	// for swapGate and records its context's error in swapCtxErr.
+	swapStarted, swapGate chan struct{}
+	swapCtxErr            error
 	// pauseWas is what PauseStream reports.
 	pauseWas bool
 }
@@ -92,8 +96,15 @@ func (f *inPlaceFakes) SnapshotPITRClones(_ context.Context, _ models.RestoreReq
 	return nil
 }
 
-func (f *inPlaceFakes) SwapPITRClones(_ context.Context, _ models.RestoreRequest, rec *models.RestoreRecord, swapped func(string)) error {
+func (f *inPlaceFakes) SwapPITRClones(ctx context.Context, _ models.RestoreRequest, rec *models.RestoreRecord, swapped func(string)) error {
 	f.call("swap")
+	if f.swapStarted != nil {
+		close(f.swapStarted)
+		<-f.swapGate
+		f.mu.Lock()
+		f.swapCtxErr = ctx.Err()
+		f.mu.Unlock()
+	}
 	for i, db := range rec.PITR.InPlace.Databases {
 		if f.swapErr != nil && i == len(rec.PITR.InPlace.Databases)-1 {
 			return f.swapErr
@@ -442,6 +453,48 @@ func TestPITRInPlaceWaitsForASecondAdministrator(t *testing.T) {
 	}
 }
 
+// TestPITRInPlaceSwapSurvivesAShutdown is the regression test of a shutdown
+// (SIGTERM, a high-availability step-down) killing mongorestore in the middle
+// of --drop: the swap runs under its own context, marked critical, and the run
+// completes although the run manager shut down meanwhile.
+func TestPITRInPlaceSwapSurvivesAShutdown(t *testing.T) {
+	env := newInPlaceEnv(t, false)
+	env.fakes.swapStarted, env.fakes.swapGate = make(chan struct{}), make(chan struct{})
+	rec, err := env.svc.StartRestore(admin(), pitrInPlace("shop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-env.fakes.swapStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the swap did not start")
+	}
+	if n := env.manager.CriticalCount(); n != 1 {
+		t.Fatalf("critical steps = %d during the swap, want 1", n)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- env.manager.Shutdown(context.Background()) }()
+	select {
+	case <-stopped:
+		t.Fatal("the shutdown did not wait for the swap")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(env.fakes.swapGate)
+	if err = <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	final := env.wait(t, rec.ID)
+	env.fakes.mu.Lock()
+	ctxErr := env.fakes.swapCtxErr
+	env.fakes.mu.Unlock()
+	if ctxErr != nil || final.Status != models.RestoreStatusCompleted || env.manager.CriticalCount() != 0 {
+		t.Fatalf("swap context %v, record %s (%s), critical %d", ctxErr, final.Status, final.ErrorMessage, env.manager.CriticalCount())
+	}
+	if !final.PITR.InPlace.StreamResumed || !strings.Contains(final.Warning, "during a shutdown") {
+		t.Fatalf("stream resumed %v, warning %q", final.PITR.InPlace.StreamResumed, final.Warning)
+	}
+}
+
 // interruptedInPlace is the record of an in-place restore of shop that a stop
 // interrupted in stage, after storing that the stream was enabled.
 func interruptedInPlace(stage string, paused bool) *models.RestoreRecord {
@@ -477,8 +530,18 @@ func TestInterruptedInPlaceResumesTheStream(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		swapping := c.stage == models.PITRInPlaceSwapping || c.stage == models.PITRInPlaceResuming
-		if swapping && !strings.Contains(note, "shop_rescue_20261005_120000_ab12") {
-			t.Fatalf("a stop during the swap must keep and name the clone: %q", note)
+		if swapping {
+			// The clone, the safety backup and the exact commands to finish or to
+			// go back are named.
+			for _, want := range []string{
+				"--archive --db=shop_rescue_20261005_120000_ab12 | mongorestore",
+				"--nsFrom='shop_rescue_20261005_120000_ab12.*' --nsTo='shop.*' --drop",
+				`{"backup_id":"bkp_safety","target_connection_id":"conn_a","safe_clone":false,"confirm_in_place":true,"drop_target":true}`,
+			} {
+				if !strings.Contains(note, want) {
+					t.Fatalf("a stop during the swap: the note lacks %q: %s", want, note)
+				}
+			}
 		}
 		if slices.Contains(env.fakes.order(), "drop_clones") == swapping {
 			t.Fatalf("%s: clone handling %v", c.stage, env.fakes.order())

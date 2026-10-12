@@ -71,7 +71,9 @@ type Manager struct {
 	// started counts the operations started with Go that have not returned, keyed
 	// or not.
 	started int
-	wg      sync.WaitGroup
+	// critical counts the steps that a shutdown must wait for (see Critical).
+	critical int
+	wg       sync.WaitGroup
 }
 
 // NewManager returns a Manager whose operations run under a context detached from any

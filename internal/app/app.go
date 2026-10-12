@@ -1523,6 +1523,23 @@ func (a *App) shutdownRuns() {
 	case <-ctx.Done():
 	}
 
+	// The swap of an in-place point-in-time restore is not cancelled (it would
+	// leave a database half replaced): it is waited for, bounded by the swap's own
+	// limit, before any tool process is killed.
+	if n := a.runs.CriticalCount(); n > 0 {
+		a.logger.Warn("waiting for an in-place point-in-time restore to finish replacing databases before stopping",
+			slog.Int("swaps", n), slog.Duration("limit", operations.MaxSwapDuration))
+		swapCtx, cancelSwap := context.WithTimeout(context.Background(), operations.MaxSwapDuration)
+		a.runs.WaitCritical(swapCtx)
+		cancelSwap()
+		select {
+		case <-done:
+			a.logger.Info("in-flight backups and restores stopped")
+			return
+		case <-time.After(shutdownTimeout):
+		}
+	}
+
 	killed := mongotools.KillAll()
 	a.logger.Warn("shutdown deadline exceeded, force-killed remaining mongo tool processes",
 		slog.Int("processes", killed),

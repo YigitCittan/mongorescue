@@ -38,6 +38,10 @@ type PITRSwapper interface {
 	SwapPITRClones(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord, swapped func(db string)) error
 }
 
+// MaxSwapDuration bounds the swap of an in-place point-in-time restore, which a
+// shutdown waits for (runs.Manager.Critical) instead of killing it midway.
+const MaxSwapDuration = 6 * time.Hour
+
 // Bounds of the stream steps of an in-place point-in-time restore.
 const (
 	// streamPauseTimeout bounds waiting for a collector to stop.
@@ -226,18 +230,27 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 	save()
 	tracker.Printf("PITR stream %s paused (it was %s); its chain ended", pp.stream.ID, map[bool]string{true: "enabled", false: "disabled"}[wasEnabled])
 
-	// 3. The swap.
+	// 3. The swap. A shutdown must not kill mongorestore in the middle of --drop:
+	// the swap runs under its own bounded context, not the run's, and the
+	// application waits for it before it kills tool processes (runs.Critical).
+	// The run is past its point of no return (cancellations fail).
 	ip.Stage, ip.SwapStarted = models.PITRInPlaceSwapping, true
+	tracker.Finishing()
 	tracker.Phase(models.PhaseSwapping, rec.Phases)
 	save()
-	err = s.cfg.PITRSwap.SwapPITRClones(ctx, req, rec, func(db string) {
+	endCritical := s.cfg.Runs.Critical()
+	swapCtx, cancelSwap := context.WithTimeoutCause(context.WithoutCancel(ctx), MaxSwapDuration,
+		fmt.Errorf("the swap exceeded %s", MaxSwapDuration))
+	err = s.cfg.PITRSwap.SwapPITRClones(swapCtx, req, rec, func(db string) {
 		ip.Swapped = append(ip.Swapped, db)
 		save()
 	})
+	cancelSwap()
+	endCritical()
 	ip.Stage = models.PITRInPlaceResuming
 	if err != nil {
 		note := s.resumeInPlace(ctx, pp, rec, locks, true)
-		return s.failInPlace(ctx, rec, err, swapFailedMessage(ip, err, clonesNote())+note)
+		return s.failInPlace(ctx, rec, err, swapFailedMessage(rec, err)+note)
 	}
 	rec.Phases.RestoreDone = models.Stamp(time.Now())
 
@@ -268,7 +281,8 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 }
 
 // swapFailedMessage explains a failed swap and how to recover from it.
-func swapFailedMessage(ip *models.PITRInPlace, err error, clones string) string {
+func swapFailedMessage(rec *models.RestoreRecord, err error) string {
+	ip, suffix := rec.PITR.InPlace, rec.PITR.CloneSuffix
 	var untouched []string
 	for _, db := range ip.Databases {
 		if !containsString(ip.Swapped, db) {
@@ -282,10 +296,27 @@ func swapFailedMessage(ip *models.PITRInPlace, err error, clones string) string 
 	if len(untouched) > 0 {
 		msg += fmt.Sprintf(" %s may be partially replaced (the first) or untouched.", strings.Join(untouched, ", "))
 	}
-	return msg + fmt.Sprintf(" The restored state is kept in the clone(s) %s and the state before the swap in the safety backup(s) %s: "+
-		"to go back, restore each safety backup in place with drop_target; to finish, copy each clone over its original "+
-		"(mongodump --archive --db=<clone> | mongorestore --archive --nsFrom='<clone>.*' --nsTo='<db>.*' --drop) and drop the clones",
-		clones, strings.Join(ip.SafetyBackupIDs, ", "))
+	msg += fmt.Sprintf(" The restored state is kept in the clone(s) %s and the state before the swap in the safety backup(s) %s.",
+		strings.Join(rec.PITR.Clones, ", "), strings.Join(ip.SafetyBackupIDs, ", "))
+	var finish, back []string
+	for _, db := range untouched {
+		clone := db + suffix
+		finish = append(finish, fmt.Sprintf("mongodump --uri=\"<connection URI>\" --archive --db=%s | mongorestore --uri=\"<connection URI>\" --archive "+
+			"--nsInclude='%s.*' --nsFrom='%s.*' --nsTo='%s.*' --drop", clone, clone, clone, db))
+	}
+	if len(ip.SafetyBackupIDs) == len(ip.Databases) {
+		for i, db := range ip.Databases {
+			back = append(back, fmt.Sprintf(`POST /api/v1/restore {"backup_id":"%s","target_connection_id":"%s","safe_clone":false,"confirm_in_place":true,"drop_target":true} (restores %s)`,
+				ip.SafetyBackupIDs[i], rec.TargetConnectionID, db))
+		}
+	}
+	if len(finish) > 0 {
+		msg += " To finish, copy each remaining clone over its original: " + strings.Join(finish, "; ") + ", then drop the clones."
+	}
+	if len(back) > 0 {
+		msg += " To go back instead, restore each safety backup in place: " + strings.Join(back, "; ") + "."
+	}
+	return msg
 }
 
 // containsString reports whether list holds s.
@@ -396,14 +427,28 @@ func (s *Service) resumeInPlace(ctx context.Context, pp *pitrPlan, rec *models.R
 		return ""
 	}
 	tracker := runs.FromContext(ctx)
-	resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), streamResumeTimeout)
+	// During a shutdown the collector stops too: the stream is enabled without
+	// waiting for its new chain, which opens at the next start.
+	shuttingDown := ctx.Err() != nil
+	wait := streamResumeTimeout
+	if shuttingDown {
+		wait = time.Second
+	}
+	resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wait)
 	defer cancel()
-	if err := s.cfg.PITRStreams.ResumeStream(resumeCtx, pp.stream.ID); err != nil {
-		s.logger.Warn("in-place point-in-time restore: the PITR stream could not be resumed",
-			logsafe.Attr("restore_id", rec.ID), logsafe.Attr("stream_id", pp.stream.ID), logsafe.Error(err))
+	err := s.cfg.PITRStreams.ResumeStream(resumeCtx, pp.stream.ID)
+	if shuttingDown && errors.Is(err, context.DeadlineExceeded) {
+		ip.StreamResumed = true
+		return fmt.Sprintf("; the PITR stream %s was enabled again during a shutdown: take a base backup of its new chain", pp.stream.ID)
+	}
+	if err != nil {
+		s.alertResume(ctx, rec, err)
 		return fmt.Sprintf("; the PITR stream %s could not be enabled again (%s): enable it and take a base backup", pp.stream.ID, redact.Text(err.Error()))
 	}
 	ip.StreamResumed = true
+	if shuttingDown {
+		return fmt.Sprintf("; the PITR stream %s was enabled again during a shutdown: take a base backup of its new chain", pp.stream.ID)
+	}
 	tracker.Printf("PITR stream %s enabled again with a new chain", pp.stream.ID)
 	if !withBase {
 		return ""
@@ -433,7 +478,7 @@ func (s *Service) cleanupInterruptedInPlace(ctx context.Context, rec *models.Res
 	case ip.SwapStarted && len(ip.Swapped) == len(ip.Databases) && ip.Stage == models.PITRInPlaceDone:
 		note = "; the original databases hold the restored state"
 	case ip.SwapStarted:
-		note = "; " + swapFailedMessage(ip, errors.New("MongoRescue stopped during the swap"), strings.Join(rec.PITR.Clones, ", "))
+		note = "; " + swapFailedMessage(rec, errors.New("MongoRescue stopped during the swap"))
 	default:
 		note = "; the original databases are untouched"
 		if len(ip.SafetyBackupIDs) > 0 {
@@ -494,16 +539,16 @@ func (s *Service) resumeInterrupted(ctx context.Context, rec *models.RestoreReco
 	return "; the PITR stream " + id + " was enabled again, and a base backup of its new chain is started once its collector runs"
 }
 
-// alertResume raises pitr.collector_failed for the stream an interrupted in-place
-// restore paused and that could not be enabled again: until someone does, no
-// oplog is collected.
+// alertResume raises pitr.collector_failed for the stream an in-place restore
+// paused and that could not be enabled again: until someone does, no oplog is
+// collected.
 func (s *Service) alertResume(ctx context.Context, rec *models.RestoreRecord, err error) {
 	msg := redact.Text(err.Error())
 	s.logger.Error("the PITR stream paused by an interrupted in-place restore could not be enabled again",
 		logsafe.Attr("stream_id", rec.PITR.StreamID), logsafe.Attr("restore_id", rec.ID), logsafe.Attr("error", msg))
 	s.publish(context.WithoutCancel(ctx), events.Event{Type: events.PITRCollectorFailed, Time: s.now().UTC(), Status: "failed",
 		Error: msg, Stream: rec.PITR.StreamID, ConnectionID: rec.TargetConnectionID, RestoreID: rec.ID,
-		Detail: "the in-place point-in-time restore " + rec.ID + " paused this stream and MongoRescue stopped before it was enabled again; enable it and take a base backup"})
+		Detail: "the in-place point-in-time restore " + rec.ID + " paused this stream and it could not be enabled again; enable it and take a base backup"})
 }
 
 // pitrInPlace reports what an in-place point-in-time restore does to the
