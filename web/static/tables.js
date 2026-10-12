@@ -927,8 +927,13 @@ const tv = {
 };
 Object.keys(TV_FILTERS).forEach(name => { tv.filters[name] = tvEmptyFilters(name); });
 
-// The server-filtered jobs list: the IDs GET /api/v1/jobs returned for key.
-const tvJobs = { key: null, ids: new Set(), error: "", seq: 0, inflight: "", source: null };
+// The Jobs table, paged and filtered on the server (GET /api/v1/jobs, by name):
+// the page shown for key (the filter query), its jobs, the total number of
+// matches, cursors[i] the after of page i (cursors[index] the page shown, the
+// last one the next page's when there is one), and source, the job directory
+// (state.jobs) it was loaded with: a reload of the directory refreshes the page.
+// inflight is the key being loaded, null when none ("" is the key without filters).
+const tvJobs = { key: null, items: [], total: 0, cursors: [""], index: 0, next: "", size: 0, error: "", seq: 0, inflight: null, source: null };
 
 function tvEmptyFilters(name) {
   const f = {};
@@ -1045,10 +1050,8 @@ function tablesFilterKey(name) {
 
 function tablesTotal(name) {
   if (tvName(name) !== "jobs") return 0;
-  const key = tvJobsQuery();
-  if (!key) return state.jobs.length;
-  if (tvJobs.key !== key || tvJobs.error) return 0;
-  return state.jobs.filter(j => tvJobs.ids.has(j.id)).length;
+  if (tvJobs.key !== tvJobsQuery() || tvJobs.error) return 0;
+  return tvJobs.total;
 }
 
 function tablesApiFilter(name) {
@@ -1074,23 +1077,21 @@ function tvConnectionTest(c) {
 }
 
 // app.js hook: the rows of table name to render, filtered and (Jobs) sorted. The
-// Jobs table returns null while its server-side filter is loading.
+// Jobs table shows its server page (sorted within the page by the column sort) and
+// returns null while the first page of its filters is loading.
 function tablesRows(name, items) {
   const list = Array.isArray(items) ? items : [];
   if (name === "jobs") {
     tvJobOptions();
     const key = tvJobsQuery();
-    let rows = list;
-    if (key) {
-      if (tvJobs.key !== key) {
-        if (tvJobs.inflight !== key) tvFetchJobs(key);
-        return null;
-      }
-      // The jobs were reloaded: ask again (last runs change), keep showing these.
-      if (tvJobs.source !== list && tvJobs.inflight !== key) tvFetchJobs(key);
-      rows = tvJobs.error ? [] : list.filter(j => tvJobs.ids.has(j.id));
+    if (tvJobs.key !== key) {
+      if (tvJobs.inflight !== key) tvFetchJobs(key, 0);
+      return null;
     }
-    return tvSortJobs(rows);
+    // The jobs were reloaded: ask for this page again (last runs change), keep
+    // showing it meanwhile.
+    if (tvJobs.source !== list && tvJobs.inflight !== key) tvFetchJobs(key, tvJobs.index);
+    return tvJobs.error ? [] : tvSortJobs(tvJobs.items);
   }
   if (name === "connections") {
     const f = tv.filters.connections;
@@ -1108,29 +1109,79 @@ function tablesRows(name, items) {
   return list;
 }
 
-function tvFetchJobs(key) {
+// Rows per page of the Jobs table (stored like the Backups and Restores sizes).
+function tvJobsPageSize() {
+  return typeof storedPageSize === "function" ? storedPageSize("jobs") : 25;
+}
+
+// Loads page index of the jobs matching key (the filter query): a new key starts
+// at the first page. Responses that arrive after a newer request are dropped.
+function tvFetchJobs(key, index) {
   if (!auth.user) return;
   const seq = ++tvJobs.seq;
   const source = state.jobs;
+  const cursors = tvJobs.key === key ? tvJobs.cursors.slice() : [""];
+  const i = Math.max(0, Math.min(Number(index) || 0, cursors.length - 1));
+  const size = tvJobsPageSize();
+  const p = new URLSearchParams(key);
+  p.set("limit", String(size));
+  if (cursors[i]) p.set("after", cursors[i]);
   tvJobs.inflight = key;
-  const done = (ids, error) => {
+  const done = (json, error) => {
     if (seq !== tvJobs.seq) return;
-    tvJobs.inflight = "";
+    tvJobs.inflight = null;
+    const items = !error && Array.isArray(json.data) ? json.data.filter(j => j && typeof j.id === "string") : [];
+    if (!error && items.length === 0 && i > 0) {
+      // The page emptied (its jobs went meanwhile): show the one before.
+      tvJobs.key = key;
+      tvJobs.cursors = cursors.slice(0, i);
+      tvFetchJobs(key, i - 1);
+      return;
+    }
+    const meta = (!error && json.meta) || {};
     tvJobs.key = key;
     tvJobs.source = source;
-    tvJobs.ids = ids;
     tvJobs.error = error;
+    tvJobs.size = size;
+    tvJobs.items = items;
+    tvJobs.total = error ? 0 : Math.max(0, Number(meta.total) || 0, items.length);
+    tvJobs.next = !error && typeof meta.next === "string" ? meta.next : "";
+    tvJobs.index = error ? 0 : i;
+    tvJobs.cursors = error ? [""] : cursors.slice(0, i + 1).concat(tvJobs.next ? [tvJobs.next] : []);
     renderJobs();
   };
-  apiJSON(`/api/v1/jobs?${key}`)
+  apiJSON(`/api/v1/jobs?${p.toString()}`)
     .then(json => {
       if (json && json.success) {
-        done(new Set((Array.isArray(json.data) ? json.data : []).map(j => j && j.id).filter(Boolean)), "");
+        done(json, "");
       } else {
-        done(new Set(), (json && json.error) || t("filters.load_failed"));
+        done(null, (json && json.error) || t("filters.load_failed"));
       }
     })
-    .catch(() => done(new Set(), t("filters.load_failed")));
+    .catch(() => done(null, t("filters.load_failed")));
+}
+
+// jobspager.js hooks: the Jobs page shown and moving to another one.
+function tablesJobsPage() {
+  const loaded = tvJobs.key !== null && tvJobs.key === tvJobsQuery();
+  return {
+    loaded, error: tvJobs.error, index: tvJobs.index, size: tvJobs.size || tvJobsPageSize(),
+    count: tvJobs.items.length, total: tvJobs.total, hasNext: !!tvJobs.next, sorted: !!tvSortOf("jobs")
+  };
+}
+
+function tablesJobsGo(delta) {
+  const key = tvJobsQuery();
+  if (tvJobs.key !== key || tvJobs.inflight === key) return;
+  const target = tvJobs.index + (delta > 0 ? 1 : -1);
+  if (target < 0 || (delta > 0 && !tvJobs.next)) return;
+  tvFetchJobs(key, target);
+}
+
+// A new page size starts again at the first page.
+function tablesJobsResize() {
+  tvJobs.key = null;
+  tvRerender("jobs");
 }
 
 // Rank of a job's last outcome for sorting by last run: failures first.
@@ -1299,10 +1350,15 @@ function tablesRendered(tbody) {
 function tablesReset() {
   tvJobs.seq++;
   tvJobs.key = null;
-  tvJobs.ids = new Set();
+  tvJobs.items = [];
+  tvJobs.total = 0;
+  tvJobs.cursors = [""];
+  tvJobs.index = 0;
+  tvJobs.next = "";
   tvJobs.error = "";
-  tvJobs.inflight = "";
+  tvJobs.inflight = null;
   tvJobs.source = null;
+  if (typeof jobsPagerRender === "function") jobsPagerRender();
   document.querySelectorAll("#app-main tbody").forEach(tvMarkBusy);
 }
 

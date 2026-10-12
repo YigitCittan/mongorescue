@@ -2326,6 +2326,15 @@ a.btn-block {
   white-space: nowrap;
 }
 
+.pager-note {
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.pager-note[hidden] {
+  display: none;
+}
+
 .pager-pages {
   display: inline-flex;
   flex-wrap: wrap;
