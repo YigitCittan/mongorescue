@@ -782,7 +782,8 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	// Retry errors come first: they also wrap the connection and target sentinels.
 	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned),
 		errors.Is(err, operations.ErrAlreadyDeleted), errors.Is(err, operations.ErrNotDeleted), errors.Is(err, operations.ErrBackupDeleted),
-		errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins):
+		errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins),
+		errors.Is(err, operations.ErrInPlaceHAMode):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval),
 		errors.Is(err, auth.ErrApproverTooRecent), errors.Is(err, operations.ErrRequesterUnknown):

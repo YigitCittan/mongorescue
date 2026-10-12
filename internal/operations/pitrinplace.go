@@ -38,6 +38,10 @@ type PITRSwapper interface {
 	SwapPITRClones(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord, swapped func(db string)) error
 }
 
+// ErrInPlaceHAMode is returned for an in-place point-in-time restore (and its
+// preflight) while active-passive high availability is on (Config.HAMode).
+var ErrInPlaceHAMode = errors.New("in-place PITR is not available in HA mode yet: a swap that outlasts the leader's lease could overlap the next leader's startup; restore into safe clones instead")
+
 // MaxSwapDuration bounds the swap of an in-place point-in-time restore, which a
 // shutdown waits for (runs.Manager.Critical) instead of killing it midway.
 const MaxSwapDuration = 6 * time.Hour

@@ -1,12 +1,26 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
+
+// TestInPlacePITRInHAModeAnswers409 checks that an in-place point-in-time restore
+// refused in active-passive HA mode answers 409 with the reason.
+func TestInPlacePITRInHAModeAnswers409(t *testing.T) {
+	s := &Server{logger: slog.New(slog.DiscardHandler)}
+	rec := httptest.NewRecorder()
+	s.writeOperationError(rec, operations.ErrInPlaceHAMode)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "in-place PITR is not available in HA mode yet") {
+		t.Fatalf("HA mode: %d %s; want 409", rec.Code, rec.Body.String())
+	}
+}
 
 // TestPITRRestoreAPI checks the point-in-time body of POST /api/v1/restore and its
 // preflight: operator (read is refused), safe clones only, and unavailable without

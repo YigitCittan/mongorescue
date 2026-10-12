@@ -124,7 +124,7 @@ type inPlaceEnv struct {
 	manager *runs.Manager
 }
 
-func newInPlaceEnv(t *testing.T, failBackup bool) *inPlaceEnv {
+func newInPlaceEnv(t *testing.T, failBackup bool, mutate ...func(*operations.Config)) *inPlaceEnv {
 	t.Helper()
 	st := storetest.New(t)
 	seedPITRStream(t, st, "conn_a")
@@ -142,12 +142,40 @@ func newInPlaceEnv(t *testing.T, failBackup bool) *inPlaceEnv {
 	pub := &recordingPublisher{}
 	conn := &models.Connection{ID: "conn_a", Name: "rs", URI: "mongodb://u:pw@db.internal/?replicaSet=rs0",
 		PostRestoreCommands: []models.PostRestoreCommand{{Database: "shop", Command: []byte(`{"delete":"users","deletes":[{"q":{"erased":true},"limit":0}]}`)}}}
-	svc := operations.New(operations.Config{
+	cfg := operations.Config{
 		Store: st, Backup: backup.NewEngine(mock, "", backup.WithRunner(bRunner)), Restore: restore.NewEngine(mock, ""),
 		Runs: manager, Connections: fakeConnections{"conn_a": conn}, Publisher: pub,
 		PITR: st, PITRRestore: fakes, PITRBases: st.ListBaseBackups, PITRStreams: fakes, PITRSwap: fakes,
-	})
+	}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	svc := operations.New(cfg)
 	return &inPlaceEnv{svc: svc, st: st, fakes: fakes, pub: pub, manager: manager}
+}
+
+// TestPITRInPlaceRefusedInHAMode: in active-passive HA mode an in-place
+// point-in-time restore and its preflight are refused before anything (an
+// approval request included) happens; restores into clones are unaffected.
+func TestPITRInPlaceRefusedInHAMode(t *testing.T) {
+	env := newInPlaceEnv(t, false, func(c *operations.Config) { c.HAMode = true })
+	if _, err := env.svc.StartRestore(admin(), pitrInPlace("shop")); !errors.Is(err, operations.ErrInPlaceHAMode) ||
+		!strings.Contains(err.Error(), "in-place PITR is not available in HA mode yet") {
+		t.Fatalf("in place in HA mode: %v", err)
+	}
+	if _, err := env.svc.PreflightRestore(admin(), pitrInPlace("shop")); !errors.Is(err, operations.ErrInPlaceHAMode) {
+		t.Fatalf("in-place preflight in HA mode: %v", err)
+	}
+	if got := env.fakes.order(); len(got) != 0 {
+		t.Fatalf("a refused request ran %v", got)
+	}
+	// An operator still gets 403 first; a restore into clones still runs.
+	if _, err := env.svc.StartRestore(operator(), pitrInPlace("shop")); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("operator in HA mode: %v", err)
+	}
+	if _, err := env.svc.PreflightRestore(admin(), pitrAt(125, "shop")); err != nil {
+		t.Fatalf("a clone preflight in HA mode: %v", err)
+	}
 }
 
 // pitrInPlace is an in-place point-in-time request for dbs, confirmed.

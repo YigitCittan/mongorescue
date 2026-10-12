@@ -260,6 +260,11 @@ type Config struct {
 	// point-in-time restores (ErrPITRUnavailable).
 	PITRStreams PITRStreamControl
 	PITRSwap    PITRSwapper
+	// HAMode reports that the instance runs in active-passive high availability:
+	// in-place point-in-time restores are refused (ErrInPlaceHAMode), since a
+	// swap that outlasts the leader's lease could overlap the next leader's
+	// startup sweep.
+	HAMode bool
 	// ArchiveSize estimates the archive size of a backup of database (from its last
 	// backup or the server's dbStats), for the size warnings of job previews; nil
 	// disables them. The backup engine's backup.SizeEstimator fits.
