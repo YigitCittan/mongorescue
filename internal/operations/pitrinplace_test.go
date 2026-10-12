@@ -453,6 +453,51 @@ func TestPITRInPlaceWaitsForASecondAdministrator(t *testing.T) {
 	}
 }
 
+// TestPITRInPlaceHoldsTheWholeConnection: a whole-instance backup or restore of
+// the connection holds an in-place restore back, and while an in-place restore
+// replaces databases, no whole-instance base backup or restore of the connection
+// starts.
+func TestPITRInPlaceHoldsTheWholeConnection(t *testing.T) {
+	env := newInPlaceEnv(t, false)
+	shared, err := env.manager.AcquireShared(runs.InstanceKey("conn_a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = env.svc.StartRestore(admin(), pitrInPlace("shop")); !errors.Is(err, runs.ErrBusy) || !strings.Contains(err.Error(), "whole-instance") {
+		t.Fatalf("in place during a whole-instance run: %v", err)
+	}
+	pre, err := env.svc.PreflightRestore(admin(), pitrInPlace("shop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := pre.Check(models.PreflightCheckInPlace); c == nil || c.Status != models.PreflightFail || !strings.Contains(c.Message, "whole-instance") {
+		t.Fatalf("in_place check = %+v", c)
+	}
+	shared()
+
+	env.fakes.swapStarted, env.fakes.swapGate = make(chan struct{}), make(chan struct{})
+	rec, err := env.svc.StartRestore(admin(), pitrInPlace("shop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-env.fakes.swapStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the swap did not start")
+	}
+	if _, err = env.svc.StartRestore(admin(), pitrAt(125)); !errors.Is(err, runs.ErrBusy) {
+		t.Errorf("a whole-instance restore during the swap: %v, want ErrBusy", err)
+	}
+	// Base backups take the same shared key (StartBaseBackup), after the base key.
+	if _, err = env.manager.AcquireShared(runs.InstanceKey("conn_a")); !errors.Is(err, runs.ErrBusy) {
+		t.Errorf("a whole-instance key during the swap: %v, want ErrBusy", err)
+	}
+	close(env.fakes.swapGate)
+	if final := env.wait(t, rec.ID); final.Status != models.RestoreStatusCompleted {
+		t.Fatalf("record %s: %s", final.Status, final.ErrorMessage)
+	}
+}
+
 // TestPITRInPlaceSwapSurvivesAShutdown is the regression test of a shutdown
 // (SIGTERM, a high-availability step-down) killing mongorestore in the middle
 // of --drop: the swap runs under its own context, marked critical, and the run

@@ -273,13 +273,23 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 			return nil, err
 		}
 	}
+	// A whole-instance restore (or chain test) never runs while an in-place
+	// restore replaces databases of the same connection.
+	releaseInstance := func() {}
+	if locks == nil && len(record.PITR.Databases) == 0 {
+		if releaseInstance, err = s.cfg.Runs.AcquireShared(runs.InstanceKey(record.TargetConnectionID)); err != nil {
+			return nil, runError(err, "an in-place point-in-time restore of this connection is running")
+		}
+	}
 	releaseClones, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
 	if err != nil {
+		releaseInstance()
 		locks.releaseAll()
 		return nil, runError(err, "a restore into "+record.TargetDatabase+" is already running")
 	}
 	release := func() {
 		releaseClones()
+		releaseInstance()
 		locks.releaseAll()
 	}
 	snapshot := *record

@@ -61,6 +61,8 @@ type Manager struct {
 
 	mu     sync.Mutex
 	active map[string]struct{}
+	// shared counts the shared holders of keys (AcquireShared).
+	shared map[string]int
 	// slots holds the counted slots of AcquireSlot (per-connection backup limits).
 	slots  map[string]*slotQueue
 	closed bool
@@ -83,7 +85,7 @@ func NewManager(logger *slog.Logger) *Manager {
 		logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{ctx: ctx, cancel: cancel, logger: logger, active: make(map[string]struct{})}
+	return &Manager{ctx: ctx, cancel: cancel, logger: logger, active: make(map[string]struct{}), shared: make(map[string]int)}
 }
 
 // Acquire reserves key for an operation that runs outside the Manager (e.g. a cron
@@ -235,11 +237,46 @@ func (m *Manager) reserveLocked(key string) error {
 	if key == "" {
 		return nil
 	}
-	if _, busy := m.active[key]; busy {
+	if _, busy := m.active[key]; busy || m.shared[key] > 0 {
 		return fmt.Errorf("%w: %s", ErrBusy, key)
 	}
 	m.active[key] = struct{}{}
 	return nil
+}
+
+// InstanceKey is the connection-wide key of connection connectionID: whole-
+// instance runs on the connection (PITR base backups, whole-instance
+// point-in-time restores and chain tests) hold it shared (AcquireShared), and an
+// in-place point-in-time restore holds it alone (Acquire) while it replaces
+// databases, so neither runs during the other.
+func InstanceKey(connectionID string) string {
+	return "instance:" + connectionID
+}
+
+// AcquireShared reserves key for an operation that may run next to others holding
+// it shared, but not while an operation holds it alone (Acquire, which in turn
+// waits for no shared holder): ErrBusy then. The returned release function is
+// idempotent. Shared holders are not listed by Active.
+func (m *Manager) AcquireShared(key string) (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.refusing {
+		return nil, ErrShuttingDown
+	}
+	if _, busy := m.active[key]; busy {
+		return nil, fmt.Errorf("%w: %s", ErrBusy, key)
+	}
+	m.shared[key]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.shared[key]--; m.shared[key] <= 0 {
+				delete(m.shared, key)
+			}
+		})
+	}, nil
 }
 
 // releaseFunc returns an idempotent function freeing key.

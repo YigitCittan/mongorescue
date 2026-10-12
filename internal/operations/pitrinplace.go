@@ -80,15 +80,20 @@ func (s *Service) startPITRInPlace(ctx context.Context, req models.RestoreReques
 // and the base backup key of the connection until it starts the new base.
 type inPlaceLocks struct {
 	keys []func()
-	base func()
+	// instance releases the base backup key and the connection-wide key, which
+	// the new base backup needs.
+	instance []func()
 }
 
-// releaseBase releases the base backup key (once).
+// releaseBase releases the base backup key and the connection-wide key (once).
 func (l *inPlaceLocks) releaseBase() {
-	if l != nil && l.base != nil {
-		l.base()
-		l.base = nil
+	if l == nil {
+		return
 	}
+	for _, release := range l.instance {
+		release()
+	}
+	l.instance = nil
 }
 
 // releaseAll releases every key still held (nil-safe).
@@ -103,14 +108,17 @@ func (l *inPlaceLocks) releaseAll() {
 	l.keys = nil
 }
 
-// inPlaceKeys returns the database keys an in-place restore of dbs on connection
-// connID holds, with what each one stands for.
+// inPlaceKeys returns the keys an in-place restore of dbs on connection connID
+// holds alone, with what each one stands for: the backup and restore keys of
+// every database, the base backup key and the connection-wide key, which every
+// whole-instance backup or restore of the connection holds shared.
 func inPlaceKeys(connID string, dbs []string) (keys, what []string) {
 	for _, db := range dbs {
 		keys = append(keys, runs.BackupKey(connID, db), runs.RestoreKey(connID, db))
 		what = append(what, "a backup of "+db, "a restore into "+db)
 	}
-	return append(keys, runs.PITRBaseKey(connID)), append(what, "a base backup of the connection")
+	return append(keys, runs.PITRBaseKey(connID), runs.InstanceKey(connID)),
+		append(what, "a base backup of the connection", "a whole-instance backup or restore of the connection")
 }
 
 // acquireInPlace reserves the keys of an in-place restore of dbs on connection
@@ -124,8 +132,8 @@ func (s *Service) acquireInPlace(connID string, dbs []string) (*inPlaceLocks, er
 			l.releaseAll()
 			return nil, runError(err, what[i]+" is running; retry the in-place restore once it ended")
 		}
-		if key == runs.PITRBaseKey(connID) {
-			l.base = release
+		if key == runs.PITRBaseKey(connID) || key == runs.InstanceKey(connID) {
+			l.instance = append(l.instance, release)
 		} else {
 			l.keys = append(l.keys, release)
 		}
