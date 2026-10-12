@@ -490,6 +490,8 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	if err != nil {
 		return nil, err
 	}
+	// The overview's history lists the jobs' schedules.
+	s.InvalidateHistory()
 	changed := job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
 	if err != nil {

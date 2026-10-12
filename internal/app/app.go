@@ -736,6 +736,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		},
 		Logger:  logger,
 		Version: o.version,
+		// The overview's history is shared for a few seconds among the dashboards
+		// asking at once; backup and run events drop it (ops.HandleEvent below).
+		HistoryCacheTTL: operations.DefaultHistoryCacheTTL,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {
@@ -743,6 +746,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// Backup, run, verification and retention events drop the cached history.
+	bus.Subscribe(ops.HandleEvent)
 	// A secret key rotation that the startup recovery completed is announced now
 	// (the bus queues the event until it runs).
 	if opened.Completed != nil {

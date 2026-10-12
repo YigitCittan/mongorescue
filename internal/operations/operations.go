@@ -269,6 +269,12 @@ type Config struct {
 	// PreviewTimeout bounds reading the collection list of an archive in
 	// ListBackupCollections; 0 means ArchivePreviewTimeout.
 	PreviewTimeout time.Duration
+	// HistoryCacheTTL shares a computed History for this long among the callers
+	// with the same window, zone and connection access, computing it once however
+	// many ask at the same time; events (HandleEvent) and InvalidateHistory drop it
+	// earlier. 0 disables the cache (every call computes); a negative value means
+	// DefaultHistoryCacheTTL.
+	HistoryCacheTTL time.Duration
 }
 
 // Service implements the backup and restore use cases. It is safe for concurrent use.
@@ -289,6 +295,9 @@ type Service struct {
 	bulk map[BulkResource]map[string]BulkAction
 	// bulkCap is the most items of one bulk operation (MaxBulkItems; lowered by tests).
 	bulkCap int
+
+	// historyCache shares computed Histories (nil when Config.HistoryCacheTTL is 0).
+	historyCache *historyCache
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -305,6 +314,12 @@ func New(cfg Config) *Service {
 		cfg: cfg, store: accessStore{cfg.Store}, logger: logger, now: time.Now,
 		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
 		bulkCap: MaxBulkItems,
+	}
+	switch ttl := cfg.HistoryCacheTTL; {
+	case ttl < 0:
+		s.historyCache = newHistoryCache(DefaultHistoryCacheTTL)
+	case ttl > 0:
+		s.historyCache = newHistoryCache(ttl)
 	}
 	s.registerBulkActions()
 	return s

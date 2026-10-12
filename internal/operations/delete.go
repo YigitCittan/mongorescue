@@ -223,6 +223,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	if s.cfg.OnJobDeleted != nil {
 		s.cfg.OnJobDeleted(id)
 	}
+	s.InvalidateHistory()
 	s.logger.With(actorAttrs(ctx)...).Info("job deleted", logsafe.Attr("job_id", id))
 	return nil
 }
