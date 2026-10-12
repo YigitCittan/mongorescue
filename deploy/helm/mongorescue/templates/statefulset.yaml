@@ -1,4 +1,12 @@
 {{- $secretName := include "mongorescue.secretKeySecret" . -}}
+{{- if .Values.ha.enabled }}
+{{- if not .Values.secretKey.existingSecret }}
+{{- fail "ha.enabled needs secretKey.existingSecret: both releases of an HA cluster must use the same secret key" }}
+{{- end }}
+{{- if not .Values.ha.target }}
+{{- fail "ha.enabled needs ha.target, the storage target of the lease" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -6,7 +14,8 @@ metadata:
   labels:
     {{- include "mongorescue.labels" . | nindent 4 }}
 spec:
-  # The data directory is locked by one process: never more than one replica.
+  # The data directory is locked by one process: never more than one replica. For
+  # high availability run a second release with ha.enabled (see values.yaml).
   replicas: 1
   serviceName: {{ include "mongorescue.fullname" . }}-headless
   # The old pod must be gone (its runs finished or cancelled, its lock released)
@@ -69,6 +78,20 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: {{ .Values.secretKey.existingSecretKey }}
+            {{- end }}
+            {{- if .Values.ha.enabled }}
+            - name: MONGORESCUE_HA_MODE
+              value: active-passive
+            - name: MONGORESCUE_HA_TARGET
+              value: {{ .Values.ha.target | quote }}
+            - name: MONGORESCUE_HA_CLUSTER
+              value: {{ .Values.ha.cluster | quote }}
+            - name: MONGORESCUE_HA_LEASE_TTL
+              value: {{ .Values.ha.leaseTTL | quote }}
+            - name: MONGORESCUE_HA_RENEW_INTERVAL
+              value: {{ .Values.ha.renewInterval | quote }}
+            - name: MONGORESCUE_HA_SNAPSHOT_INTERVAL
+              value: {{ .Values.ha.snapshotInterval | quote }}
             {{- end }}
             - name: TMPDIR
               value: /tmp

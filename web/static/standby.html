@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MongoRescue: standby instance</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Served instead of the dashboard by a standby of an active-passive HA cluster:
+       it shows no data and offers no sign-in (ha.js fills it from /api/v1/health). -->
+  <main id="ha-standby-page" class="ha-standby-page">
+    <section class="callout callout-warning" role="status" aria-labelledby="ha-standby-title">
+      <div>
+        <h1 class="callout-title" id="ha-standby-title" data-ha-i18n="standby_title">Standby instance</h1>
+        <p class="section-desc" data-ha-i18n="standby_desc">This MongoRescue instance is the standby of an active-passive HA cluster. It shows no data and accepts no sign-ins or changes. Open the active instance instead; this one takes over by itself when the active instance stops.</p>
+        <p class="section-desc">
+          <span data-ha-i18n="cluster">Cluster</span>: <strong id="ha-standby-cluster"></strong>
+          · <span data-ha-i18n="active_instance">Active instance</span>: <strong id="ha-standby-holder"></strong>
+        </p>
+      </div>
+    </section>
+  </main>
+  <script src="/ha.js"></script>
+</body>
+</html>

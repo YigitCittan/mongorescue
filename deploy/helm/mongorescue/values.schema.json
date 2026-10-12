@@ -82,6 +82,33 @@
       },
       "required": ["existingSecretKey"]
     },
+    "ha": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "target": {
+          "type": "string",
+          "description": "Storage target ID or name, or s3://bucket/prefix?endpoint=…&region=…&path_style=true or file:///path."
+        },
+        "cluster": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$" },
+        "leaseTTL": {
+          "type": "string",
+          "description": "A Go duration from 5s to 10m.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
+        "renewInterval": {
+          "type": "string",
+          "description": "A Go duration of at least 1s and below half of leaseTTL.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
+        "snapshotInterval": {
+          "type": "string",
+          "description": "A Go duration from 30s to 24h.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        }
+      }
+    },
     "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
     "extraEnv": { "type": "array" },
     "extraEnvFrom": { "type": "array" },

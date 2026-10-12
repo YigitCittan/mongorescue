@@ -26,6 +26,21 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-version` | | | Print the version and exit |
 
+### High availability
+
+Active-passive high availability ([production.md](production.md#high-availability), design in [design/ha.md](design/ha.md)) is off by default. It is set with bootstrap options too, since a standby needs them before it has any metadata:
+
+| Flag | Environment variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-ha-mode` | `MONGORESCUE_HA_MODE` | `off` | `off` or `active-passive` |
+| `-ha-target` | `MONGORESCUE_HA_TARGET` | none | The storage of the lease and the metadata snapshots: `s3://bucket/prefix?endpoint=https://host&region=eu-central-1&path_style=true` (credentials from the AWS default chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, a shared profile or an instance role; the URL takes no other query parameter and no credentials, in the endpoint neither, and errors and logs show only bucket, prefix and endpoint host), `file:///shared/dir` (a file system every instance mounts, see the NFS notes in the design; on Windows `file:///C:/shared/dir` or a UNC share `file://server/share/dir`), or the ID or name of a storage target that already exists in the instance's own database. Required in `active-passive` mode. The storage must enforce conditional writes (AWS S3 and MinIO do); a target with S3 Object Lock is refused |
+| `-ha-cluster` | `MONGORESCUE_HA_CLUSTER` | `default` | Cluster name, the same on every instance: lowercase letters, digits, `.`, `_`, `-` |
+| `-ha-lease-ttl` | `MONGORESCUE_HA_LEASE_TTL` | `30s` | How long the lease lives without renewal: `5s` to `10m`. A standby takes over at most `ttl + renew` after the active instance's last renewal |
+| `-ha-renew-interval` | `MONGORESCUE_HA_RENEW_INTERVAL` | `10s` | How often the active instance renews the lease and a standby reads it: at least `1s` and below half the TTL. The active instance stops working `ttl − renew` after its last successful renewal |
+| `-ha-snapshot-interval` | `MONGORESCUE_HA_SNAPSHOT_INTERVAL` | `5m` | Longest time between two metadata snapshots of the active instance (`30s` to `24h`); it also writes one after every finished backup or restore |
+
+Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`, or the same `secret.key`); an instance whose key differs refuses to start.
+
 The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
 
 ### MongoDB Database Tools

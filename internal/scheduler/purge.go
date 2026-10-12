@@ -482,6 +482,11 @@ func (s *Scheduler) runMaintenance() {
 // and runs the maintenance hooks (WithMaintenance). The scheduler calls it every ten
 // minutes; tests call it directly.
 func (s *Scheduler) Maintain(ctx context.Context) {
+	// An HA instance that lost the lease deletes nothing.
+	if err := s.checkFence(); err != nil {
+		s.logger.Warn("maintenance skipped: this instance does not hold the HA lease", logsafe.Error(err))
+		return
+	}
 	run := purgeRun{now: s.clock(), grace: s.deleteGrace, store: s.metadataStore, storages: s.storageFor, logger: s.logger, onPurged: s.purged}
 	if l, ok := s.targets.(objectLocator); ok {
 		run.locate = l.ObjectLocation

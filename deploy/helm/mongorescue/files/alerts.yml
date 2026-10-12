@@ -124,3 +124,33 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} has {{ $value }} active settings warnings"
           description: "Open the dashboard: the warning banner names the setting that resolves each warning."
+
+      # Active-passive HA: no member of a cluster reports the active role, so no
+      # scheduled backup and no PITR collection runs. Members export
+      # mongorescue_ha_role only in HA mode; a cluster counts while one of its
+      # members exported it in the last 10 minutes (longer outages leave it to
+      # MongoRescueDown). for: is twice the default lease TTL (30s), so a takeover
+      # in progress does not alert; raise it with the TTL.
+      - alert: MongoRescueHANoActiveInstance
+        expr: |
+          max by (cluster) (last_over_time(mongorescue_ha_role[10m]))
+          unless
+          max by (cluster) (mongorescue_ha_role{role="active"} == 1)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No active instance in MongoRescue HA cluster {{ $labels.cluster }}"
+          description: "No member of HA cluster {{ $labels.cluster }} holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."
+
+      # A standby acquired the lease but gave the takeover up, because the HA
+      # target holds no usable metadata snapshot of the previous active instance
+      # (taking over without one would lose its jobs, users and history). It keeps
+      # retrying every lease TTL; until a snapshot is usable no instance is active.
+      - alert: MongoRescueHATakeoverFailed
+        expr: increase(mongorescue_ha_takeover_failures_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
+          description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."

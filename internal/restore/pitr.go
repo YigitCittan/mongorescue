@@ -208,6 +208,9 @@ func (e *Engine) ExecutePITR(ctx context.Context, req models.RestoreRequest, run
 	if err != nil {
 		return failRestore(record, err, err.Error())
 	}
+	if e.fence != nil {
+		record.HAEpoch = e.fence.Epoch()
+	}
 	return r.executePITR(ctx, req, run, record)
 }
 
@@ -342,6 +345,9 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	record.DurationSeconds = finish.Sub(record.StartedAt).Seconds()
 	record.Phases.RestoreDone = models.Stamp(finish)
 	record.Phases.Finished = models.Stamp(finish)
+	if err = e.checkFence(); err != nil {
+		return e.failDone(ctx, record, err, err.Error()+keptNote(sortedClones(created)))
+	}
 	record.Status = models.RestoreStatusCompleted
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("point-in-time restore completed into %s in %.1fs (%d oplog operations replayed)", record.TargetDatabase, record.DurationSeconds, ops)

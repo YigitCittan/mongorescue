@@ -202,8 +202,11 @@ func TestPITRRestoreWholeInstance(t *testing.T) {
 	if rec.Status != models.RestoreStatusCompleted || rec.PITR.OpsReplayed != 3 || rec.PITR.OpsApplied == nil || *rec.PITR.OpsApplied != 3 {
 		t.Fatalf("record = %+v, pitr = %+v", rec, rec.PITR)
 	}
-	// Both passes are timed for the measured RTO, within the restore's duration.
-	if p := rec.PITR; p.BaseSeconds <= 0 || p.ReplaySeconds <= 0 || p.BaseSeconds+p.ReplaySeconds > rec.DurationSeconds {
+	// Both passes are timed for the measured RTO, within the restore's duration. The
+	// three durations are measured and rounded separately, so the sum may exceed the
+	// total by a rounding step (seen on Windows: 0.0031973+0.0062689 > 0.0094661).
+	const roundingSlack = 1e-3
+	if p := rec.PITR; p.BaseSeconds <= 0 || p.ReplaySeconds <= 0 || p.BaseSeconds+p.ReplaySeconds > rec.DurationSeconds+roundingSlack {
 		t.Fatalf("passes took %vs and %vs of %vs", p.BaseSeconds, p.ReplaySeconds, rec.DurationSeconds)
 	}
 	if perSec, _, ok := rec.PITR.PITRReplayRate(); !ok || perSec <= 0 {

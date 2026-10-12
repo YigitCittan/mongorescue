@@ -43,6 +43,11 @@ var (
 	// ErrEnvKey is returned when the key comes from MONGORESCUE_SECRET_KEY.
 	ErrEnvKey = errors.New("keyrotation: the secret key is set by MONGORESCUE_SECRET_KEY and cannot be rotated by MongoRescue; " +
 		"follow the manual procedure in docs/encryption.md")
+	// ErrHAMode is returned in active-passive HA mode: every instance of the
+	// cluster seals its database, the lease and the metadata snapshots with the
+	// same key, so one instance rotating alone would silently break the takeover.
+	ErrHAMode = errors.New("keyrotation: secret.key cannot be rotated while active-passive HA is on, since every instance of the cluster must switch to the new key at once; " +
+		"follow the procedure for an HA cluster in docs/production.md (rotating the secret key of an HA cluster) in a maintenance window")
 	// ErrBusy is returned while another rotation runs.
 	ErrBusy = errors.New("keyrotation: a secret key rotation is already running")
 	// ErrPending is returned when an earlier rotation did not finish; restart
@@ -311,6 +316,8 @@ type Config struct {
 	Key []byte
 	// FromEnv reports a key from MONGORESCUE_SECRET_KEY (rotation refused).
 	FromEnv bool
+	// HAMode reports active-passive HA (rotation refused, see ErrHAMode).
+	HAMode bool
 	// RetiredMAC derives, from a key that is being replaced, the key that keeps
 	// API keys imported under it verifying (see store.SecretKeyRotation).
 	RetiredMAC func(old []byte) ([]byte, error)
@@ -367,6 +374,9 @@ func (r *Rotator) ForgetPreviousKey() error {
 	return secretbox.RemoveKeyFile(r.cfg.Files.Previous)
 }
 
+// HAMode reports whether rotation is refused because of active-passive HA.
+func (r *Rotator) HAMode() bool { return r.cfg.HAMode }
+
 // FromEnv reports whether the key comes from MONGORESCUE_SECRET_KEY.
 func (r *Rotator) FromEnv() bool { return r.cfg.FromEnv }
 
@@ -412,6 +422,9 @@ func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
 // be empty). They are kept in the rotation marker, so the security.key_rotated event
 // of a rotation that only completes at the next start still names them.
 func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string) (*Result, error) {
+	if r.cfg.HAMode {
+		return nil, ErrHAMode
+	}
 	if r.cfg.FromEnv {
 		return nil, ErrEnvKey
 	}

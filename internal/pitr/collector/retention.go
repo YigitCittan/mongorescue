@@ -115,6 +115,10 @@ func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord,
 // applyRetention applies the retention of every stream and purges the chunks whose
 // grace period ended.
 func (s *Service) applyRetention(ctx context.Context) {
+	if err := s.checkFence(); err != nil {
+		s.logger.Warn("PITR retention skipped: this instance does not hold the HA lease", slog.String("error", err.Error()))
+		return
+	}
 	streams, err := s.cfg.Repo.ListStreams(ctx)
 	if err != nil {
 		return

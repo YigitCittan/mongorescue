@@ -85,6 +85,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if s.scheduler != nil && s.scheduler.Paused() {
 		body["draining"] = true
 	}
+	s.healthHA(body)
 	live := s.liveness()
 	if live == nil {
 		writeJSON(w, http.StatusOK, body)

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/app"
 	"github.com/yigitcittan/mongorescue/internal/cli"
@@ -75,6 +76,18 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		slog.String("data_dir", cfg.DataDir),
 	)
 
+	if cfg.HA.Enabled() {
+		// Active-passive HA: the instance starts as a standby and opens as the
+		// active one when it acquires the lease (docs/design/ha.md).
+		logger.Info("starting as a member of an active-passive HA cluster",
+			slog.String("ha_cluster", cfg.HA.Cluster), slog.Duration("lease_ttl", cfg.HA.LeaseTTL))
+		if err = app.RunHA(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv)); err != nil {
+			logger.Error("application execution terminated with error", slog.Any("error", err))
+			return 1
+		}
+		logger.Info("mongorescue shutdown complete. Goodbye!")
+		return 0
+	}
 	application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv))
 	if err != nil {
 		logger.Error("application bootstrap failed", slog.Any("error", err))
@@ -102,6 +115,12 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
 	minFreeSpace := fs.String("min-free-space-mb", "", fmt.Sprintf("Free space (MiB) the data directory needs for a backup or restore to start, 0 to turn the check off (env %s, default %d)", config.EnvMinFreeSpace, config.DefaultMinFreeSpaceMB))
 	notifyMaxAge := fs.String("notification-max-age", "", "How long a notification may wait to be sent before it is dropped as stale, e.g. 24h (env "+config.EnvNotificationMaxAge+", default 24h)")
+	haMode := fs.String("ha-mode", "", "High availability mode: off or active-passive (env "+config.EnvHAMode+", default off)")
+	haTarget := fs.String("ha-target", "", "Storage target of the HA lease and metadata handover: a target ID or name, or s3://bucket/prefix?endpoint=…&region=…&path_style=true or file:///path (env "+config.EnvHATarget+")")
+	haCluster := fs.String("ha-cluster", "", "HA cluster name (env "+config.EnvHACluster+", default "+config.DefaultHACluster+")")
+	haTTL := fs.String("ha-lease-ttl", "", "How long the HA lease lives without renewal (env "+config.EnvHALeaseTTL+", default 30s)")
+	haRenew := fs.String("ha-renew-interval", "", "How often the HA lease is renewed or read, below half the TTL (env "+config.EnvHARenewInterval+", default 10s)")
+	haSnapshot := fs.String("ha-snapshot-interval", "", "Longest time between two metadata snapshots of the active instance (env "+config.EnvHASnapshotInterval+", default 5m)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
@@ -121,7 +140,14 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr, spaceErr, ageErr error
+	var graceErr, spaceErr, ageErr, haErr error
+	haDuration := func(name, v string, dst *time.Duration) {
+		d, err := config.ParseHADuration(v)
+		if err != nil && haErr == nil {
+			haErr = fmt.Errorf("-%s: %w", name, err)
+		}
+		*dst = d
+	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "data-dir":
@@ -149,8 +175,23 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.MinFreeSpaceMB, spaceErr = config.ParseMinFreeSpace(*minFreeSpace)
 		case "notification-max-age":
 			cfg.NotificationMaxAge, ageErr = config.ParseNotificationMaxAge(*notifyMaxAge)
+		case "ha-mode":
+			cfg.HA.Mode = strings.ToLower(strings.TrimSpace(*haMode))
+		case "ha-target":
+			cfg.HA.Target = strings.TrimSpace(*haTarget)
+		case "ha-cluster":
+			cfg.HA.Cluster = strings.TrimSpace(*haCluster)
+		case "ha-lease-ttl":
+			haDuration(f.Name, *haTTL, &cfg.HA.LeaseTTL)
+		case "ha-renew-interval":
+			haDuration(f.Name, *haRenew, &cfg.HA.RenewInterval)
+		case "ha-snapshot-interval":
+			haDuration(f.Name, *haSnapshot, &cfg.HA.SnapshotInterval)
 		}
 	})
+	if haErr != nil {
+		return nil, 0, false, haErr
+	}
 	if graceErr != nil {
 		return nil, 0, false, fmt.Errorf("-shutdown-grace: %w", graceErr)
 	}

@@ -69,7 +69,7 @@ This changes the backup model, so it starts with a design document that has to b
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
 | 5.1 | **Shared metadata store** | XL | A PostgreSQL backend next to SQLite, so several instances can share state. Today the data directory lock enforces one instance ([architecture.md](architecture.md)). |
-| 5.2 | **High availability** | XL | Leader election for the scheduler and the oplog collector on top of 5.1, so a standby takes over. |
+| 5.2 | **High availability** | XL | Phase 1, active-passive without a shared store, shipped (#65): a lease on a storage target with an epoch as fencing token, a read-only standby that takes over scheduling and PITR collection within `ttl + renew` of the active instance's death, metadata handed over through encrypted snapshots, and missed schedules caught up once; see [design/ha.md](design/ha.md) and [production.md](production.md#high-availability). Phase 2 (more than one instance doing work, no snapshot handover) still needs the shared store of 5.1. |
 
 These change deployment fundamentally and are only worth doing when users need them; until then, phase 1's self-backup and recovery kit cover the "MongoRescue itself is gone" case.
 

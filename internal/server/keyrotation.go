@@ -168,7 +168,7 @@ func (s *Server) handleRotateSecretKey(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.ops.RotateSecretKey(r.Context())
 	switch {
-	case errors.Is(err, keyrotation.ErrEnvKey), errors.Is(err, keyrotation.ErrBusy), errors.Is(err, keyrotation.ErrPending):
+	case errors.Is(err, keyrotation.ErrEnvKey), errors.Is(err, keyrotation.ErrHAMode), errors.Is(err, keyrotation.ErrBusy), errors.Is(err, keyrotation.ErrPending):
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	case errors.Is(err, keyrotation.ErrIncomplete):
