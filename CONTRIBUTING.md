@@ -108,6 +108,12 @@ Pull requests that touch the desktop app or its updater, and pushes to `main`, a
 
 The cloud provider suite runs only on pushes to `main` and on `v*` tags in `YigitCittan/mongorescue`, never on pull requests. You do not need cloud credentials to contribute.
 
+#### Docker Hub images in CI
+
+Jobs that pull images from Docker Hub (MongoDB, LocalStack, Prometheus, kind node and the Dockerfile's base images) run the local action `.github/actions/docker-hub-mirror` right after checkout. It adds `mirror.gcr.io`, Google's Docker Hub pull-through cache, to the runner's Docker daemon `registry-mirrors` (merged into `/etc/docker/daemon.json`, then the daemon is restarted and `docker info` is checked), so pulls do not hit Docker Hub's anonymous rate limit (`toomanyrequests`). Image references and digests stay the same, and the daemon falls back to Docker Hub when the mirror misses. Two places do not use the host daemon and get the mirror separately: the multi-arch image build (BuildKit `buildkitd-config-inline` in `docker.yml`) and the kind cluster's containerd (`DOCKER_HUB_MIRROR` in `scripts/test-helm-kind.sh`). Add the action to any new job that pulls from Docker Hub. The scripts under `scripts/` are unchanged for local runs.
+
+Maintainers can add the optional repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a read-only Docker Hub access token); the action then also logs in to Docker Hub. Without them (forks, Dependabot) the login is skipped.
+
 #### Maintainers: cloud provider secrets
 
 Each provider is enabled by adding repository secrets; providers with missing secrets are skipped:

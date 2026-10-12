@@ -98,6 +98,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Install kind, kubectl and helm
         run: |
           set -euo pipefail
@@ -119,3 +125,6 @@ jobs:
         run: ./scripts/test-helm-kind.sh
         env:
           KIND_CLUSTER: mongorescue-ci
+          # The MongoDB pod's image is pulled by containerd in the kind node, which
+          # does not use the host daemon's registry-mirrors.
+          DOCKER_HUB_MIRROR: https://mirror.gcr.io
