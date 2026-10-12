@@ -255,6 +255,11 @@ type Config struct {
 	// of a stream; nil makes point-in-time restores fail with ErrPITRUnavailable.
 	PITRRestore PITRRestorer
 	PITRBases   func(ctx context.Context, streamID string) ([]*models.BackupRecord, error)
+	// PITRStreams pauses and resumes PITR streams around the swap of an in-place
+	// point-in-time restore and PITRSwap performs the swap; nil refuses in-place
+	// point-in-time restores (ErrPITRUnavailable).
+	PITRStreams PITRStreamControl
+	PITRSwap    PITRSwapper
 	// ArchiveSize estimates the archive size of a backup of database (from its last
 	// backup or the server's dbStats), for the size warnings of job previews; nil
 	// disables them. The backup engine's backup.SizeEstimator fits.

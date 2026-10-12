@@ -10,6 +10,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
@@ -135,6 +136,13 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if err := auth.RequireScope(ctx, auth.ScopeOperator); err != nil {
 		return nil, fmt.Errorf("point-in-time restores need the operator role or an operator API key: %w", err)
 	}
+	// An in-place point-in-time restore replaces existing databases: admin, like
+	// every in-place restore.
+	if req.PITR.IsInPlace() {
+		if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
+			return nil, fmt.Errorf("in-place point-in-time restores need the admin role or an admin API key: %w", err)
+		}
+	}
 	if req.TargetConnectionID != "" && !auth.ConnectionAllowed(ctx, req.TargetConnectionID) {
 		return nil, connectionNotFound()
 	}
@@ -184,6 +192,9 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	if targetID == "" {
 		targetID = stream.ConnectionID
 	}
+	if targetID != stream.ConnectionID && req.PITR.InPlace {
+		return nil, public("an in-place point-in-time restore replaces databases of the stream's own connection; omit target_connection_id", ErrInvalid)
+	}
 	if targetID != stream.ConnectionID {
 		if scopeErr := auth.RequireScope(ctx, auth.ScopeAdmin); scopeErr != nil {
 			return nil, fmt.Errorf("point-in-time restores into another connection than the stream's need the admin role or an admin API key: %w", scopeErr)
@@ -216,9 +227,14 @@ func missingDatabases(base, selected []string) []string {
 
 // startPITRRestore is StartRestore for a point-in-time request (req.PITR): a
 // restore into safe clones (operator; admin into another connection than the
-// stream's), refused in place (models.ErrPITRInPlace).
-// Since it never overwrites data, the two-person rule does not hold it back.
+// stream's); the in-place options of a backup restore are refused
+// (models.ErrPITRInPlace). Since it never overwrites data, the two-person rule
+// does not hold it back. An in-place point-in-time restore (pitr.in_place) is
+// startPITRInPlace.
 func (s *Service) startPITRRestore(ctx context.Context, req models.RestoreRequest) (*models.RestoreRecord, error) {
+	if req.PITR.IsInPlace() {
+		return s.startPITRInPlace(ctx, req)
+	}
 	pp, err := s.planPITR(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -249,14 +265,40 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 			record.SourceConnectionName = src.Name
 		}
 	}
-	release, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
+	// An in-place restore holds the databases it replaces for its whole run (see
+	// acquireInPlace): no backup or restore of them runs meanwhile.
+	var locks *inPlaceLocks
+	if record.PITR.InPlace != nil {
+		if locks, err = s.acquireInPlace(record.TargetConnectionID, record.PITR.InPlace.Databases); err != nil {
+			return nil, err
+		}
+	}
+	releaseClones, err := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
 	if err != nil {
+		locks.releaseAll()
 		return nil, runError(err, "a restore into "+record.TargetDatabase+" is already running")
 	}
+	release := func() {
+		releaseClones()
+		locks.releaseAll()
+	}
 	snapshot := *record
+	// The run changes the point-in-time details as it goes: the snapshot keeps its
+	// own copy.
+	info := *record.PITR
+	info.Clones = slices.Clone(info.Clones)
+	if ip := info.InPlace; ip != nil {
+		cp := *ip
+		cp.Databases = slices.Clone(ip.Databases)
+		info.InPlace = &cp
+	}
+	snapshot.PITR = &info
 	if err := s.cfg.Store.SaveRestoreRecord(ctx, &snapshot); err != nil {
 		release()
 		return nil, s.startSaveError(ctx, "restore", err)
+	}
+	if locks != nil {
+		s.inPlaceStarted(ctx, &snapshot)
 	}
 	tracked := s.track(models.RunRestore, record.ID, "", record.TargetDatabase)
 	// The clones a restore discovers as it runs are stored before they are written
@@ -276,9 +318,15 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
 		final, runErr := s.cfg.PITRRestore.ExecutePITR(runCtx, req, run, record)
+		if locks != nil {
+			final, runErr = s.finishPITRInPlace(runCtx, pp, req, final, runErr, locks)
+		}
 		done(runCtx, final)
 		// Stored first, then published (see finishRestore).
 		s.finishRestore(runCtx, final, runErr, final.BackupID, false)
+		if locks != nil {
+			s.publish(context.WithoutCancel(runCtx), events.InPlacePITREvent(final, runErr))
+		}
 	}); err != nil {
 		tracked.End()
 		release()
@@ -508,6 +556,9 @@ func (s *Service) preflightPITR(ctx context.Context, pp *pitrPlan, record *model
 	}
 	if record != nil {
 		p.postRestore(pitrPreflightClones(record.PITR))
+	}
+	if record != nil && record.PITR.InPlace != nil {
+		p.pitrInPlace(pp, record.PITR.InPlace)
 	}
 	p.pitrPrivileges()
 	if p.source != nil {

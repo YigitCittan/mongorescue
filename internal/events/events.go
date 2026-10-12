@@ -41,6 +41,12 @@ const (
 	// RestoreCancelled is emitted when a restore was cancelled
 	// (models.RestoreStatusCancelled).
 	RestoreCancelled EventType = "restore.cancelled"
+	// RestoreInPlacePITR is emitted when an in-place point-in-time restore ended,
+	// after its restore.* event: Status is "succeeded" (the original databases hold
+	// the restored state) or "failed" (Error says why and what to do),
+	// Databases names the original databases and SafetyBackupIDs the backups taken
+	// of them before the swap.
+	RestoreInPlacePITR EventType = "restore.in_place_pitr"
 	// NotificationTest is a synthetic event used by "send test" actions. It is never
 	// published on the Bus and cannot be selected by notification rules.
 	NotificationTest EventType = "notification.test"
@@ -206,7 +212,7 @@ func (t EventType) OptIn() bool {
 // ruleTypes lists the event types that notification rules may subscribe to, apart
 // from optInTypes.
 var ruleTypes = []EventType{
-	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled,
+	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled, RestoreInPlacePITR,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated,
@@ -310,6 +316,49 @@ type Event struct {
 	// Stream is the PITR stream of pitr.* events, and ConnectionID its connection.
 	Stream       string `json:"stream,omitempty"`
 	ConnectionID string `json:"connection_id,omitempty"`
+
+	// SafetyBackupIDs are the safety backups of a RestoreInPlacePITR event.
+	SafetyBackupIDs []string `json:"safety_backup_ids,omitempty"`
+}
+
+// Statuses of a RestoreInPlacePITR event.
+const (
+	// InPlacePITRSucceeded: the original databases hold the restored state.
+	InPlacePITRSucceeded = "succeeded"
+	// InPlacePITRFailed: the in-place restore failed or was cancelled.
+	InPlacePITRFailed = "failed"
+)
+
+// InPlacePITREvent builds the RestoreInPlacePITR event of rec, a finished in-place
+// point-in-time restore (rec.PITR.InPlace set): succeeded when it completed,
+// failed otherwise, with the record's redacted message.
+func InPlacePITREvent(rec *models.RestoreRecord, runErr error) Event {
+	e := Event{Type: RestoreInPlacePITR, Time: time.Now().UTC(), Status: InPlacePITRSucceeded}
+	if rec == nil {
+		e.Status, e.Error = InPlacePITRFailed, failureText("", runErr)
+		return e
+	}
+	e.RestoreID, e.BackupID = rec.ID, rec.BackupID
+	e.Duration = secondsToDuration(rec.DurationSeconds)
+	if rec.CompletedAt != nil {
+		e.Time = rec.CompletedAt.UTC()
+	}
+	if rec.PITR != nil {
+		e.Stream = rec.PITR.StreamID
+		if ip := rec.PITR.InPlace; ip != nil {
+			e.Databases = slices.Clone(ip.Databases)
+			e.Database = strings.Join(ip.Databases, ",")
+			e.SafetyBackupIDs = slices.Clone(ip.SafetyBackupIDs)
+		}
+	}
+	e.ConnectionID = rec.TargetConnectionID
+	if runErr != nil || rec.Status != models.RestoreStatusCompleted {
+		e.Status, e.Error = InPlacePITRFailed, failureText(rec.ErrorMessage, runErr)
+	}
+	if len(e.SafetyBackupIDs) > 0 {
+		e.Detail = "safety backup(s): " + strings.Join(e.SafetyBackupIDs, ", ")
+	}
+	return e
 }
 
 // SecurityEvent returns a SecurityDestructiveAction event (or, with approvalID and

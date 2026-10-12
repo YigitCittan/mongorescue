@@ -206,6 +206,9 @@ type Service struct {
 
 	mu      sync.Mutex
 	workers map[string]*runningWorker
+	// stopping counts, per stream, the collectors signalled to stop that have
+	// not returned yet (see collecting).
+	stopping map[string]int
 	// lastRetention is when retention last ran.
 	lastRetention time.Time
 	// chainTestTried is when the schedule last tried a chain test per stream.
@@ -243,7 +246,7 @@ func New(cfg Config) *Service {
 	}
 	// Every read of a stream follows the caller's connection access (accessRepo).
 	cfg.Repo = accessRepo{cfg.Repo}
-	return &Service{cfg: cfg, logger: cfg.Logger, workers: map[string]*runningWorker{}, kick: make(chan struct{}, 1)}
+	return &Service{cfg: cfg, logger: cfg.Logger, workers: map[string]*runningWorker{}, stopping: map[string]int{}, kick: make(chan struct{}, 1)}
 }
 
 // now returns the current time in UTC.
@@ -324,10 +327,13 @@ func (s *Service) reconcile(ctx context.Context) {
 	}
 	s.mu.Lock()
 	var stopping []*runningWorker
+	var stoppingIDs []string
 	for id, rw := range s.workers {
 		if st, ok := want[id]; !ok || !st.UpdatedAt.Equal(rw.updatedAt) {
 			rw.cancel()
 			stopping = append(stopping, rw)
+			stoppingIDs = append(stoppingIDs, id)
+			s.stopping[id]++
 			delete(s.workers, id)
 			if !ok {
 				s.observe(func(o Observer) { o.SetPITRCollectorUp(id, false) })
@@ -338,6 +344,13 @@ func (s *Service) reconcile(ctx context.Context) {
 	for _, rw := range stopping {
 		<-rw.done
 	}
+	s.mu.Lock()
+	for _, id := range stoppingIDs {
+		if s.stopping[id]--; s.stopping[id] <= 0 {
+			delete(s.stopping, id)
+		}
+	}
+	s.mu.Unlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -380,6 +393,15 @@ func (s *Service) Running(id string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.workers[id]
 	return ok
+}
+
+// collecting reports whether a collector of stream id runs or was signalled to
+// stop and has not returned yet (it may still commit a chunk).
+func (s *Service) collecting(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.workers[id]
+	return ok || s.stopping[id] > 0
 }
 
 // publish sends e when a publisher is configured.

@@ -262,6 +262,26 @@ func (w *worker) step(ctx context.Context) (time.Duration, error) {
 		return 0, nil
 	}
 	if !w.checked {
+		// A chain ended while no collector ran (a paused stream, see PauseStream)
+		// is never continued: a new one starts at the newest majority-committed
+		// entry, as for a new stream.
+		ended, endedErr := w.chainEnded(ctx, st.ChainID)
+		if endedErr != nil {
+			return 0, endedErr
+		}
+		if ended {
+			if win.MajorityOpTime.TS.IsZero() {
+				return w.interval, nil
+			}
+			if startErr := w.startChain(ctx, win.MajorityOpTime); startErr != nil {
+				return 0, startErr
+			}
+			w.lagSince, w.windowLow, w.rsID = st.LagSince, st.WindowLowSince != nil, st.ReplicaSetID
+			if w.rsID == "" {
+				w.adoptReplicaSetID(ctx, win.ReplicaSetID)
+			}
+			return 0, nil
+		}
 		// The alerts already raised and the replica set first seen survive a
 		// restart.
 		w.lagSince = st.LagSince
@@ -481,6 +501,20 @@ func (w *worker) chainStartsAt(ctx context.Context, st *pitr.State) bool {
 		}
 	}
 	return false
+}
+
+// chainEnded reports whether chain id of the stream has ended.
+func (w *worker) chainEnded(ctx context.Context, id string) (bool, error) {
+	chains, err := w.svc.cfg.Repo.ListChains(ctx, w.stream.ID)
+	if err != nil {
+		return false, fmt.Errorf("list the chains: %w", err)
+	}
+	for _, c := range chains {
+		if c.ChainID == id {
+			return !c.Open(), nil
+		}
+	}
+	return false, nil
 }
 
 // startChain starts a new chain at start; its first chunk keeps the entry there.

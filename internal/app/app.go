@@ -398,6 +398,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		restore.WithStorageResolver(targetSvc.Storage),
 		restore.WithValidationBypassCheck(prober.CanBypassDocumentValidation),
 		restore.WithDatabaseAdmin(prober),
+		restore.WithCollectionAdmin(prober),
 		restore.WithDatabaseLister(databaseNames(prober)),
 		restore.WithServerVersion(func(ctx context.Context, uri string) (string, error) {
 			info, pingErr := prober.Ping(ctx, uri)
@@ -731,6 +732,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		PITR:                metaStore,
 		PITRRestore:         restoreEngine,
 		PITRBases:           metaStore.ListBaseBackups,
+		// In-place point-in-time restores pause the stream through the collector,
+		// which is built below.
+		PITRStreams: lazyStreamControl{svc: &pitrSvc},
+		PITRSwap:    restoreEngine,
 		ToolsVersion: func(ctx context.Context) (string, error) {
 			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
 		},

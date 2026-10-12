@@ -55,7 +55,7 @@ function runProgressOf(rec) {
 }
 
 function runPhaseLabel(phase) {
-  const known = ["queued", "waiting", "dumping", "verifying", "restoring", "finishing", "cancelling"];
+  const known = ["queued", "waiting", "dumping", "verifying", "restoring", "safety_backup", "swapping", "finishing", "cancelling"];
   return known.includes(phase) ? t(`run.phase_${phase}`) : String(phase || "");
 }
 

@@ -15,6 +15,27 @@ import (
 // operations.Service.EstimatePITR).
 type pitrEstimator func(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate
 
+// lazyStreamControl pauses and resumes PITR streams for in-place point-in-time
+// restores through the collector (*svc is set once it is built, after the
+// operations service).
+type lazyStreamControl struct{ svc **collector.Service }
+
+// PauseStream implements operations.PITRStreamControl.
+func (l lazyStreamControl) PauseStream(ctx context.Context, id string) (bool, error) {
+	if *l.svc == nil {
+		return false, collector.ErrUnavailable
+	}
+	return (*l.svc).PauseStream(ctx, id)
+}
+
+// ResumeStream implements operations.PITRStreamControl.
+func (l lazyStreamControl) ResumeStream(ctx context.Context, id string) error {
+	if *l.svc == nil {
+		return collector.ErrUnavailable
+	}
+	return (*l.svc).ResumeStream(ctx, id)
+}
+
 // pitrStreams returns the PITR streams for the readiness report, from the
 // collector's status (*svc is set once the collector is built), with the RTO
 // estimate of each open window (*estimate is set once the operations service is

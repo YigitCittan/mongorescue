@@ -90,3 +90,60 @@ test("restores to a point in time through the wizard", async ({ page }) => {
   expect(sent.restore).toEqual(sent.preflight);
   await expect(wizard).toBeHidden();
 });
+
+// Issue #142: an administrator may replace the original databases instead. The
+// option is off by default, needs a list of databases, shows the downtime and
+// safety backup notes, and starts only after the database names were typed into
+// a danger confirmation.
+test("replaces the original databases after a typed confirmation", async ({ page }) => {
+  const sent: { preflight?: unknown; restore?: unknown } = {};
+  await page.route("**/api/v1/pitr/streams", route => route.fulfill({ json: { success: true, data: [stream] } }));
+  await page.route("**/api/v1/restores/preflight", async route => {
+    sent.preflight = route.request().postDataJSON();
+    await route.fulfill({ json: { success: true, data: preflight } });
+  });
+  await page.route("**/api/v1/restore", async route => {
+    sent.restore = route.request().postDataJSON();
+    await route.fulfill({ status: 202, json: { success: true, data: { id: "rst_pitr_e2e", status: "in_progress" } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /^Connections/ }).click();
+  await page.locator("#pitr-panel").getByRole("button", { name: "Restore to a time" }).click();
+  const wizard = page.locator("#form-pitr-restore");
+  await wizard.getByLabel("Restore to (UTC)").fill("2026-10-05T11:30");
+
+  const option = wizard.getByLabel("Replace the original databases");
+  await expect(option).not.toBeChecked();
+  const downtime = wizard.getByText(/^Downtime: applications must stop writing/);
+  await expect(downtime).toBeHidden();
+  await option.check();
+  await expect(downtime).toBeVisible();
+  await expect(wizard.getByText(/safety backup of each original/)).toBeVisible();
+
+  // Never the whole instance: the databases must be listed.
+  await wizard.getByRole("button", { name: "Check" }).click();
+  await expect(wizard.getByText(/List the databases to replace/)).toBeVisible();
+  expect(sent.preflight).toBeUndefined();
+
+  await wizard.getByLabel(/Databases/).fill("shop, crm");
+  await wizard.getByRole("button", { name: "Check" }).click();
+  await expect(wizard.getByText("pitr_chain")).toBeVisible();
+  expect(sent.preflight).toEqual({
+    pitr: { stream_id: "str_e2e", at: "2026-10-05T11:30:00Z", in_place: true, confirm_in_place: "shop,crm" },
+    databases: ["shop", "crm"],
+  });
+
+  await wizard.getByRole("button", { name: "Restore", exact: true }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Replace the original databases?" });
+  await expect(confirm).toContainText("Replaces shop, crm with their state at 2026-10-05T11:30:00Z");
+  const replace = confirm.getByRole("button", { name: "Replace" });
+  await expect(replace).toBeDisabled();
+  await page.locator("#confirm-input").fill("shop");
+  await expect(replace).toBeDisabled();
+  await page.locator("#confirm-input").fill("shop,crm");
+  await replace.click();
+  await expect(page.getByText("In-place point-in-time restore rst_pitr_e2e started.")).toBeVisible();
+  expect(sent.restore).toEqual(sent.preflight);
+  await expect(wizard).toBeHidden();
+});

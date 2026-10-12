@@ -146,6 +146,31 @@ func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]c
 	return out, err
 }
 
+// CollectionNames returns the names of the collections and views of database
+// (see ListCollections).
+func (p *Prober) CollectionNames(ctx context.Context, uri, database string) ([]string, error) {
+	list, err := p.ListCollections(ctx, uri, database)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.Name)
+	}
+	return out, nil
+}
+
+// DropCollection drops collection (or view) of database on the server at uri; a
+// collection that does not exist is not an error.
+func (p *Prober) DropCollection(ctx context.Context, uri, database, collection string) error {
+	return withClient(ctx, uri, func(c *mongo.Client) error {
+		if err := c.Database(database).Collection(collection).Drop(ctx); err != nil {
+			return fmt.Errorf("drop: %w", err)
+		}
+		return nil
+	})
+}
+
 // DatabaseSize returns the uncompressed data size of database from dbStats
 // (dataSize), close to the size of an uncompressed mongodump archive of it.
 func (p *Prober) DatabaseSize(ctx context.Context, uri, database string) (int64, error) {

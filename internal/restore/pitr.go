@@ -163,6 +163,10 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 		source, target = strings.Join(dbs, ","), strings.Join(clones, ",")
 	}
 	plan := run.Plan
+	var inPlace *models.PITRInPlace
+	if req.PITR.InPlace {
+		inPlace = &models.PITRInPlace{Databases: slices.Clone(dbs), Stage: models.PITRInPlaceRestoring, KeepClone: req.PITR.KeepClone}
+	}
 	return &models.RestoreRecord{
 		ID:                   fmt.Sprintf("%s%s_%s", pitrIDPrefix, start.Format("20060102_150405"), idSuffix),
 		BackupID:             run.Base.ID,
@@ -173,11 +177,12 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 		Status:               models.RestoreStatusInProgress,
 		StartedAt:            start,
 		Phases:               models.RunPhases{Queued: models.Stamp(start)},
+		InPlace:              inPlace != nil,
 		PITR: &models.PITRRestore{
 			StreamID: plan.StreamID, ChainID: plan.ChainID, BaseID: plan.Base.ID,
 			TargetTime: plan.TargetTime, Limit: plan.Limit,
 			Chunks: plan.ChunkCount, OplogBytes: plan.OplogBytes,
-			Databases: dbs, CloneSuffix: suffix, Clones: clones,
+			Databases: dbs, CloneSuffix: suffix, Clones: clones, InPlace: inPlace,
 		},
 	}, nil
 }

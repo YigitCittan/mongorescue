@@ -150,8 +150,9 @@ type RestoreRequest struct {
 	// PITR makes the request a point-in-time restore of a PITR stream: a base
 	// backup is restored into safe clones and the stream's oplog is replayed up to
 	// the target. BackupID is then left empty (the base is chosen by the plan), and
-	// in-place restores, dry runs, collection selections, drop_target and users and
-	// roles are refused (see ValidatePITR).
+	// the in-place options of a backup restore, dry runs, collection selections,
+	// drop_target and users and roles are refused (see ValidatePITR); the original
+	// databases are replaced only through PITRTarget.InPlace.
 	PITR *PITRTarget `json:"pitr,omitempty"`
 
 	// SourceTargetID selects the storage target the archive is read from: the
@@ -188,8 +189,18 @@ type RestoreRequest struct {
 }
 
 // ErrPITRInPlace is returned for a point-in-time restore that asks to write into
-// existing databases: this release restores to a point in time into safe clones only.
-var ErrPITRInPlace = errors.New("point-in-time restores go into safe clones only; in-place point-in-time restores are not offered")
+// existing databases through the options of a backup restore (safe_clone,
+// target_database, confirm_in_place): a point-in-time restore goes into safe clones,
+// or replaces its databases only through pitr.in_place.
+var ErrPITRInPlace = errors.New(`point-in-time restores go into safe clones; to replace the original databases set "pitr": {"in_place": true, "confirm_in_place": "<databases>"} instead of safe_clone, target_database or confirm_in_place`)
+
+// ErrPITRInPlaceNotConfirmed is returned for an in-place point-in-time restore
+// whose pitr.confirm_in_place does not list exactly the databases it replaces.
+var ErrPITRInPlaceNotConfirmed = errors.New(`in-place point-in-time restore not confirmed: "pitr.confirm_in_place" must list exactly the databases it replaces, comma-separated`)
+
+// ErrPITRInPlaceDatabases is returned for an in-place point-in-time restore
+// without a database selection: it replaces only databases named in "databases".
+var ErrPITRInPlaceDatabases = errors.New(`an in-place point-in-time restore replaces only the databases named in "databases"; list them`)
 
 // PITRTarget is the stream and the moment of a point-in-time restore. Exactly one of
 // At and TS is set.
@@ -202,6 +213,24 @@ type PITRTarget struct {
 	// TS restores every write before this exact oplog position, which is not
 	// applied.
 	TS *pitr.Timestamp `json:"ts,omitempty"`
+	// InPlace makes the restore end with the original databases holding the
+	// restored state: it restores into safe clones and verifies them as usual,
+	// takes a safety backup of every original database, pauses the stream, copies
+	// each clone over its original and drops the clones. It needs the admin scope,
+	// a database selection (RestoreRequest.Databases) and ConfirmInPlace; the MCP
+	// adapter never sets it.
+	InPlace bool `json:"in_place,omitempty"`
+	// ConfirmInPlace lists, comma-separated, the databases an InPlace restore
+	// replaces; it must name exactly RestoreRequest.Databases (in any order).
+	ConfirmInPlace string `json:"confirm_in_place,omitempty"`
+	// KeepClone keeps the clones of a successful InPlace restore instead of
+	// dropping them.
+	KeepClone bool `json:"keep_clone,omitempty"`
+}
+
+// IsInPlace reports whether t is an in-place point-in-time restore (nil: no).
+func (t *PITRTarget) IsInPlace() bool {
+	return t != nil && t.InPlace
 }
 
 // Target returns the plan target of t.
@@ -219,8 +248,11 @@ func (t PITRTarget) Target() pitr.Target {
 
 // ValidatePITR checks a point-in-time request: a stream, exactly one of a time and a
 // timestamp, valid database names other than admin, config and local, and none of
-// the options a point-in-time restore does not offer (an in-place restore wraps
-// ErrPITRInPlace). It returns nil for a request without PITR.
+// the options a point-in-time restore does not offer (the in-place options of a
+// backup restore wrap ErrPITRInPlace). An in-place point-in-time restore
+// (PITRTarget.InPlace) needs a database selection (ErrPITRInPlaceDatabases) that
+// ConfirmInPlace names exactly (ErrPITRInPlaceNotConfirmed). It returns nil for a
+// request without PITR.
 func (r RestoreRequest) ValidatePITR() error {
 	if r.PITR == nil {
 		if len(r.Databases) > 0 {
@@ -249,6 +281,9 @@ func (r RestoreRequest) ValidatePITR() error {
 	if _, err := r.PITR.Target().Limit(); err != nil {
 		return err
 	}
+	if !r.PITR.InPlace && (strings.TrimSpace(r.PITR.ConfirmInPlace) != "" || r.PITR.KeepClone) {
+		return errors.New(`pitr.confirm_in_place and pitr.keep_clone only apply with "pitr.in_place": true`)
+	}
 	seen := map[string]bool{}
 	for _, db := range r.Databases {
 		db = strings.TrimSpace(db)
@@ -265,6 +300,31 @@ func (r RestoreRequest) ValidatePITR() error {
 			return fmt.Errorf("databases: %s is listed twice", db)
 		}
 		seen[db] = true
+	}
+	if r.PITR.InPlace {
+		return r.validatePITRInPlace()
+	}
+	return nil
+}
+
+// validatePITRInPlace checks the selection and the confirmation of an in-place
+// point-in-time restore.
+func (r RestoreRequest) validatePITRInPlace() error {
+	dbs := r.PITRDatabases()
+	if len(dbs) == 0 {
+		return ErrPITRInPlaceDatabases
+	}
+	var confirmed []string
+	for _, db := range strings.Split(r.PITR.ConfirmInPlace, ",") {
+		if db = strings.TrimSpace(db); db != "" {
+			confirmed = append(confirmed, db)
+		}
+	}
+	want := slices.Clone(dbs)
+	slices.Sort(want)
+	slices.Sort(confirmed)
+	if !slices.Equal(want, confirmed) {
+		return fmt.Errorf("%w (the restore replaces %s)", ErrPITRInPlaceNotConfirmed, strings.Join(want, ","))
 	}
 	return nil
 }
@@ -322,6 +382,57 @@ type PITRRestore struct {
 	// (see PITRReplayRate).
 	BaseSeconds   float64 `json:"base_seconds,omitempty"`
 	ReplaySeconds float64 `json:"replay_seconds,omitempty"`
+	// InPlace describes an in-place point-in-time restore (PITRTarget.InPlace):
+	// its safety backups, the stream it paused and how far the swap got. Nil for a
+	// restore into safe clones.
+	InPlace *PITRInPlace `json:"in_place,omitempty"`
+}
+
+// Stages of an in-place point-in-time restore (PITRInPlace.Stage), in order.
+const (
+	// PITRInPlaceRestoring: the restore into the clones runs (originals untouched).
+	PITRInPlaceRestoring = "restoring"
+	// PITRInPlaceSafetyBackup: the safety backups of the originals run.
+	PITRInPlaceSafetyBackup = "safety_backup"
+	// PITRInPlacePausing: the stream is paused (its open chain ends).
+	PITRInPlacePausing = "pausing"
+	// PITRInPlaceSwapping: the clones are copied over the originals. From here
+	// on the originals may have changed.
+	PITRInPlaceSwapping = "swapping"
+	// PITRInPlaceResuming: the swap ended and the stream is enabled again.
+	PITRInPlaceResuming = "resuming"
+	// PITRInPlaceDone: the restore ended, successfully or not.
+	PITRInPlaceDone = "done"
+)
+
+// BackupLabelPrePITRInPlace labels the safety backups an in-place point-in-time
+// restore takes of the original databases right before it replaces them.
+const BackupLabelPrePITRInPlace = "pre-pitr-in-place"
+
+// PITRInPlace records an in-place point-in-time restore (PITRRestore.InPlace).
+type PITRInPlace struct {
+	// Databases are the original databases the restore replaces.
+	Databases []string `json:"databases"`
+	// Stage is how far the restore got (PITRInPlace* stages).
+	Stage string `json:"stage"`
+	// SafetyBackupIDs are the backups of the original databases taken right
+	// before the swap (labelled BackupLabelPrePITRInPlace).
+	SafetyBackupIDs []string `json:"safety_backup_ids,omitempty"`
+	// StreamWasEnabled reports that the stream collected when it was paused, so
+	// it is enabled again afterwards.
+	StreamWasEnabled bool `json:"stream_was_enabled,omitempty"`
+	// StreamPaused reports that the stream was paused and its open chain ended;
+	// StreamResumed that it was enabled again afterwards.
+	StreamPaused  bool `json:"stream_paused,omitempty"`
+	StreamResumed bool `json:"stream_resumed,omitempty"`
+	// SwapStarted reports that the swap began: the originals may have changed.
+	SwapStarted bool `json:"swap_started,omitempty"`
+	// Swapped are the original databases that hold the restored state.
+	Swapped []string `json:"swapped,omitempty"`
+	// KeepClone reports that the clones are kept after a successful swap.
+	KeepClone bool `json:"keep_clone,omitempty"`
+	// NewBaseID is the base backup started for the stream's new chain.
+	NewBaseID string `json:"new_base_id,omitempty"`
 }
 
 // PITRReplayRate returns the replay throughput of pass 2 in oplog entries and

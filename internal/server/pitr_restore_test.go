@@ -23,12 +23,26 @@ func TestPITRRestoreAPI(t *testing.T) {
 			t.Fatalf("%s as operator: %d %s", path, code, out)
 		}
 		if code, out := f.do(auth.ScopeOperator, "POST", path,
-			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "safe clones only") {
+			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "go into safe clones") {
 			t.Fatalf("%s in place as operator: %d %s", path, code, out)
 		}
 		if code, out := f.do(auth.ScopeAdmin, "POST", path,
-			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "safe clones only") {
+			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z"},"safe_clone":false,"confirm_in_place":true}`); code != http.StatusBadRequest || !strings.Contains(out, "go into safe clones") {
 			t.Fatalf("%s in place: %d %s", path, code, out)
+		}
+		// An in-place point-in-time restore (#142) needs admin and a confirmation
+		// naming exactly its databases.
+		inPlace := `{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z","in_place":true,"confirm_in_place":"shop"},"databases":["shop"]}`
+		if code, out := f.do(auth.ScopeOperator, "POST", path, inPlace); code != http.StatusForbidden {
+			t.Fatalf("%s pitr.in_place as operator: %d %s", path, code, out)
+		}
+		if code, out := f.do(auth.ScopeAdmin, "POST", path,
+			`{"pitr":{"stream_id":"str_a","at":"2026-10-05T12:00:00Z","in_place":true,"confirm_in_place":"crm"},"databases":["shop"]}`); code != http.StatusBadRequest ||
+			!strings.Contains(out, "not confirmed") {
+			t.Fatalf("%s pitr.in_place unconfirmed: %d %s", path, code, out)
+		}
+		if code, out := f.do(auth.ScopeAdmin, "POST", path, inPlace); code != http.StatusServiceUnavailable {
+			t.Fatalf("%s pitr.in_place without PITR restores: %d %s", path, code, out)
 		}
 		if code, out := f.do(auth.ScopeAdmin, "POST", path, `{"pitr":{"stream_id":"str_a","at":"yesterday"}}`); code != http.StatusBadRequest {
 			t.Fatalf("%s bad time: %d %s", path, code, out)
