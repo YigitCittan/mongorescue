@@ -220,7 +220,7 @@ func (s *Service) CleanupInterruptedPITR(ctx context.Context, rec *models.Restor
 	if rec == nil || rec.PITR == nil || s.cfg.PITRRestore == nil {
 		return ""
 	}
-	if ip := rec.PITR.InPlace; ip != nil && (ip.StreamPaused || ip.SwapStarted || len(ip.SafetyBackupIDs) > 0) {
+	if ip := rec.PITR.InPlace; ip != nil && ip.Stage != models.PITRInPlaceRestoring {
 		return s.cleanupInterruptedInPlace(ctx, rec)
 	}
 	if len(rec.PITR.Clones) == 0 {

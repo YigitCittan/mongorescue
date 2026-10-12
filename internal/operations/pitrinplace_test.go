@@ -31,6 +31,8 @@ type inPlaceFakes struct {
 	swapErr error
 	// snapshotErr fails SnapshotPITRClones (a clone that lists nothing).
 	snapshotErr error
+	// resumeErr fails ResumeStream.
+	resumeErr error
 	// pauseWas is what PauseStream reports.
 	pauseWas bool
 }
@@ -75,7 +77,7 @@ func (f *inPlaceFakes) PauseStream(context.Context, string) (bool, error) {
 
 func (f *inPlaceFakes) ResumeStream(context.Context, string) error {
 	f.call("resume")
-	return nil
+	return f.resumeErr
 }
 
 func (f *inPlaceFakes) SnapshotPITRClones(_ context.Context, _ models.RestoreRequest, rec *models.RestoreRecord) error {
@@ -437,5 +439,68 @@ func TestPITRInPlaceWaitsForASecondAdministrator(t *testing.T) {
 			t.Fatalf("the approved restore did not finish: %v", fakes.order())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// interruptedInPlace is the record of an in-place restore of shop that a stop
+// interrupted in stage, after storing that the stream was enabled.
+func interruptedInPlace(stage string, paused bool) *models.RestoreRecord {
+	const suffix = "_rescue_20261005_120000_ab12"
+	return &models.RestoreRecord{ID: "rst_pitr_crash", Status: models.RestoreStatusInProgress, TargetConnectionID: "conn_a", InPlace: true,
+		PITR: &models.PITRRestore{StreamID: "str_a", Databases: []string{"shop"}, CloneSuffix: suffix, Clones: []string{"shop" + suffix},
+			InPlace: &models.PITRInPlace{Databases: []string{"shop"}, Stage: stage, StreamWasEnabled: true, StreamPaused: paused,
+				SwapStarted: stage == models.PITRInPlaceSwapping || stage == models.PITRInPlaceResuming, SafetyBackupIDs: []string{"bkp_safety"}}}}
+}
+
+// TestInterruptedInPlaceResumesTheStream is the regression test of a stream left
+// disabled by a crash between pausing it and enabling it again: whatever the
+// stage, the next start enables it and starts a base of its new chain, and an
+// enable that fails raises pitr.collector_failed.
+func TestInterruptedInPlaceResumesTheStream(t *testing.T) {
+	for _, c := range []struct {
+		stage  string
+		paused bool
+	}{{models.PITRInPlacePausing, false}, {models.PITRInPlacePausing, true}, {models.PITRInPlaceSwapping, true}, {models.PITRInPlaceResuming, true}} {
+		env := newInPlaceEnv(t, false)
+		note := env.svc.CleanupInterruptedPITR(context.Background(), interruptedInPlace(c.stage, c.paused))
+		if !strings.Contains(note, "str_a was enabled again") {
+			t.Fatalf("%s: note %q", c.stage, note)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		resumes := func() int {
+			return len(slices.DeleteFunc(env.fakes.order(), func(c string) bool { return c != "resume" }))
+		}
+		for resumes() < 2 {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the new chain was not awaited: %v", c.stage, env.fakes.order())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		swapping := c.stage == models.PITRInPlaceSwapping || c.stage == models.PITRInPlaceResuming
+		if swapping && !strings.Contains(note, "shop_rescue_20261005_120000_ab12") {
+			t.Fatalf("a stop during the swap must keep and name the clone: %q", note)
+		}
+		if slices.Contains(env.fakes.order(), "drop_clones") == swapping {
+			t.Fatalf("%s: clone handling %v", c.stage, env.fakes.order())
+		}
+	}
+
+	// A stream that cannot be enabled again raises an alert.
+	env := newInPlaceEnv(t, false)
+	env.fakes.resumeErr = errors.New("the stream was deleted")
+	note := env.svc.CleanupInterruptedPITR(context.Background(), interruptedInPlace(models.PITRInPlacePausing, false))
+	if !strings.Contains(note, "could not be enabled again") {
+		t.Fatalf("note %q", note)
+	}
+	alerts := env.eventsOf(events.PITRCollectorFailed)
+	if len(alerts) != 1 || alerts[0].Stream != "str_a" || alerts[0].RestoreID != "rst_pitr_crash" {
+		t.Fatalf("alerts = %+v", alerts)
+	}
+
+	// Still restoring into the clones: the stream was never paused.
+	env = newInPlaceEnv(t, false)
+	env.svc.CleanupInterruptedPITR(context.Background(), interruptedInPlace(models.PITRInPlaceRestoring, false))
+	if slices.Contains(env.fakes.order(), "resume") {
+		t.Fatalf("a stream that was never paused was resumed: %v", env.fakes.order())
 	}
 }

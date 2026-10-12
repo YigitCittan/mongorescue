@@ -204,19 +204,26 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 		}
 	}
 
-	// 2. Pause the stream.
+	// 2. Pause the stream. Whether it was enabled is stored before it is paused,
+	// so a stop at any point from here on enables it again at the next start
+	// (cleanupInterruptedInPlace).
 	ip.Stage = models.PITRInPlacePausing
+	ip.StreamWasEnabled = pp.stream.Enabled
+	if st, getErr := s.cfg.PITR.GetStream(ctx, pp.stream.ID); getErr == nil {
+		ip.StreamWasEnabled = st.Enabled
+	}
 	save()
 	pauseCtx, cancelPause := context.WithTimeout(ctx, streamPauseTimeout)
 	wasEnabled, err := s.cfg.PITRStreams.PauseStream(pauseCtx, pp.stream.ID)
 	cancelPause()
-	ip.StreamWasEnabled = wasEnabled
+	ip.StreamWasEnabled = ip.StreamWasEnabled || wasEnabled
 	if err != nil {
 		note := s.resumeInPlace(ctx, pp, rec, locks, false)
 		return s.failInPlace(ctx, rec, err, fmt.Sprintf("the PITR stream could not be paused: %s; the original databases are untouched, the safety backup(s) %s are kept%s%s",
 			redact.Text(err.Error()), strings.Join(ip.SafetyBackupIDs, ", "), dropClones(), note))
 	}
 	ip.StreamPaused = true
+	save()
 	tracker.Printf("PITR stream %s paused (it was %s); its chain ended", pp.stream.ID, map[bool]string{true: "enabled", false: "disabled"}[wasEnabled])
 
 	// 3. The swap.
@@ -438,20 +445,65 @@ func (s *Service) cleanupInterruptedInPlace(ctx context.Context, rec *models.Res
 			note += fmt.Sprintf("; the clones %s could not be dropped (%s), drop them manually", strings.Join(rec.PITR.Clones, ", "), redact.Text(err.Error()))
 		}
 	}
-	if ip.StreamWasEnabled && ip.StreamPaused && !ip.StreamResumed && s.cfg.PITRStreams != nil {
-		// The collector may not run yet at startup: the stream is enabled, and its
-		// new chain opens once it does.
-		resumeCtx, cancel := context.WithTimeout(ctx, time.Second)
-		err := s.cfg.PITRStreams.ResumeStream(resumeCtx, rec.PITR.StreamID)
-		cancel()
-		switch {
-		case err == nil || errors.Is(err, context.DeadlineExceeded):
-			note += "; the PITR stream " + rec.PITR.StreamID + " was enabled again: take a base backup of its new chain"
-		default:
-			note += fmt.Sprintf("; the PITR stream %s could not be enabled again (%s): enable it and take a base backup", rec.PITR.StreamID, redact.Text(err.Error()))
-		}
+	// The stream is enabled again whenever the restore got as far as pausing it
+	// (its state is stored before the pause), whatever the stage it stopped in.
+	if ip.Stage != models.PITRInPlaceRestoring && ip.StreamWasEnabled && !ip.StreamResumed {
+		note += s.resumeInterrupted(ctx, rec)
 	}
 	return note
+}
+
+// resumeInterrupted enables the stream an interrupted in-place restore paused
+// and, in the background, waits for its collector's new chain and starts the base
+// backup of that chain. A stream that cannot be enabled raises
+// pitr.collector_failed. It returns a note for the record.
+func (s *Service) resumeInterrupted(ctx context.Context, rec *models.RestoreRecord) string {
+	id := rec.PITR.StreamID
+	if s.cfg.PITRStreams == nil {
+		s.alertResume(ctx, rec, errors.New("PITR streams cannot be controlled in this setup"))
+		return "; the PITR stream " + id + " was paused by this restore: enable it and take a base backup"
+	}
+	// The collector may not run yet at startup: the stream is enabled now, and
+	// its new chain opens once the collector runs.
+	enableCtx, cancel := context.WithTimeout(ctx, time.Second)
+	err := s.cfg.PITRStreams.ResumeStream(enableCtx, id)
+	cancel()
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		s.alertResume(ctx, rec, err)
+		return fmt.Sprintf("; the PITR stream %s could not be enabled again (%s): enable it and take a base backup", id, redact.Text(err.Error()))
+	}
+	goErr := s.cfg.Runs.Go("", func(runCtx context.Context) {
+		waitCtx, cancelWait := context.WithTimeout(runCtx, streamResumeTimeout)
+		defer cancelWait()
+		if waitErr := s.cfg.PITRStreams.ResumeStream(waitCtx, id); waitErr != nil {
+			s.alertResume(runCtx, rec, waitErr)
+			return
+		}
+		base, baseErr := s.StartBaseBackup(runCtx, id, models.TriggerManual)
+		if baseErr != nil {
+			s.logger.Warn("the base backup of a PITR stream resumed after an interrupted in-place restore could not be started; the base schedule retries it",
+				logsafe.Attr("stream_id", id), logsafe.Attr("restore_id", rec.ID), logsafe.Error(baseErr))
+			return
+		}
+		s.logger.Info("PITR stream resumed after an interrupted in-place restore", logsafe.Attr("stream_id", id),
+			logsafe.Attr("restore_id", rec.ID), logsafe.Attr("backup_id", base.ID))
+	})
+	if goErr != nil {
+		return "; the PITR stream " + id + " was enabled again: take a base backup of its new chain"
+	}
+	return "; the PITR stream " + id + " was enabled again, and a base backup of its new chain is started once its collector runs"
+}
+
+// alertResume raises pitr.collector_failed for the stream an interrupted in-place
+// restore paused and that could not be enabled again: until someone does, no
+// oplog is collected.
+func (s *Service) alertResume(ctx context.Context, rec *models.RestoreRecord, err error) {
+	msg := redact.Text(err.Error())
+	s.logger.Error("the PITR stream paused by an interrupted in-place restore could not be enabled again",
+		logsafe.Attr("stream_id", rec.PITR.StreamID), logsafe.Attr("restore_id", rec.ID), logsafe.Attr("error", msg))
+	s.publish(context.WithoutCancel(ctx), events.Event{Type: events.PITRCollectorFailed, Time: s.now().UTC(), Status: "failed",
+		Error: msg, Stream: rec.PITR.StreamID, ConnectionID: rec.TargetConnectionID, RestoreID: rec.ID,
+		Detail: "the in-place point-in-time restore " + rec.ID + " paused this stream and MongoRescue stopped before it was enabled again; enable it and take a base backup"})
 }
 
 // pitrInPlace reports what an in-place point-in-time restore does to the
