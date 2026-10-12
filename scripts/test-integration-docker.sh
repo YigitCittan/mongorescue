@@ -28,6 +28,7 @@
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
 #   GOTESTFLAGS    extra flags for go test (e.g. "-run TestStorageConformance -v")
+#   IT_TIMEOUT     go test -timeout per package (default 30m)
 # ==============================================================================
 set -euo pipefail
 
@@ -293,5 +294,7 @@ fi
 RACE_FLAG="-race"
 if [ "$IT_RACE" = 0 ]; then RACE_FLAG=""; fi
 log "running integration suite (MongoDB $MONGO_IMAGE $MONGO_TOPOLOGY, providers: local ${IT_PROVIDERS}, race: ${IT_RACE})"
+# The integration package runs for about 10 minutes on a replica set with -race on a
+# GitHub runner, go test's default per-package limit, so the limit is explicit.
 # shellcheck disable=SC2086 # RACE_FLAG and GOTESTFLAGS are intentionally word-split
-go test $RACE_FLAG -tags=integration -count=1 ${GOTESTFLAGS:-} ./...
+go test $RACE_FLAG -tags=integration -count=1 -timeout "${IT_TIMEOUT:-30m}" ${GOTESTFLAGS:-} ./...
