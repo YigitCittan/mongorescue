@@ -175,7 +175,10 @@ func WithConnectionDefaults(uri string) string {
 
 	switch {
 	case strings.Contains(rest, "?"):
-		if strings.HasSuffix(uri, "?") || strings.HasSuffix(uri, "&") {
+		// Judge the query, not the URI's last byte: a '?' that ends an option value
+		// ("appName=a?") does not start an empty query, and appending there would
+		// merge the defaults into that value.
+		if query == "" || strings.HasSuffix(query, "&") {
 			return uri + extra
 		}
 		return uri + "&" + extra
