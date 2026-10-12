@@ -237,6 +237,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			_ = dirLock.Release()
 		}
 	}()
+	// A replacement of the database (an HA takeover) that a crash interrupted is
+	// settled before it is opened, never left with a database missing its log.
+	if err = store.RecoverReplace(cfg.MetadataDBPath(), logger); err != nil {
+		return nil, fmt.Errorf("open the metadata database: %w", err)
+	}
 	keyFile := filepath.Join(cfg.DataDir, secretbox.KeyFileName)
 	key, err := secretbox.LoadKey(secretbox.KeySource{Env: secretKey, File: keyFile}, logger)
 	if err != nil {
