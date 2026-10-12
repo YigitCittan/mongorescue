@@ -195,6 +195,35 @@ func TestRotateResealsEverythingAndRefusesTheOldKey(t *testing.T) {
 	checkSecrets(t, again.Store)
 }
 
+// TestAnnounceRunsBeforeTheMarkerGoes checks that a rotation is announced once its
+// key file is installed and while its marker is still stored, so a crash before the
+// announcement is durable leaves the marker for the next start to announce again.
+func TestAnnounceRunsBeforeTheMarkerGoes(t *testing.T) {
+	e := newEnv(t)
+	opened := e.start(t)
+	ctx := context.Background()
+	var announced *keyrotation.Result
+	res, err := rotator(e, opened, nil, nil).RotateAs(ctx, "alice", "apr_1", func(ctx context.Context, r *keyrotation.Result) {
+		m, mErr := opened.Store.PendingKeyRotation(ctx)
+		if mErr != nil || m == nil || m.Actor != "alice" || m.ApprovalID != "apr_1" {
+			t.Errorf("marker while announcing = %+v, %v; want the rotation's", m, mErr)
+		}
+		if fp, _ := secretbox.Fingerprint(readKey(t, e.files.Current)); fp != r.NewFingerprint {
+			t.Error("announced before the new key file was installed")
+		}
+		announced = r
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if announced != res {
+		t.Fatalf("announced %+v; want the result %+v", announced, res)
+	}
+	if m, mErr := opened.Store.PendingKeyRotation(ctx); mErr != nil || m != nil {
+		t.Fatalf("marker after the rotation = %+v, %v; want none", m, mErr)
+	}
+}
+
 func TestRotateTwiceKeepsImportedKeyMACs(t *testing.T) {
 	e := newEnv(t)
 	opened := e.start(t)
@@ -234,6 +263,7 @@ func TestCrashAtEveryStep(t *testing.T) {
 		{keyrotation.StepCommitted, true, keyrotation.OutcomeCompleted},
 		{keyrotation.StepPreviousKept, true, keyrotation.OutcomeCompleted},
 		{keyrotation.StepInstalled, true, keyrotation.OutcomeCompleted},
+		{keyrotation.StepAnnounced, true, keyrotation.OutcomeCompleted},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.step), func(t *testing.T) {

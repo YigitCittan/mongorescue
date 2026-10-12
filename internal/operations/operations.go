@@ -235,6 +235,10 @@ type Config struct {
 	Reencrypter Reencrypter
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
+	// Alerts queues alerts that must survive a crash right after them (such as
+	// security.key_rotated) for the notification channels before the operation
+	// answers; nil leaves them to the Publisher alone.
+	Alerts AlertSink
 	// DiskGuard settles a backup whose final record cannot be saved (a full data
 	// directory) as failed and retries its save; nil only retries the save briefly.
 	DiskGuard *diskguard.Guard
@@ -971,6 +975,24 @@ func (s *Service) publish(ctx context.Context, e events.Event) {
 	if s.cfg.Publisher != nil {
 		s.cfg.Publisher.Publish(ctx, e)
 	}
+}
+
+// AlertSink queues an event for the notification channels synchronously (implemented
+// by *notify.Service): the deliveries are stored durably before DeliverNow returns
+// the event's ID, and the event's copy published on the Bus with that ID is not
+// delivered again.
+type AlertSink interface {
+	// DeliverNow stores the deliveries of e and returns e's ID.
+	DeliverNow(ctx context.Context, e events.Event) string
+}
+
+// alert queues e for the notification channels before it returns (see Config.Alerts),
+// then publishes it for the other subscribers.
+func (s *Service) alert(ctx context.Context, e events.Event) {
+	if s.cfg.Alerts != nil {
+		e.ID = s.cfg.Alerts.DeliverNow(ctx, e)
+	}
+	s.publish(ctx, e)
 }
 
 // derefOr returns *p, or def when p is nil.

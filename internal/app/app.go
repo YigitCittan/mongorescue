@@ -723,6 +723,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		KeyRotator:          keyRotator,
 		Reencrypter:         reencryptSvc,
 		Publisher:           bus,
+		Alerts:              notifySvc,
 		DiskGuard:           diskGuard,
 		Verifier:            integritySvc,
 		Inspector:           prober,

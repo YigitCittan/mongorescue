@@ -289,3 +289,36 @@ func TestOutboxDropsDeletedChannels(t *testing.T) {
 	defer stop()
 	waitFor(t, "the outbox to empty", func() bool { return len(heads(t, s)) == 0 })
 }
+
+// DeliverNow stores the deliveries before it returns (a crash right after loses
+// nothing), and the same event arriving from the Bus afterwards is not delivered a
+// second time; another event still is.
+func TestDeliverNowIsDurableAndOnce(t *testing.T) {
+	s := storetest.New(t)
+	seedChannel(t, s)
+	rec := &recorder{}
+	svc := notify.NewService(s, notify.WithOutbox(s),
+		notify.WithNotifierFactory(func(*notify.Channel) (notify.Notifier, error) { return rec, nil }))
+	e := keyRotated("rotation now")
+	id := svc.DeliverNow(context.Background(), e)
+	if !strings.HasPrefix(id, "evt_") {
+		t.Fatalf("DeliverNow returned ID %q", id)
+	}
+	if h := heads(t, s); len(h) != 1 || h[0].Event.ID != id {
+		t.Fatalf("outbox after DeliverNow = %+v; want the event %s stored", h, id)
+	}
+	e.ID = id
+	svc.HandleEvent(context.Background(), e) // the Bus copy
+	svc.HandleEvent(context.Background(), keyRotated("another rotation"))
+	stop := runService(t, svc)
+	defer stop()
+	waitFor(t, "both deliveries", func() bool { return len(rec.messages()) >= 2 })
+	waitFor(t, "the outbox to empty", func() bool { return len(heads(t, s)) == 0 })
+	got := map[string]int{}
+	for _, m := range rec.messages() {
+		got[m.Event.Detail]++
+	}
+	if got["rotation now"] != 1 || got["another rotation"] != 1 {
+		t.Fatalf("deliveries = %v; want each event once", got)
+	}
+}
