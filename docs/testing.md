@@ -125,7 +125,7 @@ MONGORESCUE_LOAD_PROFILE=small MONGORESCUE_LOAD_DATA_MB=512 MONGORESCUE_LOAD_JOB
 
 ### Load test numbers
 
-The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker Desktop with MongoDB 8.0 primary and secondary, 1 GiB WiredTiger cache each, and MinIO in one VM); this run is the committed `ci` baseline:
+The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker Desktop with MongoDB 8.0 primary and secondary, 1 GiB WiredTiger cache each, and MinIO in one VM); this run was the committed `ci` baseline until 2026-10-12 (see below the table):
 
 | Measurement | Value |
 | :--- | :--- |
@@ -149,6 +149,18 @@ The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker
 | Primary insert+read p95, during a dump, read preference primary | 17.4 ms (3.06× idle, 80 ops/s) |
 | Primary insert+read p95, during a dump from the secondary | 19.7 ms (3.46× idle, 75 ops/s) |
 | Primary insert+read p95, during a throttled dump (80 Mbit/s, one collection at a time) | 7.1 ms (1.24× idle, 112 ops/s) |
+
+The weekly job failed against that baseline on every run: a GitHub-hosted runner (4 CPUs, MongoDB primary, secondary, MinIO and the test on one VM) is more than three times slower than the laptop for some measurements, so they fell outside the tolerances without a code change. Since 2026-10-12 the committed `ci` baseline is therefore the worst of the two runner reports of 2026-10-11 and 2026-10-12, except the jobs list and overview history latencies (#156). On the runners:
+
+| Measurement | Runner (two runs) |
+| :--- | :--- |
+| Creating jobs / connections through the API (16 clients) | 603–895 jobs/s, 1,952–2,920 connections/s |
+| Primary insert+read p95, idle | 1.4–1.8 ms |
+| Primary insert+read p95, during a dump, read preference primary | 44.4–76.1 ms (60–76 ops/s) |
+| Primary insert+read p95, during a dump from the secondary | 44.4–77.8 ms (62–71 ops/s) |
+| Primary insert+read p95, during a throttled dump | 2.2–3.5 ms |
+| API p95: Connections / Readiness, 16 clients | 63.4–120.2 / 2,929.9–4,265.4 ms |
+| Backup throughput (no gzip, to MinIO) | 89.8–122.2 MB/s |
 
 The `small` profile on the same laptop, a run checked against the committed `small` baseline (no regression):
 

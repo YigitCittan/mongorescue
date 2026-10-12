@@ -91,13 +91,26 @@ type OplogMember struct {
 // read preference selects a member for each read.
 func (s *OplogMember) Host() string { return s.host }
 
-// oplog returns the oplog collection with the reader's read concern.
+// oplog returns the oplog collection with the reader's read concern and read
+// preference.
 func (s *OplogMember) oplog() *mongo.Collection {
+	return s.client.Database(oplogDB, s.oplogOptions()).Collection(oplogColl)
+}
+
+// oplogOptions returns the database options of the reader's oplog reads. The
+// read preference is the reader's own: the primary's readers share the session's
+// client, whose default (secondaryPreferred) would otherwise send their oplog
+// reads to any secondary, such as a former primary that has just rejoined and
+// not yet rolled back.
+func (s *OplogMember) oplogOptions() *options.DatabaseOptionsBuilder {
 	opts := options.Database()
+	if s.rp != nil {
+		opts.SetReadPreference(s.rp)
+	}
 	if s.majority {
 		opts.SetReadConcern(readconcern.Majority())
 	}
-	return s.client.Database(oplogDB, opts).Collection(oplogColl)
+	return opts
 }
 
 // OpenOplogSession returns a session for uri reading with readPreference (empty

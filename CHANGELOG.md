@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Cancelling a run at the moment it starts no longer races with the opening of its log (found by the race detector on Windows CI).
+- The PITR collector could end a healthy chain as `diverged` (`pitr.diverged`) right after a former primary rejoined its replica set. Its oplog reads "on the primary" (confirming a gap or divergence, and reading chunks when no secondary is current) went to any secondary under the session's `secondaryPreferred` read preference. When that secondary was the former primary, which had not yet rolled back, the newest stored entry seemed to be missing. These reads now go to the primary (found by the nightly replica set scenarios).
 
 ## [0.26.0] - 2026-10-12
 
