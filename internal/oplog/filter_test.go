@@ -957,3 +957,24 @@ func TestFilterFixtureDetails(t *testing.T) {
 		})
 	}
 }
+
+// TestFilterTransactionNamespace checks that a transaction entry anywhere but on
+// admin.$cmd is refused instead of being copied with its namespace unchecked
+// (FuzzFilter found an entry without ns written).
+func TestFilterTransactionNamespace(t *testing.T) {
+	o := bson.D{{Key: "applyOps", Value: applyOps(insert("shop.orders", 1))}}
+	for name, ns := range map[string]any{"no ns": nil, "shop.$cmd": "shop.$cmd", "empty": ""} {
+		e := txnEntry(1, o)
+		if ns == nil {
+			e = append(e[:3:3], e[4:]...)
+		} else {
+			e[3].Value = ns
+		}
+		if out, err := run(t, shopFilter(), entryAt(t, ts(1, 1), e)); !errors.Is(err, ErrMalformed) || len(out) != 0 {
+			t.Errorf("%s: written %v, err = %v; want ErrMalformed", name, out, err)
+		}
+	}
+	if out := mustRun(t, shopFilter(), entryAt(t, ts(1, 1), txnEntry(1, o))); len(out) != 1 {
+		t.Errorf("a transaction on admin.$cmd wrote %d entries, want 1", len(out))
+	}
+}
