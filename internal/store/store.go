@@ -62,6 +62,11 @@ type Store interface {
 	GetJob(ctx context.Context, id string) (*models.Job, error)
 	// ListJobs returns all jobs sorted by name.
 	ListJobs(ctx context.Context) ([]*models.Job, error)
+	// QueryJobs reads a window of the jobs matching a query, in name and ID order,
+	// after its cursor (keyset paging).
+	QueryJobs(ctx context.Context, q JobQuery) (*JobWindow, error)
+	// CountJobs counts the jobs matching the filters of a query.
+	CountJobs(ctx context.Context, q JobQuery) (int, error)
 	// DeleteJob removes a job or returns ErrNotFound.
 	DeleteJob(ctx context.Context, id string) error
 	// UpdateJobKnownDatabases stores only a job's KnownDatabases, as update decides
@@ -81,6 +86,9 @@ type Store interface {
 	// LatestJobRuns maps each of jobIDs that has runs to its newest run, in one
 	// query (per 500 IDs).
 	LatestJobRuns(ctx context.Context, jobIDs []string) (map[string]*models.JobRun, error)
+	// RecentExecutedJobRuns maps each of jobIDs to its newest perJob runs that ran
+	// (ListExecutedJobRuns for many jobs), in one bounded query per 500 IDs.
+	RecentExecutedJobRuns(ctx context.Context, jobIDs []string, perJob int) (map[string][]*models.JobRun, error)
 	// ListRunningJobRuns returns every job run still recorded as running.
 	ListRunningJobRuns(ctx context.Context) ([]*models.JobRun, error)
 
@@ -141,6 +149,9 @@ type Store interface {
 	// LatestJobDatabaseBackups maps every database of a job with backups in status
 	// (any when empty) to its newest one.
 	LatestJobDatabaseBackups(ctx context.Context, jobID string, status models.BackupStatus) (map[string]*models.BackupRecord, error)
+	// LatestJobsDatabaseBackups is LatestJobDatabaseBackups for many jobs, keyed by
+	// job and database, in one query per 500 IDs.
+	LatestJobsDatabaseBackups(ctx context.Context, jobIDs []string, status models.BackupStatus) (map[string]map[string]*models.BackupRecord, error)
 	// RestoreStats returns the number of restores and their counts by status.
 	RestoreStats(ctx context.Context) (*RestoreStats, error)
 	// RestoreStatsIn is RestoreStats over the restores whose source and target
