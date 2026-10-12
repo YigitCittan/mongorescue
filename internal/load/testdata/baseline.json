@@ -48,40 +48,58 @@
           "slack": 10
         },
         "api.history.p95_ms": {
-          "value": 1454.266,
+          "value": 4.128,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.history_x16.p95_ms": {
-          "value": 6443.381,
+          "value": 24.203,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_first.p95_ms": {
+          "value": 1.125,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_first_x16.p95_ms": {
+          "value": 14.888,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_search.p95_ms": {
+          "value": 65.113,
           "better": "lower",
           "tolerance": 3,
           "slack": 10
         },
-        "api.jobs_all.p95_ms": {
-          "value": 84.12,
-          "better": "lower",
-          "tolerance": 3,
-          "slack": 10
-        },
-        "api.jobs_all_x16.p95_ms": {
-          "value": 1337.635,
+        "api.jobs_search_x16.p95_ms": {
+          "value": 1328.046,
           "better": "lower",
           "tolerance": 3,
           "slack": 10
         },
         "api.jobs_page.p95_ms": {
-          "value": 80.934,
+          "value": 0.741,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_page_x16.p95_ms": {
-          "value": 1487.195,
+          "value": 8.753,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview.p95_ms": {
           "value": 83.45,
@@ -256,37 +274,43 @@
           "value": 137.8,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.history_x16.p95_ms": {
           "value": 586.664,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
-        "api.jobs_all.p95_ms": {
+        "api.jobs_first.p95_ms": {
           "value": 7.405,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
-        "api.jobs_all_x16.p95_ms": {
+        "api.jobs_first_x16.p95_ms": {
           "value": 132.69,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_page.p95_ms": {
           "value": 7.577,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_page_x16.p95_ms": {
           "value": 125.566,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview.p95_ms": {
           "value": 6.102,
