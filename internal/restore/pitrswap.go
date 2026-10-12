@@ -25,11 +25,12 @@ var ErrSwapFailed = errors.New("restore: replacing the original database with it
 
 // CollectionAdmin lists and drops the collections of a database on the target
 // server (implemented by *mongoconn.Prober). The swap of an in-place point-in-time
-// restore uses it to drop the collections of an original database that its clone
-// does not have.
+// restore uses it to check the clones and the copies and to drop the collections
+// of an original database that its clone does not have.
 type CollectionAdmin interface {
-	// CollectionNames returns the names of the collections and views of database.
-	CollectionNames(ctx context.Context, uri, database string) ([]string, error)
+	// CollectionCounts returns the collections and views of database (system
+	// collections left out) with their estimated document counts.
+	CollectionCounts(ctx context.Context, uri, database string) ([]models.CollectionCount, error)
 	// DropCollection drops collection (or view) in database.
 	DropCollection(ctx context.Context, uri, database, collection string) error
 }
@@ -85,15 +86,18 @@ func newDumpRunner(tools *mongotools.Resolver, logger *slog.Logger) DumpRunner {
 // point-in-time restore (record.PITR.InPlace.Databases) with its clone
 // (<db><CloneSuffix>), one database after another:
 //
-//  1. mongodump --archive --db=<clone> is piped straight into mongorestore
+//  1. The clone must still list exactly what SnapshotPITRClones recorded
+//     (collections, views, document counts); otherwise the original is left
+//     untouched (ErrCloneUnreadable).
+//  2. mongodump --archive --db=<clone> is piped straight into mongorestore
 //     --archive --nsInclude=<clone>.* --nsFrom=<clone>.* --nsTo=<db>.* --drop
 //     (both through the private config file of mongotools.WriteConfig, reading
 //     the primary): every collection and view of the clone replaces the one of
 //     the same name, with its indexes and options.
-//  2. The collections and views of the original that the clone does not have
-//     are dropped (system collections are left alone), so the original equals
-//     the clone. A clone that does not exist (the database did not exist at the
-//     target time) leaves the original without collections.
+//  3. The original must then hold every collection and view of the snapshot with
+//     its document count; only then are the collections and views of the
+//     original that the clone does not have dropped (system collections are left
+//     alone), so the original equals the clone.
 //
 // swapped is called with each original once it holds the restored state. Nothing
 // is buffered: the archive flows through an operating system pipe. It fails with
@@ -122,9 +126,13 @@ func (e *Engine) SwapPITRClones(ctx context.Context, req models.RestoreRequest, 
 		if c := runs.CancellationOf(ctx); c != nil {
 			return fmt.Errorf("%w: %s: %w", ErrSwapFailed, db, c)
 		}
+		snap := snapshotOf(info.InPlace, db)
+		if snap == nil {
+			return fmt.Errorf("%w: %s: %w: no record of what %s held after the restore; %s is untouched", ErrSwapFailed, db, ErrCloneUnreadable, clone, db)
+		}
 		start := time.Now()
 		tracker.Printf("replacing database %s with %s", db, clone)
-		if err := e.swapDatabase(ctx, uri, configArgs, db, clone); err != nil {
+		if err := e.swapDatabase(ctx, uri, configArgs, snap); err != nil {
 			e.logger.Error("in-place point-in-time restore: replacing a database failed",
 				slog.String("restore_id", record.ID), logsafe.Attr("target_db", db), slog.String("error", redact.Text(err.Error())))
 			return fmt.Errorf("%w: %s: %w", ErrSwapFailed, db, err)
@@ -137,29 +145,120 @@ func (e *Engine) SwapPITRClones(ctx context.Context, req models.RestoreRequest, 
 	return nil
 }
 
-// swapDatabase copies clone over db (see SwapPITRClones).
-func (e *Engine) swapDatabase(ctx context.Context, uri string, configArgs []string, db, clone string) error {
-	cloneColls, err := e.collections.CollectionNames(ctx, uri, clone)
-	if err != nil {
-		return fmt.Errorf("list the collections of %s: %w", clone, err)
+// SnapshotPITRClones records, right after the restore into the clones of an
+// in-place point-in-time restore completed, what each clone holds: its
+// collections and views and their document counts
+// (record.PITR.InPlace.Snapshots). The swap later copies a clone only while it
+// still lists exactly that, and drops collections of an original only once the
+// copy verifiably holds all of it. A clone that cannot be listed, or lists no
+// collection, fails with ErrCloneUnreadable: an empty listing may come from
+// missing privileges as well as from a database that did not exist at the target
+// time, and an in-place restore never empties an original database.
+func (e *Engine) SnapshotPITRClones(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord) error {
+	if record == nil || record.PITR == nil || record.PITR.InPlace == nil {
+		return errors.New("restore: not an in-place point-in-time restore")
 	}
-	if len(cloneColls) > 0 {
-		if err = e.copyDatabase(ctx, uri, configArgs, db, clone); err != nil {
-			return err
+	if e.collections == nil {
+		return errors.New("restore: in-place point-in-time restores are not available in this setup")
+	}
+	uri := e.resolveURI(req)
+	if req.MongoURI != "" {
+		ctx = mongotls.NewContext(ctx, req.MongoTLS)
+	}
+	info := record.PITR
+	snaps := make([]models.PITRCloneSnapshot, 0, len(info.InPlace.Databases))
+	for _, db := range info.InPlace.Databases {
+		clone := db + info.CloneSuffix
+		colls, err := e.collections.CollectionCounts(ctx, uri, clone)
+		if err != nil {
+			return fmt.Errorf("%w: list %s: %w", ErrCloneUnreadable, clone, err)
+		}
+		if len(colls) == 0 {
+			return fmt.Errorf("%w: %s lists no collection, so replacing %s would empty it; an in-place restore never empties an original database "+
+				"(if %s did not exist at the target time, drop it yourself; if the connection's user may not list every collection, grant it)",
+				ErrCloneUnreadable, clone, db, db)
+		}
+		snaps = append(snaps, models.PITRCloneSnapshot{Database: db, Clone: clone, Collections: colls})
+	}
+	info.InPlace.Snapshots = snaps
+	return nil
+}
+
+// ErrCloneUnreadable indicates that a clone of an in-place point-in-time restore
+// cannot be read completely (it lists no collection, or not what it held after
+// the restore into it): its original is left untouched.
+var ErrCloneUnreadable = errors.New("restore: the clone of an in-place point-in-time restore cannot be read completely")
+
+// snapshotOf returns the snapshot of original database db, or nil.
+func snapshotOf(ip *models.PITRInPlace, db string) *models.PITRCloneSnapshot {
+	for i := range ip.Snapshots {
+		if ip.Snapshots[i].Database == db {
+			return &ip.Snapshots[i]
 		}
 	}
-	origColls, err := e.collections.CollectionNames(ctx, uri, db)
-	if err != nil {
-		return fmt.Errorf("list the collections of %s: %w", db, err)
+	return nil
+}
+
+// collectionDiff describes how got differs from want (empty when it holds every
+// collection of want with the same kind and document count); extra collections
+// of got are ignored unless exact.
+func collectionDiff(want, got []models.CollectionCount, exact bool) string {
+	byName := make(map[string]models.CollectionCount, len(got))
+	for _, c := range got {
+		byName[c.Name] = c
 	}
-	for _, name := range origColls {
-		if strings.HasPrefix(name, "system.") || slices.Contains(cloneColls, name) {
+	var diffs []string
+	for _, w := range want {
+		g, ok := byName[w.Name]
+		switch {
+		case !ok:
+			diffs = append(diffs, w.Name+" is missing")
+		case g.View != w.View:
+			diffs = append(diffs, w.Name+" changed kind")
+		case !w.View && g.Documents != w.Documents:
+			diffs = append(diffs, fmt.Sprintf("%s has %d documents, not %d", w.Name, g.Documents, w.Documents))
+		}
+		delete(byName, w.Name)
+	}
+	if exact {
+		for name := range byName {
+			diffs = append(diffs, name+" is new")
+		}
+	}
+	slices.Sort(diffs)
+	return strings.Join(diffs, ", ")
+}
+
+// swapDatabase copies clone over db (see SwapPITRClones). Nothing of db is
+// dropped unless the clone still lists exactly its snapshot and the copy holds
+// every collection of it with its document count.
+func (e *Engine) swapDatabase(ctx context.Context, uri string, configArgs []string, snap *models.PITRCloneSnapshot) error {
+	db, clone := snap.Database, snap.Clone
+	cloneColls, err := e.collections.CollectionCounts(ctx, uri, clone)
+	if err != nil {
+		return fmt.Errorf("%w: list %s: %w; %s is untouched", ErrCloneUnreadable, clone, err, db)
+	}
+	if diff := collectionDiff(snap.Collections, cloneColls, true); diff != "" || len(cloneColls) == 0 {
+		return fmt.Errorf("%w: %s does not list what it held after the restore (%s); %s is untouched", ErrCloneUnreadable, clone, diff, db)
+	}
+	if err = e.copyDatabase(ctx, uri, configArgs, db, clone); err != nil {
+		return err
+	}
+	origColls, err := e.collections.CollectionCounts(ctx, uri, db)
+	if err != nil {
+		return fmt.Errorf("list %s after the copy: %w; nothing was dropped", db, err)
+	}
+	if diff := collectionDiff(snap.Collections, origColls, false); diff != "" {
+		return fmt.Errorf("the copy into %s is incomplete (%s); nothing was dropped", db, diff)
+	}
+	for _, c := range origColls {
+		if slices.ContainsFunc(snap.Collections, func(s models.CollectionCount) bool { return s.Name == c.Name }) {
 			continue
 		}
-		if err := e.collections.DropCollection(ctx, uri, db, name); err != nil {
-			return fmt.Errorf("drop %s.%s, which the restored state does not have: %w", db, name, err)
+		if err := e.collections.DropCollection(ctx, uri, db, c.Name); err != nil {
+			return fmt.Errorf("drop %s.%s, which the restored state does not have: %w", db, c.Name, err)
 		}
-		runs.FromContext(ctx).Printf("dropped %s.%s, which did not exist at the target time", db, name)
+		runs.FromContext(ctx).Printf("dropped %s.%s, which did not exist at the target time", db, c.Name)
 	}
 	return nil
 }

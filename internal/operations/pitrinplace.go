@@ -30,6 +30,9 @@ type PITRStreamControl interface {
 // PITRSwapper copies the clones of a completed in-place point-in-time restore
 // over the original databases (implemented by *restore.Engine).
 type PITRSwapper interface {
+	// SnapshotPITRClones records what each clone of record holds right after the
+	// restore into it; it refuses a clone that lists nothing.
+	SnapshotPITRClones(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord) error
 	// SwapPITRClones replaces every original database of record with its clone,
 	// calling swapped with each one done.
 	SwapPITRClones(ctx context.Context, req models.RestoreRequest, record *models.RestoreRecord, swapped func(db string)) error
@@ -177,6 +180,13 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 		}
 		return s.cfg.PITRRestore.DropPITRClones(tlsCtx, req.MongoURI, rec.PITR)
 	}
+
+	// 0. What the clones hold now: the swap copies exactly that, and never
+	// empties an original from a clone that lists nothing.
+	if err := s.cfg.PITRSwap.SnapshotPITRClones(ctx, req, rec); err != nil {
+		return s.failInPlace(ctx, rec, err, fmt.Sprintf("%s; the original databases are untouched%s", redact.Text(err.Error()), dropClones()))
+	}
+	save()
 
 	// 1. Safety backups.
 	ip.Stage = models.PITRInPlaceSafetyBackup

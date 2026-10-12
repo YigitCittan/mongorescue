@@ -29,6 +29,8 @@ type inPlaceFakes struct {
 	mu      sync.Mutex
 	calls   []string
 	swapErr error
+	// snapshotErr fails SnapshotPITRClones (a clone that lists nothing).
+	snapshotErr error
 	// pauseWas is what PauseStream reports.
 	pauseWas bool
 }
@@ -73,6 +75,18 @@ func (f *inPlaceFakes) PauseStream(context.Context, string) (bool, error) {
 
 func (f *inPlaceFakes) ResumeStream(context.Context, string) error {
 	f.call("resume")
+	return nil
+}
+
+func (f *inPlaceFakes) SnapshotPITRClones(_ context.Context, _ models.RestoreRequest, rec *models.RestoreRecord) error {
+	f.call("snapshot")
+	if f.snapshotErr != nil {
+		return f.snapshotErr
+	}
+	for _, db := range rec.PITR.InPlace.Databases {
+		rec.PITR.InPlace.Snapshots = append(rec.PITR.InPlace.Snapshots, models.PITRCloneSnapshot{Database: db,
+			Clone: db + rec.PITR.CloneSuffix, Collections: []models.CollectionCount{{Name: "orders", Documents: 1}}})
+	}
 	return nil
 }
 
@@ -209,7 +223,7 @@ func TestPITRInPlaceRestore(t *testing.T) {
 	// The clones are restored and verified (with the post-restore commands)
 	// first, then backed up, the stream paused, the clones swapped in and
 	// dropped, and the stream resumed.
-	want := []string{"restore", "post_restore_on_clones", "pause", "swap", "drop_clones", "resume"}
+	want := []string{"restore", "post_restore_on_clones", "snapshot", "pause", "swap", "drop_clones", "resume"}
 	if got := env.fakes.order(); !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
@@ -253,7 +267,7 @@ func TestPITRInPlaceSafetyBackupFailureLeavesTheOriginals(t *testing.T) {
 		t.Fatalf("record = %s: %s", final.Status, final.ErrorMessage)
 	}
 	// Nothing touched the originals or the stream; the clones were dropped.
-	if got, want := env.fakes.order(), []string{"restore", "post_restore_on_clones", "drop_clones"}; !slices.Equal(got, want) {
+	if got, want := env.fakes.order(), []string{"restore", "post_restore_on_clones", "snapshot", "drop_clones"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	if ip := final.PITR.InPlace; ip.SwapStarted || ip.StreamPaused || len(ip.Swapped) != 0 {
@@ -261,6 +275,30 @@ func TestPITRInPlaceSafetyBackupFailureLeavesTheOriginals(t *testing.T) {
 	}
 	if ev := env.inPlaceEvent(); ev == nil || ev.Status != events.InPlacePITRFailed {
 		t.Fatalf("restore.in_place_pitr = %+v", ev)
+	}
+}
+
+// TestPITRInPlaceEmptyCloneLeavesTheOriginals: a clone that lists nothing after
+// the restore (missing privileges, or a database absent at the target time)
+// ends the run before the safety backup, the stream or the originals are
+// touched.
+func TestPITRInPlaceEmptyCloneLeavesTheOriginals(t *testing.T) {
+	env := newInPlaceEnv(t, false)
+	env.fakes.snapshotErr = errors.New("restore: the clone of an in-place point-in-time restore cannot be read completely: shop_rescue_x lists no collection")
+	rec, err := env.svc.StartRestore(admin(), pitrInPlace("shop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := env.wait(t, rec.ID)
+	if final.Status != models.RestoreStatusFailed || !strings.Contains(final.ErrorMessage, "lists no collection") ||
+		!strings.Contains(final.ErrorMessage, "untouched") {
+		t.Fatalf("record = %s: %s", final.Status, final.ErrorMessage)
+	}
+	if got, want := env.fakes.order(), []string{"restore", "post_restore_on_clones", "snapshot", "drop_clones"}; !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if b := env.safetyBackups(t, rec.ID); len(b) != 0 {
+		t.Fatalf("safety backups %d, want none", len(b))
 	}
 }
 
@@ -277,7 +315,7 @@ func TestPITRInPlaceSwapFailureKeepsTheCloneAndTheBackup(t *testing.T) {
 		t.Fatalf("record = %s: %s (%+v)", final.Status, final.ErrorMessage, ip)
 	}
 	// The clones are kept, the stream is enabled again.
-	if got, want := env.fakes.order(), []string{"restore", "post_restore_on_clones", "pause", "swap", "resume"}; !slices.Equal(got, want) {
+	if got, want := env.fakes.order(), []string{"restore", "post_restore_on_clones", "snapshot", "pause", "swap", "resume"}; !slices.Equal(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	for _, name := range append(slices.Clone(final.PITR.Clones), ip.SafetyBackupIDs...) {

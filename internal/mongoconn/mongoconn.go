@@ -20,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 )
 
@@ -146,18 +147,36 @@ func (p *Prober) ListCollections(ctx context.Context, uri, database string) ([]c
 	return out, err
 }
 
-// CollectionNames returns the names of the collections and views of database
-// (see ListCollections).
-func (p *Prober) CollectionNames(ctx context.Context, uri, database string) ([]string, error) {
-	list, err := p.ListCollections(ctx, uri, database)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(list))
-	for _, c := range list {
-		out = append(out, c.Name)
-	}
-	return out, nil
+// CollectionCounts returns the collections and views of database (system
+// collections left out, see ListCollections) with the estimated document count of
+// each collection.
+func (p *Prober) CollectionCounts(ctx context.Context, uri, database string) ([]models.CollectionCount, error) {
+	var out []models.CollectionCount
+	err := withClient(ctx, uri, func(c *mongo.Client) error {
+		db := c.Database(database)
+		specs, err := db.ListCollectionSpecifications(ctx, bson.D{},
+			options.ListCollections().SetNameOnly(true).SetAuthorizedCollections(true))
+		if err != nil {
+			return fmt.Errorf("listCollections: %w", err)
+		}
+		out = make([]models.CollectionCount, 0, len(specs))
+		for _, s := range specs {
+			if strings.HasPrefix(s.Name, "system.") {
+				continue
+			}
+			cc := models.CollectionCount{Name: s.Name, View: s.Type != "collection"}
+			if !cc.View {
+				n, countErr := db.Collection(s.Name).EstimatedDocumentCount(ctx)
+				if countErr != nil {
+					return fmt.Errorf("count %s: %w", s.Name, countErr)
+				}
+				cc.Documents = n
+			}
+			out = append(out, cc)
+		}
+		return nil
+	})
+	return out, err
 }
 
 // DropCollection drops collection (or view) of database on the server at uri; a

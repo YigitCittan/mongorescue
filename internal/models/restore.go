@@ -388,6 +388,22 @@ type PITRRestore struct {
 	InPlace *PITRInPlace `json:"in_place,omitempty"`
 }
 
+// CollectionCount is a collection or view of a database and its (estimated)
+// document count; a view counts no documents.
+type CollectionCount struct {
+	Name      string `json:"name"`
+	View      bool   `json:"view,omitempty"`
+	Documents int64  `json:"documents"`
+}
+
+// PITRCloneSnapshot is what the clone of one original database held once an
+// in-place point-in-time restore into it completed (system collections left out).
+type PITRCloneSnapshot struct {
+	Database    string            `json:"database"`
+	Clone       string            `json:"clone"`
+	Collections []CollectionCount `json:"collections"`
+}
+
 // Stages of an in-place point-in-time restore (PITRInPlace.Stage), in order.
 const (
 	// PITRInPlaceRestoring: the restore into the clones runs (originals untouched).
@@ -427,6 +443,10 @@ type PITRInPlace struct {
 	StreamResumed bool `json:"stream_resumed,omitempty"`
 	// SwapStarted reports that the swap began: the originals may have changed.
 	SwapStarted bool `json:"swap_started,omitempty"`
+	// Snapshots record what each clone held once the restore into it completed;
+	// the swap copies a clone only while it still holds exactly that, and drops
+	// collections of an original only once the copy verifiably holds all of it.
+	Snapshots []PITRCloneSnapshot `json:"snapshots,omitempty"`
 	// Swapped are the original databases that hold the restored state.
 	Swapped []string `json:"swapped,omitempty"`
 	// KeepClone reports that the clones are kept after a successful swap.
