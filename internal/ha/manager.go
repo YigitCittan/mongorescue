@@ -64,6 +64,12 @@ type Config struct {
 	Wall func() time.Time
 	// Logger receives role changes and lease errors; nil means slog.Default().
 	Logger *slog.Logger
+	// EpochFloor, when set, returns the highest epoch known outside the lease: of
+	// the metadata snapshots on the HA target and of this instance's own state. An
+	// acquired lease always gets a higher epoch, so a lease deleted or corrupted by
+	// hand never restarts the epochs below snapshots that already exist. An error
+	// defers the acquisition to the next step.
+	EpochFloor func(ctx context.Context) (uint64, error)
 }
 
 // Status is a snapshot of a Manager's state.
@@ -126,6 +132,9 @@ type Manager struct {
 	keyMismatch   bool
 	leaseErrors   uint64
 	takeovers     uint64
+	// fresh reports that the held lease was created: no lease object existed
+	// when this instance acquired it.
+	fresh bool
 
 	changes chan struct{}
 }
@@ -373,9 +382,29 @@ func (m *Manager) observe(ctx context.Context) {
 	m.acquire(ctx, epoch, seq, data, version)
 }
 
-// acquire writes a lease held by this instance with epoch: created when version is
-// "" (prev is nil), else replacing version.
+// AcquiredFresh reports whether the held lease was created because no lease object
+// existed (the cluster's first activation, or a lease removed by hand), rather than
+// taken over from an expired, released or unreadable one.
+func (m *Manager) AcquiredFresh() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.role == RoleActive && m.fresh
+}
+
+// acquire writes a lease held by this instance with epoch (raised above
+// Config.EpochFloor): created when version is "" (prev is nil), else replacing
+// version.
 func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, version string) {
+	if m.cfg.EpochFloor != nil {
+		fctx, fcancel := context.WithTimeout(ctx, m.cfg.Renew)
+		floor, err := m.cfg.EpochFloor(fctx)
+		fcancel()
+		if err != nil {
+			m.recordError(fmt.Errorf("ha: the highest epoch on record is unknown, the lease is not acquired: %w", err))
+			return
+		}
+		epoch = max(epoch, floor+1)
+	}
 	next := Lease{
 		Cluster: m.cfg.Cluster, Holder: m.cfg.InstanceID, HolderName: m.cfg.InstanceName, Epoch: epoch, Seq: seq,
 		RenewedAt: m.cfg.Wall().UTC(), TTLSeconds: int64(m.cfg.TTL / time.Second), KeyID: m.cfg.KeyID,
@@ -406,6 +435,7 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 	m.role, m.lease, m.version, m.sentAt, m.sentWall = RoleActive, next, newVersion, sent, sentWall
 	m.seen, m.seenVersion, m.seenAt, m.seenEpoch = next, newVersion, sent, epoch
 	m.healthy, m.lastErr = true, ""
+	m.fresh = prev == nil
 	m.takeovers++
 	m.mu.Unlock()
 	m.logger.Info("acquired the HA lease: this instance is now active", slog.Uint64("epoch", epoch))

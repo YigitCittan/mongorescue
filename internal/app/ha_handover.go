@@ -182,16 +182,22 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		return err
 	}
 	if len(snaps) == 0 {
-		// Without a snapshot this instance's database is the truth only on the
-		// cluster's first activation (the lease never had a holder), or when this
-		// instance held the epoch right before (nobody worked in between).
+		// Without a snapshot this instance's database is used only when there was
+		// no lease either: the cluster's first activation, or a new HA target or
+		// cluster name, whose instance keeps its own database (never an empty one
+		// swapped in). A lease that existed (expired, released or unreadable) had a
+		// holder whose metadata would be lost.
 		epoch := s.rt.mgr().Epoch()
-		ownPrevious := s.rt.state.Cluster == s.cfg.HA.Cluster && epoch > 1 && s.rt.state.LastActiveEpoch == epoch-1
-		if epoch != 1 && !ownPrevious {
-			return fmt.Errorf("%w: the lease had a holder before (this is epoch %d), but the HA target holds no snapshot of its metadata", ErrNoSnapshotToTakeOver, epoch)
+		if !s.rt.mgr().AcquiredFresh() {
+			return fmt.Errorf("%w: a lease existed before (this is epoch %d), but the HA target holds no snapshot of its holder's metadata", ErrNoSnapshotToTakeOver, epoch)
 		}
 		s.setSince(time.Time{})
-		s.logger.Info("takeover: the cluster has no metadata snapshot yet; keeping this instance's database", slog.Uint64("epoch", epoch))
+		if s.rt.state.LastActiveEpoch > 0 {
+			s.logger.Warn("takeover: no lease and no metadata snapshot on the HA target (a new target or cluster name?); keeping this instance's database",
+				slog.Uint64("epoch", epoch), slog.Uint64("last_active_epoch", s.rt.state.LastActiveEpoch))
+		} else {
+			s.logger.Info("takeover: the cluster's first activation; keeping this instance's database", slog.Uint64("epoch", epoch))
+		}
 		return nil
 	}
 	newest := snaps[0]

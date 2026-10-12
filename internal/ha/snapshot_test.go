@@ -123,7 +123,8 @@ func TestSnapshotWriteFetchAndRetention(t *testing.T) {
 		t.Fatalf("FetchSnapshot with another key = %v; want ErrSnapshotUnreadable", err)
 	}
 
-	// Retention keeps the newest three; a late snapshot of an older epoch sorts last.
+	// Retention keeps the first three (the highest epoch, then the newest); a late
+	// snapshot of an older epoch sorts last, but as the newest by time it is kept too.
 	for range 4 {
 		clock.Advance(time.Minute)
 		if _, err = s.Snapshot(ctx); err != nil {
@@ -140,16 +141,67 @@ func TestSnapshotWriteFetchAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 3 {
-		t.Fatalf("%d snapshots kept; want 3", len(list))
+	if len(list) != 4 {
+		t.Fatalf("%d snapshots kept; want the three newest of epoch 5 and the newest by time", len(list))
 	}
 	if list[0].Epoch != 5 || !list[0].CreatedAt.Equal(clock.Now().Add(-time.Minute)) {
 		t.Fatalf("first snapshot = %+v; want the newest of epoch 5", list[0])
 	}
-	for _, sn := range list {
-		if sn.Key == stale.Key {
-			t.Fatal("retention kept the late snapshot of an older epoch over newer ones")
+	if list[3].Key != stale.Key {
+		t.Fatalf("the late snapshot of an older epoch must sort last: %+v", list)
+	}
+}
+
+// TestPruneKeepsTheCurrentEpochAndTheNewest covers retention with mixed epochs: a
+// stale epoch 9 left by a lease deleted by hand sorts first, yet the current epoch's
+// newest snapshots and the newest one by time are never deleted.
+func TestPruneKeepsTheCurrentEpochAndTheNewest(t *testing.T) {
+	base := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	var list []SnapshotInfo
+	add := func(epoch uint64, minute int) SnapshotInfo {
+		at := base.Add(time.Duration(minute) * time.Minute)
+		sn := SnapshotInfo{Key: SnapshotKey("prod", at, epoch), CreatedAt: at, Epoch: epoch}
+		list = append(list, sn)
+		return sn
+	}
+	for m := range 4 {
+		add(9, m) // old, from before the lease was lost
+	}
+	var current []SnapshotInfo
+	for m := 10; m < 15; m++ {
+		current = append(current, add(2, m))
+	}
+	late := add(1, 20) // a late write of a fenced-off instance, newest by time
+	st, err := storage.NewLocalStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorted := append([]SnapshotInfo(nil), list...)
+	for _, sn := range sorted {
+		if _, err = st.Save(context.Background(), sn.Key, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
 		}
+	}
+	sorted, err = ListSnapshots(context.Background(), st, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := keptSnapshots(sorted, 2, 3)
+	for _, sn := range current[2:] {
+		if !kept[sn.Key] {
+			t.Errorf("a newest snapshot of the current epoch is not kept: %s", sn.Key)
+		}
+	}
+	if !kept[late.Key] {
+		t.Error("the newest snapshot by time is not kept")
+	}
+	for _, sn := range current[:2] {
+		if kept[sn.Key] {
+			t.Errorf("an old snapshot of the current epoch beyond the three newest is kept: %s", sn.Key)
+		}
+	}
+	if len(kept) != 3+3+1 {
+		t.Fatalf("%d kept; want the first three, the three newest of the current epoch and the newest by time", len(kept))
 	}
 }
 

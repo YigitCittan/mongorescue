@@ -3,13 +3,10 @@ package app
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/ha"
-	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
 // bootstrappedSupervisor returns a supervisor of cfg after its bootstrap (its
@@ -71,40 +68,5 @@ func TestTakeoverWithoutASnapshot(t *testing.T) {
 	}
 	if st := second.rt.metricsState(); st.TakeoverFailures != 1 {
 		t.Fatalf("takeover failures = %d; want 1", st.TakeoverFailures)
-	}
-}
-
-// TestTakeoverWithoutASnapshotAfterOwnEpoch checks the other allowed case: the
-// instance held the epoch right before, so nobody worked in between and its own
-// database is the newest.
-func TestTakeoverWithoutASnapshotAfterOwnEpoch(t *testing.T) {
-	ctx := context.Background()
-	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
-	sup := bootstrappedSupervisor(t, cfg)
-	m := sup.rt.mgr()
-	m.Step(ctx) // epoch 1
-	sup.recordActiveEpoch(m.Epoch())
-	if err := m.Release(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// Reacquire after the cooldown with a manager without one (a restart).
-	ls, err := storage.AsLeaseStore(sup.rt.storage())
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2, err := ha.New(ha.Config{Store: ls, Cluster: cfg.HA.Cluster, InstanceID: sup.rt.state.InstanceID, TTL: cfg.HA.LeaseTTL,
-		Renew: cfg.HA.RenewInterval, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2.Step(ctx)
-	if m2.Epoch() != 2 {
-		t.Fatalf("epoch %d; want 2", m2.Epoch())
-	}
-	sup.rt.mu.Lock()
-	sup.rt.manager = m2
-	sup.rt.mu.Unlock()
-	if err = sup.prepareTakeover(ctx); err != nil {
-		t.Fatalf("a takeover right after this instance's own epoch was refused: %v", err)
 	}
 }

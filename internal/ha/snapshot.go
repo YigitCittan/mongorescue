@@ -395,21 +395,52 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 		info.SizeBytes = obj.SizeBytes
 	}
 	s.cfg.Logger.Debug("HA metadata snapshot written", logsafe.Attr("key", key), slog.Uint64("epoch", epoch))
-	s.prune(ctx)
+	s.prune(ctx, epoch)
 	return info, nil
 }
 
-// prune deletes the snapshots beyond Keep, never the newest. Failures are logged.
-func (s *Snapshotter) prune(ctx context.Context) {
+// prune deletes the snapshots retention does not keep (see keptSnapshots) for the
+// current epoch. Failures are logged.
+func (s *Snapshotter) prune(ctx context.Context, current uint64) {
 	list, err := ListSnapshots(ctx, s.cfg.Storage, s.cfg.Cluster)
 	if err != nil {
 		s.cfg.Logger.Warn("HA snapshot retention: cannot list the snapshots", slog.String("error", redact.Text(err.Error())))
 		return
 	}
-	for _, old := range list[min(len(list), max(s.cfg.Keep, 1)):] {
+	kept := keptSnapshots(list, current, max(s.cfg.Keep, 1))
+	for _, old := range list {
+		if kept[old.Key] {
+			continue
+		}
 		if delErr := s.cfg.Storage.Delete(ctx, old.Key); delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
 			s.cfg.Logger.Warn("HA snapshot retention: cannot delete a snapshot", logsafe.Attr("key", old.Key),
 				slog.String("error", redact.Text(delErr.Error())))
 		}
 	}
+}
+
+// keptSnapshots returns the keys retention keeps of list (ordered as ListSnapshots
+// orders it): the first keep, the keep newest of the current epoch, and the newest
+// by its time whatever its epoch. Snapshots of the current epoch beyond the keep
+// newest go, so the prefix does not grow without end within one long epoch.
+func keptSnapshots(list []SnapshotInfo, current uint64, keep int) map[string]bool {
+	kept := make(map[string]bool, 2*keep+1)
+	var newest SnapshotInfo
+	inEpoch := 0
+	for i, sn := range list {
+		if i < keep {
+			kept[sn.Key] = true
+		}
+		if sn.Epoch == current && inEpoch < keep {
+			kept[sn.Key] = true
+			inEpoch++
+		}
+		if newest.Key == "" || sn.CreatedAt.After(newest.CreatedAt) {
+			newest = sn
+		}
+	}
+	if newest.Key != "" {
+		kept[newest.Key] = true
+	}
+	return kept
 }

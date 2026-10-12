@@ -306,6 +306,7 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	mgr, err := ha.New(ha.Config{
 		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID,
 		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Logger: s.logger,
+		EpochFloor: func(ctx context.Context) (uint64, error) { return s.epochFloor(ctx, st) },
 	})
 	if err != nil {
 		return err
@@ -329,6 +330,20 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	s.rt.manager, s.rt.store, s.rt.key = mgr, st, slices.Clone(app.haKey)
 	s.rt.mu.Unlock()
 	return nil
+}
+
+// epochFloor returns the highest epoch on record outside the lease: of the
+// cluster's snapshots on the HA target, and the last one this instance held.
+func (s *haSupervisor) epochFloor(ctx context.Context, st storage.Storage) (uint64, error) {
+	snaps, err := ha.ListSnapshots(ctx, st, s.cfg.HA.Cluster)
+	if err != nil {
+		return 0, err
+	}
+	floor := s.rt.state.LastActiveEpoch
+	for _, sn := range snaps {
+		floor = max(floor, sn.Epoch)
+	}
+	return floor, nil
 }
 
 // haStorage opens the storage of the lease: a location of the bootstrap
