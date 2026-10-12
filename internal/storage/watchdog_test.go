@@ -17,8 +17,10 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/throttle"
 )
 
-// testStallTimeout is the stall timeout of these tests.
-const testStallTimeout = 150 * time.Millisecond
+// testStallTimeout is the stall timeout of these tests. It must exceed the time a
+// 5 MiB part takes to reach the fake S3 server under the race detector on a busy
+// CI runner, or an upload making progress is reported as a stall.
+const testStallTimeout = time.Second
 
 // fixedStall returns a StallWatch with timeout d.
 func fixedStall(target string, d time.Duration) StallWatch {
@@ -43,7 +45,7 @@ func TestStallWatchCancelsBlockedUpload(t *testing.T) {
 	if !errors.Is(err, ErrStorageStalled) || errors.Is(err, context.Canceled) {
 		t.Fatalf("finish = %v; want ErrStorageStalled only", err)
 	}
-	if !strings.Contains(err.Error(), `no upload progress for 150ms to target "offsite"`) {
+	if !strings.Contains(err.Error(), fmt.Sprintf(`no upload progress for %v to target "offsite"`, testStallTimeout)) {
 		t.Fatalf("error %q does not name the timeout and target", err)
 	}
 	if elapsed := time.Since(start); elapsed < testStallTimeout || elapsed > 5*time.Second {
@@ -146,6 +148,12 @@ func (f *partitionS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // newPartitionS3 returns an S3 driver with 5 MiB parts against f.
 func newPartitionS3(t *testing.T, f *partitionS3) *S3Storage {
 	t.Helper()
+	return newPartitionS3WithStall(t, f, fixedStall("offsite", testStallTimeout))
+}
+
+// newPartitionS3WithStall is newPartitionS3 with the given stall watch.
+func newPartitionS3WithStall(t *testing.T, f *partitionS3, stall StallWatch) *S3Storage {
+	t.Helper()
 	isolateAWSEnv(t)
 	f.release = make(chan struct{})
 	srv := httptest.NewServer(f)
@@ -154,7 +162,7 @@ func newPartitionS3(t *testing.T, f *partitionS3) *S3Storage {
 	t.Cleanup(func() { close(f.release) })
 	st, err := NewS3Storage(context.Background(), S3Config{
 		Endpoint: srv.URL, Bucket: fakeBucket, AccessKey: "a", SecretKey: "s", UsePathStyle: true,
-		PartSizeMB: 5, Stall: fixedStall("offsite", testStallTimeout),
+		PartSizeMB: 5, Stall: stall,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +176,12 @@ func newPartitionS3(t *testing.T, f *partitionS3) *S3Storage {
 func TestS3SaveStalledUploadFailsAndAborts(t *testing.T) {
 	fake := &partitionS3{}
 	fake.hang.Store(true)
-	st := newPartitionS3(t, fake)
+	// The stall itself is detected with the short test timeout; the follow-up upload,
+	// which only checks that nothing is left blocked, gets a generous one so a loaded
+	// CI runner (race detector) is not mistaken for a stall.
+	var timeout atomic.Int64
+	timeout.Store(int64(testStallTimeout))
+	st := newPartitionS3WithStall(t, fake, StallWatch{Target: "offsite", Timeout: func() time.Duration { return time.Duration(timeout.Load()) }})
 
 	start := time.Now()
 	body := io.MultiReader(bytes.NewReader(make([]byte, 11<<20))) // not seekable
@@ -180,6 +193,7 @@ func TestS3SaveStalledUploadFailsAndAborts(t *testing.T) {
 		t.Fatalf("the stall was detected after %v", elapsed)
 	}
 	fake.hang.Store(false)
+	timeout.Store(int64(10 * time.Second))
 	fake.mu.Lock()
 	aborted := fake.aborted
 	fake.mu.Unlock()
@@ -197,7 +211,7 @@ func TestS3SaveStalledUploadFailsAndAborts(t *testing.T) {
 func TestS3SaveThrottledUploadIsNoStall(t *testing.T) {
 	st := newPartitionS3(t, &partitionS3{})
 	const size = 6 << 20
-	body := throttle.NewReader(context.Background(), bytes.NewReader(make([]byte, size)), 8<<20) // about 0.75 s
+	body := throttle.NewReader(context.Background(), bytes.NewReader(make([]byte, size)), 2<<20) // about 3 s
 	obj, err := st.Save(context.Background(), "db/throttled.archive", body)
 	if err != nil {
 		t.Fatalf("throttled upload failed: %v", err)

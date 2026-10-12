@@ -164,7 +164,7 @@ jobs:
 
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: chaos-report
           path: ${{ runner.temp }}/chaos-report
@@ -215,7 +215,7 @@ jobs:
 
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: load-report
           path: ${{ runner.temp }}/load-report
@@ -265,7 +265,7 @@ jobs:
 
       - name: Upload member logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: replset-logs-${{ matrix.mongo }}-${{ matrix.tools }}
           path: ${{ runner.temp }}/replset-logs
@@ -305,7 +305,7 @@ jobs:
 
       - name: Upload the report and member logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pitr-soak-report
           path: |
