@@ -488,7 +488,7 @@ async function checkHealth() {
     const json = await res.json();
     const ok = res.ok && json.success;
     setConnection(dot, ok ? "ok" : "down", ok && json.data ? json.data.version : "");
-    // The standby banner of active-passive HA (ha.js).
+    // Active-passive HA: a standby serves no dashboard; reload into its page (ha.js).
     if (typeof haRenderRole === "function") haRenderRole(ok ? json.data : null);
     return ok ? json.data : null;
   } catch (err) {

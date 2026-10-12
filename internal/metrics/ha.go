@@ -1,9 +1,13 @@
 package metrics
 
 import (
+	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // HAState is the state of active-passive high availability reported by the HA
@@ -87,6 +91,30 @@ func boolFloat(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// standbyFamilies are the prefixes of the metric families a standby exposes
+// without credentials: process, runtime, build and HA series, never data.
+var standbyFamilies = []string{"mongorescue_ha_", "mongorescue_build_info", "go_", "process_"}
+
+// StandbyHandler serves the metrics a standby of an active-passive HA cluster
+// exposes without credentials (it trusts no API key of its database): the
+// process, Go runtime, build and HA series only.
+func (m *Metrics) StandbyHandler() http.Handler {
+	gather := prometheus.GathererFunc(func() ([]*dto.MetricFamily, error) {
+		families, err := m.registry.Gather()
+		out := families[:0]
+		for _, f := range families {
+			for _, p := range standbyFamilies {
+				if strings.HasPrefix(f.GetName(), p) {
+					out = append(out, f)
+					break
+				}
+			}
+		}
+		return out, err
+	})
+	return promhttp.HandlerFor(gather, promhttp.HandlerOpts{})
 }
 
 // SetHASource registers the function reporting the HA state; the HA series are

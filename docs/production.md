@@ -216,7 +216,7 @@ A single instance is a single point of failure: while it is down, no scheduled b
 Two (or more) instances share a **storage target** and a **secret key**, and nothing else: each has its own data directory.
 
 - The instance holding the **lease** (a small object on the HA target, renewed every 10 seconds) is **active**: it runs schedules, PITR collection, copies, integrity sweeps, metadata backups, notifications and the heartbeat, exactly like a single instance.
-- The others are **standbys**. They serve the dashboard (with a *Standby instance: read-only* banner), the read-only API, `/api/v1/health` (`"role": "standby"`) and `/metrics`, and answer every change with `503` and `Retry-After`. Signing in works.
+- The others are **standbys**. A standby serves no data and accepts no sign-in: its database is only as current as its last takeover, so its users, sessions and API keys are not trusted. It serves only `/api/v1/health` (`"role": "standby"` and the active instance), `/metrics` without credentials but with nothing but process, build and HA series, and a static page in place of the dashboard that names the active instance. Everything else, the API, signing in and MCP included, answers `503` with `Retry-After`.
 - The active instance writes an encrypted **snapshot of its metadata database** to the HA target after every finished backup or restore and at least every 5 minutes.
 - When the active instance dies, a standby **takes over** once the lease has not changed for its TTL (30 s): it restores the newest snapshot (keeping its own database as `mongorescue.db.bak`), marks the runs that were in progress as interrupted, imports the archives written after the snapshot, and runs once every job whose cron fire fell in the gap. With the defaults it is active about 40 seconds after the last renewal, and the takeover work takes seconds.
 - The active instance stops working **20 seconds** (`ttl − renew`) after its last successful renewal if it cannot reach the HA target, so two instances never work at once. Runs check the lease before they start and before they are recorded as completed; every backup, restore and job run carries the lease **epoch** (`ha_epoch`) it ran under.
@@ -249,7 +249,7 @@ Things to know:
 - **Rotating `secret.key`** changes the key of the whole cluster: give the new key to every instance before the next takeover, or the standby cannot read the snapshots (it says so and stays standby).
 - **Metadata changed after the last snapshot** (a job edited a minute before the active instance died) is lost; backups recorded after it are imported from the storage again, as manual backups. Notifications pending in the snapshot may be sent twice; receivers can de-duplicate on the event ID.
 - **A shared data directory** (two processes on one volume) is not supported: the data directory lock refuses the second process. Where the volume survives the node, run one instance with a restart policy instead.
-- **The standby's dashboard** shows its own metadata as of when it was last active (or nothing); it does not follow the active instance between takeovers.
+- **Use the active instance** for the dashboard, the API, the CLI and MCP. Point a load balancer at the instance whose `GET /api/v1/health` reports `"role": "active"`, or accept `503` from the standby.
 
 ### Checklist
 

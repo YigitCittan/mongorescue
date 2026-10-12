@@ -19,7 +19,7 @@ Non-goals (phase 1):
 - **A shared data directory.** Two processes on one data directory are refused by the data directory lock (`mongorescue.lock`). Where the volume itself survives the node (a network disk that reattaches), run a single instance with a restart policy instead.
 - Active-active, or more than one standby doing work. More than two instances may join a cluster; all but one are standbys.
 - Moving runs. A backup or restore that was running on the active instance when it died is not resumed: it is recorded as interrupted, and its archive, if complete, is imported.
-- Writes on the standby. Its API is read-only.
+- Reads or writes on the standby. It serves no data and accepts no sign-in.
 
 ## Lease
 
@@ -82,8 +82,8 @@ Timing alone does not cover a process that is paused (GC, VM freeze, `SIGSTOP`) 
 
 ### Standby
 
-- Serves the dashboard, the read-only API, `/api/v1/health` (with `role`) and `/metrics`.
-- Answers every other request (`POST`, `PUT`, `PATCH`, `DELETE`, MCP) with `503`, `Retry-After` and the error "this instance is the standby of HA cluster X". Sign-in and sign-out work, so the dashboard can be read.
+- Serves no data and accepts no sign-in: its database is only as current as its last takeover, so neither its records nor its users, sessions and API keys are trusted. It serves only `GET /api/v1/health` (with `role` and `ha`: cluster, epoch, holder, lease health), `GET /metrics` without credentials but limited to the process, Go runtime, build and HA series, and, in place of the dashboard, a static page that says it is the standby and names the active instance (`standby.html` with `ha.js`, in all eight languages).
+- Answers every other request (the whole API, signing in and out, single sign-on, MCP) with `503`, `Retry-After` and the error "this instance is the standby of HA cluster X; it serves no data and accepts no sign-ins: use the active instance".
 - Runs none of the active-only components: scheduler, PITR collector, copy queue, integrity sweeps and storage scans, re-encryption, metadata snapshots, RPO checker, the global heartbeat ping, the notification outbox, the audit log forwarder, and the startup recovery of interrupted runs. The run manager refuses new runs.
 - Its metadata is the database it last had as active (or empty). It is not refreshed while it waits.
 
@@ -162,7 +162,7 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - `/api/v1/health` adds `role` and an `ha` object (cluster, epoch, holder, lease health).
 - Events `ha.took_over` and `ha.stepped_down`, sent to every enabled notification channel.
 - Alert rule `MongoRescueHANoActiveInstance`: no instance reports `role="active"` for twice the lease TTL (1 minute with the defaults).
-- The dashboard shows a banner on the standby.
+- A standby serves a static standby page instead of the dashboard; a dashboard open on an instance that becomes standby reloads into it.
 
 ## Security
 

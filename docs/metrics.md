@@ -48,7 +48,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_rpo_target_seconds` | gauge | `job`, `database` | The job's recovery point objective (`rpo_minutes`, or the default from its schedule) |
 | `mongorescue_scheduler_last_tick_timestamp_seconds` | gauge | | Unix time of the scheduler's last liveness tick (every 30s while it runs; `0` before it starts). Older than 90 seconds means the scheduler is hung; see [health](api.md#health) |
 | `mongorescue_heartbeat_dropped_total` | counter | | Job heartbeat pings dropped because 32 were already queued or in flight (see [monitoring.md](monitoring.md#how-pings-are-sent)) |
-| `mongorescue_ha_role` | gauge | `cluster`, `role` | [Active-passive HA](production.md#high-availability) only: 1 for the instance's current role (`active` or `standby`), 0 for the other |
+| `mongorescue_ha_role` | gauge | `cluster`, `role` | [Active-passive HA](production.md#high-availability) only: 1 for the instance's current role (`active` or `standby`), 0 for the other. A standby serves `/metrics` without credentials, with only the process, Go runtime, build and HA series |
 | `mongorescue_ha_epoch` | gauge | `cluster` | HA only: the lease epoch (fencing token) the instance holds, or the highest it saw as standby |
 | `mongorescue_ha_lease_healthy` | gauge | `cluster` | HA only: 1 when the last read or write of the lease succeeded |
 | `mongorescue_ha_lease_errors_total` | counter | `cluster` | HA only: failed reads and writes of the lease, renewals included |

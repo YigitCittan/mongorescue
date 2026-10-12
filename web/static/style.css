@@ -2724,6 +2724,13 @@ a.btn-block {
   background: var(--warn-subtle);
 }
 
+/* The page a standby of an active-passive HA cluster serves (standby.html, ha.js). */
+.ha-standby-page {
+  max-width: 44rem;
+  margin: 4rem auto;
+  padding: 0 1rem;
+}
+
 .trust-chips {
   display: flex;
   flex-wrap: wrap;

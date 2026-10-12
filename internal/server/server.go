@@ -145,8 +145,9 @@ type Server struct {
 	desktopCSP bool
 
 	// haStatus reports the role in an active-passive HA cluster (see WithHA); nil
-	// outside HA mode.
-	haStatus func() HAStatus
+	// outside HA mode; standbyMetrics answers GET /metrics on a standby.
+	haStatus       func() HAStatus
+	standbyMetrics http.Handler
 
 	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
 	// usedStates remembers consumed states (see WithOIDC); nil in the desktop app.

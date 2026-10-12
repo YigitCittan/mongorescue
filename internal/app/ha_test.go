@@ -49,7 +49,7 @@ func freeLoopbackPort(t *testing.T) int {
 func haTestConfig(t *testing.T, shared, key string) *config.Config {
 	t.Helper()
 	cfg := testConfig(t)
-	cfg.Host, cfg.Port, cfg.SecretKey = "127.0.0.1", freeLoopbackPort(t), key
+	cfg.Host, cfg.Port, cfg.SecretKey, cfg.Dashboard = "127.0.0.1", freeLoopbackPort(t), key, true
 	cfg.HA = config.HAConfig{Mode: config.HAModeActivePassive, Target: "file://" + filepath.ToSlash(shared), Cluster: "test",
 		LeaseTTL: ha.MinTTL, RenewInterval: ha.MinRenew, SnapshotInterval: config.MinHASnapshotInterval}
 	return cfg
@@ -117,10 +117,40 @@ func TestStandbyAppIsReadOnlyAndRunsNothing(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("MCP on a standby = %d; want 503", rec.Code)
 	}
+	// No data and no sign-in: the standby trusts neither its data nor its users.
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"x","password":"y"}`)),
+		httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/backups", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/setup/status", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/readiness", nil),
+		httptest.NewRequest(http.MethodGet, "/auth/oidc/start", nil),
+	} {
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+			t.Errorf("%s %s on a standby = %d; want 503 with Retry-After", req.Method, req.URL.Path, rec.Code)
+		}
+	}
+	// The dashboard is replaced by the static standby page; its files stay public.
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"x","password":"y"}`)))
-	if rec.Code == http.StatusServiceUnavailable {
-		t.Fatal("sign-in is refused on a standby")
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="ha-standby-page"`) || strings.Contains(rec.Body.String(), "app.js") {
+		t.Fatalf("GET / on a standby = %d, want the standby page:\n%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ha.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /ha.js on a standby = %d", rec.Code)
+	}
+	// Metrics without credentials, but only process, build and HA series.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `mongorescue_ha_role{cluster="test",role="standby"} 1`) ||
+		strings.Contains(rec.Body.String(), "mongorescue_backups_total") || strings.Contains(rec.Body.String(), "mongorescue_settings_warnings") {
+		t.Fatalf("GET /metrics on a standby = %d:\n%s", rec.Code, rec.Body.String())
 	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))

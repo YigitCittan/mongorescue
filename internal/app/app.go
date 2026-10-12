@@ -861,7 +861,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.ha != nil {
-		serverOpts = append(serverOpts, server.WithHA(o.ha.rt.serverStatus))
+		serverOpts = append(serverOpts, server.WithHA(o.ha.rt.serverStatus, metricSet.StandbyHandler()))
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())

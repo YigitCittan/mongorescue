@@ -177,7 +177,7 @@ helm install mongorescue-a deploy/helm/mongorescue -f ha-values.yaml
 helm install mongorescue-b deploy/helm/mongorescue -f ha-values.yaml
 ```
 
-The chart refuses `ha.enabled` without `secretKey.existingSecret` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves the dashboard read-only and answers changes with `503`. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`), or put both behind one Service and expect `503` from the standby for changes. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
+The chart refuses `ha.enabled` without `secretKey.existingSecret` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves no data and accepts no sign-in: only the health check, a static standby page and `/metrics` (process, build and HA series, without credentials), and `503` for everything else. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`); behind one Service, requests that reach the standby get `503` with `Retry-After`. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
 
 ## Upgrades and backups of MongoRescue itself
 
