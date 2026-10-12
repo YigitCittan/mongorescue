@@ -40,6 +40,10 @@ type haMember struct {
 	cmd     *exec.Cmd
 	// exited is closed once the process has exited.
 	exited chan struct{}
+	// clashes is the number of port clashes in logs when the process started.
+	clashes int
+	// restarts counts the restarts after port clashes.
+	restarts int
 }
 
 // start runs the process (again, with the same data directory).
@@ -48,6 +52,7 @@ func (m *haMember) start() {
 	m.cmd = exec.Command(m.bin, "-data-dir", m.dataDir, "-host", "127.0.0.1", "-port", strconv.Itoa(m.port))
 	m.cmd.Env = m.env
 	m.cmd.Stdout, m.cmd.Stderr = m.logs, m.logs
+	m.clashes = portClashes(m.logs.String())
 	if err := m.cmd.Start(); err != nil {
 		m.t.Fatal(err)
 	}
@@ -85,6 +90,20 @@ func (m *haMember) stop() {
 	}
 }
 
+// restartOnPortClash starts the exited process again on a fresh port when its port
+// was taken (see freePort), and reports whether it did.
+func (m *haMember) restartOnPortClash() bool {
+	m.t.Helper()
+	if portClashes(m.logs.String()) <= m.clashes || m.restarts == maxPortClashes {
+		return false
+	}
+	m.restarts++
+	m.t.Logf("the port %d of %s was taken; starting it again on another one", m.port, m.name)
+	m.port = freePort(m.t)
+	m.start()
+	return true
+}
+
 // base is the member's base URL.
 func (m *haMember) base() string { return "http://127.0.0.1:" + strconv.Itoa(m.port) }
 
@@ -118,6 +137,9 @@ func (m *haMember) waitRole(role string, within time.Duration) time.Duration {
 		}
 		select {
 		case <-m.exited:
+			if m.restartOnPortClash() {
+				continue
+			}
 			m.t.Fatalf("%s exited while waiting for role %s\n%s", m.name, role, m.logs.String())
 		case <-time.After(250 * time.Millisecond):
 		}

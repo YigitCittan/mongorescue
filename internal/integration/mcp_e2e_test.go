@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -63,15 +64,56 @@ func buildBinary(t *testing.T) string {
 	return b.path
 }
 
-// freePort returns a free loopback TCP port.
+// The processes under test listen on ports from testPorts, below the ephemeral
+// ranges (Linux 32768-60999, macOS and Windows 49152-65535): neither a listener on
+// port 0 (httptest servers, docker) nor an outgoing connection can take one between
+// freePort and the child's bind, and freePort never hands a port out twice in a run.
+// Only a process outside the suite can still hold one; startServer and haMember
+// then retry on a fresh port (portClashes).
+const (
+	testPortsFirst = 20000
+	testPortsCount = 10000
+	// maxPortClashes bounds the retries after a bind failure.
+	maxPortClashes = 5
+)
+
+// testPorts is the allocator of freePort.
+var testPorts struct {
+	mu   sync.Mutex
+	next int // offset of the next port to try; random at first, so concurrent runs start apart
+	used int
+}
+
+// freePort returns a loopback TCP port that is free now and that no other test of
+// this run gets.
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	testPorts.mu.Lock()
+	defer testPorts.mu.Unlock()
+	if testPorts.used == 0 {
+		testPorts.next = rand.IntN(testPortsCount) //nolint:gosec // a start offset, not a secret
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	for testPorts.used < testPortsCount {
+		port := testPortsFirst + testPorts.next
+		testPorts.next = (testPorts.next + 1) % testPortsCount
+		testPorts.used++
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			continue // held by a process outside the suite
+		}
+		if err = l.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return port
+	}
+	t.Fatalf("no free port left in %d-%d", testPortsFirst, testPortsFirst+testPortsCount-1)
+	return 0
+}
+
+// portClashes counts the times processes under test logged that their port was taken.
+func portClashes(logs string) int {
+	return strings.Count(logs, "address already in use") + // Linux, macOS
+		strings.Count(logs, "Only one usage of each socket address") // Windows
 }
 
 // cleanEnv is the environment without MONGORESCUE_* variables, so the processes under
@@ -83,18 +125,39 @@ func cleanEnv(extra ...string) []string {
 
 // startServer runs the real binary as a server on a free port and returns its base URL
 // and its captured logs. The process is interrupted (graceful shutdown) on cleanup.
+// When the port turns out to be taken, it starts again on another one.
 func startServer(t *testing.T, bin string) (string, *syncBuffer) {
 	t.Helper()
+	for clashes := 0; ; clashes++ {
+		base, logs, ok := tryStartServer(t, bin)
+		if ok {
+			return base, logs
+		}
+		if clashes == maxPortClashes {
+			t.Fatalf("every port tried was taken\n%s", logs.String())
+		}
+		t.Logf("the port of %s was taken; starting again on another one", base)
+	}
+}
+
+// tryStartServer is one attempt of startServer: ok is false when the server exited
+// because its port was taken.
+func tryStartServer(t *testing.T, bin string) (base string, logs *syncBuffer, ok bool) {
+	t.Helper()
 	port := freePort(t)
-	logs := &syncBuffer{}
+	logs = &syncBuffer{}
 	cmd := exec.Command(bin, "-data-dir", t.TempDir(), "-host", "127.0.0.1", "-port", strconv.Itoa(port))
 	cmd.Env = cleanEnv()
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	exited := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
 	t.Cleanup(func() {
 		if runtime.GOOS == "windows" {
 			_ = cmd.Process.Kill()
@@ -102,26 +165,29 @@ func startServer(t *testing.T, bin string) (string, *syncBuffer) {
 			_ = cmd.Process.Signal(os.Interrupt)
 		}
 		select {
-		case <-done:
+		case <-exited:
 		case <-time.After(30 * time.Second):
 			_ = cmd.Process.Kill()
-			<-done
+			<-exited
 		}
 	})
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	base = fmt.Sprintf("http://127.0.0.1:%d", port)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		resp, err := http.Get(base + "/api/v1/health")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base, logs
+				return base, logs, true
 			}
 		}
 		select {
-		case err := <-done:
-			t.Fatalf("server exited: %v\n%s", err, logs.String())
+		case <-exited:
+			if portClashes(logs.String()) > 0 {
+				return base, logs, false
+			}
+			t.Fatalf("server exited: %v\n%s", waitErr, logs.String())
 		default:
 		}
 		if time.Now().After(deadline) {
