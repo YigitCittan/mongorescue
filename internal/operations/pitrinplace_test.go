@@ -498,6 +498,32 @@ func TestPITRInPlaceHoldsTheWholeConnection(t *testing.T) {
 	}
 }
 
+// TestWholeInstanceBackupRestoreWaitsForTheSwap: the restore of a backup without
+// a database (a whole-instance dump of an earlier release), in place with
+// drop_target, holds the connection-wide key shared, so it never starts while an
+// in-place point-in-time restore holds it.
+func TestWholeInstanceBackupRestoreWaitsForTheSwap(t *testing.T) {
+	env := newInPlaceEnv(t, false)
+	if err := env.st.SaveBackupRecord(context.Background(), &models.BackupRecord{ID: "bkp_all", ConnectionID: "conn_a",
+		Status: models.StatusCompleted, StartedAt: time.Now().Add(-time.Hour), StorageKey: "all/bkp_all.archive", SHA256: "ab"}); err != nil {
+		t.Fatal(err)
+	}
+	swap, err := env.manager.Acquire(runs.InstanceKey("conn_a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	req := models.RestoreRequest{BackupID: "bkp_all", SafeClone: &no, ConfirmInPlace: true, DropTarget: true}
+	if _, err = env.svc.StartRestore(admin(), req); !errors.Is(err, runs.ErrBusy) || !strings.Contains(err.Error(), "in-place point-in-time restore") {
+		t.Fatalf("whole-instance restore during a swap: %v, want ErrBusy", err)
+	}
+	swap()
+	// The refused restore left no key held.
+	if _, err = env.manager.AcquireShared(runs.InstanceKey("conn_a")); err != nil {
+		t.Fatalf("the key was left held: %v", err)
+	}
+}
+
 // TestPITRInPlaceSwapSurvivesAShutdown is the regression test of a shutdown
 // (SIGTERM, a high-availability step-down) killing mongorestore in the middle
 // of --drop: the swap runs under its own context, marked critical, and the run

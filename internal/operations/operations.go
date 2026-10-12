@@ -752,9 +752,24 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	// waits for nor blocks a restore into the same database.
 	release := func() {}
 	if !req.DryRun {
-		release, err = s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
-		if err != nil {
-			return nil, runError(err, "a restore into database "+record.TargetDatabase+" is already running")
+		// The archive of a backup without a database (an earlier release's dump
+		// of the whole instance) restores every database it holds: like other
+		// whole-instance runs it holds the connection-wide key shared, so it
+		// never runs during the swap of an in-place point-in-time restore.
+		releaseInstance := func() {}
+		if strings.TrimSpace(record.SourceDatabase) == "" {
+			if releaseInstance, err = s.cfg.Runs.AcquireShared(runs.InstanceKey(record.TargetConnectionID)); err != nil {
+				return nil, runError(err, "an in-place point-in-time restore of this connection is running")
+			}
+		}
+		releaseTarget, acqErr := s.cfg.Runs.Acquire(runs.RestoreKey(record.TargetConnectionID, record.TargetDatabase))
+		if acqErr != nil {
+			releaseInstance()
+			return nil, runError(acqErr, "a restore into database "+record.TargetDatabase+" is already running")
+		}
+		release = func() {
+			releaseTarget()
+			releaseInstance()
 		}
 	}
 	snapshot := *record
