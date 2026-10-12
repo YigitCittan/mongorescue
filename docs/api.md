@@ -626,7 +626,7 @@ The sort columns are a fixed list mapped to constant SQL; anything else, a diffe
 curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25" -H "X-API-Key: $MONGORESCUE_READ_KEY"
 ```
 
-`GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For callers with the effective `admin` scope (administrators and their `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
+`GET /api/v1/stats` covers every record regardless of any list filter and is computed with SQL aggregates (it does not read every record): `total_backups`, `completed_backups`, `failed_backups`, `failed_backups_24h`, `total_bytes`, `active_backups` and `active_restores` (pending or in progress), `total_restores`, `active_jobs`, `last_backup` (`{id, database, job_id, status, started_at, error_message}` of the newest backup) and `job_last_backups` (each job ID mapped to its newest backup), plus the default storage target. The figures are computed once for every caller asking with the same connection access, and again as soon as a job, backup, run or restore is written (at most 10 seconds later otherwise). When some figures cannot be read (they then count as zero), the response adds `degraded: true` and a `degraded_reason`. For callers with the effective `admin` scope (administrators and their `admin` keys) it also lists `corrupt_records`: stored rows that every list skips because they cannot be read, as `{table, id, error}` (the error never quotes stored data). See [troubleshooting.md](troubleshooting.md#unreadable-records).
 
 ## Listing jobs
 
@@ -637,7 +637,7 @@ curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25"
 | Parameter | Meaning |
 | --- | --- |
 | `limit` | Page size, 1 to 500 (default 100) |
-| `sort` | `name` (default), `next_run` (paused jobs and jobs without a next run last, in both directions), `last_status` (the outcome of the last run: `failed`, `partial`, `cancelled`, `in_progress`, `completed`, the newest run first within each; jobs that never ran last) or `created_at` |
+| `sort` | `name` (default), `next_run` (paused jobs and jobs without a next run last, in both directions), `last_status` (the outcome of the last run: `failed`, `partial`, `cancelled`, `in_progress`, `completed`, within each the newest first by when that backup or run started; jobs that never ran last) or `created_at` |
 | `order` | `asc` (default) or `desc` |
 | `after` | The `meta.next` of the previous page in the same `sort` and `order` (opaque; anything else, also a cursor of another order: `400`). Without it the list starts at the first job |
 
@@ -649,7 +649,7 @@ curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25"
 }
 ```
 
-`total` counts every matching job; `next` is present while jobs follow the page and is the `after` of the next one. Paging is by key (the order, its direction and the sort value and ID of the page's last job), not by position: a job created or deleted between two requests never makes the next page repeat or skip another job, and a cursor stays valid when its job is deleted. A cursor works with any filter, but pages of one filter are only consistent with that filter's cursors. `total` leaves out stored jobs that cannot be read, as the pages do. The connection and state filters (`connection_id`, `enabled`) and the pages by `name`, `created_at` and `next_run` are answered from indexes; the other filters and the `last_status` order are evaluated on the jobs of those filters.
+`total` counts every matching job; `next` is present while jobs follow the page and is the `after` of the next one. Paging is by key (the order, its direction and the sort value and ID of the page's last job), not by position: a job created or deleted between two requests never makes the next page repeat or skip another job, and a cursor stays valid when its job is deleted. A cursor works with any filter, but pages of one filter are only consistent with that filter's cursors. `total` leaves out stored jobs that cannot be read, as the pages do. Every filter and order is answered in SQL from the jobs table: the pages from the indexes of the order (with and without the connection and state filters), `q` from a lower-cased search text of each job and `database`, `schedule` and `last_status` from columns kept on each job, which every job write updates (`last_status` follows every backup and run; an `all` or `pattern` job is matched against its patterns). A caller limited to some connections, one of whose jobs has its newest backup on another connection (a job that moved), gets `last_status` filters and the `last_status` order computed from the backups it may see instead.
 
 ```bash
 curl "http://localhost:8080/api/v1/jobs?enabled=true&limit=500" -H "X-API-Key: $MONGORESCUE_READ_KEY"
@@ -738,7 +738,7 @@ Every 5 minutes, right after a job's backup finished and right after a job is cr
 
 ## Recovery readiness
 
-`GET /api/v1/readiness` (read scope) answers "could we recover each database, and how fast?". It returns `{generated_at, keys_escrowed, summary: {ok, warn, fail}, rows, streams, storage_hints}` (`storage_hints`: the `hints` of every storage target with `target_id` and `target_name`; they never change a row's status) with one row per connection and database a job backs up (paused jobs included), failing rows first:
+`GET /api/v1/readiness` (read scope) answers "could we recover each database, and how fast?". The report is computed once for every caller asking with the same connection access and shared until a job, backup, run, restore, restore test or RPO breach is written, an event is sent or 5 seconds pass, so `generated_at` may be a few seconds old. It returns `{generated_at, keys_escrowed, summary: {ok, warn, fail}, rows, streams, storage_hints}` (`storage_hints`: the `hints` of every storage target with `target_id` and `target_name`; they never change a row's status) with one row per connection and database a job backs up (paused jobs included), failing rows first:
 
 | Field | Meaning |
 | --- | --- |

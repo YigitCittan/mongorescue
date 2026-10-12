@@ -2,7 +2,7 @@
   "note": "Load test baselines per profile (internal/load). A lower-is-better metric fails above value x tolerance + slack, a higher-is-better one below value / tolerance. Record a profile with MONGORESCUE_LOAD_UPDATE_BASELINE=1; see docs/testing.md.",
   "profiles": {
     "ci": {
-      "recorded": "2026-10-12 on linux/amd64, 4 CPUs (GitHub-hosted ubuntu-latest: the worst of the Load jobs of nightly runs 38132430021 and 38256324531); api.jobs_* and api.history*: 2026-10-09 on darwin/arm64, 8 CPUs",
+      "recorded": "2026-10-12 on linux/amd64, 4 CPUs (GitHub-hosted ubuntu-latest: the worst of the Load jobs of nightly runs 38132430021 and 38256324531); api.jobs_page, api.jobs_first and api.history*: 2026-10-09 on darwin/arm64, 8 CPUs; api.jobs_search, api.jobs_filter, api.jobs_last_status, api.overview and api.readiness*: 2026-10-13 on darwin/arm64, 8 CPUs",
       "config": {
         "profile": "ci",
         "data_mb": 5120,
@@ -61,6 +61,20 @@
           "slack": 10,
           "max": 300
         },
+        "api.jobs_filter.p95_ms": {
+          "value": 4.238,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_filter_x16.p95_ms": {
+          "value": 96.737,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
         "api.jobs_first.p95_ms": {
           "value": 1.125,
           "better": "lower",
@@ -75,17 +89,33 @@
           "slack": 10,
           "max": 300
         },
-        "api.jobs_search.p95_ms": {
-          "value": 65.113,
+        "api.jobs_last_status.p95_ms": {
+          "value": 0.815,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_last_status_x16.p95_ms": {
+          "value": 67.596,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_search.p95_ms": {
+          "value": 4.02,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_search_x16.p95_ms": {
-          "value": 1328.046,
+          "value": 89.633,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_page.p95_ms": {
           "value": 0.741,
@@ -102,28 +132,32 @@
           "max": 300
         },
         "api.overview.p95_ms": {
-          "value": 147.281,
+          "value": 0.177,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview_x16.p95_ms": {
-          "value": 2641.619,
+          "value": 1.705,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness.p95_ms": {
-          "value": 369.382,
+          "value": 3.479,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness_x16.p95_ms": {
-          "value": 4265.414,
+          "value": 14.412,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "backup.size_mb": {
           "value": 5369.303544,
@@ -316,25 +350,29 @@
           "value": 6.102,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview_x16.p95_ms": {
           "value": 124.214,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness.p95_ms": {
           "value": 23.487,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness_x16.p95_ms": {
           "value": 173.89,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "backup.size_mb": {
           "value": 536.930808,
