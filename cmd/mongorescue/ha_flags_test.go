@@ -5,16 +5,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/config"
 )
 
 func TestHAFlags(t *testing.T) {
 	var stderr bytes.Buffer
-	cfg, _, _, err := parseFlags([]string{"-ha-mode", "active-passive", "-ha-target", "file:///shared/ha", "-ha-cluster", "prod",
+	target := config.FileURL(t.TempDir())
+	cfg, _, _, err := parseFlags([]string{"-ha-mode", "active-passive", "-ha-target", target, "-ha-cluster", "prod",
 		"-ha-lease-ttl", "20s", "-ha-renew-interval", "5s", "-ha-snapshot-interval", "2m"}, env(nil), &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.HA.Enabled() || cfg.HA.Target != "file:///shared/ha" || cfg.HA.Cluster != "prod" ||
+	if !cfg.HA.Enabled() || cfg.HA.Target != target || cfg.HA.Cluster != "prod" ||
 		cfg.HA.LeaseTTL != 20*time.Second || cfg.HA.RenewInterval != 5*time.Second || cfg.HA.SnapshotInterval != 2*time.Minute {
 		t.Fatalf("HA = %+v", cfg.HA)
 	}

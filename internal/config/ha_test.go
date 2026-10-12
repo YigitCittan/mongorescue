@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -86,7 +87,7 @@ func TestParseHATarget(t *testing.T) {
 	if _, err = ParseHATarget("s3://bkt?endpoint=ftp://x"); err == nil {
 		t.Fatal("a non-http endpoint was accepted")
 	}
-	if _, err = ParseHATarget("file://relative/dir"); err == nil {
-		t.Fatal("a file location with a host was accepted")
+	if _, err = ParseHATarget("file://relative/dir"); runtime.GOOS != "windows" && err == nil {
+		t.Fatal("a file location with a host was accepted outside Windows (where it is a UNC path)")
 	}
 }

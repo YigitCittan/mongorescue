@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,7 +53,7 @@ func haTestConfig(t *testing.T, shared, key string) *config.Config {
 	t.Helper()
 	cfg := testConfig(t)
 	cfg.Host, cfg.Port, cfg.SecretKey, cfg.Dashboard = "127.0.0.1", freeLoopbackPort(t), key, true
-	cfg.HA = config.HAConfig{Mode: config.HAModeActivePassive, Target: "file://" + filepath.ToSlash(shared), Cluster: "test",
+	cfg.HA = config.HAConfig{Mode: config.HAModeActivePassive, Target: config.FileURL(shared), Cluster: "test",
 		LeaseTTL: ha.MinTTL, RenewInterval: ha.MinRenew, SnapshotInterval: config.MinHASnapshotInterval}
 	return cfg
 }

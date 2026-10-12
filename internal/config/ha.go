@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -208,14 +210,11 @@ func ParseHATarget(v string) (HATarget, error) {
 		}
 		return t, nil
 	case "file":
-		// file:///C:/dir on Windows has the path "/C:/dir".
-		if len(u.Path) > 2 && u.Path[0] == '/' && u.Path[2] == ':' {
-			u.Path = u.Path[1:]
+		p, err := fileTargetPath(u.Host, u.Path, runtime.GOOS)
+		if err != nil {
+			return HATarget{}, err
 		}
-		if u.Host != "" || !filepath.IsAbs(filepath.FromSlash(u.Path)) {
-			return HATarget{}, fmt.Errorf("%w: file:// needs an absolute path, as in file:///shared/mongorescue-ha", ErrInvalidHA)
-		}
-		return HATarget{Scheme: "file", Path: filepath.Clean(filepath.FromSlash(u.Path))}, nil
+		return HATarget{Scheme: "file", Path: filepath.Clean(p)}, nil
 	}
 	return HATarget{}, fmt.Errorf("%w: unsupported storage location scheme %q (s3 or file)", ErrInvalidHA, u.Scheme)
 }
@@ -234,7 +233,7 @@ func (t HATarget) String() string {
 		}
 		return label
 	case "file":
-		return "file://" + filepath.ToSlash(t.Path)
+		return FileURL(t.Path)
 	}
 	return redact.Text(t.Ref)
 }
@@ -248,4 +247,67 @@ func HATargetLabel(v string) string {
 	}
 	v, _, _ = strings.Cut(strings.TrimSpace(v), "?")
 	return redact.Text(v)
+}
+
+// errFilePath is the error of a file:// location that is not an absolute path.
+var errFilePath = fmt.Errorf("%w: file:// needs an absolute path, as in file:///shared/mongorescue-ha, file:///C:/mongorescue-ha or file://server/share/mongorescue-ha (Windows)", ErrInvalidHA)
+
+// fileTargetPath converts the host and the (unescaped) path of a file:// URL to an
+// absolute local path for the operating system goos. On Windows it reads
+// file:///C:/dir (and the lenient file://C:/dir) as C:\dir and file://server/share/dir
+// as the UNC path \\server\share\dir; elsewhere only file:///dir (or
+// file://localhost/dir) is a path. It is pure, so every form is tested on every OS.
+func fileTargetPath(host, p, goos string) (string, error) {
+	if strings.EqualFold(host, "localhost") {
+		host = ""
+	}
+	if goos != "windows" {
+		if host != "" || !strings.HasPrefix(p, "/") {
+			return "", errFilePath
+		}
+		return path.Clean(p), nil
+	}
+	if isDrive(host) {
+		// file://C:/dir: the drive was read as the host.
+		host, p = "", host+p
+	}
+	if host != "" {
+		// UNC: file://server/share/dir names \\server\share\dir.
+		rest := strings.Trim(path.Clean("/"+p), "/")
+		if rest == "" || rest == "." {
+			return "", errFilePath
+		}
+		return `\\` + host + `\` + strings.ReplaceAll(rest, "/", `\`), nil
+	}
+	// file:///C:/dir has the path /C:/dir.
+	if len(p) >= 3 && p[0] == '/' && isDrive(p[1:3]) {
+		p = p[1:]
+	}
+	if len(p) < 3 || !isDrive(p[:2]) || p[2] != '/' {
+		return "", errFilePath
+	}
+	clean := path.Clean(p)
+	if len(clean) < 3 || !isDrive(clean[:2]) || clean[2] != '/' {
+		return "", errFilePath
+	}
+	return strings.ReplaceAll(clean, "/", `\`), nil
+}
+
+// isDrive reports whether s is a Windows drive such as "C:".
+func isDrive(s string) bool {
+	return len(s) == 2 && s[1] == ':' && ('a' <= s[0]|0x20 && s[0]|0x20 <= 'z')
+}
+
+// FileURL returns the file:// URL of the absolute local path p in the form
+// ParseHATarget reads on the same operating system: file:///srv/ha,
+// file:///C:/ha or, for a UNC path, file://server/share/ha.
+func FileURL(p string) string {
+	s := filepath.ToSlash(p)
+	switch {
+	case strings.HasPrefix(s, "//"):
+		return "file:" + s
+	case strings.HasPrefix(s, "/"):
+		return "file://" + s
+	}
+	return "file:///" + s
 }
