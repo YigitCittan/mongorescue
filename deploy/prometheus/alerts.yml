@@ -124,3 +124,21 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} has {{ $value }} active settings warnings"
           description: "Open the dashboard: the warning banner names the setting that resolves each warning."
+
+      # Active-passive HA: no member of a cluster reports the active role, so no
+      # scheduled backup and no PITR collection runs. Members export
+      # mongorescue_ha_role only in HA mode; a cluster counts while one of its
+      # members exported it in the last 10 minutes (longer outages leave it to
+      # MongoRescueDown). for: is twice the default lease TTL (30s), so a takeover
+      # in progress does not alert; raise it with the TTL.
+      - alert: MongoRescueHANoActiveInstance
+        expr: |
+          max by (cluster) (last_over_time(mongorescue_ha_role[10m]))
+          unless
+          max by (cluster) (mongorescue_ha_role{role="active"} == 1)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No active instance in MongoRescue HA cluster {{ $labels.cluster }}"
+          description: "No member of HA cluster {{ $labels.cluster }} holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."

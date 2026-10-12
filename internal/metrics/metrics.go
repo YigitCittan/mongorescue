@@ -92,6 +92,8 @@ type Metrics struct {
 	rpo *rpoCollector
 	// Scheduler tick and settings warning sources (see liveness.go).
 	liveness livenessSources
+	// Active-passive HA series (see ha.go).
+	ha *haCollector
 }
 
 // New creates a Metrics instance with its own registry.
@@ -247,6 +249,8 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newLivenessSeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
+	m.ha = newHACollector()
+	m.registry.MustRegister(m.ha)
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
 	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)

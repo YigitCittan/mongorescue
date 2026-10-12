@@ -342,6 +342,7 @@ func (s *Scheduler) saveRunOf(ctx context.Context, plan *JobRunPlan) error {
 	if plan.adhoc {
 		return nil
 	}
+	s.stampEpoch(plan.Run)
 	return s.metadataStore.SaveJobRun(ctx, plan.Run)
 }
 
@@ -843,6 +844,7 @@ func (s *Scheduler) failRun(ctx context.Context, job *models.Job, run *models.Jo
 	run.Error = redact.Text(cause.Error())
 	run.Finish(time.Now())
 	s.recordRunTimes(persistCtx, job)
+	s.stampEpoch(run)
 	if err := s.metadataStore.SaveJobRun(persistCtx, run); err != nil {
 		s.logger.Error("failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}

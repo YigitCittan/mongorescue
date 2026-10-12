@@ -78,6 +78,9 @@ type ProcessRunner func(ctx context.Context, name string, stdin io.Reader, args 
 
 // Engine orchestrates MongoDB restore and disaster recovery operations.
 type Engine struct {
+	// fence, when set, stamps every restore with its HA epoch and must pass before
+	// a restore completes (see WithFence).
+	fence        models.Fence
 	storage      storage.Storage
 	logger       *slog.Logger
 	defaultURI   string
@@ -453,7 +456,30 @@ func (e *Engine) Execute(ctx context.Context, req models.RestoreRequest, sourceR
 	if err != nil {
 		return failRestore(record, err, err.Error())
 	}
+	if e.fence != nil {
+		record.HAEpoch = e.fence.Epoch()
+	}
 	return run.execute(ctx, req, sourceRecord, record)
+}
+
+// WithFence makes every restore carry the HA epoch of fence and fail instead of
+// completing when fence.Check fails: an instance that lost the HA lease never
+// records a completed restore.
+func WithFence(fence models.Fence) Option {
+	return func(e *Engine) {
+		e.fence = fence
+	}
+}
+
+// checkFence returns the error of the fence (nil without one).
+func (e *Engine) checkFence() error {
+	if e.fence == nil {
+		return nil
+	}
+	if err := e.fence.Check(); err != nil {
+		return fmt.Errorf("restore not completed: %w", err)
+	}
+	return nil
 }
 
 // execute runs the restore on an engine bound by forRun.
@@ -741,6 +767,10 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	// clone for inspection and fails the restore.
 	created := map[string]string{sourceRecord.Database: targetDB}
 	if err := e.applyPostRestore(ctx, mongoURI, req, record, created); err != nil {
+		record.Phases.Finished = models.Stamp(time.Now())
+		return e.failDone(ctx, record, err, err.Error()+keptNote(sortedClones(created)))
+	}
+	if err := e.checkFence(); err != nil {
 		record.Phases.Finished = models.Stamp(time.Now())
 		return e.failDone(ctx, record, err, err.Error()+keptNote(sortedClones(created)))
 	}

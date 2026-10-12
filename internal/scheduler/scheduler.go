@@ -121,6 +121,20 @@ type Scheduler struct {
 	// diskGuard settles the backups whose final record cannot be saved (see
 	// WithDiskGuard).
 	diskGuard *diskguard.Guard
+	// fence stamps job runs with the HA epoch (see WithFence).
+	fence models.Fence
+}
+
+// WithFence stamps every job run with the HA epoch of fence (active-passive HA).
+func WithFence(fence models.Fence) Option {
+	return func(s *Scheduler) { s.fence = fence }
+}
+
+// stampEpoch sets the HA epoch of run when it has none yet.
+func (s *Scheduler) stampEpoch(run *models.JobRun) {
+	if s.fence != nil && run != nil && run.HAEpoch == 0 {
+		run.HAEpoch = s.fence.Epoch()
+	}
 }
 
 // TickInterval is how often a running scheduler records a liveness tick (see
@@ -707,6 +721,7 @@ func (s *Scheduler) saveRun(ctx context.Context, run *models.JobRun) {
 	if run == nil {
 		return
 	}
+	s.stampEpoch(run)
 	if err := s.metadataStore.SaveJobRun(ctx, run); err != nil {
 		s.logger.Warn("failed to record the job run", slog.String("job_id", run.JobID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}

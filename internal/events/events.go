@@ -142,6 +142,14 @@ const (
 	// It is a critical alert: every enabled channel receives it, whatever the
 	// rules (see Broadcast).
 	SystemDiskFull EventType = "system.disk_full"
+	// HATookOver is emitted when an instance of an active-passive HA cluster
+	// acquired the lease and became active (Event.Detail names the instance and the
+	// epoch). It is sent to every enabled channel (see Broadcast).
+	HATookOver EventType = "ha.took_over"
+	// HASteppedDown is emitted when the active instance of an HA cluster lost the
+	// lease or could not renew it in time and became a standby: its runs were
+	// cancelled (Event.Detail says why). It is sent to every enabled channel.
+	HASteppedDown EventType = "ha.stepped_down"
 )
 
 // Sources of verification events.
@@ -176,7 +184,7 @@ type BulkSummary struct {
 // Broadcast reports whether t is delivered to every enabled notification channel
 // instead of the channels of matching rules.
 func (t EventType) Broadcast() bool {
-	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull
+	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull || t == HATookOver || t == HASteppedDown
 }
 
 // optInTypes lists the event types a notification rule receives only when it
@@ -221,7 +229,8 @@ func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
-		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull:
+		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull,
+		HASteppedDown:
 		return true
 	default:
 		return false

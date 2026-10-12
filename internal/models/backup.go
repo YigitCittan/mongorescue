@@ -90,6 +90,10 @@ type BackupRecord struct {
 	// JobID references the scheduled job that triggered this backup, if any.
 	JobID string `json:"job_id,omitempty"`
 
+	// HAEpoch is the epoch of the HA lease (internal/ha) the instance held when it
+	// ran this; 0 outside active-passive HA.
+	HAEpoch uint64 `json:"ha_epoch,omitempty"`
+
 	// RunID groups the backups of one job run: every database a run backs up gets
 	// its own record with the run's ID (see JobRun). Empty for backups that are not
 	// part of a job run (manual backups, and job backups taken before runs existed).

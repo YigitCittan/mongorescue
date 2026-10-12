@@ -179,6 +179,18 @@
       </div>
     </section>
 
+    <!-- Active-passive HA: this instance is the read-only standby (ha.js) -->
+    <section id="ha-standby-banner" class="callout callout-warning" role="status" aria-labelledby="ha-standby-title" hidden>
+      <div>
+        <h2 class="callout-title" id="ha-standby-title" data-i18n="ha.standby_title">Standby instance: read-only</h2>
+        <p class="section-desc" data-i18n="ha.standby_desc">This instance is the standby of an active-passive HA cluster. It runs no backups and refuses changes; make changes on the active instance. It takes over by itself when the active instance stops.</p>
+        <p class="section-desc">
+          <span data-i18n="ha.cluster">Cluster</span>: <strong id="ha-standby-cluster"></strong>
+          · <span data-i18n="ha.active_instance">Active instance</span>: <strong id="ha-standby-holder"></strong>
+        </p>
+      </div>
+    </section>
+
     <!-- Warnings no feature banner shows: a full data directory, unreadable notification channels (runtimewarnings.js) -->
     <div id="runtime-warnings" hidden></div>
 
@@ -3231,6 +3243,7 @@
   <script src="/tls.js"></script>
   <script src="/stall.js"></script>
   <script src="/runtimewarnings.js"></script>
+  <script src="/ha.js"></script>
   <script src="/widgets.js"></script>
   <script src="/tables.js"></script>
 </body>

@@ -76,6 +76,18 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		slog.String("data_dir", cfg.DataDir),
 	)
 
+	if cfg.HA.Enabled() {
+		// Active-passive HA: the instance starts as a standby and opens as the
+		// active one when it acquires the lease (docs/design/ha.md).
+		logger.Info("starting as a member of an active-passive HA cluster",
+			slog.String("ha_cluster", cfg.HA.Cluster), slog.Duration("lease_ttl", cfg.HA.LeaseTTL))
+		if err = app.RunHA(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv)); err != nil {
+			logger.Error("application execution terminated with error", slog.Any("error", err))
+			return 1
+		}
+		logger.Info("mongorescue shutdown complete. Goodbye!")
+		return 0
+	}
 	application, err := app.New(cfg, logger, app.WithBuildInfo(Version, Commit), app.WithGetenv(getenv))
 	if err != nil {
 		logger.Error("application bootstrap failed", slog.Any("error", err))

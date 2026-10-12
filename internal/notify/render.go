@@ -50,6 +50,8 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.BackupCopyRecovered:       {"✅", "Backup copy recovered"},
 	events.BackupCopyExhausted:       {"🚨", "Backup copy given up"},
 	events.SystemDiskFull:            {"🚨", "Data directory full"},
+	events.HATookOver:                {"🔁", "HA takeover"},
+	events.HASteppedDown:             {"⚠️", "HA step-down"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -121,6 +123,8 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("backup %s (db %s) to storage target %s", e.BackupID, e.Database, name)
 	case events.SystemDiskFull:
 		target = "the MongoRescue metadata database cannot be written; new backups and restores are refused until space is freed"
+	case events.HATookOver, events.HASteppedDown:
+		target = e.Detail
 	case events.MetadataBackupFailed:
 		name := e.TargetName
 		if name == "" {
