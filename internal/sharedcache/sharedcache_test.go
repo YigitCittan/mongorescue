@@ -224,3 +224,47 @@ func TestAccessKey(t *testing.T) {
 		}
 	}
 }
+
+// TestCachePanickingComputeFailsTheEntry checks that a computation that panics
+// wakes its waiters (they compute their own), passes the panic on and is not
+// cached.
+func TestCachePanickingComputeFailsTheEntry(t *testing.T) {
+	c, _ := newCache(Options{TTL: time.Hour, ServeStale: true})
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = c.Get(context.Background(), "*", 0, func(context.Context) (int, error) {
+			close(started)
+			<-gate
+			panic("boom")
+		})
+	}()
+	<-started
+	waiter := make(chan int, 1)
+	go func() {
+		v, err := c.Get(context.Background(), "*", 0, func(context.Context) (int, error) { return 7, nil })
+		if err != nil {
+			t.Error(err)
+		}
+		waiter <- v
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(gate)
+	if r := <-panicked; r != "boom" {
+		t.Fatalf("recovered %v; want the panic passed on", r)
+	}
+	select {
+	case v := <-waiter:
+		if v != 7 {
+			t.Fatalf("the waiter got %d; want its own computation", v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter never woke up")
+	}
+	cnt := &counter{}
+	if v := get(t, c, "*", 0, cnt); v != 1 || cnt.calls.Load() != 1 {
+		t.Fatalf("after the panic: %d (%d computations); want a new computation", v, cnt.calls.Load())
+	}
+}

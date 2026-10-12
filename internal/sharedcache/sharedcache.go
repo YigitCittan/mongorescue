@@ -10,6 +10,7 @@ package sharedcache
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -141,17 +142,38 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, stamp int64, compute func(
 	c.entries[key] = e
 	c.mu.Unlock()
 
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		// compute panicked: the entry fails, so its waiters wake up and compute
+		// their own and the next caller computes again; the panic goes on (not
+		// recovered, so it keeps its stack).
+		e.err = errPanicked
+		c.finish(key, e)
+	}()
 	e.v, e.err = compute(ctx)
+	finished = true
+	c.finish(key, e)
+	return e.v, e.err
+}
+
+// errPanicked is the error of an entry whose computation panicked.
+var errPanicked = errors.New("sharedcache: the computation panicked")
+
+// finish ends e's computation: waiters wake up, and a failed entry is dropped.
+func (c *Cache[K, V]) finish(key K, e *entry[V]) {
 	e.at = c.now()
 	close(e.done)
-	if e.err != nil {
-		c.mu.Lock()
-		if c.entries[key] == e {
-			delete(c.entries, key)
-		}
-		c.mu.Unlock()
+	if e.err == nil {
+		return
 	}
-	return e.v, e.err
+	c.mu.Lock()
+	if c.entries[key] == e {
+		delete(c.entries, key)
+	}
+	c.mu.Unlock()
 }
 
 // Invalidate drops every cached value; computations under way finish for the

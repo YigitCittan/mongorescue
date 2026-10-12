@@ -344,3 +344,35 @@ func TestChangeStampCountsEveryWrite(t *testing.T) {
 		t.Errorf("reads moved the change stamp from %d to %d", last, n)
 	}
 }
+
+// TestLastStatusTieBreakMatchesLatestJobBackups checks that two backups of a job
+// sharing the newest start time resolve to the greatest ID, whatever the order
+// they were written in, in the stored last status and in LatestJobBackups.
+func TestLastStatusTieBreakMatchesLatestJobBackups(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Second)
+	status := map[string]models.BackupStatus{"b_1": models.StatusCompleted, "b_2": models.StatusFailed}
+	for _, order := range [][]string{{"b_1", "b_2"}, {"b_2", "b_1"}} {
+		s := storetest.New(t)
+		if err := s.SaveJob(ctx, &models.Job{ID: "job_1", Name: "a", Database: "shop", CronExpression: "@daily", ConnectionID: "c1"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range order {
+			if err := s.SaveBackupRecord(ctx, &models.BackupRecord{ID: id, JobID: "job_1", Database: "shop", ConnectionID: "c1",
+				Status: status[id], StartedAt: at}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		latest, err := s.LatestJobBackups(ctx, "")
+		if err != nil || latest["job_1"] == nil || latest["job_1"].ID != "b_2" {
+			t.Fatalf("written %v: LatestJobBackups = %+v, %v; want b_2", order, latest["job_1"], err)
+		}
+		limited, err := s.LatestJobBackupsIn(ctx, "", auth.OnlyConnections("c1"))
+		if err != nil || limited["job_1"] == nil || limited["job_1"].ID != "b_2" {
+			t.Fatalf("written %v: LatestJobBackupsIn = %+v, %v; want b_2", order, limited["job_1"], err)
+		}
+		if got := matching(t, s, store.JobQuery{LastStatus: store.JobLastFailed}); !slices.Equal(got, []string{"job_1"}) {
+			t.Fatalf("written %v: the stored last status is not b_2's (failed): %v", order, got)
+		}
+	}
+}
