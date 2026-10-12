@@ -2,13 +2,16 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -24,14 +27,30 @@ func TestCatchUpRunsEachMissedJobOnce(t *testing.T) {
 		return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second)
 	}
 
+	verified := func(context.Context, string) error { return nil }
+	scanFailed := func(context.Context, string) error { return errors.New("the storage scan failed") }
 	for name, tc := range map[string]struct {
-		now       time.Time
-		lastRun   time.Time // the newest scheduled run (zero: none)
-		created   time.Time
-		disabled  bool
-		backup    *models.BackupRecord // a recorded backup since the fire
-		wantDumps int32
+		now      time.Time
+		lastRun  time.Time // the newest scheduled run (zero: none)
+		created  time.Time
+		disabled bool
+		backup   *models.BackupRecord // a recorded backup since the fire
+		// imports is the import check (verified when nil and noCheck is false).
+		imports ImportCheck
+		noCheck bool
+		// multi makes the job a multi-database job with these known databases.
+		multi       bool
+		known       []string
+		wantDumps   int32
+		wantSkipped bool
 	}{
+		// Unknown means covered: no catch-up, a warning instead.
+		"the target scan failed":        {now: at(10, 20, 0), lastRun: at(8, 0, 1), imports: scanFailed, wantSkipped: true},
+		"no snapshot, nothing imported": {now: at(10, 20, 0), lastRun: at(8, 0, 1), noCheck: true, wantSkipped: true},
+		"databases unknown":             {now: at(10, 20, 0), lastRun: at(8, 0, 1), multi: true, wantSkipped: true},
+		"multi-database job, verified":  {now: at(10, 20, 0), lastRun: at(8, 0, 1), multi: true, known: []string{"shop", "crm"}, wantDumps: 1},
+		"multi-database job, an imported archive covers it": {now: at(10, 20, 0), lastRun: at(8, 0, 1), multi: true, known: []string{"shop", "crm"},
+			backup: &models.BackupRecord{ID: "bkp_imp", Database: "crm", Imported: true, Status: models.StatusPending, StartedAt: at(10, 0, 3).UTC()}},
 		"missed fire":                    {now: at(10, 20, 0), lastRun: at(8, 0, 1), wantDumps: 1},
 		"fire already ran":               {now: at(10, 20, 0), lastRun: at(10, 0, 1), wantDumps: 0},
 		"several missed fires, one run":  {now: at(10, 20, 0), lastRun: at(3, 0, 1), wantDumps: 1},
@@ -54,8 +73,13 @@ func TestCatchUpRunsEachMissedJobOnce(t *testing.T) {
 				return io.NopCloser(strings.NewReader("archive")), strings.NewReader(""), func() error { return nil }, nil
 			}
 			engine := backup.NewEngine(storage.NewMockStorage(), "mongodb://localhost:27017", backup.WithRunner(runner))
-			s := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil)
+			pub := &catchUpEvents{}
+			s := NewScheduler(metaStore, engine, storage.NewMockStorage(), nil, WithPublisher(pub))
 			job := &models.Job{ID: "job_hourly", Database: "shop", CronExpression: "0 * * * *", Enabled: !tc.disabled, CreatedAt: tc.created.UTC()}
+			if tc.multi {
+				// The multi-database run is not executed here: the catch-up decision is.
+				job.Database, job.KnownDatabases = "", tc.known
+			}
 			if err := metaStore.SaveJob(ctx, job); err != nil {
 				t.Fatal(err)
 			}
@@ -74,11 +98,18 @@ func TestCatchUpRunsEachMissedJobOnce(t *testing.T) {
 			if err := s.Start(ctx); err != nil {
 				t.Fatal(err)
 			}
-			started := s.CatchUp(ctx, tc.now)
+			imports := tc.imports
+			if imports == nil && !tc.noCheck {
+				imports = verified
+			}
+			started := s.CatchUp(ctx, tc.now, imports)
 			s.inflight.Wait() // the catch-up runs
 			s.Stop()
-			if dumps.Load() != tc.wantDumps || len(started) != int(tc.wantDumps) {
+			if len(started) != int(tc.wantDumps) || (!tc.multi && dumps.Load() != tc.wantDumps) {
 				t.Fatalf("dumps = %d, started %v; want %d", dumps.Load(), started, tc.wantDumps)
+			}
+			if skipped := pub.count(events.HACatchUpSkipped); skipped != boolInt(tc.wantSkipped) {
+				t.Fatalf("%d %s events; want %d", skipped, events.HACatchUpSkipped, boolInt(tc.wantSkipped))
 			}
 		})
 	}
@@ -89,4 +120,36 @@ func TestCatchUpNeedsAStartedScheduler(t *testing.T) {
 	if s.startCatchUp("job") {
 		t.Fatal("a catch-up run started before Start")
 	}
+}
+
+// catchUpEvents records published events.
+type catchUpEvents struct {
+	mu   sync.Mutex
+	seen []events.Event
+}
+
+func (p *catchUpEvents) Publish(_ context.Context, e events.Event) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen = append(p.seen, e)
+	return true
+}
+
+func (p *catchUpEvents) count(t events.EventType) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, e := range p.seen {
+		if e.Type == t {
+			n++
+		}
+	}
+	return n
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

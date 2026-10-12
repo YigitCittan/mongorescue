@@ -86,37 +86,67 @@ func (a *App) stopHAActive() {
 // written after the snapshot it took over from, then runs the jobs whose schedule
 // was missed. Nothing is deleted.
 func (a *App) takeoverTasks(ctx context.Context) {
-	if since := a.ha.rt.takeoverSince(); !since.IsZero() {
-		a.importNewerArchives(ctx, since.Add(-haImportMargin))
+	imported := map[string]error{}
+	since := a.ha.rt.takeoverSince()
+	if !since.IsZero() {
+		imported = a.importNewerArchives(ctx, since.Add(-haImportMargin))
 	}
 	if ctx.Err() != nil {
 		return
 	}
-	if started := a.scheduler.CatchUp(ctx, time.Now()); len(started) > 0 {
+	// A missed fire is caught up only when the archives of its target were checked.
+	check := func(ctx context.Context, targetID string) error {
+		if since.IsZero() {
+			return errors.New("there was no metadata snapshot to compare the storage with")
+		}
+		t, err := a.targets.Resolve(ctx, targetID)
+		if err != nil {
+			return fmt.Errorf("the storage target cannot be resolved: %w", err)
+		}
+		status, ok := imported[t.ID]
+		if !ok {
+			return errors.New("the storage target was not scanned")
+		}
+		return status
+	}
+	if started := a.scheduler.CatchUp(ctx, time.Now(), check); len(started) > 0 {
 		a.logger.Info("ran the scheduled backups missed during the takeover", slog.Int("jobs", len(started)))
 	}
 }
 
 // importNewerArchives scans every storage target and imports the orphan archives
 // (never oplog chunks) that changed at or after since: backups the previous active
-// instance wrote after its last snapshot.
-func (a *App) importNewerArchives(ctx context.Context, since time.Time) {
+// instance wrote after its last snapshot. It returns, per scanned target ID, nil
+// when every such archive is known (imported, or recorded already), or why not.
+func (a *App) importNewerArchives(ctx context.Context, since time.Time) map[string]error {
+	status := map[string]error{}
 	if a.integrity == nil {
-		return
+		return status
 	}
 	targets, err := a.targets.List(ctx)
 	if err != nil {
 		a.logger.Warn("takeover: cannot list the storage targets to import newer archives", logsafe.Error(err))
-		return
+		return status
 	}
 	imported := 0
 	for _, t := range targets {
 		report, scanErr := a.integrity.ScanTarget(ctx, t.ID, haScanSource)
-		if scanErr != nil || report == nil || report.Error != "" {
-			a.logger.Warn("takeover: storage scan failed; its newer archives are not imported", logsafe.Attr("storage_target_id", t.ID),
-				logsafe.Error(scanErr))
+		switch {
+		case scanErr != nil:
+			status[t.ID] = fmt.Errorf("the storage scan failed: %w", scanErr)
+		case report == nil:
+			status[t.ID] = errors.New("the storage scan returned nothing")
+		case report.Error != "":
+			status[t.ID] = errors.New("the storage scan failed: " + report.Error)
+		case report.OrphanCount > len(report.Orphans):
+			status[t.ID] = fmt.Errorf("the storage holds more orphan archives (%d) than one scan reports", report.OrphanCount)
+		}
+		if status[t.ID] != nil {
+			a.logger.Warn("takeover: storage scan incomplete; its newer archives may be unknown", logsafe.Attr("storage_target_id", t.ID),
+				logsafe.Error(status[t.ID]))
 			continue
 		}
+		status[t.ID] = nil
 		for _, o := range report.Orphans {
 			if integrity.IsChunkKey(o.Key) || o.ModTime.Before(since) {
 				continue
@@ -124,6 +154,7 @@ func (a *App) importNewerArchives(ctx context.Context, since time.Time) {
 			if _, impErr := a.integrity.StartImport(ctx, t.ID, o.Key); impErr != nil {
 				a.logger.Warn("takeover: cannot import an archive written after the last snapshot",
 					logsafe.Attr("storage_key", o.Key), logsafe.Error(impErr))
+				status[t.ID] = fmt.Errorf("an archive written after the last snapshot could not be imported: %w", impErr)
 				continue
 			}
 			imported++
@@ -132,6 +163,7 @@ func (a *App) importNewerArchives(ctx context.Context, since time.Time) {
 	if imported > 0 {
 		a.logger.Info("takeover: importing archives written after the last metadata snapshot", slog.Int("archives", imported))
 	}
+	return status
 }
 
 // prepareTakeover readies the data directory before the App opens as the active

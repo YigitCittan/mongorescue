@@ -60,7 +60,14 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 	write(newer, time.Now())
 	write(older, snapshotAt.Add(-24*time.Hour))
 
-	app.importNewerArchives(ctx, snapshotAt)
+	status := app.importNewerArchives(ctx, snapshotAt)
+	def, err := app.targets.Resolve(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := status[def.ID]; !ok || st != nil {
+		t.Fatalf("import status of the default target = %v (scanned %v); want verified", st, ok)
+	}
 
 	page, err := app.metaStore.QueryBackupRecords(ctx, store.BackupFilter{Database: "shop"})
 	if err != nil {
