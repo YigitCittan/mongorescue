@@ -126,7 +126,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `POST` | `/api/v1/security/rotate-secret-key` | Rotate `secret.key` `{current_password}` (admin, signed-in users only; everyone signs in again) | 200, 202 | 403, 409, 429 |
 | `POST` | `/api/v1/encryption/rotate` | Rotate the backup encryption key `{passphrase?, reencrypt?}` | 200 | 400, 409 |
 | `GET` | `/api/v1/encryption/reencryption` | The latest re-encryption job (`null` when none ran) | 200 | |
-| `GET` | `/api/v1/jobs` | List scheduled jobs, by name; optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
+| `GET` | `/api/v1/jobs` | One page of the scheduled jobs (`sort` `name`, `next_run`, `last_status` or `created_at`, `order` `asc` or `desc`; `limit` 1-500, default 100; `after` the previous page's `meta.next`); optional filters `q`, `enabled`, `connection_id`, `database`, `schedule`, `last_status` ([details](#listing-jobs)) | 200 | 400 |
 | `POST` | `/api/v1/jobs` | Create or update a job (`connection_id` and `database` or `database_selection` required, [several databases](#jobs-with-several-databases); `storage_target_id` and `parallelism` optional; the cron expression is validated). A shorter retention of an existing job is answered as `pending_retention` (or `approval`) and applies later ([delete protection](#delete-protection)); `warnings` names a retention shorter than the [object lock](configuration.md#immutable-backups-s3-object-lock) of the job's storage target | 201 | 400 |
 | `GET` | `/api/v1/jobs/{id}` | Get a job with its next three activations (`next_runs`, UTC), its effective RPO (`effective_rpo_minutes`, `rpo_default`; see [RPO](#recovery-point-objectives)) and a pending retention shortening (`pending_retention`) | 200 | 404 |
 | `PUT` | `/api/v1/jobs/{id}` | Update a job and reschedule it at once ([details](#updating-a-job)); a shorter retention is answered as `pending_retention` (or `approval`) and applies after the grace period | 200 | 400, 404, 409 changed meanwhile |
@@ -630,7 +630,33 @@ curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25"
 
 ## Listing jobs
 
-`GET /api/v1/jobs` returns every job sorted by name. Optional filters keep only the matching jobs, with the same matcher as the jobs [bulk filter](#bulk-actions), so selecting "all matching" there selects exactly the listed jobs. All given filters must match; without any the response is unchanged.
+`GET /api/v1/jobs` returns one page of the jobs in the order of `sort` and `order` (by name, ascending, by default), ties broken by ID, so the order is stable. Optional filters keep only the matching jobs, with the same matcher as the jobs [bulk filter](#bulk-actions), so selecting "all matching" there selects exactly the listed jobs. All given filters must match.
+
+> **Changed (API) after 0.26.0:** the list is paged by cursor. Without `limit` the answer is the first 100 jobs (earlier releases returned every job), with `meta.next` when more follow. Clients that read every job follow `meta.next` until it is absent, as the CLI, the MCP server and the dashboard do.
+
+| Parameter | Meaning |
+| --- | --- |
+| `limit` | Page size, 1 to 500 (default 100) |
+| `sort` | `name` (default), `next_run` (paused jobs and jobs without a next run last, in both directions), `last_status` (the outcome of the last run: `failed`, `partial`, `cancelled`, `in_progress`, `completed`, the newest run first within each; jobs that never ran last) or `created_at` |
+| `order` | `asc` (default) or `desc` |
+| `after` | The `meta.next` of the previous page in the same `sort` and `order` (opaque; anything else, also a cursor of another order: `400`). Without it the list starts at the first job |
+
+```json
+{
+  "success": true,
+  "data": [{"id": "job_a1b2c3", "name": "nightly shop", "...": "..."}],
+  "meta": {"total": 10000, "limit": 100, "next": "ajE6eyJzIjoibmFtZSIsImsiOnsiayI6Im5pZ2h0bHkgc2hvcCIsImlkIjoiam9iX2ExYjJjMyJ9fQ"}
+}
+```
+
+`total` counts every matching job; `next` is present while jobs follow the page and is the `after` of the next one. Paging is by key (the order, its direction and the sort value and ID of the page's last job), not by position: a job created or deleted between two requests never makes the next page repeat or skip another job, and a cursor stays valid when its job is deleted. A cursor works with any filter, but pages of one filter are only consistent with that filter's cursors. `total` leaves out stored jobs that cannot be read, as the pages do. The connection and state filters (`connection_id`, `enabled`) and the pages by `name`, `created_at` and `next_run` are answered from indexes; the other filters and the `last_status` order are evaluated on the jobs of those filters.
+
+```bash
+curl "http://localhost:8080/api/v1/jobs?enabled=true&limit=500" -H "X-API-Key: $MONGORESCUE_READ_KEY"
+curl "http://localhost:8080/api/v1/jobs?enabled=true&limit=500&after=$NEXT" -H "X-API-Key: $MONGORESCUE_READ_KEY"
+```
+
+Filters:
 
 | Parameter | Meaning |
 | --- | --- |
@@ -641,7 +667,7 @@ curl "http://localhost:8080/api/v1/backups?status=completed&sort=-size&limit=25"
 | `schedule` | Frequency of the cron expression: `hourly` (more than once a day, also `@every` under 24 h), `daily`, `weekly` (some weekdays), `monthly` (some days of the month) or `other` |
 | `last_status` | Outcome of the job's last run: `completed`, `failed`, `partial`, `in_progress`, `cancelled` or `never`. A single-database job's is its newest backup's (a pruned or missing archive still counts as `completed`); a multi-database job's is its newest run's (`ok`, `partial`, `failed`, `cancelled`, `running`), never one database's backup |
 
-An unknown `schedule` or `last_status` value, or an over-long text, answers `400`. Sorting is left to the client (the list is not paged).
+An unknown `schedule` or `last_status` value, an over-long text, a `limit` outside 1-500, an unknown `sort` or `order`, or an `after` that is not a `meta.next` of the same order answers `400`.
 
 ## Overview history and schedule preview
 
@@ -653,7 +679,7 @@ An unknown `schedule` or `last_status` value, or an over-long text, answers `400
 - `upcoming`: the enabled jobs' scheduled runs in the next 24 hours, in order (`{job_id, at}`), at most 96 per job and 500 in total (`upcoming_truncated` says the caps cut the list).
 - `verification_issues`: the 20 newest completed backups of the window whose verification failed (`{id, job_id, database, started_at, verification}`, `mismatch` or `error`), and `verification_issues_total` for the window.
 
-Every query is answered from an index on `backups`, never by scanning the table, and record JSON is read only for the rows the index selected (a job's newest runs, the window's completed backups).
+Every query is answered from an index on `backups`, never by scanning the table, and record JSON is read only for the rows the index selected (a job's newest runs, the window's completed backups). The per-day outcomes and the stored size read covering indexes only; the runs and last successes of jobs with several databases are read in one bounded query per 500 jobs. The answer is computed once for every caller asking with the same `days`, zone and connection access within 10 seconds (also when they ask at the same moment), and computed again earlier after a backup, job run, verification, retention, bulk action or job change, so `generated_at` may be a few seconds old.
 - `server_time_zone`: `{name, offset_minutes}`, the time zone cron expressions are evaluated in.
 
 `GET /api/v1/schedule/preview?cron=0%202%20*%20*%20*&n=3` (read scope) parses a cron expression with the scheduler's own parser and returns `{valid, error, next_runs, server_time_zone, default_rpo_minutes}`: the expression's hours are read in the server's time zone, and `next_runs` are given in UTC. `default_rpo_minutes` is the [recovery point objective](#recovery-point-objectives) a job with this schedule has when it sets none. An expression the scheduler rejects is answered with `200` and `"valid": false` plus the reason; a missing or longer than 256 characters `cron`, or `n` outside 1-10, is a `400`. The dashboard's cron builder uses it for its *next runs* line and the job form's RPO hint.

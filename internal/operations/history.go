@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	// none (Windows, minimal containers).
 	_ "time/tzdata"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -195,6 +197,11 @@ type History struct {
 // History returns the outcomes and stored sizes per day, the jobs' recent runs, the
 // next day's scheduled runs and the failed verifications. Days or offsets out of
 // range return an ErrInvalid error.
+//
+// With Config.HistoryCacheTTL, the result is shared: callers asking for the same
+// window and zone with the same connection access get the same *History (treat it
+// as read-only) for up to that long, computed once however many ask at the same
+// time; InvalidateHistory and the events HandleEvent receives drop it earlier.
 func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, error) {
 	days := req.Days
 	if days == 0 {
@@ -206,8 +213,19 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	if req.OffsetMinutes < -MaxHistoryOffsetMinutes || req.OffsetMinutes > MaxHistoryOffsetMinutes {
 		return nil, public(fmt.Sprintf("tz_offset must be between %d and %d minutes", -MaxHistoryOffsetMinutes, MaxHistoryOffsetMinutes), ErrInvalid)
 	}
-	now := s.now()
 	loc, zoneName := req.location()
+	if s.historyCache == nil {
+		return s.history(ctx, days, loc, zoneName)
+	}
+	key := historyKey{days: days, zone: zoneName, access: accessKey(auth.ConnectionFilter(ctx))}
+	return s.historyCache.get(ctx, key, func(ctx context.Context) (*History, error) {
+		return s.history(ctx, days, loc, zoneName)
+	})
+}
+
+// history computes History for days days cut in loc (named zoneName).
+func (s *Service) history(ctx context.Context, days int, loc *time.Location, zoneName string) (*History, error) {
+	now := s.now()
 	local := now.In(loc)
 	// Midnights in loc: days are 23 or 25 hours long across daylight saving changes.
 	starts := make([]time.Time, days+1)
@@ -274,62 +292,71 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 		hj.LastSuccessAt = &at
 		h.Jobs[jobID] = hj
 	}
-	for _, j := range jobs {
-		if !j.Enabled {
-			continue
+	upcoming, intervals, truncated := scheduleFigures(jobs, now)
+	for id, interval := range intervals {
+		hj := h.Jobs[id]
+		if hj.Runs == nil {
+			hj.Runs = []HistoryRun{}
 		}
-		if runs := scheduler.NextRuns(j.CronExpression, now, 2); len(runs) == 2 {
-			hj := h.Jobs[j.ID]
-			if hj.Runs == nil {
-				hj.Runs = []HistoryRun{}
-			}
-			hj.IntervalSeconds = runs[1].Sub(runs[0]).Seconds()
-			h.Jobs[j.ID] = hj
-		}
+		hj.IntervalSeconds = interval
+		h.Jobs[id] = hj
 	}
-	for _, j := range jobs {
-		if j.MultiDatabase() {
-			if err := s.multiJobHistory(ctx, j, h); err != nil {
-				return nil, err
-			}
-		}
+	if err := s.multiJobHistory(ctx, jobs, h); err != nil {
+		return nil, err
 	}
 	for _, v := range agg.VerificationIssues {
 		h.VerificationIssues = append(h.VerificationIssues, VerificationIssue{
 			ID: v.ID, JobID: v.JobID, Database: v.Database, StartedAt: v.StartedAt, Verification: v.Verification,
 		})
 	}
-	h.Upcoming, h.UpcomingTruncated = upcomingRuns(jobs, now)
+	h.Upcoming, h.UpcomingTruncated = upcoming, truncated
 	return h, nil
 }
 
-// multiJobHistory replaces the per-backup history of multi-database job j with its
-// runs (one entry per run, however many databases it backed up) and reports its
-// stalest database as its last success.
-func (s *Service) multiJobHistory(ctx context.Context, j *models.Job, h *History) error {
+// multiJobHistory replaces the per-backup history of the multi-database jobs among
+// jobs with their runs (one entry per run, however many databases it backed up)
+// and reports their stalest database as their last success. Runs and newest
+// backups are read in one bounded query each per 500 jobs, never one per job.
+func (s *Service) multiJobHistory(ctx context.Context, jobs []*models.Job, h *History) error {
+	var multi []*models.Job
+	var ids []string
+	for _, j := range jobs {
+		if j.MultiDatabase() {
+			multi = append(multi, j)
+			ids = append(ids, j.ID)
+		}
+	}
+	if len(multi) == 0 {
+		return nil
+	}
 	// Skipped runs (outside the backup window) backed nothing up; they are left
 	// out before the limit, so they never push real runs out of the history.
-	list, err := s.store.ListExecutedJobRuns(ctx, j.ID, HistoryRunsPerJob)
+	runs, err := s.store.RecentExecutedJobRuns(ctx, ids, HistoryRunsPerJob)
 	if err != nil {
-		return fmt.Errorf("runs of job %s: %w", j.ID, err)
+		return fmt.Errorf("runs of the multi-database jobs: %w", err)
 	}
-	hj := h.Jobs[j.ID]
-	hj.Runs = make([]HistoryRun, 0, len(list))
-	for i := len(list) - 1; i >= 0; i-- { // oldest first
-		run := list[i]
-		ok, _, _, _ := run.Counts()
-		hj.Runs = append(hj.Runs, HistoryRun{
-			ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,
-			DurationSeconds: run.DurationSeconds, Databases: len(run.Databases), Succeeded: ok,
-			FailedDatabases: run.FailedDatabases(),
-		})
+	latest, err := s.store.LatestJobsDatabaseBackups(ctx, ids, models.StatusCompleted)
+	if err != nil {
+		return fmt.Errorf("latest backups of the multi-database jobs: %w", err)
 	}
-	var js JobStatus
-	if err := s.multiJobStatus(ctx, j, &js); err != nil {
-		return err
+	for _, j := range multi {
+		list := runs[j.ID]
+		hj := h.Jobs[j.ID]
+		hj.Runs = make([]HistoryRun, 0, len(list))
+		for i := len(list) - 1; i >= 0; i-- { // oldest first
+			run := list[i]
+			ok, _, _, _ := run.Counts()
+			hj.Runs = append(hj.Runs, HistoryRun{
+				ID: run.ID, Status: runBackupStatus(run.Status), RunStatus: run.Status, StartedAt: run.StartedAt,
+				DurationSeconds: run.DurationSeconds, Databases: len(run.Databases), Succeeded: ok,
+				FailedDatabases: run.FailedDatabases(),
+			})
+		}
+		var js JobStatus
+		multiJobStatusFrom(j, latest[j.ID], &js)
+		hj.LastSuccessAt, hj.StalestDatabase, hj.Databases = js.LastSuccessAt, js.StalestDatabase, js.Databases
+		h.Jobs[j.ID] = hj
 	}
-	hj.LastSuccessAt, hj.StalestDatabase, hj.Databases = js.LastSuccessAt, js.StalestDatabase, js.Databases
-	h.Jobs[j.ID] = hj
 	return nil
 }
 
@@ -349,38 +376,87 @@ func runBackupStatus(st models.JobRunStatus) models.BackupStatus {
 	}
 }
 
-// upcomingRuns lists the activations of the enabled jobs in the next UpcomingWindow,
-// in order, and reports whether MaxUpcomingPerJob or MaxUpcoming cut the list.
-func upcomingRuns(jobs []*models.Job, now time.Time) ([]UpcomingRun, bool) {
-	out := []UpcomingRun{}
+// compareUpcoming orders upcoming runs by time, then job ID.
+func compareUpcoming(a, b UpcomingRun) int {
+	if c := a.At.Compare(b.At); c != 0 {
+		return c
+	}
+	return strings.Compare(a.JobID, b.JobID)
+}
+
+// upcomingHeap is a max-heap of upcoming runs: the latest one is on top, so the
+// MaxUpcoming earliest runs are kept without collecting every activation.
+type upcomingHeap []UpcomingRun
+
+// Len implements heap.Interface.
+func (h upcomingHeap) Len() int { return len(h) }
+
+// Less implements heap.Interface: the later run first.
+func (h upcomingHeap) Less(i, j int) bool { return compareUpcoming(h[i], h[j]) > 0 }
+
+// Swap implements heap.Interface.
+func (h upcomingHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+// Push implements heap.Interface.
+func (h *upcomingHeap) Push(x any) { *h = append(*h, x.(UpcomingRun)) }
+
+// Pop implements heap.Interface.
+func (h *upcomingHeap) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
+}
+
+// scheduleFigures reads the schedule of every enabled job once (each expression is
+// parsed once and only the activations needed are computed): the activations in
+// the next UpcomingWindow, in order, whether MaxUpcomingPerJob or MaxUpcoming cut
+// them, and the gap between each job's next two activations in seconds.
+func scheduleFigures(jobs []*models.Job, now time.Time) ([]UpcomingRun, map[string]float64, bool) {
+	h := make(upcomingHeap, 0, MaxUpcoming)
+	intervals := map[string]float64{}
 	truncated := false
 	end := now.Add(UpcomingWindow)
 	for _, j := range jobs {
 		if !j.Enabled {
 			continue
 		}
-		runs := scheduler.NextRuns(j.CronExpression, now, MaxUpcomingPerJob+1)
-		for i, at := range runs {
-			if at.After(end) {
+		var first time.Time
+		n, done := 0, false
+		for at := range scheduler.Activations(j.CronExpression, now) {
+			n++
+			switch n {
+			case 1:
+				first = at
+			case 2:
+				intervals[j.ID] = at.Sub(first).Seconds()
+			}
+			inWindow := !at.After(end)
+			if inWindow && !done {
+				r := UpcomingRun{JobID: j.ID, At: at}
+				switch {
+				case n > MaxUpcomingPerJob:
+					truncated, done = true, true
+				case h.Len() < MaxUpcoming:
+					heap.Push(&h, r)
+				case compareUpcoming(r, h[0]) < 0:
+					// r displaces the latest kept run, which the cap cuts.
+					h[0] = r
+					heap.Fix(&h, 0)
+					truncated = true
+				default:
+					// r and this job's later runs are past the cap.
+					truncated, done = true, true
+				}
+			}
+			if n >= 2 && (done || !inWindow) {
 				break
 			}
-			if i == MaxUpcomingPerJob {
-				truncated = true
-				break
-			}
-			out = append(out, UpcomingRun{JobID: j.ID, At: at})
 		}
 	}
-	slices.SortStableFunc(out, func(a, b UpcomingRun) int {
-		if c := a.At.Compare(b.At); c != 0 {
-			return c
-		}
-		return strings.Compare(a.JobID, b.JobID)
-	})
-	if len(out) > MaxUpcoming {
-		out, truncated = out[:MaxUpcoming], true
-	}
-	return out, truncated
+	out := []UpcomingRun(h)
+	slices.SortFunc(out, compareUpcoming)
+	return out, intervals, truncated
 }
 
 // SchedulePreview is the reading of a cron expression.

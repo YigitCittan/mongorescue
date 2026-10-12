@@ -243,6 +243,11 @@ func commandName(entry bson.Raw) string {
 
 // transaction filters an entry of transaction id.
 func (f *Filter) transaction(entry bson.Raw, id string) ([]bson.D, int64, error) {
+	// MongoDB writes every transaction entry on admin.$cmd; one elsewhere (or
+	// without ns) would be copied with its namespace unchecked.
+	if ns, _ := entry.Lookup("ns").StringValueOK(); ns != "admin.$cmd" {
+		return nil, 0, fmt.Errorf("%w: transaction entry on namespace %q, not admin.$cmd", ErrMalformed, ns)
+	}
 	if f.txns == nil {
 		f.txns = map[string]*txnState{}
 	}

@@ -44,6 +44,7 @@ func TestWithConnectionDefaultsAuthSource(t *testing.T) {
 		{"existing query string", "mongodb://sa:pw@h/mydb?tls=true&replicaSet=rs0", "mongodb://sa:pw@h/mydb?tls=true&replicaSet=rs0&authSource=mydb&" + both},
 		{"query without path", "mongodb://sa:pw@h?tls=true", "mongodb://sa:pw@h?tls=true&authSource=admin&" + both},
 		{"trailing question mark", "mongodb://sa:pw@h/mydb?", "mongodb://sa:pw@h/mydb?authSource=mydb&" + both},
+		{"value ending in a question mark", "mongodb://sa:pw@h/?appName=a?", "mongodb://sa:pw@h/?appName=a?&authSource=admin&" + both},
 		{"encoded at sign in password", "mongodb://sa:p%40ss@h:27017", "mongodb://sa:p%40ss@h:27017/?authSource=admin&" + both},
 		{"all options present", "mongodb://sa:pw@h/?authSource=admin&serverSelectionTimeoutMS=1&connectTimeoutMS=2", "mongodb://sa:pw@h/?authSource=admin&serverSelectionTimeoutMS=1&connectTimeoutMS=2"},
 	}

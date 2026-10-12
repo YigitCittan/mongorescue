@@ -235,6 +235,10 @@ type Config struct {
 	Reencrypter Reencrypter
 	// Publisher receives backup and restore outcome events; nil disables them.
 	Publisher events.Publisher
+	// Alerts queues alerts that must survive a crash right after them (such as
+	// security.key_rotated) for the notification channels before the operation
+	// answers; nil leaves them to the Publisher alone.
+	Alerts AlertSink
 	// DiskGuard settles a backup whose final record cannot be saved (a full data
 	// directory) as failed and retries its save; nil only retries the save briefly.
 	DiskGuard *diskguard.Guard
@@ -279,6 +283,12 @@ type Config struct {
 	// PreviewTimeout bounds reading the collection list of an archive in
 	// ListBackupCollections; 0 means ArchivePreviewTimeout.
 	PreviewTimeout time.Duration
+	// HistoryCacheTTL shares a computed History for this long among the callers
+	// with the same window, zone and connection access, computing it once however
+	// many ask at the same time; events (HandleEvent) and InvalidateHistory drop it
+	// earlier. 0 disables the cache (every call computes); a negative value means
+	// DefaultHistoryCacheTTL.
+	HistoryCacheTTL time.Duration
 }
 
 // Service implements the backup and restore use cases. It is safe for concurrent use.
@@ -299,6 +309,9 @@ type Service struct {
 	bulk map[BulkResource]map[string]BulkAction
 	// bulkCap is the most items of one bulk operation (MaxBulkItems; lowered by tests).
 	bulkCap int
+
+	// historyCache shares computed Histories (nil when Config.HistoryCacheTTL is 0).
+	historyCache *historyCache
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -315,6 +328,12 @@ func New(cfg Config) *Service {
 		cfg: cfg, store: accessStore{cfg.Store}, logger: logger, now: time.Now,
 		archiveCache: newCollectionCache(archiveCacheSize), previewSlots: make(chan struct{}, maxConcurrentPreviews),
 		bulkCap: MaxBulkItems,
+	}
+	switch ttl := cfg.HistoryCacheTTL; {
+	case ttl < 0:
+		s.historyCache = newHistoryCache(DefaultHistoryCacheTTL)
+	case ttl > 0:
+		s.historyCache = newHistoryCache(ttl)
 	}
 	s.registerBulkActions()
 	return s
@@ -996,6 +1015,24 @@ func (s *Service) publish(ctx context.Context, e events.Event) {
 	if s.cfg.Publisher != nil {
 		s.cfg.Publisher.Publish(ctx, e)
 	}
+}
+
+// AlertSink queues an event for the notification channels synchronously (implemented
+// by *notify.Service): the deliveries are stored durably before DeliverNow returns
+// the event's ID, and the event's copy published on the Bus with that ID is not
+// delivered again.
+type AlertSink interface {
+	// DeliverNow stores the deliveries of e and returns e's ID.
+	DeliverNow(ctx context.Context, e events.Event) string
+}
+
+// alert queues e for the notification channels before it returns (see Config.Alerts),
+// then publishes it for the other subscribers.
+func (s *Service) alert(ctx context.Context, e events.Event) {
+	if s.cfg.Alerts != nil {
+		e.ID = s.cfg.Alerts.DeliverNow(ctx, e)
+	}
+	s.publish(ctx, e)
 }
 
 // derefOr returns *p, or def when p is nil.

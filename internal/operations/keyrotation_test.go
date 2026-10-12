@@ -3,6 +3,8 @@ package operations_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -17,14 +19,79 @@ type fakeRotator struct {
 	env               bool
 	calls             int
 	actor, approvalID string
+	// silent skips the announcement, as a rotator that never calls it would.
+	silent bool
+	// afterAnnounce runs once announce returned (before RotateAs does).
+	afterAnnounce func()
 }
 
 func (f *fakeRotator) FromEnv() bool { return f.env }
 
-func (f *fakeRotator) RotateAs(_ context.Context, actor, approvalID string) (*keyrotation.Result, error) {
+func (f *fakeRotator) RotateAs(ctx context.Context, actor, approvalID string, announce keyrotation.AnnounceFunc) (*keyrotation.Result, error) {
 	f.calls++
 	f.actor, f.approvalID = actor, approvalID
-	return &keyrotation.Result{OldFingerprint: "old-fp", NewFingerprint: "new-fp"}, nil
+	res := &keyrotation.Result{OldFingerprint: "old-fp", NewFingerprint: "new-fp"}
+	if announce != nil && !f.silent {
+		announce(ctx, res)
+		if f.afterAnnounce != nil {
+			f.afterAnnounce()
+		}
+	}
+	return res, nil
+}
+
+// alertSink records the events queued with DeliverNow.
+type alertSink struct {
+	mu     sync.Mutex
+	queued []events.Event
+}
+
+func (a *alertSink) DeliverNow(_ context.Context, e events.Event) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e.ID = fmt.Sprintf("evt_%d", len(a.queued)+1)
+	a.queued = append(a.queued, e)
+	return e.ID
+}
+
+func (a *alertSink) events() []events.Event {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]events.Event(nil), a.queued...)
+}
+
+// TestKeyRotatedAlertIsStoredBeforeTheRotationEnds checks that security.key_rotated
+// goes to the alert sink (the notification outbox) inside the rotator's
+// announcement, before the rotation is marked finished and the request answered,
+// and that the Bus gets the same event (same ID) once; a rotator that does not
+// announce still gets its alert, and so does a rotation completed at startup.
+func TestKeyRotatedAlertIsStoredBeforeTheRotationEnds(t *testing.T) {
+	sink := &alertSink{}
+	stored := -1
+	r := &fakeRotator{}
+	r.afterAnnounce = func() { stored = len(sink.events()) }
+	env := newProtEnv(t)
+	env.cfg.KeyRotator, env.cfg.Alerts = r, sink
+	env.svc = operations.New(env.cfg)
+	if _, err := env.svc.RotateSecretKey(asUser("alice", auth.ScopeAdmin)); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 1 {
+		t.Fatalf("alerts stored when the announcement returned = %d; want 1", stored)
+	}
+	ev := keyRotatedEvents(env)
+	if q := sink.events(); len(q) != 1 || len(ev) != 1 || ev[0].ID != q[0].ID || ev[0].Actor != "alice" {
+		t.Fatalf("stored %+v, published %+v; want one event with the stored ID", q, ev)
+	}
+
+	r.silent = true
+	if _, err := env.svc.RotateSecretKey(asUser("alice", auth.ScopeAdmin)); err != nil {
+		t.Fatal(err)
+	}
+	env.svc.KeyRotationCompleted(context.Background(), &store.KeyRotation{OldFingerprint: "o", NewFingerprint: "n", Actor: "bob"})
+	if q := sink.events(); len(q) != 3 || len(keyRotatedEvents(env)) != 3 {
+		t.Fatalf("stored %d alerts, published %d; want 3 each", len(q), len(keyRotatedEvents(env)))
+	}
 }
 
 func rotEnv(t *testing.T, r *fakeRotator) *protEnv {

@@ -1,6 +1,8 @@
 package scheduler
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -96,6 +98,41 @@ func EffectiveRPO(job *models.Job, from time.Time) (time.Duration, bool) {
 		return job.RPO(0)
 	}
 	return job.RPO(WindowedInterval(job.CronExpression, job.BackupWindow, from))
+}
+
+// RPOs computes EffectiveRPO for many jobs at one time: jobs sharing a schedule
+// and backup window read its activations once, so evaluating thousands of jobs
+// costs one interval per distinct schedule. It is not safe for concurrent use.
+type RPOs struct {
+	from      time.Time
+	intervals map[rpoKey]time.Duration
+}
+
+// rpoKey identifies a schedule and backup window.
+type rpoKey struct {
+	expr, window string
+}
+
+// NewRPOs returns an RPOs evaluating at from.
+func NewRPOs(from time.Time) *RPOs {
+	return &RPOs{from: from, intervals: map[rpoKey]time.Duration{}}
+}
+
+// Effective is EffectiveRPO(job, from).
+func (r *RPOs) Effective(job *models.Job) (time.Duration, bool) {
+	if job.RPOMinutes > 0 {
+		return job.RPO(0)
+	}
+	k := rpoKey{expr: job.CronExpression}
+	if w := job.BackupWindow; w != nil {
+		k.window = fmt.Sprintf("%q %q %q %q", w.Timezone, strings.Join(w.Days, ","), w.Start, w.End)
+	}
+	interval, ok := r.intervals[k]
+	if !ok {
+		interval = WindowedInterval(job.CronExpression, job.BackupWindow, r.from)
+		r.intervals[k] = interval
+	}
+	return job.RPO(interval)
 }
 
 // WithJobChanged runs fn with a job's ID after every job write that went through

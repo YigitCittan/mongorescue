@@ -244,9 +244,30 @@ func (c *cluster) waitHealthy(t *testing.T) {
 		} else {
 			last = err.Error()
 		}
+		// A member whose container has exited never becomes healthy: fail at once
+		// with the reason instead of waiting out the deadline.
+		if exited := c.exited(); exited != "" {
+			t.Fatalf("the replica set cannot become healthy (%s): %s", last, exited)
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("the replica set did not become healthy: %s", last)
+}
+
+// exited describes the members whose container is not running, with the last
+// lines of their output; it is empty when every container runs.
+func (c *cluster) exited() string {
+	var parts []string
+	for _, host := range c.hosts {
+		out, err := c.docker(context.Background(), "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", c.containers[host])
+		status, code, _ := strings.Cut(strings.TrimSpace(out), " ")
+		if err != nil || status == "running" {
+			continue
+		}
+		logs, _ := c.docker(context.Background(), "logs", "--tail", "5", c.containers[host])
+		parts = append(parts, fmt.Sprintf("%s is %s (exit code %s), last output: %s", host, status, code, strings.TrimSpace(logs)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // direct returns a client of member host alone.

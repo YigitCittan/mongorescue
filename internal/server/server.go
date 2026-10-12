@@ -461,27 +461,42 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// handleListJobs lists the jobs, sorted by name. The optional filters q, enabled,
-// connection_id, database, schedule and last_status (see jobListFilter) keep only the
-// matching jobs, with the matcher of the bulk job actions.
+// handleListJobs lists one page of the jobs in the order of sort (name, next_run,
+// last_status or created_at; name by default) and order (asc or desc), ties by ID:
+// limit jobs (100 by default, at most 500) after the cursor after, with the total number of matches
+// and the cursor of the next page in meta. The optional filters q, enabled,
+// connection_id, database, schedule and last_status (see jobListFilter) keep only
+// the matching jobs, with the matcher of the bulk job actions.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	f, filtered, err := jobListFilter(r.URL.Query())
+	q := r.URL.Query()
+	f, _, err := jobListFilter(q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var jobs []*models.Job
-	if filtered {
-		jobs, err = s.ops.FilterJobs(r.Context(), f)
-	} else {
-		jobs, err = s.ops.ListJobs(r.Context())
+	req := operations.JobListRequest{Filter: f, After: q.Get("after"), Sort: q.Get("sort")}
+	switch q.Get("order") {
+	case "", "asc":
+	case "desc":
+		req.Desc = true
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%v: order must be \"asc\" or \"desc\"", errBadParam))
+		return
 	}
+	if v := q.Get("limit"); v != "" {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil || n < 1 || n > operations.MaxJobPageSize {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%v: limit must be an integer between 1 and %d", errBadParam, operations.MaxJobPageSize))
+			return
+		}
+		req.Limit = n
+	}
+	page, err := s.ops.ListJobsPage(r.Context(), req)
 	if err != nil {
 		s.writeOperationError(w, err)
 		return
 	}
-
-	writeJSON(w, http.StatusOK, jobs)
+	writeCursorList(w, cursorMeta{Total: page.Total, Limit: page.Limit, Next: page.Next}, page.Items)
 }
 
 // jobRequest is the body of POST /api/v1/jobs. Omitted retention and gzip fields take
@@ -622,6 +637,8 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 		s.writeOperationError(w, saveErr) // 500, logged
 		return
 	}
+	// The overview's history lists the jobs' schedules.
+	s.ops.InvalidateHistory()
 	changed := existing != nil && (job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount)
 	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
 	if holdErr != nil {

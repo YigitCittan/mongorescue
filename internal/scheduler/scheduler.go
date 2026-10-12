@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"strings"
 	"sync"
@@ -1100,6 +1101,24 @@ func NextRuns(expr string, from time.Time, n int) []time.Time {
 		runs = append(runs, next.UTC())
 	}
 	return runs
+}
+
+// Activations returns the activations of expr strictly after from, in UTC and in
+// order, as an iterator the caller stops when it has seen enough (computing only
+// what it reads, unlike NextRuns). It yields nothing when expr cannot be parsed.
+func Activations(expr string, from time.Time) iter.Seq[time.Time] {
+	schedule, err := cronParser.Parse(expr)
+	return func(yield func(time.Time) bool) {
+		if err != nil {
+			return
+		}
+		for next := from; ; {
+			next = schedule.Next(next)
+			if next.IsZero() || !yield(next.UTC()) {
+				return
+			}
+		}
+	}
 }
 
 // nextRun returns the first activation of expr strictly after from, or nil

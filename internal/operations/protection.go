@@ -196,6 +196,9 @@ func (s *Service) destructive(ctx context.Context, action, detail string, fill f
 		fill(&e)
 	}
 	s.publish(context.WithoutCancel(ctx), e)
+	// A deleted backup or job leaves the overview's history at once, also without
+	// an event bus.
+	s.InvalidateHistory()
 	s.logger.With(actorAttrs(ctx)...).Info("destructive action", slog.String("action", action), logsafe.Attr("detail", detail))
 }
 

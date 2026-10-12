@@ -736,7 +736,7 @@ const TABLES_I18N = {
 // Every managed table. tbody is its body's id; tab names its pane in the URL hash
 // (main tables only: their filters and sort live in the hash and in saved views);
 // server marks Backups and Restores (sorted by the API, filtered by app.js); data
-// marks the Jobs table, sorted from its data before rendering; tools adds the
+// marks the Jobs table, paged and sorted by the API (tvFetchJobs); tools adds the
 // views, columns and density controls (into bar, the filter bar). cols maps header
 // cells (by their data-i18n key) to columns: key names the column (sort value,
 // column toggle, hash), sort makes it sortable, dir is the first direction, fixed
@@ -767,11 +767,11 @@ const TV_TABLES = {
     tbody: "jobs-tbody", tab: "jobs", data: true, tools: true, bar: '[data-tv-filters="jobs"]', defaultSort: "name",
     cols: [
       { i18n: "tables.job_name", key: "name", sort: true, dir: "asc", fixed: true },
-      { i18n: "tables.connection", key: "connection", sort: true, dir: "asc" },
-      { i18n: "tables.database", key: "database", sort: true, dir: "asc" },
-      { i18n: "tables.schedule", key: "schedule", sort: true, dir: "asc" },
+      { i18n: "tables.connection", key: "connection" },
+      { i18n: "tables.database", key: "database" },
+      { i18n: "tables.schedule", key: "schedule" },
       { i18n: "tables.retention_policy", key: "retention" },
-      { i18n: "tables.status", key: "status", sort: true, dir: "asc" },
+      { i18n: "tables.status", key: "status" },
       { i18n: "tables.last_run", key: "last_run", sort: true, dir: "asc" },
       { i18n: "tables.next_run", key: "next_run", sort: true, dir: "asc" }
     ]
@@ -927,8 +927,13 @@ const tv = {
 };
 Object.keys(TV_FILTERS).forEach(name => { tv.filters[name] = tvEmptyFilters(name); });
 
-// The server-filtered jobs list: the IDs GET /api/v1/jobs returned for key.
-const tvJobs = { key: null, ids: new Set(), error: "", seq: 0, inflight: "", source: null };
+// The Jobs table, paged and filtered on the server (GET /api/v1/jobs, by name):
+// the page shown for key (the filter query), its jobs, the total number of
+// matches, cursors[i] the after of page i (cursors[index] the page shown, the
+// last one the next page's when there is one), and source, the job directory
+// (state.jobs) it was loaded with: a reload of the directory refreshes the page.
+// inflight is the key being loaded, null when none ("" is the key without filters).
+const tvJobs = { key: null, items: [], total: 0, cursors: [""], index: 0, next: "", size: 0, error: "", seq: 0, inflight: null, source: null };
 
 function tvEmptyFilters(name) {
   const f = {};
@@ -1045,10 +1050,8 @@ function tablesFilterKey(name) {
 
 function tablesTotal(name) {
   if (tvName(name) !== "jobs") return 0;
-  const key = tvJobsQuery();
-  if (!key) return state.jobs.length;
-  if (tvJobs.key !== key || tvJobs.error) return 0;
-  return state.jobs.filter(j => tvJobs.ids.has(j.id)).length;
+  if (tvJobs.key !== tvJobsPageQuery() || tvJobs.error) return 0;
+  return tvJobs.total;
 }
 
 function tablesApiFilter(name) {
@@ -1074,23 +1077,21 @@ function tvConnectionTest(c) {
 }
 
 // app.js hook: the rows of table name to render, filtered and (Jobs) sorted. The
-// Jobs table returns null while its server-side filter is loading.
+// Jobs table shows its server page, in the order of its column sort, and returns
+// null while the first page of its filters and sort is loading.
 function tablesRows(name, items) {
   const list = Array.isArray(items) ? items : [];
   if (name === "jobs") {
     tvJobOptions();
-    const key = tvJobsQuery();
-    let rows = list;
-    if (key) {
-      if (tvJobs.key !== key) {
-        if (tvJobs.inflight !== key) tvFetchJobs(key);
-        return null;
-      }
-      // The jobs were reloaded: ask again (last runs change), keep showing these.
-      if (tvJobs.source !== list && tvJobs.inflight !== key) tvFetchJobs(key);
-      rows = tvJobs.error ? [] : list.filter(j => tvJobs.ids.has(j.id));
+    const key = tvJobsPageQuery();
+    if (tvJobs.key !== key) {
+      if (tvJobs.inflight !== key) tvFetchJobs(key, 0);
+      return null;
     }
-    return tvSortJobs(rows);
+    // The jobs were reloaded: ask for this page again (last runs change), keep
+    // showing it meanwhile.
+    if (tvJobs.source !== list && tvJobs.inflight !== key) tvFetchJobs(key, tvJobs.index);
+    return tvJobs.error ? [] : tvJobs.items;
   }
   if (name === "connections") {
     const f = tv.filters.connections;
@@ -1108,85 +1109,96 @@ function tablesRows(name, items) {
   return list;
 }
 
-function tvFetchJobs(key) {
+// Rows per page of the Jobs table (stored like the Backups and Restores sizes).
+function tvJobsPageSize() {
+  return typeof storedPageSize === "function" ? storedPageSize("jobs") : 25;
+}
+
+// Loads page index of the jobs matching key (the filter query): a new key starts
+// at the first page. Responses that arrive after a newer request are dropped.
+function tvFetchJobs(key, index) {
   if (!auth.user) return;
   const seq = ++tvJobs.seq;
   const source = state.jobs;
+  const cursors = tvJobs.key === key ? tvJobs.cursors.slice() : [""];
+  const i = Math.max(0, Math.min(Number(index) || 0, cursors.length - 1));
+  const size = tvJobsPageSize();
+  const p = new URLSearchParams(key);
+  p.set("limit", String(size));
+  if (cursors[i]) p.set("after", cursors[i]);
   tvJobs.inflight = key;
-  const done = (ids, error) => {
+  const done = (json, error) => {
     if (seq !== tvJobs.seq) return;
-    tvJobs.inflight = "";
+    tvJobs.inflight = null;
+    const items = !error && Array.isArray(json.data) ? json.data.filter(j => j && typeof j.id === "string") : [];
+    if (!error && items.length === 0 && i > 0) {
+      // The page emptied (its jobs went meanwhile): show the one before.
+      tvJobs.key = key;
+      tvJobs.cursors = cursors.slice(0, i);
+      tvFetchJobs(key, i - 1);
+      return;
+    }
+    const meta = (!error && json.meta) || {};
     tvJobs.key = key;
     tvJobs.source = source;
-    tvJobs.ids = ids;
     tvJobs.error = error;
+    tvJobs.size = size;
+    tvJobs.items = items;
+    tvJobs.total = error ? 0 : Math.max(0, Number(meta.total) || 0, items.length);
+    tvJobs.next = !error && typeof meta.next === "string" ? meta.next : "";
+    tvJobs.index = error ? 0 : i;
+    tvJobs.cursors = error ? [""] : cursors.slice(0, i + 1).concat(tvJobs.next ? [tvJobs.next] : []);
     renderJobs();
   };
-  apiJSON(`/api/v1/jobs?${key}`)
+  apiJSON(`/api/v1/jobs?${p.toString()}`)
     .then(json => {
       if (json && json.success) {
-        done(new Set((Array.isArray(json.data) ? json.data : []).map(j => j && j.id).filter(Boolean)), "");
+        done(json, "");
       } else {
-        done(new Set(), (json && json.error) || t("filters.load_failed"));
+        done(null, (json && json.error) || t("filters.load_failed"));
       }
     })
-    .catch(() => done(new Set(), t("filters.load_failed")));
+    .catch(() => done(null, t("filters.load_failed")));
 }
 
-// Rank of a job's last outcome for sorting by last run: failures first.
-const TV_RUN_RANK = { failed: 0, partial: 1, cancelled: 2, running: 3, ok: 4 };
-
-// The last outcome of job: its last run's for jobs with several databases
-// (jobdbs.js), its newest backup's otherwise; "" when it never ran.
-function tvJobLastStatus(job) {
-  if (typeof jobLastRun === "function" && typeof jobIsMulti === "function" && jobIsMulti(job)) {
-    const run = jobLastRun(job);
-    return run ? String(run.status || "") : "";
-  }
-  const b = state.stats && state.stats.job_last_backups ? state.stats.job_last_backups[job.id] : null;
-  if (!b) return "";
-  switch (b.status) {
-    case "failed": return "failed";
-    case "cancelled": return "cancelled";
-    case "pending":
-    case "in_progress": return "running";
-    default: return "ok";
-  }
+// jobspager.js hooks: the Jobs page shown and moving to another one.
+function tablesJobsPage() {
+  const loaded = tvJobs.key !== null && tvJobs.key === tvJobsPageQuery();
+  return {
+    loaded, error: tvJobs.error, index: tvJobs.index, size: tvJobs.size || tvJobsPageSize(),
+    count: tvJobs.items.length, total: tvJobs.total, hasNext: !!tvJobs.next
+  };
 }
 
-function tvTime(value) {
-  const d = parseDate(value);
-  return d ? d.getTime() : null;
+function tablesJobsGo(delta) {
+  const key = tvJobsPageQuery();
+  if (tvJobs.key !== key || tvJobs.inflight === key) return;
+  const target = tvJobs.index + (delta > 0 ? 1 : -1);
+  if (target < 0 || (delta > 0 && !tvJobs.next)) return;
+  tvFetchJobs(key, target);
 }
 
-// Sort values of the Jobs columns; null sorts last in both directions.
-const TV_JOB_SORT = {
-  name: j => j.name || j.id,
-  connection: j => (j.connection_id ? connectionName(j.connection_id) : null),
-  // The selection summary of jobs with several databases (jobdbs.js).
-  database: j => (typeof jobDatabaseSummary === "function" ? jobDatabaseSummary(j) : j.database) || null,
-  schedule: j => j.cron_expression || null,
-  status: j => (j.enabled !== false ? 0 : 1),
-  // The run status first, then the newest run first.
-  last_run: j => {
-    const s = tvJobLastStatus(j);
-    if (!s) return null;
-    const rank = Object.prototype.hasOwnProperty.call(TV_RUN_RANK, s) ? TV_RUN_RANK[s] : 5;
-    return [rank, -(tvTime(j.last_run) || 0)];
-  },
-  next_run: j => (j.enabled !== false ? tvTime(j.next_run) : null)
-};
+// A new page size starts again at the first page.
+function tablesJobsResize() {
+  tvJobs.key = null;
+  tvRerender("jobs");
+}
 
-function tvSortJobs(rows) {
+// The server orders (GET /api/v1/jobs sort) of the sortable Jobs columns.
+const TV_JOB_SERVER_SORT = { name: "name", last_run: "last_status", next_run: "next_run" };
+
+// The GET /api/v1/jobs query of the Jobs page: its filters and its column sort
+// (name ascending, the API's default, adds nothing).
+function tvJobsPageQuery() {
+  const p = new URLSearchParams(tvJobsQuery());
   const sort = tvSortOf("jobs");
-  if (!sort) return rows;
   const desc = sort.startsWith("-");
-  const fn = TV_JOB_SORT[desc ? sort.slice(1) : sort];
-  if (!fn) return rows;
-  const collator = tvCollator();
-  return rows.map((j, i) => ({ j, i, v: fn(j) }))
-    .sort((a, b) => tvCompare(a.v, b.v, desc, collator) || a.i - b.i)
-    .map(x => x.j);
+  const server = TV_JOB_SERVER_SORT[desc ? sort.slice(1) : sort];
+  if (server && (server !== "name" || desc)) {
+    p.set("sort", server);
+    if (desc) p.set("order", "desc");
+  }
+  return p.toString();
 }
 
 function tvCollator() {
@@ -1299,10 +1311,15 @@ function tablesRendered(tbody) {
 function tablesReset() {
   tvJobs.seq++;
   tvJobs.key = null;
-  tvJobs.ids = new Set();
+  tvJobs.items = [];
+  tvJobs.total = 0;
+  tvJobs.cursors = [""];
+  tvJobs.index = 0;
+  tvJobs.next = "";
   tvJobs.error = "";
-  tvJobs.inflight = "";
+  tvJobs.inflight = null;
   tvJobs.source = null;
+  if (typeof jobsPagerRender === "function") jobsPagerRender();
   document.querySelectorAll("#app-main tbody").forEach(tvMarkBusy);
 }
 

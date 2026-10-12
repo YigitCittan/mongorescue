@@ -8,7 +8,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | :--- | :--- | :--- | :--- |
 | Unit | `*_test.go` next to the code | every push and pull request, with `-race`, on Linux, macOS (Go 1.26 and 1.27) and Windows; 60% coverage gate | Engines, storage drivers, auth, scheduler, API and MCP behave as specified with fakes. Hermetic: no network, no external binaries. The [trust features](verification.md) are covered there too: post-upload verification ok and mismatch, the sweep order, restore tests (success, count mismatch, missing privileges, an existing temporary database, two concurrent tests of one database dropping only their own temporary database, and the temporary database dropped after a failure, a cancellation and a panic, never the source), parallel imports of one key, the revival of a pruned record's archive, shared archives kept on delete and retention, the last verified backup re-checked when pruning, the manifest capture, a retention preview that equals the actual deletion, pins respected by retention and deletion, storage drift (orphans, import, missing) and the route scope matrix. |
 | Security | unit tests in `internal/auth`, `internal/server`, `internal/notify`, `internal/redact`, `internal/storage`, `internal/secretbox`; every integration test | every push and pull request | Credentials never reach logs, errors, records or API responses; path traversal is refused; sessions, CSRF, scopes and login throttling hold; secrets are sealed at rest. The integration tests use a random MongoDB password and fail if it appears anywhere. |
-| Fuzz | `Fuzz*` targets, `make fuzz` | nightly, `make fuzz FUZZTIME=5m` (the job fails if the target is missing) | Parsers of untrusted input do not panic or misbehave on arbitrary bytes. |
+| Fuzz | `Fuzz*` targets, `make fuzz` | nightly, `make fuzz FUZZTIME=2m` (the job fails if the target is missing) | Parsers of untrusted input do not panic or misbehave on arbitrary bytes. |
 | Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, each standalone and as a single-node replica set (which runs the point-in-time recovery tests), MinIO and LocalStack, Database Tools 100.12.2 and, on the 8.0 replica set, 100.19.1 | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
 | PITR replica set | `internal/replset`, `replset3` build tag, `make test-pitr-replset` | nightly, 03:00 UTC (job "PITR replica set" of the Nightly workflow, not required): MongoDB 5.0 and 8.0, Database Tools 100.12.2 and 100.19.1 | On a three-member replica set: failovers during collection and during a restore, a rollback through network isolation and divergence after a forced reconfiguration keep the oplog chain unbroken (or end it exactly where the surviving history ends), lose and duplicate no entry, and never store a rolled-back write. See [below](#pitr-on-a-three-member-replica-set). |
@@ -111,11 +111,11 @@ GOTESTFLAGS="-v -run TestKillDuringBackup" make test-chaos-docker   # one scenar
 
 1. **Data.** A database of `MONGORESCUE_LOAD_DATA_MB` MiB (5120 by default, 51200 for the issue's 50 GB) of incompressible 256 KiB documents, written by eight parallel writers (reruns against the same server reuse it), and `MONGORESCUE_LOAD_CONCURRENT` databases of 16 MiB.
 2. **Scale.** `MONGORESCUE_LOAD_CONNECTIONS` connections (500) with `max_concurrent_backups` 4 and `MONGORESCUE_LOAD_JOBS` scheduled jobs (10,000), created through the API by 16 clients at once; the jobs are daily at hours away from the run, so they are registered with the scheduler but do not fire.
-3. **Idle at scale.** For 100 seconds: every scheduler tick (from `/api/v1/health`), and the latency of the dashboard's calls (jobs with `limit=50`, all jobs, backup page, connections, overview, history, readiness, health), 50 sequential requests each and 200 from 16 clients at once.
+3. **Idle at scale.** For 100 seconds: every scheduler tick (from `/api/v1/health`), and the latency of the dashboard's calls (jobs with `limit=50`, the jobs list's default first page, a jobs search, backup page, connections, overview, history, readiness, health), 50 sequential requests each and 200 from 16 clients at once.
 4. **Primary impact.** A probe inserts a document and reads it back on the primary every 5 ms: 20 s idle, then during a full backup of the large database with the default read preference (this is also the throughput measurement), during a backup through a connection to the secondary with `read_preference: secondary` (60 s), and during a job throttled to `max_upload_mbps: 80` with `num_parallel_collections: 1` (60 s). The load suite runs a primary and a secondary for this.
 5. **Concurrent backups.** One backup of each small database started at once (four at a time on the connection); the wall time, the API p95 during them and the number of `SQLITE_BUSY` / *database is locked* errors in the log (which must stay zero).
 
-The report has every measurement; `metrics` holds the flat values the baseline checks. `internal/load/testdata/baseline.json` has one profile per scale (`MONGORESCUE_LOAD_PROFILE`, `ci` by default): the scale it was recorded at (a run at another scale fails instead of comparing), and per metric the value, which way is better and a tolerance: a lower-is-better metric fails above `value × tolerance + slack`, a higher-is-better one below `value / tolerance`. The tolerances are wide (3× for latencies and throughput, 2× plus 32 MiB for memory) because runners differ; `concurrent.sqlite_busy_errors` allows none and `scheduler.tick_lag_max_s` five seconds. Record or refresh a profile with `MONGORESCUE_LOAD_UPDATE_BASELINE=1` and commit the file.
+The report has every measurement; `metrics` holds the flat values the baseline checks. `internal/load/testdata/baseline.json` has one profile per scale (`MONGORESCUE_LOAD_PROFILE`, `ci` by default): the scale it was recorded at (a run at another scale fails instead of comparing), and per metric the value, which way is better and a tolerance: a lower-is-better metric fails above `value × tolerance + slack`, a higher-is-better one below `value / tolerance`. A metric may also have a `max`, an absolute ceiling checked besides the tolerance and kept when the profile is recorded again: the p95 of the jobs list (`api.jobs_page`, `api.jobs_first`) and of the overview history (`api.history`), alone and with 16 clients, must stay under 300 ms (#156). The tolerances are wide (3× for latencies and throughput, 2× plus 32 MiB for memory) because runners differ; `concurrent.sqlite_busy_errors` allows none and `scheduler.tick_lag_max_s` five seconds. Record or refresh a profile with `MONGORESCUE_LOAD_UPDATE_BASELINE=1` and commit the file.
 
 ```bash
 make test-load-docker                         # the ci profile: 5 GiB, 500 connections, 10,000 jobs
@@ -125,7 +125,7 @@ MONGORESCUE_LOAD_PROFILE=small MONGORESCUE_LOAD_DATA_MB=512 MONGORESCUE_LOAD_JOB
 
 ### Load test numbers
 
-The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker Desktop with MongoDB 8.0 primary and secondary, 1 GiB WiredTiger cache each, and MinIO in one VM); this run is the committed `ci` baseline:
+The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker Desktop with MongoDB 8.0 primary and secondary, 1 GiB WiredTiger cache each, and MinIO in one VM); this run was the committed `ci` baseline until 2026-10-12 (see below the table):
 
 | Measurement | Value |
 | :--- | :--- |
@@ -135,8 +135,8 @@ The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker
 | Memory idle at scale: RSS / Go heap in use (peak) | 539 / 463 MiB |
 | Memory during the large backups | 291 / 258 MiB |
 | Memory during the concurrent backups | 414 / 305 MiB |
-| API p95: Jobs with `limit=50` (ignored), alone / 16 clients | 80.9 / 1,487.2 ms |
-| API p95: All jobs, alone / 16 clients | 84.1 / 1,337.6 ms |
+| API p95: Jobs with `limit=50` (ignored before #156), alone / 16 clients | 80.9 / 1,487.2 ms |
+| API p95: All jobs (before #156), alone / 16 clients | 84.1 / 1,337.6 ms |
 | API p95: Backup page, alone / 16 clients | 0.2 / 2.5 ms |
 | API p95: Connections, alone / 16 clients | 7.1 / 40.1 ms |
 | API p95: Overview (`/stats`), alone / 16 clients | 83.5 / 1,371.3 ms |
@@ -149,6 +149,18 @@ The `ci` profile, recorded 2026-10-09 on a laptop (Apple silicon, 8 CPUs, Docker
 | Primary insert+read p95, during a dump, read preference primary | 17.4 ms (3.06× idle, 80 ops/s) |
 | Primary insert+read p95, during a dump from the secondary | 19.7 ms (3.46× idle, 75 ops/s) |
 | Primary insert+read p95, during a throttled dump (80 Mbit/s, one collection at a time) | 7.1 ms (1.24× idle, 112 ops/s) |
+
+The weekly job failed against that baseline on every run: a GitHub-hosted runner (4 CPUs, MongoDB primary, secondary, MinIO and the test on one VM) is more than three times slower than the laptop for some measurements, so they fell outside the tolerances without a code change. Since 2026-10-12 the committed `ci` baseline is therefore the worst of the two runner reports of 2026-10-11 and 2026-10-12, except the jobs list and overview history latencies (#156). On the runners:
+
+| Measurement | Runner (two runs) |
+| :--- | :--- |
+| Creating jobs / connections through the API (16 clients) | 603–895 jobs/s, 1,952–2,920 connections/s |
+| Primary insert+read p95, idle | 1.4–1.8 ms |
+| Primary insert+read p95, during a dump, read preference primary | 44.4–76.1 ms (60–76 ops/s) |
+| Primary insert+read p95, during a dump from the secondary | 44.4–77.8 ms (62–71 ops/s) |
+| Primary insert+read p95, during a throttled dump | 2.2–3.5 ms |
+| API p95: Connections / Readiness, 16 clients | 63.4–120.2 / 2,929.9–4,265.4 ms |
+| Backup throughput (no gzip, to MinIO) | 89.8–122.2 MB/s |
 
 The `small` profile on the same laptop, a run checked against the committed `small` baseline (no regression):
 
@@ -175,10 +187,26 @@ The `small` profile on the same laptop, a run checked against the committed `sma
 | Primary insert+read p95, during a dump from the secondary | 12.4 ms (2.56× idle, 93 ops/s) |
 | Primary insert+read p95, during a throttled dump (80 Mbit/s, one collection at a time) | 6.0 ms (1.24× idle, 117 ops/s) |
 
-What the numbers say:
+#### After #156: paged jobs list and a fast overview history
+
+The API latencies at the `ci` scale of jobs and connections (10,000 jobs, 500 connections), measured on the same laptop on 2026-10-12 with a small database (`MONGORESCUE_LOAD_DATA_MB=64`, `MONGORESCUE_LOAD_CONCURRENT=4`; the API phase does not depend on the data size), before (`origin/main` at 0.26.0) and after the change. The committed `ci` baseline takes the *after* values of the jobs list and the history, with their 300 ms ceilings.
+
+| API p95, alone / 16 clients | Before | After |
+| :--- | :--- | :--- |
+| Jobs with `limit=50` | 229.1 / 2,266.7 ms | 0.7 / 8.8 ms |
+| Jobs without `limit` (before: every job; after: the first 100) | 216.8 / 3,120.9 ms | 1.1 / 14.9 ms |
+| Jobs search (`q=load-01`, 1,000 matches) | not measured | 65.1 / 1,328.0 ms |
+| Overview history | 3,167.7 / 8,601.2 ms | 4.1 / 24.2 ms |
+| Readiness | 212.2 / 2,151.9 ms | 78.4 / 1,468.4 ms |
+| Memory idle at scale: RSS / Go heap (peak) | 563 / 513 MiB | 409 / 296 MiB |
+| Creating jobs through the API (16 clients) | 1,186 jobs/s | 2,668 jobs/s |
+
+The history spent its time computing three months of activations per job to list the next day's runs; it now computes only what it lists, reads the multi-database jobs in batches and shares the answer for 10 seconds among callers (computed once when they ask together). The jobs list pages by cursor from the jobs indexes (migration 0028). Creating jobs is faster because the RPO checks that job writes ask for are coalesced (one every 5 seconds at most) instead of running back to back during the burst. A search (`q`), like the `database`, `schedule` and `last_status` filters, still reads the jobs of the indexed filters to count the matches (`api.jobs_search`). The overview (`/stats`) and readiness still grow with the number of jobs and are serialized on the single SQLite connection under 16 clients; they are the next candidates.
+
+What the numbers say (0.26.0):
 
 - **The scheduler holds 10,000 jobs** without a late tick (0.1 s worst), and 20 concurrent backups produced no SQLite busy error.
-- **The job list is not paged**: `GET /api/v1/jobs` ignores `limit`, so `limit=50` costs as much as the whole list (81 against 84 ms at 10,000 jobs, 1.5 s with 16 clients). The overview (`/stats`) and readiness grow with the number of jobs in the same way, and the overview history is the slowest call (1.5 s alone, 6.4 s with 16 clients). Every other call stays in single-digit milliseconds. The idle memory peak (539 MiB RSS) comes from 16 clients reading the 10,000 jobs at once; the large backup itself peaked at 291 MiB.
+- **The job list was not paged** (fixed by #156, see above): `GET /api/v1/jobs` ignored `limit`, so `limit=50` costs as much as the whole list (81 against 84 ms at 10,000 jobs, 1.5 s with 16 clients). The overview (`/stats`) and readiness grow with the number of jobs in the same way, and the overview history is the slowest call (1.5 s alone, 6.4 s with 16 clients). Every other call stays in single-digit milliseconds. The idle memory peak (539 MiB RSS) comes from 16 clients reading the 10,000 jobs at once; the large backup itself peaked at 291 MiB.
 - **Primary impact.** A full dump at about 64 MB/s triples the p95 of the probe on the primary; throttling to 80 Mbit/s with one collection at a time keeps it at 1.24×. Reading from the secondary did not help here because both members share one machine's CPU and disk (the secondary even replays the probe's writes); on separate hosts it takes the dump's reads off the primary.
 - The weekly job runs the `ci` profile on a GitHub-hosted runner, which is slower than the laptop; the tolerances absorb that, and its report (artifact `load-report`) is where the baseline is refreshed from.
 

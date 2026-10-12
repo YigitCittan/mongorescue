@@ -39,6 +39,10 @@ const (
 	DefaultCheckInterval = 5 * time.Minute
 	// DefaultStartDelay delays the first check after start-up.
 	DefaultStartDelay = 30 * time.Second
+	// DefaultMinKickInterval spaces the checks job writes ask for (see
+	// Config.MinKickInterval): creating thousands of jobs runs a check every few
+	// seconds instead of one per job.
+	DefaultMinKickInterval = 5 * time.Second
 )
 
 // Store is the persistence port (implemented by *store.SQLiteStore).
@@ -117,6 +121,11 @@ type Config struct {
 	// StartDelay delays its first check (default DefaultStartDelay).
 	CheckInterval time.Duration
 	StartDelay    time.Duration
+	// MinKickInterval is the shortest time between the end of a check and a
+	// check asked for by Kick (job writes, finished backups): kicks meanwhile are
+	// coalesced into one check at the end of the interval. 0 checks at every kick;
+	// the application uses DefaultMinKickInterval.
+	MinKickInterval time.Duration
 	// CopyMissingAfter is how long after a backup finished its configured copies
 	// may still be missing before its row warns with ReasonCopyMissing (default
 	// DefaultCopyMissingAfter).
@@ -146,6 +155,10 @@ type Service struct {
 	checkMu sync.Mutex
 	// kick asks the background loop for an early check.
 	kick chan struct{}
+	// newTimer and mono are the checker loop's timer and monotonic clock (Config.Now
+	// is the wall clock of the evaluation); tests replace them.
+	newTimer func(time.Duration) loopTimer
+	mono     func() time.Time
 
 	lifeMu  sync.Mutex
 	cancel  context.CancelFunc
@@ -176,7 +189,7 @@ func New(cfg Config) *Service {
 	if cfg.DRDrillMaxAge <= 0 {
 		cfg.DRDrillMaxAge = DefaultDRDrillMaxAge
 	}
-	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1)}
+	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1), newTimer: newRealTimer, mono: time.Now}
 }
 
 // now returns the current time in UTC.
@@ -214,27 +227,59 @@ func (s *Service) Stop() {
 
 // loop checks after StartDelay, then every CheckInterval and whenever kicked.
 func (s *Service) loop(ctx context.Context) {
-	timer := time.NewTimer(s.cfg.StartDelay)
+	timer := s.newTimer(s.cfg.StartDelay)
 	defer timer.Stop()
+	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-timer.C():
 		case <-s.kick:
 			if !timer.Stop() {
 				select {
-				case <-timer.C:
+				case <-timer.C():
 				default:
 				}
+			}
+			// Kicks within MinKickInterval of the last check wait for its end, so
+			// a burst of job writes costs one check, not one per write.
+			if wait := s.cfg.MinKickInterval - s.mono().Sub(last); !last.IsZero() && wait > 0 {
+				timer.Reset(wait)
+				continue
 			}
 		}
 		if err := s.Check(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("the RPO check is incomplete", logsafe.Error(err))
 		}
+		last = s.mono()
 		timer.Reset(s.cfg.CheckInterval)
 	}
 }
+
+// loopTimer is the timer of the checker loop: a time.Timer, or a fake in tests.
+type loopTimer interface {
+	// C delivers the time when the timer fires.
+	C() <-chan time.Time
+	// Stop stops the timer, reporting whether it had not fired yet.
+	Stop() bool
+	// Reset makes the timer fire after d.
+	Reset(d time.Duration)
+}
+
+// realTimer is a loopTimer on a time.Timer.
+type realTimer struct{ t *time.Timer }
+
+func newRealTimer(d time.Duration) loopTimer { return realTimer{time.NewTimer(d)} }
+
+// C implements loopTimer.
+func (r realTimer) C() <-chan time.Time { return r.t.C }
+
+// Stop implements loopTimer.
+func (r realTimer) Stop() bool { return r.t.Stop() }
+
+// Reset implements loopTimer.
+func (r realTimer) Reset(d time.Duration) { r.t.Reset(d) }
 
 // HandleEvent is an events.Handler: a finished backup of a job asks the checker for
 // an early check, so a breach heals (and the gauges follow) without waiting for the
@@ -326,8 +371,10 @@ func (s *Service) points(ctx context.Context, jobs []*models.Job, now time.Time)
 		return nil, fmt.Errorf("database joins: %w", err)
 	}
 	var out []point
+	// Jobs sharing a schedule and window read its activations once.
+	rpos := scheduler.NewRPOs(now)
 	for _, j := range jobs {
-		target, isDefault := scheduler.EffectiveRPO(j, now)
+		target, isDefault := rpos.Effective(j)
 		for _, db := range Databases(j, latest[j.ID]) {
 			p := point{job: j, database: db, last: latest[j.ID][db], target: target, isDefault: isDefault}
 			if p.last != nil {

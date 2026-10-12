@@ -100,6 +100,11 @@ type Service struct {
 	// heldBackoff and heldMaxBackoff bound the retries of a failed outbox write.
 	heldBackoff, heldMaxBackoff time.Duration
 
+	// direct holds the IDs of events DeliverNow queued, so that their copy from
+	// the Bus is not delivered again (see DeliverNow).
+	directMu sync.Mutex
+	direct   map[string]struct{}
+
 	// mu serialises configuration mutations (check-then-write sequences).
 	mu sync.Mutex
 
@@ -477,6 +482,57 @@ func dedupe[T comparable](in []T) []T {
 // when the outbox cannot be written, they are queued in memory, and deliveries
 // that do not fit in the queue are dropped and reported to the observer.
 func (s *Service) HandleEvent(ctx context.Context, e events.Event) {
+	if s.takeDirect(e.ID) {
+		return
+	}
+	s.handle(ctx, e)
+}
+
+// maxDirect bounds the IDs DeliverNow remembers for events whose Bus copy never
+// came (a full or stopped Bus); beyond it they are forgotten, at worst a duplicate.
+const maxDirect = 1024
+
+// DeliverNow queues e for its channels like HandleEvent, but synchronously: with
+// an outbox the deliveries are stored before it returns, so an alert that must not
+// be lost survives a crash right after (delivered at least once). It returns e's ID
+// (set when empty): publish e with that ID on the Bus afterwards for the other
+// subscribers, and HandleEvent skips that copy.
+func (s *Service) DeliverNow(ctx context.Context, e events.Event) string {
+	if e.ID == "" {
+		id, err := newID("evt_")
+		if err != nil {
+			s.logger.Error("notification event ID unavailable", slog.Any("error", err))
+			s.handle(ctx, e)
+			return ""
+		}
+		e.ID = id
+	}
+	s.directMu.Lock()
+	if s.direct == nil || len(s.direct) >= maxDirect {
+		s.direct = make(map[string]struct{})
+	}
+	s.direct[e.ID] = struct{}{}
+	s.directMu.Unlock()
+	s.handle(ctx, e)
+	return e.ID
+}
+
+// takeDirect reports whether DeliverNow already queued event id, and forgets it.
+func (s *Service) takeDirect(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.directMu.Lock()
+	defer s.directMu.Unlock()
+	if _, ok := s.direct[id]; !ok {
+		return false
+	}
+	delete(s.direct, id)
+	return true
+}
+
+// handle matches e against the rules and queues its deliveries (see HandleEvent).
+func (s *Service) handle(ctx context.Context, e events.Event) {
 	if e.Type.Broadcast() {
 		s.broadcast(ctx, e)
 		return

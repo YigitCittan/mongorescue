@@ -427,6 +427,15 @@ func pageProps(props map[string]*jsonschema.Schema) {
 	}
 }
 
+// jobPageProps constrains limit and cursor of list_jobs: its cursor is the REST
+// API's keyset cursor (the last job's sort value and ID), longer than an offset.
+func jobPageProps(props map[string]*jsonschema.Schema) {
+	pageProps(props)
+	if p := props["cursor"]; p != nil {
+		p.MaxLength = ptr(operations.MaxJobCursor)
+	}
+}
+
 // collectionProps constrains collection filters.
 func collectionProps(props map[string]*jsonschema.Schema, names ...string) {
 	for _, n := range names {
@@ -464,9 +473,10 @@ func (s *Server) registerTools() {
 		Name: ToolListJobs,
 		Description: "List scheduled backup jobs (cron schedule, database or database_selection, retention, last and next run). " +
 			"A job backs up one database (database_selection mode single) or several: a list, all databases of the connection, " +
-			"or those matching glob patterns, optionally including new databases automatically.",
+			"or those matching glob patterns, optionally including new databases automatically. " +
+			"Sorted by name. Paginated (50 per page unless limit is set): pass next_cursor to get the next page.",
 		Annotations: readOnly("List jobs"),
-		InputSchema: schemaFor[pageInput](pageProps),
+		InputSchema: schemaFor[pageInput](jobPageProps),
 	}, s.listJobs)
 	addTool(s, &sdk.Tool{
 		Name:        ToolGetJob,
@@ -606,18 +616,6 @@ func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled
 	return out, fmt.Sprintf("Cancellation of %s %s requested; %s.", res.Kind, idText(in.ID), out.NextStep), nil
 }
 
-// page returns the window of n items selected by limit and cursor, and the cursor
-// of the next page ("" on the last page).
-func page(n, limit int, cursor string) (start, end int, next string, err error) {
-	limit, start, err = pageArgs(limit, cursor)
-	if err != nil {
-		return 0, 0, "", err
-	}
-	start = min(start, n)
-	end = min(start+limit, n)
-	return start, end, nextCursor(end, n), nil
-}
-
 // pageArgs validates limit (DefaultPageSize when 0) and decodes cursor into an offset.
 func pageArgs(limit int, cursor string) (pageLimit, offset int, err error) {
 	if limit == 0 {
@@ -741,16 +739,24 @@ func (s *Server) listCollections(ctx context.Context, in collectionsInput) (coll
 }
 
 func (s *Server) listJobs(ctx context.Context, in pageInput) (jobList, string, error) {
-	jobs, err := s.cfg.Operations.ListJobs(ctx)
+	limit := in.Limit
+	if limit == 0 {
+		limit = DefaultPageSize
+	}
+	if limit < 1 || limit > MaxPageSize {
+		return jobList{}, "", fmt.Errorf("%w: limit must be between 1 and %d", errInvalidInput, MaxPageSize)
+	}
+	// The jobs are paged by key on the server, like GET /api/v1/jobs: the cursor is
+	// the REST API's next cursor.
+	res, err := s.cfg.Operations.ListJobsPage(ctx, operations.JobListRequest{Limit: limit, After: in.Cursor})
+	if errors.Is(err, operations.ErrInvalid) && in.Cursor != "" {
+		return jobList{}, "", fmt.Errorf("%w: cursor is not a next_cursor of this tool", errInvalidInput)
+	}
 	if err != nil {
 		return jobList{}, "", err
 	}
-	start, end, next, err := page(len(jobs), in.Limit, in.Cursor)
-	if err != nil {
-		return jobList{}, "", err
-	}
-	out := jobList{Jobs: jobs[start:end], Total: len(jobs), NextCursor: next}
-	return out, fmt.Sprintf("%d of %d job(s).", end-start, len(jobs)), nil
+	out := jobList{Jobs: res.Items, Total: res.Total, NextCursor: res.Next}
+	return out, fmt.Sprintf("%d of %d job(s).", len(res.Items), res.Total), nil
 }
 
 func (s *Server) getJob(ctx context.Context, in idInput) (*models.Job, string, error) {

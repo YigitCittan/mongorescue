@@ -71,6 +71,9 @@ type OplogSession struct {
 	uri string
 	// tls is the TLS material of the connection, reused for member clients.
 	tls *models.ConnectionTLS
+	// directHost is the address of a directConnection=true URI (empty otherwise):
+	// the only member the session reaches (see memberAddress).
+	directHost string
 
 	mu      sync.Mutex
 	members map[string]*mongo.Client
@@ -91,13 +94,26 @@ type OplogMember struct {
 // read preference selects a member for each read.
 func (s *OplogMember) Host() string { return s.host }
 
-// oplog returns the oplog collection with the reader's read concern.
+// oplog returns the oplog collection with the reader's read concern and read
+// preference.
 func (s *OplogMember) oplog() *mongo.Collection {
+	return s.client.Database(oplogDB, s.oplogOptions()).Collection(oplogColl)
+}
+
+// oplogOptions returns the database options of the reader's oplog reads. The
+// read preference is the reader's own: the primary's readers share the session's
+// client, whose default (secondaryPreferred) would otherwise send their oplog
+// reads to any secondary, such as a former primary that has just rejoined and
+// not yet rolled back.
+func (s *OplogMember) oplogOptions() *options.DatabaseOptionsBuilder {
 	opts := options.Database()
+	if s.rp != nil {
+		opts.SetReadPreference(s.rp)
+	}
 	if s.majority {
 		opts.SetReadConcern(readconcern.Majority())
 	}
-	return s.client.Database(oplogDB, opts).Collection(oplogColl)
+	return opts
 }
 
 // OpenOplogSession returns a session for uri reading with readPreference (empty
@@ -115,12 +131,18 @@ func (p *Prober) OpenOplogSession(ctx context.Context, uri, readPreference strin
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidReadPreference, readPreference)
 	}
-	client, err := mongo.Connect(clientOptions(ctx, uri).SetReadPreference(rp).SetDialer(newIdleDialer()))
+	opts := clientOptions(ctx, uri)
+	directHost := ""
+	if opts.Direct != nil && *opts.Direct && len(opts.Hosts) == 1 {
+		directHost = opts.Hosts[0]
+	}
+	client, err := mongo.Connect(opts.SetReadPreference(rp).SetDialer(newIdleDialer()))
 	if err != nil {
 		// Parse errors may quote parts of the URI; never return them verbatim.
 		return nil, errors.New("invalid connection string")
 	}
-	return &OplogSession{OplogMember: OplogMember{client: client, rp: rp}, uri: uri, tls: mongotls.FromContext(ctx), members: map[string]*mongo.Client{}}, nil
+	return &OplogSession{OplogMember: OplogMember{client: client, rp: rp}, uri: uri, tls: mongotls.FromContext(ctx),
+		directHost: directHost, members: map[string]*mongo.Client{}}, nil
 }
 
 // Close disconnects the session's client and the clients of pinned members.
@@ -149,21 +171,42 @@ func (s *OplogSession) Primary() *OplogMember {
 // sees one oplog. A member that is not the primary and whose newest write is
 // older than notBefore (the collector's position) is stale: the primary is used
 // instead. When a direct connection to the member cannot be made the primary is
-// used too. Errors are redacted.
+// used too. On a directConnection=true session the member is the connected one,
+// read through the session's client (see memberAddress). Errors are redacted.
 func (s *OplogSession) Pin(ctx context.Context, notBefore pitr.Timestamp) (*OplogMember, error) {
 	h, err := s.hello(ctx, s.rp)
 	if err != nil {
 		return nil, err
 	}
 	stale := !notBefore.IsZero() && pitr.Timestamp{T: h.LastWrite.OpTime.TS.T, I: h.LastWrite.OpTime.TS.I}.Compare(notBefore) < 0
-	if h.IsWritablePrimary || stale || h.Me == "" {
+	if h.IsWritablePrimary || stale {
 		return s.primaryMember(ctx)
 	}
-	client, err := s.memberClient(ctx, h.Me)
+	host, own := s.memberAddress(h.Me)
+	if !own {
+		return &OplogMember{client: s.client, rp: readpref.Nearest(), host: host}, nil
+	}
+	if host == "" {
+		return s.primaryMember(ctx)
+	}
+	client, err := s.memberClient(ctx, host)
 	if err != nil {
 		return s.primaryMember(ctx)
 	}
-	return &OplogMember{client: client, rp: readpref.Nearest(), host: h.Me}, nil
+	return &OplogMember{client: client, rp: readpref.Nearest(), host: host}, nil
+}
+
+// memberAddress returns the address Pin binds a member's reader to, given the
+// address the member advertises (hello's "me"), and whether that needs a client of
+// its own. A directConnection=true session reaches exactly the member of its URI,
+// which may advertise an address unreachable from here (a port mapping, a proxy,
+// a container network): its reader is the session's client, under the URI's
+// address, and "me" is never dialled.
+func (s *OplogSession) memberAddress(me string) (host string, own bool) {
+	if s.directHost != "" {
+		return s.directHost, false
+	}
+	return me, true
 }
 
 // primaryMember returns a reader bound to the primary (read concern local, like
