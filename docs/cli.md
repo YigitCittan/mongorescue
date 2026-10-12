@@ -141,7 +141,7 @@ Restores a replica set to a [point in time](pitr.md#restoring-to-a-point-in-time
 mongorescue list backups|restores|jobs|connections|targets [filters]
 ```
 
-Backups and restores are listed newest first, 50 at a time: `--limit` (1 to 200, `0` for every match) and `--offset` page through them, and a note on stderr says when there are more. The filters map to the [list parameters](api.md#listing-backups-and-restores) of the API:
+Backups and restores are listed newest first, 50 at a time: `--limit` (1 to 200, `0` for every match) and `--offset` page through them, and a note on stderr says when there are more. Jobs are listed by name, every match: the command follows the API's job pages (500 at a time) for you. The filters map to the [list parameters](api.md#listing-backups-and-restores) of the API:
 
 | Flag | Applies to | Parameter |
 | :--- | :--- | :--- |
@@ -159,7 +159,7 @@ Backups and restores are listed newest first, 50 at a time: `--limit` (1 to 200,
 | `--sort COLUMN` | backups, restores | `sort` |
 | `--enabled BOOL`, `--schedule S`, `--last-status S` | jobs | `enabled`, `schedule`, `last_status` |
 
-A filter that does not apply to the listed resource is a usage error (exit `2`). `--json` prints the server's array unchanged; `--quiet` prints the IDs. Connection strings are shown redacted.
+A filter that does not apply to the listed resource is a usage error (exit `2`). `--json` prints the server's array unchanged (for jobs, the items of every page in one array); `--quiet` prints the IDs. Connection strings are shown redacted.
 
 ### verify
 

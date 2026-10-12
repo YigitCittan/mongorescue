@@ -358,8 +358,9 @@ func TestLoad(t *testing.T) {
 	// Idle at scale: scheduler ticks and API latencies.
 	tickLag := watchTicks(t, c, 100*time.Second, func() {
 		endpoints := map[string]string{
-			"jobs_page": "/api/v1/jobs?limit=50", "jobs_all": "/api/v1/jobs", "backups_page": "/api/v1/backups?limit=50",
-			"connections": "/api/v1/connections", "overview": "/api/v1/stats", "history": "/api/v1/stats/history",
+			"jobs_page": "/api/v1/jobs?limit=50", "jobs_first": "/api/v1/jobs", "jobs_search": "/api/v1/jobs?q=load-01&limit=50",
+			"backups_page": "/api/v1/backups?limit=50",
+			"connections":  "/api/v1/connections", "overview": "/api/v1/stats", "history": "/api/v1/stats/history",
 			"readiness": "/api/v1/readiness", "health": "/api/v1/health",
 		}
 		for name, path := range endpoints {
@@ -576,6 +577,11 @@ type baselineMetric struct {
 	// Slack is added to a lower-is-better limit, so tiny values (a few
 	// milliseconds, zero errors) do not fail on noise.
 	Slack float64 `json:"slack,omitempty"`
+	// Max is an absolute ceiling of a lower-is-better metric, checked besides the
+	// tolerance and kept when the baseline is recorded again (the service levels
+	// the project commits to, such as p95 under 300 ms for the jobs list and the
+	// history with 16 clients); 0 means none.
+	Max float64 `json:"max,omitempty"`
 }
 
 func baselinePath() string {
@@ -640,6 +646,9 @@ func compare(t *testing.T, rep *report) []string {
 		case "lower":
 			if limit := m.Value*m.Tolerance + m.Slack; v > limit {
 				out = append(out, fmt.Sprintf("%s = %.2f, above %.2f (baseline %.2f x %.1f + %.1f)", name, v, limit, m.Value, m.Tolerance, m.Slack))
+			}
+			if m.Max > 0 && v > m.Max {
+				out = append(out, fmt.Sprintf("%s = %.2f, above its ceiling %.2f", name, v, m.Max))
 			}
 		case "higher":
 			if limit := m.Value / m.Tolerance; v < limit {

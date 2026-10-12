@@ -500,6 +500,18 @@
           </tbody>
         </table>
       </div>
+      <nav class="pager" id="jobs-pager" aria-label="Job pages" data-i18n-aria-label="pager.jobs_label" hidden>
+        <label class="pager-size">
+          <span data-i18n="pager.per_page">Rows per page</span>
+          <select class="form-select" id="jobs-page-size" data-jobs-page-size>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <span class="pager-range" id="jobs-pager-range" aria-live="polite"></span>
+        <div class="pager-pages" id="jobs-pager-pages"></div>
+      </nav>
     </section>
 
     <!-- Restores -->
@@ -3233,6 +3245,7 @@
   <script src="/runtimewarnings.js"></script>
   <script src="/ha.js"></script>
   <script src="/widgets.js"></script>
+  <script src="/jobspager.js"></script>
   <script src="/tables.js"></script>
 </body>
 </html>

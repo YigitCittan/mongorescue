@@ -1186,6 +1186,53 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 28,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			// Indexes only: the jobs written by every earlier version page and
+			// count exactly as they list.
+			all, err := s.ListJobs(ctx)
+			if err != nil || len(all) == 0 {
+				t.Fatalf("jobs = %d, %v", len(all), err)
+			}
+			n, err := s.CountJobs(ctx, JobQuery{})
+			if err != nil || n != len(all) {
+				t.Fatalf("CountJobs = %d, %v; want %d", n, err, len(all))
+			}
+			var paged []*models.Job
+			q := JobQuery{Limit: 1}
+			for {
+				w, err := s.QueryJobs(ctx, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				paged = append(paged, w.Jobs...)
+				if !w.More {
+					break
+				}
+				last := w.Last
+				q.After = &last
+			}
+			if len(paged) != len(all) {
+				t.Fatalf("paged %d jobs; ListJobs returns %d", len(paged), len(all))
+			}
+			for i := range all {
+				if paged[i].ID != all[i].ID {
+					t.Fatalf("page order %d = %s; ListJobs has %s", i, paged[i].ID, all[i].ID)
+				}
+			}
+			for _, name := range []string{"jobs_by_connection_name", "jobs_by_enabled_name", "jobs_by_created", "jobs_by_connection_created",
+				"jobs_by_enabled_created", "jobs_by_next_run", "jobs_by_connection_next_run", "backups_by_started_status_size",
+				"backups_by_status_started_size", "backups_by_job_database"} {
+				var found int
+				if err := s.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&found); err != nil || found != 1 {
+					t.Errorf("index %s: %d, %v", name, found, err)
+				}
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

@@ -180,6 +180,7 @@ func (s *Service) UndeleteBackup(ctx context.Context, id string) (*models.Backup
 		return nil, err
 	}
 	auditlog.Annotate(ctx, "protection", "undeleted")
+	s.InvalidateHistory()
 	s.logger.With(actorAttrs(ctx)...).Info("backup undeleted",
 		logsafe.Attr("backup_id", updated.ID), slog.String("status", string(updated.Status)))
 	return updated, nil
@@ -223,6 +224,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	if s.cfg.OnJobDeleted != nil {
 		s.cfg.OnJobDeleted(id)
 	}
+	s.InvalidateHistory()
 	s.logger.With(actorAttrs(ctx)...).Info("job deleted", logsafe.Attr("job_id", id))
 	return nil
 }

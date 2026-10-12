@@ -771,11 +771,29 @@ async function loadStats() {
   renderCorruptRecords();
 }
 
+// Pages of the job directory (GET /api/v1/jobs pages by name; 500 is its largest
+// page) and the most pages followed.
+const JOB_DIRECTORY_PAGE = 500;
+const JOB_DIRECTORY_MAX_PAGES = 200;
+
+// Loads the job directory (state.jobs: every job, for names, the overview and the
+// forms) by following the list's next cursor. The Jobs table pages and filters on
+// the server instead (tables.js).
 async function loadJobs() {
   try {
-    const json = await apiJSON("/api/v1/jobs");
-    if (!noteLoad("jobs", json)) return;
-    state.jobs = json.data || [];
+    const all = [];
+    let after = "";
+    for (let page = 0; page < JOB_DIRECTORY_MAX_PAGES; page++) {
+      const p = new URLSearchParams({ limit: String(JOB_DIRECTORY_PAGE) });
+      if (after) p.set("after", after);
+      const json = await apiJSON(`/api/v1/jobs?${p.toString()}`);
+      if (!noteLoad("jobs", json)) return;
+      (Array.isArray(json.data) ? json.data : []).forEach(j => all.push(j));
+      const next = json.meta && typeof json.meta.next === "string" ? json.meta.next : "";
+      if (!next || next === after) break;
+      after = next;
+    }
+    state.jobs = all;
     state.loaded.jobs = true;
     renderJobs();
   } catch (err) {
@@ -1689,6 +1707,12 @@ function jobLabel(jobID) {
 }
 
 function renderJobs() {
+  renderJobRows();
+  // The Jobs table's pager (jobspager.js): its page, range and sort note.
+  if (typeof jobsPagerRender === "function") jobsPagerRender();
+}
+
+function renderJobRows() {
   const tbody = document.getElementById("jobs-tbody");
   if (!tbody) return;
   if (!state.loaded.jobs) return;

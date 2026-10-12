@@ -95,6 +95,10 @@ func (a *App) takeoverTasks(ctx context.Context) {
 	since := a.ha.rt.takeoverSince()
 	if !since.IsZero() {
 		imported = a.importNewerArchives(ctx, since.Add(-haImportMargin))
+		// The imported backups belong in the overview's history at once.
+		if a.ops != nil {
+			a.ops.InvalidateHistory()
+		}
 	}
 	if ctx.Err() != nil {
 		return

@@ -495,6 +495,13 @@ func (s *Service) multiJobStatus(ctx context.Context, j *models.Job, js *JobStat
 	if err != nil {
 		return fmt.Errorf("latest backups of job %s: %w", j.ID, err)
 	}
+	multiJobStatusFrom(j, latest, js)
+	return nil
+}
+
+// multiJobStatusFrom is multiJobStatus with the newest completed backup of each of
+// the job's databases already loaded (latest, keyed by database).
+func multiJobStatusFrom(j *models.Job, latest map[string]*models.BackupRecord, js *JobStatus) {
 	js.LastSuccessAt, js.LastSuccessBackupID = nil, ""
 	never := false
 	for _, db := range jobDatabases(j, latest) {
@@ -518,7 +525,6 @@ func (s *Service) multiJobStatus(ctx context.Context, j *models.Job, js *JobStat
 	if never {
 		js.LastSuccessAt, js.LastSuccessBackupID = nil, ""
 	}
-	return nil
 }
 
 // FailedBackup summarises a failed backup for Status.

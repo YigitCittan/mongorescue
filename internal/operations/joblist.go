@@ -210,19 +210,32 @@ func (s *Service) FilterJobs(ctx context.Context, f BulkFilter) ([]*models.Job, 
 // matchingJobs validates the job filter values of f and returns the matching jobs,
 // sorted by name.
 func (s *Service) matchingJobs(ctx context.Context, f *BulkFilter) ([]*models.Job, error) {
-	if err := checkText(map[string]string{"database": f.Database, "connection_id": f.ConnectionID, "q": f.Q}); err != nil {
+	if err := checkJobFilter(f); err != nil {
 		return nil, err
-	}
-	if f.Schedule != "" && !slices.Contains(JobFrequencies, f.Schedule) {
-		return nil, public("schedule must be one of "+strings.Join(JobFrequencies, ", "), ErrInvalid)
-	}
-	if f.LastStatus != "" && !slices.Contains(JobLastStatuses, f.LastStatus) {
-		return nil, public("last_status must be one of "+strings.Join(JobLastStatuses, ", "), ErrInvalid)
 	}
 	jobs, err := s.ListJobs(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return s.keepMatchingJobs(ctx, jobs, f)
+}
+
+// checkJobFilter validates the job filter values of f.
+func checkJobFilter(f *BulkFilter) error {
+	if err := checkText(map[string]string{"database": f.Database, "connection_id": f.ConnectionID, "q": f.Q}); err != nil {
+		return err
+	}
+	if f.Schedule != "" && !slices.Contains(JobFrequencies, f.Schedule) {
+		return public("schedule must be one of "+strings.Join(JobFrequencies, ", "), ErrInvalid)
+	}
+	if f.LastStatus != "" && !slices.Contains(JobLastStatuses, f.LastStatus) {
+		return public("last_status must be one of "+strings.Join(JobLastStatuses, ", "), ErrInvalid)
+	}
+	return nil
+}
+
+// keepMatchingJobs returns the jobs of jobs matching f, in order.
+func (s *Service) keepMatchingJobs(ctx context.Context, jobs []*models.Job, f *BulkFilter) ([]*models.Job, error) {
 	q := strings.ToLower(f.Q)
 	out := make([]*models.Job, 0, len(jobs))
 	for _, j := range jobs {

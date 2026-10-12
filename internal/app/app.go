@@ -586,6 +586,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Streams:      pitrStreams(&pitrSvc, &chainTestFailed, metaStore, &pitrEstimate),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
+		// Bursts of job writes (an import, the API creating thousands of jobs)
+		// coalesce into one check every few seconds.
+		MinKickInterval: readiness.DefaultMinKickInterval,
 		// Every job requires locked copies while the setting is on.
 		RequireLockedCopies: func() bool { return settingsSvc.Current().Security.RequireLockedCopies },
 		Observe: func(started time.Time, samples []readiness.Sample) {
@@ -664,8 +667,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		scheduler.WithAuditor(auditSvc),
 		scheduler.WithAfterBackup(integritySvc.AfterBackup),
 		scheduler.WithAfterRun(integritySvc.AfterRun),
-		// Job edits, pauses and resumes re-evaluate the RPOs at once.
-		scheduler.WithJobChanged(func(string) { readinessSvc.Kick() }),
+		// Job edits, pauses and resumes re-evaluate the RPOs at once and drop the
+		// cached history (also the writes that reach only the scheduler, such as
+		// applied pending changes and approvals; ops is set before it starts).
+		scheduler.WithJobChanged(func(string) {
+			readinessSvc.Kick()
+			if ops != nil {
+				ops.InvalidateHistory()
+			}
+		}),
 		// Multi-database jobs resolve their selection against the connection's
 		// databases (system ones included; selections exclude them themselves).
 		scheduler.WithDatabaseLister(func(ctx context.Context, connectionID string) ([]string, error) {
@@ -737,6 +747,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		},
 		Logger:  logger,
 		Version: o.version,
+		// The overview's history is shared for a few seconds among the dashboards
+		// asking at once; backup and run events drop it (ops.HandleEvent below).
+		HistoryCacheTTL: operations.DefaultHistoryCacheTTL,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {
@@ -744,6 +757,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			readinessSvc.Kick()
 		},
 	})
+	// Backup, run, verification and retention events drop the cached history.
+	bus.Subscribe(ops.HandleEvent)
 	// A secret key rotation that the startup recovery completed is announced now
 	// (the bus queues the event until it runs).
 	if opened.Completed != nil {
