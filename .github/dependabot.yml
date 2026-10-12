@@ -39,9 +39,11 @@ updates:
           - "patch"
 
   # Workflow actions are pinned to commit SHAs; Dependabot bumps the SHA and the
-  # version comment together.
+  # version comment together, in the workflows and the local composite actions.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

@@ -20,6 +20,8 @@
 #   KIND_CLUSTER     kind cluster name (default: mongorescue-helm); created when it
 #                    does not exist and deleted afterwards unless KEEP_CLUSTER=1
 #   KIND_NODE_IMAGE  node image for a new cluster (default: kind's default)
+#   DOCKER_HUB_MIRROR  Docker Hub pull-through cache for a new cluster's nodes,
+#                    e.g. https://mirror.gcr.io (default: none; CI sets it)
 #   IMAGE            image name to build and load (default: mongorescue:kind)
 #   SKIP_BUILD       1 uses an IMAGE that is already built
 #   MONGO_IMAGE      MongoDB image (default: mongo:7, pinned by digest)
@@ -79,8 +81,32 @@ if ! kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER"; then
   log "creating kind cluster $KIND_CLUSTER"
   args=(create cluster --name "$KIND_CLUSTER" --wait 120s)
   if [ -n "${KIND_NODE_IMAGE:-}" ]; then args+=(--image "$KIND_NODE_IMAGE"); fi
+  if [ -n "${DOCKER_HUB_MIRROR:-}" ]; then
+    # containerd in the nodes reads per-registry hosts.toml files from config_path.
+    cat >"$WORK/kind.yaml" <<'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+EOF
+    args+=(--config "$WORK/kind.yaml")
+  fi
   kind "${args[@]}"
   CREATED_CLUSTER=1
+  if [ -n "${DOCKER_HUB_MIRROR:-}" ]; then
+    while read -r node; do
+      docker exec -i "$node" sh -c \
+        'mkdir -p /etc/containerd/certs.d/docker.io && cat >/etc/containerd/certs.d/docker.io/hosts.toml' <<EOF
+server = "https://registry-1.docker.io"
+
+[host."$DOCKER_HUB_MIRROR"]
+  capabilities = ["pull", "resolve"]
+EOF
+    done < <(kind get nodes --name "$KIND_CLUSTER")
+    log "cluster pulls Docker Hub images through $DOCKER_HUB_MIRROR"
+  fi
 fi
 kubectl config use-context "kind-$KIND_CLUSTER" >/dev/null
 
