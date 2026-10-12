@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
@@ -80,6 +82,46 @@ func TestOplogSessionOptions(t *testing.T) {
 	// A range that ends before it starts never reaches the server.
 	if _, err = s.ReadOplog(ctx, pitr.OplogRange{From: pitr.Timestamp{T: 5}, To: pitr.Timestamp{T: 4}}, io.Discard); !errors.Is(err, ErrInvalidRange) {
 		t.Errorf("backwards range = %v; want ErrInvalidRange", err)
+	}
+}
+
+// TestOplogReadsUseTheReadersPreference checks that oplog reads go where the
+// reader's read preference sends them: the primary's reader shares the session's
+// client (secondaryPreferred) but must read the primary's oplog, with read
+// concern majority.
+func TestOplogReadsUseTheReadersPreference(t *testing.T) {
+	s, err := New().OpenOplogSession(context.Background(), "mongodb://127.0.0.1:1/", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	applied := func(m *OplogMember) options.DatabaseOptions {
+		t.Helper()
+		var o options.DatabaseOptions
+		for _, set := range m.oplogOptions().List() {
+			if err := set(&o); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return o
+	}
+	for _, tc := range []struct {
+		name     string
+		m        *OplogMember
+		mode     readpref.Mode
+		majority bool
+	}{
+		{"session", &s.OplogMember, readpref.SecondaryPreferredMode, false},
+		{"primary", s.Primary(), readpref.PrimaryMode, true},
+		{"primary member", &OplogMember{client: s.client, rp: readpref.Primary()}, readpref.PrimaryMode, false},
+	} {
+		o := applied(tc.m)
+		if o.ReadPreference == nil || o.ReadPreference.Mode() != tc.mode {
+			t.Errorf("%s: oplog read preference = %v; want %s", tc.name, o.ReadPreference, tc.mode)
+		}
+		if got := o.ReadConcern != nil && o.ReadConcern.Level == "majority"; got != tc.majority {
+			t.Errorf("%s: majority read concern = %v; want %v", tc.name, got, tc.majority)
+		}
 	}
 }
 
