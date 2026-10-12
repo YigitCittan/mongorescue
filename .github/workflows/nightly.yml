@@ -119,13 +119,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # The targets run one after another: 30 of them at 2m each (about 70 minutes
+      # with the builds) fit timeout-minutes; 5m each would need 150 minutes. Keep
+      # targets x FUZZTIME under about 75 minutes when adding targets.
       - name: Run fuzz targets
         run: |
           if ! { [ -f Makefile ] && grep -q '^fuzz:' Makefile; }; then
             echo "::error::The Makefile has no fuzz target; the nightly fuzz run cannot start."
             exit 1
           fi
-          make fuzz FUZZTIME=5m
+          make fuzz FUZZTIME=2m
 
   chaos:
     name: Chaos
