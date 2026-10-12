@@ -155,6 +155,10 @@ type Service struct {
 	checkMu sync.Mutex
 	// kick asks the background loop for an early check.
 	kick chan struct{}
+	// newTimer and mono are the checker loop's timer and monotonic clock (Config.Now
+	// is the wall clock of the evaluation); tests replace them.
+	newTimer func(time.Duration) loopTimer
+	mono     func() time.Time
 
 	lifeMu  sync.Mutex
 	cancel  context.CancelFunc
@@ -185,7 +189,7 @@ func New(cfg Config) *Service {
 	if cfg.DRDrillMaxAge <= 0 {
 		cfg.DRDrillMaxAge = DefaultDRDrillMaxAge
 	}
-	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1)}
+	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1), newTimer: newRealTimer, mono: time.Now}
 }
 
 // now returns the current time in UTC.
@@ -223,24 +227,24 @@ func (s *Service) Stop() {
 
 // loop checks after StartDelay, then every CheckInterval and whenever kicked.
 func (s *Service) loop(ctx context.Context) {
-	timer := time.NewTimer(s.cfg.StartDelay)
+	timer := s.newTimer(s.cfg.StartDelay)
 	defer timer.Stop()
 	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-timer.C():
 		case <-s.kick:
 			if !timer.Stop() {
 				select {
-				case <-timer.C:
+				case <-timer.C():
 				default:
 				}
 			}
 			// Kicks within MinKickInterval of the last check wait for its end, so
 			// a burst of job writes costs one check, not one per write.
-			if wait := s.cfg.MinKickInterval - time.Since(last); !last.IsZero() && wait > 0 {
+			if wait := s.cfg.MinKickInterval - s.mono().Sub(last); !last.IsZero() && wait > 0 {
 				timer.Reset(wait)
 				continue
 			}
@@ -248,10 +252,34 @@ func (s *Service) loop(ctx context.Context) {
 		if err := s.Check(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("the RPO check is incomplete", logsafe.Error(err))
 		}
-		last = time.Now()
+		last = s.mono()
 		timer.Reset(s.cfg.CheckInterval)
 	}
 }
+
+// loopTimer is the timer of the checker loop: a time.Timer, or a fake in tests.
+type loopTimer interface {
+	// C delivers the time when the timer fires.
+	C() <-chan time.Time
+	// Stop stops the timer, reporting whether it had not fired yet.
+	Stop() bool
+	// Reset makes the timer fire after d.
+	Reset(d time.Duration)
+}
+
+// realTimer is a loopTimer on a time.Timer.
+type realTimer struct{ t *time.Timer }
+
+func newRealTimer(d time.Duration) loopTimer { return realTimer{time.NewTimer(d)} }
+
+// C implements loopTimer.
+func (r realTimer) C() <-chan time.Time { return r.t.C }
+
+// Stop implements loopTimer.
+func (r realTimer) Stop() bool { return r.t.Stop() }
+
+// Reset implements loopTimer.
+func (r realTimer) Reset(d time.Duration) { r.t.Reset(d) }
 
 // HandleEvent is an events.Handler: a finished backup of a job asks the checker for
 // an early check, so a breach heals (and the gauges follow) without waiting for the
