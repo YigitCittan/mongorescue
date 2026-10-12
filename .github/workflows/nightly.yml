@@ -30,8 +30,11 @@ on:
 permissions:
   contents: read
 
+# One group per branch and suite: a dispatch on one branch never cancels (as a
+# replaced pending run) or waits for one on another branch. Scheduled runs (no
+# suite input) share one group on main and queue behind each other.
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.suite || 'scheduled' }}
   cancel-in-progress: false
 
 env:
