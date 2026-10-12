@@ -32,11 +32,12 @@ const (
 //
 //	{
 //	  "version": 1,
+//	  "event_id": "evt_3f9a1c2e5b7d9f01", // the same for every attempt; de-duplicate on it
 //	  "event": "backup.failed",          // backup.succeeded|backup.failed|backup.cancelled|backup.skipped|restore.succeeded|
 //	                                     // restore.failed|restore.cancelled|verification.failed|
 //	                                     // restore_test.succeeded|restore_test.failed|
 //	                                     // restore.verification_failed|job.rpo_missed|job.rpo_recovered|
-//	                                     // storage.drift_detected|retention.deleted|pitr.*|notification.test
+//	                                     // storage.drift_detected|retention.deleted|pitr.*|system.disk_full|notification.test
 //	  "time": "2026-09-24T03:00:00Z",   // RFC 3339, UTC
 //	  "job_id": "nightly-shop",          // omitted for manual runs
 //	  "backup_id": "bkp_shop_...",       // omitted when unknown
@@ -55,6 +56,10 @@ const (
 type WebhookPayload struct {
 	// Version is the payload schema version (always WebhookPayloadVersion).
 	Version int `json:"version"`
+	// EventID identifies the event: deliveries are at least once, so a receiver
+	// that sees an ID again (a retry, a re-delivery after a restart) can drop it.
+	// Omitted for test messages.
+	EventID string `json:"event_id,omitempty"`
 	// Event is the event type.
 	Event string `json:"event"`
 	// Time is the event time in UTC.
@@ -111,6 +116,7 @@ func NewWebhookPayload(msg Message) WebhookPayload {
 	e := msg.Event
 	return WebhookPayload{
 		Version:         WebhookPayloadVersion,
+		EventID:         e.ID,
 		Event:           string(e.Type),
 		Time:            e.Time.UTC(),
 		JobID:           e.JobID,

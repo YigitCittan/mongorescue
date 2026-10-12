@@ -1120,6 +1120,72 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 26,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO notification_outbox (channel_id, channel_type, event, attempts, next_attempt_at, created_at, last_error)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				"ch_hook", "webhook", `{"type":"security.key_rotated","id":"evt_v26","time":"2026-09-26T13:00:00Z","action":"secret_key","duration":0}`,
+				2, ns(38*time.Hour), ns(37*time.Hour), "webhook: status 503")
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			heads, err := s.OutboxHeads(ctx)
+			if err != nil || len(heads) != 1 {
+				t.Fatalf("queued notifications = %+v, %v; want the one queued before the upgrade", heads, err)
+			}
+			h := heads[0]
+			if h.ChannelID != "ch_hook" || h.ChannelType != "webhook" || h.Event.Type != "security.key_rotated" || h.Event.ID != "evt_v26" ||
+				h.Attempts != 2 || !h.NextAttemptAt.Equal(compatT0.Add(38*time.Hour)) {
+				t.Fatalf("queued notification = %+v", h)
+			}
+			if err = s.DeleteDelivery(ctx, h.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
+	{
+		version: 27,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			// The rebuilt pending_changes keeps every row and accepts turning
+			// security.require_locked_copies off, once.
+			list, err := s.ListPendingChanges(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept := false
+			for _, c := range list {
+				kept = kept || c.ID == "chg_v22"
+			}
+			if !kept {
+				t.Errorf("pending changes after the rebuild = %+v; want chg_v22 kept", list)
+			}
+			c := &models.PendingChange{ID: "chg_v27", Kind: models.PendingDisableLockedCopies, EffectiveAt: compatT0}
+			if _, err = s.ReplacePendingChange(ctx, c); err != nil {
+				t.Fatalf("store a locked copies change: %v", err)
+			}
+			if _, err = s.db.Exec(`INSERT INTO pending_changes (id, kind, subject, effective_at, data) VALUES ('chg_z', 'disable_locked_copies', '', 1, '{}')`); err == nil {
+				t.Error("two pending locked copies changes were stored")
+			}
+			if err = s.DeletePendingChange(ctx, "chg_v27"); err != nil {
+				t.Fatal(err)
+			}
+			// A job's locked copies change, one per job.
+			j := &models.PendingChange{ID: "chg_v27j", Kind: models.PendingJobLockedCopies, JobID: "job_v3", EffectiveAt: compatT0}
+			if _, err = s.ReplacePendingChange(ctx, j); err != nil {
+				t.Fatalf("store a job locked copies change: %v", err)
+			}
+			if err = s.DeletePendingChange(ctx, "chg_v27j"); err != nil {
+				t.Fatal(err)
+			}
+			// Chunk copies can be planned on the new table.
+			if _, err = s.PlanChunkCopies(ctx, "pst_v21", []models.CopyTarget{{ID: "tgt_dr"}}); err != nil {
+				t.Fatalf("plan chunk copies: %v", err)
+			}
+		},
+	},
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

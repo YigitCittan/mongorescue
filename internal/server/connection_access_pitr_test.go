@@ -15,7 +15,8 @@ import (
 // TestPITRRestoresFollowConnectionAccessOverHTTP checks the point-in-time restore
 // bodies of POST /api/v1/restore and its preflight, and CLI restore --pitr, for a
 // caller limited to connection A: B's stream (by stream or connection ID) is not
-// found, A's gets the usual admin refusal.
+// found, and so is a restore of A's stream into B; A's own restore passes the
+// scope checks (operator) and is refused only by its plan.
 func TestPITRRestoresFollowConnectionAccessOverHTTP(t *testing.T) {
 	f := newAccessFixture(t)
 	body := func(stream string) []byte {
@@ -29,9 +30,21 @@ func TestPITRRestoresFollowConnectionAccessOverHTTP(t *testing.T) {
 					t.Errorf("POST %s for B's stream %s: %d %s; want 404", path, b, rec.Code, rec.Body.String())
 				}
 			}
+			// A's stream: an operator may restore it into safe clones, so only the
+			// plan refuses it (the stream has no chunks yet).
 			rec := serve(f.h, http.MethodPost, path, body(accessPstA), h)
-			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "admin") {
-				t.Errorf("POST %s for A's stream: %d %s; want the admin refusal", path, rec.Code, rec.Body.String())
+			want := http.StatusUnprocessableEntity
+			if strings.HasSuffix(path, "/preflight") {
+				want = http.StatusOK
+			}
+			if rec.Code != want || !strings.Contains(rec.Body.String(), "no oplog chunks") {
+				t.Errorf("POST %s for A's stream: %d %s; want %d and the plan's refusal", path, rec.Code, rec.Body.String(), want)
+			}
+			// Into B's server: not found, like B's stream.
+			into := []byte(`{"pitr":{"stream_id":"` + accessPstA + `","at":"2026-10-05T12:00:00Z"},"target_connection_id":"` + accessConnB + `"}`)
+			rec = serve(f.h, http.MethodPost, path, into, h)
+			if !hiddenNotFound(rec.Code, rec.Body.String()) || leaked(rec.Body.String(), accessConnB) != "" {
+				t.Errorf("POST %s for A's stream into B: %d %s; want 404", path, rec.Code, rec.Body.String())
 			}
 		}
 	}

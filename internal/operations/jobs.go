@@ -125,6 +125,8 @@ type JobUpdate struct {
 	CopyTargets *[]string `json:"copy_targets"`
 	// CopyMode, when set, replaces the job's copy mode ("async" or "sync").
 	CopyMode *models.CopyMode `json:"copy_mode"`
+	// RequireLockedCopies, when set, replaces the job's locked copies policy.
+	RequireLockedCopies *bool `json:"require_locked_copies"`
 	// UpdatedAt, when set, is the job's updated_at the client edited: the update is
 	// refused with ErrJobChanged if the job was changed since.
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -244,6 +246,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if len(job.CopyTargets) == 0 {
 		job.CopyMode = ""
+	}
+	if rt := job.RestoreTest; rt != nil && rt.SourceTargetID != "" && !slices.Contains(job.CopyTargets, rt.SourceTargetID) {
+		return invalid(fmt.Errorf("%w: restore_test.source_target_id must be one of the job's copy targets", models.ErrInvalidRestoreTest))
 	}
 	s.snapshotKnownDatabases(ctx, job)
 	return nil
@@ -416,6 +421,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		job.CopyTargets = slices.Clone(*u.CopyTargets)
 	}
 	job.CopyMode = derefOr(u.CopyMode, existing.CopyMode)
+	job.RequireLockedCopies = derefOr(u.RequireLockedCopies, existing.RequireLockedCopies)
 	CarryKnownDatabases(job, existing)
 	job.Enabled = derefOr(u.Enabled, existing.Enabled)
 	switch {
@@ -445,6 +451,10 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 		return nil, err
 	}
 	if err = s.ValidateJob(ctx, job); err != nil {
+		return nil, err
+	}
+	lockedHold, err := s.HoldLockedCopies(ctx, existing, job)
+	if err != nil {
 		return nil, err
 	}
 	hold, err := s.HoldRetention(ctx, existing, job)
@@ -483,6 +493,9 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	changed := job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
 	if err != nil {
+		return nil, err
+	}
+	if err = s.ApplyLockedCopiesHold(ctx, lockedHold, job.ID, prot); err != nil {
 		return nil, err
 	}
 	return &JobSaveResult{Job: job, JobProtection: *prot, Warnings: s.JobWarnings(ctx, job)}, nil

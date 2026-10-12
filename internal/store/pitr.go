@@ -27,10 +27,11 @@ const (
 
 // streamData is the JSON data column of pitr_streams: the options without a column.
 type streamData struct {
-	BaseOnGap      bool   `json:"base_on_gap"`
-	ReadPreference string `json:"read_preference,omitempty"`
-	ChainTestCron  string `json:"chain_test_cron,omitempty"`
-	ChainTestConn  string `json:"chain_test_connection_id,omitempty"`
+	BaseOnGap      bool     `json:"base_on_gap"`
+	ReadPreference string   `json:"read_preference,omitempty"`
+	ChainTestCron  string   `json:"chain_test_cron,omitempty"`
+	ChainTestConn  string   `json:"chain_test_connection_id,omitempty"`
+	CopyTargets    []string `json:"copy_targets,omitempty"`
 }
 
 // oplogTS converts a stored integer pair to a BSON timestamp.
@@ -43,7 +44,8 @@ func (s *SQLiteStore) CreateStream(ctx context.Context, st *pitr.Stream) error {
 	if st == nil || st.ID == "" || st.ConnectionID == "" {
 		return fmt.Errorf("%w: PITR stream with ID and connection is required", ErrInvalidRecord)
 	}
-	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID})
+	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID,
+		CopyTargets: st.CopyTargets})
 	if err != nil {
 		return fmt.Errorf("store: encode PITR stream %s: %w", st.ID, err)
 	}
@@ -69,7 +71,8 @@ func (s *SQLiteStore) UpdateStream(ctx context.Context, st *pitr.Stream) error {
 	if st == nil || st.ID == "" || st.ConnectionID == "" {
 		return fmt.Errorf("%w: PITR stream with ID and connection is required", ErrInvalidRecord)
 	}
-	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID})
+	data, err := json.Marshal(streamData{BaseOnGap: st.BaseOnGap, ReadPreference: st.ReadPreference, ChainTestCron: st.ChainTestCron, ChainTestConn: st.ChainTestConnectionID,
+		CopyTargets: st.CopyTargets})
 	if err != nil {
 		return fmt.Errorf("store: encode PITR stream %s: %w", st.ID, err)
 	}
@@ -153,7 +156,7 @@ func scanStream(r rowScanner) (*pitr.Stream, error) {
 		return nil, fmt.Errorf("%w: PITR stream %s: %w", ErrCorruptRecord, st.ID, err)
 	}
 	st.BaseOnGap, st.ReadPreference, st.ChainTestCron = d.BaseOnGap, d.ReadPreference, d.ChainTestCron
-	st.ChainTestConnectionID = d.ChainTestConn
+	st.ChainTestConnectionID, st.CopyTargets = d.ChainTestConn, d.CopyTargets
 	st.CreatedAt, st.UpdatedAt = fromKey(created), fromKey(updated)
 	return &st, nil
 }
@@ -647,6 +650,14 @@ func (s *SQLiteStore) ChunkKeys(ctx context.Context, targetID string) (map[strin
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: list the chunk keys of target %s: %w", targetID, err)
+	}
+	// The copies of chunks of streams whose copy target it is.
+	copies, err := s.ChunkCopyKeys(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	for key := range copies {
+		out[key] = true
 	}
 	return out, nil
 }

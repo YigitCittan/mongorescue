@@ -22,7 +22,6 @@ const stream = {
   chains: [],
   bases: [],
   chain_breaks: 0,
-  experimental: true,
 };
 
 const preflight = {
@@ -52,7 +51,9 @@ test("restores to a point in time through the wizard", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: /^Connections/ }).click();
   const panel = page.locator("#pitr-panel");
-  await expect(panel.getByText("Experimental").first()).toBeVisible();
+  // A supported feature since #141: no "Experimental" badge.
+  await expect(panel.getByText("Point-in-time recovery").first()).toBeVisible();
+  await expect(page.getByText("Experimental", { exact: true })).toHaveCount(0);
   await panel.getByRole("button", { name: "Restore to a time" }).click();
 
   const wizard = page.locator("#form-pitr-restore");

@@ -140,6 +140,10 @@ type Input struct {
 	S3 *models.S3Target `json:"s3,omitempty"`
 	// IsDefault makes the new target the default (create only).
 	IsDefault bool `json:"is_default,omitempty"`
+	// Region labels the region holding the target's data (models.StorageTarget.Region);
+	// nil keeps the stored one on an update. An S3 target without a region (here or
+	// in s3.region) takes its bucket's location when storage tells it.
+	Region *string `json:"region,omitempty"`
 }
 
 // TestResult is the outcome of a target test.
@@ -314,6 +318,7 @@ func (s *Service) Create(ctx context.Context, in Input) (*models.StorageTarget, 
 	if err = s.checkObjectLock(ctx, t); err != nil {
 		return nil, err
 	}
+	s.detectRegion(ctx, t)
 	id, err := NewID()
 	if err != nil {
 		return nil, err
@@ -380,6 +385,7 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Stor
 	if err = s.checkObjectLock(ctx, t); err != nil {
 		return nil, err
 	}
+	s.detectRegion(ctx, t)
 	t.ID, t.CreatedAt, t.IsDefault = existing.ID, existing.CreatedAt, existing.IsDefault
 	t.UpdatedAt = s.now().UTC()
 	if !t.UpdatedAt.After(existing.UpdatedAt) {
@@ -819,6 +825,43 @@ func (s *Service) checkObjectLock(ctx context.Context, t *models.StorageTarget) 
 	return nil
 }
 
+// sameRegionSource reports whether a and b are S3 targets on the same endpoint and
+// bucket with the same S3 region, so a region detected for a holds for b.
+func sameRegionSource(a, b *models.StorageTarget) bool {
+	return a.S3 != nil && b.S3 != nil && a.S3.Endpoint == b.S3.Endpoint && a.S3.Bucket == b.S3.Bucket &&
+		strings.EqualFold(strings.TrimSpace(a.S3.Region), strings.TrimSpace(b.S3.Region))
+}
+
+// detectRegion sets the Region of an AWS S3 target whose region is unknown (no
+// label, and its S3 region empty or "auto") to the location of its bucket, when
+// storage tells it, and marks it detected. Other endpoints are left alone: only an
+// operator's label tells where their data is (see models.StorageTarget.DRRegion).
+// It is best effort: a failure leaves the region unknown, which the readiness
+// report warns about.
+func (s *Service) detectRegion(ctx context.Context, t *models.StorageTarget) {
+	if !t.IsAWSS3() || t.DRRegion() != "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.testTimeout)
+	defer cancel()
+	driver, err := s.build(ctx, t)
+	if err != nil {
+		return
+	}
+	locator, ok := driver.(storage.RegionLocator)
+	if !ok {
+		return
+	}
+	region, err := locator.BucketRegion(ctx)
+	if err != nil {
+		s.logger.Debug("the bucket region of a storage target is unknown", logsafe.Attr("location", t.Location()), logsafe.Error(err))
+		return
+	}
+	if region != "" && len(region) <= models.MaxRegionLength && !strings.ContainsFunc(region, isControl) {
+		t.Region, t.RegionDetected = region, true
+	}
+}
+
 // checkWritable verifies that a local target's directory can be created and written.
 func (s *Service) checkWritable(ctx context.Context, t *models.StorageTarget) error {
 	if err := s.runProbe(ctx, t); err != nil {
@@ -840,6 +883,14 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		return nil, fmt.Errorf("%w: name must not contain control characters", ErrInvalid)
 	}
 	t := &models.StorageTarget{Name: name, Type: in.Type}
+	switch {
+	case in.Region != nil:
+		region := strings.TrimSpace(*in.Region)
+		if len(region) > models.MaxRegionLength || strings.ContainsFunc(region, isControl) {
+			return nil, fmt.Errorf("%w: region must be printable and at most %d characters", ErrInvalid, models.MaxRegionLength)
+		}
+		t.Region = region
+	}
 	switch in.Type {
 	case models.StorageLocal:
 		if in.Local == nil {
@@ -879,6 +930,13 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		t.S3 = &s3
 	default:
 		return nil, fmt.Errorf("%w: type must be local or s3", ErrInvalid)
+	}
+	if in.Region == nil && existing != nil {
+		t.Region, t.RegionDetected = existing.Region, existing.RegionDetected
+		// A detected region belongs to the bucket it was read from.
+		if t.RegionDetected && !sameRegionSource(existing, t) {
+			t.Region, t.RegionDetected = "", false
+		}
 	}
 	return t, nil
 }

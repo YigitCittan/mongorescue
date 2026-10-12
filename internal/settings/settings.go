@@ -159,12 +159,23 @@ type General struct {
 	// PostRestoreCommandTimeout bounds each post-restore command of a restore
 	// (MinPostRestoreCommandTimeout to MaxPostRestoreCommandTimeout).
 	PostRestoreCommandTimeout Duration `json:"post_restore_command_timeout"`
+	// StorageStallTimeout fails an upload (backup, oplog chunk, copy, metadata
+	// snapshot, re-encryption) whose storage target accepts no bytes for this long
+	// (MinStorageStallTimeout to MaxStorageStallTimeout).
+	StorageStallTimeout Duration `json:"storage_stall_timeout"`
 }
 
 // Limits of General.PostRestoreCommandTimeout.
 const (
 	MinPostRestoreCommandTimeout = time.Second
 	MaxPostRestoreCommandTimeout = 24 * time.Hour
+)
+
+// Default and limits of General.StorageStallTimeout.
+const (
+	DefaultStorageStallTimeout = 5 * time.Minute
+	MinStorageStallTimeout     = time.Minute
+	MaxStorageStallTimeout     = time.Hour
 )
 
 // Security holds session, cookie, proxy, CORS and metrics options.
@@ -193,6 +204,10 @@ type Security struct {
 	// for a second administrator's approval. It can only be turned on while at least
 	// two administrators exist, and turning it off needs an approval too.
 	RequireSecondApprover bool `json:"require_second_approver"`
+	// RequireLockedCopies is the default of models.Job.RequireLockedCopies for new
+	// jobs: every copy target of the job must have S3 Object Lock. Turning it off is
+	// a lowered protection, delayed like the grace period (see protection.go).
+	RequireLockedCopies bool `json:"require_locked_copies"`
 }
 
 // DeleteGrace returns the delete grace period as a duration.
@@ -243,6 +258,7 @@ func Defaults() Settings {
 			RestoreVerifyPolicy:       models.VerifyAuto,
 			LogRetentionDays:          30,
 			PostRestoreCommandTimeout: Duration(time.Minute),
+			StorageStallTimeout:       Duration(DefaultStorageStallTimeout),
 		},
 		Security: Security{
 			SessionIdleTimeout:     Duration(12 * time.Hour),
@@ -336,6 +352,7 @@ type GeneralPatch struct {
 	LogRetentionDays          *int                 `json:"log_retention_days,omitempty"`
 	MaxUploadMbps             *float64             `json:"max_upload_mbps,omitempty"`
 	PostRestoreCommandTimeout *Duration            `json:"post_restore_command_timeout,omitempty"`
+	StorageStallTimeout       *Duration            `json:"storage_stall_timeout,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -349,6 +366,7 @@ type SecurityPatch struct {
 	MCPEnabled             *bool         `json:"mcp_enabled,omitempty"`
 	DeleteGraceDays        *int          `json:"delete_grace_days,omitempty"`
 	RequireSecondApprover  *bool         `json:"require_second_approver,omitempty"`
+	RequireLockedCopies    *bool         `json:"require_locked_copies,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -377,6 +395,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.LogRetentionDays, g.LogRetentionDays)
 		setIf(&next.General.MaxUploadMbps, g.MaxUploadMbps)
 		setIf(&next.General.PostRestoreCommandTimeout, g.PostRestoreCommandTimeout)
+		setIf(&next.General.StorageStallTimeout, g.StorageStallTimeout)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -390,6 +409,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
 		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
 		setIf(&next.Security.RequireSecondApprover, sec.RequireSecondApprover)
+		setIf(&next.Security.RequireLockedCopies, sec.RequireLockedCopies)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)
@@ -486,6 +506,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.%w", ErrInvalid, models.ErrInvalidUploadRate)
 	case g.PostRestoreCommandTimeout.Std() < MinPostRestoreCommandTimeout || g.PostRestoreCommandTimeout.Std() > MaxPostRestoreCommandTimeout:
 		return fmt.Errorf("%w: general.post_restore_command_timeout must be between 1s and 24h", ErrInvalid)
+	case g.StorageStallTimeout.Std() < MinStorageStallTimeout || g.StorageStallTimeout.Std() > MaxStorageStallTimeout:
+		return fmt.Errorf("%w: general.storage_stall_timeout must be between 1m and 1h", ErrInvalid)
 	}
 
 	sec := &s.Security

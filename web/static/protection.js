@@ -816,6 +816,8 @@ function protectionFillSecurity(sec) {
   if (grace) grace.value = String(Number(sec.delete_grace_days) || GRACE_DEFAULT_DAYS);
   const second = document.getElementById("set-require-second-approver");
   if (second) second.checked = !!sec.require_second_approver;
+  // The locked copies default (dr.js).
+  if (typeof drFillSecurity === "function") drFillSecurity(sec);
   setText("set-delete-grace-hint", tf("protection.grace_hint", { min: GRACE_MIN_DAYS, max: GRACE_MAX_DAYS }));
   if (state.settings && Array.isArray(state.settings.pending_changes)) protection.pending = state.settings.pending_changes;
   renderPendingChanges();
@@ -836,6 +838,7 @@ function protectionCollectSecurity() {
   }
   const second = document.getElementById("set-require-second-approver");
   if (second) out.require_second_approver = second.checked;
+  if (typeof drCollectSecurity === "function") Object.assign(out, drCollectSecurity());
   return out;
 }
 
@@ -902,6 +905,8 @@ function renderPendingChanges() {
     if (c.kind === "disable_second_approver") text = tf("protection.pending_disable", { when });
     // A lowered S3 Object Lock of a storage target (objectlock.js).
     if (c.kind === "object_lock" && typeof objectLockPendingText === "function") text = objectLockPendingText(c, when);
+    // Locked copies no longer required (dr.js).
+    if ((c.kind === "disable_locked_copies" || c.kind === "job_locked_copies") && typeof drPendingText === "function") text = drPendingText(c, when);
     const by = c.requested_by ? ` <span class="muted">(${escapeHtml(tf("protection.pending_by", { who: String(c.requested_by) }))})</span>` : "";
     return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}
       <button type="button" class="btn btn-secondary btn-sm" data-action="pending-cancel" data-id="${escapeHtml(c.id)}">${escapeHtml(t("protection.pending_cancel"))}</button></li>`;

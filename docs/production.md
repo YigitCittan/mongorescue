@@ -17,6 +17,26 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] An [RPO](#rpo-and-rto) set on every job whose default does not match what you promised, a `job.rpo_missed` notification rule, and no `fail` row under Overview → *Recovery readiness*.
 - [ ] Busy replica sets backed up from a secondary, with an upload cap and a backup window where the dump competes with production traffic; databases past the [practical limits of mongodump](#large-databases) covered by snapshots or your cloud provider's backups instead.
 
+## Production checklist
+
+The checklist above secures the instance. This one makes sure you can still restore after losing a database, a bucket, a cloud account or MongoRescue itself. Review it at every minor release, together with the README's [known limitations](../README.md#known-limitations).
+
+- [ ] **Object Lock in compliance mode, with versioning**, on every S3 target that holds backups ([Object Lock](configuration.md#immutable-backups-s3-object-lock), [threat model](security.md#immutable-backups-s3-object-lock)). Why: without it, anyone holding the bucket's credentials can delete every archive, and governance mode can be bypassed.
+- [ ] **A separate IAM account and credentials for copy targets** ([least-privilege credentials](#least-privilege-storage-credentials), [copies](configuration.md#copies-on-a-second-target-3-2-1)). Why: one leaked key, or one compromised account, must not reach the primary and its copies at once.
+- [ ] **A cross-region copy** of every important job, on its own locked target ([3-2-1 backups](#3-2-1-backups)). Why: a region outage or a lost account takes the primary target with it; restores then fall back to a healthy copy by themselves.
+- [ ] **Locked copies required** with **Settings → Security → Require locked copies** (`security.require_locked_copies`) and on every job with copies ([cross-region disaster recovery](#cross-region-disaster-recovery)). Why: a copy target without Object Lock leaves the copy deletable by whoever holds its key, and the policy refuses such a job instead of letting it slip.
+- [ ] **A DR drill from the cross-region copy** on every important job, passing at least monthly, and the [region failure runbook](#region-failure) walked through once with the recovery kit stored outside the primary's region ([DR drills](#dr-drills)). Why: a copy you never restored from is a hope, not a plan; the drill proves it restores without region A.
+- [ ] **No `dr_same_region` or `dr_same_credentials` warning** under Overview → *Recovery readiness*, and a region set on every storage target ([region awareness](#region-awareness)). Why: a copy in the primary's region, or reachable with the primary's key, fails together with it.
+- [ ] **A heartbeat and the alert rules** ([heartbeats](monitoring.md#global-heartbeat), [Prometheus alert rules](monitoring.md#prometheus-alert-rules)). Why: a crashed instance or a hung scheduler cannot report its own failure.
+- [ ] **The recovery kit downloaded and stored offline**, apart from the backups, with metadata backups on ([recovery kit](#recovery-kit), [metadata backups](#metadata-backups)). Why: without `secret.key` the stored credentials and encryption keys are unrecoverable.
+- [ ] **The two-person rule on, with at least two administrators** ([two-person rule](security.md#the-two-person-rule)). Why: one stolen administrator credential then cannot delete backups, lower protections or make another administrator alone; the rule cannot be turned on with fewer than two.
+- [ ] **Read preference `secondary` (or `secondaryPreferred`), an upload cap and a backup window** on busy replica sets ([reading from a secondary](#reading-from-a-secondary), [throttling](#throttling), [backup windows](#backup-windows)). Why: a dump from the primary competes with production traffic and evicts its working set.
+- [ ] **Scheduled restore tests, and chain tests for PITR streams** ([restore tests](verification.md#automated-restore-tests), [chain tests](pitr.md#chain-tests)). Why: a checksum proves the archive is intact, only a restore proves it is usable, and its duration is your measured RTO.
+- [ ] **TLS to MongoDB**, with certificate and hostname verification on ([TLS settings](connections.md#tls-settings)). Why: the dump carries all your data and the connection carries its credentials.
+- [ ] **Per-connection access** for every user and API key that is not an administrator, and few administrators ([per-connection access](security.md#per-connection-access), [roles](design/roles.md#roles-and-scopes)). Why: one team's credential should not read or restore another team's databases.
+- [ ] **A key rotation runbook** you have walked through once: `secret.key`, the backup encryption key and the storage credentials ([key rotation](#key-rotation), [runbook](encryption.md#key-rotation-runbook)). Why: after a leak or a departure you rotate under pressure, and every rotation needs a new recovery kit.
+- [ ] **MongoRescue in another failure domain than the databases**: another cloud account, region or cluster, with its metadata backups on a target outside the instance's own ([metadata backups](#metadata-backups), [Kubernetes](kubernetes.md#what-the-chart-runs)). Why: an incident that takes the databases must not take the tool that restores them.
+
 ## TLS and the reverse proxy
 
 MongoRescue serves plain HTTP. Put it behind a proxy that terminates TLS, and make the MongoRescue port reachable only from the proxy: publish it on loopback (`-p 127.0.0.1:8080:8080`), or keep it on a private Docker network that only the proxy joins.
@@ -59,6 +79,20 @@ The channel **test** endpoint and the connection test make outbound requests to 
 Connection strings and channel secrets are encrypted with AES-256-GCM. **Losing the key loses them**: MongoRescue refuses to start when the key does not match the database (`the secret key does not match the key this database was encrypted with`). Store a copy of `secret.key`, or set `MONGORESCUE_SECRET_KEY` from your secret manager, and keep it apart from database backups so one leaked backup does not reveal both. A refused start changes nothing in the database: put the original key back (file or variable) and the stored credentials open again. `MONGORESCUE_SECRET_KEY` takes precedence over `secret.key` when both exist, and a damaged `secret.key` is reported, never replaced. The age identity used for backup encryption is one of these stored secrets; escrow it separately as well (see [encryption.md](encryption.md#key-management-and-loss)).
 
 Losing the database does not lose the backup archives, but it loses the records that point to them, your schedules, users and connections. Back it up with [metadata backups](#metadata-backups) and keep `secret.key` in a [recovery kit](#recovery-kit).
+
+### Disk space
+
+Keep the data directory on a filesystem with room to spare: every run writes its record to `mongorescue.db` and its log under `logs/`, and a full disk stops both.
+
+- **Before every run** (backups, job runs, restores, PITR base backups) MongoRescue checks the free space of the data directory. Below `MONGORESCUE_MIN_FREE_SPACE_MB` (`-min-free-space-mb`, 100 MiB by default, `0` turns the check off) the run does not start: the API answers `503` with the free space and the minimum (and `Retry-After: 30`), and a scheduled run is recorded as failed, so `backup.failed` and the job's heartbeat `/fail` ping fire.
+- **When a metadata write fails because the disk is full** (SQLite `database or disk is full`, `ENOSPC`), MongoRescue publishes the critical event `system.disk_full` (sent to every enabled notification channel, whatever the rules), shows the `data_dir_full` warning (a dashboard banner, `GET /api/v1/settings`, counted by `mongorescue_settings_warnings`), and refuses new backups and restores until there is enough free space again; it checks every 30 seconds and resumes on its own. Where the free space cannot be read, the episode ends as soon as a write succeeds (a small probe file in the data directory, at most every 5 seconds, or the save of a record that waited). `system.disk_full` is sent at most once an hour: an episode that starts sooner after the last alert is only logged and shown as the warning.
+- **A backup whose final record cannot be saved never reports success.** The save is retried for a few seconds; if it still fails, the backup is reported as failed (`backup.failed`, a failed job run, the heartbeat's `/fail` ping, no copies, no retention), the failure is logged and written to the run's log, and the failed record is saved as soon as writes work again (at the latest by the next start, which fails every run left in progress). Its archive is complete, so it is kept (`the backup record could not be saved (data disk full: …); the archive was kept`, never `archive_cleanup_pending`, and copies already made stay): the [storage scan](verification.md#storage-scans) lists it as an orphan and *Import* revives the record as a completed backup. Only the artifact of a run that failed by itself (an upload that broke off) is cleaned up, as before.
+- **At the next start**, a backup still recorded as in progress is failed. If its archive exists in storage it may be complete, so it is kept (`interrupted before the record was saved; the archive was kept`, no `archive_cleanup_pending`): the [storage scan](verification.md#storage-scans) lists it as an orphan and *Import* revives the record as a completed backup. Only an archive smaller than the size recorded for it goes to the purge; when the target cannot be read nothing is deleted.
+- **Only a full disk fails a run.** Any other failure of the final save (a busy or locked database, a timeout) is transient: the record is kept as it is and saved in the background, retried with a backoff from 1 second to 1 minute until it succeeds, and the run reports its real outcome. A good archive or clone is never deleted over a lock. A restart before that save succeeds leaves the record to the startup recovery.
+- **The same holds for restores** (also point-in-time restores and chain tests): the record is stored before `restore.succeeded` is published. A restore whose record cannot be saved is reported as failed (`restore.failed`), and what it restored is handled like the clones of any failed restore: a safe clone, or the clones of a point-in-time restore or chain test, are dropped; an in-place target is never touched.
+- The writes at the start of a run (the in-progress records, the chunks of the PITR collector) report a full disk too, so the episode starts before a run gets far.
+
+The rest of the server copes with a full data directory: requests that must write fail with an error, the database stays consistent (SQLite rolls back the failed transaction), and nothing needs repairing once space is freed. Alert on the filesystem itself as well (node exporter's `node_filesystem_avail_bytes`), well before the minimum.
 
 ### Metadata backups
 
@@ -104,7 +138,7 @@ Since v0.14.0 the database records a checksum of every schema migration applied 
 
 A single damaged row (a record whose stored JSON no longer fits, or whose credentials cannot be decrypted) does not take a list down: it is skipped, logged with its table and ID, shown to administrators in a dashboard banner and left unchanged on disk. [troubleshooting.md](troubleshooting.md#unreadable-records) shows how to back up the database, inspect the row with `sqlite3`, and repair, export or remove it.
 
-Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#json-file)). Job connection strings from those releases become managed connections.
+Releases before the SQLite store kept metadata in `state.json`; it is imported automatically on the first start and renamed to `state.json.migrated-<timestamp>` (see [configuration.md](configuration.md#upgrading-deprecated-environment-variables-and-configjson)). Job connection strings from those releases become managed connections.
 
 ## RPO and RTO
 
@@ -135,6 +169,44 @@ What you get:
 - **One lifecycle.** Retention and deletion apply to the backup with all its copies: a deleted backup can be undeleted with its copies during the grace period, and the purge then removes every copy, each after its own target's lock.
 
 Copies read storage, not MongoDB, so they run outside backup windows too; they upload at the job's (or the general) `max_upload_mbps`. Size the copy target like the primary: it holds the same archives for as long as the primary does.
+
+## Cross-region disaster recovery
+
+"We use S3" is not disaster recovery: a region outage, a lost account or one leaked key can take the primary bucket and every copy in the same failure domain with it. Real DR keeps an **immutable copy in another region, behind other credentials**, and proves regularly that a restore works **from that copy alone**. MongoRescue checks each part and sums it up per database under Overview → *Recovery readiness* (*DR: cross-region ✓* or *DR: same region ✗*).
+
+### Locked copies
+
+A job with **Require locked copies** (`require_locked_copies` in the API) is refused (`400`) unless every one of its copy targets has [S3 Object Lock](configuration.md#immutable-backups-s3-object-lock), so a copy is never left deletable. **Settings → Security → Require locked copies** (`security.require_locked_copies`) applies to every job while it is on: no job can opt out (a new job without the policy, or a job turning it off, is refused with `400`), and the copy targets of every job and PITR stream must have Object Lock. Turning the setting off, or a job's policy while the setting is off, is a lowered protection: it takes effect after the [delete grace period](security.md#lowering-a-protection-takes-the-grace-period-too) and, under the [two-person rule](security.md#the-two-person-rule), only once a second administrator approved it (pending change and approval kinds `disable_locked_copies` and `job_locked_copies`).
+
+### Region awareness
+
+Every storage target has a **region**: an AWS S3 target takes its `s3.region`, or, when that is empty or `auto`, the bucket's location (`GetBucketLocation`, needs `s3:GetBucketLocation`); any other target (MinIO, another S3 provider, a local disk or NAS) only has the label you give it (for example `dc-frankfurt`), since its `s3.region` says nothing about where the data is. Set the label on every such target. For a database whose jobs have copy targets the readiness report then warns:
+
+- `dr_same_region` when no copy target is in a known region other than the primary's (an unknown region never counts as another one);
+- `dr_same_credentials` when every copy target is reachable with the primary's credentials or account, where this is detectable (see [copy targets in another account](#copy-targets-in-another-account));
+- `dr_unlocked_copy` when a job that requires locked copies has a copy target without Object Lock (a job saved before the setting was turned on). The check of a job's copy targets runs when they or its policy change, so pausing or renaming such a job still works; removing the Object Lock of a copy target that a requiring job or stream uses is refused (`400`).
+
+### DR drills
+
+A **DR drill** is a [restore test](verification.md#automated-restore-tests) that reads the archive from a copy target instead of the primary: in the job form, *Restore test* → *Read from* a copy target (`restore_test.source_target_id`, one of the job's `copy_targets`). Pick the copy in the other region. A drill tests the newest backup whose copy on that target is complete (with async copies that may be the previous backup); a scheduled drill is skipped while no backup has a complete copy there yet, and a manual one is refused. The result names the target it read (`source_target_id`), and the readiness row shows the last drill and its result. `dr_drill_stale` warns when no drill passed in the last 30 days.
+
+**DR: cross-region.** A database's readiness row shows *DR: cross-region* once one of its jobs has a copy target in another region with Object Lock, and a drill from such a copy passed within the last 30 days. Otherwise it shows what is missing (*same region*, *not locked*, *no recent drill*).
+
+### Region failure
+
+The runbook for "region A is gone" (the primary target, maybe the databases and MongoRescue with it). Prepare it before you need it:
+
+- The **recovery kit** (and its passphrase) and the backup **encryption key** are stored **outside region A**: in another region, another account, or offline. Without `secret.key` the stored credentials are unreadable, and without the private key encrypted archives are.
+- [Metadata backups](#metadata-backups) go to a target in region B, so the instance's own database survives too.
+- A drill from the region B copy passed recently (no `dr_drill_stale`).
+
+When region A fails:
+
+1. **Start MongoRescue in region B** (or anywhere with access to region B). If the instance in region A is gone, restore it from the metadata backup in region B with the recovery kit ([restore MongoRescue from a snapshot](#restore-mongorescue-from-a-snapshot)), or start a fresh instance and add the region B copy target with its own credentials.
+2. **Check what region B holds.** Every backup lists its copies; the region B target must show them *done*. Copies that were still pending when region A went are lost with it: the newest restorable backup is the newest one with a done copy in region B.
+3. **Restore from region B.** A restore falls back to a healthy copy by itself when the primary archive cannot be read; to be explicit, choose the region B target under *Read the archive from* (`source_target_id`, `--from-target` on the CLI). Restore into a new cluster in region B, as a safe clone first.
+4. **Point the jobs at region B.** Until region A is back, make the region B target the primary of the jobs (and add a new copy target in a third region), so new backups do not fail against the lost one.
+5. **After region A returns**, run the integrity sweep: it verifies every copy and copies missing or damaged ones again.
 
 ## Large databases
 
@@ -212,7 +284,7 @@ A rotation of `secret.key` is crash-safe: a start after an interruption complete
 
 ### Least-privilege storage credentials
 
-Give MongoRescue a key limited to its bucket and prefix, with only the actions it uses: `s3:PutObject` (backups, snapshots, probes), `s3:GetObject` (restores, verification), `s3:ListBucket` (scans, retention, probes; restrict it with an `s3:prefix` condition) and `s3:DeleteObject` (retention, purges, re-encryption, probes), plus `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` for large uploads. A credential rotation refuses a key that cannot write, read, list or delete. With object lock or versioning, deletions keep a version: size the bucket's lifecycle rules accordingly. Example AWS policy:
+Give MongoRescue a key limited to its bucket and prefix, with only the actions it uses: `s3:PutObject` (backups, snapshots, probes), `s3:GetObject` (restores, verification), `s3:ListBucket` (scans, retention, probes; restrict it with an `s3:prefix` condition) and `s3:DeleteObject` (retention, purges, re-encryption, probes), plus `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` for large uploads. A credential rotation refuses a key that cannot write, read, list or delete. With object lock or versioning, deletions keep a version: size the bucket's lifecycle rules accordingly. Add a lifecycle rule that aborts incomplete multipart uploads after a day (`AbortIncompleteMultipartUpload`): a failed upload is aborted when the storage answers, but a backup cut off by a crash, a SIGKILL or a storage outage longer than the 30-second abort window leaves its uploaded parts behind; they are not an object and no backup refers to them, but they are billed until removed ([fault-injection tests](testing.md#fault-injection-suite)). Example AWS policy:
 
 ```json
 {
@@ -228,6 +300,17 @@ Give MongoRescue a key limited to its bucket and prefix, with only the actions i
 ```
 
 Use a separate key per installation, so revoking one never stops another.
+
+#### Copy targets in another account
+
+A copy only protects against a leaked key or a compromised account if that key or account cannot reach it. Put every copy target in **another account** (AWS account, Cloudflare account, MinIO tenant) than the primary, with **its own key** that MongoRescue alone holds:
+
+1. Create the copy bucket in the second account, in another region than the primary, with **Object Lock (compliance mode) and versioning** enabled at creation.
+2. Create a user (or role) in that account whose policy allows only what copies need on that bucket and prefix: `s3:PutObject`, `s3:GetObject` and `s3:ListBucket` (copies, verification, restores and drills), `s3:DeleteObject` (the purge, which Object Lock holds back until the retention ends), `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` (large copies), plus `s3:GetBucketObjectLockConfiguration`, `s3:GetBucketVersioning`, `s3:PutObjectRetention` (and `s3:PutObjectLegalHold` with *legal hold on pin*) for Object Lock, and `s3:GetBucketLocation` so the target's region is detected. Never give it `s3:BypassGovernanceRetention`, `s3:PutBucketObjectLockConfiguration` or `s3:DeleteBucket`.
+3. Do not reuse the primary's access key, and do not rely on the default credentials (instance profile, environment) for both: two targets without keys on one endpoint share the process's credentials.
+4. Keep the second account's root and administrator credentials out of the place that runs MongoRescue, and out of region A.
+
+The readiness report checks the part it can see: `dr_same_credentials` warns when every copy of a job uses the primary's access key ID, both use the default credentials on the same endpoint, or both are on the same Cloudflare R2 account (the account is part of the endpoint). It cannot see AWS account IDs or role trust, so a different key in the same account passes the check: the account split is yours to keep.
 
 ## Container images
 

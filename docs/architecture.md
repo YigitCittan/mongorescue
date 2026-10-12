@@ -79,6 +79,7 @@ flowchart TB
 | `internal/auth/oidc` | OpenID Connect protocol glue on `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`: discovery, PKCE and nonce, code exchange, ID token verification (RS256/ES256, `azp`, `iat`, `nbf`), claim extraction; no HTTP handlers. `oidctest` is the fake provider of the tests |
 | `internal/operations` | Backup, job-run and restore use cases shared by the REST API and the MCP server: validation, safe-clone and in-place rules, restore preflights and post-restore verification (behind a `RestoreInspector` port), background runs, records and events; read models (`Status`, `Stats`) |
 | `internal/runs` | The run `Manager` (background runs under the application lifecycle, per-database concurrency keys) and the run `Registry` (active runs: cancellation with who and why, live progress, their log files) |
+| `internal/diskguard` | The data directory's space guard ([production.md](production.md#disk-space)): the pre-run free-space check (an admission check of the run `Manager`), disk-full episodes (`system.disk_full`, the `data_dir_full` warning, runs refused until space is freed), and the final save of backup records, which fails a backup whose record cannot be saved and retries the save later |
 | `internal/runlog` | Per-run log files under `<data_dir>/logs`: redacted, bounded lines streamed to disk, capped at 5 MiB with head and tail kept; tail reads and pruning |
 | `internal/audit` | The activity log of API keys (MCP calls, REST requests): argument redaction, coalescing of repeated calls, pruning, listing |
 | `internal/auditlog` | The audit log of every action ([audit.md](audit.md)): hash chain and canonical encoding, verification, retention with the chain anchor, JSON Lines export and webhook forwarding |
@@ -100,7 +101,7 @@ flowchart TB
 | `internal/events` | Domain events emitted when backups and restores finish, and the in-process event bus |
 | `internal/throttle` | A context-aware token-bucket reader with an injectable clock; the backup engine caps the upload stream with it (`max_upload_mbps`, [production.md](production.md#throttling)) |
 | `internal/heartbeat` | Outbound heartbeat pings to a dead-man's switch ([monitoring.md](monitoring.md)): the global ping every `monitoring.heartbeat_interval` while the scheduler is healthy, and per job `<url>/start`, `<url>` and `<url>/fail` (nothing after the start of a cancelled or interrupted run) as a `scheduler.RunObserver`; fire-and-forget, retried, in order per job, through the guarded notification HTTP client, never logging a URL |
-| `internal/notify` | Notification channels (webhook, Telegram, SMTP, Twilio), rules, and the asynchronous delivery dispatcher |
+| `internal/notify` | Notification channels (webhook, Telegram, SMTP, Twilio), rules, and the asynchronous delivery dispatcher, which stores every delivery in the durable outbox (`notification_outbox`, in `internal/store`) before it is sent: at least once, in order per channel, retried across restarts |
 | `internal/metrics` | Prometheus metrics on a dedicated registry |
 | `internal/server` | REST API, authentication, scope (route → scope table) and CORS middleware, the `/mcp` mount with its Origin and Host checks, embedded dashboard serving |
 | `internal/redact` | Dependency-free helpers that scrub credentials from URIs and free text |
@@ -200,7 +201,7 @@ type Storage interface {
 
 When a backup or restore finishes, the scheduler or API server publishes a domain event to an in-process bus (`internal/events`). `Publish` never blocks: if the bus queue is full the event is dropped and counted in `mongorescue_events_dropped_total`. Two subscribers consume events:
 
-- `internal/notify` matches events against rules and enqueues deliveries into its own bounded queue served by a fixed worker pool, with a 10 second per-attempt timeout and exponential-backoff retries.
+- `internal/notify` matches events against rules and stores one delivery per channel in the durable outbox (`notification_outbox`) in one transaction; a dispatcher hands the oldest due delivery of each channel to a fixed worker pool (10 second per-attempt timeout, exponential-backoff retries, then rounds rescheduled in the outbox), and removes it once delivered or given up. Deliveries left by a crash are sent at the next start; only the few milliseconds between an action and its event reaching the outbox through the bus are not covered.
 - `internal/metrics` updates Prometheus counters, histograms and gauges.
 
 Both are started and stopped by `internal/app` with the rest of the process, so no goroutine outlives shutdown.

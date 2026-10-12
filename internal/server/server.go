@@ -23,6 +23,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
@@ -479,6 +480,9 @@ type jobRequest struct {
 	RetentionDays  *int  `json:"retention_days"`
 	RetentionCount *int  `json:"retention_count"`
 	Gzip           *bool `json:"gzip"`
+	// RequireLockedCopies, when omitted, keeps an existing job's policy and takes
+	// the security.require_locked_copies setting for a new job.
+	RequireLockedCopies *bool `json:"require_locked_copies"`
 }
 
 func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
@@ -544,10 +548,25 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	switch {
+	case req.RequireLockedCopies != nil:
+		job.RequireLockedCopies = *req.RequireLockedCopies
+	case existing != nil:
+		job.RequireLockedCopies = existing.RequireLockedCopies
+	default:
+		job.RequireLockedCopies = s.currentSettings().Security.RequireLockedCopies
+	}
 	// Known databases are server-managed: never taken from the client.
 	operations.CarryKnownDatabases(&job, existing)
 	if err := s.ops.ValidateJob(r.Context(), &job); err != nil {
 		s.writeJobError(w, err)
+		return
+	}
+	// Turning require_locked_copies off is refused while the setting is on, and
+	// stored later (after the delete grace period) otherwise.
+	lockedHold, lockedErr := s.ops.HoldLockedCopies(r.Context(), existing, &job)
+	if lockedErr != nil {
+		s.writeJobError(w, lockedErr)
 		return
 	}
 	// A shorter retention is stored later, after the delete grace period.
@@ -595,6 +614,10 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	changed := existing != nil && (job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount)
 	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
 	if holdErr != nil {
+		s.writeOperationError(w, holdErr)
+		return
+	}
+	if holdErr = s.ops.ApplyLockedCopiesHold(r.Context(), lockedHold, job.ID, prot); holdErr != nil {
 		s.writeOperationError(w, holdErr)
 		return
 	}
@@ -735,6 +758,10 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	if errors.As(err, &preflight) {
 		writeErrorData(w, http.StatusConflict, err.Error(), preflight.Result)
 		return
+	}
+	// A run refused for space (503) may be retried once the guard looks again.
+	if errors.Is(err, diskguard.ErrLowSpace) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(diskguard.DefaultPollInterval.Seconds())))
 	}
 	// A destructive action that waits for a second administrator answers 202.
 	if writeApprovalPending(w, err) {

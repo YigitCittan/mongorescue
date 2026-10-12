@@ -117,6 +117,9 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 		c.VersionID, c.RetainUntil = saved.VersionID, saved.RetainUntil
 	}
 	if err := w.svc.cfg.Repo.CommitChunk(ctx, c); err != nil {
+		if w.svc.cfg.OnWriteError != nil {
+			w.svc.cfg.OnWriteError(ctx, err)
+		}
 		w.removeObject(ctx, driver, key)
 		return nil, 0, fmt.Errorf("commit the chunk: %w", err)
 	}

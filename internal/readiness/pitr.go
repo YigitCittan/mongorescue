@@ -3,6 +3,8 @@ package readiness
 import (
 	"context"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 // PITR reasons. A stream's reasons also apply to every row of its connection.
@@ -65,6 +67,11 @@ type StreamInfo struct {
 	Broken bool `json:"broken"`
 	// ChainTestFailed reports that the newest chain test failed.
 	ChainTestFailed bool `json:"chain_test_failed,omitempty"`
+	// RTO estimates how long a point-in-time restore of the whole instance to the
+	// newest point of the current window takes: the newest eligible base plus the
+	// oplog after it, at the rates measured on the stream's recent restores and
+	// chain tests (default rates without any); nil without an open window.
+	RTO *models.PITREstimate `json:"rto,omitempty"`
 }
 
 // StreamRow is the readiness of one PITR stream.

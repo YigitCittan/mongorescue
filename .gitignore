@@ -97,3 +97,6 @@ node_modules/
 .yarn/
 .parcel-cache/
 .vite/
+
+# Fault-injection and load test reports (scripts/test-chaos-docker.sh)
+/chaos-report/

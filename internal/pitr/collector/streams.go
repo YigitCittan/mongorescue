@@ -75,6 +75,9 @@ type StreamRequest struct {
 	ChainTestCron *string `json:"chain_test_cron,omitempty"`
 	// ChainTestConnectionID is where chain tests restore; "" means the stream's own.
 	ChainTestConnectionID *string `json:"chain_test_connection_id,omitempty"`
+	// CopyTargets replaces the storage targets the stream's chunks and base
+	// backups are copied to (an empty list removes them).
+	CopyTargets *[]string `json:"copy_targets,omitempty"`
 }
 
 // invalidf returns an ErrInvalid error with a message.
@@ -113,6 +116,9 @@ func (req StreamRequest) apply(st *pitr.Stream) {
 	}
 	if req.ChainTestConnectionID != nil {
 		st.ChainTestConnectionID = strings.TrimSpace(*req.ChainTestConnectionID)
+	}
+	if req.CopyTargets != nil {
+		st.CopyTargets = slices.Clone(*req.CopyTargets)
 	}
 }
 
@@ -166,16 +172,40 @@ func (s *Service) checkCollectable(ctx context.Context, connectionID string) (st
 	return in.Window.ReplicaSet, nil
 }
 
-// resolveTarget resolves the stream's storage target.
+// resolveTarget resolves the stream's storage target and copy targets: at most
+// models.MaxCopyTargets distinct targets other than the primary, each accepted by
+// Config.CheckCopyTarget (locked copies).
 func (s *Service) resolveTarget(ctx context.Context, st *pitr.Stream) error {
-	if s.cfg.ResolveTarget == nil {
-		return nil
+	if s.cfg.ResolveTarget != nil {
+		id, err := s.cfg.ResolveTarget(ctx, st.TargetID)
+		if err != nil {
+			return fmt.Errorf("%w: storage target %q: %s", ErrInvalid, st.TargetID, redact.Text(err.Error()))
+		}
+		st.TargetID = id
 	}
-	id, err := s.cfg.ResolveTarget(ctx, st.TargetID)
+	ids, err := models.NormalizeCopyTargets(st.CopyTargets, st.TargetID)
 	if err != nil {
-		return fmt.Errorf("%w: storage target %q: %s", ErrInvalid, st.TargetID, redact.Text(err.Error()))
+		return fmt.Errorf("%w: copy_targets: %w", ErrInvalid, err)
 	}
-	st.TargetID = id
+	st.CopyTargets = nil
+	for _, id := range ids {
+		if s.cfg.ResolveTarget != nil {
+			resolved, resolveErr := s.cfg.ResolveTarget(ctx, id)
+			if resolveErr != nil {
+				return fmt.Errorf("%w: copy target %q: %s", ErrInvalid, id, redact.Text(resolveErr.Error()))
+			}
+			id = resolved
+		}
+		if id == st.TargetID || slices.Contains(st.CopyTargets, id) {
+			return invalidf("copy_targets must name distinct storage targets other than target_id")
+		}
+		if s.cfg.CheckCopyTarget != nil {
+			if checkErr := s.cfg.CheckCopyTarget(ctx, id); checkErr != nil {
+				return fmt.Errorf("%w: %w", ErrInvalid, checkErr)
+			}
+		}
+		st.CopyTargets = append(st.CopyTargets, id)
+	}
 	return nil
 }
 
@@ -225,7 +255,7 @@ func (s *Service) UpdateStream(ctx context.Context, id string, req StreamRequest
 	if err := s.validate(st); err != nil {
 		return nil, err
 	}
-	if req.TargetID != nil {
+	if req.TargetID != nil || req.CopyTargets != nil {
 		if err := s.resolveTarget(ctx, st); err != nil {
 			return nil, err
 		}

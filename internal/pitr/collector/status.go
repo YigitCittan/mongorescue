@@ -78,8 +78,6 @@ type StreamStatus struct {
 	// ChainBreaks counts the chains that ended in a gap, a replica set change or a
 	// divergence.
 	ChainBreaks int `json:"chain_breaks"`
-	// Experimental is always true: the stream API may still change.
-	Experimental bool `json:"experimental"`
 }
 
 // eligibleBase reports whether b can start a point-in-time restore.
@@ -93,7 +91,7 @@ func (s *Service) Status(ctx context.Context, id string) (*StreamStatus, error) 
 	if err != nil {
 		return nil, err
 	}
-	out := &StreamStatus{Stream: st, Windows: []Window{}, Chains: []ChainStatus{}, Bases: []BaseStatus{}, Experimental: true}
+	out := &StreamStatus{Stream: st, Windows: []Window{}, Chains: []ChainStatus{}, Bases: []BaseStatus{}}
 	state, err := s.cfg.Repo.LoadState(ctx, id)
 	switch {
 	case err == nil:

@@ -269,3 +269,17 @@ func TestStorageTargetEndpointsAndPerTargetBackups(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// TestStorageTargetOverlapIsConflict pins the documented 409 for a target created on
+// or inside the location of another. The chaos suite got 500 "internal error" for a
+// target inside the default "Local disk" target's directory.
+func TestStorageTargetOverlapIsConflict(t *testing.T) {
+	f := newTargetsFixture(t)
+	a := f.createLocal(t, "disk a", filepath.Join(f.base, "a"))
+	for _, path := range []string{a.Local.Path, filepath.Join(a.Local.Path, "nested")} {
+		rec := f.do("POST", "/api/v1/storage-targets", map[string]any{"name": "overlap", "type": "local", "local": map[string]string{"path": path}})
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "overlaps") {
+			t.Fatalf("target at %s: %d %s; want 409 naming the overlap", path, rec.Code, rec.Body)
+		}
+	}
+}

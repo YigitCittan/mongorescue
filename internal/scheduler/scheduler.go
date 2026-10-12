@@ -13,6 +13,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
+	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -108,21 +109,29 @@ type Scheduler struct {
 	// clock reading, so a wall clock step (NTP, a resumed VM) never makes a fresh
 	// tick look stale; see LastTick and Stale.
 	lastTick atomic.Pointer[time.Time]
+	// tickEvery is the liveness tick interval (0 means TickInterval; lowered by
+	// tests), and liveness tracks the goroutine that ticks.
+	tickEvery time.Duration
+	liveness  sync.WaitGroup
+	// lastTrigger is the latest cron trigger of each job (guarded by mu), with its
+	// monotonic clock reading; see repeatedTrigger.
+	lastTrigger map[string]time.Time
 	// observer is told when job runs start and finish (see RunObserver).
 	observer RunObserver
+	// diskGuard settles the backups whose final record cannot be saved (see
+	// WithDiskGuard).
+	diskGuard *diskguard.Guard
 }
 
 // TickInterval is how often a running scheduler records a liveness tick (see
-// LastTick). The tick runs on the cron runner and takes the scheduler's lock, so a
-// hung runner or a deadlocked scheduler stops it.
+// LastTick). The tick runs on a monotonic time.Ticker, not on the wall-clock cron,
+// so a wall clock step (NTP, a resumed VM) never delays it; it takes the
+// scheduler's lock, so a deadlocked scheduler stops it.
 const TickInterval = 30 * time.Second
 
 // StaleAfter is how old the last tick may be before the scheduler counts as stale
 // (three missed ticks).
 const StaleAfter = 3 * TickInterval
-
-// tickSchedule is the cron schedule of the liveness tick (TickInterval).
-const tickSchedule = "@every 30s"
 
 // RunObserver is told when a job run starts and when it finishes (the run's status
 // is final then: ok, partial, failed or cancelled). It sees the job as the run read
@@ -141,6 +150,13 @@ type RunObserver interface {
 // WithRunObserver tells o about every job run, scheduled or on demand.
 func WithRunObserver(o RunObserver) Option {
 	return func(s *Scheduler) { s.observer = o }
+}
+
+// WithDiskGuard makes g settle a backup whose final record cannot be saved (a
+// full data directory) as failed and retry its save once writes work again.
+// Without it the save is only retried briefly.
+func WithDiskGuard(g *diskguard.Guard) Option {
+	return func(s *Scheduler) { s.diskGuard = g }
 }
 
 // runStarted tells the observer that run of job started.
@@ -169,9 +185,9 @@ func (s *Scheduler) LastTick() time.Time {
 }
 
 // Stale reports whether the scheduler was started and its last tick is older than
-// StaleAfter: its cron runner is hung, it is deadlocked or it was stopped. The age
-// is measured with the monotonic clock (time.Since), so changes of the wall clock
-// do not count.
+// StaleAfter: it is deadlocked (the tick cannot take its lock) or it was stopped.
+// The age is measured with the monotonic clock (time.Since), so changes of the wall
+// clock do not count.
 func (s *Scheduler) Stale() bool {
 	last := s.LastTick()
 	return !last.IsZero() && time.Since(last) > StaleAfter
@@ -181,6 +197,26 @@ func (s *Scheduler) Stale() bool {
 func (s *Scheduler) recordTick() {
 	now := time.Now()
 	s.lastTick.Store(&now)
+}
+
+// runLiveness ticks every tickEvery on a monotonic time.Ticker until ctx (the
+// scheduler's run context, cancelled by Stop) ends. Stop waits for it.
+func (s *Scheduler) runLiveness(ctx context.Context) {
+	defer s.liveness.Done()
+	every := s.tickEvery
+	if every <= 0 {
+		every = TickInterval
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.tick()
+		}
+	}
 }
 
 // tick records a liveness tick. It takes s.mu, so a scheduler whose lock is held
@@ -269,6 +305,7 @@ func NewScheduler(
 		storageDriver: storageDriver,
 		logger:        logger,
 		entries:       make(map[string]cron.EntryID),
+		lastTrigger:   make(map[string]time.Time),
 		ctx:           ctx,
 		cancel:        cancel,
 		retryFirst:    loadRetryFirst,
@@ -335,9 +372,8 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	// The liveness tick read by the health check and the heartbeat.
 	s.recordTick()
-	if _, err := s.cron.AddFunc(tickSchedule, s.tick); err != nil {
-		s.logger.Error("failed to schedule the scheduler liveness tick", slog.Any("error", err))
-	}
+	s.liveness.Add(1)
+	go s.runLiveness(runCtx)
 	// Deleted backups are purged once their grace period ends, and pending changes
 	// that lower a protection are applied once they are due.
 	if _, err := s.cron.AddFunc(maintenanceSchedule, s.runMaintenance); err != nil {
@@ -447,6 +483,7 @@ func (s *Scheduler) Stop() {
 
 	ctx := s.cron.Stop()
 	<-ctx.Done()
+	s.liveness.Wait()
 	s.loader.Wait()
 	s.inflight.Wait()
 	s.logger.Info("backup scheduler stopped")
@@ -534,7 +571,7 @@ func (s *Scheduler) registerJobLocked(job *models.Job) error {
 
 	jobID := job.ID
 	entryID, err := s.cron.AddFunc(job.CronExpression, func() {
-		s.runScheduled(jobID)
+		s.cronFire(jobID)
 	})
 	if err != nil {
 		return fmt.Errorf("invalid cron expression %q: %w", job.CronExpression, err)
@@ -570,6 +607,8 @@ func (s *Scheduler) UnregisterJob(jobID string) {
 	defer s.mu.Unlock()
 
 	s.changes++
+	// A job registered again checks its first trigger against its run history.
+	delete(s.lastTrigger, jobID)
 	if entryID, exists := s.entries[jobID]; exists {
 		s.cron.Remove(entryID)
 		delete(s.entries, jobID)
@@ -712,6 +751,12 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	// A multi-database run takes the run lock of each database itself.
 	if s.guard != nil && !job.MultiDatabase() {
 		release, err := s.guard(job.ConnectionID, job.Database)
+		if errors.Is(err, diskguard.ErrLowSpace) {
+			// Not enough space for the metadata: the run fails, so its alerts fire.
+			s.logger.Error("scheduled backup not started", slog.String("job_id", job.ID), logsafe.Error(err))
+			_, _ = s.finishJobRun(ctx, job, s.newScheduledRun(job), nil, err, true)
+			return
+		}
 		if err != nil {
 			s.logger.Warn("skipping scheduled backup: another backup of this database is running",
 				slog.String("job_id", job.ID),
@@ -820,6 +865,7 @@ func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, can
 	record := plan.First()
 	opts := plan.options[0]
 	if saveErr := s.metadataStore.SaveBackupRecord(ctx, record); saveErr != nil {
+		s.diskGuard.Observe(ctx, saveErr)
 		s.logger.Warn("failed to record the scheduled backup as in progress",
 			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
 	}
@@ -853,6 +899,17 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 
 	s.recordRunTimes(persistCtx, job)
 
+	// Persist the backup record before the run: a record that cannot be saved
+	// makes the run fail (diskguard.Guard.FinishBackup), so neither the run, its
+	// observer (heartbeat) nor the event reports a success the metadata lacks.
+	var saveErr error
+	if record != nil {
+		if run != nil {
+			record.RunID = run.ID
+		}
+		saveErr = s.diskGuard.FinishBackup(persistCtx, record, s.metadataStore.SaveBackupRecord, s.logger, s.registry.Get(record.ID))
+	}
+
 	if run != nil {
 		switch {
 		case record != nil:
@@ -872,18 +929,6 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 		s.runFinished(ctx, job, run)
 	}
 
-	// Persist the backup record last: once a client sees the final status, the
-	// job's run timestamps are already stored.
-	if record != nil {
-		if saveErr := s.metadataStore.SaveBackupRecord(persistCtx, record); saveErr != nil {
-			s.logger.Error("failed to persist backup record",
-				logsafe.Attr("job_id", job.ID),
-				logsafe.Attr("backup_id", record.ID),
-				logsafe.Error(saveErr),
-			)
-		}
-	}
-
 	// Emit the outcome once it is persisted; publishing is non-blocking by contract.
 	if s.publisher != nil {
 		e := events.BackupEvent(record, err, job.ID, job.Database)
@@ -891,11 +936,14 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 			e.RunID, e.Run = run.ID, events.RunSummaryOf(run, false)
 		}
 		s.publisher.Publish(persistCtx, e)
-		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok {
+		if ve, ok := events.VerificationEvent(record, events.VerificationAfterUpload); ok && saveErr == nil {
 			s.publisher.Publish(persistCtx, ve)
 		}
 	}
 
+	if err == nil && saveErr != nil {
+		err = saveErr
+	}
 	if err != nil {
 		s.logger.Error("backup job execution failed",
 			logsafe.Attr("job_id", job.ID),
