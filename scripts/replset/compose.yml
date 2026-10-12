@@ -10,9 +10,16 @@ x-member: &member
   image: ${MONGO_IMAGE:-mongo:8.0}
   entrypoint: ["bash", "-c"]
   # $$ escapes compose interpolation: RS_KEY is expanded inside the container.
+  # The scenarios restart killed members (docker start), so the key file of the
+  # previous run is still there, owned by mongodb. Hosts with
+  # fs.protected_regular (Ubuntu, so GitHub's runners) refuse even root an
+  # O_CREAT open of a file it does not own in the sticky /tmp: the redirection
+  # would fail with "Permission denied" and the member would not come back.
+  # Removing the file first is allowed (root owns /tmp).
   command:
     - |
       set -e
+      rm -f /tmp/rs.key
       printf '%s' "$$RS_KEY" > /tmp/rs.key
       chmod 400 /tmp/rs.key
       chown mongodb:mongodb /tmp/rs.key
