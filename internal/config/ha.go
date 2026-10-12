@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/ha"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
 // Bootstrap environment variables of active-passive high availability (see
@@ -183,6 +184,15 @@ func ParseHATarget(v string) (HATarget, error) {
 			return HATarget{}, fmt.Errorf("%w: s3:// needs a bucket, as in s3://bucket/prefix", ErrInvalidHA)
 		}
 		q := u.Query()
+		for k := range q {
+			switch k {
+			case "endpoint", "region", "path_style":
+			default:
+				// Never accept anything else: a credential put in the URL would end up
+				// in process listings and logs.
+				return HATarget{}, fmt.Errorf("%w: unsupported query parameter %q in the storage location (endpoint, region and path_style only; credentials come from the AWS default chain)", ErrInvalidHA, k)
+			}
+		}
 		t := HATarget{Scheme: "s3", Bucket: u.Host, Prefix: strings.Trim(u.Path, "/"), Endpoint: q.Get("endpoint"), Region: q.Get("region")}
 		if ps := q.Get("path_style"); ps != "" {
 			t.PathStyle = ps == "true" || ps == "1"
@@ -191,6 +201,9 @@ func ParseHATarget(v string) (HATarget, error) {
 			eu, perr := url.Parse(t.Endpoint)
 			if perr != nil || (eu.Scheme != "http" && eu.Scheme != "https") || eu.Host == "" {
 				return HATarget{}, fmt.Errorf("%w: the endpoint must be an http(s) URL", ErrInvalidHA)
+			}
+			if eu.User != nil || eu.RawQuery != "" || eu.Fragment != "" {
+				return HATarget{}, fmt.Errorf("%w: the endpoint must not contain credentials, a query or a fragment; credentials come from the AWS default chain", ErrInvalidHA)
 			}
 		}
 		return t, nil
@@ -205,4 +218,34 @@ func ParseHATarget(v string) (HATarget, error) {
 		return HATarget{Scheme: "file", Path: filepath.Clean(filepath.FromSlash(u.Path))}, nil
 	}
 	return HATarget{}, fmt.Errorf("%w: unsupported storage location scheme %q (s3 or file)", ErrInvalidHA, u.Scheme)
+}
+
+// String returns a label of the target that is safe to log: the target reference,
+// or the location without anything but its bucket, prefix and endpoint host.
+func (t HATarget) String() string {
+	switch t.Scheme {
+	case "s3":
+		label := "s3://" + t.Bucket
+		if t.Prefix != "" {
+			label += "/" + t.Prefix
+		}
+		if eu, err := url.Parse(t.Endpoint); err == nil && eu.Host != "" {
+			label += " (endpoint " + eu.Scheme + "://" + eu.Host + ")"
+		}
+		return label
+	case "file":
+		return "file://" + filepath.ToSlash(t.Path)
+	}
+	return redact.Text(t.Ref)
+}
+
+// HATargetLabel returns a label of an EnvHATarget value that is safe for errors and
+// logs: the parsed target's String, or, for a value that does not parse, the value
+// without its query and with credentials masked (internal/redact).
+func HATargetLabel(v string) string {
+	if t, err := ParseHATarget(v); err == nil {
+		return t.String()
+	}
+	v, _, _ = strings.Cut(strings.TrimSpace(v), "?")
+	return redact.Text(v)
 }

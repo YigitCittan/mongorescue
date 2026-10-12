@@ -278,11 +278,11 @@ func (s *haSupervisor) run(ctx context.Context) error {
 func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	st, err := s.haStorage(ctx, app)
 	if err != nil {
-		return fmt.Errorf("HA target %q: %w", s.cfg.HA.Target, err)
+		return fmt.Errorf("HA target %s: %w", config.HATargetLabel(s.cfg.HA.Target), err)
 	}
 	ls, err := storage.AsLeaseStore(st)
 	if err != nil {
-		return fmt.Errorf("HA target %q: %w", s.cfg.HA.Target, err)
+		return fmt.Errorf("HA target %s: %w", config.HATargetLabel(s.cfg.HA.Target), err)
 	}
 	probeKey := ha.ProbeKey(s.cfg.HA.Cluster, s.rt.state.InstanceID)
 	probeCtx, cancel := context.WithTimeout(ctx, haProbeTimeout)
@@ -295,7 +295,7 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 		if errors.Is(err, storage.ErrConditionalWritesUnsupported) {
 			return fmt.Errorf("the HA target does not enforce conditional writes (If-None-Match/If-Match), so the lease would not be safe; use AWS S3, MinIO or another storage that does: %w", err)
 		}
-		return fmt.Errorf("HA target %q: %w", s.cfg.HA.Target, err)
+		return fmt.Errorf("HA target %s: %w", config.HATargetLabel(s.cfg.HA.Target), err)
 	}
 	keyID, err := metabackup.InstallID(app.haKey)
 	if err != nil {
