@@ -32,6 +32,12 @@ import (
 // cronFire is the cron callback of job jobID: it skips a repeated trigger (see
 // repeatedTrigger) and runs the job otherwise.
 func (s *Scheduler) cronFire(jobID string) {
+	s.mu.Lock()
+	ctx := s.ctx
+	s.mu.Unlock()
+	if !s.fenceAllows(ctx, "scheduled backup") {
+		return
+	}
 	if s.repeatedTrigger(jobID) {
 		return
 	}

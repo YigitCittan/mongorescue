@@ -121,6 +121,14 @@ func (rt *haRuntime) Check() error {
 	return m.Check()
 }
 
+// Renew implements models.FenceRenewer: one lease step now, then Check.
+func (rt *haRuntime) Renew(ctx context.Context) error {
+	if m := rt.mgr(); m != nil {
+		m.Step(ctx)
+	}
+	return rt.Check()
+}
+
 // Epoch implements models.Fence.
 func (rt *haRuntime) Epoch() uint64 {
 	if m := rt.mgr(); m != nil {

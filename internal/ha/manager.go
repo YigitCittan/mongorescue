@@ -106,10 +106,12 @@ type Manager struct {
 	mu   sync.RWMutex
 	role Role
 	// lease and version are the lease this instance holds (active) and its
-	// version; sentAt is when the last successful write of it was sent.
-	lease   Lease
-	version string
-	sentAt  time.Time
+	// version; sentAt is when the last successful write of it was sent, on the
+	// monotonic clock, and sentWall the same moment on the wall clock.
+	lease    Lease
+	version  string
+	sentAt   time.Time
+	sentWall time.Time
 	// seen, seenVersion and seenAt are the lease as last read, its version and
 	// when that version was first observed; seenEpoch is the highest epoch seen or
 	// held.
@@ -186,14 +188,24 @@ func (m *Manager) deadlineLocked() time.Time {
 	return m.sentAt.Add(m.cfg.TTL - m.cfg.Renew)
 }
 
+// wallNow returns the wall clock without its monotonic reading.
+func (m *Manager) wallNow() time.Time { return m.cfg.Wall().Round(0) }
+
+// expiredLocked reports whether the step-down deadline has passed on either clock:
+// the monotonic one, or the wall clock, which keeps running while the machine is
+// suspended (a laptop lid, a paused VM) when the monotonic clock may not.
+func (m *Manager) expiredLocked(now, wall time.Time) bool {
+	return !now.Before(m.deadlineLocked()) || wall.Sub(m.sentWall) >= m.cfg.TTL-m.cfg.Renew
+}
+
 // Check returns nil while this instance holds the lease, and ErrNotActive
-// otherwise. It reads the clock itself, so it fails at the step-down deadline even
-// when Run is stuck in a storage call. Runs call it before they start and before
-// they are marked completed.
+// otherwise. It reads the clocks itself, so it fails at the step-down deadline even
+// when Run is stuck in a storage call, and after a suspend that only the wall clock
+// saw. Runs call it before they start and before they are marked completed.
 func (m *Manager) Check() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.role != RoleActive || !m.cfg.Now().Before(m.deadlineLocked()) {
+	if m.role != RoleActive || m.expiredLocked(m.cfg.Now(), m.wallNow()) {
 		return ErrNotActive
 	}
 	return nil
@@ -234,7 +246,8 @@ func (m *Manager) untilNextStep() time.Duration {
 	defer m.mu.RUnlock()
 	wait := m.cfg.Renew
 	if m.role == RoleActive {
-		wait = min(wait, max(m.deadlineLocked().Sub(m.cfg.Now()), 0))
+		wait = min(wait, max(m.deadlineLocked().Sub(m.cfg.Now()), 0),
+			max(m.sentWall.Add(m.cfg.TTL-m.cfg.Renew).Sub(m.wallNow()), 0))
 	}
 	return wait
 }
@@ -257,11 +270,12 @@ func (m *Manager) Step(ctx context.Context) {
 // renew renews the held lease, or steps down when it cannot be sure it still holds
 // it.
 func (m *Manager) renew(ctx context.Context) {
-	now := m.cfg.Now()
+	now, wall := m.cfg.Now(), m.wallNow()
 	m.mu.RLock()
 	deadline, next, version := m.deadlineLocked(), m.lease, m.version
+	expired := m.expiredLocked(now, wall)
 	m.mu.RUnlock()
-	if !now.Before(deadline) {
+	if expired {
 		m.stepDown("the lease was not renewed in time", true)
 		return
 	}
@@ -279,7 +293,7 @@ func (m *Manager) renew(ctx context.Context) {
 	switch {
 	case err == nil:
 		m.mu.Lock()
-		m.lease, m.version, m.sentAt = next, newVersion, now
+		m.lease, m.version, m.sentAt, m.sentWall = next, newVersion, now, wall
 		m.healthy, m.lastErr = true, ""
 		m.mu.Unlock()
 	case errors.Is(err, storage.ErrPreconditionFailed):
@@ -287,7 +301,10 @@ func (m *Manager) renew(ctx context.Context) {
 		m.stepDown("another instance wrote the lease", true)
 	default:
 		m.recordError(err)
-		if !m.cfg.Now().Before(deadline) {
+		m.mu.RLock()
+		expired = m.expiredLocked(m.cfg.Now(), m.wallNow())
+		m.mu.RUnlock()
+		if expired {
 			m.stepDown("the lease storage did not answer in time", true)
 		}
 	}
@@ -368,7 +385,7 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 		m.recordError(err)
 		return
 	}
-	sent := m.cfg.Now()
+	sent, sentWall := m.cfg.Now(), m.wallNow()
 	rctx, cancel := context.WithTimeout(ctx, m.cfg.Renew)
 	var newVersion string
 	if prev == nil {
@@ -386,7 +403,7 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 		return
 	}
 	m.mu.Lock()
-	m.role, m.lease, m.version, m.sentAt = RoleActive, next, newVersion, sent
+	m.role, m.lease, m.version, m.sentAt, m.sentWall = RoleActive, next, newVersion, sent, sentWall
 	m.seen, m.seenVersion, m.seenAt, m.seenEpoch = next, newVersion, sent, epoch
 	m.healthy, m.lastErr = true, ""
 	m.takeovers++
@@ -467,7 +484,7 @@ func (m *Manager) releaseLocked(ctx context.Context) error {
 		return fmt.Errorf("ha: release the lease: %w", err)
 	}
 	m.mu.Lock()
-	m.lease, m.version, m.sentAt = next, newVersion, m.cfg.Now()
+	m.lease, m.version, m.sentAt, m.sentWall = next, newVersion, m.cfg.Now(), m.wallNow()
 	m.mu.Unlock()
 	return nil
 }

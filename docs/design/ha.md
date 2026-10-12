@@ -53,7 +53,7 @@ Drivers:
 
 Every instance polls or renews every `renew` interval (default 10 s); the lease lives for `ttl` (default 30 s). `renew` must be below `ttl/2`.
 
-No instance trusts another's clock, and none reads the wall clock for a decision. Each measures time with its own monotonic clock:
+No instance trusts another's clock, and no standby reads the wall clock for a decision. Each measures time with its own monotonic clock:
 
 - **Active.** It renews with `If-Match` on the version it wrote last. The renewal's validity is measured from when the request was **sent**, since the write may take effect any time between sending and the response. If no renewal succeeds for `ttl - renew` (20 s by default), it steps down. A renewal that fails with `ErrPreconditionFailed` means someone else wrote the lease: it steps down at once. Each request is bounded by the time left, so a hung request cannot delay the step-down.
 - **Standby.** It reads the lease every `renew`. When the version (or epoch) changes, it notes the time of the observation. When a lease has not changed for `ttl` (or the lease's own `ttl_seconds`, whichever is larger) since the standby first saw its current version, the standby replaces it with `If-Match` on that version: holder itself, epoch + 1. A released lease (empty holder) is taken at once; a missing lease is created with `If-None-Match`.
@@ -66,6 +66,7 @@ Timing alone does not cover a process that is paused (GC, VM freeze, `SIGSTOP`) 
 
 - **Before a run starts** (the admission check of the run manager, which every backup, restore and PITR base backup passes) and **before a backup or restore is marked completed** (a completion guard in the engines), the active instance checks that it still holds the lease. The check is local and live: role active and the step-down deadline not reached. A fenced-off instance never starts or completes a run after it lost the lease: the run fails with `ha.ErrNotActive`.
 - **Background work checks it too, before it writes or deletes**: the PITR collector before each chunk upload and commit (and it never removes an uncommitted chunk without the lease, since the new active instance may write the same key), retention and the purge, the copy queue, and integrity sweeps, scans and restore tests.
+- **A suspend is fenced too.** The monotonic clock may stand still while a machine or VM is suspended. The active instance's check therefore also fails when its own **wall clock** shows `ttl − renew` or more since the last renewal was sent (a wall clock set back never shortens anything), and the scheduler, when the wall clock moved more than 30 seconds apart from the monotonic clock since its last fire, renews the lease (or steps down) and checks it again before anything fires.
 - **The step-down is never late.** The lease manager wakes at the step-down deadline when that comes before its next renewal, so after a renewal that fails fast the active instance stops exactly `ttl − renew` after its last successful renewal, not up to a renew interval later.
 - Records written under the lease carry `ha_epoch`.
 - Metadata snapshots carry the epoch in their key. The standby restores the snapshot with the **highest epoch**, then the newest, so a late snapshot from a fenced-off instance never wins over the current one.
@@ -137,7 +138,8 @@ A target given by ID or name must exist in the instance's own database when it s
 | Both cannot reach the storage | Active steps down; no instance is active; the `MongoRescueHANoActiveInstance` alert fires | Backups to that storage would fail anyway |
 | Network partition between the instances only | Nothing: they never talk to each other | |
 | Active process paused (GC, VM freeze, `SIGSTOP`) longer than `ttl` | Standby takes over. On resume the paused instance's fencing check fails before any run starts or completes, and its next renewal fails | A run that was uploading may still finish its upload; it is recorded as failed, and its archive stays an orphan for the next storage scan |
-| Wall clock jumps on either side | No effect: decisions use the monotonic clock | |
+| Wall clock jumps on either side | A standby ignores it. The active instance steps down when its wall clock jumped forward past the deadline (a suspend looks like that); a jump back has no effect | |
+| Active machine or VM suspended longer than `ttl − renew` | On resume the fencing check fails on the wall clock before any run starts or completes; the scheduler renews before it fires, and the instance steps down | |
 | Both instances start at once on an empty bucket | `If-None-Match: *` lets exactly one create the lease | |
 | Lease object deleted by hand | Active's renewal fails and it steps down; the standby creates a new lease with a higher epoch than any it saw | Up to `ttl + renew` without an active instance |
 | Storage provider ignores conditional headers | HA refuses to start (startup probe) | |

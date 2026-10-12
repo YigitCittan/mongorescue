@@ -21,6 +21,9 @@ const maxCatchUpFires = 100_000
 // job runs at most once. Active-passive HA calls it after a takeover; the scheduler
 // must have been started. It returns the IDs of the jobs it started.
 func (s *Scheduler) CatchUp(ctx context.Context, now time.Time) []string {
+	if !s.fenceAllows(ctx, "missed-schedule catch-up") {
+		return nil
+	}
 	jobs, err := s.metadataStore.ListJobs(ctx)
 	if err != nil {
 		s.logger.Warn("missed schedules not checked: cannot list the jobs", logsafe.Error(err))
