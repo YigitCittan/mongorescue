@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
@@ -237,6 +238,10 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 	case err != nil:
 		return PurgeOutcome{}, fmt.Errorf("load deleted backup %s: %w", rec.ID, err)
 	case !current.PurgeDue(now, grace):
+		return PurgeOutcome{}, errPurgeSkip
+	case pitr.SharedPins().Snapshot().Base(current.ID):
+		// A point-in-time restore in flight reads this PITR base: a later run purges it.
+		logger.Info("deleted backup waits for the point-in-time restore that reads it", logsafe.Attr("backup_id", current.ID))
 		return PurgeOutcome{}, errPurgeSkip
 	}
 	out := PurgeOutcome{Backup: current}

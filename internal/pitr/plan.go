@@ -26,6 +26,9 @@ var (
 	// ErrKeyMissing is returned when the base or a chunk is encrypted in a mode for
 	// which no decryption key is configured.
 	ErrKeyMissing = errors.New("pitr: no decryption key for the encryption of the range")
+	// ErrPlanStale is returned by CheckPlanLive when a chunk of a plan was deleted
+	// (by retention, for example) after the plan was made.
+	ErrPlanStale = errors.New("pitr: part of the restore plan was deleted since it was planned")
 )
 
 // Target is the moment a point-in-time restore goes back to: a wall-clock second
@@ -253,6 +256,47 @@ func planFrom(chains []*Chain, byChain map[string][]*Chunk, b Base, limit Timest
 		firstErr = fmt.Errorf("%w: no oplog chain covers base %s from its start", ErrChainBreak, b.ID)
 	}
 	return nil, firstErr
+}
+
+// CheckPlanLive returns ErrPlanStale, naming the first such chunk, unless every
+// chunk of plan is still live and committed in repo. A restore pins its plan
+// (PinSet) first and checks it then: a chunk deleted before the pin fails the
+// check, and one deleted after it keeps its object until the pin is released.
+func CheckPlanLive(ctx context.Context, repo Repository, plan *RestorePlan) error {
+	if plan == nil || len(plan.Chunks) == 0 {
+		return nil
+	}
+	// The bounds are widened by one position: an empty chunk has From equal to To.
+	first, last := plan.Chunks[0].From, plan.Chunks[len(plan.Chunks)-1].To
+	var after, until Timestamp
+	switch {
+	case first.I > 0:
+		after = Timestamp{T: first.T, I: first.I - 1}
+	case first.T > 0:
+		after = Timestamp{T: first.T - 1, I: math.MaxUint32}
+	}
+	if last.I < math.MaxUint32 {
+		until = Timestamp{T: last.T, I: last.I + 1}
+	} else if last.T < math.MaxUint32 {
+		until = Timestamp{T: last.T + 1}
+	}
+	chunks, err := repo.ListChunks(ctx, ChunkQuery{StreamID: plan.StreamID, ChainID: plan.ChainID,
+		After: after, Until: until, Status: ChunkCommitted, Live: true})
+	if err != nil {
+		return fmt.Errorf("pitr: list chunks of chain %s: %w", plan.ChainID, err)
+	}
+	live := make(map[string]bool, len(chunks))
+	for _, ch := range chunks {
+		if ch.Live() {
+			live[ch.ID] = true
+		}
+	}
+	for _, ch := range plan.Chunks {
+		if !live[ch.ID] {
+			return fmt.Errorf("%w: oplog chunk %s (%s-%s) was deleted", ErrPlanStale, ch.ID, ch.From, ch.To)
+		}
+	}
+	return nil
 }
 
 // checkKeys returns ErrKeyMissing when the base or a chunk of plan is encrypted in

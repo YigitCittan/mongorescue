@@ -264,6 +264,10 @@ type Config struct {
 	// point-in-time restores (ErrPITRUnavailable).
 	PITRStreams PITRStreamControl
 	PITRSwap    PITRSwapper
+	// PITRPins holds the pins of the point-in-time restores and chain tests in
+	// flight (see pitr.PinSet), which PITR retention and the purges honour; nil
+	// means pitr.SharedPins.
+	PITRPins *pitr.PinSet
 	// HAMode reports that the instance runs in active-passive high availability:
 	// in-place point-in-time restores are refused (ErrInPlaceHAMode), since a
 	// swap that outlasts the leader's lease could overlap the next leader's

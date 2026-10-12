@@ -76,6 +76,9 @@ func (s *Service) startPITRInPlace(ctx context.Context, req models.RestoreReques
 			Summary: fmt.Sprintf("restore databases %s of connection %s in place to %s (point in time), replacing their current data",
 				strings.Join(dbs, ", "), pp.req.TargetConnectionName, pp.run.Plan.TargetTime.Format(time.RFC3339))})
 	}
+	if pp, err = s.pinPITRPlan(ctx, pp, func() (*pitrPlan, error) { return s.planPITR(ctx, req, false) }); err != nil {
+		return nil, err
+	}
 	return s.runPITRRestore(ctx, pp, func(context.Context, *models.RestoreRecord) {})
 }
 

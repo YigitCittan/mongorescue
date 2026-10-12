@@ -49,6 +49,14 @@ type RetentionPlan struct {
 // base may still be running). Superseded chunks are deleted. OplogMaxDays, when
 // set, also deletes the chunks that end more than that many days ago.
 func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord, chains []*pitr.Chain, chunks map[string][]*pitr.Chunk) RetentionPlan {
+	return planRetention(now, st, bases, chains, chunks, pitr.PinSnapshot{})
+}
+
+// planRetention is PlanRetention that also keeps what pins names: a pinned base
+// counts as kept (so the chunks from its T_before stay too) and a pinned chunk is
+// never deleted.
+func planRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord, chains []*pitr.Chain,
+	chunks map[string][]*pitr.Chunk, pins pitr.PinSnapshot) RetentionPlan {
 	plan := RetentionPlan{DeleteBases: []string{}, DeleteChunks: []string{}}
 	segs := map[string][]Segment{}
 	for _, c := range chains {
@@ -78,7 +86,7 @@ func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord,
 	}
 	keptBefore := map[string]pitr.Timestamp{} // chain -> oldest T_before of its kept eligible bases
 	for i, b := range completed {
-		keep := i < st.BaseKeepCount || b.Pinned || b.ID == newestEligible ||
+		keep := i < st.BaseKeepCount || b.Pinned || pins.Base(b.ID) || b.ID == newestEligible ||
 			(st.BaseKeepDays > 0 && now.Sub(b.StartedAt) < time.Duration(st.BaseKeepDays)*24*time.Hour)
 		if !keep {
 			plan.DeleteBases = append(plan.DeleteBases, b.ID)
@@ -97,7 +105,7 @@ func PlanRetention(now time.Time, st *pitr.Stream, bases []*models.BackupRecord,
 	for _, c := range chains {
 		cutoff, kept := keptBefore[c.ChainID]
 		for _, ch := range chunks[c.ChainID] {
-			if ch.DeletedAt != nil || ch.Status == pitr.ChunkPruned {
+			if ch.DeletedAt != nil || ch.Status == pitr.ChunkPruned || pins.Chunk(ch.ID) {
 				continue
 			}
 			del := ch.Status == pitr.ChunkSuperseded ||
@@ -136,7 +144,9 @@ func (s *Service) applyRetention(ctx context.Context) {
 // RetainStream applies the retention of stream id now (see PlanRetention) and
 // purges its deleted chunks whose grace period ended. Deleted bases and chunks keep
 // their objects until the delete grace period ends; bases are then purged with the
-// other deleted backups. It holds runs.LockDeletion("pitr:<stream>").
+// other deleted backups. The bases and chunks pinned by a point-in-time restore in
+// flight (Config.Pins) are skipped, and deleted by a later run once released. It
+// holds runs.LockDeletion("pitr:<stream>").
 func (s *Service) RetainStream(ctx context.Context, id string) error {
 	unlock, err := lockStream(ctx, id)
 	if err != nil {
@@ -151,7 +161,10 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 	if orphanErr := s.sweepOrphans(ctx, st, now); orphanErr != nil {
 		s.logger.Warn("cannot remove the orphan oplog chunks of a PITR stream", logsafe.Attr("stream_id", id), logsafe.Error(orphanErr))
 	}
-	if err = s.purgeChunks(ctx, st, now); err != nil {
+	pins := s.pinSnapshot()
+	var skipped pinSkips
+	defer func() { skipped.log(s.logger, id) }()
+	if skipped.purge, err = s.purgeChunks(ctx, st, now, pins); err != nil {
 		return err
 	}
 	if s.cfg.Bases == nil {
@@ -171,12 +184,17 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	plan := PlanRetention(now, st, bases, chains, chunks)
+	plan := planRetention(now, st, bases, chains, chunks, pins)
+	if !pins.Empty() {
+		free := PlanRetention(now, st, bases, chains, chunks)
+		skipped.bases, skipped.chunks = len(free.DeleteBases)-len(plan.DeleteBases), len(free.DeleteChunks)-len(plan.DeleteChunks)
+	}
 	purgeAfter := now.Add(s.deleteGrace())
 	if s.cfg.UpdateBase != nil {
 		for _, bid := range plan.DeleteBases {
 			_, err := s.cfg.UpdateBase(ctx, bid, func(r *models.BackupRecord) error {
-				if r.Pinned || r.Status != models.StatusCompleted {
+				// A restore may have pinned it since the snapshot.
+				if r.Pinned || r.Status != models.StatusCompleted || s.pinSet().Snapshot().Base(bid) {
 					return errBaseChanged
 				}
 				r.MarkDeleted(models.SoftDelete{At: now, PurgeAfter: purgeAfter, By: RetentionActor,
@@ -268,19 +286,62 @@ func (s *Service) purgeOrphan(ctx context.Context, st *pitr.Stream, driver stora
 }
 
 // purgeChunks removes the objects of the deleted chunks of st whose grace period
-// ended and marks them pruned. Its caller holds the stream's deletion lock.
-func (s *Service) purgeChunks(ctx context.Context, st *pitr.Stream, now time.Time) error {
+// ended and marks them pruned, except those pins names (a restore still reads
+// them: a later run purges them), and returns how many it skipped for a pin. Its
+// caller holds the stream's deletion lock.
+func (s *Service) purgeChunks(ctx context.Context, st *pitr.Stream, now time.Time, pins pitr.PinSnapshot) (int, error) {
 	due, err := s.cfg.Repo.ListPurgeableChunks(ctx, st.ID, now, purgeBatch)
 	if err != nil {
-		return fmt.Errorf("list purgeable chunks: %w", err)
+		return 0, fmt.Errorf("list purgeable chunks: %w", err)
 	}
 	var errs []error
+	skipped := 0
 	for _, c := range due {
+		if pins.Chunk(c.ID) {
+			skipped++
+			continue
+		}
 		if err := s.purgeChunk(ctx, c, now); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return skipped, errors.Join(errs...)
+}
+
+// pinSet returns the pins retention honours (Config.Pins, else pitr.SharedPins).
+func (s *Service) pinSet() *pitr.PinSet {
+	if s.cfg.Pins != nil {
+		return s.cfg.Pins
+	}
+	return pitr.SharedPins()
+}
+
+// pinSnapshot returns the current pins and logs those dropped for their age.
+func (s *Service) pinSnapshot() pitr.PinSnapshot {
+	snap := s.pinSet().Snapshot()
+	for _, e := range snap.Expired {
+		s.logger.Warn("dropped a PITR restore pin older than its maximum age; retention may now delete what it held",
+			logsafe.Attr("owner", e.Owner), slog.Duration("age", e.Age))
+	}
+	return snap
+}
+
+// pinSkips counts what one retention run left for a later one because a
+// point-in-time restore in flight pinned it.
+type pinSkips struct {
+	// bases and chunks were kept instead of deleted; purge chunk objects were not
+	// purged yet.
+	bases, chunks, purge int
+}
+
+// log reports the skips of stream id, if any.
+func (p pinSkips) log(logger *slog.Logger, id string) {
+	if p.bases+p.chunks+p.purge == 0 {
+		return
+	}
+	logger.Info("PITR retention skipped objects pinned by a point-in-time restore in flight; a later run deletes them once it ends",
+		logsafe.Attr("stream_id", id), slog.Int("pinned_bases", p.bases), slog.Int("pinned_chunks", p.chunks),
+		slog.Int("pinned_purges", p.purge))
 }
 
 // chunkRetention records the retain-until date the purge found on a chunk's object
