@@ -246,7 +246,7 @@ Things to know:
 - **Use the HA target for nothing else that needs Object Lock.** Lease renewals would leave a locked version behind every 10 seconds.
 - **Storage targets that only one instance can reach** (a local disk, a NAS mounted on one host) do not survive a takeover. Back up to S3 targets every instance can reach; the default "Local disk" target of a standby points to the active instance's directory after a takeover.
 - **Backup encryption keys** (the age identity or passphrase in the settings) are stored in the database, sealed with `secret.key`, and travel with the snapshot: nothing to copy.
-- **Rotating `secret.key`** changes the key of the whole cluster: give the new key to every instance before the next takeover, or the standby cannot read the snapshots (it says so and stays standby).
+- **`secret.key` is not rotated in HA mode.** An instance rotating alone would leave the others unable to read its snapshots and lease, so the rotation is refused with `409` (`keyrotation: secret.key cannot be rotated while active-passive HA is on…`). Follow [the procedure below](#rotating-the-secret-key-of-an-ha-cluster) instead.
 - **Metadata changed after the last snapshot** (a job edited a minute before the active instance died) is lost; backups recorded after it are imported from the storage again, as manual backups. Notifications pending in the snapshot may be sent twice; receivers can de-duplicate on the event ID.
 - **A shared data directory** (two processes on one volume) is not supported: the data directory lock refuses the second process. Where the volume survives the node, run one instance with a restart policy instead.
 - **Use the active instance** for the dashboard, the API, the CLI and MCP. Point a load balancer at the instance whose `GET /api/v1/health` reports `"role": "active"`, or accept `503` from the standby.
@@ -259,6 +259,16 @@ Things to know:
 - [ ] Every storage target of every job reachable from every instance.
 - [ ] `MongoRescueHANoActiveInstance`, `MongoRescueHATakeoverFailed` and `MongoRescueDown` alerts loaded, every instance scraped.
 - [ ] A takeover tested once: stop the active instance (or kill it), watch the standby report `"role": "active"`, check that the next scheduled backup runs there, and start the old instance again (it comes back as standby).
+
+### Rotating the secret key of an HA cluster
+
+Every instance seals its database, the lease's `key_id` and the metadata snapshots with the same key, so the key changes for the whole cluster at once, in a maintenance window during which no backup runs:
+
+1. Stop every standby.
+2. Restart the active instance as a single instance (`MONGORESCUE_HA_MODE=off`, same data directory) and rotate the key there: **Settings → Security → Rotate secret key** for a key in `secret.key`, or the [manual procedure](encryption.md#key-rotation-runbook) for a key set by `MONGORESCUE_SECRET_KEY`. Download a new [recovery kit](#recovery-kit). Stop it.
+3. Delete the cluster's objects on the HA target, which are sealed with the old key: the lease `_mongorescue/ha/<cluster>/lease.json` and the snapshots under `_mongorescue/metadata/ha/<cluster>/`.
+4. Give the new key to every instance. Empty the data directory of every former standby (its database is sealed with the old key; it receives the metadata at its first takeover).
+5. Start the former active instance in HA mode first: with no lease left it is the cluster's first activation, takes over with its own database and writes a snapshot at once. Then start the standbys; they check that they can read that snapshot.
 
 ### Failure domains
 

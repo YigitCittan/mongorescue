@@ -561,7 +561,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// component holding it or one of its subkeys.
 	holders := &keyHolders{auth: authSvc, oidcFlow: oidcFlowRef, metaBackup: metaBackupSvc, kit: kitSvc, logger: logger}
 	keyRotator = keyrotation.New(keyrotation.Config{
-		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv,
+		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv, HAMode: o.ha != nil,
 		RetiredMAC:       func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
 		RetiredInstallID: metabackup.InstallID,
 		OnCommit:         holders.onCommit,

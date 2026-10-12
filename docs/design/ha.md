@@ -34,7 +34,7 @@ The lease is one small JSON object on a storage target, `_mongorescue/ha/<cluste
 - `epoch` is the fencing token. It grows by one on every takeover and never decreases. Every run record and every metadata snapshot carries the epoch it was written under.
 - `seq` grows with every renewal, so every write has distinct content (and an S3 ETag of its own).
 - `renewed_at` is for people only. No decision reads it.
-- `key_id` is derived from `secret.key` (like the install ID of metadata backups). An instance whose key differs refuses to start, since it could not read the active instance's snapshots or credentials.
+- `key_id` is derived from `secret.key` (like the install ID of metadata backups). An instance whose key differs refuses to start, since it could not read the active instance's snapshots or credentials. For the same reason an instance in HA mode refuses to rotate `secret.key` on its own (`keyrotation.ErrHAMode`); the key of a cluster changes in a maintenance window ([production.md](../production.md#rotating-the-secret-key-of-an-ha-cluster)).
 
 ### Conditional writes
 
