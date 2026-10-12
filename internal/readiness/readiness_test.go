@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -352,6 +353,44 @@ func TestHandleEventKicksAnEarlyCheck(t *testing.T) {
 	case <-checked:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Kick did not trigger a check")
+	}
+}
+
+// TestKicksWithinMinKickIntervalCoalesce: a burst of kicks right after a check
+// runs one more check at the end of the interval, not one per kick.
+func TestKicksWithinMinKickIntervalCoalesce(t *testing.T) {
+	st := storetest.New(t)
+	clk := &clock{now: t0.Add(10 * time.Hour)}
+	var checks atomic.Int32
+	checked := make(chan struct{}, 64)
+	svc := readiness.New(readiness.Config{
+		Store: st, Now: clk.Now, StartDelay: time.Hour, CheckInterval: time.Hour, MinKickInterval: 300 * time.Millisecond,
+		Observe: func(time.Time, []readiness.Sample) { checks.Add(1); checked <- struct{}{} },
+	})
+	svc.Start(context.Background())
+	defer svc.Stop()
+	svc.Kick()
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first kick did not trigger a check")
+	}
+	start := time.Now()
+	for range 20 {
+		svc.Kick()
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the burst of kicks did not trigger a check")
+	}
+	if waited := time.Since(start); waited < 250*time.Millisecond {
+		t.Errorf("the coalesced check ran %v after the burst began; want the interval", waited)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if n := checks.Load(); n != 2 {
+		t.Errorf("%d checks for a kick and a burst of 20; want 2", n)
 	}
 }
 

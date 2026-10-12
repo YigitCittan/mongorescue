@@ -586,6 +586,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Streams:      pitrStreams(&pitrSvc, &chainTestFailed, metaStore, &pitrEstimate),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
+		// Bursts of job writes (an import, the API creating thousands of jobs)
+		// coalesce into one check every few seconds.
+		MinKickInterval: readiness.DefaultMinKickInterval,
 		// Every job requires locked copies while the setting is on.
 		RequireLockedCopies: func() bool { return settingsSvc.Current().Security.RequireLockedCopies },
 		Observe: func(started time.Time, samples []readiness.Sample) {

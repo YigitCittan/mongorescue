@@ -39,6 +39,10 @@ const (
 	DefaultCheckInterval = 5 * time.Minute
 	// DefaultStartDelay delays the first check after start-up.
 	DefaultStartDelay = 30 * time.Second
+	// DefaultMinKickInterval spaces the checks job writes ask for (see
+	// Config.MinKickInterval): creating thousands of jobs runs a check every few
+	// seconds instead of one per job.
+	DefaultMinKickInterval = 5 * time.Second
 )
 
 // Store is the persistence port (implemented by *store.SQLiteStore).
@@ -117,6 +121,11 @@ type Config struct {
 	// StartDelay delays its first check (default DefaultStartDelay).
 	CheckInterval time.Duration
 	StartDelay    time.Duration
+	// MinKickInterval is the shortest time between the end of a check and a
+	// check asked for by Kick (job writes, finished backups): kicks meanwhile are
+	// coalesced into one check at the end of the interval. 0 checks at every kick;
+	// the application uses DefaultMinKickInterval.
+	MinKickInterval time.Duration
 	// CopyMissingAfter is how long after a backup finished its configured copies
 	// may still be missing before its row warns with ReasonCopyMissing (default
 	// DefaultCopyMissingAfter).
@@ -216,6 +225,7 @@ func (s *Service) Stop() {
 func (s *Service) loop(ctx context.Context) {
 	timer := time.NewTimer(s.cfg.StartDelay)
 	defer timer.Stop()
+	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -228,10 +238,17 @@ func (s *Service) loop(ctx context.Context) {
 				default:
 				}
 			}
+			// Kicks within MinKickInterval of the last check wait for its end, so
+			// a burst of job writes costs one check, not one per write.
+			if wait := s.cfg.MinKickInterval - time.Since(last); !last.IsZero() && wait > 0 {
+				timer.Reset(wait)
+				continue
+			}
 		}
 		if err := s.Check(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("the RPO check is incomplete", logsafe.Error(err))
 		}
+		last = time.Now()
 		timer.Reset(s.cfg.CheckInterval)
 	}
 }
