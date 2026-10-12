@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,20 +32,28 @@ const (
 	// JobSortNextRun orders by the next scheduled run; paused jobs and jobs without
 	// one come last in both directions.
 	JobSortNextRun JobSort = "next_run"
+	// JobSortLastStatus orders by the last status (failed, partial, cancelled, in
+	// progress, completed; see JobLastStatusRank), then by when that backup or run
+	// started, the newest first; jobs that never ran come last in both directions.
+	JobSortLastStatus JobSort = "last_status"
 )
 
 // JobKey is the position of a job in a JobSort order: its sort value and its ID.
 // It is the cursor of keyset paging.
 type JobKey struct {
 	// Null marks a job without a value (JobSortNextRun: paused, or never
-	// scheduled); such jobs come after the others in both directions.
+	// scheduled; JobSortLastStatus: never ran); such jobs come after the others in
+	// both directions.
 	Null bool `json:"n,omitempty"`
 	// Str, Int and Real hold the value: the name, the creation time in Unix
-	// nanoseconds, or the next run as a Julian day number (SQLite's julianday).
-	// The fields an order does not use stay zero.
+	// nanoseconds or the rank of the last status, or the next run as a Julian day
+	// number (SQLite's julianday). The fields an order does not use stay zero.
 	Str  string  `json:"k,omitempty"`
 	Int  int64   `json:"i,omitempty"`
 	Real float64 `json:"r,omitempty"`
+	// Time is when the last status's backup or run started, in Unix nanoseconds
+	// (JobSortLastStatus); it orders in reverse, the newest first.
+	Time int64 `json:"t,omitempty"`
 	// ID breaks ties.
 	ID string `json:"id"`
 }
@@ -58,14 +67,17 @@ func CompareJobKeys(a, b JobKey, desc bool) int {
 		}
 		return -1
 	}
-	c := cmp.Or(strings.Compare(a.Str, b.Str), cmp.Compare(a.Int, b.Int), cmp.Compare(a.Real, b.Real), strings.Compare(a.ID, b.ID))
+	c := cmp.Or(strings.Compare(a.Str, b.Str), cmp.Compare(a.Int, b.Int), cmp.Compare(b.Time, a.Time), cmp.Compare(a.Real, b.Real),
+		strings.Compare(a.ID, b.ID))
 	if desc {
 		return -c
 	}
 	return c
 }
 
-// JobKeyOf returns the key of job j in order sort, as QueryJobs computes it.
+// JobKeyOf returns the key of job j in order sort, as QueryJobs computes it. The
+// last status is not part of a job's document: for JobSortLastStatus, the key
+// has the ID only (see JobLastStatusRank for the rest).
 func JobKeyOf(j *models.Job, sort JobSort) JobKey {
 	k := JobKey{ID: j.ID}
 	switch sort {
@@ -77,6 +89,7 @@ func JobKeyOf(j *models.Job, sort JobSort) JobKey {
 		} else {
 			k.Real = julianDay(*j.NextRun)
 		}
+	case JobSortLastStatus:
 	default:
 		k.Str = j.Name
 	}
@@ -118,6 +131,23 @@ type JobQuery struct {
 	// Connections keeps the jobs of these connections (the caller's access, see
 	// auth.ConnectionFilter); nil keeps every job.
 	Connections auth.ConnectionSet
+	// Search keeps the jobs whose ID, name, database, selection (mode, names and
+	// patterns) or a known database contains it, ignoring case (the jobs list's
+	// q). It must not contain JobSearchSeparator.
+	Search string
+	// Database keeps the jobs that back it up (models.Job.Covers). It must not
+	// contain JobSearchSeparator.
+	Database string
+	// Schedule keeps the jobs whose cron expression has this frequency
+	// (models.ScheduleFrequency).
+	Schedule string
+	// LastStatus keeps the jobs with this last status: JobLastNever or one of
+	// JobLastStatusRank's.
+	LastStatus string
+
+	// databaseIDs are the jobs with an all or pattern selection whose patterns
+	// match Database without naming or knowing it (resolveDatabase).
+	databaseIDs []string
 }
 
 // JobWindow is one window of QueryJobs.
@@ -148,7 +178,85 @@ func jobConditions(q JobQuery) *conditions {
 	if q.Enabled != nil {
 		c.add("enabled = ?", boolInt(*q.Enabled))
 	}
+	if q.Search != "" {
+		c.add("instr(search_text, ?) > 0", strings.ToLower(q.Search))
+	}
+	if q.Schedule != "" {
+		c.add("schedule = ?", q.Schedule)
+	}
+	if q.Database != "" {
+		name := JobSearchSeparator + q.Database + JobSearchSeparator
+		if len(q.databaseIDs) == 0 {
+			c.add("instr(databases, ?) > 0", name)
+		} else {
+			ids, _ := json.Marshal(q.databaseIDs)
+			// One JSON argument, whatever the number of jobs.
+			c.add("(instr(databases, ?) > 0 OR id IN (SELECT value FROM json_each(?)))", name, string(ids))
+		}
+	}
+	switch rank, ok := jobLastStatusRank[q.LastStatus]; {
+	case q.LastStatus == JobLastNever:
+		c.add("last_status IS NULL")
+	case ok:
+		c.add("last_status = ?", rank)
+	}
 	return c
+}
+
+// clone returns a copy of c that can be extended without changing c.
+func (c *conditions) clone() *conditions {
+	return &conditions{clauses: slices.Clone(c.clauses), args: slices.Clone(c.args)}
+}
+
+// checkJobQuery returns an ErrInvalidFilter error for a limit, an order or a
+// filter value out of range.
+func checkJobQuery(q JobQuery) error {
+	switch _, ranked := jobLastStatusRank[q.LastStatus]; {
+	case q.Limit < 0 || q.Limit > MaxJobWindow:
+		return fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidFilter, MaxJobWindow)
+	case !validJobSort(q.Sort):
+		return fmt.Errorf("%w: unknown job order %q", ErrInvalidFilter, q.Sort)
+	case q.LastStatus != "" && q.LastStatus != JobLastNever && !ranked:
+		return fmt.Errorf("%w: unknown last status %q", ErrInvalidFilter, q.LastStatus)
+	case strings.Contains(q.Search, JobSearchSeparator) || strings.Contains(q.Database, JobSearchSeparator):
+		return fmt.Errorf("%w: the search and the database must not contain U+001F", ErrInvalidFilter)
+	}
+	return nil
+}
+
+// resolveDatabase sets q.databaseIDs for a Database filter: the jobs of q's other
+// filters whose all or pattern selection matches the database without naming or
+// knowing it, evaluated with models.Job.Covers on their documents (few jobs
+// discover their databases; the others match on the databases column alone).
+func (s *SQLiteStore) resolveDatabase(ctx context.Context, q *JobQuery) error {
+	if q.Database == "" {
+		return nil
+	}
+	other := *q
+	other.Database = ""
+	c := jobConditions(other)
+	c.add("discovers = 1 AND instr(databases, ?) = 0", JobSearchSeparator+q.Database+JobSearchSeparator)
+	// The partial index holds the discovering jobs only; the other filters' indexes
+	// would read every job.
+	rows, err := s.db.QueryContext(ctx, "SELECT id, data FROM jobs INDEXED BY jobs_discovering"+c.where(), c.args...) //nolint:gosec // G202: only constant clauses are joined; values are ? arguments.
+	if err != nil {
+		return fmt.Errorf("store: query jobs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	q.databaseIDs = nil
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return fmt.Errorf("store: scan job: %w", err)
+		}
+		if j, decErr := decode[models.Job](data); decErr == nil && j.Covers(q.Database) {
+			q.databaseIDs = append(q.databaseIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: iterate jobs: %w", err)
+	}
+	return nil
 }
 
 // jobSegment is one query of a window: the rows with a sort value, or (null) those
@@ -157,47 +265,84 @@ type jobSegment struct {
 	query string
 	args  []any
 	null  bool
+	// limitInside marks a query that ends with its LIMIT placeholder (a window
+	// read in two steps); the others take " LIMIT ?" appended.
+	limitInside bool
 }
 
 // validJobSort reports whether sort is an order of QueryJobs ("" is JobSortName).
 func validJobSort(sort JobSort) bool {
 	switch sort {
-	case "", JobSortName, JobSortCreatedAt, JobSortNextRun:
+	case "", JobSortName, JobSortCreatedAt, JobSortNextRun, JobSortLastStatus:
 		return true
 	}
 	return false
 }
 
+// lastStatusSetSQL holds for the rows with a last status (JobSortLastStatus),
+// indexed by jobs_by_last_status and its connection and state variants.
+const lastStatusSetSQL = "last_status IS NOT NULL"
+
 // jobWindowSQL returns the queries of a QueryJobs window, run in turn: one for the
-// orders whose rows all have a value, and for JobSortNextRun the rows with a next
-// run, then those without (never before the cursor's segment). Every query reads
-// "id, value, data" in the order of an index; the cursor and the order are
-// constant SQL, the values arguments.
+// orders whose rows all have a value, and for JobSortNextRun and
+// JobSortLastStatus the rows with a value, then those without (never before the
+// cursor's segment). Every query reads "id, value, time, data" in the order of an
+// index; the cursor and the order are constant SQL, the values arguments.
 func jobWindowSQL(q JobQuery) []jobSegment {
-	dir, op := "", ">"
+	dir, op, rev := "", ">", " DESC"
 	if q.Desc {
-		dir, op = " DESC", "<"
+		dir, op, rev = " DESC", "<", ""
 	}
+	base := jobConditions(q)
+	// A window of the filters on the jobs' search, database, schedule or last
+	// status columns is read in two steps (see below).
+	deferred := q.Limit > 0 && (q.Search != "" || q.Database != "" || q.Schedule != "" || q.LastStatus != "")
 	var segs []jobSegment
 	value := func(expr string, null bool) {
-		c := jobConditions(q)
-		switch {
-		case null:
-			c.add("NOT (" + nextRunSetSQL + ")")
-		case q.Sort == JobSortNextRun:
-			c.add(nextRunSetSQL)
+		c := base.clone()
+		set := ""
+		switch q.Sort {
+		case JobSortNextRun:
+			set = nextRunSetSQL
+		case JobSortLastStatus:
+			set = lastStatusSetSQL
 		}
-		if a := q.After; a != nil && a.Null == null {
-			if null {
-				c.add("id "+op+" ?", a.ID)
-			} else {
-				c.add("("+expr+", id) "+op+" (?, ?)", afterValue(q.Sort, *a), a.ID)
+		switch {
+		case null && q.Sort == JobSortLastStatus:
+			// Both are NULL together; with both, the index reads them in ID order.
+			c.add("last_status IS NULL AND last_status_at IS NULL")
+		case null:
+			c.add("NOT (" + set + ")")
+		case set != "":
+			c.add(set)
+		}
+		a := q.After
+		switch {
+		case a == nil || a.Null != null:
+		case null:
+			c.add("id "+op+" ?", a.ID)
+		case q.Sort == JobSortLastStatus:
+			// The rank in the order's direction (a range of the index), without the
+			// rows of the cursor's rank up to the cursor: the start time runs against
+			// the direction, the ID with it. An OR of the two ranges would cost the
+			// index its order.
+			from, before, upTo := ">=", ">", "<="
+			if q.Desc {
+				from, before, upTo = "<=", "<", ">="
 			}
+			c.add("last_status "+from+" ? AND NOT (last_status = ? AND (last_status_at "+before+" ? OR (last_status_at = ? AND id "+upTo+" ?)))",
+				a.Int, a.Int, a.Time, a.Time, a.ID)
+		default:
+			c.add("("+expr+", id) "+op+" (?, ?)", afterValue(q.Sort, *a), a.ID)
 		}
 		order := expr + dir + ", id" + dir
-		col := expr
+		col, timeCol := expr, "0"
+		if q.Sort == JobSortLastStatus {
+			order = "last_status" + dir + ", last_status_at" + rev + ", id" + dir
+			timeCol = "last_status_at"
+		}
 		if null {
-			order, col = "id"+dir, "NULL"
+			order, col, timeCol = "id"+dir, "NULL", "0"
 		}
 		from := "jobs"
 		if q.Sort == JobSortNextRun && !null {
@@ -208,16 +353,29 @@ func jobWindowSQL(q JobQuery) []jobSegment {
 				from = "jobs INDEXED BY jobs_by_connection_next_run"
 			}
 		}
-		segs = append(segs, jobSegment{query: "SELECT id, " + col + ", data FROM " + from + c.where() + " ORDER BY " + order, args: c.args, null: null})
+		if deferred && q.Sort != JobSortNextRun {
+			// The window's IDs first, from the filter columns (the covering
+			// jobs_filter index, or the order's index), then the documents of the
+			// window only: a filter the order's index cannot serve never reads, nor
+			// sorts, the documents of every match.
+			segs = append(segs, jobSegment{query: "SELECT id, " + col + ", " + timeCol + ", data FROM jobs WHERE id IN (SELECT id FROM jobs" + c.where() +
+				" ORDER BY " + order + " LIMIT ?) ORDER BY " + order, args: c.args, null: null, limitInside: true})
+			return
+		}
+		segs = append(segs, jobSegment{query: "SELECT id, " + col + ", " + timeCol + ", data FROM " + from + c.where() + " ORDER BY " + order, args: c.args, null: null})
 	}
 	switch q.Sort {
 	case JobSortCreatedAt:
 		value("created_at", false)
-	case JobSortNextRun:
-		if q.After == nil || !q.After.Null {
-			value(nextRunSQL, false)
+	case JobSortNextRun, JobSortLastStatus:
+		expr := nextRunSQL
+		if q.Sort == JobSortLastStatus {
+			expr = "last_status"
 		}
-		value(nextRunSQL, true)
+		if q.After == nil || !q.After.Null {
+			value(expr, false)
+		}
+		value(expr, true)
 	default:
 		value("name", false)
 	}
@@ -238,18 +396,24 @@ func afterValue(sort JobSort, a JobKey) any {
 // jobCountSQL returns the query of CountJobs and its arguments.
 func jobCountSQL(q JobQuery) (string, []any) {
 	c := jobConditions(q)
-	return "SELECT count(*) FROM jobs" + c.where(), c.args
+	from := "jobs"
+	if q.Search != "" || q.Database != "" || q.Schedule != "" || q.LastStatus != "" {
+		// jobs_filter holds every column of the filters: the count never reads a
+		// document, also where the planner's statistics would prefer the table.
+		from = "jobs INDEXED BY jobs_filter"
+	}
+	return "SELECT count(*) FROM " + from + c.where(), c.args
 }
 
 // QueryJobs reads the jobs matching q after its cursor, in its order (from the jobs
 // indexes of that order), at most q.Limit of them. It returns an ErrInvalidFilter
-// error for a limit or an order out of range.
+// error for a limit, an order or a filter out of range.
 func (s *SQLiteStore) QueryJobs(ctx context.Context, q JobQuery) (*JobWindow, error) {
-	if q.Limit < 0 || q.Limit > MaxJobWindow {
-		return nil, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidFilter, MaxJobWindow)
+	if err := checkJobQuery(q); err != nil {
+		return nil, err
 	}
-	if !validJobSort(q.Sort) {
-		return nil, fmt.Errorf("%w: unknown job order %q", ErrInvalidFilter, q.Sort)
+	if err := s.resolveDatabase(ctx, &q); err != nil {
+		return nil, err
 	}
 	defer s.lockKey()()
 	w := &JobWindow{Jobs: []*models.Job{}}
@@ -258,7 +422,9 @@ func (s *SQLiteStore) QueryJobs(ctx context.Context, q JobQuery) (*JobWindow, er
 		query, args := seg.query, seg.args
 		if q.Limit > 0 {
 			// One row more than the window tells whether another one follows.
-			query += " LIMIT ?"
+			if !seg.limitInside {
+				query += " LIMIT ?"
+			}
 			args = append(args, q.Limit+1-read)
 		}
 		done, err := s.readJobSegment(ctx, q, seg.null, query, args, w, &read)
@@ -288,12 +454,14 @@ func (s *SQLiteStore) readJobSegment(ctx context.Context, q JobQuery, null bool,
 		var (
 			id, data string
 			value    any
+			at       int64
 		)
-		if err := rows.Scan(&id, &value, &data); err != nil {
+		if err := rows.Scan(&id, &value, &at, &data); err != nil {
 			return false, fmt.Errorf("store: scan job: %w", err)
 		}
 		*read++
 		w.Last = rowJobKey(null, id, value)
+		w.Last.Time = at
 		job, err := decode[models.Job](data)
 		if err == nil {
 			if err = s.openJob(job); errors.Is(err, ErrNoSecretBox) {
@@ -338,6 +506,13 @@ func rowJobKey(null bool, id string, value any) JobKey {
 // left out, as QueryJobs skips them, so the count matches the jobs a client can
 // page through.
 func (s *SQLiteStore) CountJobs(ctx context.Context, q JobQuery) (int, error) {
+	q.Limit, q.Sort, q.After = 0, "", nil
+	if err := checkJobQuery(q); err != nil {
+		return 0, err
+	}
+	if err := s.resolveDatabase(ctx, &q); err != nil {
+		return 0, err
+	}
 	query, args := jobCountSQL(q)
 	if ids := s.corruptIDs(tableJobs); len(ids) > 0 {
 		list, err := json.Marshal(ids)

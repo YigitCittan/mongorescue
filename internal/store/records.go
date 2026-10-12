@@ -12,12 +12,15 @@ import (
 )
 
 const (
-	upsertJobSQL = `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	// upsertJobSQL takes the job's columns, then jobIndex.args.
+	upsertJobSQL = `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data,
+			search_text, schedule, databases, discovers, index_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET name = excluded.name, database_name = excluded.database_name,
 			enabled = excluded.enabled, created_at = excluded.created_at,
 			connection_id = excluded.connection_id, storage_target_id = excluded.storage_target_id,
-			data = excluded.data`
+			data = excluded.data, search_text = excluded.search_text, schedule = excluded.schedule,
+			databases = excluded.databases, discovers = excluded.discovers, index_version = excluded.index_version`
 
 	upsertBackupSQL = `INSERT INTO backups (id, job_id, database_name, status, started_at, connection_id, storage_target_id, retry_of, size_bytes, phases, run_id, data)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -126,9 +129,11 @@ func (s *SQLiteStore) CreateJob(ctx context.Context, job *models.Job) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`,
-		job.ID, job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data)
+	args := append([]any{job.ID, job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data},
+		jobIndexColumns(job).args()...)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO jobs (id, name, database_name, enabled, created_at, connection_id, storage_target_id, data,
+			search_text, schedule, databases, discovers, index_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`, args...)
 	if err != nil {
 		return fmt.Errorf("store: create job %s: %w", job.ID, err)
 	}
@@ -154,9 +159,10 @@ func (s *SQLiteStore) UpdateJob(ctx context.Context, job *models.Job) error {
 	if err != nil {
 		return err
 	}
+	args := append([]any{job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data},
+		jobIndexColumns(job).args()...)
 	return execOne(ctx, s.db, ErrNotFound, `UPDATE jobs SET name = ?, database_name = ?, enabled = ?, created_at = ?,
-		connection_id = ?, storage_target_id = ?, data = ? WHERE id = ?`,
-		job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data, job.ID)
+		connection_id = ?, storage_target_id = ?, data = ?, `+jobIndexSet+` WHERE id = ?`, append(args, job.ID)...)
 }
 
 // UpdateJobRunTimes stores a job's run timestamps without touching its settings, so
@@ -296,8 +302,15 @@ func putJob(ctx context.Context, e execer, job *models.Job) error {
 	if err != nil {
 		return err
 	}
-	if _, err := e.ExecContext(ctx, upsertJobSQL,
-		job.ID, job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data); err != nil {
+	return execUpsertJob(ctx, e, job, data)
+}
+
+// execUpsertJob upserts job with its document data (job encoded, possibly with
+// fields of an older format), its columns and its filter columns.
+func execUpsertJob(ctx context.Context, e execer, job *models.Job, data string) error {
+	args := append([]any{job.ID, job.Name, job.Database, boolInt(job.Enabled), timeKey(job.CreatedAt), job.ConnectionID, job.StorageTargetID, data},
+		jobIndexColumns(job).args()...)
+	if _, err := e.ExecContext(ctx, upsertJobSQL, args...); err != nil {
 		return fmt.Errorf("store: save job %s: %w", job.ID, err)
 	}
 	return nil

@@ -24,7 +24,8 @@ func TestScaleQueryPlans(t *testing.T) {
 	}
 	for i := range 10000 {
 		if _, err := tx.ExecContext(ctx, upsertJobSQL, fmt.Sprintf("job_x%05d", i), fmt.Sprintf("load-%05d", i), "db", i%2, 0,
-			fmt.Sprintf("conn_%03d", i%500), "", fmt.Sprintf(`{"next_run":"2026-10-%02dT%02d:00:00Z"}`, 1+i%28, i%24)); err != nil {
+			fmt.Sprintf("conn_%03d", i%500), "", fmt.Sprintf(`{"next_run":"2026-10-%02dT%02d:00:00Z"}`, 1+i%28, i%24),
+			fmt.Sprintf("job_x%05d\x1fload-%05d", i, i), "daily", "\x1fdb\x1f", 0, jobIndexVersion); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,12 +47,12 @@ func TestScaleQueryPlans(t *testing.T) {
 		if p := plan(count, cargs...); !strings.Contains(p, "COVERING INDEX") {
 			t.Errorf("%s count: plan %q; want a covering index", name, p)
 		}
-		for _, sort := range []JobSort{JobSortName, JobSortCreatedAt, JobSortNextRun} {
+		for _, sort := range []JobSort{JobSortName, JobSortCreatedAt, JobSortNextRun, JobSortLastStatus} {
 			for _, desc := range []bool{false, true} {
-				for _, after := range []*JobKey{nil, {Str: "load-05000", Int: 5, Real: 2461320.5, ID: "job_x05000"}, {Null: true, ID: "job_x05000"}} {
+				for _, after := range []*JobKey{nil, {Str: "load-05000", Int: 5, Real: 2461320.5, Time: 5, ID: "job_x05000"}, {Null: true, ID: "job_x05000"}} {
 					q := q
 					q.Sort, q.Desc, q.After = sort, desc, after
-					if after != nil && after.Null && sort != JobSortNextRun {
+					if after != nil && after.Null && sort != JobSortNextRun && sort != JobSortLastStatus {
 						continue
 					}
 					for _, seg := range jobWindowSQL(q) {
@@ -68,6 +69,34 @@ func TestScaleQueryPlans(t *testing.T) {
 							t.Errorf("%s, %s desc=%v after=%v: plan %q; want a jobs index in page order", name, sort, desc, after != nil, p)
 						}
 					}
+				}
+			}
+		}
+	}
+
+	// The filters on the jobs' columns (#169): counts read the covering filter
+	// index, windows their IDs first and then only the window's documents.
+	for name, q := range map[string]JobQuery{
+		"search":               {Search: "load-01"},
+		"database":             {Database: "db", databaseIDs: []string{"job_x00001"}},
+		"schedule":             {Schedule: "daily", ConnectionID: "conn_007"},
+		"last status":          {LastStatus: JobLastNever, Enabled: &on},
+		"every filter, access": {Search: "load", Database: "db", Schedule: "daily", LastStatus: JobLastFailed, Connections: auth.OnlyConnections("conn_007")},
+	} {
+		count, cargs := jobCountSQL(q)
+		if p := plan(count, cargs...); !strings.Contains(p, "COVERING INDEX jobs_filter") {
+			t.Errorf("%s count: plan %q; want the covering filter index", name, p)
+		}
+		for _, sort := range []JobSort{JobSortName, JobSortCreatedAt, JobSortLastStatus} {
+			q := q
+			q.Sort, q.Limit = sort, 100
+			for _, seg := range jobWindowSQL(q) {
+				if !seg.limitInside {
+					t.Errorf("%s, %s: a window read in one step", name, sort)
+					continue
+				}
+				if p := plan(seg.query, append(seg.args, 101)...); !strings.Contains(p, "LIST SUBQUERY") || strings.Contains(p, "SCAN jobs\n") {
+					t.Errorf("%s, %s: plan %q; want the IDs of the window first", name, sort, p)
 				}
 			}
 		}
