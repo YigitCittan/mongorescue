@@ -73,6 +73,31 @@ func (a accessStore) ListJobs(ctx context.Context) ([]*models.Job, error) {
 	return out, nil
 }
 
+// QueryJobs reads a window of the jobs the caller may touch.
+func (a accessStore) QueryJobs(ctx context.Context, q store.JobQuery) (*store.JobWindow, error) {
+	q.Connections = q.Connections.Intersect(auth.ConnectionFilter(ctx))
+	return a.Store.QueryJobs(ctx, q)
+}
+
+// CountJobs counts the jobs the caller may touch.
+func (a accessStore) CountJobs(ctx context.Context, q store.JobQuery) (int, error) {
+	q.Connections = q.Connections.Intersect(auth.ConnectionFilter(ctx))
+	return a.Store.CountJobs(ctx, q)
+}
+
+// LatestJobsDatabaseBackups maps the databases of jobIDs to their newest backups
+// the caller may touch, as LatestJobDatabaseBackups does per job.
+func (a accessStore) LatestJobsDatabaseBackups(ctx context.Context, jobIDs []string, status models.BackupStatus) (map[string]map[string]*models.BackupRecord, error) {
+	m, err := a.Store.LatestJobsDatabaseBackups(ctx, jobIDs, status)
+	if err != nil || !auth.ConnectionFilter(ctx).Limited() {
+		return m, err
+	}
+	for _, dbs := range m {
+		maps.DeleteFunc(dbs, func(_ string, b *models.BackupRecord) bool { return !backupVisible(ctx, b) })
+	}
+	return m, nil
+}
+
 // GetBackupRecord returns backup id, or store.ErrNotFound when the caller may not
 // touch it.
 func (a accessStore) GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error) {

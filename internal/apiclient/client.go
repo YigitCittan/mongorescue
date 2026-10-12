@@ -114,9 +114,13 @@ func (e *APIError) Unwrap() error {
 type Meta struct {
 	// Total counts every match.
 	Total int `json:"total"`
-	// Limit and Offset repeat the page asked for.
+	// Limit and Offset repeat the page asked for (lists paged by cursor have no
+	// offset).
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
+	// Next is the cursor of the next page of a list paged by cursor (GET
+	// /api/v1/jobs: pass it as after); empty on the last page.
+	Next string `json:"next,omitempty"`
 }
 
 // Result is a decoded response: the typed value, the envelope's data exactly as the

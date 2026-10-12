@@ -132,6 +132,26 @@ func writeList(w http.ResponseWriter, p listPage, total int, items any) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// cursorMeta describes the page of a list paged by cursor (GET /api/v1/jobs).
+type cursorMeta struct {
+	Total int `json:"total"`
+	Limit int `json:"limit"`
+	// Next is the after value of the next page, omitted on the last page.
+	Next string `json:"next,omitempty"`
+}
+
+// writeCursorList answers a cursor-paged list request: the items as data and the
+// page in meta.
+func writeCursorList(w http.ResponseWriter, meta cursorMeta, items any) {
+	resp := struct {
+		apiResponse
+		Meta cursorMeta `json:"meta"`
+	}{apiResponse: apiResponse{Success: true, Data: items}, Meta: meta}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // handleListBackups lists backups matching the query parameters, newest first. Without
 // limit every match is returned, as before pagination existed. Deleted and purged
 // backups are hidden unless status (or deleted=true, the deleted backups waiting for
