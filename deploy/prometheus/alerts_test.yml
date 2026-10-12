@@ -246,3 +246,57 @@ tests:
             exp_annotations:
               summary: "MongoRescue on mr:8080 has 1 active settings warnings"
               description: "Open the dashboard: the warning banner names the setting that resolves each warning."
+
+  - name: HA cluster without an active instance
+    interval: 1m
+    input_series:
+      # Member a is active until it dies after minute 4; member b takes over at
+      # minute 10.
+      - series: 'mongorescue_ha_role{job="backup", instance="a:8080", cluster="prod", role="active"}'
+        values: "1 1 1 1 1 stale"
+      - series: 'mongorescue_ha_role{job="backup", instance="a:8080", cluster="prod", role="standby"}'
+        values: "0 0 0 0 0 stale"
+      - series: 'mongorescue_ha_role{job="backup", instance="b:8080", cluster="prod", role="active"}'
+        values: "0x9 1x5"
+      - series: 'mongorescue_ha_role{job="backup", instance="b:8080", cluster="prod", role="standby"}'
+        values: "1x9 0x5"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MongoRescueHANoActiveInstance
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: MongoRescueHANoActiveInstance
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              cluster: prod
+            exp_annotations:
+              summary: "No active instance in MongoRescue HA cluster prod"
+              description: "No member of HA cluster prod holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."
+      - eval_time: 11m
+        alertname: MongoRescueHANoActiveInstance
+        exp_alerts: []
+
+  - name: HA takeover failed
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_takeover_failures_total{job="backup", instance="b:8080", cluster="prod"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHATakeoverFailed
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHATakeoverFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+            exp_annotations:
+              summary: "A takeover failed in MongoRescue HA cluster prod on b:8080"
+              description: "The standby b:8080 acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/prod/ on the HA target and the standby's logs."
+      - eval_time: 25m
+        alertname: MongoRescueHATakeoverFailed
+        exp_alerts: []

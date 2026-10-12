@@ -54,6 +54,9 @@ type Store interface {
 type Config struct {
 	// Store reads the queue and records the outcome of every attempt.
 	Store Store
+	// Fence, when set, must pass before a copy is written (active-passive HA): an
+	// instance that lost the HA lease writes no copy.
+	Fence models.Fence
 	// Storages returns the driver of a storage target.
 	Storages StorageFunc
 	// UploadMbps returns the upload cap of a backup's copies in megabits per
@@ -310,6 +313,11 @@ func (s *Service) mbps(ctx context.Context, rec *models.BackupRecord) float64 {
 
 // copyOne copies rec to copy target targetID once and returns the stored object.
 func (s *Service) copyOne(ctx context.Context, rec *models.BackupRecord, cp *models.BackupCopy, mbps float64) (*models.StorageObject, error) {
+	if s.cfg.Fence != nil {
+		if err := s.cfg.Fence.Check(); err != nil {
+			return nil, fmt.Errorf("copy not started: %w", err)
+		}
+	}
 	src, err := s.cfg.Storages(ctx, rec.StorageTargetID)
 	if err != nil {
 		return nil, fmt.Errorf("open the primary storage target: %w", err)

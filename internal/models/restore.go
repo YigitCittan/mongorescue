@@ -461,6 +461,10 @@ type RestoreRecord struct {
 	// BackupID references the source backup record.
 	BackupID string `json:"backup_id"`
 
+	// HAEpoch is the epoch of the HA lease (internal/ha) the instance held when it
+	// ran this; 0 outside active-passive HA.
+	HAEpoch uint64 `json:"ha_epoch,omitempty"`
+
 	// SourceDatabase is the original database name contained in the archive.
 	SourceDatabase string `json:"source_database"`
 

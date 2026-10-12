@@ -35,7 +35,8 @@ The checklist above secures the instance. This one makes sure you can still rest
 - [ ] **TLS to MongoDB**, with certificate and hostname verification on ([TLS settings](connections.md#tls-settings)). Why: the dump carries all your data and the connection carries its credentials.
 - [ ] **Per-connection access** for every user and API key that is not an administrator, and few administrators ([per-connection access](security.md#per-connection-access), [roles](design/roles.md#roles-and-scopes)). Why: one team's credential should not read or restore another team's databases.
 - [ ] **A key rotation runbook** you have walked through once: `secret.key`, the backup encryption key and the storage credentials ([key rotation](#key-rotation), [runbook](encryption.md#key-rotation-runbook)). Why: after a leak or a departure you rotate under pressure, and every rotation needs a new recovery kit.
-- [ ] **MongoRescue in another failure domain than the databases**: another cloud account, region or cluster, with its metadata backups on a target outside the instance's own ([metadata backups](#metadata-backups), [Kubernetes](kubernetes.md#what-the-chart-runs)). Why: an incident that takes the databases must not take the tool that restores them.
+- [ ] **MongoRescue in another failure domain than the databases**: another cloud account, region or cluster, with its metadata backups on a target outside the instance's own ([metadata backups](#metadata-backups), [failure domains](#failure-domains), [Kubernetes](kubernetes.md#what-the-chart-runs)). Why: an incident that takes the databases must not take the tool that restores them.
+- [ ] **A standby instance** where missed backups or a gap in PITR collection would breach your RPO, with the `MongoRescueHANoActiveInstance` alert loaded ([high availability](#high-availability)). Why: a single instance that dies stops every schedule until someone restarts it.
 
 ## TLS and the reverse proxy
 
@@ -207,6 +208,71 @@ When region A fails:
 3. **Restore from region B.** A restore falls back to a healthy copy by itself when the primary archive cannot be read; to be explicit, choose the region B target under *Read the archive from* (`source_target_id`, `--from-target` on the CLI). Restore into a new cluster in region B, as a safe clone first.
 4. **Point the jobs at region B.** Until region A is back, make the region B target the primary of the jobs (and add a new copy target in a third region), so new backups do not fail against the lost one.
 5. **After region A returns**, run the integrity sweep: it verifies every copy and copies missing or damaged ones again.
+
+## High availability
+
+A single instance is a single point of failure: while it is down, no scheduled backup runs and the PITR oplog is not collected. A restart policy (Docker `restart: unless-stopped`, systemd `Restart=on-failure`, a Kubernetes StatefulSet) covers a crashed process; **active-passive high availability** also covers a lost node, zone or host. The design, with its failure matrix, is in [design/ha.md](design/ha.md).
+
+Two (or more) instances share a **storage target** and a **secret key**, and nothing else: each has its own data directory.
+
+- The instance holding the **lease** (a small object on the HA target, renewed every 10 seconds) is **active**: it runs schedules, PITR collection, copies, integrity sweeps, metadata backups, notifications and the heartbeat, exactly like a single instance.
+- The others are **standbys**. A standby serves no data and accepts no sign-in: its database is only as current as its last takeover, so its users, sessions and API keys are not trusted. It serves only `/api/v1/health` (`"role": "standby"` and the active instance), `/metrics` without credentials but with nothing but process, build and HA series, and a static page in place of the dashboard that names the active instance. Everything else, the API, signing in and MCP included, answers `503` with `Retry-After`.
+- The active instance writes an encrypted **snapshot of its metadata database** to the HA target as soon as it becomes active, after every finished backup or restore and at least every 5 minutes. A standby takes over without a snapshot only when no lease exists either (the cluster's first activation, or a new HA target or cluster name: it keeps its own database); when a lease existed it stays standby and `MongoRescueHATakeoverFailed` fires, since its own database would lose the previous holder's metadata.
+- When the active instance dies, a standby **takes over** once the lease has not changed for its TTL (30 s): it restores the newest snapshot (keeping its own database as `mongorescue.db.bak-<UTC time>-epoch<N>`, the newest three copies), marks the runs that were in progress as interrupted, imports the archives written after the snapshot, and runs once every job whose cron fire fell in the gap, when it can verify that the fire did not run (else it sends `ha.catch_up_skipped` and leaves the run to you). With the defaults it is active about 40 seconds after the last renewal, and the takeover work takes seconds.
+- The active instance stops working **20 seconds** (`ttl − renew`) after its last successful renewal if it cannot reach the HA target, so two instances never work at once. Runs check the lease before they start and before they are recorded as completed; every backup, restore and job run carries the lease **epoch** (`ha_epoch`) it ran under.
+- A graceful shutdown (`SIGTERM`) of the active instance writes a last snapshot and releases the lease, so a standby takes over within one renew interval.
+
+### Setting it up
+
+1. Create the shared key once (`openssl rand -base64 32`) and give it to every instance as `MONGORESCUE_SECRET_KEY`. An instance with another key refuses to start.
+2. Choose the HA target: an S3 bucket (or prefix) **without Object Lock** that every instance can reach, ideally in another failure domain than any single instance. AWS S3 and MinIO enforce the conditional writes the lease needs; HA refuses to start on a service that ignores them. Give the instances credentials through the AWS default chain (environment, profile, instance role, IRSA).
+3. Start every instance with the same HA options ([configuration.md](configuration.md#high-availability)):
+
+   ```bash
+   MONGORESCUE_SECRET_KEY=... \
+   MONGORESCUE_HA_MODE=active-passive \
+   MONGORESCUE_HA_TARGET='s3://mongorescue-ha/prod?region=eu-central-1' \
+   MONGORESCUE_HA_CLUSTER=prod \
+   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+   mongorescue -data-dir /var/lib/mongorescue
+   ```
+
+   On Kubernetes, install the chart twice ([kubernetes.md](kubernetes.md#high-availability)).
+4. Complete the setup, and every later change, on the **active** instance (`GET /api/v1/health` says which one it is). Changes reach the standby with the next snapshot.
+5. Load the alert rules ([monitoring.md](monitoring.md#prometheus-alert-rules)) and scrape every instance: `MongoRescueHANoActiveInstance` fires when no instance of a cluster has been active for a minute.
+
+Things to know:
+
+- **Use the HA target for nothing else that needs Object Lock.** Lease renewals would leave a locked version behind every 10 seconds.
+- **Storage targets that only one instance can reach** (a local disk, a NAS mounted on one host) do not survive a takeover. Back up to S3 targets every instance can reach; the default "Local disk" target of a standby points to the active instance's directory after a takeover.
+- **Backup encryption keys** (the age identity or passphrase in the settings) are stored in the database, sealed with `secret.key`, and travel with the snapshot: nothing to copy.
+- **`secret.key` is not rotated in HA mode.** An instance rotating alone would leave the others unable to read its snapshots and lease, so the rotation is refused with `409` (`keyrotation: secret.key cannot be rotated while active-passive HA is on…`). Follow [the procedure below](#rotating-the-secret-key-of-an-ha-cluster) instead.
+- **Metadata changed after the last snapshot** (a job edited a minute before the active instance died) is lost; backups recorded after it are imported from the storage again, as manual backups. Notifications pending in the snapshot may be sent twice; receivers can de-duplicate on the event ID.
+- **A shared data directory** (two processes on one volume) is not supported: the data directory lock refuses the second process. Where the volume survives the node, run one instance with a restart policy instead.
+- **Use the active instance** for the dashboard, the API, the CLI and MCP. Point a load balancer at the instance whose `GET /api/v1/health` reports `"role": "active"`, or accept `503` from the standby.
+
+### Checklist
+
+- [ ] The same `MONGORESCUE_SECRET_KEY` on every instance, stored in your secret manager and in the [recovery kit](#recovery-kit).
+- [ ] The instances on different hosts, zones or nodes (Kubernetes: anti-affinity), each with its own data directory.
+- [ ] The HA target reachable from every instance, without Object Lock, with credentials only MongoRescue holds.
+- [ ] Every storage target of every job reachable from every instance.
+- [ ] `MongoRescueHANoActiveInstance`, `MongoRescueHATakeoverFailed` and `MongoRescueDown` alerts loaded, every instance scraped.
+- [ ] A takeover tested once: stop the active instance (or kill it), watch the standby report `"role": "active"`, check that the next scheduled backup runs there, and start the old instance again (it comes back as standby).
+
+### Rotating the secret key of an HA cluster
+
+Every instance seals its database, the lease's `key_id` and the metadata snapshots with the same key, so the key changes for the whole cluster at once, in a maintenance window during which no backup runs:
+
+1. Stop every standby.
+2. Restart the active instance as a single instance (`MONGORESCUE_HA_MODE=off`, same data directory) and rotate the key there: **Settings → Security → Rotate secret key** for a key in `secret.key`, or the [manual procedure](encryption.md#key-rotation-runbook) for a key set by `MONGORESCUE_SECRET_KEY`. Download a new [recovery kit](#recovery-kit). Stop it.
+3. Delete the cluster's objects on the HA target, which are sealed with the old key: the lease `_mongorescue/ha/<cluster>/lease.json` and the snapshots under `_mongorescue/metadata/ha/<cluster>/`.
+4. Give the new key to every instance. Empty the data directory of every former standby (its database is sealed with the old key; it receives the metadata at its first takeover).
+5. Start the former active instance in HA mode first: with no lease left it is the cluster's first activation, takes over with its own database and writes a snapshot at once. Then start the standbys; they check that they can read that snapshot.
+
+### Failure domains
+
+High availability protects against losing a MongoRescue instance, not against losing what it shares with the databases it protects. Run MongoRescue in **another failure domain than the protected databases**: another cloud account, region or Kubernetes cluster, so an incident, a compromised account or a misapplied change that takes the databases does not take the tool that restores them. Give it **storage credentials that only it holds**: the applications and their operators should not be able to delete or overwrite backups, and MongoRescue's credentials should not reach anything else. Combine this with [locked copies in another region](#cross-region-disaster-recovery): HA keeps the schedules running, the copies keep the data.
 
 ## Large databases
 

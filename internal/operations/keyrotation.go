@@ -47,6 +47,10 @@ func (s *Service) RotateSecretKey(ctx context.Context) (*keyrotation.Result, err
 	if r == nil {
 		return nil, public("secret key rotation is not available", ErrUnavailable)
 	}
+	// Refused before any approval is requested; RotateAs refuses it too.
+	if h, ok := r.(interface{ HAMode() bool }); ok && h.HAMode() {
+		return nil, keyrotation.ErrHAMode
+	}
 	if r.FromEnv() {
 		return nil, keyrotation.ErrEnvKey
 	}

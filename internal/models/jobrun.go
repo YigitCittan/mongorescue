@@ -53,6 +53,9 @@ type JobRun struct {
 	JobID string `json:"job_id"`
 	// Trigger is how the run was started.
 	Trigger BackupTrigger `json:"trigger"`
+	// HAEpoch is the epoch of the HA lease (internal/ha) the instance held when it
+	// ran this; 0 outside active-passive HA.
+	HAEpoch uint64 `json:"ha_epoch,omitempty"`
 	// Status is the run's outcome (JobRunRunning while it runs).
 	Status JobRunStatus `json:"status"`
 	// StartedAt is when the run started.

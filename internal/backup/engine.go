@@ -156,6 +156,20 @@ type Engine struct {
 	// copier copies the archive of a backup with synchronous copies before it
 	// completes (see copies.go).
 	copier CopyFunc
+
+	// fence, when set, stamps every run with its HA epoch and must pass before a
+	// backup completes (see WithFence).
+	fence models.Fence
+}
+
+// WithFence makes every backup carry the HA epoch of fence and fail instead of
+// completing when fence.Check fails: an instance that lost the HA lease never
+// records a completed backup. The archive is kept; a storage scan lists it as an
+// orphan.
+func WithFence(fence models.Fence) Option {
+	return func(e *Engine) {
+		e.fence = fence
+	}
 }
 
 // RunConfig holds the settings a run uses. They are read when a run is prepared and
@@ -492,6 +506,9 @@ func (e *Engine) Execute(ctx context.Context, opts models.BackupOptions, record 
 		opts.Gzip = true
 	}
 	run.alignEncryption(record)
+	if e.fence != nil {
+		record.HAEpoch = e.fence.Epoch()
+	}
 	return run.execute(ctx, opts, record)
 }
 
@@ -743,6 +760,12 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	}
 	if err := e.copySync(runCtx, opts, record); err != nil {
 		return e.fail(runCtx, record, err)
+	}
+	if e.fence != nil {
+		if err := e.fence.Check(); err != nil {
+			tracker.Printf("the archive %s was kept: this instance lost the HA lease before the backup completed", targetKey)
+			return e.fail(runCtx, record, fmt.Errorf("backup not completed: %w", err))
+		}
 	}
 	return record, nil
 }

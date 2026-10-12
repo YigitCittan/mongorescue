@@ -30,6 +30,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/copies"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
@@ -151,6 +152,15 @@ type App struct {
 	started        bool
 	stopped        bool
 	stopBackground func()
+
+	// ha is the role of this App in an active-passive HA cluster (nil outside HA
+	// mode, see RunHA); haKey is the secret key, which seals the HA snapshots.
+	ha    *haRole
+	haKey []byte
+	// haSnap writes the metadata snapshots of the active instance; haTasks owns its
+	// loop and the takeover tasks (see startHAActive).
+	haSnap  *ha.Snapshotter
+	haTasks haTasks
 }
 
 // options holds optional App settings.
@@ -159,6 +169,8 @@ type options struct {
 	version string
 	commit  string
 	getenv  func(string) string
+	// ha opens the App in a role of an active-passive HA cluster (see RunHA).
+	ha *haRole
 }
 
 // Option customises App construction.
@@ -225,6 +237,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			_ = dirLock.Release()
 		}
 	}()
+	// A replacement of the database (an HA takeover) that a crash interrupted is
+	// settled before it is opened, never left with a database missing its log.
+	if err = store.RecoverReplace(cfg.MetadataDBPath(), logger); err != nil {
+		return nil, fmt.Errorf("open the metadata database: %w", err)
+	}
 	keyFile := filepath.Join(cfg.DataDir, secretbox.KeyFileName)
 	key, err := secretbox.LoadKey(secretbox.KeySource{Env: secretKey, File: keyFile}, logger)
 	if err != nil {
@@ -370,6 +387,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			}
 			return cfg
 		}),
+		backup.WithFence(o.fence()),
 	)
 	// The audit log (built in step 4) records every post-restore command.
 	var auditLog *auditlog.Service
@@ -391,6 +409,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 				CommandTimeout: g.PostRestoreCommandTimeout.Std()}
 		}),
 		restore.WithCommandRunner(commandRunner(prober)),
+		restore.WithFence(o.fence()),
 		// auditLog is built below; restores only run once the app has started.
 		restore.WithCommandAudit(func(ctx context.Context, rec *models.RestoreRecord, res models.PostRestoreResult) {
 			auditLog.Record(ctx, postRestoreAuditEvent(rec, res))
@@ -438,6 +457,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		},
 		Publisher: bus,
 		Observe:   metricSet.ObserveCopy,
+		Fence:     o.fence(),
 		Logger:    logger,
 	})
 	metricSet.SetCopyQueueSource(copySvc.QueueDepth)
@@ -498,6 +518,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Decryptor:   settingsSvc.Decryptor,
 		Publisher:   bus,
 		ObserveScan: metricSet.ObserveStorageScan,
+		Fence:       o.fence(),
 		Logger:      logger,
 	})
 
@@ -540,7 +561,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// component holding it or one of its subkeys.
 	holders := &keyHolders{auth: authSvc, oidcFlow: oidcFlowRef, metaBackup: metaBackupSvc, kit: kitSvc, logger: logger}
 	keyRotator = keyrotation.New(keyrotation.Config{
-		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv,
+		Files: keyFiles, Store: metaStore, Key: key.Key, FromEnv: key.FromEnv, HAMode: o.ha != nil,
 		RetiredMAC:       func(old []byte) ([]byte, error) { return secretbox.DeriveSubkey(old, auth.ImportedKeySubkeyPurpose) },
 		RetiredInstallID: metabackup.InstallID,
 		OnCommit:         holders.onCommit,
@@ -591,6 +612,18 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Logger:    logger,
 	})
 	runManager.SetAdmission(diskGuard.Admit)
+	// In HA mode every run must also pass the fencing check: a standby, or an active
+	// instance that can no longer be sure it holds the lease, starts no run.
+	var fence models.Fence
+	if o.ha != nil {
+		fence = o.ha.rt
+		runManager.SetAdmission(func() error {
+			if fenceErr := fence.Check(); fenceErr != nil {
+				return fenceErr
+			}
+			return diskGuard.Admit()
+		})
+	}
 
 	// The outbound heartbeat: the global ping while the scheduler is healthy and the
 	// per-job start/success/fail pings. sched is assigned below, before Start runs
@@ -619,6 +652,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 		scheduler.WithPublisher(bus),
 		scheduler.WithRunObserver(heartbeatSvc),
+		scheduler.WithFence(fence),
 		scheduler.WithDiskGuard(diskGuard),
 		scheduler.WithConnectionResolver(connSvc),
 		scheduler.WithStorageTargets(targetSvc),
@@ -649,6 +683,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 	metricSet.SetSchedulerTickSource(sched.LastTick)
 	metricSet.SetSettingsWarningsSource(func() int { return len(settingsSvc.Warnings()) })
+	if o.ha != nil {
+		metricSet.SetHASource(o.ha.rt.metricsState)
+	}
 
 	// 6. Initialize the embedded web dashboard (only with cfg.Dashboard) & HTTP API.
 	// Without it the server has no "/" route and serves only the API, MCP and metrics.
@@ -714,7 +751,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{
-		Repo: metaStore,
+		Repo:  metaStore,
+		Fence: o.fence(),
 		OnWriteError: func(ctx context.Context, err error) {
 			diskGuard.Observe(ctx, err)
 		},
@@ -827,12 +865,26 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithPITR(pitrSvc),
 		server.WithHeartbeat(heartbeatSvc),
 	}
+	if o.ha != nil {
+		serverOpts = append(serverOpts, server.WithHA(o.ha.rt.serverStatus, metricSet.StandbyHandler()))
+	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
 	} else {
 		serverOpts = append(serverOpts, server.WithOIDCRef(oidcClient, oidcFlowRef))
 	}
 	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger, serverOpts...)
+
+	// The active instance of an HA cluster snapshots its database to the HA target,
+	// after every finished run and at least every snapshot interval.
+	var haSnap *ha.Snapshotter
+	if o.ha != nil && o.ha.active {
+		var snapErr error
+		if haSnap, snapErr = newHASnapshotter(cfg, o.ha.rt, metaStore, key.Key, logger); snapErr != nil {
+			return nil, snapErr
+		}
+		bus.Subscribe(kickOnFinishedRun(haSnap))
+	}
 
 	return &App{
 		cfg:           cfg,
@@ -864,6 +916,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		diskGuard:     diskGuard,
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
+		ha:            o.ha,
+		haKey:         haKey(o.ha, key.Key),
+		haSnap:        haSnap,
 	}, nil
 }
 
@@ -916,19 +971,20 @@ func (a *App) Close() error {
 // goroutine owned by the returned stop function. Stop must be called after every
 // event producer (HTTP server, scheduler) has stopped: it first drains the bus into
 // the notification queue and then drains the notification queue, each bounded by its
-// own drain timeout.
-func (a *App) startBackground() (stop func()) {
+// own drain timeout. A standby (HA) runs neither the notification outbox, the audit
+// log forwarder nor the heartbeat.
+func (a *App) startBackground(standby bool) (stop func()) {
 	busCtx, cancelBus := context.WithCancel(context.Background())
 	notifyCtx, cancelNotify := context.WithCancel(context.Background())
 
 	var busWG, notifyWG sync.WaitGroup
-	notifyWG.Add(1)
-	go func() {
-		defer notifyWG.Done()
-		if err := a.notifications.Run(notifyCtx); err != nil {
-			a.logger.Error("notification service stopped with error", slog.Any("error", err))
-		}
-	}()
+	if !standby {
+		notifyWG.Go(func() {
+			if err := a.notifications.Run(notifyCtx); err != nil {
+				a.logger.Error("notification service stopped with error", slog.Any("error", err))
+			}
+		})
+	}
 	busWG.Add(1)
 	go func() {
 		defer busWG.Done()
@@ -952,12 +1008,14 @@ func (a *App) startBackground() (stop func()) {
 	forwardCtx, cancelForward := context.WithCancel(context.Background())
 	var auditWG, forwardWG sync.WaitGroup
 	auditWG.Go(func() { a.auditLog.Run(auditCtx) })
-	forwardWG.Go(func() { a.auditForward.Run(forwardCtx) })
+	if !standby {
+		forwardWG.Go(func() { a.auditForward.Run(forwardCtx) })
+	}
 	// The heartbeat stops after the runs (Stop calls this after shutdownRuns), so the
 	// /fail pings of runs cancelled by the shutdown are still sent.
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
 	var heartbeatWG sync.WaitGroup
-	if a.heartbeat != nil {
+	if a.heartbeat != nil && !standby {
 		heartbeatWG.Go(func() { a.heartbeat.Run(heartbeatCtx) })
 	}
 	// The space guard retries the saves a full data directory failed; it stops
@@ -1250,11 +1308,22 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	standby := a.ha != nil && !a.ha.active
+	if standby {
+		// A standby runs nothing that writes to the storage, sends notifications or
+		// pings: its database is not the cluster's, and the active instance does
+		// all of that.
+		a.stopBackground = a.startBackground(true)
+		a.logger.Info("started as HA standby: scheduling, PITR collection, copies, integrity sweeps, metadata snapshots, notifications and the heartbeat wait for the HA lease",
+			slog.String("ha_cluster", a.ha.rt.cfg.Cluster))
+		return nil
+	}
+
 	a.failInterruptedRuns(ctx)
 
 	// Start the event bus and notification workers. Stop drains them after the
 	// producers (scheduler, runs) have stopped.
-	a.stopBackground = a.startBackground()
+	a.stopBackground = a.startBackground(false)
 
 	// Start background cron scheduler. It is stopped by shutdownRuns.
 	if err := a.scheduler.Start(ctx); err != nil {
@@ -1286,6 +1355,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.readiness != nil {
 		a.readiness.Start(context.WithoutCancel(ctx))
 	}
+	// HA: the metadata snapshots and the takeover tasks; stopped by stopLocked.
+	if a.ha != nil {
+		a.startHAActive(ctx)
+	}
 	return nil
 }
 
@@ -1306,6 +1379,7 @@ func (a *App) stopLocked() {
 		return
 	}
 	a.stopped = true
+	a.stopHAActive()
 	// Producers stop before the event-bus drain: cancel and await backups and
 	// restores so no mongodump/mongorestore outlives the process.
 	a.shutdownRuns()

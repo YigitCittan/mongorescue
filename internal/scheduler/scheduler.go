@@ -121,6 +121,65 @@ type Scheduler struct {
 	// diskGuard settles the backups whose final record cannot be saved (see
 	// WithDiskGuard).
 	diskGuard *diskguard.Guard
+	// fence stamps job runs with the HA epoch and must pass before anything fires
+	// (see WithFence); clockRef is the reference of the wall clock jump detection
+	// (see fenceAllows), guarded by mu.
+	fence    models.Fence
+	clockRef struct{ mono, wall time.Time }
+}
+
+// WithFence stamps every job run with the HA epoch of fence (active-passive HA).
+func WithFence(fence models.Fence) Option {
+	return func(s *Scheduler) { s.fence = fence }
+}
+
+// clockJumpThreshold is how far the wall clock may move apart from the monotonic
+// clock between two fires before the scheduler renews the HA lease first.
+const clockJumpThreshold = 30 * time.Second
+
+// fenceAllows reports whether the scheduler may fire now: always without an HA
+// fence, else only while the fence passes. When the wall clock moved apart from the
+// monotonic clock (a suspended machine or VM, whose monotonic clock may stand
+// still), the lease is renewed first, so a lease that expired meanwhile is seen
+// before anything runs.
+func (s *Scheduler) fenceAllows(ctx context.Context, what string) bool {
+	if s.fence == nil {
+		return true
+	}
+	mono, wall := time.Now(), s.clock().Round(0)
+	s.mu.Lock()
+	ref := s.clockRef
+	s.clockRef.mono, s.clockRef.wall = mono, wall
+	s.mu.Unlock()
+	if !ref.mono.IsZero() {
+		drift := wall.Sub(ref.wall) - mono.Sub(ref.mono)
+		if drift > clockJumpThreshold || drift < -clockJumpThreshold {
+			s.logger.Warn("the wall clock jumped; renewing the HA lease before anything runs", slog.Duration("jump", drift))
+			if r, ok := s.fence.(models.FenceRenewer); ok {
+				_ = r.Renew(ctx)
+			}
+		}
+	}
+	if err := s.fence.Check(); err != nil {
+		s.logger.Warn(what+" skipped: this instance does not hold the HA lease", logsafe.Error(err))
+		return false
+	}
+	return true
+}
+
+// checkFence returns the error of the HA fence (nil without one).
+func (s *Scheduler) checkFence() error {
+	if s.fence == nil {
+		return nil
+	}
+	return s.fence.Check()
+}
+
+// stampEpoch sets the HA epoch of run when it has none yet.
+func (s *Scheduler) stampEpoch(run *models.JobRun) {
+	if s.fence != nil && run != nil && run.HAEpoch == 0 {
+		run.HAEpoch = s.fence.Epoch()
+	}
 }
 
 // TickInterval is how often a running scheduler records a liveness tick (see
@@ -355,6 +414,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		prevCancel()
 	}
 	s.started = true
+	s.clockRef.mono, s.clockRef.wall = time.Now(), s.clock().Round(0)
 
 	if err := s.loadJobsLocked(); err != nil {
 		s.logger.Error("failed to load scheduled jobs; scheduled backups do not run until they load, retrying",
@@ -707,6 +767,7 @@ func (s *Scheduler) saveRun(ctx context.Context, run *models.JobRun) {
 	if run == nil {
 		return
 	}
+	s.stampEpoch(run)
 	if err := s.metadataStore.SaveJobRun(ctx, run); err != nil {
 		s.logger.Warn("failed to record the job run", slog.String("job_id", run.JobID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}

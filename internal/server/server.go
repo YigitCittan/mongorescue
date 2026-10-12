@@ -144,6 +144,11 @@ type Server struct {
 	// desktopCSP selects desktopContentSecurityPolicy (see WithDesktopCSP).
 	desktopCSP bool
 
+	// haStatus reports the role in an active-passive HA cluster (see WithHA); nil
+	// outside HA mode; standbyMetrics answers GET /metrics on a standby.
+	haStatus       func() HAStatus
+	standbyMetrics http.Handler
+
 	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
 	// usedStates remembers consumed states (see WithOIDC); nil in the desktop app.
 	oidc       *oidc.Client
@@ -265,7 +270,7 @@ func NewServer(
 	if s.desktopCSP {
 		csp = desktopContentSecurityPolicy
 	}
-	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.authMiddleware(mux))))
+	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.authMiddleware(mux)))))
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -301,6 +306,12 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down http server")
 	return s.httpServer.Shutdown(ctx)
+}
+
+// Close closes the listener and every connection at once, including long-lived
+// ones (event streams) that Shutdown would wait for.
+func (s *Server) Close() error {
+	return s.httpServer.Close()
 }
 
 // buildRoutes registers all API endpoints using Go 1.22 ServeMux method routing. The

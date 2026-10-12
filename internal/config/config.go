@@ -154,12 +154,14 @@ type Config struct {
 	// queue (behind older ones of its channel, or across a downtime) before it is
 	// dropped as stale.
 	NotificationMaxAge time.Duration
+	// HA holds the active-passive high availability settings (off by default).
+	HA HAConfig
 }
 
 // Default returns the defaults of the binary.
 func Default() *Config {
 	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo,
-		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge}
+		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge, HA: defaultHA()}
 }
 
 // FromEnv returns the defaults overridden by the bootstrap environment variables.
@@ -215,6 +217,9 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("%s: %w", EnvNotificationMaxAge, err)
 		}
 		cfg.NotificationMaxAge = d
+	}
+	if err := haFromEnv(&cfg.HA, getenv); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
@@ -276,6 +281,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s: %w", EnvMinFreeSpace, ErrInvalidMinFreeSpace)
 	case c.NotificationMaxAge != 0 && (c.NotificationMaxAge < MinNotificationMaxAge || c.NotificationMaxAge > MaxNotificationMaxAge):
 		return fmt.Errorf("%s: %w", EnvNotificationMaxAge, ErrInvalidNotificationMaxAge)
+	}
+	if err := c.HA.Validate(); err != nil {
+		return err
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/oplog"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -81,7 +82,11 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 
 	h := sha256.New()
 	counted := &hashReader{r: pr, h: h}
-	saved, saveErr := driver.Save(ctx, key, counted)
+	var saved *models.StorageObject
+	saveErr := w.svc.checkFence()
+	if saveErr == nil {
+		saved, saveErr = driver.Save(ctx, key, counted)
+	}
 	if saveErr != nil {
 		cancelRead()
 	}
@@ -116,6 +121,10 @@ func (w *worker) writeChunk(ctx context.Context, chainID string, rng pitr.OplogR
 	if saved != nil {
 		c.VersionID, c.RetainUntil = saved.VersionID, saved.RetainUntil
 	}
+	if err := w.svc.checkFence(); err != nil {
+		w.removeObject(ctx, driver, key)
+		return nil, 0, fmt.Errorf("commit the chunk: %w", err)
+	}
 	if err := w.svc.cfg.Repo.CommitChunk(ctx, c); err != nil {
 		if w.svc.cfg.OnWriteError != nil {
 			w.svc.cfg.OnWriteError(ctx, err)
@@ -148,8 +157,15 @@ func checkScan(sc *oplog.Scanner, stats pitr.OplogStats) error {
 
 // removeObject deletes an object that was not committed, detached from ctx's
 // cancellation. On a locked target the object cannot go before its lock ends: it is
-// left without a delete marker, so the orphan purge finds and deletes it then.
+// left without a delete marker, so the orphan purge finds and deletes it then. An
+// instance that lost the HA lease deletes nothing: the object stays an orphan,
+// since the active instance may write the same key.
 func (w *worker) removeObject(ctx context.Context, driver storage.Storage, key string) {
+	if err := w.svc.checkFence(); err != nil {
+		w.svc.logger.Warn("an uncommitted oplog chunk is left in place: this instance does not hold the HA lease",
+			logsafe.Attr("stream_id", w.stream.ID), logsafe.Attr("storage_key", key))
+		return
+	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if _, err := storage.Purge(cctx, driver, key, "", w.svc.now()); err != nil && !errors.Is(err, storage.ErrNotFound) {

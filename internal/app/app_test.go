@@ -68,7 +68,7 @@ func TestAppBackgroundLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
-	stop := application.startBackground()
+	stop := application.startBackground(false)
 	application.bus.Publish(context.Background(), events.Event{Type: events.BackupFailed, JobID: "job_x"})
 
 	done := make(chan struct{})
