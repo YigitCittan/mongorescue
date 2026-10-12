@@ -5,6 +5,7 @@ package chaos
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/mongoconn"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
 type pitrTS struct {
@@ -85,14 +88,37 @@ func (w *writer) halt() {
 	w.wg.Wait()
 }
 
+// lastWrite returns the optime of the member's last write (hello's lastWrite), at
+// or after every write it acknowledged.
+func (e *env) lastWrite(t *testing.T) pitrTS {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	var hello struct {
+		LastWrite struct {
+			OpTime struct {
+				TS bson.Timestamp `bson:"ts"`
+			} `bson:"opTime"`
+		} `bson:"lastWrite"`
+	}
+	if err := e.Mongo.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ts := hello.LastWrite.OpTime.TS
+	if ts.IsZero() {
+		t.Fatal("hello reports no last write")
+	}
+	return pitrTS{T: ts.T, I: ts.I}
+}
+
 // TestPrimaryStepdownDuringPITR steps the primary down while a PITR stream collects
 // the oplog (15 s chunks) and a writer inserts a document every 50 ms, retrying
 // through the election.
 //
 // Expected: the collector carries on after the election: the stream keeps one
 // chain (no chain break, no pitr.chain_broken), its chunks are contiguous (each
-// starts where the previous one ended); and a point-in-time restore to the moment
-// after the last write holds exactly the documents written: no gap and no
+// starts where the previous one ended); and a point-in-time restore to the oplog
+// position after the last write holds exactly the documents written: no gap and no
 // duplicate.
 func TestPrimaryStepdownDuringPITR(t *testing.T) {
 	e := requireEnv(t)
@@ -138,13 +164,26 @@ func TestPrimaryStepdownDuringPITR(t *testing.T) {
 	time.Sleep(40 * time.Second)
 	w.halt()
 	written := w.next.Load()
-	lastWrite := time.Now().UTC()
-	t.Logf("%d documents written across the stepdown", written)
+	// The target is the oplog position right after the last write, not this
+	// machine's clock: the oplog's seconds never go back, so after a step back of the
+	// system clock (the clock scenarios share this mongod) they stay ahead of the
+	// wall clock until it catches up, and a wall-clock target would lie before every
+	// base backup. The limit is exclusive, so the last write is replayed.
+	last := e.lastWrite(t)
+	limit := pitrTS{T: last.T, I: last.I + 1}
+	t.Logf("%d documents written across the stepdown, the last at or before %d:%d", written, last.T, last.I)
 
+	less := func(a, b pitrTS) bool { return a.T < b.T || a.T == b.T && a.I < b.I }
+	chunks := func() []pitrChunk {
+		var page struct {
+			Chunks []pitrChunk `json:"chunks"`
+		}
+		r.api.data("GET", "/api/v1/pitr/streams/"+streamID+"/chunks?limit=500", nil, http.StatusOK, &page)
+		return page.Chunks
+	}
 	waitFor(t, 3*time.Minute, "the chunks to cover the last write", func() bool {
-		s := status()
-		for _, win := range s.Windows {
-			if win.Open && win.EndTime.After(lastWrite.Add(time.Second)) {
+		for _, c := range chunks() {
+			if c.Status == "committed" && !less(c.To, limit) {
 				return true
 			}
 		}
@@ -157,31 +196,27 @@ func TestPrimaryStepdownDuringPITR(t *testing.T) {
 	if got := r.hook.find("pitr.chain_broken", "", ""); len(got) > 0 {
 		t.Fatalf("pitr.chain_broken fired: %v", got)
 	}
-	var page struct {
-		Chunks []pitrChunk `json:"chunks"`
-	}
-	r.api.data("GET", "/api/v1/pitr/streams/"+streamID+"/chunks?limit=500", nil, http.StatusOK, &page)
+	all := chunks()
 	// By start, then end: the first chunk of a chain holds only its start entry
 	// ([From, From], read inclusively) and the next one starts there.
-	less := func(a, b pitrTS) bool { return a.T < b.T || a.T == b.T && a.I < b.I }
-	sort.Slice(page.Chunks, func(i, j int) bool {
-		a, b := page.Chunks[i], page.Chunks[j]
+	sort.Slice(all, func(i, j int) bool {
+		a, b := all[i], all[j]
 		if a.From != b.From {
 			return less(a.From, b.From)
 		}
 		return less(a.To, b.To)
 	})
-	for i := 1; i < len(page.Chunks); i++ {
-		prev, cur := page.Chunks[i-1], page.Chunks[i]
+	for i := 1; i < len(all); i++ {
+		prev, cur := all[i-1], all[i]
 		if cur.ChainID != prev.ChainID || cur.From != prev.To {
 			t.Fatalf("chunks %s and %s are not contiguous: %+v then %+v", prev.ID, cur.ID, prev, cur)
 		}
 	}
-	t.Logf("%d contiguous chunks in one chain", len(page.Chunks))
+	t.Logf("%d contiguous chunks in one chain", len(all))
 
 	var accepted models.RestoreRecord
 	r.api.data("POST", "/api/v1/restore", map[string]any{
-		"pitr": map[string]any{"stream_id": streamID, "at": lastWrite.Add(time.Second).Format(time.RFC3339)}, "databases": []string{db},
+		"pitr": map[string]any{"stream_id": streamID, "ts": limit}, "databases": []string{db},
 	}, http.StatusAccepted, &accepted)
 	rst := r.waitRestore(accepted.ID)
 	if rst.Status != models.RestoreStatusCompleted || rst.PITR == nil || len(rst.PITR.Clones) == 0 {
@@ -207,5 +242,41 @@ func TestPrimaryStepdownDuringPITR(t *testing.T) {
 	if err := e.Mongo.Database(clone).Collection("events").FindOne(ctx, bson.D{},
 		options.FindOne().SetSort(bson.D{{Key: "_id", Value: -1}})).Decode(&maxDoc); err != nil || maxDoc.ID != written-1 {
 		t.Fatalf("the newest document of the clone is %d (%v); want %d", maxDoc.ID, err, written-1)
+	}
+}
+
+// TestOplogPinDuringStepdown pins the PITR collector's oplog reader while the
+// member is a secondary (stepped down for ten seconds), through the suite's
+// directConnection=true URI on a mapped port. The member advertises its address
+// inside the container (127.0.0.1:27017), which is not reachable from here.
+//
+// Expected: the reader is bound to the connected address and reads the oplog
+// window; it never dials the advertised one.
+func TestOplogPinDuringStepdown(t *testing.T) {
+	e := requireEnv(t)
+	u, err := url.Parse(e.MongoURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	s, err := mongoconn.New().OpenOplogSession(ctx, e.MongoURI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e.stepDown(t, 10)
+	t.Cleanup(func() { e.waitPrimary(t) })
+	// The stepdown closes connections: retry until a pin lands on the secondary.
+	var m *mongoconn.OplogMember
+	waitFor(t, 8*time.Second, "a pin on the stepped-down member", func() bool {
+		m, err = s.Pin(ctx, pitr.Timestamp{})
+		return err == nil && m.Host() != ""
+	})
+	if m.Host() != u.Host {
+		t.Fatalf("pinned to %q; want the connected address %q", m.Host(), u.Host)
+	}
+	if _, err = m.OplogWindow(ctx); err != nil {
+		t.Fatalf("read the oplog window of the pinned secondary: %v", err)
 	}
 }

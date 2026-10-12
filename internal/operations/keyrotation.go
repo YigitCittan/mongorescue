@@ -30,8 +30,10 @@ const (
 type SecretKeyRotator interface {
 	// FromEnv reports a key from MONGORESCUE_SECRET_KEY, which cannot be rotated.
 	FromEnv() bool
-	// RotateAs rotates the key on behalf of actor, for approval approvalID.
-	RotateAs(ctx context.Context, actor, approvalID string) (*keyrotation.Result, error)
+	// RotateAs rotates the key on behalf of actor, for approval approvalID, and
+	// calls announce once the rotation took effect, before it is marked finished
+	// (see keyrotation.AnnounceFunc).
+	RotateAs(ctx context.Context, actor, approvalID string, announce keyrotation.AnnounceFunc) (*keyrotation.Result, error)
 }
 
 // RotateSecretKey rotates secret.key: every sealed credential is re-sealed under a
@@ -71,7 +73,13 @@ func (s *Service) RotateSecretKey(ctx context.Context) (*keyrotation.Result, err
 	if a := approvalOf(ctx); a != nil {
 		approvalID = a.approval.ID
 	}
-	res, err := r.RotateAs(ctx, by, approvalID)
+	// The alert is stored before the rotation is marked finished: a crash in
+	// between leaves the marker, and the next start announces it again.
+	announced := false
+	res, err := r.RotateAs(ctx, by, approvalID, func(ctx context.Context, res *keyrotation.Result) {
+		announced = true
+		s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint, res.Skipped...)
+	})
 	if errors.Is(err, keyrotation.ErrIncomplete) && res != nil {
 		// The database uses the new key; the next start installs the key file and
 		// sends security.key_rotated then. The audit entry records it now.
@@ -82,7 +90,9 @@ func (s *Service) RotateSecretKey(ctx context.Context) (*keyrotation.Result, err
 	if err != nil {
 		return nil, err
 	}
-	s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint, res.Skipped...)
+	if !announced {
+		s.keyRotated(ctx, KeyKindSecretKey, res.OldFingerprint, res.NewFingerprint, res.Skipped...)
+	}
 	return res, nil
 }
 
@@ -98,7 +108,7 @@ func (s *Service) KeyRotationCompleted(ctx context.Context, m *store.KeyRotation
 		by = "unknown"
 	}
 	detail := "old fingerprint " + m.OldFingerprint + ", new fingerprint " + m.NewFingerprint + " (completed at startup)"
-	s.publish(context.WithoutCancel(ctx), events.SecurityEvent(events.SecurityKeyRotated, s.now(), KeyKindSecretKey, by, m.ApprovalID, detail))
+	s.alert(context.WithoutCancel(ctx), events.SecurityEvent(events.SecurityKeyRotated, s.now(), KeyKindSecretKey, by, m.ApprovalID, detail))
 	if s.cfg.Audit != nil {
 		s.cfg.Audit.Record(context.WithoutCancel(ctx), systemAudit(s.now(), "keyrotation.completed", map[string]any{
 			"kind": KeyKindSecretKey, "old_fingerprint": m.OldFingerprint, "new_fingerprint": m.NewFingerprint,
@@ -128,7 +138,7 @@ func (s *Service) keyRotated(ctx context.Context, kind, oldFP, newFP string, ski
 	if a := approvalOf(ctx); a != nil {
 		e.ApprovalID = a.approval.ID
 	}
-	s.publish(context.WithoutCancel(ctx), e)
+	s.alert(context.WithoutCancel(ctx), e)
 	auditlog.Annotate(ctx, "key_rotated", kind)
 	auditlog.Annotate(ctx, "old_fingerprint", oldFP)
 	auditlog.Annotate(ctx, "new_fingerprint", newFP)

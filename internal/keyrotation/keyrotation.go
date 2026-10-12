@@ -11,7 +11,8 @@
 //     rotation survives a power loss);
 //  4. the old key is written to secret.key.previous;
 //  5. secret.key.next is renamed to secret.key;
-//  6. the marker row is removed.
+//  6. the rotation is announced (AnnounceFunc: the alert is stored durably);
+//  7. the marker row is removed.
 //
 // A crash may stop it after any step. Open, at the next start, settles it from what
 // it finds: when secret.key opens the database, the rotation either completed (its
@@ -284,6 +285,7 @@ const (
 	StepCommitted    Step = "committed"
 	StepPreviousKept Step = "previous_kept"
 	StepInstalled    Step = "installed"
+	StepAnnounced    Step = "announced"
 )
 
 // Result describes a finished rotation. It never carries key material.
@@ -412,16 +414,24 @@ func (r *Rotator) fault(step Step) error {
 	return nil
 }
 
+// AnnounceFunc records a rotation that took effect, durably (the
+// security.key_rotated alert). RotateAs calls it once the new key file is installed
+// and before the rotation marker is removed: a crash before it returns leaves the
+// marker, so the next start completes the rotation and announces it
+// (Opened.Completed). A rotation is announced at least once.
+type AnnounceFunc func(ctx context.Context, res *Result)
+
 // Rotate generates a new key, re-seals the database under it and installs it as
 // secret.key (see the package comment). Everyone has to sign in again afterwards.
 func (r *Rotator) Rotate(ctx context.Context) (*Result, error) {
-	return r.RotateAs(ctx, "", "")
+	return r.RotateAs(ctx, "", "", nil)
 }
 
 // RotateAs is Rotate on behalf of actor, approved by approval approvalID (both may
-// be empty). They are kept in the rotation marker, so the security.key_rotated event
-// of a rotation that only completes at the next start still names them.
-func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string) (*Result, error) {
+// be empty), calling announce (when set) before the marker goes. Actor and approval
+// are kept in the rotation marker, so the security.key_rotated event of a rotation
+// that only completes at the next start still names them.
+func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string, announce AnnounceFunc) (*Result, error) {
 	if r.cfg.HAMode {
 		return nil, ErrHAMode
 	}
@@ -538,13 +548,20 @@ func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string) (*Resu
 	if err = r.fault(StepInstalled); err != nil {
 		return nil, err
 	}
+	result := &Result{OldFingerprint: oldFP, NewFingerprint: newFP, Resealed: res.Resealed,
+		SessionsRevoked: res.SessionsRevoked, Skipped: res.Skipped, RotatedAt: r.cfg.Now().UTC()}
+	if announce != nil {
+		announce(ctx, result)
+	}
+	if err = r.fault(StepAnnounced); err != nil {
+		return nil, err
+	}
 	if err = r.cfg.Store.EndKeyRotation(ctx); err != nil {
 		// The next start clears the marker (secret.key matches its new fingerprint).
 		log.Warn("secret key rotation: could not clear the rotation marker", logsafe.Error(err))
 	}
 	log.Info("secret key rotated", slog.Int("resealed", res.Resealed), slog.Int("sessions_revoked", res.SessionsRevoked))
-	return &Result{OldFingerprint: oldFP, NewFingerprint: newFP, Resealed: res.Resealed,
-		SessionsRevoked: res.SessionsRevoked, Skipped: res.Skipped, RotatedAt: r.cfg.Now().UTC()}, nil
+	return result, nil
 }
 
 // abort undoes a rotation that never committed: the next key file and the marker go.

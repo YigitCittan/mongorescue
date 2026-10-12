@@ -122,6 +122,22 @@ func copyDir(t *testing.T, src, dst string) {
 
 const migrationLine = "applied metadata schema migration"
 
+// committedMigrations returns how many schema migrations past fixtureVersion the
+// metadata database in dataDir has committed.
+func committedMigrations(t *testing.T, dataDir string) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "mongorescue.db")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err = db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version > ?", fixtureVersion).Scan(&n); err != nil {
+		t.Fatalf("read the committed migrations: %v", err)
+	}
+	return n
+}
+
 // TestKillDuringMigration upgrades the metadata database of an older schema with
 // the current binary and SIGKILLs it right after each schema migration it logs
 // (from inside the write of the log line) and at points spread over the rest of its
@@ -176,13 +192,19 @@ func TestKillDuringMigration(t *testing.T) {
 			time.Sleep(delay)
 			victim.kill()
 		}
-		before := strings.Count(victim.logs.String(), migrationLine)
+		logged := strings.Count(victim.logs.String(), migrationLine)
 		integrityCheck(t, work)
+		// The killed file is the truth: a migration is logged after its commit, so a
+		// kill between the two leaves one committed migration unlogged, never more.
+		before := committedMigrations(t, work)
+		if before < logged || before > logged+1 {
+			t.Fatalf("kill point %d: %d migrations committed before the kill, %d logged", i, before, logged)
+		}
 
 		next := startProc(t, binary(t), work, port)
 		after := strings.Count(next.logs.String(), migrationLine)
 		if before+after != applied {
-			t.Fatalf("kill point %d: %d migrations before the kill and %d after, want %d in all", i, before, after, applied)
+			t.Fatalf("kill point %d: %d migrations committed before the kill and %d applied after, want %d in all", i, before, after, applied)
 		}
 		a := newAPI(t, next.base)
 		match := setupCodePattern.FindStringSubmatch(next.logs.String())
@@ -238,7 +260,7 @@ func TestKillDuringMigration(t *testing.T) {
 				t.Fatalf("kill point %d: the connection password is still stored in plaintext in %s", i, filepath.Base(f))
 			}
 		}
-		t.Logf("kill point %d (after %d logged migrations or %s): killed after %d migrations, the restart applied %d", i, k, delay, before, after)
+		t.Logf("kill point %d (after %d logged migrations or %s): killed after %d committed migrations (%d logged), the restart applied %d", i, k, delay, before, logged, after)
 		return before
 	}
 

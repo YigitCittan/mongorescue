@@ -139,11 +139,7 @@ test-desktop-update-e2e:
 
 ## fuzz: Runs each fuzz target in FUZZ_TARGETS for FUZZTIME (default 30s), one after another
 fuzz:
-	@set -e; for target in $(FUZZ_TARGETS); do \
-		pkg=$${target%%:*}; name=$${target##*:}; \
-		echo "==> Fuzzing $$name in $$pkg for $(FUZZTIME)..."; \
-		go test -run='^$$' -fuzz="^$$name\$$" -fuzztime=$(FUZZTIME) $$pkg; \
-	done
+	@./scripts/fuzz.sh $(FUZZTIME) $(FUZZ_TARGETS)
 
 ## clean: Removes build artifacts
 clean:

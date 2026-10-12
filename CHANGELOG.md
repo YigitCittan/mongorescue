@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Cancelling a run at the moment it starts no longer races with the opening of its log (found by the race detector on Windows CI).
 - The PITR collector could end a healthy chain as `diverged` (`pitr.diverged`) right after a former primary rejoined its replica set. Its oplog reads "on the primary" (confirming a gap or divergence, and reading chunks when no secondary is current) went to any secondary under the session's `secondaryPreferred` read preference. When that secondary was the former primary, which had not yet rolled back, the newest stored entry seemed to be missing. These reads now go to the primary (found by the nightly replica set scenarios).
+- The connection defaults (`authSource`, `serverSelectionTimeoutMS`, `connectTimeoutMS`) handed to the Database Tools were merged into the last option's value when that value ended in `?` (e.g. `appName=a?`), so they did not apply (found by the nightly fuzzing).
+- The PITR oplog filter refuses a transaction entry that is not on `admin.$cmd` as malformed instead of copying it with its namespace unchecked (found by the nightly fuzzing).
+- A `security.key_rotated` alert could be lost when the process died right after a rotation finished: it went through the in-memory event queue. Key rotation alerts are now stored in the notification outbox before the rotation is marked finished and the request answered, and a crash before that leaves the rotation marker, so the next start sends the alert (at least once).
+- The PITR collector of a connection with `directConnection=true` failed while its member was a secondary (during a stepdown, or for good when connected to a secondary): it dialled the address the member advertises, which is unreachable behind a port mapping or proxy. It now reads from the connected address.
 
 ## [0.26.0] - 2026-10-12
 
