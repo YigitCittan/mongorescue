@@ -41,7 +41,7 @@ The suffix is appended to the URL's path; a query string is kept (`https://push.
 
 ## Health check
 
-`GET /api/v1/health` (no authentication) answers `503` with `"scheduler": "stale"` when the scheduler's last liveness tick is older than 90 seconds (three ticks), and `200` with `"scheduler": "ok"` and `scheduler_last_tick` otherwise; `status` keeps its value, so checks must read the HTTP status or `scheduler` (see [api.md](api.md#health)). The Docker image's `HEALTHCHECK` uses it, so a container with a hung scheduler is reported unhealthy; point load balancer and uptime checks at it too.
+`GET /api/v1/health` (no authentication) answers `503` with `"scheduler": "stale"` when the scheduler's last liveness tick is older than 90 seconds (three ticks), and `200` with `"scheduler": "ok"` and `scheduler_last_tick` otherwise; `status` keeps its value, so checks must read the HTTP status or `scheduler` (see [api.md](api.md#health)). The Docker image's `HEALTHCHECK` uses it, so a container with a hung scheduler is reported unhealthy; point load balancer and uptime checks at it too. In [active-passive HA mode](production.md#high-availability) it adds `role` (`active` or `standby`) and `ha` (cluster, epoch, holder, lease health); a standby answers `200` with `"scheduler": "not_started"`.
 
 ### Clock steps
 
@@ -67,6 +67,7 @@ Scheduled jobs follow the wall clock, since cron expressions name wall-clock tim
 | `MongoRescueRestoreTestFailed` | warning | An automated restore test failed or found differences in the last 24 hours |
 | `MongoRescueMetadataBackupFailed` | warning | A [metadata snapshot](production.md#metadata-backups) failed in the last 24 hours |
 | `MongoRescueSettingsWarning` | warning | A settings warning (encryption off, recovery kit missing or outdated, ...) has been active for an hour |
+| `MongoRescueHANoActiveInstance` | critical | No instance of an [active-passive HA cluster](production.md#high-availability) has reported `role="active"` for a minute (twice the default lease TTL), while one of them exported `mongorescue_ha_role` in the last 10 minutes |
 
 Load the file in `prometheus.yml`. The rules work with a default [scrape configuration](metrics.md#scrape-configuration) under any scrape job name: they select no job and do not need `honor_labels`. By default Prometheus renames the `job` label of per-job series (the MongoRescue job ID) to `exported_job`; the rules group by `job` and `exported_job` and name the job from whichever holds it, so `honor_labels: true` works too.
 

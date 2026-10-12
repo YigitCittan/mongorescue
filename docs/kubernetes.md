@@ -140,10 +140,44 @@ ingress:
 | `config.shutdownGrace` | `MONGORESCUE_SHUTDOWN_GRACE` | `terminationGracePeriodSeconds` − 60 s |
 | `config.toolsDir` | `MONGORESCUE_TOOLS_DIR` | the tools in the image |
 | `secretKey.*` | `MONGORESCUE_SECRET_KEY` | a generated Secret |
+| `ha.*` | `MONGORESCUE_HA_*` ([high availability](#high-availability)) | off |
 | `extraEnv`, `extraEnvFrom` | any variable, e.g. `AWS_*` for S3 targets without static keys | none |
 | `extraVolumes`, `extraVolumeMounts` | e.g. a CA bundle for MongoDB TLS | none |
 
 The data directory (`/data`), host and port (`0.0.0.0:8080`) are fixed by the chart. Every other setting lives in the database: see [configuration.md](configuration.md).
+
+## High availability
+
+The StatefulSet keeps one replica: its data directory belongs to one process. For [active-passive high availability](production.md#high-availability), install the chart **twice** (two releases, each with its own data claim), ideally on different nodes or zones, with the same `ha` values and the same secret key:
+
+```bash
+kubectl create secret generic mongorescue-key --from-literal=secret-key="$(openssl rand -base64 32)"
+kubectl create secret generic mongorescue-ha-s3 --from-literal=AWS_ACCESS_KEY_ID=... --from-literal=AWS_SECRET_ACCESS_KEY=...
+cat > ha-values.yaml <<'EOF'
+secretKey:
+  existingSecret: mongorescue-key
+ha:
+  enabled: true
+  target: s3://mongorescue-ha/prod?region=eu-central-1
+  cluster: prod
+extraEnvFrom:
+  - secretRef:
+      name: mongorescue-ha-s3
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: topology.kubernetes.io/zone
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongorescue
+EOF
+helm install mongorescue-a deploy/helm/mongorescue -f ha-values.yaml
+helm install mongorescue-b deploy/helm/mongorescue -f ha-values.yaml
+```
+
+The chart refuses `ha.enabled` without `secretKey.existingSecret` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves the dashboard read-only and answers changes with `503`. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`), or put both behind one Service and expect `503` from the standby for changes. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
 
 ## Upgrades and backups of MongoRescue itself
 

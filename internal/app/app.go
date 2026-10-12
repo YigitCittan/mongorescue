@@ -30,6 +30,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/copies"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
@@ -156,6 +157,10 @@ type App struct {
 	// mode, see RunHA); haKey is the secret key, which seals the HA snapshots.
 	ha    *haRole
 	haKey []byte
+	// haSnap writes the metadata snapshots of the active instance; haTasks owns its
+	// loop and the takeover tasks (see startHAActive).
+	haSnap  *ha.Snapshotter
+	haTasks haTasks
 }
 
 // options holds optional App settings.
@@ -862,6 +867,17 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	}
 	srv := server.NewServer(cfg, metaStore, backupEngine, restoreEngine, nil, sched, subFS, logger, serverOpts...)
 
+	// The active instance of an HA cluster snapshots its database to the HA target,
+	// after every finished run and at least every snapshot interval.
+	var haSnap *ha.Snapshotter
+	if o.ha != nil && o.ha.active {
+		var snapErr error
+		if haSnap, snapErr = newHASnapshotter(cfg, o.ha.rt, metaStore, key.Key, logger); snapErr != nil {
+			return nil, snapErr
+		}
+		bus.Subscribe(kickOnFinishedRun(haSnap))
+	}
+
 	return &App{
 		cfg:           cfg,
 		toolsTemp:     toolsTemp,
@@ -894,6 +910,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		dirLock:       dirLock,
 		ha:            o.ha,
 		haKey:         haKey(o.ha, key.Key),
+		haSnap:        haSnap,
 	}, nil
 }
 
@@ -1330,6 +1347,10 @@ func (a *App) Start(ctx context.Context) error {
 	if a.readiness != nil {
 		a.readiness.Start(context.WithoutCancel(ctx))
 	}
+	// HA: the metadata snapshots and the takeover tasks; stopped by stopLocked.
+	if a.ha != nil {
+		a.startHAActive(ctx)
+	}
 	return nil
 }
 
@@ -1350,6 +1371,7 @@ func (a *App) stopLocked() {
 		return
 	}
 	a.stopped = true
+	a.stopHAActive()
 	// Producers stop before the event-bus drain: cancel and await backups and
 	// restores so no mongodump/mongorestore outlives the process.
 	a.shutdownRuns()

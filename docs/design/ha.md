@@ -106,9 +106,9 @@ A graceful shutdown of the active instance (`SIGTERM`) drains like a single inst
 
 - Written by the active instance only, through the fencing check, after every finished backup, restore or job run (debounced to one per 10 s) and at least every `MONGORESCUE_HA_SNAPSHOT_INTERVAL` (default 5 minutes).
 - Key: `_mongorescue/metadata/ha/<cluster>/mongorescue-<UTC time>Z-e<epoch>.db.age`. It does not collide with the per-installation self-backups under `_mongorescue/metadata/<install_id>/`.
-- `VACUUM INTO` a temporary file, then age encryption with a passphrase derived from `secret.key` (so a standby needs nothing but the shared key), then upload. The data never passes through memory as a whole.
+- `VACUUM INTO` a temporary file, then age encryption with a passphrase derived from `secret.key` (an HKDF subkey; scrypt work factor 10, since the passphrase is a random 256-bit key), then upload. A standby needs nothing but the shared key, and an instance with another key refuses to start: at startup it checks the lease's `key_id` and decrypts the start of the newest snapshot. The data never passes through memory as a whole.
 - Retention keeps the newest 12 snapshots and never deletes the newest one.
-- Storage targets, connections, jobs, users, settings and the age identity (when stored in the settings) travel with the snapshot. An age identity **file** is read from its path, so mount it on both instances.
+- Storage targets, connections, jobs, users and settings, the backup encryption keys among them (sealed with `secret.key`), travel with the snapshot.
 
 ## Configuration
 

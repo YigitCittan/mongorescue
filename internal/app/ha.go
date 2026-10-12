@@ -80,6 +80,11 @@ type haRuntime struct {
 	mu      sync.RWMutex
 	manager *ha.Manager
 	store   storage.Storage
+	// key is the secret key (the snapshots' passphrase derives from it).
+	key []byte
+	// since is the creation time of the snapshot the last takeover restored or
+	// kept; zero when there was none. Archives written after it are imported.
+	since time.Time
 
 	// lastTakeover holds the duration of the last takeover in seconds (float64
 	// bits).
@@ -91,6 +96,20 @@ func (rt *haRuntime) mgr() *ha.Manager {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.manager
+}
+
+// storage returns the driver of the HA target.
+func (rt *haRuntime) storage() storage.Storage {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.store
+}
+
+// takeoverSince returns the creation time of the snapshot of the last takeover.
+func (rt *haRuntime) takeoverSince() time.Time {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.since
 }
 
 // Check implements models.Fence: nil while this instance holds the lease.
@@ -193,6 +212,8 @@ type haSupervisor struct {
 	logger *slog.Logger
 	opts   []Option
 	rt     *haRuntime
+	// onActive, when set, is called with every App that started as active (tests).
+	onActive func(*App)
 }
 
 // open builds the App of a role.
@@ -293,7 +314,7 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 		return err
 	}
 	s.rt.mu.Lock()
-	s.rt.manager, s.rt.store = mgr, st
+	s.rt.manager, s.rt.store, s.rt.key = mgr, st, slices.Clone(app.haKey)
 	s.rt.mu.Unlock()
 	return nil
 }
@@ -413,6 +434,9 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 		return false, err
 	}
 	errCh := serve(app)
+	if s.onActive != nil {
+		s.onActive(app)
+	}
 	epoch := mgr.Epoch()
 	s.rt.lastTakeover.Store(math.Float64bits(time.Since(start).Seconds()))
 	s.recordActiveEpoch(epoch)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // haTestKey is the secret key shared by the members of a test cluster.
@@ -169,21 +171,28 @@ func waitRole(t *testing.T, port int, role string, within time.Duration) {
 	t.Fatalf("the member on port %d did not become %s within %s (now %q)", port, role, within, roleOf(port))
 }
 
+// haMarker is a state document the test writes on the active member and reads on
+// the member that takes over.
+const haMarker = "ha_test.marker"
+
 // TestSupervisorHandsOverBetweenTwoMembers runs two members of a cluster in the
 // process: the first becomes active, the second standby; a graceful stop of the
-// active member releases the lease and the standby takes over at its next read; a
-// restarted member comes back as standby.
+// active member writes a last snapshot and releases the lease, and the standby takes
+// over at its next read with the first member's metadata (its own database kept as
+// .bak); a restarted member comes back as standby.
 func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs two HA members for several seconds")
 	}
 	shared, key := t.TempDir(), haTestKey(t)
 	cfgA, cfgB := haTestConfig(t, shared, key), haTestConfig(t, shared, key)
+	handedOver := make(chan string, 4)
 
-	start := func(cfg *config.Config) (stop func() error) {
+	start := func(cfg *config.Config, onActive func(*App)) (stop func() error) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		sup := newTestSupervisor(t, cfg)
+		sup.onActive = onActive
 		go func() { done <- sup.run(ctx) }()
 		return func() error {
 			cancel()
@@ -197,9 +206,21 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 		}
 	}
 
-	stopA := start(cfgA)
+	stopA := start(cfgA, func(app *App) {
+		if err := app.metaStore.(*store.SQLiteStore).SaveIntegrityState(context.Background(), haMarker, map[string]string{"from": "A"}); err != nil {
+			t.Error(err)
+		}
+	})
 	waitRole(t, cfgA.Port, "active", 10*time.Second)
-	stopB := start(cfgB)
+	stopB := start(cfgB, func(app *App) {
+		var v map[string]string
+		ok, err := app.metaStore.(*store.SQLiteStore).LoadIntegrityState(context.Background(), haMarker, &v)
+		if err != nil || !ok {
+			handedOver <- ""
+			return
+		}
+		handedOver <- v["from"]
+	})
 	waitRole(t, cfgB.Port, "standby", 10*time.Second)
 	if roleOf(cfgA.Port) != "active" {
 		t.Fatal("the first member lost the active role when the second joined")
@@ -210,8 +231,19 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	}
 	// The lease was released: the standby takes over at its next read.
 	waitRole(t, cfgB.Port, "active", 3*cfgB.HA.RenewInterval+5*time.Second)
+	select {
+	case from := <-handedOver:
+		if from != "A" {
+			t.Fatalf("the new active member does not have the metadata of the previous one (marker %q)", from)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new active member did not start")
+	}
+	if _, err := os.Stat(cfgB.MetadataDBPath() + store.BackupSuffix); err != nil {
+		t.Fatalf("the standby's own database was not kept as .bak: %v", err)
+	}
 
-	stopA = start(cfgA)
+	stopA = start(cfgA, nil)
 	waitRole(t, cfgA.Port, "standby", 10*time.Second)
 	time.Sleep(2 * cfgA.HA.RenewInterval)
 	if roleOf(cfgA.Port) != "standby" || roleOf(cfgB.Port) != "active" {
@@ -222,5 +254,35 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	}
 	if err := stopA(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStartupRefusesAnotherSecretKey(t *testing.T) {
+	shared := t.TempDir()
+	cfgA := haTestConfig(t, shared, haTestKey(t))
+	supA := newTestSupervisor(t, cfgA)
+	app, err := supA.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = supA.bootstrap(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	_ = app.Close()
+	// A writes the lease.
+	supA.rt.mgr().Step(context.Background())
+	if supA.rt.mgr().Role() != ha.RoleActive {
+		t.Fatal("the first member did not acquire the lease")
+	}
+
+	cfgB := haTestConfig(t, shared, haTestKey(t))
+	supB := newTestSupervisor(t, cfgB)
+	appB, err := supB.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appB.Close()
+	if err = supB.bootstrap(context.Background(), appB); !errors.Is(err, ha.ErrKeyMismatch) {
+		t.Fatalf("bootstrap with another secret key = %v; want ErrKeyMismatch", err)
 	}
 }
