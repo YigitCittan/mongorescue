@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/events"
@@ -199,6 +200,9 @@ func (s *Service) dispatch(ctx context.Context) {
 // outbox write failed follows its in-memory state (see heldDelivery): one that was
 // delivered or given up is never sent again, only its removal is retried.
 func (s *Service) dispatchDue(ctx context.Context) time.Duration {
+	// Taken before the outbox is read: a delivery of a channel that settles after
+	// this point may have removed a head the read still returns (see claim).
+	settled := s.settledSnapshot()
 	heads, err := s.outbox.OutboxHeads(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -209,7 +213,9 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 	now := time.Now()
 	wait := outboxIdle
 	for _, h := range heads {
-		if s.inFlight(h.ChannelID) {
+		if !s.idle(h.ChannelID, settled[h.ChannelID]) {
+			// In flight, or settled since the read: its settle wakes the
+			// dispatcher, and the next read is current.
 			continue
 		}
 		if held, ok := s.heldState(h.ID); ok {
@@ -254,12 +260,14 @@ func (s *Service) dispatchDue(ctx context.Context) time.Duration {
 			wait = min(wait, s.discard(ctx, h, "channel disabled"))
 			continue
 		}
-		s.setInFlight(h.ChannelID, true)
+		if !s.claim(h.ChannelID, settled[h.ChannelID]) {
+			continue
+		}
 		d := delivery{channel: ch, msg: Render(h.Event), outboxID: h.ID, attempts: h.Attempts}
 		select {
 		case s.queue <- d:
 		case <-ctx.Done():
-			s.setInFlight(h.ChannelID, false)
+			s.unclaim(h.ChannelID)
 			return 0
 		}
 	}
@@ -370,23 +378,45 @@ func (s *Service) remove(ctx context.Context, id int64) time.Duration {
 	return wait
 }
 
-// inFlight reports whether a delivery of channel id is being sent.
-func (s *Service) inFlight(id string) bool {
+// settledSnapshot returns the settled counters of every channel (see
+// Service.settled).
+func (s *Service) settledSnapshot() map[string]uint64 {
 	s.flightMu.Lock()
 	defer s.flightMu.Unlock()
-	_, ok := s.flight[id]
-	return ok
+	return maps.Clone(s.settled)
 }
 
-// setInFlight marks (or clears) a delivery of channel id as being sent.
-func (s *Service) setInFlight(id string, on bool) {
+// idle reports whether channel id has no delivery in flight and none settled since
+// its counter read seen.
+func (s *Service) idle(id string, seen uint64) bool {
 	s.flightMu.Lock()
 	defer s.flightMu.Unlock()
-	if on {
-		s.flight[id] = struct{}{}
-	} else {
-		delete(s.flight, id)
+	_, busy := s.flight[id]
+	return !busy && s.settled[id] == seen
+}
+
+// claim marks a delivery of channel id as being sent, unless one is in flight or
+// one settled since the outbox read made with counter seen. A settle removes or
+// updates its row before it leaves flight, so a read that started after the last
+// settle (an unchanged counter) does not return a row already delivered: the head
+// is current, and only this dispatcher sends it.
+func (s *Service) claim(id string, seen uint64) bool {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	if _, busy := s.flight[id]; busy || s.settled[id] != seen {
+		return false
 	}
+	s.flight[id] = struct{}{}
+	return true
+}
+
+// unclaim takes channel id out of flight after its delivery settled or was
+// abandoned, counting the change (see claim).
+func (s *Service) unclaim(id string) {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	delete(s.flight, id)
+	s.settled[id]++
 }
 
 // settle records the outcome of outbox delivery d: delivered or given up removes
@@ -396,7 +426,7 @@ func (s *Service) setInFlight(id string, on bool) {
 // delivered notification again.
 func (s *Service) settle(ctx context.Context, d delivery, sendErr error) {
 	defer func() {
-		s.setInFlight(d.channel.ID, false)
+		s.unclaim(d.channel.ID)
 		s.signal()
 	}()
 	attempts := d.attempts + 1
