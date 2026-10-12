@@ -65,6 +65,8 @@ Why this is safe: the standby's takeover write succeeds only if the lease still 
 Timing alone does not cover a process that is paused (GC, VM freeze, `SIGSTOP`) between a check and a write. The epoch covers it:
 
 - **Before a run starts** (the admission check of the run manager, which every backup, restore and PITR base backup passes) and **before a backup or restore is marked completed** (a completion guard in the engines), the active instance checks that it still holds the lease. The check is local and live: role active and the step-down deadline not reached. A fenced-off instance never starts or completes a run after it lost the lease: the run fails with `ha.ErrNotActive`.
+- **Background work checks it too, before it writes or deletes**: the PITR collector before each chunk upload and commit (and it never removes an uncommitted chunk without the lease, since the new active instance may write the same key), retention and the purge, the copy queue, and integrity sweeps, scans and restore tests.
+- **The step-down is never late.** The lease manager wakes at the step-down deadline when that comes before its next renewal, so after a renewal that fails fast the active instance stops exactly `ttl − renew` after its last successful renewal, not up to a renew interval later.
 - Records written under the lease carry `ha_epoch`.
 - Metadata snapshots carry the epoch in their key. The standby restores the snapshot with the **highest epoch**, then the newest, so a late snapshot from a fenced-off instance never wins over the current one.
 

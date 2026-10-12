@@ -452,6 +452,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		},
 		Publisher: bus,
 		Observe:   metricSet.ObserveCopy,
+		Fence:     o.fence(),
 		Logger:    logger,
 	})
 	metricSet.SetCopyQueueSource(copySvc.QueueDepth)
@@ -512,6 +513,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Decryptor:   settingsSvc.Decryptor,
 		Publisher:   bus,
 		ObserveScan: metricSet.ObserveStorageScan,
+		Fence:       o.fence(),
 		Logger:      logger,
 	})
 
@@ -744,7 +746,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{
-		Repo: metaStore,
+		Repo:  metaStore,
+		Fence: o.fence(),
 		OnWriteError: func(ctx context.Context, err error) {
 			diskGuard.Observe(ctx, err)
 		},

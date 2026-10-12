@@ -142,6 +142,9 @@ type Targets interface {
 // Config holds the dependencies of a Service. Store, Targets and Runs are required;
 // without Restore, Admin and Connections restore tests are unavailable.
 type Config struct {
+	// Fence, when set, must pass before sweeps, scans and restore tests run
+	// (active-passive HA): an instance that lost the HA lease writes nothing.
+	Fence models.Fence
 	// Store persists records, manifests, restore tests and the integrity state.
 	Store Store
 	// Targets resolves storage targets and their drivers.
@@ -300,6 +303,10 @@ func (s *Service) loop(ctx context.Context) {
 // RunDue starts the integrity sweep and the storage scans when they are due, one
 // after the other, and returns when they finished. The background loop calls it.
 func (s *Service) RunDue(ctx context.Context) {
+	if err := s.checkFence(); err != nil {
+		s.logger.Warn("integrity work skipped: this instance does not hold the HA lease", slog.Any("error", err))
+		return
+	}
 	now := s.now()
 	if due := s.nextSweep(ctx); due != nil && !now.Before(*due) {
 		if _, err := s.Sweep(ctx, TriggerScheduled); err != nil && !errors.Is(err, ErrBusy) && ctx.Err() == nil {
@@ -353,4 +360,12 @@ func (s *Service) Status(ctx context.Context) (*Overview, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkFence returns the error of the HA fence (nil without one).
+func (s *Service) checkFence() error {
+	if s.cfg.Fence == nil {
+		return nil
+	}
+	return s.cfg.Fence.Check()
 }

@@ -130,6 +130,14 @@ func WithFence(fence models.Fence) Option {
 	return func(s *Scheduler) { s.fence = fence }
 }
 
+// checkFence returns the error of the HA fence (nil without one).
+func (s *Scheduler) checkFence() error {
+	if s.fence == nil {
+		return nil
+	}
+	return s.fence.Check()
+}
+
 // stampEpoch sets the HA epoch of run when it has none yet.
 func (s *Scheduler) stampEpoch(run *models.JobRun) {
 	if s.fence != nil && run != nil && run.HAEpoch == 0 {

@@ -184,6 +184,9 @@ func (s *Service) ScanTarget(ctx context.Context, targetID, source string) (*Dri
 	if err != nil {
 		return nil, fmt.Errorf("%w: storage target %s", ErrNotFound, targetID)
 	}
+	if err = s.checkFence(); err != nil {
+		return nil, err
+	}
 	release, err := s.cfg.Runs.Acquire(keyPrefixScan + target.ID)
 	if err != nil {
 		return nil, err

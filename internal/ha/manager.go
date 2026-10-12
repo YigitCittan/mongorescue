@@ -210,19 +210,33 @@ func (m *Manager) Epoch() uint64 {
 }
 
 // Run renews (active) or reads (standby) the lease now and then every renew
-// interval until ctx ends. It does not release the lease: call Release after the
-// work it guards has stopped.
+// interval until ctx ends, and wakes at the active instance's step-down deadline
+// when that comes first, so a step-down after a failed renewal is never late. It
+// does not release the lease: call Release after the work it guards has stopped.
 func (m *Manager) Run(ctx context.Context) {
-	ticker := time.NewTicker(m.cfg.Renew)
-	defer ticker.Stop()
 	for {
 		m.Step(ctx)
+		timer := time.NewTimer(m.untilNextStep())
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+// untilNextStep returns how long Run waits for the next step: the renew interval,
+// or the time left to the step-down deadline of an active instance when that is
+// shorter.
+func (m *Manager) untilNextStep() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	wait := m.cfg.Renew
+	if m.role == RoleActive {
+		wait = min(wait, max(m.deadlineLocked().Sub(m.cfg.Now()), 0))
+	}
+	return wait
 }
 
 // Step runs one lease operation: a renewal when active, a read (and takeover when

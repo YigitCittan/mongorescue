@@ -127,6 +127,10 @@ func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 type Config struct {
 	// Repo persists streams, chains, chunks and the collector state.
 	Repo pitr.Repository
+	// Fence, when set, must pass before a chunk is uploaded and before it is
+	// committed, and before retention runs (active-passive HA): an instance that
+	// lost the HA lease writes and deletes nothing.
+	Fence models.Fence
 	// OnWriteError, when set, is told every failed chunk commit, so a full data
 	// directory is detected early (internal/diskguard).
 	OnWriteError func(ctx context.Context, err error)
@@ -411,4 +415,12 @@ func newID(prefix string) string {
 func ChunkKey(st *pitr.Stream, chainID string, from, to pitr.Timestamp) string {
 	return KeyPrefix + models.SanitizeIDComponent(st.ConnectionID, 0) + "/" + models.SanitizeIDComponent(st.ReplicaSet, 0) +
 		"/" + chainID + "/" + from.String() + "-" + to.String() + ".bson.gz" + encryption.FileExtension
+}
+
+// checkFence returns the error of the HA fence (nil without one).
+func (s *Service) checkFence() error {
+	if s.cfg.Fence == nil {
+		return nil
+	}
+	return s.cfg.Fence.Check()
 }

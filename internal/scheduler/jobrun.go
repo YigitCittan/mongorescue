@@ -892,6 +892,10 @@ func (s *Scheduler) applyRetention(ctx context.Context, job *models.Job, record 
 	if record == nil || record.Status != models.StatusCompleted || (job.RetentionDays <= 0 && job.RetentionCount <= 0) {
 		return
 	}
+	if err := s.checkFence(); err != nil {
+		s.logger.Warn("retention skipped: this instance does not hold the HA lease", slog.String("job_id", job.ID), logsafe.Error(err))
+		return
+	}
 	history, listErr := s.metadataStore.ListBackupRecords(ctx, record.Database)
 	if listErr != nil {
 		s.logger.Warn("retention skipped: the backups cannot be listed",

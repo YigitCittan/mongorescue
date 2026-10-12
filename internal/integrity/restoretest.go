@@ -273,6 +273,10 @@ func (s *Service) runRestoreTest(ctx context.Context, job *models.Job, backup *m
 			res.Status, res.Error = models.RestoreTestError, "internal error during the restore test"
 		}
 	}()
+	if err := s.checkFence(); err != nil {
+		res.Status, res.Error = models.RestoreTestError, "restore test not started: "+err.Error()
+		return res
+	}
 	if err := s.restoreTest(ctx, job, backup, res); err != nil {
 		res.Status, res.Error = models.RestoreTestError, redact.Text(err.Error())
 	}
