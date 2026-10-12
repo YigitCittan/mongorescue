@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cancelling a run at the moment it starts no longer races with the opening of its log (found by the race detector on Windows CI).
+
 ## [0.26.0] - 2026-10-12
 
 ### Added
