@@ -142,3 +142,15 @@ groups:
         annotations:
           summary: "No active instance in MongoRescue HA cluster {{ $labels.cluster }}"
           description: "No member of HA cluster {{ $labels.cluster }} holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."
+
+      # A standby acquired the lease but gave the takeover up, because the HA
+      # target holds no usable metadata snapshot of the previous active instance
+      # (taking over without one would lose its jobs, users and history). It keeps
+      # retrying every lease TTL; until a snapshot is usable no instance is active.
+      - alert: MongoRescueHATakeoverFailed
+        expr: increase(mongorescue_ha_takeover_failures_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
+          description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."

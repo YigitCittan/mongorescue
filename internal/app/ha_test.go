@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -269,8 +268,8 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the new active member did not start")
 	}
-	if _, err := os.Stat(cfgB.MetadataDBPath() + store.BackupSuffix); err != nil {
-		t.Fatalf("the standby's own database was not kept as .bak: %v", err)
+	if backups, err := store.DatabaseBackups(cfgB.MetadataDBPath()); err != nil || len(backups) != 1 {
+		t.Fatalf("the standby's own database was not kept as a backup: %v, %v", backups, err)
 	}
 
 	stopA = start(cfgA, nil)

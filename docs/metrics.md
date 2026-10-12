@@ -54,6 +54,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_ha_lease_errors_total` | counter | `cluster` | HA only: failed reads and writes of the lease, renewals included |
 | `mongorescue_ha_takeovers_total` | counter | `cluster` | HA only: times this instance acquired the lease |
 | `mongorescue_ha_takeover_duration_seconds` | gauge | `cluster` | HA only: duration of the last takeover, from acquiring the lease to serving as active |
+| `mongorescue_ha_takeover_failures_total` | counter | `cluster` | HA only: takeovers given up because no usable metadata snapshot was found (the instance stayed standby) |
 | `mongorescue_pitr_collector_up` | gauge | `stream` | 1 while the [PITR](pitr.md) collector of the stream stores chunks, 0 while it fails or is stopped |
 | `mongorescue_pitr_lag_seconds` | gauge | `stream` | Seconds between the replica set's newest write and the end of the last stored chunk |
 | `mongorescue_pitr_last_chunk_timestamp_seconds` | gauge | `stream` | Oplog time (seconds) of the end of the last stored chunk |

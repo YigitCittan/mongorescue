@@ -87,8 +87,9 @@ type haRuntime struct {
 	since time.Time
 
 	// lastTakeover holds the duration of the last takeover in seconds (float64
-	// bits).
-	lastTakeover atomic.Uint64
+	// bits); takeoverFailures counts the takeovers given up.
+	lastTakeover     atomic.Uint64
+	takeoverFailures atomic.Uint64
 }
 
 // mgr returns the lease manager (nil before the bootstrap).
@@ -166,7 +167,8 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	st := rt.serverStatus()
 	ms := rt.status()
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
-		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load())}
+		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
+		TakeoverFailures: rt.takeoverFailures.Load()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -411,6 +413,7 @@ func (s *haSupervisor) serveStandby(ctx context.Context, app *App) (bool, error)
 func (s *haSupervisor) takeOver(ctx context.Context) (*App, error) {
 	mgr := s.rt.mgr()
 	if err := s.prepareTakeover(ctx); err != nil {
+		s.rt.takeoverFailures.Add(1)
 		s.logger.Error("cannot take over: giving the HA lease up and staying standby", logsafe.Error(err))
 		if relErr := mgr.StepDown(ctx, "the takeover failed", true); relErr != nil {
 			s.logger.Warn("could not release the HA lease", logsafe.Error(relErr))

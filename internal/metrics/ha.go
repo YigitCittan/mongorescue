@@ -28,6 +28,9 @@ type HAState struct {
 	// LastTakeoverSeconds is how long the last takeover took, from acquiring the
 	// lease to serving as active (0 before the first).
 	LastTakeoverSeconds float64
+	// TakeoverFailures counts the takeovers this instance gave up (no usable
+	// metadata snapshot).
+	TakeoverFailures uint64
 }
 
 // haRoles are the values of the role label.
@@ -42,12 +45,14 @@ type haCollector struct {
 	errors   *prometheus.Desc
 	takeover *prometheus.Desc
 	duration *prometheus.Desc
+	failures *prometheus.Desc
 }
 
 // newHACollector returns the collector of mongorescue_ha_role,
 // mongorescue_ha_epoch, mongorescue_ha_lease_healthy,
 // mongorescue_ha_lease_errors_total, mongorescue_ha_takeovers_total and
-// mongorescue_ha_takeover_duration_seconds.
+// mongorescue_ha_takeover_duration_seconds and
+// mongorescue_ha_takeover_failures_total.
 func newHACollector() *haCollector {
 	name := func(n string) string { return prometheus.BuildFQName(namespace, "ha", n) }
 	cluster := []string{"cluster"}
@@ -58,12 +63,13 @@ func newHACollector() *haCollector {
 		errors:   prometheus.NewDesc(name("lease_errors_total"), "Total number of failed reads and writes (renewals included) of the HA lease.", cluster, nil),
 		takeover: prometheus.NewDesc(name("takeovers_total"), "Total number of times this instance acquired the HA lease and became active.", cluster, nil),
 		duration: prometheus.NewDesc(name("takeover_duration_seconds"), "Duration of the last takeover, from acquiring the lease to serving as active.", cluster, nil),
+		failures: prometheus.NewDesc(name("takeover_failures_total"), "Total number of takeovers this instance gave up because no usable metadata snapshot was found; it stays standby.", cluster, nil),
 	}
 }
 
 // Describe implements prometheus.Collector.
 func (c *haCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration} {
+	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures} {
 		ch <- d
 	}
 }
@@ -83,6 +89,7 @@ func (c *haCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.errors, prometheus.CounterValue, float64(st.LeaseErrors), st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.takeover, prometheus.CounterValue, float64(st.Takeovers), st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.duration, prometheus.GaugeValue, st.LastTakeoverSeconds, st.Cluster)
+	ch <- prometheus.MustNewConstMetric(c.failures, prometheus.CounterValue, float64(st.TakeoverFailures), st.Cluster)
 }
 
 // boolFloat returns 1 for true and 0 for false.

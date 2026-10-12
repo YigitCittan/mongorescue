@@ -299,10 +299,11 @@ func (s *Snapshotter) Kick() {
 	}
 }
 
-// Run writes a snapshot after MinGap, then every Interval and after every Kick (at
-// most one per MinGap), until ctx ends.
+// Run writes a snapshot at once, so a new active instance's epoch has one right
+// away, then every Interval and after every Kick (at most one per MinGap), until
+// ctx ends.
 func (s *Snapshotter) Run(ctx context.Context) {
-	timer := time.NewTimer(s.cfg.MinGap)
+	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		select {

@@ -217,8 +217,8 @@ Two (or more) instances share a **storage target** and a **secret key**, and not
 
 - The instance holding the **lease** (a small object on the HA target, renewed every 10 seconds) is **active**: it runs schedules, PITR collection, copies, integrity sweeps, metadata backups, notifications and the heartbeat, exactly like a single instance.
 - The others are **standbys**. A standby serves no data and accepts no sign-in: its database is only as current as its last takeover, so its users, sessions and API keys are not trusted. It serves only `/api/v1/health` (`"role": "standby"` and the active instance), `/metrics` without credentials but with nothing but process, build and HA series, and a static page in place of the dashboard that names the active instance. Everything else, the API, signing in and MCP included, answers `503` with `Retry-After`.
-- The active instance writes an encrypted **snapshot of its metadata database** to the HA target after every finished backup or restore and at least every 5 minutes.
-- When the active instance dies, a standby **takes over** once the lease has not changed for its TTL (30 s): it restores the newest snapshot (keeping its own database as `mongorescue.db.bak`), marks the runs that were in progress as interrupted, imports the archives written after the snapshot, and runs once every job whose cron fire fell in the gap, when it can verify that the fire did not run (else it sends `ha.catch_up_skipped` and leaves the run to you). With the defaults it is active about 40 seconds after the last renewal, and the takeover work takes seconds.
+- The active instance writes an encrypted **snapshot of its metadata database** to the HA target as soon as it becomes active, after every finished backup or restore and at least every 5 minutes. A standby takes over without a snapshot only on the cluster's very first activation; otherwise it stays standby and `MongoRescueHATakeoverFailed` fires, since its own database would lose the previous active instance's metadata.
+- When the active instance dies, a standby **takes over** once the lease has not changed for its TTL (30 s): it restores the newest snapshot (keeping its own database as `mongorescue.db.bak-<UTC time>-epoch<N>`, the newest three copies), marks the runs that were in progress as interrupted, imports the archives written after the snapshot, and runs once every job whose cron fire fell in the gap, when it can verify that the fire did not run (else it sends `ha.catch_up_skipped` and leaves the run to you). With the defaults it is active about 40 seconds after the last renewal, and the takeover work takes seconds.
 - The active instance stops working **20 seconds** (`ttl − renew`) after its last successful renewal if it cannot reach the HA target, so two instances never work at once. Runs check the lease before they start and before they are recorded as completed; every backup, restore and job run carries the lease **epoch** (`ha_epoch`) it ran under.
 - A graceful shutdown (`SIGTERM`) of the active instance writes a last snapshot and releases the lease, so a standby takes over within one renew interval.
 
@@ -257,7 +257,7 @@ Things to know:
 - [ ] The instances on different hosts, zones or nodes (Kubernetes: anti-affinity), each with its own data directory.
 - [ ] The HA target reachable from every instance, without Object Lock, with credentials only MongoRescue holds.
 - [ ] Every storage target of every job reachable from every instance.
-- [ ] `MongoRescueHANoActiveInstance` and `MongoRescueDown` alerts loaded, every instance scraped.
+- [ ] `MongoRescueHANoActiveInstance`, `MongoRescueHATakeoverFailed` and `MongoRescueDown` alerts loaded, every instance scraped.
 - [ ] A takeover tested once: stop the active instance (or kill it), watch the standby report `"role": "active"`, check that the next scheduled backup runs there, and start the old instance again (it comes back as standby).
 
 ### Failure domains

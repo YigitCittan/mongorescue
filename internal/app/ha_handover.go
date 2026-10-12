@@ -33,6 +33,11 @@ const (
 	haScanSource = "ha_takeover"
 )
 
+// ErrNoSnapshotToTakeOver is returned by a takeover that finds no metadata snapshot
+// although the lease had a holder before: the previous active instance's metadata
+// would be lost, so the instance stays standby and the takeover failure is alerted.
+var ErrNoSnapshotToTakeOver = errors.New("no metadata snapshot to take over from")
+
 // haTasks owns the goroutines of the active instance's HA work.
 type haTasks struct {
 	cancel context.CancelFunc
@@ -177,8 +182,16 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		return err
 	}
 	if len(snaps) == 0 {
+		// Without a snapshot this instance's database is the truth only on the
+		// cluster's first activation (the lease never had a holder), or when this
+		// instance held the epoch right before (nobody worked in between).
+		epoch := s.rt.mgr().Epoch()
+		ownPrevious := s.rt.state.Cluster == s.cfg.HA.Cluster && epoch > 1 && s.rt.state.LastActiveEpoch == epoch-1
+		if epoch != 1 && !ownPrevious {
+			return fmt.Errorf("%w: the lease had a holder before (this is epoch %d), but the HA target holds no snapshot of its metadata", ErrNoSnapshotToTakeOver, epoch)
+		}
 		s.setSince(time.Time{})
-		s.logger.Info("takeover: the cluster has no metadata snapshot yet; keeping this instance's database")
+		s.logger.Info("takeover: the cluster has no metadata snapshot yet; keeping this instance's database", slog.Uint64("epoch", epoch))
 		return nil
 	}
 	newest := snaps[0]
@@ -229,7 +242,9 @@ func (s *haSupervisor) restoreSnapshot(ctx context.Context, st storage.Storage, 
 	if err = ha.FetchSnapshot(ctx, st, snap.Key, passphrase, tmp); err != nil {
 		return err
 	}
-	return store.ReplaceDatabase(ctx, s.cfg.MetadataDBPath(), tmp, s.logger, store.WithSecretBox(box))
+	_, err = store.ReplaceDatabase(ctx, store.Replacement{Path: s.cfg.MetadataDBPath(), NewPath: tmp, Epoch: s.rt.mgr().Epoch(),
+		Keep: store.DefaultBackupsKept, Logger: s.logger}, store.WithSecretBox(box))
+	return err
 }
 
 // finalSnapshot writes the last snapshot of a gracefully stopping active instance,
