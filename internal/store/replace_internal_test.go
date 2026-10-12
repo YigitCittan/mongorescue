@@ -4,15 +4,15 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
-
-var errCrash = errors.New("crash")
 
 func testBox(t *testing.T) *secretbox.Box {
 	t.Helper()
@@ -66,9 +66,10 @@ func TestReplaceSurvivesACrashAtEveryStep(t *testing.T) {
 		step string
 		want string
 	}{
-		{"journaled", "old"},
-		{"kept", "old"},
-		{"renamed", "new"},
+		{phaseJournaled, "old"},
+		{phaseKept, "old"},
+		{phaseSwapping, "new"},
+		{phaseSwapped, "new"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			ctx := context.Background()
@@ -82,15 +83,10 @@ func TestReplaceSurvivesACrashAtEveryStep(t *testing.T) {
 			}
 			writeDB(t, box, newPath, "new")
 
-			replaceStep = func(s string) error {
-				if s == tc.step {
-					return errCrash
-				}
-				return nil
-			}
+			replaceCrash = func(s string) bool { return s == tc.step }
 			_, err := ReplaceDatabase(ctx, Replacement{Path: path, NewPath: newPath, Epoch: 2}, WithSecretBox(box))
-			replaceStep = nil
-			if !errors.Is(err, errCrash) {
+			replaceCrash = nil
+			if !errors.Is(err, errCrashed) {
 				t.Fatalf("ReplaceDatabase = %v; want the injected crash", err)
 			}
 			if _, statErr := os.Stat(path + replaceJournalSuffix); statErr != nil {
@@ -195,5 +191,73 @@ func TestReplaceCheckpointsTheOldDatabase(t *testing.T) {
 	}
 	if got := recordOf(t, box, bak); got != "logged" {
 		t.Fatalf("the copy of the previous database holds %q; want the write that was only in its log", got)
+	}
+}
+
+// TestFailedReplacementLeavesNoJournal covers an I/O error (a full disk while the
+// previous database is copied): the previous database stays, and no journal is
+// left that a later start would report as an interrupted swap.
+func TestFailedReplacementLeavesNoJournal(t *testing.T) {
+	box := testBox(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mongorescue.db")
+	writeDB(t, box, path, "old")
+	newPath := filepath.Join(dir, ".ha-restore", "mongorescue.db")
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeDB(t, box, newPath, "new")
+	diskFull := errors.New("no space left on device")
+	replaceFail = func(s string) error {
+		if s == phaseKept {
+			return diskFull
+		}
+		return nil
+	}
+	_, err := ReplaceDatabase(context.Background(), Replacement{Path: path, NewPath: newPath, Epoch: 2}, WithSecretBox(box))
+	replaceFail = nil
+	if !errors.Is(err, diskFull) {
+		t.Fatalf("ReplaceDatabase = %v; want the disk-full error", err)
+	}
+	if _, statErr := os.Stat(path + replaceJournalSuffix); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatal("a failed replacement left its journal behind")
+	}
+	if got := recordOf(t, box, path); got != "old" {
+		t.Fatalf("the database holds %q after a failed replacement; want the previous one", got)
+	}
+}
+
+// TestRecoveryWhenTheReplacementFileIsGone covers a crash before the swap after
+// which the replacement's temporary directory was removed: the content of the
+// database, not the missing file, says that the swap did not happen.
+func TestRecoveryWhenTheReplacementFileIsGone(t *testing.T) {
+	box := testBox(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mongorescue.db")
+	writeDB(t, box, path, "old")
+	tmp := filepath.Join(dir, ".ha-restore")
+	newPath := filepath.Join(tmp, "mongorescue.db")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeDB(t, box, newPath, "new")
+	replaceCrash = func(s string) bool { return s == phaseKept }
+	_, err := ReplaceDatabase(context.Background(), Replacement{Path: path, NewPath: newPath, Epoch: 2}, WithSecretBox(box))
+	replaceCrash = nil
+	if !errors.Is(err, errCrashed) {
+		t.Fatal(err)
+	}
+	if err = os.RemoveAll(tmp); err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	if err = RecoverReplace(path, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "before the swap") || !strings.Contains(logs.String(), "phase=kept") {
+		t.Fatalf("recovery reported %q; want an interruption before the swap in phase kept", logs.String())
+	}
+	if got := recordOf(t, box, path); got != "old" {
+		t.Fatalf("the database holds %q; want the previous one", got)
 	}
 }

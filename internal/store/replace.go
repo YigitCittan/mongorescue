@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,22 +61,45 @@ type Replacement struct {
 	Now func() time.Time
 }
 
+// Phases of a replacement, recorded in its journal.
+const (
+	phaseJournaled = "journaled" // nothing moved yet
+	phaseKept      = "kept"      // the previous database has its backup copy
+	phaseSwapping  = "swapping"  // the rename may have happened
+	phaseSwapped   = "swapped"   // the replacement is in place
+)
+
 // replaceJournal is the journal of a replacement in progress.
 type replaceJournal struct {
-	NewPath   string    `json:"new_path"`
+	NewPath string `json:"new_path"`
+	// NewSHA256 identifies the replacement: the database is the replacement when
+	// its content has this hash, whatever happened to NewPath.
+	NewSHA256 string    `json:"new_sha256"`
 	Backup    string    `json:"backup"`
 	Epoch     uint64    `json:"epoch"`
+	Phase     string    `json:"phase"`
 	StartedAt time.Time `json:"started_at"`
 }
 
-// replaceStep, when set (tests), is called after each step of ReplaceDatabase; an
-// error stops the replacement there, as a crash would.
-var replaceStep func(step string) error
+// Test hooks of ReplaceDatabase: replaceCrash, when it returns true after a step,
+// stops the replacement there as a crash would (nothing is cleaned up);
+// replaceFail, when it returns an error at a step, makes the step fail like an I/O
+// error would.
+var (
+	replaceCrash func(step string) bool
+	replaceFail  func(step string) error
+)
 
-// step runs the test hook of a step.
-func step(name string) error {
-	if replaceStep != nil {
-		return replaceStep(name)
+// errCrashed is returned by a replacement replaceCrash stopped.
+var errCrashed = errors.New("store: replacement stopped by the test hook")
+
+// crashed runs the crash hook after a step.
+func crashed(step string) bool { return replaceCrash != nil && replaceCrash(step) }
+
+// failAt runs the failure hook of a step.
+func failAt(step string) error {
+	if replaceFail != nil {
+		return replaceFail(step)
 	}
 	return nil
 }
@@ -135,6 +160,10 @@ func ReplaceDatabase(ctx context.Context, r Replacement, opts ...Option) (string
 	if err = removeLogs(r.NewPath); err != nil {
 		return "", err
 	}
+	newSum, err := fileSHA256(r.NewPath)
+	if err != nil {
+		return "", err
+	}
 
 	// 2. Checkpoint the current database, so its file holds everything.
 	_, statErr := os.Stat(r.Path)
@@ -159,36 +188,70 @@ func ReplaceDatabase(ctx context.Context, r Replacement, opts ...Option) (string
 			bak += "-" + strconv.FormatInt(r.Now().UnixNano(), 10)
 		}
 	}
-	journal := replaceJournal{NewPath: r.NewPath, Backup: bak, Epoch: r.Epoch, StartedAt: r.Now().UTC()}
-	if err = writeJournal(r.Path+replaceJournalSuffix, journal); err != nil {
+	journalPath := r.Path + replaceJournalSuffix
+	journal := replaceJournal{NewPath: r.NewPath, NewSHA256: newSum, Backup: bak, Epoch: r.Epoch, Phase: phaseJournaled, StartedAt: r.Now().UTC()}
+	if err = writeJournal(journalPath, journal); err != nil {
 		return "", err
 	}
 	syncDir(dir)
-	if err = step("journaled"); err != nil {
-		return "", err
+	if crashed(phaseJournaled) {
+		return "", errCrashed
+	}
+	// An error before the swap leaves the previous database in place: the journal
+	// goes (with a partial copy), so nothing reports an interrupted replacement.
+	abort := func(cause error) (string, error) {
+		_ = removeIfExists(journalPath)
+		syncDir(dir)
+		r.Logger.Warn("the metadata database was not replaced; the previous one stays in use", slog.Any("error", cause))
+		return "", cause
+	}
+	setPhase := func(phase string) error {
+		journal.Phase = phase
+		if werr := writeJournal(journalPath, journal); werr != nil {
+			return werr
+		}
+		syncDir(dir)
+		return nil
 	}
 
 	// 4. Keep the previous database: a hard link costs nothing, and the rename
 	// below then replaces only the name r.Path.
 	if exists {
-		if linkErr := os.Link(r.Path, bak); linkErr != nil {
-			if err = copyFile(r.Path, bak); err != nil {
-				return "", fmt.Errorf("store: keep the previous database: %w", err)
+		err = failAt(phaseKept)
+		if err == nil {
+			if linkErr := os.Link(r.Path, bak); linkErr != nil {
+				err = copyFile(r.Path, bak)
 			}
+		}
+		if err != nil {
+			_ = removeIfExists(bak)
+			return abort(fmt.Errorf("store: keep the previous database: %w", err))
 		}
 		syncDir(dir)
 	}
-	if err = step("kept"); err != nil {
-		return "", err
+	if err = setPhase(phaseKept); err != nil {
+		return abort(err)
+	}
+	if crashed(phaseKept) {
+		return "", errCrashed
 	}
 
 	// 5. Swap.
+	if err = setPhase(phaseSwapping); err != nil {
+		return abort(err)
+	}
 	if err = os.Rename(r.NewPath, r.Path); err != nil {
-		return "", fmt.Errorf("store: replace the database: %w", err)
+		return abort(fmt.Errorf("store: replace the database: %w", err))
 	}
 	syncDir(dir)
-	if err = step("renamed"); err != nil {
-		return "", err
+	if crashed(phaseSwapping) {
+		return "", errCrashed
+	}
+	if err = setPhase(phaseSwapped); err != nil {
+		r.Logger.Warn("the metadata database was replaced, but its journal could not be updated; the next start settles it", slog.Any("error", err))
+	}
+	if crashed(phaseSwapped) {
+		return "", errCrashed
 	}
 	if err = restrictPermissions(r.Path); err != nil {
 		return "", err
@@ -227,13 +290,25 @@ func RecoverReplace(path string, logger *slog.Logger) error {
 	if err = json.Unmarshal(data, &j); err != nil {
 		return fmt.Errorf("%w: %s is unreadable; check %s and its copies (%s*) by hand, then remove it", ErrInterruptedReplace, journalPath, path, path+BackupInfix)
 	}
-	_, pathErr := os.Stat(path)
-	_, newErr := os.Stat(j.NewPath)
-	switch {
-	case pathErr != nil && newErr != nil:
-		return fmt.Errorf("%w: %s is missing; restore it from %s, then remove %s", ErrInterruptedReplace, path, j.Backup, journalPath)
-	case newErr == nil:
-		// Not swapped yet: the previous database is in place and complete.
+	if _, err = os.Stat(path); err != nil {
+		return fmt.Errorf("%w: %s is missing (phase %s); restore it from %s, then remove %s", ErrInterruptedReplace, path, j.Phase, j.Backup, journalPath)
+	}
+	// The content decides, not the phase alone: the rename may have happened
+	// without the journal saying so, and the replacement file may be gone.
+	swapped := j.Phase == phaseSwapped
+	if j.NewSHA256 != "" {
+		sum, sumErr := fileSHA256(path)
+		if sumErr != nil {
+			return fmt.Errorf("store: settle an interrupted replacement: %w", sumErr)
+		}
+		swapped = sum == j.NewSHA256
+	} else if _, newErr := os.Stat(j.NewPath); newErr != nil {
+		swapped = true
+	}
+	if swapped {
+		logger.Warn("a replacement of the metadata database was interrupted after the swap; the new database is in use",
+			slog.String("path", path), slog.String("phase", j.Phase), slog.String("previous", j.Backup))
+	} else {
 		if err = removeIfExists(j.NewPath); err != nil {
 			return err
 		}
@@ -241,10 +316,7 @@ func RecoverReplace(path string, logger *slog.Logger) error {
 			return err
 		}
 		logger.Warn("a replacement of the metadata database was interrupted before the swap; the previous database stays in use",
-			slog.String("path", path), slog.String("replacement", j.NewPath))
-	default:
-		logger.Warn("a replacement of the metadata database was interrupted after the swap; the new database is in use",
-			slog.String("path", path), slog.String("previous", j.Backup))
+			slog.String("path", path), slog.String("phase", j.Phase), slog.String("replacement", j.NewPath))
 	}
 	if err = removeIfExists(journalPath); err != nil {
 		return err
@@ -278,6 +350,20 @@ func checkpointFile(ctx context.Context, path string) error {
 		err = closeErr
 	}
 	return err
+}
+
+// fileSHA256 returns the hex SHA-256 of the file at path, streamed.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path) //nolint:gosec // G304: a database file of the data directory.
+	if err != nil {
+		return "", fmt.Errorf("store: hash %s: %w", filepath.Base(path), err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("store: hash %s: %w", filepath.Base(path), err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // removeLogs removes the write-ahead log and shared memory files of a checkpointed
