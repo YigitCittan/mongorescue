@@ -256,3 +256,26 @@ func TestCancelAfterTheRunStoppedIsRefused(t *testing.T) {
 		t.Fatalf("a shut-down run reports cancellation %+v", c)
 	}
 }
+
+// A cancellation racing with Register must never see a half-built run: the run's
+// log is opened before the run becomes visible (go test -race catches a regression).
+func TestCancelDuringRegisterDoesNotRace(t *testing.T) {
+	reg := NewRegistry(WithLogs(runlog.NewDir(t.TempDir())))
+	for i := range 50 {
+		id := fmt.Sprintf("bkp_%d", i)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for reg.Get(id) == nil {
+				_ = reg.Cancel(id, Cancellation{By: "alice"})
+			}
+			_ = reg.Cancel(id, Cancellation{By: "alice"})
+		}()
+		run, err := reg.Register(Meta{Kind: models.RunBackup, ID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		run.End()
+	}
+}
