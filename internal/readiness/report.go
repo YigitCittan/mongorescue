@@ -10,6 +10,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/sharedcache"
 )
 
 // Status is the overall readiness of a database.
@@ -269,7 +270,26 @@ func (s *Service) latestBackups(ctx context.Context, verified bool) (map[string]
 // A caller limited to some connections (auth.ConnectionFilter) gets the rows of its
 // connections only. It fails with an ErrUnavailable error when the metadata cannot
 // be read.
+//
+// With Config.ReportCacheTTL, the report is shared: callers with the same
+// connection access get the same *Report (treat it as read-only) while nothing
+// changed, for up to that long.
 func (s *Service) Report(ctx context.Context) (*Report, error) {
+	if s.reports == nil {
+		return s.report(ctx)
+	}
+	var stamp int64
+	if st, ok := s.cfg.Store.(ChangeStamper); ok {
+		var err error
+		if stamp, err = st.ChangeStamp(ctx); err != nil {
+			return s.report(ctx)
+		}
+	}
+	return s.reports.Get(ctx, sharedcache.AccessKey(auth.ConnectionFilter(ctx)), stamp, s.report)
+}
+
+// report computes Report without the cache.
+func (s *Service) report(ctx context.Context) (*Report, error) {
 	now := s.now()
 	jobs, err := s.cfg.Store.ListJobs(ctx)
 	if err != nil {

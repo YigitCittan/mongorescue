@@ -27,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/sharedcache"
 )
 
 // ErrUnavailable is returned when the readiness report cannot be read from the
@@ -137,6 +138,26 @@ type Config struct {
 	// RequireLockedCopies reports security.require_locked_copies (every job then
 	// requires locked copies, see ReasonDRUnlockedCopy); nil means off.
 	RequireLockedCopies func() bool
+	// ReportCacheTTL shares a computed Report for this long among the callers with
+	// the same connection access, computing it once however many ask at the same
+	// time, so concurrent readers never each rebuild it. Any write to the jobs,
+	// backups, runs, restores, restore tests, RPO breaches or database join times
+	// (the store's change stamp, see ChangeStamper), every event (HandleEvent) and
+	// every Kick drop it at once; a caller asking while an expired report is
+	// recomputed gets the previous one. Keep it at most MinKickInterval: a failure
+	// then shows at once, and a recovery point that ages past its objective
+	// within the TTL and one computation. 0 disables the cache (every call
+	// computes); the application uses DefaultMinKickInterval.
+	ReportCacheTTL time.Duration
+}
+
+// ChangeStamper is implemented by stores that count the writes to the tables the
+// report reads (*store.SQLiteStore): a report computed at one stamp is current
+// while the stamp is unchanged. A Store without it relies on the TTL, Kick and
+// the events.
+type ChangeStamper interface {
+	// ChangeStamp returns the number of writes so far.
+	ChangeStamp(ctx context.Context) (int64, error)
 }
 
 // DefaultCopyMissingAfter is the default of Config.CopyMissingAfter.
@@ -159,6 +180,9 @@ type Service struct {
 	// is the wall clock of the evaluation); tests replace them.
 	newTimer func(time.Duration) loopTimer
 	mono     func() time.Time
+
+	// reports shares computed reports (nil when Config.ReportCacheTTL is 0).
+	reports *sharedcache.Cache[string, *Report]
 
 	lifeMu  sync.Mutex
 	cancel  context.CancelFunc
@@ -189,7 +213,18 @@ func New(cfg Config) *Service {
 	if cfg.DRDrillMaxAge <= 0 {
 		cfg.DRDrillMaxAge = DefaultDRDrillMaxAge
 	}
-	return &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1), newTimer: newRealTimer, mono: time.Now}
+	s := &Service{cfg: cfg, logger: cfg.Logger, kick: make(chan struct{}, 1), newTimer: newRealTimer, mono: time.Now}
+	if cfg.ReportCacheTTL > 0 {
+		s.reports = sharedcache.New[string, *Report](sharedcache.Options{TTL: cfg.ReportCacheTTL, ServeStale: true})
+	}
+	return s
+}
+
+// invalidate drops the cached reports.
+func (s *Service) invalidate() {
+	if s.reports != nil {
+		s.reports.Invalidate()
+	}
 }
 
 // now returns the current time in UTC.
@@ -281,10 +316,12 @@ func (r realTimer) Stop() bool { return r.t.Stop() }
 // Reset implements loopTimer.
 func (r realTimer) Reset(d time.Duration) { r.t.Reset(d) }
 
-// HandleEvent is an events.Handler: a finished backup of a job asks the checker for
-// an early check, so a breach heals (and the gauges follow) without waiting for the
+// HandleEvent is an events.Handler: every event drops the cached reports (see
+// Config.ReportCacheTTL), and a finished backup of a job asks the checker for an
+// early check, so a breach heals (and the gauges follow) without waiting for the
 // next interval. It never blocks.
 func (s *Service) HandleEvent(_ context.Context, e events.Event) {
+	s.invalidate()
 	switch e.Type {
 	case events.BackupSucceeded, events.BackupFailed:
 		if e.JobID != "" {
@@ -293,10 +330,12 @@ func (s *Service) HandleEvent(_ context.Context, e events.Event) {
 	}
 }
 
-// Kick asks the background checker for an early check, coalescing requests; it
-// never blocks. Job writes (an edit of the RPO or the schedule, a pause, a resume,
-// a deletion) call it, so their effect shows within moments.
+// Kick drops the cached reports and asks the background checker for an early
+// check, coalescing requests; it never blocks. Job writes (an edit of the RPO or
+// the schedule, a pause, a resume, a deletion) call it, so their effect shows
+// within moments.
 func (s *Service) Kick() {
+	s.invalidate()
 	select {
 	case s.kick <- struct{}{}:
 	default:
