@@ -107,4 +107,61 @@ func TestWorkerStartsANewChainAfterAnEndedOne(t *testing.T) {
 	if cs := fx.chunks(st.ChainID); len(cs) == 0 {
 		t.Fatal("the new chain stores no chunk")
 	}
+	// A paused stream's base is taken by whoever paused it.
+	if len(fx.bases) != 0 {
+		t.Fatalf("bases %v after a stopped chain", fx.bases)
+	}
+}
+
+// TestRestartResumesAnInterruptedGap is the regression test of a stop between
+// ending a chain for a gap and starting the next one: the restarted collector
+// finishes the break (a new chain at the oldest entry and a base backup) instead
+// of hiding the gap behind a chain at the newest entry.
+func TestRestartResumesAnInterruptedGap(t *testing.T) {
+	fx := newFixture(t)
+	ctx := context.Background()
+	w := fx.worker()
+	fx.step(w)
+	fx.f.add(t, 3)
+	fx.step(w)
+	old := fx.state()
+	fx.f.add(t, 20)
+	fx.f.truncate(pitr.Timestamp{T: 1020, I: 1})
+	// The crash: the chain ended for the gap, no new chain yet.
+	if err := fx.repo.EndChain(ctx, fx.stream.ID, old.ChainID, old.Last.TS, pitr.EndGap, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fx.step(fx.worker())
+	st := fx.state()
+	if st.ChainID == old.ChainID || st.Last.TS != (pitr.Timestamp{T: 1020, I: 1}) {
+		t.Fatalf("state %+v; want a new chain at the oldest entry 1020:1", st)
+	}
+	if len(fx.bases) != 1 || fx.bases[0] != fx.stream.ID {
+		t.Fatalf("bases %v; want the base backup of the break", fx.bases)
+	}
+}
+
+// TestRestartResumesAnInterruptedDivergence: after a stop between ending a
+// diverged chain and starting the next one, the next chain starts at the
+// divergence point the chain ended at, with a base backup.
+func TestRestartResumesAnInterruptedDivergence(t *testing.T) {
+	fx := newFixture(t)
+	ctx := context.Background()
+	w := fx.worker()
+	fx.step(w)
+	fx.f.add(t, 3)
+	fx.step(w)
+	old := fx.state()
+	point := pitr.Timestamp{T: 1009, I: 1}
+	if err := fx.repo.EndChain(ctx, fx.stream.ID, old.ChainID, point, pitr.EndDiverged, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fx.step(fx.worker())
+	st := fx.state()
+	if st.ChainID == old.ChainID || st.Last.TS != point {
+		t.Fatalf("state %+v; want a new chain at the divergence point %s", st, point)
+	}
+	if len(fx.bases) != 1 {
+		t.Fatalf("bases %v; want the base backup of the break", fx.bases)
+	}
 }

@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Failures.** A failure before the swap drops the clones and leaves the originals untouched; a failure during the swap keeps the clones and the safety backups and names both with recovery steps; the stream is enabled again either way, also after a restart interrupted the run.
   - **Events.** `restore.in_place_pitr` (`succeeded` or `failed`, with `safety_backup_ids`), selectable by notification rules, and `security.destructive_action` (`pitr_in_place`) when it starts.
   - **Dashboard.** The point-in-time restore wizard offers administrators *Replace the original databases* behind a danger confirmation in which the database names are typed, with the downtime, safety backup and approval notes, in all eight languages; the default stays a restore into new clones.
-  - A PITR collector whose stored position belongs to an ended chain now starts a new chain instead of failing on every commit.
+  - A PITR collector whose stored position belongs to an ended chain no longer fails on every commit: after a pause (`stopped`) it starts a new chain at the newest entry; after a gap, a replica set change or a divergence that a stop interrupted before the next chain started, it finishes the break (a new chain at the oldest entry or the divergence point, and a base backup).
 
 ### Fixed
 - Cancelling a run at the moment it starts no longer races with the opening of its log (found by the race detector on Windows CI).
