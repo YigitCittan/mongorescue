@@ -326,8 +326,10 @@ func (s *Service) points(ctx context.Context, jobs []*models.Job, now time.Time)
 		return nil, fmt.Errorf("database joins: %w", err)
 	}
 	var out []point
+	// Jobs sharing a schedule and window read its activations once.
+	rpos := scheduler.NewRPOs(now)
 	for _, j := range jobs {
-		target, isDefault := scheduler.EffectiveRPO(j, now)
+		target, isDefault := rpos.Effective(j)
 		for _, db := range Databases(j, latest[j.ID]) {
 			p := point{job: j, database: db, last: latest[j.ID][db], target: target, isDefault: isDefault}
 			if p.last != nil {
