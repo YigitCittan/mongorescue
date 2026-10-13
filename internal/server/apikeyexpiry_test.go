@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -100,6 +101,13 @@ func TestExpiredAPIKeysAreRefusedWithACode(t *testing.T) {
 	if refused == 0 {
 		t.Fatal("the refusals of the expired key were not audited")
 	}
+	// Expired-key refusals are charged to the budget of the client address, like
+	// any other request without valid credentials.
+	var last *httptest.ResponseRecorder
+	for range anonymousRateLimit.Burst {
+		last = key.do("GET", "/api/v1/jobs", nil, bearer)
+	}
+	assertRateLimited(t, last, "an address sending an expired key over the anonymous burst")
 }
 
 // TestAMaximumLifetimeRefusesKeysWithoutAnExpiry proves the cap over HTTP.

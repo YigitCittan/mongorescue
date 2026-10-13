@@ -137,10 +137,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			err = auth.ErrUnauthenticated
 		}
 		if err != nil {
-			// An expired key is refused with its own code, and recorded with the key.
+			// An expired key is refused with its own code, and recorded with the key,
+			// after it was charged to the budget of its client address like any other
+			// request without valid credentials.
 			var expired *auth.ExpiredKeyError
 			if errors.As(err, &expired) {
-				s.refuseExpiredKey(w, r, pattern, expired, isMCP)
+				if s.allowRate(w, r, nil, pattern, false) {
+					s.refuseExpiredKey(w, r, pattern, expired, isMCP)
+				}
 				return
 			}
 			// Refused mutating requests are recorded, anonymously.
