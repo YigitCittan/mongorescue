@@ -1323,6 +1323,30 @@
               <span class="form-hint" id="set-api-key-warning-hint" data-i18n="apikeys.warning_days_hint">Warn this many days before a key expires (1–365).</span>
             </div>
             </div>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-api-rate-limit" data-i18n="ratelimit.per_minute">Requests per minute (per API key or session)</label>
+              <input type="number" id="set-api-rate-limit" class="form-input" min="0" max="100000" step="1" inputmode="numeric" aria-describedby="set-api-rate-limit-hint">
+              <span class="form-hint" id="set-api-rate-limit-hint" data-i18n="ratelimit.per_minute_hint">REST API requests each API key and each session may make, sustained. 0 turns the limit off. Over it, requests get 429 with Retry-After.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-api-rate-burst" data-i18n="ratelimit.burst">Burst</label>
+              <input type="number" id="set-api-rate-burst" class="form-input" min="1" max="100000" step="1" inputmode="numeric" aria-describedby="set-api-rate-burst-hint">
+              <span class="form-hint" id="set-api-rate-burst-hint" data-i18n="ratelimit.burst_hint">Requests allowed at once before the per-minute rate applies.</span>
+            </div>
+            </div>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-api-work-rate-limit" data-i18n="ratelimit.work_per_minute">Work requests per minute</label>
+              <input type="number" id="set-api-work-rate-limit" class="form-input" min="0" max="100000" step="1" inputmode="numeric" aria-describedby="set-api-work-rate-limit-hint">
+              <span class="form-hint" id="set-api-work-rate-limit-hint" data-i18n="ratelimit.work_per_minute_hint">A tighter budget for requests that start work: backups, restores, job runs, verifications, scans, bulk actions and tests. 0 leaves them to the general limit.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-api-work-rate-burst" data-i18n="ratelimit.work_burst">Work burst</label>
+              <input type="number" id="set-api-work-rate-burst" class="form-input" min="1" max="100000" step="1" inputmode="numeric" aria-describedby="set-api-work-rate-burst-hint">
+              <span class="form-hint" id="set-api-work-rate-burst-hint" data-i18n="ratelimit.work_burst_hint">Work requests allowed at once.</span>
+            </div>
+            </div>
           </fieldset>
           <fieldset class="settings-group">
             <legend class="settings-group-title" data-i18n="protection.group_title">Delete protection</legend>
@@ -3281,6 +3305,7 @@
   <script src="/tls.js"></script>
   <script src="/stall.js"></script>
   <script src="/apikeys.js"></script>
+  <script src="/ratelimit.js"></script>
   <script src="/runtimewarnings.js"></script>
   <script src="/ha.js"></script>
   <script src="/widgets.js"></script>

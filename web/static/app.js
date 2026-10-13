@@ -528,17 +528,66 @@ function setAppVersion(version) {
   el.hidden = !shown;
 }
 
+// The REST API rate limit: after a 429 with the code rate_limited, every request
+// waits until the server's Retry-After has passed (at most RATE_LIMIT_MAX_WAIT_MS),
+// so the dashboard's polling backs off instead of hammering the server.
+const RATE_LIMIT_MAX_WAIT_MS = 60000;
+// RATE_LIMIT_TOAST_MS spaces the toasts that announce a back-off.
+const RATE_LIMIT_TOAST_MS = 30000;
+let rateLimitedUntil = 0;
+let rateLimitToastAt = 0;
+
+// rateLimitWaitMs returns the wait a 429 asks for (Retry-After in seconds or as a
+// date; 1 second without one), capped at RATE_LIMIT_MAX_WAIT_MS.
+function rateLimitWaitMs(res) {
+  const v = String(res.headers.get("Retry-After") || "").trim();
+  let ms = 1000;
+  if (/^\d+$/.test(v)) ms = Number(v) * 1000;
+  else if (v && !isNaN(Date.parse(v))) ms = Date.parse(v) - Date.now();
+  return Math.min(Math.max(ms, 1000), RATE_LIMIT_MAX_WAIT_MS);
+}
+
+// waitForRateLimit resolves once the current rate limit back-off is over.
+async function waitForRateLimit() {
+  const wait = rateLimitedUntil - Date.now();
+  if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+}
+
+// isRateLimited reports whether res is a 429 of the REST API rate limit (not, say,
+// a throttled password check, which has a meaning of its own).
+async function isRateLimited(res) {
+  if (res.status !== 429) return false;
+  try {
+    const body = await res.clone().json();
+    return !!body && body.code === "rate_limited";
+  } catch (err) {
+    return false;
+  }
+}
+
 // Wrapper for authenticated API requests. Sends the session cookie, adds the CSRF
 // token to unsafe methods, turns 401 into the sign-in screen and, on 403, reloads
-// the session once (the CSRF token may have rotated) before retrying.
-async function apiFetch(url, options = {}, retried = false) {
+// the session once (the CSRF token may have rotated) before retrying. A request
+// refused by the rate limit (which the server refuses before running it) is sent
+// again once, after the back-off.
+async function apiFetch(url, options = {}, retried = false, rateRetried = false) {
   const method = String(options.method || "GET").toUpperCase();
   const headers = { ...(options.headers || {}) };
   if (!SAFE_METHODS.includes(method) && auth.csrf) {
     headers["X-CSRF-Token"] = auth.csrf;
   }
 
+  await waitForRateLimit();
   const res = await fetch(url, { ...options, method, headers, credentials: "same-origin" });
+  if (!rateRetried && await isRateLimited(res)) {
+    const wait = rateLimitWaitMs(res);
+    if (Date.now() - rateLimitToastAt >= RATE_LIMIT_TOAST_MS) {
+      rateLimitToastAt = Date.now();
+      showToast(tf("ratelimit.toast", { seconds: Math.ceil(wait / 1000) }), "error");
+    }
+    rateLimitedUntil = Math.max(rateLimitedUntil, Date.now() + wait);
+    return apiFetch(url, options, retried, true);
+  }
   if (res.status === 401) {
     handleUnauthorized();
     throw new Error(t("auth.session_expired"));
@@ -548,7 +597,7 @@ async function apiFetch(url, options = {}, retried = false) {
       handleUnauthorized();
       throw new Error(t("auth.session_expired"));
     }
-    if (!SAFE_METHODS.includes(method)) return apiFetch(url, options, true);
+    if (!SAFE_METHODS.includes(method)) return apiFetch(url, options, true, rateRetried);
   }
   return res;
 }
@@ -590,7 +639,8 @@ async function apiJSON(url, options) {
 // ---------------------------------------------------------------------------
 
 async function refreshAll() {
-  if (refreshInFlight || !auth.user) return;
+  // Skipped while the rate limit asks to wait; the next poll catches up.
+  if (refreshInFlight || !auth.user || rateLimitedUntil > Date.now()) return;
   refreshInFlight = true;
   try {
     await Promise.all([
@@ -5053,6 +5103,8 @@ function fillSecurity(sec) {
   if (typeof protectionFillSecurity === "function") protectionFillSecurity(sec);
   // API key lifetime and expiry warning (apikeys.js).
   if (typeof apiKeyExpiryFillSecurity === "function") apiKeyExpiryFillSecurity(sec);
+  // REST API rate limits (ratelimit.js).
+  if (typeof rateLimitFillSecurity === "function") rateLimitFillSecurity(sec);
   updateDurationPreviews("form-security");
 }
 
@@ -5241,6 +5293,7 @@ function collectSecurity() {
     metrics_public: document.getElementById("set-metrics-public").checked,
     mcp_enabled: document.getElementById("set-mcp-enabled").checked,
     ...(typeof apiKeyExpiryCollectSecurity === "function" ? apiKeyExpiryCollectSecurity() : {}),
+    ...(typeof rateLimitCollectSecurity === "function" ? rateLimitCollectSecurity() : {}),
     ...(typeof protectionCollectSecurity === "function" ? protectionCollectSecurity() : {})
   };
 }

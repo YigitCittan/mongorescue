@@ -1,6 +1,6 @@
 # REST API
 
-Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}`. Some refusals also carry a stable, machine-readable `code` next to `error` (`api_key_expired`); match it rather than the English text.
+Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}`. Some refusals also carry a stable, machine-readable `code` next to `error` (`api_key_expired`, `rate_limited`); match it rather than the English text.
 
 ## Authentication
 
@@ -34,6 +34,10 @@ A backup's own connection decides, not its job's: a job that moved from another 
 ### API key expiry
 
 A key may expire: `POST /api/v1/api-keys` takes `expires_at` (RFC 3339, in the future) or `expires_in_days` (1 to 3650), not both (`400`); without either the key never expires. While `security.api_key_max_lifetime_days` is set, a key without an expiry or with a later one than that many days from now is refused (`400`), and existing keys get a deadline ([security.md](security.md#api-key-expiry)). A request with an expired key answers `401` with `{"success": false, "error": "unauthorized: the API key expired at …", "code": "api_key_expired"}` (on `/mcp` also `WWW-Authenticate: Bearer … error="invalid_token"`), also for `GET /api/v1/auth/me`. `GET /api/v1/api-keys` and `GET /api/v1/auth/me` (`key_expires_at`) show the expiry; keys without one have no `expires_at`. The list also marks the key imported from `MONGORESCUE_API_KEY` (`imported: true`, the only key a maximum lifetime leaves without an expiry) and names the API key that created a key in `created_by_key`.
+
+### Rate limits
+
+Each API key and each session has a request budget (`security.api_rate_limit_per_minute`, default 1200, with bursts of `security.api_rate_limit_burst`, default 300), and routes that start work (backups, restores, job runs, verifications, scans, bulk actions, tests) spend a tighter one too (`security.api_work_rate_limit_per_minute`, default 60, bursts of 20). Unauthenticated requests share 300 a minute (bursts of 100) per client address. A request over a budget is refused before it runs: `429` with `Retry-After` (seconds) and `{"success": false, "error": "too many requests: over the general rate limit of 1200 per minute; retry in 3s", "code": "rate_limited"}`; send it again after that. `GET /api/v1/health` and `/metrics` are never limited; `/mcp` has its own limit. See [security.md](security.md#rest-api-rate-limits).
 
 ### API key scopes
 

@@ -209,6 +209,9 @@ func setup(t *testing.T, p *proc) *api {
 		Key string `json:"key"`
 	}
 	c.data("POST", "/api/v1/api-keys", map[string]string{"name": "load", "scope": "admin"}, http.StatusCreated, &key)
+	// The load test measures the server, not the REST API rate limit: turn it off
+	// for the thousands of requests it sends with one key.
+	c.data("PUT", "/api/v1/settings", map[string]any{"security": map[string]any{"api_rate_limit_per_minute": 0}}, http.StatusOK, nil)
 	out := newAPI(t, p.base)
 	out.key = key.Key
 	return out

@@ -98,6 +98,8 @@ type Metrics struct {
 	keyWrap keyWrapSeries
 	// API key expiry (see apikeys.go).
 	apiKeys apiKeySeries
+	// REST API requests refused by the rate limit (see ratelimit.go).
+	apiRateLimited *prometheus.CounterVec
 }
 
 // New creates a Metrics instance with its own registry.
@@ -253,6 +255,7 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newLivenessSeries()...)
 	m.registry.MustRegister(m.newKeyWrapSeries()...)
 	m.registry.MustRegister(m.newAPIKeySeries()...)
+	m.registry.MustRegister(m.newAPIRateLimitSeries())
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
 	m.ha = newHACollector()

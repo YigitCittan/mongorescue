@@ -106,6 +106,7 @@ flowchart TB
 | `internal/metrics` | Prometheus metrics on a dedicated registry |
 | `internal/server` | REST API, authentication, scope (route → scope table) and CORS middleware, the `/mcp` mount with its Origin and Host checks, embedded dashboard serving |
 | `internal/redact` | Dependency-free helpers that scrub credentials from URIs and free text |
+| `internal/ratelimit` | In-memory token buckets per key (API key, session, client address) with bounded memory, shared by the REST API rate limit and the MCP limiter, and a once-per-interval gate for log lines |
 | `internal/sharedcache` | A single-flight cache with a TTL, a change stamp and invalidation, keyed by what a value depends on (such as the caller's connection access): the operations service shares the overview history and statistics through it, the readiness service its report; the store's change stamp (migration 0029) counts every write to the tables they read |
 | `internal/diskspace` | Free space of a local filesystem (`statfs`, `GetDiskFreeSpaceExW` on Windows) for restore preflights of a server on the same host |
 | `internal/mongouri` | Structural validation of MongoDB connection strings without the driver |

@@ -220,6 +220,18 @@ type Security struct {
 	// mongorescue_api_keys_expiring metric); 1 to MaxAPIKeyExpiryWarningDays,
 	// default DefaultAPIKeyExpiryWarningDays.
 	APIKeyExpiryWarningDays int `json:"api_key_expiry_warning_days"`
+	// APIRateLimitPerMinute and APIRateLimitBurst are the request budget of the REST
+	// API per API key and per session (a token bucket: this many requests a minute
+	// sustained, APIRateLimitBurst at once); unauthenticated requests get a fixed,
+	// smaller budget per client address. 0 per minute turns the limit off.
+	APIRateLimitPerMinute int `json:"api_rate_limit_per_minute"`
+	APIRateLimitBurst     int `json:"api_rate_limit_burst"`
+	// APIWorkRateLimitPerMinute and APIWorkRateLimitBurst are the tighter, separate
+	// budget of the routes that start work (backups, restores, job runs,
+	// verifications, scans, bulk actions) and of reads that reach MongoDB, on top of
+	// the general one. 0 per minute leaves those routes to the general budget.
+	APIWorkRateLimitPerMinute int `json:"api_work_rate_limit_per_minute"`
+	APIWorkRateLimitBurst     int `json:"api_work_rate_limit_burst"`
 }
 
 // Limits and defaults of the API key expiry settings.
@@ -242,6 +254,22 @@ func (s Security) APIKeyMaxLifetime() time.Duration {
 func (s Security) APIKeyExpiryWarning() time.Duration {
 	return time.Duration(s.APIKeyExpiryWarningDays) * 24 * time.Hour
 }
+
+// Defaults and limits of the REST API rate limit settings.
+const (
+	// DefaultAPIRateLimitPerMinute is the default security.api_rate_limit_per_minute:
+	// several dashboard tabs polling while runs are active stay well below it.
+	DefaultAPIRateLimitPerMinute = 1200
+	// DefaultAPIRateLimitBurst is the default security.api_rate_limit_burst.
+	DefaultAPIRateLimitBurst = 300
+	// DefaultAPIWorkRateLimitPerMinute is the default
+	// security.api_work_rate_limit_per_minute.
+	DefaultAPIWorkRateLimitPerMinute = 60
+	// DefaultAPIWorkRateLimitBurst is the default security.api_work_rate_limit_burst.
+	DefaultAPIWorkRateLimitBurst = 20
+	// MaxAPIRateLimit bounds every rate limit setting.
+	MaxAPIRateLimit = 100000
+)
 
 // DeleteGrace returns the delete grace period as a duration.
 func (s Security) DeleteGrace() time.Duration {
@@ -294,13 +322,17 @@ func Defaults() Settings {
 			StorageStallTimeout:       Duration(DefaultStorageStallTimeout),
 		},
 		Security: Security{
-			SessionIdleTimeout:      Duration(12 * time.Hour),
-			SessionAbsoluteTimeout:  Duration(7 * 24 * time.Hour),
-			SecureCookies:           CookiesAuto,
-			CORSOrigins:             []string{},
-			MCPEnabled:              true,
-			DeleteGraceDays:         models.DefaultDeleteGraceDays,
-			APIKeyExpiryWarningDays: DefaultAPIKeyExpiryWarningDays,
+			SessionIdleTimeout:        Duration(12 * time.Hour),
+			SessionAbsoluteTimeout:    Duration(7 * 24 * time.Hour),
+			SecureCookies:             CookiesAuto,
+			CORSOrigins:               []string{},
+			MCPEnabled:                true,
+			DeleteGraceDays:           models.DefaultDeleteGraceDays,
+			APIKeyExpiryWarningDays:   DefaultAPIKeyExpiryWarningDays,
+			APIRateLimitPerMinute:     DefaultAPIRateLimitPerMinute,
+			APIRateLimitBurst:         DefaultAPIRateLimitBurst,
+			APIWorkRateLimitPerMinute: DefaultAPIWorkRateLimitPerMinute,
+			APIWorkRateLimitBurst:     DefaultAPIWorkRateLimitBurst,
 		},
 		Encryption: Encryption{
 			Mode:        ModeX25519,
@@ -391,18 +423,22 @@ type GeneralPatch struct {
 
 // SecurityPatch updates Security; see Security for the fields.
 type SecurityPatch struct {
-	SessionIdleTimeout      *Duration     `json:"session_idle_timeout,omitempty"`
-	SessionAbsoluteTimeout  *Duration     `json:"session_absolute_timeout,omitempty"`
-	SecureCookies           *CookiePolicy `json:"secure_cookies,omitempty"`
-	TrustProxyHeaders       *bool         `json:"trust_proxy_headers,omitempty"`
-	CORSOrigins             *[]string     `json:"cors_origins,omitempty"`
-	MetricsPublic           *bool         `json:"metrics_public,omitempty"`
-	MCPEnabled              *bool         `json:"mcp_enabled,omitempty"`
-	DeleteGraceDays         *int          `json:"delete_grace_days,omitempty"`
-	RequireSecondApprover   *bool         `json:"require_second_approver,omitempty"`
-	RequireLockedCopies     *bool         `json:"require_locked_copies,omitempty"`
-	APIKeyMaxLifetimeDays   *int          `json:"api_key_max_lifetime_days,omitempty"`
-	APIKeyExpiryWarningDays *int          `json:"api_key_expiry_warning_days,omitempty"`
+	SessionIdleTimeout        *Duration     `json:"session_idle_timeout,omitempty"`
+	SessionAbsoluteTimeout    *Duration     `json:"session_absolute_timeout,omitempty"`
+	SecureCookies             *CookiePolicy `json:"secure_cookies,omitempty"`
+	TrustProxyHeaders         *bool         `json:"trust_proxy_headers,omitempty"`
+	CORSOrigins               *[]string     `json:"cors_origins,omitempty"`
+	MetricsPublic             *bool         `json:"metrics_public,omitempty"`
+	MCPEnabled                *bool         `json:"mcp_enabled,omitempty"`
+	DeleteGraceDays           *int          `json:"delete_grace_days,omitempty"`
+	RequireSecondApprover     *bool         `json:"require_second_approver,omitempty"`
+	RequireLockedCopies       *bool         `json:"require_locked_copies,omitempty"`
+	APIKeyMaxLifetimeDays     *int          `json:"api_key_max_lifetime_days,omitempty"`
+	APIKeyExpiryWarningDays   *int          `json:"api_key_expiry_warning_days,omitempty"`
+	APIRateLimitPerMinute     *int          `json:"api_rate_limit_per_minute,omitempty"`
+	APIRateLimitBurst         *int          `json:"api_rate_limit_burst,omitempty"`
+	APIWorkRateLimitPerMinute *int          `json:"api_work_rate_limit_per_minute,omitempty"`
+	APIWorkRateLimitBurst     *int          `json:"api_work_rate_limit_burst,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -448,6 +484,10 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.RequireLockedCopies, sec.RequireLockedCopies)
 		setIf(&next.Security.APIKeyMaxLifetimeDays, sec.APIKeyMaxLifetimeDays)
 		setIf(&next.Security.APIKeyExpiryWarningDays, sec.APIKeyExpiryWarningDays)
+		setIf(&next.Security.APIRateLimitPerMinute, sec.APIRateLimitPerMinute)
+		setIf(&next.Security.APIRateLimitBurst, sec.APIRateLimitBurst)
+		setIf(&next.Security.APIWorkRateLimitPerMinute, sec.APIWorkRateLimitPerMinute)
+		setIf(&next.Security.APIWorkRateLimitBurst, sec.APIWorkRateLimitBurst)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)
@@ -562,6 +602,14 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: security.api_key_max_lifetime_days must be between 0 (unlimited) and %d", ErrInvalid, MaxAPIKeyLifetimeDays)
 	case sec.APIKeyExpiryWarningDays < 1 || sec.APIKeyExpiryWarningDays > MaxAPIKeyExpiryWarningDays:
 		return fmt.Errorf("%w: security.api_key_expiry_warning_days must be between 1 and %d", ErrInvalid, MaxAPIKeyExpiryWarningDays)
+	case sec.APIRateLimitPerMinute < 0 || sec.APIRateLimitPerMinute > MaxAPIRateLimit:
+		return fmt.Errorf("%w: security.api_rate_limit_per_minute must be between 0 (off) and %d", ErrInvalid, MaxAPIRateLimit)
+	case sec.APIRateLimitBurst < 1 || sec.APIRateLimitBurst > MaxAPIRateLimit:
+		return fmt.Errorf("%w: security.api_rate_limit_burst must be between 1 and %d", ErrInvalid, MaxAPIRateLimit)
+	case sec.APIWorkRateLimitPerMinute < 0 || sec.APIWorkRateLimitPerMinute > MaxAPIRateLimit:
+		return fmt.Errorf("%w: security.api_work_rate_limit_per_minute must be between 0 (only the general limit) and %d", ErrInvalid, MaxAPIRateLimit)
+	case sec.APIWorkRateLimitBurst < 1 || sec.APIWorkRateLimitBurst > MaxAPIRateLimit:
+		return fmt.Errorf("%w: security.api_work_rate_limit_burst must be between 1 and %d", ErrInvalid, MaxAPIRateLimit)
 	}
 	switch sec.SecureCookies {
 	case CookiesAuto, CookiesAlways, CookiesNever:

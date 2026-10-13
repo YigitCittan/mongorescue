@@ -34,6 +34,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/notify"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/pitr/collector"
+	"github.com/yigitcittan/mongorescue/internal/ratelimit"
 	"github.com/yigitcittan/mongorescue/internal/readiness"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/redact"
@@ -156,6 +157,13 @@ type Server struct {
 	oidc       *oidc.Client
 	oidcBox    *secretbox.Ref
 	usedStates *stateSet
+
+	// rateBuckets holds the REST API request budgets per API key, session and
+	// client address, rateLog limits their log lines and rateObserve counts the
+	// refusals (see ratelimit.go).
+	rateBuckets *ratelimit.Limiter
+	rateLog     *ratelimit.Gate
+	rateObserve func(caller, budget string)
 }
 
 // WithDesktopCSP makes the server send desktopContentSecurityPolicy, which also
@@ -247,6 +255,8 @@ func NewServer(
 		staticFS:      staticFS,
 
 		heartbeatThrottle: auth.NewThrottle(nil),
+		rateBuckets:       ratelimit.New(),
+		rateLog:           ratelimit.NewGate(rateLimitLogInterval, nil),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -416,7 +426,7 @@ type apiResponse struct {
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 	// Code is a stable, machine-readable reason of some refusals (such as
-	// codeAPIKeyExpired); clients match it instead of the English error text.
+	// codeAPIKeyExpired or codeRateLimited); clients match it instead of the English error text.
 	Code string `json:"code,omitempty"`
 }
 

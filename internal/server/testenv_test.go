@@ -147,6 +147,8 @@ func newTestSettings(t *testing.T, repo settings.Repository, sec settings.Securi
 		SessionIdleTimeout: &sec.SessionIdleTimeout, SessionAbsoluteTimeout: &sec.SessionAbsoluteTimeout,
 		SecureCookies: &sec.SecureCookies, TrustProxyHeaders: &sec.TrustProxyHeaders,
 		CORSOrigins: &origins, MetricsPublic: &sec.MetricsPublic,
+		APIRateLimitPerMinute: &sec.APIRateLimitPerMinute, APIRateLimitBurst: &sec.APIRateLimitBurst,
+		APIWorkRateLimitPerMinute: &sec.APIWorkRateLimitPerMinute, APIWorkRateLimitBurst: &sec.APIWorkRateLimitBurst,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +173,12 @@ func bootConfig() *config.Config {
 
 // errUnreachable simulates a server that cannot be reached.
 var errUnreachable = errors.New("server selection error: dial tcp 10.0.0.1:27017: i/o timeout, uri mongodb://admin:s3cret-pw@db.internal:27017")
+
+// withoutRateLimit turns the REST API rate limit off, for fixtures that sweep
+// every route with the same keys (the limit has tests of its own).
+func withoutRateLimit() Option {
+	return func(s *Server) { s.rateBuckets = nil }
+}
 
 // asPrincipal serves h with p attached to every request, like the auth middleware
 // does, for tests that exercise the bare routes.

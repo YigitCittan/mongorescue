@@ -27,6 +27,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_audit_queue_depth` | gauge | | Audit log entries waiting to be written |
 | `mongorescue_audit_forward_total` | counter | `outcome` | Audit log entries forwarded to the audit webhook: `sent`, `failed` (refused or unreachable) or `dropped` (queue full or stopped); see [audit.md](audit.md#forwarding) |
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
+| `mongorescue_api_rate_limited_total` | counter | `caller`, `budget` | REST API requests refused with `429` by the [rate limit](security.md#rest-api-rate-limits) (`caller`: `api_key`, `session`, `anonymous`; `budget`: `general`, `work`) |
 | `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
 | `mongorescue_bulk_operations_total` | counter | `resource`, `action` | [Bulk operations](api.md#bulk-actions) run (not dry runs; `resource`: `backups`, `restores`, `jobs`) |
 | `mongorescue_bulk_items_total` | counter | `resource`, `action`, `outcome` | Items of bulk operations (`outcome`: `succeeded`, `skipped`, `failed`) |
