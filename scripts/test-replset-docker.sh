@@ -179,9 +179,18 @@ run_test() {
     env_args+=(-e "MONGORESCUE_SOAK_REPORT=/report/$(basename "$MONGORESCUE_SOAK_REPORT")")
   fi
   log "running $name"
+  local status=0
   docker run --rm --name "${RS_PROJECT}-runner" --network "$network" \
     "${mounts[@]}" "${env_args[@]}" "$RUNNER_IMAGE" \
-    /work/replset.test -test.v -test.count=1 -test.timeout "$TEST_TIMEOUT" -test.run "^${name}\$"
+    /work/replset.test -test.v -test.count=1 -test.timeout "$TEST_TIMEOUT" -test.run "^${name}\$" || status=$?
+  # The container writes the report as root (mode 0600): hand it to the caller,
+  # so a CI artifact upload or a later run can read it.
+  if [ -n "${MONGORESCUE_SOAK_REPORT:-}" ]; then
+    docker run --rm -v "$report_dir:/report" "$RUNNER_IMAGE" \
+      sh -c 'if [ -e "$1" ]; then chown "$2" "$1" && chmod 0644 "$1"; fi' sh \
+      "/report/$(basename "$MONGORESCUE_SOAK_REPORT")" "$(id -u):$(id -g)" || true
+  fi
+  return "$status"
 }
 
 TESTS=()
