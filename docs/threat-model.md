@@ -135,7 +135,7 @@ Assumptions:
 | | Threat | Mitigations (code) |
 | :--- | :--- | :--- |
 | T | Path traversal through object keys | `resolvePath` (`internal/storage/local.go`) refuses backslashes, drive letters, control characters and non-local paths (`filepath.IsLocal`); fuzzed by `FuzzLocalKey`. |
-| T | Archive replaced or corrupted on storage | Each record keeps the SHA-256 of the stored bytes; a verified restore checks it before `mongorestore` starts and every restore checks it while streaming (`ErrChecksumMismatch`, `internal/restore/engine.go`); integrity sweeps re-read archives (`internal/integrity`). Encrypted archives are also authenticated by age. |
+| T | Archive replaced or corrupted on storage | Each record keeps the SHA-256 of the stored bytes; a verified restore checks it before `mongorestore` starts and every restore checks it while streaming (`ErrChecksumMismatch`, `internal/restore/engine.go`); integrity sweeps re-read archives (`internal/integrity`). The recorded checksum is the only authenticity check: age detects corrupted or truncated ciphertext, but anyone with an X25519 recipient can produce a valid encrypted archive (component 7). |
 | T | Deletion through MongoRescue | Soft deletes with a grace period, pins, the two-person rule ([security.md](security.md#delete-protection)). |
 | T | Deletion on the storage side | S3 Object Lock (`internal/storage/s3_lock.go`): every upload carries the target's retention; compliance mode resists every principal; a target with a lock mode is refused unless the bucket has Object Lock and versioning; lowering a lock waits for the grace period. |
 | T | Two targets overwriting each other | Overlapping locations are refused and the purge checks aliases ([security.md](security.md#storage-targets)). |
@@ -175,7 +175,7 @@ Assumptions:
 
 | | Threat | Mitigations (code) |
 | :--- | :--- | :--- |
-| T | Modified ciphertext | age authenticates every 64 KiB chunk and the header; failures are `ErrDecryptionFailed` (`internal/encryption/encryption.go`); fuzzed by `FuzzDecrypt`, `FuzzRoundTrip`. |
+| T | Modified ciphertext | age detects modification of every 64 KiB chunk and of the header under the file key (integrity, not sender authenticity: see the S row below); failures are `ErrDecryptionFailed` (`internal/encryption/encryption.go`); fuzzed by `FuzzDecrypt`, `FuzzRoundTrip`. |
 | I | Reading archives on storage | X25519 recipients (the backup server needs no private key) or scrypt passphrases; identities and passphrases are sealed in the database. |
 | I | Key material in errors | Errors name recipients and identities by position only. |
 | D | A crafted header forcing an expensive scrypt | `MaxScryptWorkFactor` (18) caps decryption as well as encryption. |
@@ -306,9 +306,9 @@ Assumptions:
 
 | Component | Item |
 | :--- | :--- |
-| HA | Bind the cluster and epoch to the snapshot content and refuse a mismatch on takeover. |
-| HTTP API | Rate limits per API key and per session on the REST API; HSTS when served over TLS. |
-| Auth | Optional API key expiry; MFA for local accounts. |
+| HA | Bind the cluster and epoch to the snapshot content and refuse a mismatch on takeover ([#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
+| HTTP API | Rate limits per API key and per session on the REST API ([#191](https://github.com/YigitCittan/mongorescue/issues/191)); HSTS when served over TLS. |
+| Auth | Optional API key expiry ([#190](https://github.com/YigitCittan/mongorescue/issues/190)); MFA for local accounts. |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
 | secretbox | An external key provider (KMS) for `secret.key`. |
 | Notifications | An option to deny private ranges. |

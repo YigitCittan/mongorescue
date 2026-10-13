@@ -6,12 +6,12 @@ The MongoRescue maintainers take the security and integrity of database operatio
 
 ## 1. Supported Versions
 
-Security updates and patches are provided for the following versions:
+Before 1.0, security fixes go into the latest minor release only: they ship as a patch release of it as soon as they are merged ([docs/versioning.md](docs/versioning.md#when-to-release)). Older minor releases get no fixes; upgrade to the latest release.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
+| Version                       | Supported          |
+| ----------------------------- | ------------------ |
+| Latest 0.x minor (now 0.27.x) | :white_check_mark: |
+| Older 0.x minors              | :x:                |
 
 ---
 

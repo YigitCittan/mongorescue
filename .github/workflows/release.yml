@@ -116,10 +116,43 @@ jobs:
       TAG: ${{ github.ref_name }}
       PROVENANCE: ${{ needs.provenance.outputs.provenance-name }}
     steps:
+      # The artifact is downloaded by name, which another job of this run could
+      # also have used. slsa-github-generator v2.1.0 offers no hash-checked
+      # download to callers: its generic workflow outputs only the provenance
+      # name (provenance-sha256 stays internal to it), and secure-download-artifact
+      # is an internal action under .github/actions that needs that hash. The file
+      # is therefore checked by content before it is attached: slsa-verifier
+      # checks its signature (the generator's workflow identity, Rekor), this
+      # repository and tag, and that it covers every archive and checksums.txt
+      # of the release. A substituted file fails here.
       - name: Download the provenance
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.provenance.outputs.provenance-name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false # clean release build, as in the goreleaser job
+
+      # Pinned by version; the Go checksum database verifies the module.
+      - name: Install slsa-verifier
+        run: go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@v2.7.1
+
+      - name: Verify the provenance against the release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets \
+            -p 'mongorescue_*.tar.gz' -p 'mongorescue_*.zip' -p checksums.txt
+          for f in release-assets/*; do
+            slsa-verifier verify-artifact "$f" --provenance-path "$PROVENANCE" \
+              --source-uri "github.com/$GITHUB_REPOSITORY" --source-tag "$TAG"
+          done
 
       - name: Upload the provenance to the release
         env:

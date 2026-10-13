@@ -79,8 +79,49 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-      actions: read # download the corpus of the previous batch run
+      actions: write # read the corpus artifacts and delete untrusted ones (see below)
     steps:
+      # Corpus trust. Without a storage repository (which would need a token
+      # secret), ClusterFuzzLite keeps the corpus as workflow artifacts named
+      # cifuzz-corpus-<target> and picks the newest artifact of that name in the
+      # whole repository; it cannot filter by branch or event. Code-change runs
+      # (the pr job) never upload a corpus, but a pull request from a fork runs
+      # its own copy of this workflow and could upload an artifact with that name
+      # to plant inputs. So before the trusted jobs read the corpus, every corpus
+      # artifact that was not written by a schedule or workflow_dispatch run of
+      # this workflow on main in this repository is deleted (actions: write).
+      # What remains is data, never code: a planted input can only make a fuzz
+      # target built from main fail or waste time, and one uploaded in the
+      # seconds between this step and the download is caught by the next run.
+      - name: Drop corpus artifacts from untrusted runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          declare -A verdict=()
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | startswith("cifuzz-corpus-")) | "\(.id) \(.workflow_run.id // "none")"' |
+          while read -r id run; do
+            if [ -z "${verdict[$run]+x}" ]; then
+              verdict[$run]=untrusted
+              if [ "$run" != none ]; then
+                info=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" \
+                  --jq '"\(.event) \(.head_branch) \(.head_repository.full_name) \(.path)"' 2>/dev/null || true)
+                read -r event branch repo path <<<"$info"
+                case "$event" in
+                  schedule | workflow_dispatch)
+                    if [ "$branch" = main ] && [ "$repo" = "$GITHUB_REPOSITORY" ] && [ "${path%%@*}" = .github/workflows/cflite.yml ]; then
+                      verdict[$run]=trusted
+                    fi ;;
+                esac
+              fi
+            fi
+            if [ "${verdict[$run]}" != trusted ]; then
+              echo "Deleting corpus artifact $id from untrusted run $run"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            fi
+          done
+
       - name: Build fuzzers
         id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
@@ -107,8 +148,49 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      actions: read # download the corpus to prune
+      actions: write # read the corpus artifacts and delete untrusted ones (see below)
     steps:
+      # Corpus trust. Without a storage repository (which would need a token
+      # secret), ClusterFuzzLite keeps the corpus as workflow artifacts named
+      # cifuzz-corpus-<target> and picks the newest artifact of that name in the
+      # whole repository; it cannot filter by branch or event. Code-change runs
+      # (the pr job) never upload a corpus, but a pull request from a fork runs
+      # its own copy of this workflow and could upload an artifact with that name
+      # to plant inputs. So before the trusted jobs read the corpus, every corpus
+      # artifact that was not written by a schedule or workflow_dispatch run of
+      # this workflow on main in this repository is deleted (actions: write).
+      # What remains is data, never code: a planted input can only make a fuzz
+      # target built from main fail or waste time, and one uploaded in the
+      # seconds between this step and the download is caught by the next run.
+      - name: Drop corpus artifacts from untrusted runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          declare -A verdict=()
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | startswith("cifuzz-corpus-")) | "\(.id) \(.workflow_run.id // "none")"' |
+          while read -r id run; do
+            if [ -z "${verdict[$run]+x}" ]; then
+              verdict[$run]=untrusted
+              if [ "$run" != none ]; then
+                info=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" \
+                  --jq '"\(.event) \(.head_branch) \(.head_repository.full_name) \(.path)"' 2>/dev/null || true)
+                read -r event branch repo path <<<"$info"
+                case "$event" in
+                  schedule | workflow_dispatch)
+                    if [ "$branch" = main ] && [ "$repo" = "$GITHUB_REPOSITORY" ] && [ "${path%%@*}" = .github/workflows/cflite.yml ]; then
+                      verdict[$run]=trusted
+                    fi ;;
+                esac
+              fi
+            fi
+            if [ "${verdict[$run]}" != trusted ]; then
+              echo "Deleting corpus artifact $id from untrusted run $run"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            fi
+          done
+
       - name: Build fuzzers
         id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
