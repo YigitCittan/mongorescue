@@ -131,9 +131,9 @@ func UnwrapToFiles(ctx context.Context, cfg OfflineConfig) (*Change, error) {
 			if err = secretbox.WriteKeyFile(of.plain, key); err != nil {
 				return nil, err
 			}
-			back, err := secretbox.ReadKeyFile(of.plain)
-			if err != nil {
-				return nil, err
+			back, readErr := secretbox.ReadKeyFile(of.plain)
+			if readErr != nil {
+				return nil, readErr
 			}
 			if subtle.ConstantTimeCompare(back, key) != 1 {
 				return nil, fmt.Errorf("keywrap: %s does not read back as written", of.name)

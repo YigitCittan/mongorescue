@@ -272,14 +272,14 @@ func (l *loader) current(ctx context.Context) (*Loaded, error) {
 	switch {
 	case err == nil:
 		start := time.Now()
-		key, attempts, err := l.open(ctx, f, name)
-		if err != nil {
-			return nil, err
+		key, attempts, openErr := l.open(ctx, f, name)
+		if openErr != nil {
+			return nil, openErr
 		}
 		out := &Loaded{Key: key, File: f, Attempts: attempts, UnwrapDuration: time.Since(start)}
 		if hasPlain {
-			if err := l.dropPlain(plain, key); err != nil {
-				return nil, err
+			if dropErr := l.dropPlain(plain, key); dropErr != nil {
+				return nil, dropErr
 			}
 			l.log.Warn("removed a plaintext secret.key next to secret.key.wrapped (left by an interrupted migration or copied back)")
 		}
@@ -341,12 +341,12 @@ func (l *loader) migrateAside(ctx context.Context, name string) (bool, error) {
 	f, err := ReadFile(wrapped)
 	switch {
 	case err == nil:
-		back, _, err := l.open(ctx, f, name)
-		if err != nil {
-			return false, err
+		back, _, openErr := l.open(ctx, f, name)
+		if openErr != nil {
+			return false, openErr
 		}
-		if err = l.dropPlain(plain, back); err != nil {
-			return false, err
+		if openErr = l.dropPlain(plain, back); openErr != nil {
+			return false, openErr
 		}
 		return false, nil
 	case !errors.Is(err, fs.ErrNotExist):

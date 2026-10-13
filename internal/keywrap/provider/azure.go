@@ -41,9 +41,9 @@ func newAzure(spec keywrap.Spec, opts Options) (keywrap.Wrapper, error) {
 	}
 	cred := opts.AzureCredential
 	if cred == nil {
-		dc, err := azidentity.NewDefaultAzureCredential(nil)
-		if err != nil {
-			return nil, fmt.Errorf("azure-keyvault: set up DefaultAzureCredential: %w", err)
+		dc, credErr := azidentity.NewDefaultAzureCredential(nil)
+		if credErr != nil {
+			return nil, fmt.Errorf("azure-keyvault: set up DefaultAzureCredential: %w", credErr)
 		}
 		cred = dc
 	}

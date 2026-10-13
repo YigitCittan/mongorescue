@@ -84,9 +84,9 @@ func TestLoadFirstStartStoresOnlyTheWrappedKey(t *testing.T) {
 	}
 	wrapped := filepath.Join(dir, keywrap.WrappedKeyFileName)
 	if runtime.GOOS != "windows" {
-		info, err := os.Stat(wrapped)
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("secret.key.wrapped mode = %v, %v", info, err)
+		info, statErr := os.Stat(wrapped)
+		if statErr != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("secret.key.wrapped mode = %v, %v", info, statErr)
 		}
 	}
 	assertNoPlaintext(t, dir, first.Key)
@@ -141,9 +141,9 @@ func TestLoadMigratesPlaintextKeyFiles(t *testing.T) {
 	}
 	codec := keywrap.NewCodec(testSpec, kms).WithRetry(fastRetry, keywraptest.NoSleep)
 	for name, want := range map[string][]byte{secretbox.NextKeyFileName: next, secretbox.PreviousKeyFileName: prev} {
-		k, err := codec.ReadKey(context.Background(), filepath.Join(dir, name+keywrap.Suffix))
-		if err != nil || !bytes.Equal(k, want) {
-			t.Errorf("ReadKey(%s) = %v", name, err)
+		k, readErr := codec.ReadKey(context.Background(), filepath.Join(dir, name+keywrap.Suffix))
+		if readErr != nil || !bytes.Equal(k, want) {
+			t.Errorf("ReadKey(%s) = %v", name, readErr)
 		}
 	}
 	changes, err := keywrap.ReadJournal(dir)

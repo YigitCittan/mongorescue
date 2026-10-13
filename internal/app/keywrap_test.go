@@ -112,8 +112,8 @@ func TestAppMigratesItsPlaintextKeyToTheKMS(t *testing.T) {
 	if _, err = os.Stat(keyFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the plaintext secret.key was kept")
 	}
-	if c, err := wrapped.metaStore.(*store.SQLiteStore).GetConnection(ctx, "conn_1"); err != nil || !strings.Contains(c.URI, "conn-secret") {
-		t.Fatalf("the credentials do not open after the migration: %v", err)
+	if c, getErr := wrapped.metaStore.(*store.SQLiteStore).GetConnection(ctx, "conn_1"); getErr != nil || !strings.Contains(c.URI, "conn-secret") {
+		t.Fatalf("the credentials do not open after the migration: %v", getErr)
 	}
 	f, err := keywrap.ReadFile(keyFile + keywrap.Suffix)
 	if err != nil {

@@ -118,9 +118,9 @@ func TestKeyWrapAWSKMS(t *testing.T) {
 	cfg.DataDir = filepath.Join(t.TempDir(), "data")
 	cfg.KeyWrap = spec
 	for range 2 {
-		a, err := app.New(cfg, slog.New(slog.DiscardHandler), app.WithGetenv(func(string) string { return "" }))
-		if err != nil {
-			t.Fatalf("app with AWS KMS key wrapping: %v", err)
+		a, newErr := app.New(cfg, slog.New(slog.DiscardHandler), app.WithGetenv(func(string) string { return "" }))
+		if newErr != nil {
+			t.Fatalf("app with AWS KMS key wrapping: %v", newErr)
 		}
 		_ = a.Close()
 	}
@@ -205,8 +205,8 @@ func TestKeyWrapVaultTransit(t *testing.T) {
 
 	// A new version of the Transit key: the stored ciphertext still unwraps.
 	v.api(t, http.MethodPost, "transit/keys/mongorescue/rotate", nil, nil)
-	if again, err := loadWrapped(dir, spec, w); err != nil || !bytes.Equal(again.Key, first.Key) {
-		t.Fatalf("unwrap after the Transit key rotated = %v", err)
+	if again, loadErr := loadWrapped(dir, spec, w); loadErr != nil || !bytes.Equal(again.Key, first.Key) {
+		t.Fatalf("unwrap after the Transit key rotated = %v", loadErr)
 	}
 
 	// AppRole: a role whose policy only allows this key.
@@ -225,13 +225,13 @@ path "transit/decrypt/mongorescue" { capabilities = ["update"] }`
 	v.api(t, http.MethodGet, "auth/approle/role/mongorescue-it/role-id", nil, &roleID)
 	v.api(t, http.MethodPost, "auth/approle/role/mongorescue-it/secret-id", nil, &secretID)
 	_, approle := v.wrapper(t, "mongorescue", map[string]string{provider.EnvVaultRoleID: roleID.Data["role_id"].(string), provider.EnvVaultSecretID: secretID.Data["secret_id"].(string)})
-	if got, err := first.File.Open(ctx, approle); err != nil || !bytes.Equal(got, first.Key) {
-		t.Fatalf("unwrap with AppRole = %v", err)
+	if got, openErr := first.File.Open(ctx, approle); openErr != nil || !bytes.Equal(got, first.Key) {
+		t.Fatalf("unwrap with AppRole = %v", openErr)
 	}
 
 	// Rewrap to another Transit key; the old file spec no longer loads.
 	v.api(t, http.MethodPost, "transit/keys/mongorescue-next", map[string]string{"type": "aes256-gcm96"}, nil)
-	nextSpec, _ := v.wrapper(t, "mongorescue-next", nil)
+	nextSpec, _ := v.wrapper(t, "mongorescue-next", map[string]string{provider.EnvVaultToken: v.token})
 	open := func(ctx context.Context, s keywrap.Spec) (keywrap.Wrapper, error) {
 		return provider.OpenWith(ctx, s, provider.Options{Getenv: func(k string) string {
 			if k == provider.EnvVaultToken {
@@ -251,15 +251,15 @@ path "transit/decrypt/mongorescue" { capabilities = ["update"] }`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if moved, err := loadWrapped(dir, nextSpec, nextW); err != nil || !bytes.Equal(moved.Key, first.Key) {
-		t.Fatalf("Load after the rewrap = %v", err)
+	if moved, loadErr := loadWrapped(dir, nextSpec, nextW); loadErr != nil || !bytes.Equal(moved.Key, first.Key) {
+		t.Fatalf("Load after the rewrap = %v", loadErr)
 	}
 
 	// Leaving the KMS writes the plaintext key back.
 	if _, err = keywrap.UnwrapToFiles(ctx, keywrap.OfflineConfig{DataDir: dir, Open: open, Actor: "it", Retry: itRetry}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := secretbox.ReadKeyFile(filepath.Join(dir, secretbox.KeyFileName)); err != nil || !bytes.Equal(got, first.Key) {
-		t.Fatalf("secret.key after unwrap = %v", err)
+	if got, readErr := secretbox.ReadKeyFile(filepath.Join(dir, secretbox.KeyFileName)); readErr != nil || !bytes.Equal(got, first.Key) {
+		t.Fatalf("secret.key after unwrap = %v", readErr)
 	}
 }

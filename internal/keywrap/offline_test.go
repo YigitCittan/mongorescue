@@ -48,9 +48,9 @@ func TestUnwrapToFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string][]byte{secretbox.KeyFileName: cur, secretbox.PreviousKeyFileName: prev} {
-		got, err := secretbox.ReadKeyFile(filepath.Join(dir, name))
-		if err != nil || !bytes.Equal(got, want) {
-			t.Errorf("%s after unwrap: %v", name, err)
+		got, readErr := secretbox.ReadKeyFile(filepath.Join(dir, name))
+		if readErr != nil || !bytes.Equal(got, want) {
+			t.Errorf("%s after unwrap: %v", name, readErr)
 		}
 		if exists(t, filepath.Join(dir, name+keywrap.Suffix)) {
 			t.Errorf("%s.wrapped was kept", name)
@@ -130,9 +130,9 @@ func TestRewrap(t *testing.T) {
 	}
 	codec := keywrap.NewCodec(otherSpec, newKMS)
 	for name, want := range map[string][]byte{keywrap.WrappedKeyFileName: cur, secretbox.PreviousKeyFileName + keywrap.Suffix: prev} {
-		got, err := codec.ReadKey(context.Background(), filepath.Join(dir, name))
-		if err != nil || !bytes.Equal(got, want) {
-			t.Errorf("%s after rewrap: %v", name, err)
+		got, readErr := codec.ReadKey(context.Background(), filepath.Join(dir, name))
+		if readErr != nil || !bytes.Equal(got, want) {
+			t.Errorf("%s after rewrap: %v", name, readErr)
 		}
 	}
 	// The old KMS key no longer opens anything.
