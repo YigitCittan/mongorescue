@@ -171,6 +171,10 @@ const (
 	// ApprovalJobLockedCopies turns off require_locked_copies of job Subject (then
 	// delayed by the grace period too).
 	ApprovalJobLockedCopies ApprovalAction = "job_locked_copies"
+	// ApprovalPlaintextRecoveryKit lets its requester (Subject) download one
+	// recovery kit carrying the plaintext secret.key of a KMS-wrapped installation,
+	// within an hour of the approval. Approving runs nothing else.
+	ApprovalPlaintextRecoveryKit ApprovalAction = "plaintext_recovery_kit"
 )
 
 // ApprovalStatus is the state of an approval request.

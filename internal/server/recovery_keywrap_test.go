@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,9 +14,11 @@ import (
 	"testing"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/keywrap/keywraptest"
+	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -120,5 +123,50 @@ func TestRecoveryKitOfAWrappedKey(t *testing.T) {
 	}
 	if ok != 2 || plaintext != 1 {
 		t.Fatalf("audit: %d downloads, %d with the plaintext key; want 2 and 1", ok, plaintext)
+	}
+
+	// With the two-person rule, the plaintext key needs a second administrator.
+	if _, err = authSvc.CreateUser(context.Background(), auth.SystemPrincipal(), "bob", testPassword, auth.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if rec = b.do("PUT", "/api/v1/settings", map[string]any{"security": map[string]any{"require_second_approver": true}}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("turn the two-person rule on: %d %s", rec.Code, rec.Body)
+	}
+	plainBody := func(approvalID string) map[string]any {
+		return map[string]any{"passphrase": kitPassphrase, "current_password": testPassword, "plaintext_secret_key": true, "approval_id": approvalID}
+	}
+	rec = b.do("POST", "/api/v1/recovery-kit", plainBody(""), nil)
+	var pending struct {
+		Data struct {
+			ApprovalRequired bool             `json:"approval_required"`
+			Approval         *models.Approval `json:"approval"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(rec.Body.Bytes(), &pending); err != nil || rec.Code != http.StatusAccepted || !pending.Data.ApprovalRequired ||
+		pending.Data.Approval == nil || pending.Data.Approval.Action != models.ApprovalPlaintextRecoveryKit {
+		t.Fatalf("plaintext download with the rule on: %d %s; want 202 with an approval request", rec.Code, rec.Body)
+	}
+	id := pending.Data.Approval.ID
+	if rec = b.do("POST", "/api/v1/recovery-kit", plainBody(id), nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("plaintext download before the approval: %d %s; want 403", rec.Code, rec.Body)
+	}
+	bob := f.browser(t)
+	bob.session(bob.login("bob", testPassword))
+	if rec = bob.do("POST", "/api/v1/approvals/"+id+"/approve", nil, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"approved"`) {
+		t.Fatalf("approval by bob: %d %s", rec.Code, rec.Body)
+	}
+	rec = b.do("POST", "/api/v1/recovery-kit", plainBody(id), nil)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("approved plaintext download: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	if _, ok := kitFiles(t, rec.Body.Bytes())[recoverykit.SecretKeyName]; !ok {
+		t.Fatal("the approved plaintext kit lacks secret.key")
+	}
+	if rec = b.do("POST", "/api/v1/recovery-kit", plainBody(id), nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("second use of the approval: %d %s; want 403", rec.Code, rec.Body)
+	}
+	// The wrapped kit needs no approval.
+	if rec = b.do("POST", "/api/v1/recovery-kit", kitBody(testPassword), nil); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("wrapped download with the rule on: %d %v", rec.Code, rec.Header())
 	}
 }

@@ -594,6 +594,10 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 		return "secret.key rotated (new fingerprint " + res.NewFingerprint + "); every user has to sign in again", nil
 	case models.ApprovalPostRestoreCommands:
 		return s.applyPostRestoreChange(ctx, a)
+	case models.ApprovalPlaintextRecoveryKit:
+		// The requester downloads the kit; the approver never gets it.
+		return "the requester may download one recovery kit with the plaintext secret.key within " + PlaintextKitGrantTTL.String() +
+			" (approval_id in POST /api/v1/recovery-kit)", nil
 	default:
 		return "", public("unknown approval action "+string(a.Action), ErrInvalid)
 	}

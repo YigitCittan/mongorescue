@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 )
 
@@ -113,6 +114,9 @@ type recoveryKitRequest struct {
 	// wrapped by a KMS (recoverykit.PrepareOptions.PlaintextSecretKey). It is
 	// recorded in the audit entry.
 	PlaintextSecretKey bool `json:"plaintext_secret_key,omitempty"`
+	// ApprovalID is the approved plaintext_recovery_kit request that allows a
+	// plaintext_secret_key download under the two-person rule.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // handleDownloadRecoveryKit streams the recovery kit, sealed with the passphrase
@@ -163,6 +167,22 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	plaintext := req.PlaintextSecretKey && s.recoveryKit.KeyWrapped()
+	if plaintext {
+		// Under the two-person rule the plaintext key needs a second administrator.
+		switch err := s.ops.AuthorizePlaintextRecoveryKit(r.Context(), req.ApprovalID); {
+		case err == nil:
+		case writeApprovalPending(w, err):
+			s.auditRecoveryKit(r.Context(), p, start, audit.ResultDenied, http.StatusAccepted, "waits for a second administrator", plaintext)
+			return
+		case errors.Is(err, operations.ErrPlaintextKitApproval):
+			s.auditRecoveryKit(r.Context(), p, start, audit.ResultDenied, http.StatusForbidden, "approval not usable", plaintext)
+			writeError(w, http.StatusForbidden, operations.ErrPlaintextKitApproval.Error())
+			return
+		default:
+			s.writeOperationError(w, err)
+			return
+		}
+	}
 	kit, err := s.recoveryKit.PrepareWith(r.Context(), recoverykit.PrepareOptions{IncludePreviousKey: req.IncludePreviousKey,
 		PlaintextSecretKey: req.PlaintextSecretKey})
 	if errors.Is(err, recoverykit.ErrNoPreviousKey) || errors.Is(err, recoverykit.ErrWrappedKeyStale) {
