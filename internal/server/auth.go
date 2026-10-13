@@ -126,6 +126,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			err = auth.ErrUnauthenticated
 		}
 		if err != nil {
+			// An expired key is refused with its own code, and recorded with the key.
+			var expired *auth.ExpiredKeyError
+			if errors.As(err, &expired) {
+				s.refuseExpiredKey(w, r, pattern, expired, isMCP)
+				return
+			}
 			// Refused mutating requests are recorded, anonymously.
 			if s.auditLog != nil && auditsAction(r.Method, path, pattern) {
 				rec, done := s.auditedAction(w, r, nil, pattern)
@@ -186,6 +192,29 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, req)
 	})
+}
+
+// reasonAPIKeyExpired is the audit reason of a request refused for an expired API
+// key.
+const reasonAPIKeyExpired = "api_key_expired"
+
+// refuseExpiredKey answers a request made with an expired API key: 401 with the
+// code api_key_expired, and an audit entry naming the key (identical refusals are
+// coalesced by the audit log), whatever the method.
+func (s *Server) refuseExpiredKey(w http.ResponseWriter, r *http.Request, pattern string, e *auth.ExpiredKeyError, isMCP bool) {
+	if s.auditLog != nil {
+		s.auditLog.Record(r.Context(), auditlog.Event{
+			Action: routeLabel(r.Method, pattern), Targets: map[string]string{targetReason: reasonAPIKeyExpired},
+			Status: http.StatusUnauthorized, Outcome: auditlog.OutcomeDenied,
+			ActorKind: auditlog.ActorAPIKey, ActorKeyID: e.KeyID, ActorKeyName: e.KeyName,
+			ClientIP: s.clientIP(r), UserAgent: r.UserAgent(),
+		})
+	}
+	if isMCP {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="mongorescue", error="invalid_token", error_description="the API key has expired"`)
+	}
+	writeErrorCode(w, http.StatusUnauthorized, codeAPIKeyExpired,
+		"unauthorized: the API key expired at "+e.ExpiresAt.UTC().Format(time.RFC3339)+"; create a new key in Settings → API keys")
 }
 
 // routePattern returns the ServeMux pattern r matches, or "" when none does.
@@ -401,7 +430,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidPassword), errors.Is(err, auth.ErrInvalidUsername),
 		errors.Is(err, auth.ErrInvalidName), errors.Is(err, auth.ErrDeleteSelf), errors.Is(err, auth.ErrInvalidScope),
 		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrChangeOwnRole), errors.Is(err, auth.ErrNoPassword),
-		errors.Is(err, auth.ErrInvalidConnections), errors.Is(err, auth.ErrAdminConnections):
+		errors.Is(err, auth.ErrInvalidConnections), errors.Is(err, auth.ErrAdminConnections), errors.Is(err, auth.ErrInvalidExpiry):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, auth.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden: "+scopeMessage(err))
@@ -555,6 +584,8 @@ type meResponse struct {
 	// KeyScope is the API key's own scope (API keys only); Scope is lower when the
 	// creator's role caps the key.
 	KeyScope auth.Scope `json:"key_scope,omitempty"`
+	// KeyExpiresAt is when the API key expires (API keys with an expiry only).
+	KeyExpiresAt *time.Time `json:"key_expires_at,omitempty"`
 	// AllConnections and ConnectionIDs are the connections the caller may touch
 	// (signed in only): every connection, or exactly the list (none when empty).
 	AllConnections *bool     `json:"all_connections,omitempty"`
@@ -569,6 +600,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	me := meResponse{
 		User: p.User, CSRFToken: p.CSRFToken, Auth: p.Method, Role: p.Role, Scope: p.Scope, KeyScope: p.KeyScope,
+		KeyExpiresAt: p.KeyExpiresAt,
 	}
 	a := auth.AccessOf(p.Connections)
 	me.AllConnections = &a.AllConnections
@@ -943,8 +975,16 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		// The key's connections (a limit needs a scope below admin); every
 		// connection reaches what its creator may touch.
 		connectionAccessRequest
+		// ExpiresAt (RFC 3339) or ExpiresInDays sets when the key stops working;
+		// neither means never, which a maximum lifetime refuses.
+		ExpiresAt     *time.Time `json:"expires_at"`
+		ExpiresInDays *int       `json:"expires_in_days"`
 	}
 	if !decodeBody(w, r, &req) {
+		return
+	}
+	expiresAt, ok := s.requestedExpiry(w, req.ExpiresAt, req.ExpiresInDays)
+	if !ok {
 		return
 	}
 	// Who may create keys at all is checked before the connections are looked up.
@@ -956,7 +996,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	k, plain, err := svc.CreateAPIKeyWithConnections(r.Context(), p, req.Name, req.Scope, access)
+	k, plain, err := svc.CreateAPIKeyWithOptions(r.Context(), p, auth.APIKeyOptions{Name: req.Name, Scope: req.Scope, Access: access, ExpiresAt: expiresAt})
 	if k != nil && err != nil {
 		// The two-person rule: the key works with the operator scope, the admin scope
 		// waits. Its plaintext is shown here, once, like for any new key.
@@ -976,8 +1016,36 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !k.AllConnections {
 		auditlog.Annotate(r.Context(), targetConnections, connectionsNote(k.ConnectionAccess))
 	}
+	if k.ExpiresAt != nil {
+		auditlog.Annotate(r.Context(), targetExpiresAt, k.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, createdAPIKey{APIKey: k, Key: plain})
+}
+
+// targetExpiresAt is the audit target of a new key's expiry.
+const targetExpiresAt = "expires_at"
+
+// maxExpiresInDays bounds expires_in_days (auth.MaxAPIKeyLifetime).
+const maxExpiresInDays = int(auth.MaxAPIKeyLifetime / (24 * time.Hour))
+
+// requestedExpiry resolves the expiry of a new key from expires_at or
+// expires_in_days (not both), answering 400 for a bad combination. The policy
+// (future, maximum lifetime) is checked by the auth service.
+func (s *Server) requestedExpiry(w http.ResponseWriter, at *time.Time, days *int) (*time.Time, bool) {
+	switch {
+	case at != nil && days != nil:
+		writeError(w, http.StatusBadRequest, "set expires_at or expires_in_days, not both")
+		return nil, false
+	case days != nil:
+		if *days < 1 || *days > maxExpiresInDays {
+			writeError(w, http.StatusBadRequest, "expires_in_days must be between 1 and "+strconv.Itoa(maxExpiresInDays))
+			return nil, false
+		}
+		t := s.auth.Now().UTC().Add(time.Duration(*days) * 24 * time.Hour)
+		return &t, true
+	}
+	return at, true
 }
 
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {

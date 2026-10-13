@@ -139,7 +139,7 @@ func (a *App) Run(ctx context.Context, args []string, getenv func(string) string
 	var done *reportedError
 	if !errors.As(err, &done) {
 		fmt.Fprintln(stderr, "mongorescue: "+redact.Text(err.Error()))
-		if hint := hintFor(code, s); hint != "" {
+		if hint := hintFor(code, s, err); hint != "" {
 			fmt.Fprintln(stderr, hint)
 		}
 	}
@@ -187,12 +187,15 @@ func ExitCode(err error) int {
 	return ExitFailed
 }
 
-// hintFor returns a line of advice for an exit code, or "".
-func hintFor(code int, s *session) string {
+// hintFor returns a line of advice for an exit code and its error, or "".
+func hintFor(code int, s *session, err error) string {
 	switch code {
 	case ExitUsage:
 		return `Run "mongorescue help" for usage.`
 	case ExitAuth:
+		if errors.Is(err, apiclient.ErrAPIKeyExpired) {
+			return "The API key has expired: create a new one in Settings → API keys and update " + EnvAPIKeyFile + " or " + EnvAPIKey + "."
+		}
 		return "Check the API key (" + EnvAPIKeyFile + " or " + EnvAPIKey + ") and its scope (Settings → API keys)."
 	case ExitUnavailable:
 		if s.baseURL != "" {

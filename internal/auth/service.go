@@ -40,7 +40,10 @@ type Service struct {
 	sessionPolicy func() (idle, absolute time.Duration)
 	// oidcPolicy, when set, supplies the single sign-on policy (see WithOIDCPolicy).
 	oidcPolicy func() OIDCPolicy
-	throttle   *Throttle
+	// keyPolicy, when set, supplies the API key expiry policy (see
+	// WithAPIKeyPolicy).
+	keyPolicy func() APIKeyPolicy
+	throttle  *Throttle
 
 	// dummyHash is compared against for unknown usernames so that a login takes the
 	// same time whether or not the account exists.
@@ -426,8 +429,13 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 	if !s.apiKeyMatches(key, stored.Hash, mac) {
 		return nil, ErrUnauthenticated
 	}
-	s.rehashImportedKey(ctx, stored, key, mac)
 	now := s.now().UTC()
+	// Expiry is checked only after the key matched, so only its holder learns that
+	// it expired rather than that it is unknown.
+	if stored.ExpiresAt != nil && !now.Before(*stored.ExpiresAt) {
+		return nil, &ExpiredKeyError{KeyID: stored.ID, KeyName: stored.Name, ExpiresAt: stored.ExpiresAt.UTC()}
+	}
+	s.rehashImportedKey(ctx, stored, key, mac)
 	if stored.LastUsedAt == nil || now.Sub(*stored.LastUsedAt) >= touchInterval {
 		if err := s.repo.TouchAPIKey(ctx, stored.ID, now); err != nil {
 			s.logger.Warn("failed to update api key last use", slog.String("api_key_id", stored.ID), slog.Any("error", err))
@@ -438,7 +446,7 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, key string) (*Principa
 		// Fail closed: a key with a scope this build does not know may only read.
 		scope = ScopeRead
 	}
-	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, KeyScope: scope}
+	p := &Principal{Method: MethodAPIKey, APIKeyID: stored.ID, APIKeyName: stored.Name, KeyScope: scope, KeyExpiresAt: stored.ExpiresAt}
 	var creatorConns ConnectionSet
 	if stored.CreatedBy != "" {
 		u, err := s.repo.GetUser(ctx, stored.CreatedBy)
@@ -877,6 +885,29 @@ func (s *Service) CreateAPIKey(ctx context.Context, actor *Principal, name strin
 // caller's connections only, because the creator's connections cap the key on
 // every request.
 func (s *Service) CreateAPIKeyWithConnections(ctx context.Context, actor *Principal, name string, scope Scope, access ConnectionAccess) (*APIKey, string, error) {
+	return s.CreateAPIKeyWithOptions(ctx, actor, APIKeyOptions{Name: name, Scope: scope, Access: access})
+}
+
+// APIKeyOptions describes a new API key (see CreateAPIKeyWithOptions).
+type APIKeyOptions struct {
+	// Name is the key's label.
+	Name string
+	// Scope is read, operator or admin (ScopeRead when empty).
+	Scope Scope
+	// Access is the key's own connection access.
+	Access ConnectionAccess
+	// ExpiresAt is when the key stops working; nil means never, which is refused
+	// while a maximum lifetime is set (see APIKeyPolicy).
+	ExpiresAt *time.Time
+}
+
+// CreateAPIKeyWithOptions is CreateAPIKeyWithConnections with an optional expiry.
+// The expiry must lie in the future and within the maximum lifetime of the policy
+// (MaxAPIKeyLifetime without one); while a maximum lifetime is set a key without
+// an expiry is refused. Errors are those of CreateAPIKeyWithConnections and
+// ErrInvalidExpiry.
+func (s *Service) CreateAPIKeyWithOptions(ctx context.Context, actor *Principal, opts APIKeyOptions) (*APIKey, string, error) {
+	name, scope, access := opts.Name, opts.Scope, opts.Access
 	if err := actor.RequireKeyCreator(); err != nil {
 		return nil, "", err
 	}
@@ -906,6 +937,10 @@ func (s *Service) CreateAPIKeyWithConnections(ctx context.Context, actor *Princi
 		// only keys with a creator are limited, but fail closed.
 		return nil, "", ErrConnectionsExceedAccess
 	}
+	expiresAt, err := s.checkExpiry(opts.ExpiresAt)
+	if err != nil {
+		return nil, "", err
+	}
 	// With the two-person rule an admin key is created with the operator scope, and
 	// the admin scope waits for a second administrator.
 	gate := s.holdsAdminGrant(ctx)
@@ -922,13 +957,13 @@ func (s *Service) CreateAPIKeyWithConnections(ctx context.Context, actor *Princi
 		return nil, "", err
 	}
 	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC(),
-		ConnectionAccess: access}
+		ExpiresAt: expiresAt, ConnectionAccess: access}
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return nil, "", err
 	}
 	k.setEffective(access.ConnectionSet().Intersect(actor.Connections))
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
-		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()))
+		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()), slog.Any("expires_at", k.ExpiresAt))
 	if held {
 		err = gate.RequestAdminGrant(ctx, AdminGrant{Kind: GrantAdminKey, KeyID: k.ID, KeyName: k.Name, Created: true})
 		if err = s.rollbackUnrequested(ctx, err, "API key", func(c context.Context) error {

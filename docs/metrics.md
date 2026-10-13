@@ -39,6 +39,8 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
 | `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |
 | `mongorescue_metadata_backups_total` | counter | `result` | [Metadata snapshots](production.md#metadata-backups) (`ok`, `error`) |
+| `mongorescue_api_keys_expiring` | gauge | | API keys that expire within `security.api_key_expiry_warning_days` and have not expired yet ([API key expiry](security.md#api-key-expiry)); updated hourly and when the settings change, on the active instance |
+| `mongorescue_api_keys_expired` | gauge | | Stored API keys past their expiry (refused; revoke them) |
 | `mongorescue_key_wrapping_active` | gauge | `provider` | `1` while `secret.key` is [wrapped by a KMS](security.md#wrapping-secretkey-with-a-kms); absent without key wrapping |
 | `mongorescue_key_wrap_duration_seconds` | histogram | `provider`, `operation` | Duration of the KMS calls that unwrap (at startup) and wrap (key rotation) `secret.key`; `operation` is `wrap` or `unwrap` |
 | `mongorescue_key_wrap_errors_total` | counter | `provider`, `operation` | Failed KMS calls, each retry counted. A start that never reaches the KMS fails before it serves metrics: watch the instance's health too |

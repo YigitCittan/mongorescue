@@ -57,7 +57,31 @@ var (
 	// another user reset: until they choose a new one, they may only change it, sign
 	// out and read their session.
 	ErrPasswordChangeRequired = errors.New("auth: your password was reset by an administrator; choose a new password first")
+	// ErrAPIKeyExpired is returned for a well-formed, matching API key past its
+	// expiry (see APIKey.ExpiresAt). It is wrapped in an *ExpiredKeyError, which also
+	// matches ErrUnauthenticated.
+	ErrAPIKeyExpired = errors.New("auth: the API key has expired")
+	// ErrInvalidExpiry is returned when a new API key's expiry is in the past, beyond
+	// the maximum lifetime (security.api_key_max_lifetime_days), or missing while a
+	// maximum lifetime is set.
+	ErrInvalidExpiry = errors.New("auth: invalid API key expiry")
 )
+
+// ExpiredKeyError reports an API key that authenticated but has expired. It matches
+// both ErrAPIKeyExpired and ErrUnauthenticated, so callers that only know about the
+// latter refuse it like any other bad key.
+type ExpiredKeyError struct {
+	// KeyID and KeyName identify the key, for the audit log (never its secret).
+	KeyID, KeyName string
+	// ExpiresAt is when the key expired.
+	ExpiresAt time.Time
+}
+
+// Error implements error.
+func (e *ExpiredKeyError) Error() string { return ErrAPIKeyExpired.Error() }
+
+// Unwrap makes errors.Is match ErrAPIKeyExpired and ErrUnauthenticated.
+func (e *ExpiredKeyError) Unwrap() []error { return []error{ErrAPIKeyExpired, ErrUnauthenticated} }
 
 // Provider says how a user signs in.
 type Provider string
@@ -162,6 +186,13 @@ type APIKey struct {
 	CreatedAt time.Time `json:"created_at"`
 	// LastUsedAt is updated (at most once a minute) when the key authenticates.
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// ExpiresAt is when the key stops working; nil means never. It is chosen on
+	// creation, or set to now + the maximum lifetime when an administrator turns
+	// security.api_key_max_lifetime_days on (see CheckAPIKeyExpiry).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// ExpiryWarnedFor is the expiry the last api_key.expiring notice was sent for,
+	// so each expiry is announced once; it is never serialised.
+	ExpiryWarnedFor *time.Time `json:"-"`
 	// EffectiveScope is what the key may do today: its scope, capped by the current
 	// role of its creator. It is computed by Service.ListAPIKeys and never stored.
 	EffectiveScope Scope `json:"effective_scope,omitempty"`
@@ -219,6 +250,8 @@ type Principal struct {
 	// KeyScope is the scope the API key was created with (MethodAPIKey only); Scope
 	// is below it when the creator's role caps the key.
 	KeyScope Scope
+	// KeyExpiresAt is when the API key expires (MethodAPIKey only; nil: never).
+	KeyExpiresAt *time.Time
 	// Connections limits the caller to some connections (see effectiveConnections):
 	// nil allows every one. Use AllowsConnection.
 	Connections ConnectionSet
@@ -331,6 +364,14 @@ type Repository interface {
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error)
 	// TouchAPIKey sets LastUsedAt.
 	TouchAPIKey(ctx context.Context, id string, at time.Time) error
+	// CapAPIKeyExpiry sets ExpiresAt to deadline on every key with a creator whose
+	// expiry is unset or later than deadline (keys imported from
+	// MONGORESCUE_API_KEY keep theirs), in one transaction, and returns the keys it
+	// changed with their new expiry.
+	CapAPIKeyExpiry(ctx context.Context, deadline time.Time) ([]*APIKey, error)
+	// MarkAPIKeyExpiryWarned records that the expiry expiresAt of key id was
+	// announced (ExpiryWarnedFor); an unknown key is not an error.
+	MarkAPIKeyExpiryWarned(ctx context.Context, id string, expiresAt time.Time) error
 	// DeleteAPIKey removes a key or returns ErrAPIKeyNotFound.
 	DeleteAPIKey(ctx context.Context, id string) error
 }

@@ -5051,6 +5051,8 @@ function fillSecurity(sec) {
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
   // Delete grace period, two-person rule and pending changes (protection.js).
   if (typeof protectionFillSecurity === "function") protectionFillSecurity(sec);
+  // API key lifetime and expiry warning (apikeys.js).
+  if (typeof apiKeyExpiryFillSecurity === "function") apiKeyExpiryFillSecurity(sec);
   updateDurationPreviews("form-security");
 }
 
@@ -5238,6 +5240,7 @@ function collectSecurity() {
     cors_origins: origins,
     metrics_public: document.getElementById("set-metrics-public").checked,
     mcp_enabled: document.getElementById("set-mcp-enabled").checked,
+    ...(typeof apiKeyExpiryCollectSecurity === "function" ? apiKeyExpiryCollectSecurity() : {}),
     ...(typeof protectionCollectSecurity === "function" ? protectionCollectSecurity() : {})
   };
 }
@@ -6184,7 +6187,7 @@ function renderApiKeys() {
   const tbody = document.getElementById("apikeys-tbody");
   if (!tbody || !state.loaded.apikeys) return;
   if (state.apikeys.length === 0) {
-    setTbody(tbody, emptyRow(7, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key")));
+    setTbody(tbody, emptyRow(8, t("settings.keys_empty"), "new-api-key", "plus", t("settings.create_key")));
     return;
   }
   setTbody(tbody, state.apikeys.map(k => `<tr>
@@ -6194,6 +6197,7 @@ function renderApiKeys() {
       <td>${k.created_by ? escapeHtml(userName(k.created_by)) : mutedDash()}</td>
       <td>${timeCell(k.created_at)}</td>
       <td>${parseDate(k.last_used_at) ? timeCell(k.last_used_at) : `<span class="muted">${escapeHtml(t("settings.never"))}</span>`}</td>
+      <td>${typeof apiKeyExpiryCell === "function" ? apiKeyExpiryCell(k) : mutedDash()}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="revoke-api-key" data-id="${escapeHtml(k.id)}">${escapeHtml(t("settings.revoke"))}</button>
       </div></td>
@@ -6343,6 +6347,8 @@ function openApiKeyModal() {
   const conns = document.getElementById("api-key-connections-group");
   if (conns) conns.hidden = !can("admin");
   if (can("admin") && typeof fillConnectionChecklist === "function") fillConnectionChecklist("api-key-connections", { all: true, ids: [] });
+  // The expiry choices follow the maximum lifetime (apikeys.js).
+  if (typeof apiKeyExpiryOpenModal === "function") apiKeyExpiryOpenModal();
   showApiKeyStep("name");
   openModal("modal-api-key");
 }
@@ -6368,12 +6374,15 @@ async function createApiKey(e) {
   }
   const chosen = getValue("api-key-scope");
   const scope = API_KEY_SCOPES.includes(chosen) ? chosen : "read";
+  // expires_in_days or expires_at; null when the chosen date is invalid (apikeys.js).
+  const expiry = typeof apiKeyExpiryPayload === "function" ? apiKeyExpiryPayload() : {};
+  if (!expiry) return;
   try {
     const json = await apiJSON("/api/v1/api-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name, scope,
+        name, scope, ...expiry,
         ...(can("admin") && scope !== "admin" && typeof readConnectionAccess === "function"
           ? readConnectionAccess("api-key-connections") : { all_connections: true })
       })

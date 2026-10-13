@@ -397,7 +397,7 @@ var compatSteps = []compatStep{
 				t.Errorf("key_v4 = %+v, %v", key, err)
 			}
 			keys, err := s.ListAPIKeys(context.Background())
-			keys = slices.DeleteFunc(keys, func(k *auth.APIKey) bool { return k.ID == "key_v24_limited" })
+			keys = slices.DeleteFunc(keys, func(k *auth.APIKey) bool { return k.ID == "key_v24_limited" || k.ID == "key_v30_expiring" })
 			if err != nil || len(keys) != 2 {
 				t.Errorf("ListAPIKeys = %d, %v", len(keys), err)
 			}
@@ -1242,6 +1242,50 @@ var compatSteps = []compatStep{
 			assertJobColumnsCurrent(t, s)
 			if _, err := s.ChangeStamp(context.Background()); err != nil {
 				t.Fatal(err)
+			}
+		},
+	},
+	{
+		version: 30,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO api_keys (id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, all_connections, connection_ids, expires_at, expiry_warned_for)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"key_v30_expiring", "nightly", "mrk_v30ddd", strings.Repeat("d4", 32), "usr_v1", ns(40*time.Hour), nil, "read", 1, "[]",
+				ns(50*time.Hour), ns(50*time.Hour))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			// Keys stored before the migration never expire; the key of this version
+			// keeps its expiry and the expiry its notice was sent for.
+			keys, err := s.ListAPIKeys(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range keys {
+				switch k.ID {
+				case "key_v30_expiring":
+					if k.ExpiresAt == nil || !k.ExpiresAt.Equal(compatT0.Add(50*time.Hour)) || k.ExpiryWarnedFor == nil || !k.ExpiryWarnedFor.Equal(*k.ExpiresAt) {
+						t.Errorf("key_v30_expiring = %+v", k)
+					}
+				default:
+					if k.ExpiresAt != nil || k.ExpiryWarnedFor != nil {
+						t.Errorf("key %s from an earlier version expires at %v", k.ID, k.ExpiresAt)
+					}
+				}
+			}
+			// A maximum lifetime gives every older key with a creator the deadline.
+			deadline := compatT0.Add(100 * time.Hour)
+			capped, err := s.CapAPIKeyExpiry(ctx, deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range capped {
+				if k.ID == "key_v30_expiring" || k.ExpiresAt == nil || !k.ExpiresAt.Equal(deadline) {
+					t.Errorf("capped %+v", k)
+				}
+			}
+			if len(capped) == 0 {
+				t.Error("no key from an earlier version got the deadline")
 			}
 		},
 	},

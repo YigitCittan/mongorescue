@@ -96,6 +96,8 @@ type Metrics struct {
 	ha *haCollector
 	// KMS wrapping of secret.key (see keywrap.go).
 	keyWrap keyWrapSeries
+	// API key expiry (see apikeys.go).
+	apiKeys apiKeySeries
 }
 
 // New creates a Metrics instance with its own registry.
@@ -250,6 +252,7 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newAuditSeries()...)
 	m.registry.MustRegister(m.newLivenessSeries()...)
 	m.registry.MustRegister(m.newKeyWrapSeries()...)
+	m.registry.MustRegister(m.newAPIKeySeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
 	m.ha = newHACollector()

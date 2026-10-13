@@ -135,6 +135,8 @@ type App struct {
 	auditForward *auditlog.Forwarder
 	heartbeat    *heartbeat.Service
 	diskGuard    *diskguard.Guard
+	// keyExpiry applies the API key expiry policy (active instance only).
+	keyExpiry *apiKeyExpiryMonitor
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -301,7 +303,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			sec := settingsSvc.Current().Security
 			return sec.SessionIdleTimeout.Std(), sec.SessionAbsoluteTimeout.Std()
 		}),
-		auth.WithOIDCPolicy(func() auth.OIDCPolicy { return oidcPolicy(settingsSvc.Current().OIDC, o.desktop) }))
+		auth.WithOIDCPolicy(func() auth.OIDCPolicy { return oidcPolicy(settingsSvc.Current().OIDC, o.desktop) }),
+		auth.WithAPIKeyPolicy(func() auth.APIKeyPolicy { return apiKeyPolicy(settingsSvc) }))
 	if err != nil {
 		return nil, fmt.Errorf("initialize authentication: %w", err)
 	}
@@ -978,6 +981,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		auditForward:  auditForwarder,
 		heartbeat:     heartbeatSvc,
 		diskGuard:     diskGuard,
+		keyExpiry:     newAPIKeyExpiryMonitor(authSvc, ops, metricSet, settingsSvc, logger),
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 		ha:            o.ha,
@@ -1082,6 +1086,13 @@ func (a *App) startBackground(standby bool) (stop func()) {
 	if a.heartbeat != nil && !standby {
 		heartbeatWG.Go(func() { a.heartbeat.Run(heartbeatCtx) })
 	}
+	// The API key expiry policy: deadlines of a maximum lifetime, expiring keys
+	// announced once, the expiry gauges (the active instance only).
+	keyExpiryCtx, cancelKeyExpiry := context.WithCancel(context.Background())
+	var keyExpiryWG sync.WaitGroup
+	if a.keyExpiry != nil && !standby {
+		keyExpiryWG.Go(func() { a.keyExpiry.Run(keyExpiryCtx) })
+	}
 	// The space guard retries the saves a full data directory failed; it stops
 	// after the runs too, before the metadata database closes.
 	guardCtx, cancelGuard := context.WithCancel(context.Background())
@@ -1089,6 +1100,8 @@ func (a *App) startBackground(standby bool) (stop func()) {
 	guardWG.Go(func() { a.diskGuard.Run(guardCtx) })
 
 	return func() {
+		cancelKeyExpiry()
+		keyExpiryWG.Wait()
 		cancelHeartbeat()
 		heartbeatWG.Wait()
 		cancelGuard()

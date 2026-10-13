@@ -46,6 +46,9 @@ var (
 	ErrBadRequest = errors.New("apiclient: request refused")
 	// ErrUnauthorized matches 401 responses: no valid API key.
 	ErrUnauthorized = errors.New("apiclient: unauthorized")
+	// ErrAPIKeyExpired matches the 401 of an API key past its expiry (code
+	// api_key_expired); such an error matches ErrUnauthorized too.
+	ErrAPIKeyExpired = errors.New("apiclient: the API key has expired")
 	// ErrForbidden matches 403 responses: the key's scope does not allow the request.
 	ErrForbidden = errors.New("apiclient: forbidden")
 	// ErrNotFound matches 404 responses, and lookups by ID that found nothing.
@@ -75,6 +78,21 @@ type APIError struct {
 	Location string
 	// RetryAfter is the delay a 429 or 503 response asked for (Retry-After), or 0.
 	RetryAfter time.Duration
+	// Code is the envelope's machine-readable reason, such as CodeAPIKeyExpired, or
+	// "".
+	Code string
+}
+
+// Error codes of the response envelope (APIError.Code).
+const (
+	// CodeAPIKeyExpired is the code of the 401 of an expired API key.
+	CodeAPIKeyExpired = "api_key_expired"
+)
+
+// Is reports whether the error matches target beyond its status: ErrAPIKeyExpired
+// for the 401 of an expired key.
+func (e *APIError) Is(target error) bool {
+	return target == ErrAPIKeyExpired && e.StatusCode == http.StatusUnauthorized && e.Code == CodeAPIKeyExpired
 }
 
 // Error implements error.
@@ -222,6 +240,7 @@ type envelope struct {
 	Data    json.RawMessage `json:"data"`
 	Error   string          `json:"error"`
 	Message string          `json:"message"`
+	Code    string          `json:"code"`
 	Meta    *Meta           `json:"meta"`
 }
 
@@ -272,6 +291,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if decodeErr == nil {
 			apiErr.Message = redact.Text(strings.TrimSpace(env.Error))
 			apiErr.Data = env.Data
+			apiErr.Code = env.Code
 		}
 		if resp.StatusCode < 400 {
 			apiErr.Location = redact.URI(resp.Header.Get("Location"))

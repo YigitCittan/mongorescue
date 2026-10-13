@@ -117,6 +117,16 @@ const (
 	// key fingerprint (never key material). The offline commands journal the
 	// change; the next start publishes it.
 	SecurityKeyWrapping EventType = "security.key_wrapping_changed"
+	// APIKeyExpiring is emitted once per expiry when an API key comes within
+	// security.api_key_expiry_warning_days of it (Event.Detail names the key, its
+	// prefix and the expiry; never its secret), so the automation using it can be
+	// moved to a new key in time.
+	APIKeyExpiring EventType = "api_key.expiring" //nolint:gosec // G101: an event name, not a credential.
+	// APIKeyDeadlineSet is emitted when a maximum API key lifetime
+	// (security.api_key_max_lifetime_days) gave existing keys a deadline: keys
+	// without an expiry, or with a later one, now expire at now + that lifetime
+	// (Event.Detail names the keys and the deadline).
+	APIKeyDeadlineSet EventType = "api_key.deadline_set"
 	// PITRChainBroken is emitted when a gap ends the oplog chain of a PITR stream:
 	// the oplog window was overrun or the replica set changed (Event.Stream,
 	// Event.Detail). It is a critical alert: point-in-time recovery cannot cross it.
@@ -224,6 +234,7 @@ var ruleTypes = []EventType{
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated, SecurityKeyWrapping,
+	APIKeyExpiring, APIKeyDeadlineSet,
 	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
 	BackupCopyFailed, BackupCopyRecovered, BackupCopyExhausted,
 }
