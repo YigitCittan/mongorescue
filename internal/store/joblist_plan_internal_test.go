@@ -11,20 +11,22 @@ import (
 )
 
 // TestScaleQueryPlans checks the query plans of the jobs list and the history at
-// 10,000 jobs (issue #156): every page and count of the jobs list is answered from
+// 10,000 jobs and 20,000 backups (issue #156; their statistics on a few hundred
+// rows, see useScaleStats): every page and count of the jobs list is answered from
 // a jobs index in page order (no temporary sort, no table scan), and the
 // history's per-day and stored-size aggregates and the newest backup per job and
 // database read covering indexes only.
 func TestScaleQueryPlans(t *testing.T) {
-	s, now := historyFixture(t, 20, 20000)
+	s, now := historyFixture(t, 20, 1000)
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range 10000 {
+	// 200 jobs, planned as 10,000 on 500 connections (useScaleStats).
+	for i := range 200 {
 		if _, err := tx.ExecContext(ctx, upsertJobSQL, fmt.Sprintf("job_x%05d", i), fmt.Sprintf("load-%05d", i), "db", i%2, 0,
-			fmt.Sprintf("conn_%03d", i%500), "", fmt.Sprintf(`{"next_run":"2026-10-%02dT%02d:00:00Z"}`, 1+i%28, i%24),
+			fmt.Sprintf("conn_%03d", i%50), "", fmt.Sprintf(`{"next_run":"2026-10-%02dT%02d:00:00Z"}`, 1+i%28, i%24),
 			fmt.Sprintf("job_x%05d\x1fload-%05d", i, i), "daily", "\x1fdb\x1f", 0, jobIndexVersion); err != nil {
 			t.Fatal(err)
 		}
@@ -35,6 +37,7 @@ func TestScaleQueryPlans(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, "ANALYZE"); err != nil {
 		t.Fatal(err)
 	}
+	useScaleStats(t, s)
 	on := true
 	plan := func(query string, args ...any) string { return strings.Join(queryPlan(t, s.db, query, args...), "\n") }
 	for name, q := range map[string]JobQuery{
