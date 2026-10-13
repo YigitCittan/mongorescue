@@ -1,7 +1,10 @@
 {{- $secretName := include "mongorescue.secretKeySecret" . -}}
+{{- if and .Values.keyWrap .Values.secretKey.existingSecret }}
+{{- fail "keyWrap wraps secret.key on the data volume and cannot be combined with secretKey.existingSecret (MONGORESCUE_SECRET_KEY)" }}
+{{- end }}
 {{- if .Values.ha.enabled }}
-{{- if not .Values.secretKey.existingSecret }}
-{{- fail "ha.enabled needs secretKey.existingSecret: both releases of an HA cluster must use the same secret key" }}
+{{- if not (or .Values.secretKey.existingSecret .Values.keyWrap) }}
+{{- fail "ha.enabled needs secretKey.existingSecret (or keyWrap with the same secret.key.wrapped in both releases): both releases of an HA cluster must use the same secret key" }}
 {{- end }}
 {{- if not .Values.ha.target }}
 {{- fail "ha.enabled needs ha.target, the storage target of the lease" }}
@@ -70,6 +73,10 @@ spec:
               value: {{ include "mongorescue.shutdownGrace" . | quote }}
             {{- with .Values.config.toolsDir }}
             - name: MONGORESCUE_TOOLS_DIR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.keyWrap }}
+            - name: MONGORESCUE_KEY_WRAP
               value: {{ . | quote }}
             {{- end }}
             {{- if $secretName }}

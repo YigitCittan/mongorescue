@@ -16,6 +16,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Large data | `TestThroughputAndMemory` with `MONGORESCUE_TEST_LARGE=1` | nightly, 03:00 UTC, on every MongoDB version | About 2 GiB streams through backup and restore with peak process memory below 256 MiB; throughput is reported. |
 | Fault injection | `internal/chaos`, `chaos` build tag, `make test-chaos-docker` | nightly, job "Chaos" (not required, not on pull requests) | A storage outage or partition, a MongoDB connection drop, a primary stepdown (during dumps and PITR collection), a full disk, SIGKILL (backup, purge, migration, key rotation) and clock steps never leave a broken run `completed` or an object that looks complete; the next run succeeds and the alert fires; see [below](#fault-injection-suite). |
 | Load | `internal/load`, `load` build tag, `make test-load-docker` | weekly, job "Load" (not required) | 5 GiB, 500 connections and 10,000 scheduled jobs: scheduler tick latency, memory, API p95, SQLite contention, backup throughput and the impact of a dump on a busy primary stay within the committed baseline; see [below](#load-test). |
+| Key wrapping | Unit: `internal/keywrap` with a fake KMS (migration, startup, retries, refusals, tampered files, rotation, recovery kit, HA, rewrap, unwrap), `internal/keywrap/provider` against `httptest` fakes of AWS KMS, Cloud KMS, Key Vault and Vault (request shapes, authentication, error classes). Integration: `TestKeyWrapAWSKMS` (LocalStack), `TestKeyWrapVaultTransit` (Vault dev server) | unit tests on every push and pull request; the integration tests in the LocalStack job of "Integration" | The data directory never holds the plaintext key with wrapping on; a plaintext key is removed only after its wrapped copy was written and unwrapped again; a KMS that is down or refuses stops the start without a fallback. Google Cloud KMS and Azure Key Vault have no reliable emulator: their contract is covered by the `httptest` tests only. |
 | Single sign-on | Unit: `internal/auth/oidc` against the fake provider `oidctest`, `internal/auth`, `internal/server`. Integration: `TestKeycloakSingleSignOn` | unit tests on every push and pull request; Keycloak in the job "Integration (Keycloak SSO)" on pushes to `main` and nightly (not required) | Forged, replayed, misdirected and stale tokens and states are refused (the full list is in [design/oidc.md](design/oidc.md#tests)); a real Keycloak sign-in through its login form maps groups to roles, applies the domain filter and logs out at the provider, without tokens in logs or the audit log. |
 
 ## What the integration suite proves
@@ -52,13 +53,13 @@ make test-chaos-docker          # fault-injection suite (MongoDB, MinIO, Toxipro
 make test-load-docker           # load test (a replica set with a secondary, MinIO)
 ```
 
-`make test-integration-docker` needs Docker, curl, Go and the MongoDB Database Tools (100.3 or newer) on `PATH`. It starts MongoDB with a random root password, MinIO, LocalStack and Keycloak (dev mode, with the test realm of `internal/integration/testdata/keycloak-realm.json`) on random loopback ports and removes them afterwards. Knobs:
+`make test-integration-docker` needs Docker, curl, Go and the MongoDB Database Tools (100.3 or newer) on `PATH`. It starts MongoDB with a random root password, MinIO, LocalStack (S3 and KMS), Keycloak (dev mode, with the test realm of `internal/integration/testdata/keycloak-realm.json`) and Vault (dev mode, `hashicorp/vault` pinned by digest, with the Transit engine) on random loopback ports and removes them afterwards. Knobs:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `MONGO_IMAGE` | `mongo:7` | Server image, e.g. `mongo:5.0` or `mongo:8.0` |
 | `MONGO_TOPOLOGY` | `standalone` | `replset` starts a single-node replica set (keyfile, `rs.initiate`, `directConnection=true`) |
-| `IT_PROVIDERS` | `minio localstack keycloak` | Services to start: the S3 emulators and Keycloak for the single sign-on test (`none` for local disk only) |
+| `IT_PROVIDERS` | `minio localstack keycloak vault` | Services to start: the S3 emulators (LocalStack also serves KMS), Keycloak for the single sign-on test and Vault for the key wrapping test (`none` for local disk only) |
 | `IT_RACE` | `1` | `0` runs without the race detector |
 | `IT_WHOLE_INSTANCE` | `1` | With `replset`, starts a second replica set for `TestWholeInstance` (`MONGORESCUE_TEST_WHOLE_INSTANCE_URI`); `0` runs those tests alone on the first one |
 | `IT_PACKAGES` | `./internal/integration/...` | Packages to test; the unit tests of the others are hermetic and run in CI's test job |

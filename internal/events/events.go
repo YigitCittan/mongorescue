@@ -109,6 +109,14 @@ const (
 	// Event.ApprovalID the approval if any and Event.Detail the old and new
 	// fingerprints (never key material).
 	SecurityKeyRotated EventType = "security.key_rotated"
+	// SecurityKeyWrapping is emitted when the KMS wrapping of secret.key changed
+	// (internal/keywrap): Event.Action is wrapped (a plaintext secret.key was
+	// wrapped at startup), rewrapped (moved to another KMS key by "mongorescue key
+	// rewrap") or unwrapped_to_file ("mongorescue key unwrap" wrote it back in
+	// plain form), Event.Actor who, Event.Detail the provider, the key URIs and the
+	// key fingerprint (never key material). The offline commands journal the
+	// change; the next start publishes it.
+	SecurityKeyWrapping EventType = "security.key_wrapping_changed"
 	// PITRChainBroken is emitted when a gap ends the oplog chain of a PITR stream:
 	// the oplog window was overrun or the replica set changed (Event.Stream,
 	// Event.Detail). It is a critical alert: point-in-time recovery cannot cross it.
@@ -215,7 +223,7 @@ var ruleTypes = []EventType{
 	BackupSucceeded, BackupFailed, BackupCancelled, RestoreSucceeded, RestoreFailed, RestoreCancelled, RestoreInPlacePITR,
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
-	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated,
+	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated, SecurityKeyWrapping,
 	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
 	BackupCopyFailed, BackupCopyRecovered, BackupCopyExhausted,
 }

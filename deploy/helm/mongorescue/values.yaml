@@ -48,12 +48,28 @@ secretKey:
   # false stores the key as secret.key on the data volume instead.
   generate: true
 
+# Wrap secret.key with an external KMS instead of keeping it in a Secret
+# (MONGORESCUE_KEY_WRAP, docs/security.md#wrapping-secretkey-with-a-kms):
+# "<provider>:<key URI>", for example
+#   aws-kms:arn:aws:kms:eu-central-1:123456789012:alias/mongorescue
+#   gcp-kms:projects/p/locations/europe-west1/keyRings/r/cryptoKeys/mongorescue
+#   azure-keyvault:https://my-vault.vault.azure.net/keys/mongorescue
+#   vault-transit:https://vault.vault.svc:8200/transit/keys/mongorescue
+# The data volume then holds only secret.key.wrapped, unwrapped at every start
+# with the pod's identity: IRSA or EKS Pod Identity, GKE Workload Identity, Azure
+# Workload Identity (serviceAccount.annotations, podLabels), or Vault's Kubernetes
+# auth (extraEnv VAULT_K8S_ROLE and serviceAccount.automountServiceAccountToken:
+# true). See docs/kubernetes.md. With keyWrap set, secretKey.generate is ignored
+# and secretKey.existingSecret must be empty.
+keyWrap: ""
+
 # Active-passive high availability (docs/production.md#high-availability). Run a
 # second release with the same values (and its own data volume): the instance
 # holding the lease on the HA storage target runs schedules and PITR collection,
 # the other waits as a read-only standby and takes over when the lease expires.
 # Both releases need the same secret key: set secretKey.existingSecret to one
-# Secret shared by them. replicas stays 1 per release.
+# Secret shared by them, or with keyWrap copy secret.key.wrapped of the first
+# release into the data volume of the second. replicas stays 1 per release.
 ha:
   enabled: false
   # The storage target of the lease and the metadata handover. Prefer a location

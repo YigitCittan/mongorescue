@@ -40,6 +40,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.SecurityDestructiveAction: {"🛡️", "Destructive action"},
 	events.SecurityApprovalRequested: {"🛡️", "Approval requested"},
 	events.SecurityKeyRotated:        {"🔑", "Key rotated"},
+	events.SecurityKeyWrapping:       {"🔑", "Secret key wrapping changed"},
 	events.PITRChainBroken:           {"🚨", "PITR oplog chain broken"},
 	events.PITRDiverged:              {"🚨", "PITR oplog diverged"},
 	events.PITRLagHigh:               {"⏰", "PITR collector lagging"},
@@ -114,6 +115,8 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("%s by %s", e.Detail, e.Actor)
 	case events.SecurityKeyRotated:
 		target = fmt.Sprintf("%s key rotated by %s: %s", e.Action, e.Actor, e.Detail)
+	case events.SecurityKeyWrapping:
+		target = fmt.Sprintf("%s by %s: %s", e.Action, e.Actor, e.Detail)
 	case events.SecurityApprovalRequested:
 		target = fmt.Sprintf("%s requested by %s; another administrator must approve it (request %s)", e.Detail, e.Actor, e.ApprovalID)
 	case events.PITRChainBroken, events.PITRDiverged, events.PITRLagHigh, events.PITRLagRecovered,

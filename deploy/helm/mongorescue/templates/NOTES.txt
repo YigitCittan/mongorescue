@@ -13,7 +13,14 @@ MongoRescue {{ .Chart.AppVersion }} is starting as {{ include "mongorescue.fulln
 2. Finish the setup with the one-time setup code from the log:
      kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "mongorescue.fullname" . }} | grep setup_code
 
-{{- if .Values.secretKey.existingSecret }}
+{{- if .Values.keyWrap }}
+
+3. Stored credentials are encrypted with secret.key, kept on the data volume only
+   wrapped by {{ .Values.keyWrap }}.
+   The pod unwraps it at every start with its identity: if access to that KMS key
+   is lost, the stored credentials cannot be opened. Download the recovery kit
+   (Settings → Recovery) once the setup is done.
+{{- else if .Values.secretKey.existingSecret }}
 
 3. Stored credentials are encrypted with the key in Secret {{ .Values.secretKey.existingSecret }} (key {{ .Values.secretKey.existingSecretKey }}).
    Keep a copy of it outside the cluster: without it the stored credentials cannot be opened.

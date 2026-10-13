@@ -94,6 +94,8 @@ type Metrics struct {
 	liveness livenessSources
 	// Active-passive HA series (see ha.go).
 	ha *haCollector
+	// KMS wrapping of secret.key (see keywrap.go).
+	keyWrap keyWrapSeries
 }
 
 // New creates a Metrics instance with its own registry.
@@ -247,6 +249,7 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newPITRSeries()...)
 	m.registry.MustRegister(m.newAuditSeries()...)
 	m.registry.MustRegister(m.newLivenessSeries()...)
+	m.registry.MustRegister(m.newKeyWrapSeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
 	m.ha = newHACollector()

@@ -3,7 +3,10 @@
 // needed to bring MongoRescue back on a new host:
 //
 //   - secret.key, without which the credentials in mongorescue.db (and in its
-//     metadata snapshots) cannot be opened;
+//     metadata snapshots) cannot be opened; with key wrapping on
+//     (internal/keywrap) the kit holds secret.key.wrapped and the KMS key URI
+//     instead, so recovering needs access to the KMS key, unless the administrator
+//     explicitly asks for the plaintext key (PrepareOptions.PlaintextSecretKey);
 //   - identities.txt, the age X25519 private keys (current and retired) that decrypt
 //     backups and metadata snapshots, when any is configured;
 //   - recovery.json, the encryption settings (passphrases are never included, only
@@ -37,6 +40,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yigitcittan/mongorescue/internal/encryption"
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -61,6 +65,10 @@ const (
 	// PreviousKeyName is the copy of secret.key.previous, the key a rotation
 	// replaced, when the kit was asked to carry it.
 	PreviousKeyName = secretbox.PreviousKeyFileName
+	// WrappedSecretKeyName and WrappedPreviousKeyName are the wrapped
+	// counterparts the kit carries with key wrapping on.
+	WrappedSecretKeyName   = SecretKeyName + keywrap.Suffix
+	WrappedPreviousKeyName = PreviousKeyName + keywrap.Suffix
 	// IdentitiesName holds the age X25519 private keys, one per line.
 	IdentitiesName = "identities.txt"
 	// ManifestName is the JSON document with settings, targets and the snapshot.
@@ -113,15 +121,30 @@ type Config struct {
 	// MetadataPrefix is the storage key prefix of this installation's metadata
 	// snapshots (metabackup.Service.Prefix).
 	MetadataPrefix string
-	// PreviousKeyFile is the path of secret.key.previous ("" when unknown); see
+	// PreviousKeyFile is the path of secret.key.previous ("" when unknown), or of
+	// secret.key.previous.wrapped with key wrapping on; see
 	// PrepareOptions.IncludePreviousKey.
 	PreviousKeyFile string
+	// KeyWrap describes the KMS wrapping of secret.key (nil when off).
+	KeyWrap *KeyWrap
 	// Version is the MongoRescue version written to the kit.
 	Version string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// WorkFactor is the scrypt work factor of the seal (0 = the age default).
 	WorkFactor int
+}
+
+// KeyWrap describes the KMS wrapping of secret.key for the kit.
+type KeyWrap struct {
+	// Spec is the configured provider and key URI; KeyID the KMS key's stable ID.
+	Spec  keywrap.Spec
+	KeyID string
+	// CurrentFile is the path of secret.key.wrapped.
+	CurrentFile string
+	// ReadKey unwraps a wrapped key file; it reads secret.key.previous.wrapped for
+	// a kit with PrepareOptions.PlaintextSecretKey and IncludePreviousKey.
+	ReadKey func(ctx context.Context, path string) ([]byte, error)
 }
 
 // Service builds recovery kits. It is safe for concurrent use.
@@ -131,6 +154,7 @@ type Service struct {
 	mu     sync.RWMutex
 	fpKey  []byte
 	keyB64 string
+	keyFP  string
 	prefix string
 }
 
@@ -143,10 +167,14 @@ func New(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("recoverykit: %w", err)
 	}
+	keyFP, err := secretbox.Fingerprint(cfg.SecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("recoverykit: %w", err)
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{cfg: cfg, fpKey: fpKey, keyB64: secretbox.EncodeKey(cfg.SecretKey), prefix: cfg.MetadataPrefix}, nil
+	return &Service{cfg: cfg, fpKey: fpKey, keyB64: secretbox.EncodeKey(cfg.SecretKey), keyFP: keyFP, prefix: cfg.MetadataPrefix}, nil
 }
 
 // SetSecretKey switches the kit to a rotated secret.key and the metadata prefix
@@ -157,9 +185,13 @@ func (s *Service) SetSecretKey(key []byte, metadataPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("recoverykit: %w", err)
 	}
+	keyFP, err := secretbox.Fingerprint(key)
+	if err != nil {
+		return fmt.Errorf("recoverykit: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.fpKey, s.keyB64, s.prefix = fpKey, secretbox.EncodeKey(key), metadataPrefix
+	s.fpKey, s.keyB64, s.keyFP, s.prefix = fpKey, secretbox.EncodeKey(key), keyFP, metadataPrefix
 	return nil
 }
 
@@ -169,6 +201,10 @@ func (s *Service) keys() (fpKey []byte, keyB64, prefix string) {
 	defer s.mu.RUnlock()
 	return s.fpKey, s.keyB64, s.prefix
 }
+
+// KeyWrapped reports whether secret.key is wrapped by a KMS, so that a kit
+// carries it wrapped unless PrepareOptions.PlaintextSecretKey is set.
+func (s *Service) KeyWrapped() bool { return s.cfg.KeyWrap != nil }
 
 // ValidatePassphrase checks the passphrase that seals a kit.
 func ValidatePassphrase(p string) error {
@@ -191,6 +227,10 @@ type fingerprintInput struct {
 	Identity   []string                `json:"identity_recipients"`
 	Retired    []fingerprintRetired    `json:"retired"`
 	Targets    []fingerprintTarget     `json:"targets"`
+	// KeyWrap is the provider and key URI that wrap secret.key ("" when off, so
+	// installations without key wrapping keep their fingerprint): a kit holding
+	// a key wrapped with another KMS key is outdated.
+	KeyWrap string `json:"key_wrap,omitempty"`
 }
 
 type fingerprintRetired struct {
@@ -217,6 +257,9 @@ func (s *Service) Fingerprint(ctx context.Context) (string, error) {
 func (s *Service) fingerprint(ctx context.Context, fpKey []byte) (string, error) {
 	enc := s.cfg.Settings.Current().Encryption
 	in := fingerprintInput{Mode: enc.Mode, Recipients: slices.Clone(enc.Recipients), Retired: []fingerprintRetired{}, Targets: []fingerprintTarget{}}
+	if s.cfg.KeyWrap != nil {
+		in.KeyWrap = s.cfg.KeyWrap.Spec.Provider + ":" + s.cfg.KeyWrap.Spec.KeyURI
+	}
 	slices.Sort(in.Recipients)
 	if enc.Identity != "" {
 		ids, err := encryption.IdentityRecipients(enc.Identity)
@@ -287,6 +330,22 @@ type SecretKeyInfo struct {
 	// the kit does not carry it). Metadata snapshots taken before that rotation are
 	// sealed with it.
 	PreviousFile string `json:"previous_file,omitempty"`
+	// Wrapped reports that File (and PreviousFile) hold the key wrapped by the
+	// KMS key of KeyWrap, not the key itself: recovering needs access to it.
+	Wrapped bool `json:"wrapped,omitempty"`
+	// KeyWrap names the KMS key of a wrapped key, or of the installation when the
+	// kit carries the plaintext key on request (nil without key wrapping).
+	KeyWrap *KeyWrapInfo `json:"key_wrap,omitempty"`
+}
+
+// KeyWrapInfo names the KMS key that wraps secret.key.
+type KeyWrapInfo struct {
+	// Provider and KeyURI are the parts of MONGORESCUE_KEY_WRAP; Env is its value.
+	Provider string `json:"provider"`
+	KeyURI   string `json:"key_uri"`
+	Env      string `json:"env"`
+	// KeyID is the KMS key's stable identifier.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // EncryptionInfo describes the backup encryption keys. Passphrases are never
@@ -328,11 +387,34 @@ type Kit struct {
 	previousKey string
 }
 
+// wrapped reports whether the kit carries the wrapped secret.key.
+func (k *Kit) wrapped() bool { return k.manifest.SecretKey.Wrapped }
+
+// secretKeyFile and previousKeyFile name the key files of the kit.
+func (k *Kit) secretKeyFile() string {
+	if k.wrapped() {
+		return WrappedSecretKeyName
+	}
+	return SecretKeyName
+}
+
+func (k *Kit) previousKeyFile() string {
+	if k.wrapped() {
+		return WrappedPreviousKeyName
+	}
+	return PreviousKeyName
+}
+
 // PrepareOptions customises PrepareWith.
 type PrepareOptions struct {
 	// IncludePreviousKey adds secret.key.previous (the key the last secret key
 	// rotation replaced), which opens metadata snapshots taken before the rotation.
 	IncludePreviousKey bool
+	// PlaintextSecretKey puts secret.key (and secret.key.previous) in plain form
+	// into the kit although key wrapping is on. Without it such a kit carries the
+	// wrapped keys and the KMS key URI, and recovering needs the KMS key. It has
+	// no effect without key wrapping (the kit then always holds the plain key).
+	PlaintextSecretKey bool
 }
 
 // ErrNoPreviousKey is returned by PrepareWith when the previous key was asked for
@@ -354,24 +436,27 @@ func (s *Service) PrepareWith(ctx context.Context, opts PrepareOptions) (*Kit, e
 	if err != nil {
 		return nil, err
 	}
+	keyInfo := SecretKeyInfo{File: SecretKeyName, FromEnv: s.cfg.SecretKeyFromEnv}
+	secretKey := keyB64 + "\n"
+	if kw := s.cfg.KeyWrap; kw != nil {
+		keyInfo.KeyWrap = &KeyWrapInfo{Provider: kw.Spec.Provider, KeyURI: kw.Spec.KeyURI, Env: kw.Spec.Provider + ":" + kw.Spec.KeyURI, KeyID: kw.KeyID}
+		if !opts.PlaintextSecretKey {
+			if secretKey, err = s.wrappedKey(); err != nil {
+				return nil, err
+			}
+			keyInfo.File, keyInfo.Wrapped = WrappedSecretKeyName, true
+		}
+	}
 	var previous string
 	if opts.IncludePreviousKey {
-		if s.cfg.PreviousKeyFile == "" {
-			return nil, ErrNoPreviousKey
+		if previous, err = s.previousKey(ctx, keyInfo.Wrapped); err != nil {
+			return nil, err
 		}
-		key, readErr := secretbox.ReadKeyFile(s.cfg.PreviousKeyFile)
-		switch {
-		case errors.Is(readErr, fs.ErrNotExist):
-			return nil, ErrNoPreviousKey
-		case readErr != nil:
-			return nil, fmt.Errorf("recoverykit: %w", readErr)
-		}
-		previous = secretbox.EncodeKey(key)
 	}
 	enc := s.cfg.Settings.Current().Encryption
 	m := Manifest{
 		Format: Format, FormatVersion: 1, CreatedAt: s.cfg.Now().UTC(), Version: s.cfg.Version,
-		SecretKey: SecretKeyInfo{File: SecretKeyName, FromEnv: s.cfg.SecretKeyFromEnv},
+		SecretKey: keyInfo,
 		Encryption: EncryptionInfo{
 			Enabled: enc.Enabled, Mode: enc.Mode, Recipients: slices.Clone(enc.Recipients), Identities: []IdentityInfo{},
 			PassphraseConfigured: enc.Passphrase != "",
@@ -421,10 +506,76 @@ func (s *Service) PrepareWith(ctx context.Context, opts PrepareOptions) (*Kit, e
 	if s.cfg.LatestSnapshot != nil {
 		m.MetadataSnapshot = s.cfg.LatestSnapshot(ctx)
 	}
+	kit := &Kit{manifest: m, identities: ids.String(), fingerprint: fp, secretKey: secretKey, previousKey: previous}
 	if previous != "" {
-		m.SecretKey.PreviousFile = PreviousKeyName
+		kit.manifest.SecretKey.PreviousFile = kit.previousKeyFile()
 	}
-	return &Kit{manifest: m, identities: ids.String(), fingerprint: fp, secretKey: keyB64, previousKey: previous}, nil
+	return kit, nil
+}
+
+// ErrWrappedKeyStale is returned by PrepareWith when secret.key.wrapped does not
+// hold the key the installation runs with (a rotation is being installed, or the
+// file was replaced): the kit would not open this installation's database.
+var ErrWrappedKeyStale = errors.New("recoverykit: secret.key.wrapped does not hold the current secret key; retry once the key rotation finished")
+
+// wrappedKey returns the content of secret.key.wrapped after checking that it
+// holds the current key (by its fingerprint, without calling the KMS).
+func (s *Service) wrappedKey() (string, error) {
+	f, err := keywrap.ReadFile(s.cfg.KeyWrap.CurrentFile)
+	if err != nil {
+		return "", fmt.Errorf("recoverykit: %w", err)
+	}
+	s.mu.RLock()
+	keyFP := s.keyFP
+	s.mu.RUnlock()
+	if f.Fingerprint != keyFP {
+		return "", ErrWrappedKeyStale
+	}
+	data, err := f.Marshal()
+	if err != nil {
+		return "", fmt.Errorf("recoverykit: %w", err)
+	}
+	return string(data), nil
+}
+
+// previousKey returns the kit content of the previous key: the wrapped file as it
+// is, or the plain key (unwrapped by the KMS with key wrapping on).
+func (s *Service) previousKey(ctx context.Context, wrapped bool) (string, error) {
+	path := s.cfg.PreviousKeyFile
+	if path == "" {
+		return "", ErrNoPreviousKey
+	}
+	var (
+		out     string
+		readErr error
+	)
+	switch {
+	case wrapped:
+		var f *keywrap.File
+		if f, readErr = keywrap.ReadFile(path); readErr == nil {
+			var data []byte
+			if data, readErr = f.Marshal(); readErr == nil {
+				out = string(data)
+			}
+		}
+	case s.cfg.KeyWrap != nil:
+		var key []byte
+		if key, readErr = s.cfg.KeyWrap.ReadKey(ctx, path); readErr == nil {
+			out = secretbox.EncodeKey(key) + "\n"
+		}
+	default:
+		var key []byte
+		if key, readErr = secretbox.ReadKeyFile(path); readErr == nil {
+			out = secretbox.EncodeKey(key) + "\n"
+		}
+	}
+	switch {
+	case errors.Is(readErr, fs.ErrNotExist):
+		return "", ErrNoPreviousKey
+	case readErr != nil:
+		return "", fmt.Errorf("recoverykit: %w", readErr)
+	}
+	return out, nil
 }
 
 // kitFile is one file of the kit archive.
@@ -456,11 +607,11 @@ func (s *Service) Seal(w io.Writer, kit *Kit, passphrase string) error {
 	}
 	files := []kitFile{
 		{ReadmeName, 0o644, readme(kit)},
-		{SecretKeyName, 0o600, kit.secretKey + "\n"},
+		{kit.secretKeyFile(), 0o600, kit.secretKey},
 		{ManifestName, 0o600, string(manifest) + "\n"},
 	}
 	if kit.previousKey != "" {
-		files = append(files, kitFile{PreviousKeyName, 0o600, kit.previousKey + "\n"})
+		files = append(files, kitFile{kit.previousKeyFile(), 0o600, kit.previousKey})
 	}
 	if kit.identities != "" {
 		files = append(files, kitFile{IdentitiesName, 0o600, kit.identities})

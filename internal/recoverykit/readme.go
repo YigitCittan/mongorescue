@@ -28,23 +28,48 @@ func readme(kit *Kit) string {
 		fmt.Fprintf(&b, " by MongoRescue %s", m.Version)
 	}
 	b.WriteString(".\n\n")
+	kw := m.SecretKey.KeyWrap
+	wrapped := kit.wrapped()
 	b.WriteString(`This kit holds secrets in plain form. Keep it offline (a password manager, an
 encrypted USB stick, a safe), separate from your backups, and never commit or
 mail it. Download a new kit whenever MongoRescue reminds you to.
-
-Contents
---------
-secret.key      The key that seals the credentials stored in mongorescue.db and in
+`)
+	if wrapped {
+		fmt.Fprintf(&b, `
+secret.key is in this kit only wrapped by your key management service:
+  %s
+Recovering with this kit needs an identity that may decrypt with that KMS key.
+If the KMS key is deleted or access to it is lost, neither this kit nor the
+database can be opened: keep the KMS key (and a plaintext kit, if your policy
+allows one) for as long as you keep backups.
+`, kw.Env)
+	} else if kw != nil {
+		fmt.Fprintf(&b, `
+This kit was asked to carry secret.key in plain form, although the installation
+keeps it wrapped by %s.
+`, kw.Env)
+	}
+	b.WriteString("\nContents\n--------\n")
+	if wrapped {
+		b.WriteString(`secret.key.wrapped
+                The key that seals the credentials stored in mongorescue.db and in
+                its metadata snapshots, wrapped by the KMS key above. A database
+                copy cannot be used without it.
+`)
+	} else {
+		b.WriteString(`secret.key      The key that seals the credentials stored in mongorescue.db and in
                 its metadata snapshots. A database copy cannot be used without it.
-recovery.json   Encryption settings, every storage target with its credentials and
+`)
+	}
+	b.WriteString(`recovery.json   Encryption settings, every storage target with its credentials and
                 the location of the latest metadata snapshot.
 `)
 	if kit.previousKey != "" {
-		b.WriteString(`secret.key.previous
+		fmt.Fprintf(&b, `%s
                 The key the last secret key rotation replaced. Metadata snapshots
                 taken before that rotation are sealed with it: to restore one, use
-                this file as secret.key.
-`)
+                this file as %s.
+`, kit.previousKeyFile(), kit.secretKeyFile())
 	}
 	b.WriteString(`Metadata snapshots taken before a secret key rotation need the key of their
 time: keep the recovery kit of that time, or a kit that carries
@@ -78,17 +103,29 @@ secret.key.previous.
 	if passphrase {
 		b.WriteString("   With passphrase encryption, run age -d -o mongorescue.db <file> and enter the\n   backup passphrase (it is not in the kit).\n")
 	}
-	b.WriteString(`   A snapshot ending in .db is not encrypted: rename it.
+	if wrapped {
+		fmt.Fprintf(&b, `   A snapshot ending in .db is not encrypted: rename it.
+4. Put mongorescue.db and secret.key.wrapped into the data directory and restrict
+   them:
+     chmod 600 mongorescue.db secret.key.wrapped
+   Set MONGORESCUE_KEY_WRAP=%s
+   and give the new host an identity that may encrypt and decrypt with that KMS
+   key (see docs/security.md, "Wrapping secret.key with a KMS").
+5. Start MongoRescue.`, kw.Env)
+	} else {
+		b.WriteString(`   A snapshot ending in .db is not encrypted: rename it.
 4. Put mongorescue.db and secret.key into the data directory and restrict them:
      chmod 600 mongorescue.db secret.key
    If the old installation used MONGORESCUE_SECRET_KEY, set it to the content of
    secret.key instead of copying the file.
-5. Start MongoRescue. Jobs, backup records, users, settings and storage targets are
+5. Start MongoRescue.`)
+	}
+	b.WriteString(` Jobs, backup records, users, settings and storage targets are
    back; sign in with your usual account.
 
 Without a snapshot
 ------------------
-Start a fresh installation with this secret.key, recreate the storage targets from
+Start a fresh installation with this ` + kit.secretKeyFile() + `, recreate the storage targets from
 recovery.json, `)
 	switch {
 	case hasIdentities:

@@ -18,6 +18,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/ha"
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
@@ -41,10 +42,11 @@ const (
 )
 
 // ErrHANeedsSharedKey is returned by RunHA when neither MONGORESCUE_SECRET_KEY nor
-// a secret.key file is present: an instance would generate a key of its own, and
-// could not read the other instances' snapshots.
+// a secret.key file (or, with key wrapping, secret.key.wrapped) is present: an
+// instance would generate a key of its own, and could not read the other
+// instances' snapshots.
 var ErrHANeedsSharedKey = errors.New("app: active-passive HA needs the secret key shared by every instance: set " +
-	config.EnvSecretKey + " (or mount the same secret.key in every data directory)")
+	config.EnvSecretKey + " (or mount the same secret.key, or with " + config.EnvKeyWrap + " the same secret.key.wrapped, in every data directory)")
 
 // haRole is the role an App is opened in.
 type haRole struct {
@@ -105,6 +107,8 @@ type haRuntime struct {
 	store   storage.Storage
 	// key is the secret key (the snapshots' passphrase derives from it).
 	key []byte
+	// wrapped keeps the key unwrapped by the KMS across the Apps of the roles.
+	wrapped wrappedKeyCache
 	// since is the creation time of the snapshot the last takeover restored or
 	// kept; zero when there was none. Archives written after it are imported.
 	since time.Time
@@ -213,10 +217,8 @@ func RunHA(cfg *config.Config, logger *slog.Logger, opts ...Option) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-	if cfg.SecretKey == "" {
-		if _, err := os.Stat(filepath.Join(cfg.DataDir, secretbox.KeyFileName)); err != nil {
-			return ErrHANeedsSharedKey
-		}
+	if err := checkHASharedKey(cfg); err != nil {
+		return err
 	}
 	target, err := config.ParseHATarget(cfg.HA.Target)
 	if err != nil {
@@ -239,6 +241,26 @@ func RunHA(cfg *config.Config, logger *slog.Logger, opts ...Option) error {
 	defer stop()
 	sup := &haSupervisor{cfg: cfg, logger: logger, opts: opts, rt: rt}
 	return sup.run(ctx)
+}
+
+// checkHASharedKey returns ErrHANeedsSharedKey unless cfg names a key every
+// instance shares: MONGORESCUE_SECRET_KEY, a secret.key file or, with key
+// wrapping, secret.key.wrapped. Instances may hold different ciphertexts of the
+// same key (each wrapped its own copy); the lease's key ID, derived from the
+// unwrapped key, tells a different key apart at the bootstrap.
+func checkHASharedKey(cfg *config.Config) error {
+	if cfg.SecretKey != "" {
+		return nil
+	}
+	keyFile := filepath.Join(cfg.DataDir, secretbox.KeyFileName)
+	_, err := os.Stat(keyFile)
+	if err != nil && cfg.KeyWrap.Enabled() {
+		_, err = os.Stat(keyFile + keywrap.Suffix)
+	}
+	if err != nil {
+		return ErrHANeedsSharedKey
+	}
+	return nil
 }
 
 // haSupervisor opens the App of each role in turn.

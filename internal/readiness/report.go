@@ -68,6 +68,10 @@ type Report struct {
 	// KeysEscrowed reports whether a recovery kit holds the current secret.key,
 	// encryption keys and storage targets.
 	KeysEscrowed bool `json:"keys_escrowed"`
+	// KeyWrapping tells whether secret.key is wrapped by an external KMS, so that
+	// losing the data directory does not lose the root of trust (nil when the
+	// service does not know).
+	KeyWrapping *KeyWrapping `json:"key_wrapping,omitempty"`
 	// Summary counts the rows by status.
 	Summary Summary `json:"summary"`
 	// Rows has one entry per connection and database, ordered by status (fail
@@ -79,6 +83,15 @@ type Report struct {
 	// deletion outside MongoRescue (models.StorageTarget.ImmutabilityHint), sorted
 	// by target name. They never change a row's status.
 	StorageHints []StorageHint `json:"storage_hints"`
+}
+
+// KeyWrapping is the KMS wrapping of secret.key. It never names the key.
+type KeyWrapping struct {
+	// Active reports that secret.key is stored wrapped by a KMS.
+	Active bool `json:"active"`
+	// Provider is aws-kms, gcp-kms, azure-keyvault or vault-transit ("" when
+	// inactive).
+	Provider string `json:"provider,omitempty"`
 }
 
 // StorageHint is a note on one storage target.
@@ -376,6 +389,10 @@ func (s *Service) report(ctx context.Context) (*Report, error) {
 
 	report := &Report{GeneratedAt: now, KeysEscrowed: escrowed, Rows: make([]Row, 0, len(rows)), Streams: streamRows(streams, names),
 		StorageHints: s.storageHints(ctx)}
+	if s.cfg.KeyWrapping != nil {
+		kw := s.cfg.KeyWrapping()
+		report.KeyWrapping = &kw
+	}
 	// Every backup whose copies the queue gave up on, not only the newest one.
 	for rk := range s.exhaustedCopies(ctx) {
 		if acc := rows[rk]; acc != nil {

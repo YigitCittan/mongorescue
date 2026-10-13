@@ -34,6 +34,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/keyrotation"
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
@@ -171,6 +172,11 @@ type options struct {
 	getenv  func(string) string
 	// ha opens the App in a role of an active-passive HA cluster (see RunHA).
 	ha *haRole
+	// openWrapper opens the KMS wrapper of MONGORESCUE_KEY_WRAP (nil:
+	// provider.Open); wrapRetry and wrapSleep replace keywrap.DefaultRetry (tests).
+	openWrapper keywrap.OpenFunc
+	wrapRetry   keywrap.Retry
+	wrapSleep   func(context.Context, time.Duration) error
 }
 
 // Option customises App construction.
@@ -242,14 +248,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err = store.RecoverReplace(cfg.MetadataDBPath(), logger); err != nil {
 		return nil, fmt.Errorf("open the metadata database: %w", err)
 	}
-	keyFile := filepath.Join(cfg.DataDir, secretbox.KeyFileName)
-	key, err := secretbox.LoadKey(secretbox.KeySource{Env: secretKey, File: keyFile}, logger)
+	// With MONGORESCUE_KEY_WRAP the key is unwrapped from secret.key.wrapped by
+	// the KMS (a plaintext secret.key is wrapped and removed first).
+	key, err := loadSecretKey(ctx, cfg, &o, secretKey, logger)
 	if err != nil {
 		return nil, fmt.Errorf("load secret key: %w", err)
 	}
 	// keyrotation.Open settles a secret key rotation that a crash interrupted; the
 	// key it returns is the one the database is sealed with (secret.key again).
-	keyFiles := keyrotation.FilesIn(cfg.DataDir)
+	keyFiles := key.files
 	opened, err := keyrotation.Open(ctx, keyFiles, key.Key, key.FromEnv,
 		func(ctx context.Context, box *secretbox.Box) (*store.SQLiteStore, error) {
 			return store.OpenSQLite(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
@@ -259,9 +266,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		metaStore, key.Key = opened.Store, opened.Key
 	}
 	if err != nil {
-		if key.Created && errors.Is(err, secretbox.ErrSecretKeyMismatch) {
+		if errors.Is(err, secretbox.ErrSecretKeyMismatch) {
 			// Do not leave a useless new key next to a database it cannot open.
-			_ = os.Remove(keyFile)
+			key.removeCreated()
 		}
 		return nil, fmt.Errorf("initialize metadata store: %w", err)
 	}
@@ -428,6 +435,11 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// 4. Initialize observability & notifications: metrics registry, event bus, and the
 	// notification service (the metadata store doubles as its repository).
 	metricSet := metrics.New(metrics.BuildInfo{Version: o.version, Commit: o.commit, GoVersion: runtime.Version()})
+	if key.wrap != nil {
+		// The unwrap at startup preceded the metrics: it is replayed now.
+		metricSet.SetKeyWrapping(key.wrap.spec.Provider)
+		key.wrap.wrapper.SetObserver(metricSet.ObserveKeyWrap)
+	}
 	bus := events.NewBus(events.WithLogger(logger), events.WithDropHook(metricSet.IncEventsDropped))
 	// Deliveries are stored in the metadata database before they are sent
 	// (notification_outbox), so a crash or a kill does not lose them.
@@ -555,6 +567,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		LatestSnapshot:   metaBackupSvc.Latest,
 		MetadataPrefix:   metaBackupSvc.Prefix(),
 		PreviousKeyFile:  keyFiles.Previous,
+		KeyWrap:          key.wrap.kit(cfg.DataDir),
 		Version:          o.version,
 	})
 	if err != nil {
@@ -589,6 +602,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
+		KeyWrapping:  key.wrap.status,
 		Streams:      pitrStreams(&pitrSvc, &lastChainTest, metaStore, &pitrEstimate),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
@@ -786,6 +800,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if opened.Completed != nil {
 		ops.KeyRotationCompleted(ctx, opened.Completed)
 	}
+	// Changes of the KMS wrapping of secret.key (made at this start or by the
+	// offline "mongorescue key" commands) likewise.
+	publishKeyWrapJournal(ctx, cfg.DataDir, ops, logger)
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{

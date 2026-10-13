@@ -72,6 +72,11 @@
         "toolsDir": { "type": "string", "pattern": "^$|^/" }
       }
     },
+    "keyWrap": {
+      "type": "string",
+      "description": "MONGORESCUE_KEY_WRAP: <provider>:<key URI> with provider aws-kms, gcp-kms, azure-keyvault or vault-transit; empty keeps secret.key unwrapped.",
+      "pattern": "^$|^(aws-kms|gcp-kms|azure-keyvault|vault-transit):.+"
+    },
     "secretKey": {
       "type": "object",
       "additionalProperties": false,

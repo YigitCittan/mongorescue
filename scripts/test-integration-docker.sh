@@ -8,7 +8,10 @@
 #   - a MongoDB with --tlsMode requireTLS and --auth, its certificates
 #     signed by a throwaway CA generated in Go (internal/integration/gencerts),
 #     for TLS with a custom CA and x509 client certificate authentication
-#   - MinIO and LocalStack as S3-compatible emulators
+#   - MinIO and LocalStack as S3-compatible emulators; LocalStack also serves
+#     KMS for the key wrapping test (MONGORESCUE_TEST_KMS_LOCALSTACK_ENDPOINT)
+#   - a HashiCorp Vault dev server with the Transit engine, for the key
+#     wrapping test (MONGORESCUE_TEST_VAULT_ADDR, MONGORESCUE_TEST_VAULT_TOKEN)
 # Containers bind to random loopback ports and are always removed on exit.
 #
 # The MONGORESCUE_TEST_* variables below only tell the test suite which services
@@ -22,10 +25,12 @@
 #   MONGO_IMAGE    MongoDB image (default: mongo:7; CI runs 5.0, 6.0, 7.0 and 8.0)
 #   MONGO_TOPOLOGY standalone (default) or replset: a single-node replica set with
 #                  a keyfile, initiated after start; clients use directConnection
-#   IT_PROVIDERS   space-separated services to start (default: "minio localstack keycloak");
+#   IT_PROVIDERS   space-separated services to start (default: "minio localstack keycloak vault");
 #                  "keycloak" also starts Keycloak (KEYCLOAK_IMAGE) in dev mode
 #                  with the realm of internal/integration/testdata, for the
-#                  single sign-on test (MONGORESCUE_TEST_KEYCLOAK_URL)
+#                  single sign-on test (MONGORESCUE_TEST_KEYCLOAK_URL); "vault"
+#                  starts Vault (VAULT_IMAGE) in dev mode with the Transit
+#                  engine and the key "mongorescue", for the key wrapping test
 #   IT_TLS         1 (default) starts the TLS MongoDB (MONGORESCUE_TEST_TLS_*); 0 skips it
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
@@ -47,8 +52,10 @@ MONGO_IMAGE="${MONGO_IMAGE:-mongo:7}"
 MINIO_IMAGE="${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1}"
 LOCALSTACK_IMAGE="${LOCALSTACK_IMAGE:-localstack/localstack:4.4}"
 KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.3@sha256:357829ec7c4693397533035092ad13b0644bcc95ded311f33a3738c4d9e9bdba}"
+# Docker Hub image (pulled through the registry mirror in CI), pinned by digest.
+VAULT_IMAGE="${VAULT_IMAGE:-hashicorp/vault:1.21@sha256:4e33b126a59c0c333b76fb4e894722462659a6bec7c48c9ee8cea56fccfd2569}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IT_PROVIDERS="${IT_PROVIDERS:-minio localstack keycloak}"
+IT_PROVIDERS="${IT_PROVIDERS:-minio localstack keycloak vault}"
 MONGO_TOPOLOGY="${MONGO_TOPOLOGY:-standalone}"
 IT_RACE="${IT_RACE:-1}"
 IT_TLS="${IT_TLS:-1}"
@@ -62,6 +69,8 @@ if [ "$IT_RACE" = 0 ]; then RACE_FLAG=""; fi
 
 PREFIX="mongorescue-it-$$"
 MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+# Root token of the throwaway Vault dev server (masked in the failure logs).
+VAULT_TOKEN_IT="vt$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 CONTAINERS=()
 
 # mongod writes its log synchronously and logs every connection (accepted, client
@@ -84,7 +93,8 @@ cleanup() {
       echo "---- logs: $c ----"
       # Docker's receive time precedes each line; compared with mongod's own "t" it
       # shows whether log delivery lagged.
-      docker logs --timestamps --tail 50 "$c" 2>&1 | sed "s/${MONGO_PW}/******/g" || true
+      docker logs --timestamps --tail 50 "$c" 2>&1 | sed -e "s/${MONGO_PW}/******/g" -e "s/${VAULT_TOKEN_IT}/******/g" \
+        -e 's/Unseal Key: .*/Unseal Key: ******/' || true
     done
   fi
   for c in "${CONTAINERS[@]:-}"; do
@@ -299,7 +309,7 @@ fi
 # --- LocalStack ----------------------------------------------------------------
 if [[ " $IT_PROVIDERS " == *" localstack "* ]]; then
   log "starting $LOCALSTACK_IMAGE"
-  docker run -d --name "$PREFIX-localstack" -p 127.0.0.1::4566 -e SERVICES=s3 \
+  docker run -d --name "$PREFIX-localstack" -p 127.0.0.1::4566 -e SERVICES=s3,kms \
     "$LOCALSTACK_IMAGE" >/dev/null
   CONTAINERS+=("$PREFIX-localstack")
   LOCALSTACK_URL="http://127.0.0.1:$(host_port "$PREFIX-localstack" 4566)"
@@ -307,7 +317,7 @@ if [[ " $IT_PROVIDERS " == *" localstack "* ]]; then
   localstack_ready() {
     local health
     health=$(curl -fsS "$LOCALSTACK_URL/_localstack/health") || return 1
-    grep -Eq '"s3": *"(available|running)"' <<<"$health"
+    grep -Eq '"s3": *"(available|running)"' <<<"$health" && grep -Eq '"kms": *"(available|running)"' <<<"$health"
   }
   wait_for "localstack" 120 localstack_ready
   export MONGORESCUE_TEST_S3_LOCALSTACK_ENDPOINT="$LOCALSTACK_URL"
@@ -316,6 +326,27 @@ if [[ " $IT_PROVIDERS " == *" localstack "* ]]; then
   export MONGORESCUE_TEST_S3_LOCALSTACK_SECRET_KEY="test"
   export MONGORESCUE_TEST_S3_LOCALSTACK_PATH_STYLE="true"
   export MONGORESCUE_TEST_S3_LOCALSTACK_CREATE_BUCKET="true"
+  # KMS of the key wrapping test (the test creates its keys; credentials test/test).
+  export MONGORESCUE_TEST_KMS_LOCALSTACK_ENDPOINT="$LOCALSTACK_URL"
+fi
+
+# --- HashiCorp Vault (Transit, key wrapping) ----------------------------------------
+if [[ " $IT_PROVIDERS " == *" vault "* ]]; then
+  log "starting $VAULT_IMAGE"
+  # Dev mode: in memory, unsealed, the root token set here. Not a production setup.
+  docker run -d --name "$PREFIX-vault" -p 127.0.0.1::8200 --cap-add IPC_LOCK \
+    -e VAULT_DEV_ROOT_TOKEN_ID="$VAULT_TOKEN_IT" -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+    "$VAULT_IMAGE" server -dev >/dev/null
+  CONTAINERS+=("$PREFIX-vault")
+  VAULT_URL="http://127.0.0.1:$(host_port "$PREFIX-vault" 8200)"
+  wait_for "vault" 60 curl -fsS "$VAULT_URL/v1/sys/health"
+  vault_api() {
+    curl -fsS -X POST -H "X-Vault-Token: $VAULT_TOKEN_IT" "$VAULT_URL/v1/$1" -d "$2" >/dev/null
+  }
+  vault_api sys/mounts/transit '{"type":"transit"}'
+  vault_api transit/keys/mongorescue '{"type":"aes256-gcm96"}'
+  export MONGORESCUE_TEST_VAULT_ADDR="$VAULT_URL"
+  export MONGORESCUE_TEST_VAULT_TOKEN="$VAULT_TOKEN_IT"
 fi
 
 # --- Keycloak (single sign-on) ---------------------------------------------------

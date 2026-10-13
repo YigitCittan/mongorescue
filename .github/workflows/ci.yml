@@ -235,7 +235,9 @@ jobs:
         env:
           MONGO_IMAGE: mongo:${{ matrix.mongo }}
           MONGO_TOPOLOGY: ${{ matrix.topology }}
-          IT_PROVIDERS: ${{ matrix.emulator }}
+          # The LocalStack run also starts Vault: the key wrapping test covers AWS KMS
+          # (LocalStack) and Vault Transit there.
+          IT_PROVIDERS: ${{ matrix.emulator }}${{ matrix.emulator == 'localstack' && ' vault' || '' }}
           GOTESTFLAGS: -coverprofile=integration-coverage.out -covermode=atomic -coverpkg=./...
         run: ./scripts/test-integration-docker.sh
 

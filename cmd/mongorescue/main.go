@@ -6,7 +6,9 @@
 // is configured in the dashboard and stored in the database. "mongorescue mcp" runs
 // the stdio bridge for AI assistants instead of the server, and "mongorescue backup",
 // "restore", "list", "verify" and "status" run the CLI (internal/cli), a client of a
-// running server's REST API.
+// running server's REST API. "mongorescue key" runs the offline commands of the KMS
+// wrapping of secret.key (status, rewrap, unwrap) on a stopped instance's data
+// directory.
 package main
 
 import (
@@ -25,6 +27,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/app"
 	"github.com/yigitcittan/mongorescue/internal/cli"
 	"github.com/yigitcittan/mongorescue/internal/config"
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 )
 
 // Version metadata populated at build time via -ldflags.
@@ -38,14 +41,17 @@ func main() {
 	os.Exit(dispatch(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 }
 
-// dispatch runs the command args name: "mcp" (the stdio bridge), a CLI command
-// (backup, restore, list, verify, status, help) or, without one, the server. It
+// dispatch runs the command args name: "mcp" (the stdio bridge), "key" (the
+// offline key wrapping commands), a CLI command (backup, restore, list, verify,
+// status, help) or, without one, the server. It
 // returns the process exit code.
 func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch {
 		case args[0] == mcpCommand:
 			return runMCP(args[1:], getenv, stdin, stdout, stderr)
+		case args[0] == keyCommand:
+			return runKey(args[1:], getenv, stdout, stderr)
 		case cli.IsCommand(args[0]):
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -115,6 +121,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
 	minFreeSpace := fs.String("min-free-space-mb", "", fmt.Sprintf("Free space (MiB) the data directory needs for a backup or restore to start, 0 to turn the check off (env %s, default %d)", config.EnvMinFreeSpace, config.DefaultMinFreeSpaceMB))
 	notifyMaxAge := fs.String("notification-max-age", "", "How long a notification may wait to be sent before it is dropped as stale, e.g. 24h (env "+config.EnvNotificationMaxAge+", default 24h)")
+	keyWrap := fs.String("key-wrap", "", "Wrap secret.key with an external KMS: <provider>:<key URI> with provider aws-kms, gcp-kms, azure-keyvault or vault-transit (env "+config.EnvKeyWrap+", default off)")
 	haMode := fs.String("ha-mode", "", "High availability mode: off or active-passive (env "+config.EnvHAMode+", default off)")
 	haTarget := fs.String("ha-target", "", "Storage target of the HA lease and metadata handover: a target ID or name, or s3://bucket/prefix?endpoint=…&region=…&path_style=true or file:///path (env "+config.EnvHATarget+")")
 	haCluster := fs.String("ha-cluster", "", "HA cluster name (env "+config.EnvHACluster+", default "+config.DefaultHACluster+")")
@@ -130,7 +137,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 		return config.Default(), slog.LevelInfo, true, nil
 	}
 	if fs.NArg() > 0 {
-		return nil, 0, false, fmt.Errorf("unexpected arguments: %v (everything except the bootstrap flags is configured in the dashboard; CLI commands: backup, restore, list, verify, status, help)", fs.Args())
+		return nil, 0, false, fmt.Errorf("unexpected arguments: %v (everything except the bootstrap flags is configured in the dashboard; CLI commands: backup, restore, list, verify, status, key, help)", fs.Args())
 	}
 	level, err := config.ParseLogLevel(*logLevel)
 	if err != nil {
@@ -140,7 +147,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr, spaceErr, ageErr, haErr error
+	var graceErr, spaceErr, ageErr, haErr, wrapErr error
 	haDuration := func(name, v string, dst *time.Duration) {
 		d, err := config.ParseHADuration(v)
 		if err != nil && haErr == nil {
@@ -175,6 +182,8 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.MinFreeSpaceMB, spaceErr = config.ParseMinFreeSpace(*minFreeSpace)
 		case "notification-max-age":
 			cfg.NotificationMaxAge, ageErr = config.ParseNotificationMaxAge(*notifyMaxAge)
+		case "key-wrap":
+			cfg.KeyWrap, wrapErr = keywrap.ParseSpec(*keyWrap)
 		case "ha-mode":
 			cfg.HA.Mode = strings.ToLower(strings.TrimSpace(*haMode))
 		case "ha-target":
@@ -191,6 +200,9 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	})
 	if haErr != nil {
 		return nil, 0, false, haErr
+	}
+	if wrapErr != nil {
+		return nil, 0, false, fmt.Errorf("-key-wrap: %w", wrapErr)
 	}
 	if graceErr != nil {
 		return nil, 0, false, fmt.Errorf("-shutdown-grace: %w", graceErr)

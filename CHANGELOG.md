@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- KMS wrapping of `secret.key` (#61; the Vault Transit part of #62). With `MONGORESCUE_KEY_WRAP=<provider>:<key URI>` (or `-key-wrap`) the data directory holds only `secret.key.wrapped`, which every start unwraps with the instance's own identity. See [docs/security.md](docs/security.md#wrapping-secretkey-with-a-kms).
+  - **Providers.** `aws-kms` (AWS SDK, default credential chain, encryption context), `gcp-kms` (Cloud KMS REST API with Application Default Credentials and CRC32C checks), `azure-keyvault` (`wrapKey`/`unwrapKey` with `RSA-OAEP-256` and `DefaultAzureCredential`) and `vault-transit` (a minimal HTTP client with token, AppRole or Kubernetes authentication). Key URIs are validated and never hold credentials.
+  - **Migration.** The first start with wrapping on wraps `secret.key` (and the `.next` and `.previous` files of a key rotation), writes the wrapped files atomically, checks that they unwrap to the same keys and only then overwrites and removes the plaintext files; an interrupted migration finishes at the next start.
+  - **Startup.** The unwrap is retried while the KMS is unreachable and fails with an actionable error (provider, key URI, permissions to check) when it stays so or refuses; there is never a fallback to a plaintext key. A data directory with `secret.key.wrapped` refuses to start without `MONGORESCUE_KEY_WRAP`, and `MONGORESCUE_SECRET_KEY` cannot be combined with it.
+  - **Key rotation and other KMS keys.** A `secret.key` rotation wraps the new key before it is written. `mongorescue key rewrap --to <provider>:<key URI>` moves the wrapped keys to another KMS key, `mongorescue key unwrap --confirm-plaintext` leaves the KMS, and `mongorescue key status` shows the stored key's provider and fingerprint; all run offline on the data directory.
+  - **Recovery kit.** With wrapping on, the kit carries `secret.key.wrapped` and the KMS key URI, and its README explains that recovery needs the KMS key; the plaintext key only with `"plaintext_secret_key": true` (audited). `GET /api/v1/recovery-kit` reports `key_wrapped`.
+  - **HA.** Instances share the wrapped key (or wrap copies of the same key); the lease's shared-key check still applies, and an instance unwraps once per process, so a takeover does not need the KMS.
+  - **Observability.** The event `security.key_wrapping_changed` (`wrapped`, `rewrapped`, `unwrapped_to_file`) with audit entries `keywrap.*`, the series `mongorescue_key_wrapping_active`, `mongorescue_key_wrap_duration_seconds` and `mongorescue_key_wrap_errors_total`, and `key_wrapping` in `GET /api/v1/readiness`.
+  - The Helm chart has a `keyWrap` value, and docs/kubernetes.md covers IRSA, GKE and Azure Workload Identity and Vault's Kubernetes auth. The integration suite tests AWS KMS on LocalStack and Vault Transit on a Vault dev server; Google Cloud KMS and Azure Key Vault are covered by contract tests against `httptest` fakes.
+
 ## [0.27.1] - 2026-10-13
 
 ### Fixed
