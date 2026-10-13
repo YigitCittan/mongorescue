@@ -189,6 +189,9 @@ type Config struct {
 	// without one); either nil disables the chain test schedule.
 	StartChainTest func(ctx context.Context, streamID string) error
 	LastChainTest  func(ctx context.Context, streamID string) time.Time
+	// Pins are the pins of the point-in-time restores in flight, whose bases and
+	// chunks retention and the purge skip; nil means pitr.SharedPins.
+	Pins *pitr.PinSet
 }
 
 // Service runs the collectors of the enabled streams. It is safe for concurrent

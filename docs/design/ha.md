@@ -155,7 +155,7 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - **Takeover work**: a snapshot download and swap (seconds for a database of a few MB), the scan of the storage targets, then the components start. Typically under 30 s.
 - **Scheduling RTO**: about 70 s. A missed fire runs once on takeover.
 - **Metadata RPO**: run records are snapshotted after every finished run, so a crash loses at most what changed since (normally nothing but the running runs). Settings and job edits made in the last snapshot interval can be lost; edit through the active instance and check the dashboard after a takeover. Archives written after the last snapshot are imported by the scan.
-- **PITR**: the collector resumes from the last chunk the snapshot records and reads the gap from the oplog again. The oplog window must be longer than the takeover (it is, by orders of magnitude). Orphan chunk objects from the old active are removed by the collector's retention.
+- **PITR**: the collector resumes from the last chunk the snapshot records and reads the gap from the oplog again. The oplog window must be longer than the takeover (it is, by orders of magnitude). Orphan chunk objects from the old active are removed by the collector's retention. The pins that keep retention away from the base and chunks of a running point-in-time restore or chain test live in each process's memory; that suffices because only the active instance runs restores and retention, and an old active instance that lost the lease is fenced and stops its runs.
 - **Notifications**: delivered at least once. Deliveries pending in the snapshot's outbox are sent again by the new active instance; receivers can de-duplicate on the event ID.
 
 ## Observability

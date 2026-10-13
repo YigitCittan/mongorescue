@@ -49,9 +49,59 @@ func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.
 	if err != nil {
 		return nil, err
 	}
+	// b2 is the record of the newer base, whose manifest the clones are compared with.
+	var b2 *models.BackupRecord
+	planChainTest := func() (*pitrPlan, error) {
+		pp, rec, planErr := s.planChainTest(ctx, stream)
+		b2 = rec
+		return pp, planErr
+	}
+	pp, err := planChainTest()
+	if err != nil {
+		return nil, err
+	}
+	cloneID, err := models.NewCloneID()
+	if err != nil {
+		return nil, err
+	}
+	suffix, err := models.ChainTestCloneSuffix(s.now(), cloneID)
+	if err != nil {
+		return nil, err
+	}
+	// The test may run on another server (chain_test_connection_id), so production
+	// is spared its load; it defaults to the stream's own connection.
+	targetID := stream.ChainTestConnectionID
+	if targetID == "" {
+		targetID = stream.ConnectionID
+	}
+	conn, err := s.ResolveConnection(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	// The plan is pinned for the whole test (runPITRRestore releases it): retention
+	// skips its base and chunks.
+	if pp, err = s.pinPITRPlan(ctx, pp, planChainTest); err != nil {
+		return nil, err
+	}
+	limit := pp.run.Plan.Limit
+	// No force: the preflight (privileges, disk space) can refuse a chain test.
+	pp.req = models.RestoreRequest{
+		PITR: &models.PITRTarget{StreamID: stream.ID, TS: &limit}, PITRCloneSuffix: suffix,
+		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI, MongoTLS: conn.TLS(),
+	}
+	b2ID, expected := b2.ID, s.manifest(ctx, b2)
+	return s.runPITRRestore(ctx, pp, func(runCtx context.Context, final *models.RestoreRecord) {
+		s.finishChainTest(mongotls.NewContext(runCtx, conn.TLS()), final, b2ID, expected, conn.URI)
+	})
+}
+
+// planChainTest plans the chain test of stream: the newest eligible base with a
+// manifest (B2, returned) and the eligible base before it (B1), restored to B2's
+// consistent point. It returns ErrNoChainTest without such a pair.
+func (s *Service) planChainTest(ctx context.Context, stream *pitr.Stream) (*pitrPlan, *models.BackupRecord, error) {
 	records, err := s.cfg.PITRBases(ctx, stream.ID)
 	if err != nil {
-		return nil, fmt.Errorf("list base backups: %w", err)
+		return nil, nil, fmt.Errorf("list base backups: %w", err)
 	}
 	bases, byID := pitrBases(records)
 	sort.SliceStable(bases, func(i, j int) bool { return bases[i].TAfter.TS.Compare(bases[j].TAfter.TS) > 0 })
@@ -72,39 +122,11 @@ func (s *Service) StartChainTest(ctx context.Context, streamID string) (*models.
 		if lastErr != nil {
 			msg += ": " + strings.TrimPrefix(lastErr.Error(), "pitr: ")
 		}
-		return nil, public(msg, ErrNoChainTest, lastErr)
-	}
-	cloneID, err := models.NewCloneID()
-	if err != nil {
-		return nil, err
-	}
-	suffix, err := models.ChainTestCloneSuffix(s.now(), cloneID)
-	if err != nil {
-		return nil, err
-	}
-	// The test may run on another server (chain_test_connection_id), so production
-	// is spared its load; it defaults to the stream's own connection.
-	targetID := stream.ChainTestConnectionID
-	if targetID == "" {
-		targetID = stream.ConnectionID
-	}
-	conn, err := s.ResolveConnection(ctx, targetID)
-	if err != nil {
-		return nil, err
-	}
-	limit := plan.Limit
-	// No force: the preflight (privileges, disk space) can refuse a chain test.
-	req := models.RestoreRequest{
-		PITR: &models.PITRTarget{StreamID: stream.ID, TS: &limit}, PITRCloneSuffix: suffix,
-		TargetConnectionID: conn.ID, TargetConnectionName: conn.Name, MongoURI: conn.URI, MongoTLS: conn.TLS(),
+		return nil, nil, public(msg, ErrNoChainTest, lastErr)
 	}
 	base := byID[plan.Base.ID]
-	pp := &pitrPlan{req: req, stream: stream, chainTest: true,
-		run: restore.PITRRun{Plan: plan, Base: base, Databases: base.InstanceDatabases}}
-	expected := s.manifest(ctx, byID[b2.ID])
-	return s.runPITRRestore(ctx, pp, func(runCtx context.Context, final *models.RestoreRecord) {
-		s.finishChainTest(mongotls.NewContext(runCtx, conn.TLS()), final, b2.ID, expected, conn.URI)
-	})
+	return &pitrPlan{stream: stream, chainTest: true,
+		run: restore.PITRRun{Plan: plan, Base: base, Databases: base.InstanceDatabases}}, byID[b2.ID], nil
 }
 
 // finishChainTest compares the clones of a completed chain test with the manifest

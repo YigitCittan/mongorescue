@@ -182,21 +182,41 @@ func (s *Service) attemptChunk(ctx context.Context, cs ChunkStore, c *pitr.Chunk
 // purgeChunkCopies deletes the copies of chunks that are gone (see
 // ChunkStore.PurgeableChunkCopies), each under its deletion lock. A copy whose
 // object is still under its Object Lock records the end of the lock and waits.
+// The copies of a chunk pinned by a point-in-time restore in flight (Config.Pins)
+// wait for a later run.
 func (s *Service) purgeChunkCopies(ctx context.Context, cs ChunkStore) error {
 	list, err := cs.PurgeableChunkCopies(ctx, s.now(), chunkBatch)
 	if err != nil {
 		return fmt.Errorf("list the purgeable chunk copies: %w", err)
 	}
+	pins := s.pinSet().Snapshot()
 	var errs []error
+	skipped := 0
 	for _, cp := range list {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if pins.Chunk(cp.ChunkID) {
+			skipped++
+			continue
 		}
 		if err = s.purgeChunkCopy(ctx, cs, cp); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	if skipped > 0 {
+		s.logger.Info("skipped the purge of oplog chunk copies pinned by a point-in-time restore in flight; a later run purges them once it ends",
+			slog.Int("pinned_copies", skipped))
+	}
 	return errors.Join(errs...)
+}
+
+// pinSet returns the pins the purge honours (Config.Pins, else pitr.SharedPins).
+func (s *Service) pinSet() *pitr.PinSet {
+	if s.cfg.Pins != nil {
+		return s.cfg.Pins
+	}
+	return pitr.SharedPins()
 }
 
 // purgeChunkCopy deletes the object of copy cp and marks it purged.

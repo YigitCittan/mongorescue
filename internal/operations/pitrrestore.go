@@ -53,6 +53,8 @@ type pitrPlan struct {
 	// fallback explains why the restore reads a copy chain instead of the
 	// primary (see pitrSource).
 	fallback string
+	// pin is the pin of the run's base and chunks (pinPITRPlan); nil without one.
+	pin *pitr.Pin
 }
 
 // resolveStream returns the PITR stream id, or the stream of connection id. A
@@ -242,12 +244,24 @@ func (s *Service) startPITRRestore(ctx context.Context, req models.RestoreReques
 	if err != nil {
 		return nil, err
 	}
+	if pp, err = s.pinPITRPlan(ctx, pp, func() (*pitrPlan, error) { return s.planPITR(ctx, req, false) }); err != nil {
+		return nil, err
+	}
 	return s.runPITRRestore(ctx, pp, func(context.Context, *models.RestoreRecord) {})
 }
 
 // runPITRRestore prepares, preflights, stores and starts the restore of pp in the
-// background; done is called with the final record before it is stored.
+// background; done is called with the final record before it is stored. It
+// keeps the pin of pp (pinPITRPlan) alive while the restore runs and releases it
+// when the restore ends, or at once when it does not start.
 func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(context.Context, *models.RestoreRecord)) (*models.RestoreRecord, error) {
+	pin := pp.pin
+	started := false
+	defer func() {
+		if !started {
+			pin.Release()
+		}
+	}()
 	req := pp.req
 	record, err := s.cfg.PITRRestore.PreparePITR(req, pp.run)
 	if err != nil {
@@ -327,6 +341,8 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		}
 	}
 	if err := s.cfg.Runs.Go("", func(runCtx context.Context) {
+		defer pin.Release()
+		defer pin.KeepAlive()()
 		defer release()
 		defer tracked.End()
 		runCtx = tracked.Bind(runCtx)
@@ -350,6 +366,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		}
 		return nil, runError(err, "")
 	}
+	started = true
 	return &snapshot, nil
 }
 

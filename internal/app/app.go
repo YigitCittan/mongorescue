@@ -443,9 +443,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	bus.Subscribe(metricSet.ObserveEvent)
 	bus.Subscribe(notifySvc.HandleEvent)
 	bus.Subscribe(watchEncryptionOffAlert(logger, settingsSvc))
+	// The pins of the point-in-time restores in flight, which PITR retention, the
+	// chunk copy purge and the purge of deleted backups honour.
+	pitrPins := pitr.NewPinSet(pitr.PinOptions{Logger: logger})
 	// Copies of backups to their copy targets (3-2-1): the persistent queue wakes up
 	// for every succeeded backup.
 	copySvc = copies.New(copies.Config{
+		Pins:     pitrPins,
 		Store:    metaStore,
 		Storages: copies.StorageFunc(targetSvc.Storage),
 		UploadMbps: func(ctx context.Context, rec *models.BackupRecord) float64 {
@@ -653,6 +657,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	var ops *operations.Service
 	sched = scheduler.NewScheduler(metaStore, backupEngine, nil, logger,
 		scheduler.WithDeleteGrace(func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() }),
+		scheduler.WithPITRPins(pitrPins),
 		scheduler.WithMaintenance(func(ctx context.Context) {
 			if ops != nil {
 				ops.ApplyDueChanges(ctx)
@@ -717,6 +722,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// 7. The backup, job and restore use cases are shared by the REST API and the MCP
 	// server, so both adapters apply exactly the same rules.
 	ops = operations.New(operations.Config{
+		PITRPins:    pitrPins,
 		Store:       metaStore,
 		WakeCopies:  copySvc.Notify,
 		Backup:      backupEngine,
@@ -781,6 +787,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// The PITR oplog collector: one goroutine and session per enabled stream, off
 	// while no stream is enabled. Base backups go through the operations service.
 	pitrSvc = collector.New(collector.Config{
+		Pins:  pitrPins,
 		Repo:  metaStore,
 		Fence: o.fence(),
 		OnWriteError: func(ctx context.Context, err error) {

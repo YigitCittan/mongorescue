@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -82,6 +83,10 @@ type Config struct {
 	// SyncBackoff is the wait between the attempts of a synchronous copy (default
 	// two seconds, doubled per attempt).
 	SyncBackoff time.Duration
+	// Pins are the pins of the point-in-time restores in flight: the copies of a
+	// pinned chunk are not purged until it is released (a restore may read a copy
+	// chain). nil means pitr.SharedPins.
+	Pins *pitr.PinSet
 }
 
 // Results of an attempt, as passed to Config.Observe (equal to the metrics
