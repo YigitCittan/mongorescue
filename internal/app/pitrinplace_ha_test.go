@@ -25,6 +25,7 @@ func TestInPlacePITRIsRefusedInHAMode(t *testing.T) {
 
 	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
 	sup := newTestSupervisor(t, cfg)
+	sup.clock = newFakeClock().Now // the lease cannot expire however slowly the App opens
 	standby, err := sup.open(false)
 	if err != nil {
 		t.Fatal(err)
