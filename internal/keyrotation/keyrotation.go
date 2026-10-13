@@ -22,6 +22,11 @@
 // Should the commit itself have been lost while the new key was already installed,
 // secret.key.previous is put back. Every other mismatch is refused, as before.
 //
+// With key wrapping on (MONGORESCUE_KEY_WRAP, internal/keywrap) the same steps run
+// on secret.key.wrapped, secret.key.next.wrapped and secret.key.previous.wrapped
+// (WrappedFilesIn): every key is wrapped by the KMS, and checked to unwrap again,
+// before it is written, so no key of a rotation reaches the disk in plain form.
+//
 // Keys from MONGORESCUE_SECRET_KEY are never rotated by the application.
 package keyrotation
 
@@ -33,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/mongotls"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
@@ -75,8 +81,23 @@ const (
 
 // Files are the key files of a data directory.
 type Files struct {
-	// Current is secret.key, Next secret.key.next and Previous secret.key.previous.
+	// Current is secret.key, Next secret.key.next and Previous secret.key.previous
+	// (or their wrapped counterparts, see WrappedFilesIn).
 	Current, Next, Previous string
+	// Codec reads and writes the key files; nil means plaintext key files
+	// (secretbox.ReadKeyFile and secretbox.WriteKeyFile).
+	Codec KeyCodec
+}
+
+// KeyCodec reads and writes key files. With key wrapping on it is
+// *keywrap.Codec: a key is wrapped by the KMS before it is written, so a rotated
+// key never reaches the disk in plain form.
+type KeyCodec interface {
+	// ReadKey returns the key of the file at path (an error wrapping
+	// fs.ErrNotExist when it is missing).
+	ReadKey(ctx context.Context, path string) ([]byte, error)
+	// WriteKey writes key to path atomically, replacing an existing file.
+	WriteKey(ctx context.Context, path string, key []byte) error
 }
 
 // FilesIn returns the key files of dataDir.
@@ -87,6 +108,32 @@ func FilesIn(dataDir string) Files {
 		Previous: filepath.Join(dataDir, secretbox.PreviousKeyFileName),
 	}
 }
+
+// WrappedFilesIn returns the KMS-wrapped key files of dataDir
+// (secret.key.wrapped and so on), read and written by codec.
+func WrappedFilesIn(dataDir string, codec KeyCodec) Files {
+	f := FilesIn(dataDir)
+	return Files{Current: f.Current + keywrap.Suffix, Next: f.Next + keywrap.Suffix, Previous: f.Previous + keywrap.Suffix, Codec: codec}
+}
+
+// read returns the key of the file at path.
+func (f Files) read(ctx context.Context, path string) ([]byte, error) {
+	if f.Codec != nil {
+		return f.Codec.ReadKey(ctx, path)
+	}
+	return secretbox.ReadKeyFile(path)
+}
+
+// write writes key to path.
+func (f Files) write(ctx context.Context, path string, key []byte) error {
+	if f.Codec != nil {
+		return f.Codec.WriteKey(ctx, path, key)
+	}
+	return secretbox.WriteKeyFile(path, key)
+}
+
+// Wrapped reports whether the key files are wrapped by a KMS.
+func (f Files) Wrapped() bool { return f.Codec != nil }
 
 // OpenFunc opens the metadata store with box; a key that does not match the database
 // returns an error wrapping secretbox.ErrSecretKeyMismatch.
@@ -156,7 +203,7 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 		return nil, err
 	}
 	// The transaction committed before secret.key.next was installed.
-	if opened, err := tryCandidate(ctx, files.Next, open, func(m *store.KeyRotation, fp string) bool {
+	if opened, err := tryCandidate(ctx, files, files.Next, open, func(m *store.KeyRotation, fp string) bool {
 		return m.OldFingerprint == curFP && m.NewFingerprint == fp
 	}); err != nil {
 		return nil, err
@@ -170,7 +217,7 @@ func Open(ctx context.Context, files Files, key []byte, fromEnv bool, open OpenF
 		return opened, nil
 	}
 	// The new key was installed but the commit was lost (power loss).
-	if opened, err := tryCandidate(ctx, files.Previous, open, func(m *store.KeyRotation, fp string) bool {
+	if opened, err := tryCandidate(ctx, files, files.Previous, open, func(m *store.KeyRotation, fp string) bool {
 		return m.OldFingerprint == fp && m.NewFingerprint == curFP
 	}); err != nil {
 		return nil, err
@@ -218,12 +265,12 @@ func settleOpened(ctx context.Context, st *store.SQLiteStore, files Files, key [
 // tryCandidate opens the store with the key file at path, when it exists, and keeps
 // it only when the rotation marker matches (match gets the marker and the key's
 // fingerprint). It returns nil when the candidate does not apply.
-func tryCandidate(ctx context.Context, path string, open OpenFunc, match func(*store.KeyRotation, string) bool) (*Opened, error) {
+func tryCandidate(ctx context.Context, files Files, path string, open OpenFunc, match func(*store.KeyRotation, string) bool) (*Opened, error) {
 	ok, err := secretbox.KeyFileExists(path)
 	if err != nil || !ok {
 		return nil, err
 	}
-	key, err := secretbox.ReadKeyFile(path)
+	key, err := files.read(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +297,7 @@ func tryCandidate(ctx context.Context, path string, open OpenFunc, match func(*s
 // completeInstall finishes a rotation whose transaction committed: the old key goes
 // to secret.key.previous, secret.key.next becomes secret.key and the marker goes.
 func completeInstall(ctx context.Context, st *store.SQLiteStore, files Files, old []byte) error {
-	if err := secretbox.WriteKeyFile(files.Previous, old); err != nil {
+	if err := files.write(ctx, files.Previous, old); err != nil {
 		return err
 	}
 	if err := secretbox.InstallKeyFile(files.Next, files.Current); err != nil {
@@ -262,7 +309,7 @@ func completeInstall(ctx context.Context, st *store.SQLiteStore, files Files, ol
 // rollBackInstall undoes a rotation whose commit was lost: the previous key becomes
 // secret.key again and the marker goes.
 func rollBackInstall(ctx context.Context, st *store.SQLiteStore, files Files, previous []byte) error {
-	if err := secretbox.WriteKeyFile(files.Current, previous); err != nil {
+	if err := files.write(ctx, files.Current, previous); err != nil {
 		return err
 	}
 	if err := secretbox.RemoveKeyFile(files.Next); err != nil {
@@ -490,7 +537,7 @@ func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string, announ
 	if err = r.fault(StepMarked); err != nil {
 		return nil, err
 	}
-	if err = secretbox.WriteKeyFile(r.cfg.Files.Next, next); err != nil {
+	if err = r.cfg.Files.write(ctx, r.cfg.Files.Next, next); err != nil {
 		_ = r.abort(ctx, nil, log) // nothing was re-sealed yet
 		return nil, err
 	}
@@ -534,7 +581,9 @@ func (r *Rotator) RotateAs(ctx context.Context, actor, approvalID string, announ
 	if err = r.fault(StepCommitted); err != nil {
 		return nil, err
 	}
-	if err = secretbox.WriteKeyFile(r.cfg.Files.Previous, old); err != nil {
+	// The database already uses the new key: a cancelled request must not stop
+	// the files from following it (with key wrapping, this calls the KMS).
+	if err = r.cfg.Files.write(context.WithoutCancel(ctx), r.cfg.Files.Previous, old); err != nil {
 		log.Error("secret key rotation: could not keep the previous key", logsafe.Error(err))
 		return partial(oldFP, newFP, res), ErrIncomplete
 	}

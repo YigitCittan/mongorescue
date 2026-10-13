@@ -103,6 +103,9 @@ type Config struct {
 	// KeysEscrowed reports whether a recovery kit was downloaded for the current
 	// secret.key, encryption keys and storage targets; nil means false.
 	KeysEscrowed func() bool
+	// KeyWrapping reports whether secret.key is wrapped by an external KMS
+	// (internal/keywrap); nil leaves Report.KeyWrapping out.
+	KeyWrapping func() KeyWrapping
 	// Streams lists the PITR streams: they appear in the report, and a stream's
 	// durable lag is the PITR RPO of the rows of its connection; nil means none.
 	Streams StreamLister

@@ -94,6 +94,8 @@ Effects:
 - **Metadata snapshots taken before the rotation are sealed with the old key** and stay below the old install ID's prefix (`_mongorescue/metadata/<old id>/`); new snapshots go below the new key's prefix. They hold the credentials of their time sealed with the old, possibly leaked key, so they do not stay: the rotation records the old install ID in the same transaction, and once the delete grace period (Settings → Security) has passed since the rotation, the metadata backup service deletes the snapshots below that prefix on every storage target. Until then, restore an old snapshot with the old key: the previous recovery kit, or a kit downloaded with **Include the previous key** (`"include_previous_key": true` in `POST /api/v1/recovery-kit`), which adds `secret.key.previous`.
 - **secret.key.previous goes after the old snapshots.** Once they are pruned, MongoRescue deletes `secret.key.previous` itself when a recovery kit was downloaded after the rotation; otherwise the dashboard warns (`previous_secret_key`) until you download a kit or delete the file.
 
+With [key wrapping](security.md#wrapping-secretkey-with-a-kms) on, the rotation is the same, on `secret.key.wrapped`, `secret.key.next.wrapped` and `secret.key.previous.wrapped`: each key is wrapped by the KMS (and checked) before it is written, so the rotation needs the KMS to be reachable, and no key of it reaches the disk in plain form. A new version of the KMS key itself needs no rotation of `secret.key`; another KMS key is reached with `mongorescue key rewrap`.
+
 #### Keys from MONGORESCUE_SECRET_KEY
 
 A key set by `MONGORESCUE_SECRET_KEY` cannot be rotated by MongoRescue (it does not own the environment); the endpoint answers `409`. Rotate it by hand:

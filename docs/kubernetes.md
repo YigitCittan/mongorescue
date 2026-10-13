@@ -42,6 +42,27 @@ The key encrypts every stored credential: connection strings, S3 keys, notificat
 - **Recommended:** create the Secret yourself, from your secret manager or with `kubectl create secret generic mongorescue-key --from-literal=secret-key="$(openssl rand -base64 32)"`, and set `secretKey.existingSecret=mongorescue-key` (and `secretKey.existingSecretKey` if the key inside the Secret is not `secret-key`).
 - **Default:** without `existingSecret`, the chart generates a random key into the Secret `<release>-secret-key`. Helm keeps the Secret on `helm uninstall` (`helm.sh/resource-policy: keep`) and reuses its key on upgrades. Copy it out of the cluster right after the install (`NOTES.txt` prints the command) and download the [recovery kit](production.md#recovery-kit) once the setup is done. Reinstalling into a namespace whose Secret was deleted generates a *new* key that does not open the old database.
 - **`secretKey.generate: false`** (without `existingSecret`) leaves the key in `/data/secret.key` on the data volume, as with Docker.
+- **`keyWrap`** keeps the key on the data volume, but only as `secret.key.wrapped`, wrapped by a KMS; the pod unwraps it at every start with its own identity ([key wrapping](security.md#wrapping-secretkey-with-a-kms)). No Secret is generated and `existingSecret` must stay empty. See [below](#key-wrapping-with-workload-identity).
+
+### Key wrapping with workload identity
+
+Give the pod an identity that may encrypt and decrypt with the KMS key, and nothing else, then set `keyWrap`:
+
+- **AWS KMS with IRSA**: an IAM role with `kms:Encrypt` and `kms:Decrypt` on the key, trusted by the cluster's OIDC provider for the release's service account.
+
+  ```yaml
+  keyWrap: aws-kms:arn:aws:kms:eu-central-1:123456789012:alias/mongorescue
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/mongorescue
+  ```
+
+  With EKS Pod Identity, associate the role with the service account instead; no annotation is needed.
+- **Google Cloud KMS with GKE Workload Identity**: grant `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key to the Kubernetes service account (`principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<project>.svc.id.goog/subject/ns/<namespace>/sa/<service account>`), or to a Google service account it impersonates (`serviceAccount.annotations: {iam.gke.io/gcp-service-account: mongorescue@<project>.iam.gserviceaccount.com}`).
+- **Azure Key Vault with Azure Workload Identity**: a user-assigned managed identity with *Key Vault Crypto User* on the key and a federated credential for the service account; set `serviceAccount.annotations: {azure.workload.identity/client-id: <client id>}` and `podLabels: {azure.workload.identity/use: "true"}`.
+- **Vault Transit with the Kubernetes auth method**: a Vault role bound to the service account with a policy allowing `update` on `transit/encrypt/<key>` and `transit/decrypt/<key>`; set `extraEnv` `VAULT_K8S_ROLE` (and `VAULT_CACERT` with a mounted CA bundle) and `serviceAccount.automountServiceAccountToken: true`, which the login needs.
+
+Unwrapping needs the KMS at every start: a pod whose identity cannot reach it stays in `CrashLoopBackOff` with the reason in its log. For [high availability](#high-availability), copy `secret.key.wrapped` from the first release's data volume into the second's before it starts (for example `kubectl cp` while it is scaled to 0); both pods need the KMS permission.
 
 ## Probes
 
@@ -140,6 +161,7 @@ ingress:
 | `config.shutdownGrace` | `MONGORESCUE_SHUTDOWN_GRACE` | `terminationGracePeriodSeconds` − 60 s |
 | `config.toolsDir` | `MONGORESCUE_TOOLS_DIR` | the tools in the image |
 | `secretKey.*` | `MONGORESCUE_SECRET_KEY` | a generated Secret |
+| `keyWrap` | `MONGORESCUE_KEY_WRAP` ([key wrapping](#key-wrapping-with-workload-identity)) | off |
 | `ha.*` | `MONGORESCUE_HA_*` ([high availability](#high-availability)) | off |
 | `extraEnv`, `extraEnvFrom` | any variable, e.g. `AWS_*` for S3 targets without static keys | none |
 | `extraVolumes`, `extraVolumeMounts` | e.g. a CA bundle for MongoDB TLS | none |
@@ -177,7 +199,7 @@ helm install mongorescue-a deploy/helm/mongorescue -f ha-values.yaml
 helm install mongorescue-b deploy/helm/mongorescue -f ha-values.yaml
 ```
 
-The chart refuses `ha.enabled` without `secretKey.existingSecret` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves no data and accepts no sign-in: only the health check, a static standby page and `/metrics` (process, build and HA series, without credentials), and `503` for everything else. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`); behind one Service, requests that reach the standby get `503` with `Retry-After`. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
+The chart refuses `ha.enabled` without `secretKey.existingSecret` or `keyWrap` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves no data and accepts no sign-in: only the health check, a static standby page and `/metrics` (process, build and HA series, without credentials), and `503` for everything else. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`); behind one Service, requests that reach the standby get `503` with `Retry-After`. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
 
 ## Upgrades and backups of MongoRescue itself
 

@@ -1,7 +1,7 @@
 // Package config holds the bootstrap options MongoRescue needs before it can open its
 // database: the data directory, the listen address, the log level, the optional
-// secret key, the MongoDB Database Tools directory and whether the web dashboard is
-// served. Everything else (storage
+// secret key or its KMS wrapping, the MongoDB Database Tools directory and whether
+// the web dashboard is served. Everything else (storage
 // targets, encryption, security, limits) is managed in the dashboard and stored in
 // the database (internal/settings).
 //
@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 )
@@ -35,6 +36,13 @@ const (
 	// EnvSecretKey supplies the base64 key that encrypts stored credentials instead of
 	// <data_dir>/secret.key.
 	EnvSecretKey = "MONGORESCUE_SECRET_KEY" //nolint:gosec // G101: a variable name, not a credential.
+	// EnvKeyWrap wraps <data_dir>/secret.key with an external KMS:
+	// "<provider>:<key URI>" (see internal/keywrap). The data directory then holds
+	// secret.key.wrapped only.
+	EnvKeyWrap = keywrap.EnvKeyWrap
+	// EnvKeyWrapAllowInsecure ("true") allows a vault-transit key URI with plain
+	// http:// (a development Vault only; logged as a warning).
+	EnvKeyWrapAllowInsecure = keywrap.EnvKeyWrapAllowInsecure
 	// EnvDashboard enables the embedded web dashboard on the HTTP server ("true",
 	// "1", ...; see strconv.ParseBool). The container image sets it; installer-based
 	// installs use the desktop app instead.
@@ -111,6 +119,11 @@ var (
 	// ErrInvalidMinFreeSpace is returned for a minimum free space that is not a
 	// whole number of MiB from 0 to MaxMinFreeSpaceMB.
 	ErrInvalidMinFreeSpace = errors.New("config: minimum free space must be a whole number of MiB from 0 to 1048576")
+	// ErrKeyWrapWithSecretKey is returned when key wrapping and
+	// MONGORESCUE_SECRET_KEY are both set: a key from the environment is not stored
+	// in the data directory, so there is nothing to wrap.
+	ErrKeyWrapWithSecretKey = errors.New("config: " + EnvKeyWrap + " wraps the secret.key file of the data directory and cannot be combined with " +
+		EnvSecretKey + "; keep the key in your secret manager, or move it to secret.key and unset " + EnvSecretKey)
 	// ErrInvalidNotificationMaxAge is returned for a notification maximum age that
 	// is not a duration from 10m to 720h.
 	ErrInvalidNotificationMaxAge = errors.New("config: notification max age must be a duration from 10m to 720h (such as 24h)")
@@ -129,6 +142,13 @@ type Config struct {
 	// SecretKey is the optional base64 key (MONGORESCUE_SECRET_KEY) that encrypts
 	// stored credentials. Empty means <DataDir>/secret.key, generated on first start.
 	SecretKey string
+	// KeyWrap wraps secret.key with an external KMS (MONGORESCUE_KEY_WRAP); the
+	// zero Spec leaves it a plaintext file. It never holds a credential: the KMS
+	// is reached with the instance's identity.
+	KeyWrap keywrap.Spec
+	// KeyWrapAllowInsecure accepts a KeyWrap URI with plain http://
+	// (MONGORESCUE_KEY_WRAP_ALLOW_INSECURE; development only).
+	KeyWrapAllowInsecure bool
 	// Dashboard serves the embedded web dashboard at "/". Off by default: the REST
 	// API, MCP and metrics work without it.
 	Dashboard bool
@@ -183,6 +203,20 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	}
 	if v := strings.TrimSpace(getenv(EnvSecretKey)); v != "" {
 		cfg.SecretKey = v
+	}
+	if v := strings.TrimSpace(getenv(EnvKeyWrap)); v != "" {
+		spec, err := keywrap.ParseSpec(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvKeyWrap, err)
+		}
+		cfg.KeyWrap = spec
+	}
+	if v := strings.TrimSpace(getenv(EnvKeyWrapAllowInsecure)); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: must be true or false", EnvKeyWrapAllowInsecure)
+		}
+		cfg.KeyWrapAllowInsecure = b
 	}
 	if v := strings.TrimSpace(getenv(EnvToolsDir)); v != "" {
 		cfg.ToolsDir = filepath.Clean(v)
@@ -284,6 +318,17 @@ func (c *Config) Validate() error {
 	}
 	if err := c.HA.Validate(); err != nil {
 		return err
+	}
+	if c.KeyWrap.Enabled() {
+		if _, err := keywrap.ParseSpec(c.KeyWrap.Provider + ":" + c.KeyWrap.KeyURI); err != nil {
+			return fmt.Errorf("%s: %w", EnvKeyWrap, err)
+		}
+		if c.SecretKey != "" {
+			return ErrKeyWrapWithSecretKey
+		}
+		if c.KeyWrap.Insecure() && !c.KeyWrapAllowInsecure {
+			return fmt.Errorf("%s: %w", EnvKeyWrap, keywrap.ErrInsecureKeyURI)
+		}
 	}
 	if c.SecretKey != "" {
 		if _, err := secretbox.ParseKey(c.SecretKey); err != nil {

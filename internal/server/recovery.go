@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/metabackup"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/recoverykit"
 )
 
@@ -82,6 +83,9 @@ type recoveryKitStatus struct {
 	UpToDate bool `json:"up_to_date"`
 	// MinPassphraseLength is the minimum passphrase length.
 	MinPassphraseLength int `json:"min_passphrase_length"`
+	// KeyWrapped reports that secret.key is wrapped by a KMS: a kit carries it
+	// wrapped unless plaintext_secret_key is asked for.
+	KeyWrapped bool `json:"key_wrapped"`
 }
 
 // handleRecoveryKitStatus reports when the last recovery kit was downloaded.
@@ -92,7 +96,8 @@ func (s *Server) handleRecoveryKitStatus(w http.ResponseWriter, r *http.Request)
 	}
 	s.refreshRecoveryKit(r.Context())
 	st := s.settings.RecoveryKitStatus()
-	writeJSON(w, http.StatusOK, recoveryKitStatus{DownloadedAt: st.DownloadedAt, UpToDate: st.UpToDate, MinPassphraseLength: recoverykit.MinPassphraseLength})
+	writeJSON(w, http.StatusOK, recoveryKitStatus{DownloadedAt: st.DownloadedAt, UpToDate: st.UpToDate, MinPassphraseLength: recoverykit.MinPassphraseLength,
+		KeyWrapped: s.recoveryKit.KeyWrapped()})
 }
 
 // recoveryKitRequest is the body of POST /api/v1/recovery-kit. Neither field is ever
@@ -105,6 +110,13 @@ type recoveryKitRequest struct {
 	// IncludePreviousKey adds secret.key.previous, the key the last secret key
 	// rotation replaced (metadata snapshots taken before it need it).
 	IncludePreviousKey bool `json:"include_previous_key,omitempty"`
+	// PlaintextSecretKey puts secret.key in plain form into the kit although it is
+	// wrapped by a KMS (recoverykit.PrepareOptions.PlaintextSecretKey). It is
+	// recorded in the audit entry.
+	PlaintextSecretKey bool `json:"plaintext_secret_key,omitempty"`
+	// ApprovalID is the approved plaintext_recovery_kit request that allows a
+	// plaintext_secret_key download under the two-person rule.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // handleDownloadRecoveryKit streams the recovery kit, sealed with the passphrase
@@ -146,7 +158,7 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 			case rec.status >= http.StatusInternalServerError:
 				result, msg = audit.ResultError, "password check failed"
 			}
-			s.auditRecoveryKit(r.Context(), p, start, result, rec.status, msg)
+			s.auditRecoveryKit(r.Context(), p, start, result, rec.status, msg, req.PlaintextSecretKey)
 		}
 		return
 	}
@@ -154,14 +166,32 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	kit, err := s.recoveryKit.PrepareWith(r.Context(), recoverykit.PrepareOptions{IncludePreviousKey: req.IncludePreviousKey})
-	if errors.Is(err, recoverykit.ErrNoPreviousKey) {
+	plaintext := req.PlaintextSecretKey && s.recoveryKit.KeyWrapped()
+	if plaintext {
+		// Under the two-person rule the plaintext key needs a second administrator.
+		switch err := s.ops.AuthorizePlaintextRecoveryKit(r.Context(), req.ApprovalID); {
+		case err == nil:
+		case writeApprovalPending(w, err):
+			s.auditRecoveryKit(r.Context(), p, start, audit.ResultDenied, http.StatusAccepted, "waits for a second administrator", plaintext)
+			return
+		case errors.Is(err, operations.ErrPlaintextKitApproval):
+			s.auditRecoveryKit(r.Context(), p, start, audit.ResultDenied, http.StatusForbidden, "approval not usable", plaintext)
+			writeError(w, http.StatusForbidden, operations.ErrPlaintextKitApproval.Error())
+			return
+		default:
+			s.writeOperationError(w, err)
+			return
+		}
+	}
+	kit, err := s.recoveryKit.PrepareWith(r.Context(), recoverykit.PrepareOptions{IncludePreviousKey: req.IncludePreviousKey,
+		PlaintextSecretKey: req.PlaintextSecretKey})
+	if errors.Is(err, recoverykit.ErrNoPreviousKey) || errors.Is(err, recoverykit.ErrWrappedKeyStale) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err != nil {
 		s.logger.Error("recovery kit could not be prepared", logsafe.Error(err))
-		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusInternalServerError, "kit could not be prepared")
+		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusInternalServerError, "kit could not be prepared", plaintext)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -173,19 +203,24 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 	if err = s.recoveryKit.Seal(w, kit, req.Passphrase); err != nil {
 		// The status is sent; the client sees a truncated stream that does not decrypt.
 		s.logger.Error("recovery kit download failed", logsafe.Error(err))
-		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusOK, "download interrupted")
+		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusOK, "download interrupted", plaintext)
 		return
 	}
 	if err = s.recoveryKit.MarkDownloaded(r.Context(), kit); err != nil {
 		s.logger.Error("could not record the recovery kit download", logsafe.Error(err))
 	}
-	s.auditRecoveryKit(r.Context(), p, start, audit.ResultOK, http.StatusOK, "")
+	s.auditRecoveryKit(r.Context(), p, start, audit.ResultOK, http.StatusOK, "", plaintext)
+	if plaintext {
+		s.logger.Warn("recovery kit downloaded with the plaintext secret key, although it is wrapped by a KMS", logsafe.Attr("user_id", p.UserID()))
+		return
+	}
 	s.logger.Info("recovery kit downloaded", logsafe.Attr("user_id", p.UserID()))
 }
 
 // auditRecoveryKit records a recovery kit download attempt of p: who and the
-// outcome, never the passphrase, the password or the content.
-func (s *Server) auditRecoveryKit(ctx context.Context, p *auth.Principal, start time.Time, result string, status int, msg string) {
+// outcome and whether the plaintext secret key of a KMS-wrapped installation was
+// asked for, never the passphrase, the password or the content.
+func (s *Server) auditRecoveryKit(ctx context.Context, p *auth.Principal, start time.Time, result string, status int, msg string, plaintextKey bool) {
 	if s.audit == nil {
 		return
 	}
@@ -193,7 +228,11 @@ func (s *Server) auditRecoveryKit(ctx context.Context, p *auth.Principal, start 
 	if p.User != nil {
 		username = p.User.Username
 	}
-	args, _ := json.Marshal(map[string]string{"actor": "user:" + p.UserID(), "username": username})
+	fields := map[string]string{"actor": "user:" + p.UserID(), "username": username}
+	if plaintextKey {
+		fields["plaintext"] = "true"
+	}
+	args, _ := json.Marshal(fields)
 	s.audit.Record(context.WithoutCancel(ctx), audit.Entry{
 		Time: start, APIKeyID: p.APIKeyID, APIKeyName: p.APIKeyName, Transport: audit.TransportREST, Tool: recoveryKitRoute,
 		Arguments: args, Result: result, Error: msg, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),

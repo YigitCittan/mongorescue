@@ -39,6 +39,9 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
 | `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |
 | `mongorescue_metadata_backups_total` | counter | `result` | [Metadata snapshots](production.md#metadata-backups) (`ok`, `error`) |
+| `mongorescue_key_wrapping_active` | gauge | `provider` | `1` while `secret.key` is [wrapped by a KMS](security.md#wrapping-secretkey-with-a-kms); absent without key wrapping |
+| `mongorescue_key_wrap_duration_seconds` | histogram | `provider`, `operation` | Duration of the KMS calls that unwrap (at startup) and wrap (key rotation) `secret.key`; `operation` is `wrap` or `unwrap` |
+| `mongorescue_key_wrap_errors_total` | counter | `provider`, `operation` | Failed KMS calls, each retry counted. A start that never reaches the KMS fails before it serves metrics: watch the instance's health too |
 | `mongorescue_backup_copies_total` | counter | `result` | Attempts to copy a backup to a [copy target](configuration.md#copies-on-a-second-target-3-2-1) (`ok`, `mismatch`, `error`) |
 | `mongorescue_backup_copy_queue_depth` | gauge | | Backup copies waiting in the copy queue (pending, or failed with a next attempt) |
 | `mongorescue_last_successful_metadata_backup_timestamp_seconds` | gauge | | Unix time of the last stored metadata snapshot |

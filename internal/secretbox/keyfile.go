@@ -91,6 +91,14 @@ func warnLoosePermissions(path string, logger *slog.Logger) {
 	}
 }
 
+// WriteFileAtomic writes data to path with mode 0600 via a synced temporary file
+// (named like the temporary key files RemoveStaleTempFiles removes), a rename and a
+// sync of the parent directory. It is how every key file is written, also the
+// KMS-wrapped ones of internal/keywrap.
+func WriteFileAtomic(path string, data []byte) error {
+	return writeFileAtomic(path, data)
+}
+
 // writeFileAtomic writes data to path via a synced temporary file, a rename and a sync
 // of the parent directory, so a crash never leaves a truncated key behind and a key
 // that LoadKey returned survives a power loss.

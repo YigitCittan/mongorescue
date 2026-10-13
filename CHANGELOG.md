@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- KMS wrapping of `secret.key` (#61; the Vault Transit part of #62). With `MONGORESCUE_KEY_WRAP=<provider>:<key URI>` (or `-key-wrap`) the data directory holds only `secret.key.wrapped`, which every start unwraps with the instance's own identity. See [docs/security.md](docs/security.md#wrapping-secretkey-with-a-kms).
+  - **Providers.** `aws-kms` (AWS SDK, default credential chain, encryption context), `gcp-kms` (Cloud KMS REST API with Application Default Credentials and CRC32C checks), `azure-keyvault` (`wrapKey`/`unwrapKey` with `RSA-OAEP-256` and `DefaultAzureCredential`) and `vault-transit` (a minimal HTTP client with token, AppRole or Kubernetes authentication). Key URIs are validated and never hold credentials; `http://` (Vault only) needs `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE=true` (development only, logged as a warning), and no KMS client follows redirects.
+  - **Migration.** The first start with wrapping on wraps `secret.key` (and the `.next` and `.previous` files of a key rotation), writes the wrapped files atomically, checks that they unwrap to the same keys and only then removes the plaintext files (renamed aside first, then overwritten, synced and deleted); an interrupted migration finishes at the next start, and leftovers of a crash during the removal are cleaned up with a warning instead of failing the start.
+  - **Startup.** The unwrap is retried while the KMS is unreachable and fails with an actionable error (provider, key URI, permissions to check) when it stays so or refuses; there is never a fallback to a plaintext key. A data directory with `secret.key.wrapped` refuses to start without `MONGORESCUE_KEY_WRAP`, and `MONGORESCUE_SECRET_KEY` cannot be combined with it.
+  - **Key rotation and other KMS keys.** A `secret.key` rotation wraps the new key before it is written. `mongorescue key rewrap --to <provider>:<key URI>` moves the wrapped keys to another KMS key, `mongorescue key unwrap --confirm-plaintext` leaves the KMS, and `mongorescue key status` shows the stored key's provider and fingerprint; all run offline on the data directory and take the KMS key from `MONGORESCUE_KEY_WRAP` (or a confirmed `--from`), never from the data directory.
+  - **Recovery kit.** With wrapping on, the kit carries `secret.key.wrapped` and the KMS key URI, and its README explains that recovery needs the KMS key; the plaintext key only with `"plaintext_secret_key": true` (audited, and approved by a second administrator under the two-person rule: approval kind `plaintext_recovery_kit`, usable once by the requester within an hour). `GET /api/v1/recovery-kit` reports `key_wrapped`.
+  - **HA.** Instances share the wrapped key (or wrap copies of the same key); the lease's shared-key check still applies, and an instance unwraps once per process, so a takeover does not need the KMS.
+  - **Observability.** The event `security.key_wrapping_changed` (`wrapped`, `rewrapped`, `unwrapped_to_file`) with audit entries `keywrap.*`, the series `mongorescue_key_wrapping_active`, `mongorescue_key_wrap_duration_seconds` and `mongorescue_key_wrap_errors_total`, and `key_wrapping` in `GET /api/v1/readiness`.
+  - The Helm chart has a `keyWrap` value, and docs/kubernetes.md covers IRSA, GKE and Azure Workload Identity and Vault's Kubernetes auth. The integration suite tests AWS KMS on LocalStack and Vault Transit on a Vault dev server; Google Cloud KMS and Azure Key Vault are covered by contract tests against `httptest` fakes.
+
+### Security
+- `golang.org/x/net` v0.58.0 → v0.60.0. The Azure SDK used for key wrapping links `golang.org/x/net/http2` into the binary, which made five HTTP/2 advisories reachable (govulncheck): GO-2026-6617 (HPACK encoder race), GO-2026-6612 (double flow control refund), GO-2026-6611 (excessive CPU from repeated initial window changes), GO-2026-6610 (malformed framing headers accepted) and GO-2026-6603 (memory exhaustion through trailers); the image scan reported it as CVE-2026-78669.
+
 ## [0.27.1] - 2026-10-13
 
 ### Fixed

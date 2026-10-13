@@ -24,6 +24,8 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | `-shutdown-grace` | `MONGORESCUE_SHUTDOWN_GRACE` | `0s` | How long a shutdown (SIGTERM) waits for running backups and restores before it cancels them: a duration such as `9m` or a number of seconds, up to `24h`. New runs are refused meanwhile. Keep it about a minute below the stop timeout of your process manager; see [kubernetes.md](kubernetes.md#graceful-shutdown) |
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
+| `-key-wrap` | `MONGORESCUE_KEY_WRAP` | off | Wrap `secret.key` with an external KMS: `<provider>:<key URI>` with provider `aws-kms`, `gcp-kms`, `azure-keyvault` or `vault-transit`. The data directory then holds `secret.key.wrapped` only, unwrapped at every start with the instance's identity. Cannot be combined with `MONGORESCUE_SECRET_KEY`. See [Key wrapping](#key-wrapping) |
+| | `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE` | `false` | `true` accepts a `vault-transit` key URI with plain `http://`, which sends the Vault token and the key unencrypted: **development only**, logged as a warning at every start |
 | `-version` | | | Print the version and exit |
 
 ### High availability
@@ -39,7 +41,20 @@ Active-passive high availability ([production.md](production.md#high-availabilit
 | `-ha-renew-interval` | `MONGORESCUE_HA_RENEW_INTERVAL` | `10s` | How often the active instance renews the lease and a standby reads it: at least `1s` and below half the TTL. The active instance stops working `ttl − renew` after its last successful renewal |
 | `-ha-snapshot-interval` | `MONGORESCUE_HA_SNAPSHOT_INTERVAL` | `5m` | Longest time between two metadata snapshots of the active instance (`30s` to `24h`); it also writes one after every finished backup or restore |
 
-Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`, or the same `secret.key`); an instance whose key differs refuses to start.
+Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`, the same `secret.key`, or with key wrapping the same `secret.key.wrapped`); an instance whose key differs refuses to start.
+
+### Key wrapping
+
+`MONGORESCUE_KEY_WRAP` keeps `secret.key` wrapped by an external key management service ([security.md](security.md#wrapping-secretkey-with-a-kms) has the details and the threat model). The value is the provider and the key URI; credentials always come from the provider's standard environment, never from the URI:
+
+| Value | Credentials and settings |
+| :--- | :--- |
+| `aws-kms:arn:aws:kms:<region>:<account>:key/<id>` (or `alias/<name>`, an alias ARN, a key ID) | AWS default chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, IRSA, EKS Pod Identity, ECS and EC2 roles); `AWS_REGION` when the key URI is not an ARN; `AWS_ENDPOINT_URL_KMS` for another endpoint |
+| `gcp-kms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>` | Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, GKE Workload Identity, the attached service account) |
+| `azure-keyvault:https://<vault>.vault.azure.net/keys/<name>[/<version>]` | `DefaultAzureCredential` (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`, Azure Workload Identity, managed identity) |
+| `vault-transit:https://<vault>:8200/<mount>/keys/<name>` | `VAULT_TOKEN`; or AppRole: `VAULT_ROLE_ID`, `VAULT_SECRET_ID` (`VAULT_APPROLE_MOUNT`, default `approle`); or Kubernetes: `VAULT_K8S_ROLE` (`VAULT_K8S_MOUNT`, default `kubernetes`; `VAULT_K8S_TOKEN_PATH`, default the pod's service account token); `VAULT_NAMESPACE`; `VAULT_CACERT` (PEM file of the CAs that verify Vault). The address is the key URI's; `VAULT_ADDR` is not read |
+
+The offline commands `mongorescue key status`, `mongorescue key rewrap --to <provider>:<key URI>` and `mongorescue key unwrap --confirm-plaintext` (all with `--data-dir`) show, move or remove the wrapping while MongoRescue is stopped. `rewrap` and `unwrap` use the KMS key of `MONGORESCUE_KEY_WRAP` (or `--from <provider>:<key URI> --confirm-from`), never the one recorded in the data directory.
 
 The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
 
@@ -59,7 +74,7 @@ The desktop app packages ship `mongodump` and `mongorestore` in the locations of
 
 The CLI commands (`mongorescue backup`, `restore`, `list`, `verify`, `status`) are clients of a running instance and never open the data directory either. They read only `--url`/`MONGORESCUE_URL` (default `http://127.0.0.1:8080`) and the API key from `--api-key-file`, `MONGORESCUE_CLI_API_KEY_FILE`, `MONGORESCUE_CLI_API_KEY` or `--api-key`, in that order; never `MONGORESCUE_API_KEY` or `MONGORESCUE_API_KEY_FILE`, which the server imports as an admin key. See [cli.md](cli.md#connecting).
 
-The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secret.key` or `MONGORESCUE_SECRET_KEY`) encrypts connection strings, notification secrets, storage credentials and encryption keys in the database. Losing it makes them unrecoverable, and MongoRescue refuses to start with a key that does not match the database rather than silently discard them. Keep a copy apart from database backups; see [production.md](production.md#data-directory).
+The metadata database is always `<data_dir>/mongorescue.db`. The key (from `secret.key`, `secret.key.wrapped` or `MONGORESCUE_SECRET_KEY`) encrypts connection strings, notification secrets, storage credentials and encryption keys in the database. Losing it makes them unrecoverable, and MongoRescue refuses to start with a key that does not match the database rather than silently discard them. Keep a copy apart from database backups; see [production.md](production.md#data-directory).
 
 ## Settings
 

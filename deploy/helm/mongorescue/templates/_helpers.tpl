@@ -58,12 +58,12 @@ The container image: repository@digest, or repository:tag (the appVersion by def
 
 {{/*
 The Secret and key holding MONGORESCUE_SECRET_KEY, or nothing when the key lives in
-secret.key on the data volume.
+secret.key (or, with keyWrap, secret.key.wrapped) on the data volume.
 */}}
 {{- define "mongorescue.secretKeySecret" -}}
 {{- if .Values.secretKey.existingSecret }}
 {{- .Values.secretKey.existingSecret }}
-{{- else if .Values.secretKey.generate }}
+{{- else if and .Values.secretKey.generate (not .Values.keyWrap) }}
 {{- printf "%s-secret-key" (include "mongorescue.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 {{- end }}
