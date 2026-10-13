@@ -301,6 +301,30 @@ tests:
         alertname: MongoRescueHATakeoverFailed
         exp_alerts: []
 
+  - name: HA started from empty state
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_empty_starts_total{job="backup", instance="b:8080", cluster="prod"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+            exp_annotations:
+              summary: "MongoRescue HA cluster prod started from empty state on b:8080"
+              description: "b:8080 found no lease and no metadata snapshot for HA cluster prod and became active with its own database. If this was not a new cluster, check the HA target (were its objects deleted?) and run a storage scan of every storage target to re-import the archives."
+      - eval_time: 25m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts: []
+
   - name: HA rollback suspected
     interval: 1m
     input_series:

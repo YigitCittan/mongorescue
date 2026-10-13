@@ -43,6 +43,9 @@ type HAState struct {
 	// RollbackSuspected counts the takeovers refused because they could roll the
 	// metadata back, by reason (every reason present, 0 included).
 	RollbackSuspected map[string]uint64
+	// EmptyStarts counts the times this instance became active from empty state
+	// (no lease and no snapshot on the HA target).
+	EmptyStarts uint64
 }
 
 // haRoles are the values of the role label.
@@ -62,6 +65,7 @@ type haCollector struct {
 	rejected *prometheus.Desc
 	refused  *prometheus.Desc
 	rollback *prometheus.Desc
+	empty    *prometheus.Desc
 }
 
 // newHACollector returns the collector of mongorescue_ha_role,
@@ -69,7 +73,8 @@ type haCollector struct {
 // mongorescue_ha_lease_errors_total, mongorescue_ha_takeovers_total and
 // mongorescue_ha_takeover_duration_seconds, mongorescue_ha_takeover_failures_total,
 // mongorescue_ha_step_downs_total, mongorescue_ha_snapshots_rejected_total,
-// mongorescue_ha_refused_snapshots and mongorescue_ha_rollback_suspected_total.
+// mongorescue_ha_refused_snapshots, mongorescue_ha_rollback_suspected_total and
+// mongorescue_ha_empty_starts_total.
 func newHACollector() *haCollector {
 	name := func(n string) string { return prometheus.BuildFQName(namespace, "ha", n) }
 	cluster := []string{"cluster"}
@@ -83,6 +88,7 @@ func newHACollector() *haCollector {
 		down:     prometheus.NewDesc(name("step_downs_total"), "Total number of times this instance lost the HA lease while active and stepped down to standby.", cluster, nil),
 		failures: prometheus.NewDesc(name("takeover_failures_total"), "Total number of takeovers this instance gave up because no usable metadata snapshot was found; it stays standby.", cluster, nil),
 		rollback: prometheus.NewDesc(name("rollback_suspected_total"), "Total number of takeovers this instance refused because they could roll the cluster's metadata back (lease not authentic or missing, newest snapshot older than the lease or this instance knows), by reason; an operator forces them with mongorescue ha force-takeover.", []string{"cluster", "reason"}, nil),
+		empty:    prometheus.NewDesc(name("empty_starts_total"), "Total number of times this instance became active from empty state: no lease and no metadata snapshot on the HA target, so it kept its own database. Expected once for a new cluster; otherwise check the HA target.", cluster, nil),
 		refused:  prometheus.NewDesc(name("refused_snapshots"), "Number of metadata snapshots on the HA target that this instance found refused at its last check (copied, renamed or altered); they are kept until someone deletes them.", cluster, nil),
 		rejected: prometheus.NewDesc(name("snapshots_rejected_total"), "Total number of metadata snapshots this instance refused because their authenticated header did not match their name or cluster, or they did not decrypt (copied, renamed or altered on the HA target).", cluster, nil),
 	}
@@ -90,7 +96,7 @@ func newHACollector() *haCollector {
 
 // Describe implements prometheus.Collector.
 func (c *haCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down, c.rejected, c.refused, c.rollback} {
+	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down, c.rejected, c.refused, c.rollback, c.empty} {
 		ch <- d
 	}
 }
@@ -114,6 +120,7 @@ func (c *haCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.down, prometheus.CounterValue, float64(st.StepDowns), st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.rejected, prometheus.CounterValue, float64(st.SnapshotsRejected), st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.refused, prometheus.GaugeValue, float64(st.RefusedSnapshots), st.Cluster)
+	ch <- prometheus.MustNewConstMetric(c.empty, prometheus.CounterValue, float64(st.EmptyStarts), st.Cluster)
 	for reason, n := range st.RollbackSuspected {
 		ch <- prometheus.MustNewConstMetric(c.rollback, prometheus.CounterValue, float64(n), st.Cluster, reason)
 	}

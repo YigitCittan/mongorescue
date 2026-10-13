@@ -15,6 +15,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
+	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -459,6 +460,21 @@ func TestFirstActivationNeedsAFreshInstance(t *testing.T) {
 	}
 	if !enabled.rt.stateCopy().Seen(enabled.cfg.HA.Cluster) {
 		t.Fatal("the first activation was not recorded as HA history")
+	}
+	// It is never silent: counted for the alert, and an ha.empty_start event
+	// (broadcast, critical) naming the cluster and the instance is pending.
+	if n := enabled.rt.metricsState().EmptyStarts; n != 1 {
+		t.Fatalf("empty starts %d; want 1", n)
+	}
+	detail := enabled.rt.takeEmptyStart()
+	if !strings.Contains(detail, enabled.cfg.HA.Cluster) || !strings.Contains(detail, enabled.rt.state.InstanceID) || !strings.Contains(detail, "storage scan") {
+		t.Fatalf("ha.empty_start detail %q; want the cluster, the instance and the storage scan hint", detail)
+	}
+	if !events.HAEmptyStart.Broadcast() || !events.HAEmptyStart.Failed() {
+		t.Fatal("ha.empty_start is not a broadcast alert")
+	}
+	if seen.rt.metricsState().EmptyStarts != 0 || seen.rt.takeEmptyStart() != "" {
+		t.Fatal("a forced takeover counted as an empty-state activation")
 	}
 }
 

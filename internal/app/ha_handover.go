@@ -269,7 +269,7 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		switch {
 		case pred.Trust == ha.LeaseAbsent && !local.Seen(cluster):
 			s.setSince(time.Time{})
-			s.logger.Info("takeover: the cluster's first activation; keeping this instance's database", slog.Uint64("epoch", epoch))
+			s.startedFromEmptyState(epoch)
 			return s.confirmTakeover(ctx, ha.SnapshotMark{}, false)
 		case pred.Trust == ha.LeaseAbsent:
 			return s.suspectRollback(rollbackLeaseMissing, fmt.Errorf("%w: no lease and no metadata snapshot on the HA target, but this instance has HA history for the cluster (ha.json): the cluster's objects may have been deleted", ErrNoSnapshotToTakeOver))
@@ -477,6 +477,21 @@ func (s *haSupervisor) observeCluster(mark ha.SnapshotMark, reset bool) {
 	if err := s.rt.updateState(func(st *ha.State) { st.Observe(cluster, mark, reset) }); err != nil {
 		s.logger.Warn("could not record the HA high-water mark in the data directory", logsafe.Error(err))
 	}
+}
+
+// startedFromEmptyState reports an activation without lease and snapshots: never
+// silently. It logs an error, counts it (mongorescue_ha_empty_starts_total, alert
+// MongoRescueHAStartedFromEmptyState), and the active instance sends
+// ha.empty_start to every channel once it serves.
+func (s *haSupervisor) startedFromEmptyState(epoch uint64) {
+	detail := fmt.Sprintf("HA cluster %s started from empty state: instance %s (%s) found no lease and no metadata snapshot on the HA target and became active under epoch %d with its own database. "+
+		"Expected once for a new cluster or when HA is enabled on an existing instance; otherwise check the HA target (were its objects deleted?) and run a storage scan of every target to re-import the archives",
+		s.cfg.HA.Cluster, s.rt.name, s.rt.state.InstanceID, epoch)
+	s.rt.emptyStarts.Add(1)
+	s.rt.mu.Lock()
+	s.rt.emptyStart = detail
+	s.rt.mu.Unlock()
+	s.logger.Error("takeover: "+detail, slog.Uint64("epoch", epoch))
 }
 
 // suspectRollback counts and alerts a takeover refused for reason and returns

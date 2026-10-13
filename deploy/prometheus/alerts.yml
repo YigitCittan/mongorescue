@@ -155,6 +155,18 @@ groups:
           summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."
 
+      # An instance became active from empty state: no lease and no metadata
+      # snapshot on the HA target, so it kept its own database. Expected once for
+      # a new cluster (or HA enabled on an existing instance); otherwise the HA
+      # target's objects may have been deleted.
+      - alert: MongoRescueHAStartedFromEmptyState
+        expr: increase(mongorescue_ha_empty_starts_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "MongoRescue HA cluster {{ $labels.cluster }} started from empty state on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} found no lease and no metadata snapshot for HA cluster {{ $labels.cluster }} and became active with its own database. If this was not a new cluster, check the HA target (were its objects deleted?) and run a storage scan of every storage target to re-import the archives."
+
       # A standby refused a takeover because it could roll the cluster's metadata
       # back: the lease is not authentic or missing, or the newest snapshot is
       # older than the one the lease or the instance knows (snapshots or the lease

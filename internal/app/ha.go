@@ -123,6 +123,11 @@ type haRuntime struct {
 	// rollbacks counts the takeovers refused because a rollback was suspected, by
 	// reason (guarded by mu).
 	rollbacks map[string]uint64
+	// emptyStart is the detail of the empty-state activation of the last
+	// takeover, published as ha.empty_start once the active instance serves
+	// (guarded by mu); emptyStarts counts such activations.
+	emptyStart  string
+	emptyStarts atomic.Uint64
 	// since is the creation time of the snapshot the last takeover restored or
 	// kept; zero when there was none. Archives written after it are imported.
 	since time.Time
@@ -188,6 +193,16 @@ func (rt *haRuntime) rollbackCounts() map[string]uint64 {
 		out[r] = rt.rollbacks[r]
 	}
 	return out
+}
+
+// takeEmptyStart returns and clears the detail of the last takeover's
+// empty-state activation ("" when there was none).
+func (rt *haRuntime) takeEmptyStart() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	d := rt.emptyStart
+	rt.emptyStart = ""
+	return d
 }
 
 // takeForced returns and clears the override the last takeover used.
@@ -279,7 +294,8 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
 		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
 		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load(), SnapshotsRejected: rt.snapshotsRejected.Load(),
-		RefusedSnapshots: rt.refusedSnapshots(), RollbackSuspected: rt.rollbackCounts()}
+		RefusedSnapshots: rt.refusedSnapshots(), RollbackSuspected: rt.rollbackCounts(),
+		EmptyStarts: rt.emptyStarts.Load()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -642,6 +658,9 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 	s.recordActiveEpoch(epoch)
 	if o := s.rt.takeForced(); o != nil {
 		s.auditForcedTakeover(ctx, app, o, epoch)
+	}
+	if detail := s.rt.takeEmptyStart(); detail != "" {
+		app.publishHA(ctx, events.HAEmptyStart, detail)
 	}
 	app.publishHA(ctx, events.HATookOver, fmt.Sprintf("instance %s (%s) is now the active instance of HA cluster %s (epoch %d)",
 		s.rt.name, s.rt.state.InstanceID, s.cfg.HA.Cluster, epoch))
