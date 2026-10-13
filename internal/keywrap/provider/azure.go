@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -47,10 +49,17 @@ func newAzure(spec keywrap.Spec, opts Options) (keywrap.Wrapper, error) {
 		}
 		cred = dc
 	}
-	clientOpts := opts.AzureClientOptions
-	if clientOpts == nil {
-		// keywrap.Load retries itself; the SDK's own retries stay short.
-		clientOpts = &azkeys.ClientOptions{ClientOptions: azcore.ClientOptions{Retry: policy.RetryOptions{MaxRetries: 2}}}
+	clientOpts := &azkeys.ClientOptions{ClientOptions: azcore.ClientOptions{Retry: policy.RetryOptions{MaxRetries: 2}}}
+	if opts.AzureClientOptions != nil {
+		cp := *opts.AzureClientOptions
+		clientOpts = &cp
+	}
+	// The SDK's default client follows redirects with the request body (the key of
+	// wrapKey): the vault client follows none.
+	if hc, ok := clientOpts.Transport.(*http.Client); ok && hc != nil {
+		clientOpts.Transport = withoutRedirects(hc)
+	} else if clientOpts.Transport == nil {
+		clientOpts.Transport = azureHTTPClient()
 	}
 	client, err := azkeys.NewClient(vaultURL, cred, clientOpts)
 	if err != nil {
@@ -89,6 +98,14 @@ func (a *azureKV) Unwrap(ctx context.Context, ciphertext []byte) ([]byte, error)
 	return resp.Result, nil
 }
 
+// azureHTTPClient is the HTTP client of the vault client: TLS 1.2 or newer, the
+// proxy of the environment, no redirects.
+func azureHTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // the standard library's transport.
+	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: tr, Timeout: requestTimeout, CheckRedirect: noRedirect}
+}
+
 // splitAzureCiphertext parses a ciphertext of Wrap.
 func splitAzureCiphertext(ct []byte) (version string, raw []byte, err error) {
 	rest, ok := strings.CutPrefix(string(ct), azurePrefix)
@@ -108,6 +125,9 @@ func splitAzureCiphertext(ct []byte) (version string, raw []byte, err error) {
 // azureError marks the permanent errors of Key Vault.
 func azureError(err error) error {
 	var re *azcore.ResponseError
+	if errors.As(err, &re) && isRedirect(re.StatusCode) {
+		return keywrap.Permanent(fmt.Errorf("azure-keyvault: HTTP %d: %w", re.StatusCode, errRedirect))
+	}
 	if errors.As(err, &re) && statusPermanent(re.StatusCode) {
 		return keywrap.Permanent(fmt.Errorf("azure-keyvault: %s (HTTP %d)", re.ErrorCode, re.StatusCode))
 	}

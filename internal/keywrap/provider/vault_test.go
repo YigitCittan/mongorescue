@@ -78,7 +78,7 @@ func newVaultTest(t *testing.T, env map[string]string) (*fakeVault, keywrap.Wrap
 	t.Cleanup(srv.Close)
 	uri := srv.URL + "/team/transit/keys/mongorescue"
 	w, err := OpenWith(context.Background(), keywrap.Spec{Provider: keywrap.ProviderVaultTransit, KeyURI: uri},
-		Options{HTTPClient: srv.Client(), Getenv: func(k string) string { return env[k] }})
+		Options{HTTPClient: srv.Client(), Getenv: func(k string) string { return env[k] }, AllowInsecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}

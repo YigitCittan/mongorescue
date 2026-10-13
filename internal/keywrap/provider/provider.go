@@ -11,9 +11,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -49,11 +52,21 @@ type Options struct {
 	// client options of the key vault client.
 	AzureCredential    azcore.TokenCredential
 	AzureClientOptions *azkeys.ClientOptions
+	// AllowInsecure accepts a key URI with plain http:// (keywrap.Spec.Insecure;
+	// MONGORESCUE_KEY_WRAP_ALLOW_INSECURE).
+	AllowInsecure bool
 }
 
-// Open returns the Wrapper of spec with the standard environment.
+// Open returns the Wrapper of spec with the standard environment;
+// MONGORESCUE_KEY_WRAP_ALLOW_INSECURE allows a plain http:// key URI.
 func Open(ctx context.Context, spec keywrap.Spec) (keywrap.Wrapper, error) {
-	return OpenWith(ctx, spec, Options{})
+	return OpenWith(ctx, spec, Options{AllowInsecure: AllowInsecure(os.Getenv)})
+}
+
+// AllowInsecure reports whether MONGORESCUE_KEY_WRAP_ALLOW_INSECURE is true.
+func AllowInsecure(getenv func(string) string) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(getenv(keywrap.EnvKeyWrapAllowInsecure)))
+	return err == nil && v
 }
 
 // OpenWith returns the Wrapper of spec with opts. It does not call the KMS: a
@@ -61,6 +74,9 @@ func Open(ctx context.Context, spec keywrap.Spec) (keywrap.Wrapper, error) {
 func OpenWith(ctx context.Context, spec keywrap.Spec, opts Options) (keywrap.Wrapper, error) {
 	if _, err := keywrap.ParseSpec(spec.Provider + ":" + spec.KeyURI); err != nil {
 		return nil, err
+	}
+	if spec.Insecure() && !opts.AllowInsecure {
+		return nil, keywrap.ErrInsecureKeyURI
 	}
 	if opts.Getenv == nil {
 		opts.Getenv = os.Getenv
@@ -78,17 +94,40 @@ func OpenWith(ctx context.Context, spec keywrap.Spec, opts Options) (keywrap.Wra
 	return nil, fmt.Errorf("%w: unknown provider", keywrap.ErrInvalidSpec)
 }
 
-// baseClient returns the HTTP client of the REST providers.
-func baseClient(opts Options) *http.Client {
-	if opts.HTTPClient != nil {
-		return opts.HTTPClient
-	}
-	return &http.Client{Timeout: requestTimeout}
+// errRedirect describes a redirect a KMS answered with. Redirects are never
+// followed: every request carries credentials (a token, a signed request) and
+// often the key itself, which must not reach another host.
+var errRedirect = errors.New("the key management service answered with a redirect, which is not followed")
+
+// noRedirect is the CheckRedirect of every KMS client: the 3xx response is
+// returned as it is, and treated as an error.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// withoutRedirects returns a copy of c that follows no redirect.
+func withoutRedirects(c *http.Client) *http.Client {
+	cp := *c
+	cp.CheckRedirect = noRedirect
+	return &cp
 }
 
+// baseClient returns the HTTP client of the REST providers, which follows no
+// redirect.
+func baseClient(opts Options) *http.Client {
+	if opts.HTTPClient != nil {
+		return withoutRedirects(opts.HTTPClient)
+	}
+	return &http.Client{Timeout: requestTimeout, CheckRedirect: noRedirect}
+}
+
+// isRedirect reports whether code is a redirect status.
+func isRedirect(code int) bool { return code >= 300 && code < 400 }
+
 // statusPermanent reports whether an HTTP status of a KMS means a retry cannot
-// help (a refused request, a missing key or permission).
+// help (a refused request, a missing key or permission, a redirect).
 func statusPermanent(code int) bool {
+	if isRedirect(code) {
+		return true
+	}
 	switch code {
 	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
 		http.StatusMethodNotAllowed, http.StatusConflict, http.StatusGone, http.StatusPreconditionFailed,

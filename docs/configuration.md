@@ -25,6 +25,7 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-key-wrap` | `MONGORESCUE_KEY_WRAP` | off | Wrap `secret.key` with an external KMS: `<provider>:<key URI>` with provider `aws-kms`, `gcp-kms`, `azure-keyvault` or `vault-transit`. The data directory then holds `secret.key.wrapped` only, unwrapped at every start with the instance's identity. Cannot be combined with `MONGORESCUE_SECRET_KEY`. See [Key wrapping](#key-wrapping) |
+| | `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE` | `false` | `true` accepts a `vault-transit` key URI with plain `http://`, which sends the Vault token and the key unencrypted: **development only**, logged as a warning at every start |
 | `-version` | | | Print the version and exit |
 
 ### High availability

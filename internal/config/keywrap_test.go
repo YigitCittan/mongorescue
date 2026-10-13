@@ -41,3 +41,25 @@ func TestKeyWrapFromEnv(t *testing.T) {
 		t.Fatalf("Validate with an invalid spec = %v", err)
 	}
 }
+
+func TestKeyWrapPlainHTTPNeedsTheOptIn(t *testing.T) {
+	vars := map[string]string{EnvKeyWrap: "vault-transit:http://127.0.0.1:8200/transit/keys/k"}
+	cfg, err := FromEnv(env(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cfg.Validate(); !errors.Is(err, keywrap.ErrInsecureKeyURI) {
+		t.Fatalf("http:// without the opt-in = %v; want ErrInsecureKeyURI", err)
+	}
+	vars[EnvKeyWrapAllowInsecure] = "true"
+	if cfg, err = FromEnv(env(vars)); err != nil || !cfg.KeyWrapAllowInsecure {
+		t.Fatalf("FromEnv with the opt-in = %+v, %v", cfg, err)
+	}
+	if err = cfg.Validate(); err != nil {
+		t.Fatalf("http:// with the opt-in = %v", err)
+	}
+	vars[EnvKeyWrapAllowInsecure] = "maybe"
+	if _, err = FromEnv(env(vars)); err == nil {
+		t.Fatal("an invalid opt-in value was accepted")
+	}
+}

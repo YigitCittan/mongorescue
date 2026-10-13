@@ -125,7 +125,7 @@ func vaultClientWithCA(path string) (*http.Client, error) {
 	}
 	tr = tr.Clone()
 	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	return &http.Client{Timeout: requestTimeout, Transport: tr}, nil
+	return &http.Client{Timeout: requestTimeout, Transport: tr, CheckRedirect: noRedirect}, nil
 }
 
 func (v *vaultTransit) Provider() string { return keywrap.ProviderVaultTransit }
@@ -174,7 +174,10 @@ type vaultStatusError struct {
 
 func (e *vaultStatusError) Error() string {
 	msg := http.StatusText(e.status)
-	if len(e.msgs) > 0 {
+	switch {
+	case isRedirect(e.status):
+		msg = errRedirect.Error()
+	case len(e.msgs) > 0:
 		msg = strings.Join(e.msgs, "; ")
 	}
 	return fmt.Sprintf("vault-transit: %s: HTTP %d: %s", e.path, e.status, msg)

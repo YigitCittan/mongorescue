@@ -110,9 +110,18 @@ func loadSecretKey(ctx context.Context, cfg *config.Config, o *options, envKey s
 			return &out, nil
 		}
 	}
+	if cfg.KeyWrap.Insecure() {
+		if !cfg.KeyWrapAllowInsecure {
+			return nil, fmt.Errorf("%s: %w", config.EnvKeyWrap, keywrap.ErrInsecureKeyURI)
+		}
+		logger.Warn("key wrapping uses plain http (" + config.EnvKeyWrapAllowInsecure + "=true): the Vault token and secret.key travel unencrypted; " +
+			"use https outside a development setup")
+	}
 	open := o.openWrapper
 	if open == nil {
-		open = provider.Open
+		open = func(ctx context.Context, spec keywrap.Spec) (keywrap.Wrapper, error) {
+			return provider.OpenWith(ctx, spec, provider.Options{AllowInsecure: cfg.KeyWrapAllowInsecure})
+		}
 	}
 	w, err := open(ctx, cfg.KeyWrap)
 	if err != nil {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/smithy-go"
@@ -60,6 +62,14 @@ func newAWS(ctx context.Context, spec keywrap.Spec, opts Options) (keywrap.Wrapp
 	if cfg.Region == "" {
 		return nil, errors.New("aws-kms: no region: use a key ARN or set AWS_REGION")
 	}
+	// The SDK's client follows 307 and 308 redirects to other hosts, with the
+	// request body (the plaintext key of Encrypt): KMS calls follow none.
+	if hc, ok := cfg.HTTPClient.(*http.Client); ok && hc != nil {
+		cfg.HTTPClient = withoutRedirects(hc)
+	} else {
+		b := awshttp.NewBuildableClient()
+		cfg.HTTPClient = &http.Client{Transport: b.GetTransport(), Timeout: b.GetTimeout(), CheckRedirect: noRedirect}
+	}
 	return &awsKMS{client: kms.NewFromConfig(cfg), keyID: spec.KeyURI}, nil
 }
 
@@ -96,6 +106,10 @@ var awsPermanent = map[string]bool{
 
 // awsError marks the permanent errors of KMS.
 func awsError(err error) error {
+	var re *awshttp.ResponseError
+	if errors.As(err, &re) && isRedirect(re.HTTPStatusCode()) {
+		return keywrap.Permanent(fmt.Errorf("aws-kms: HTTP %d: %w", re.HTTPStatusCode(), errRedirect))
+	}
 	var ae smithy.APIError
 	if errors.As(err, &ae) && awsPermanent[ae.ErrorCode()] {
 		return keywrap.Permanent(fmt.Errorf("aws-kms: %w", err))

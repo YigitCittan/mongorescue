@@ -14,6 +14,11 @@ import (
 // "<provider>:<key URI>" (see ParseSpec).
 const EnvKeyWrap = "MONGORESCUE_KEY_WRAP"
 
+// EnvKeyWrapAllowInsecure ("true") allows a vault-transit key URI with plain
+// http://, which sends the Vault token and the key unencrypted. It is meant for a
+// development Vault on the same host only; a start that uses it logs a warning.
+const EnvKeyWrapAllowInsecure = "MONGORESCUE_KEY_WRAP_ALLOW_INSECURE"
+
 // Providers.
 const (
 	// ProviderAWSKMS wraps with AWS KMS: the key URI is a key ARN, an alias ARN, a
@@ -35,6 +40,11 @@ func Providers() []string {
 	return []string{ProviderAWSKMS, ProviderGCPKMS, ProviderAzureKeyVault, ProviderVaultTransit}
 }
 
+// ErrInsecureKeyURI is returned for a key URI with plain http:// unless
+// EnvKeyWrapAllowInsecure opts in.
+var ErrInsecureKeyURI = errors.New("keywrap: the key URI uses plain http://, which would send the Vault token and the key unencrypted; " +
+	"use https://, or set " + EnvKeyWrapAllowInsecure + "=true for a development Vault only")
+
 // ErrInvalidSpec is returned for a key wrapping configuration that is not
 // "<provider>:<key URI>" with a known provider and a well-formed key URI. Its
 // message never contains the configured value.
@@ -51,6 +61,12 @@ type Spec struct {
 
 // Enabled reports whether s configures key wrapping.
 func (s Spec) Enabled() bool { return s.Provider != "" }
+
+// Insecure reports whether the key URI uses plain http:// (only vault-transit
+// accepts it, and only with EnvKeyWrapAllowInsecure).
+func (s Spec) Insecure() bool {
+	return s.Provider == ProviderVaultTransit && strings.HasPrefix(strings.ToLower(s.KeyURI), "http://")
+}
 
 // String returns "<provider>:<key URI>" for logs and errors, scrubbed by
 // internal/redact (a valid key URI holds no credential, but a log line never

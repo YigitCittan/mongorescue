@@ -179,7 +179,7 @@ func (v vaultEnv) wrapper(t *testing.T, key string, env map[string]string) (keyw
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := provider.OpenWith(context.Background(), spec, provider.Options{Getenv: func(k string) string { return env[k] }})
+	w, err := provider.OpenWith(context.Background(), spec, provider.Options{Getenv: func(k string) string { return env[k] }, AllowInsecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ path "transit/decrypt/mongorescue" { capabilities = ["update"] }`
 	v.api(t, http.MethodPost, "transit/keys/mongorescue-next", map[string]string{"type": "aes256-gcm96"}, nil)
 	nextSpec, _ := v.wrapper(t, "mongorescue-next", map[string]string{provider.EnvVaultToken: v.token})
 	open := func(ctx context.Context, s keywrap.Spec) (keywrap.Wrapper, error) {
-		return provider.OpenWith(ctx, s, provider.Options{Getenv: func(k string) string {
+		return provider.OpenWith(ctx, s, provider.Options{AllowInsecure: true, Getenv: func(k string) string {
 			if k == provider.EnvVaultToken {
 				return v.token
 			}

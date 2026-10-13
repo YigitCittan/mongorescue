@@ -40,6 +40,9 @@ const (
 	// "<provider>:<key URI>" (see internal/keywrap). The data directory then holds
 	// secret.key.wrapped only.
 	EnvKeyWrap = keywrap.EnvKeyWrap
+	// EnvKeyWrapAllowInsecure ("true") allows a vault-transit key URI with plain
+	// http:// (a development Vault only; logged as a warning).
+	EnvKeyWrapAllowInsecure = keywrap.EnvKeyWrapAllowInsecure
 	// EnvDashboard enables the embedded web dashboard on the HTTP server ("true",
 	// "1", ...; see strconv.ParseBool). The container image sets it; installer-based
 	// installs use the desktop app instead.
@@ -143,6 +146,9 @@ type Config struct {
 	// zero Spec leaves it a plaintext file. It never holds a credential: the KMS
 	// is reached with the instance's identity.
 	KeyWrap keywrap.Spec
+	// KeyWrapAllowInsecure accepts a KeyWrap URI with plain http://
+	// (MONGORESCUE_KEY_WRAP_ALLOW_INSECURE; development only).
+	KeyWrapAllowInsecure bool
 	// Dashboard serves the embedded web dashboard at "/". Off by default: the REST
 	// API, MCP and metrics work without it.
 	Dashboard bool
@@ -204,6 +210,13 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("%s: %w", EnvKeyWrap, err)
 		}
 		cfg.KeyWrap = spec
+	}
+	if v := strings.TrimSpace(getenv(EnvKeyWrapAllowInsecure)); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: must be true or false", EnvKeyWrapAllowInsecure)
+		}
+		cfg.KeyWrapAllowInsecure = b
 	}
 	if v := strings.TrimSpace(getenv(EnvToolsDir)); v != "" {
 		cfg.ToolsDir = filepath.Clean(v)
@@ -312,6 +325,9 @@ func (c *Config) Validate() error {
 		}
 		if c.SecretKey != "" {
 			return ErrKeyWrapWithSecretKey
+		}
+		if c.KeyWrap.Insecure() && !c.KeyWrapAllowInsecure {
+			return fmt.Errorf("%s: %w", EnvKeyWrap, keywrap.ErrInsecureKeyURI)
 		}
 	}
 	if c.SecretKey != "" {

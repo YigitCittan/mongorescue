@@ -51,7 +51,9 @@ func newGCP(ctx context.Context, spec keywrap.Spec, opts Options) (keywrap.Wrapp
 			return nil, fmt.Errorf("gcp-kms: find the Application Default Credentials: %w", err)
 		}
 	}
-	client := oauth2.NewClient(tctx, ts)
+	// oauth2.Transport adds the token to every request, a redirected one too:
+	// the client follows no redirect.
+	client := withoutRedirects(oauth2.NewClient(tctx, ts))
 	client.Timeout = base.Timeout
 	endpoint := strings.TrimRight(opts.GCPEndpoint, "/")
 	if endpoint == "" {
@@ -158,6 +160,9 @@ func (g *gcpKMS) call(ctx context.Context, method string, body, out any) error {
 		msg := http.StatusText(resp.StatusCode)
 		if json.Unmarshal(raw, &e) == nil && e.Error.Message != "" {
 			msg = e.Error.Status + ": " + e.Error.Message
+		}
+		if isRedirect(resp.StatusCode) {
+			msg = errRedirect.Error()
 		}
 		err = fmt.Errorf("gcp-kms: %s: HTTP %d: %s", method, resp.StatusCode, msg)
 		if statusPermanent(resp.StatusCode) {
