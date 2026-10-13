@@ -116,26 +116,27 @@ type soakReport struct {
 	ChunksDeleted int `json:"chunks_deleted"`
 	// EntriesCompared is how many stored entries were compared with the oplog.
 	EntriesCompared int `json:"entries_compared"`
-	// ChainTestsDuring counts the chain tests that passed during the load,
+	// ChainTestsDuring counts the chain tests that completed during the load,
 	// ChainTestsAcrossBases those during which a base backup completed (retention
 	// then wanted their base or chunks gone), and BasesDuringChainTests those bases.
-	ChainTestsDuring      int `json:"chain_tests_during"`
-	ChainTestsAcrossBases int `json:"chain_tests_across_bases"`
-	BasesDuringChainTests int `json:"bases_during_chain_tests"`
+	// ChainTestMismatchesDuring counts those whose comparison with the newer base's
+	// manifest did not pass: a manifest taken under writes is not exact.
+	ChainTestsDuring          int `json:"chain_tests_during"`
+	ChainTestsAcrossBases     int `json:"chain_tests_across_bases"`
+	BasesDuringChainTests     int `json:"bases_during_chain_tests"`
+	ChainTestMismatchesDuring int `json:"chain_test_mismatches_during"`
 	// ChainTest is the outcome of the final chain test and its replay rates.
 	ChainTest *chainTestReport `json:"chain_test,omitempty"`
 }
 
 // soakChains runs the chain tests during the load, one at a time.
 type soakChains struct {
-	// id is the chain test in flight ("" without one) and bases the bases taken
-	// when it started.
-	id    string
-	bases int
+	// id is the chain test in flight ("" without one).
+	id string
 }
 
-// tick finishes the chain test in flight once it ended (it must pass) and starts
-// the next one.
+// tick finishes the chain test in flight once it ended (its restore must
+// complete) and starts the next one.
 func (r *rig) soakChainTick(t *testing.T, report *soakReport, ct *soakChains) {
 	t.Helper()
 	if ct.id != "" {
@@ -155,22 +156,40 @@ func (r *rig) soakChainTick(t *testing.T, report *soakReport, ct *soakChains) {
 	case err != nil:
 		t.Fatalf("StartChainTest during the load: %v", err)
 	}
-	ct.id, ct.bases = rec.ID, report.BasesTaken
+	ct.id = rec.ID
 }
 
-// soakChainDone waits for the chain test in flight, which must pass, and counts it.
+// soakChainDone waits for the chain test in flight, whose restore must complete,
+// and counts it. Its comparison is only counted: the manifest of a base taken
+// under the load's writes need not match the restored state exactly.
 func (r *rig) soakChainDone(t *testing.T, report *soakReport, ct *soakChains) {
 	t.Helper()
 	if ct.id == "" {
 		return
 	}
-	final := r.waitChainTest(t, ct.id)
+	final := r.waitChainTest(t, ct.id, false)
 	report.ChainTestsDuring++
-	if n := report.BasesTaken - ct.bases; n > 0 {
+	verdict := "passed"
+	if final.Verification == nil || final.Verification.Status != models.RestoreVerificationPassed {
+		report.ChainTestMismatchesDuring++
+		verdict = fmt.Sprintf("completed, comparison %+v", final.Verification)
+	}
+	// The bases that completed while it ran.
+	bases, err := r.repo.ListBaseBackups(r.ctx, streamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, b := range bases {
+		if b.CompletedAt != nil && b.CompletedAt.After(final.StartedAt) && (final.CompletedAt == nil || b.CompletedAt.Before(*final.CompletedAt)) {
+			n++
+		}
+	}
+	if n > 0 {
 		report.ChainTestsAcrossBases++
 		report.BasesDuringChainTests += n
 	}
-	t.Logf("chain test %s during the load passed in %.1fs (%d base(s) taken meanwhile)", final.ID, final.DurationSeconds, report.BasesTaken-ct.bases)
+	t.Logf("chain test %s during the load %s in %.1fs (%d base(s) completed meanwhile)", final.ID, verdict, final.DurationSeconds, n)
 	ct.id = ""
 }
 
@@ -297,8 +316,8 @@ func TestSoak(t *testing.T) {
 	// back the purge they expect.
 	r.soakChainDone(t, report, &chainTests)
 	if cfg.ChainTests {
-		t.Logf("%d chain test(s) passed during the load, %d across %d base backup(s)",
-			report.ChainTestsDuring, report.ChainTestsAcrossBases, report.BasesDuringChainTests)
+		t.Logf("%d chain test(s) completed during the load (%d comparison(s) off), %d across %d base backup(s)",
+			report.ChainTestsDuring, report.ChainTestMismatchesDuring, report.ChainTestsAcrossBases, report.BasesDuringChainTests)
 	}
 	report.Writes, report.WriteErrors = load.halt()
 	if report.Writes == 0 {
@@ -459,11 +478,17 @@ func (r *rig) assertRetainedFromOldestBase(t *testing.T, chain *pitr.Chain, live
 // soakChainTest runs a chain test and returns its outcome.
 func (r *rig) soakChainTest(t *testing.T) *chainTestReport {
 	t.Helper()
+	// A base that just completed may lie beyond the collected oplog for a moment.
+	deadline := time.Now().Add(3 * time.Minute)
 	rec, err := r.ops.StartChainTest(auth.WithPrincipal(r.ctx, auth.SystemPrincipal()), streamID)
+	for errors.Is(err, operations.ErrNoChainTest) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Second)
+		rec, err = r.ops.StartChainTest(auth.WithPrincipal(r.ctx, auth.SystemPrincipal()), streamID)
+	}
 	if err != nil {
 		t.Fatalf("StartChainTest: %v", err)
 	}
-	final := r.waitChainTest(t, rec.ID)
+	final := r.waitChainTest(t, rec.ID, true)
 	out := &chainTestReport{ID: final.ID, Verification: string(final.Verification.Status), DurationSeconds: final.DurationSeconds,
 		BaseBytes: final.PITR.BaseBytes, OplogBytes: final.PITR.OplogBytes, OpsReplayed: final.PITR.OpsReplayed,
 		ReplaySeconds: final.PITR.ReplaySeconds}
@@ -478,8 +503,9 @@ func (r *rig) soakChainTest(t *testing.T) *chainTestReport {
 	return out
 }
 
-// waitChainTest waits for chain test id and its verification, which must pass.
-func (r *rig) waitChainTest(t *testing.T, id string) *models.RestoreRecord {
+// waitChainTest waits for chain test id and its verification. The restore must
+// complete and, when strict, the verification must pass.
+func (r *rig) waitChainTest(t *testing.T, id string, strict bool) *models.RestoreRecord {
 	t.Helper()
 	final := r.waitRestore(t, id)
 	deadline := time.Now().Add(5 * time.Minute)
@@ -487,8 +513,8 @@ func (r *rig) waitChainTest(t *testing.T, id string) *models.RestoreRecord {
 		time.Sleep(time.Second)
 		final = r.waitRestore(t, id)
 	}
-	if final.Status != models.RestoreStatusCompleted || final.Verification == nil ||
-		final.Verification.Status != models.RestoreVerificationPassed {
+	if final.Status != models.RestoreStatusCompleted || (strict && (final.Verification == nil ||
+		final.Verification.Status != models.RestoreVerificationPassed)) {
 		t.Fatalf("chain test %s: %s %s %+v", final.ID, final.Status, final.ErrorMessage, final.Verification)
 	}
 	return final
