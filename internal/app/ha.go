@@ -117,6 +117,9 @@ type haRuntime struct {
 	// bits); takeoverFailures counts the takeovers given up.
 	lastTakeover     atomic.Uint64
 	takeoverFailures atomic.Uint64
+	// snapshotsRejected counts the metadata snapshots refused because they failed
+	// authentication (ha.SnapshotCheck.Refused).
+	snapshotsRejected atomic.Uint64
 	// stepDowns counts the times this instance lost the lease while active.
 	stepDowns atomic.Uint64
 }
@@ -197,7 +200,7 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	ms := rt.status()
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
 		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
-		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load()}
+		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load(), SnapshotsRejected: rt.snapshotsRejected.Load()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -391,17 +394,21 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 }
 
 // epochFloor returns the highest epoch on record outside the lease: of the
-// cluster's snapshots on the HA target, and the last one this instance held.
+// cluster's snapshots on the HA target whose header authenticates it (a renamed
+// snapshot's name counts for nothing), and the last one this instance held.
 func (s *haSupervisor) epochFloor(ctx context.Context, st storage.Storage) (uint64, error) {
-	snaps, err := ha.ListSnapshots(ctx, st, s.cfg.HA.Cluster)
+	s.rt.mu.RLock()
+	key := s.rt.key
+	s.rt.mu.RUnlock()
+	sel, err := s.selectSnapshots(ctx, st, key, 1)
 	if err != nil {
 		return 0, err
 	}
-	floor := s.rt.state.LastActiveEpoch
-	for _, sn := range snaps {
-		floor = max(floor, sn.Epoch)
+	epoch, ok := sel.AuthenticEpoch(s.cfg.HA.Cluster)
+	if !ok {
+		return 0, fmt.Errorf("none of the %d metadata snapshots on the HA target could be verified", sel.Listed)
 	}
-	return floor, nil
+	return max(s.rt.state.LastActiveEpoch, epoch), nil
 }
 
 // haStorage opens the storage of the lease: a location of the bootstrap

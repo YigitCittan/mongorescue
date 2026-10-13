@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,8 +52,9 @@ func newHASnapshotter(cfg *config.Config, rt *haRuntime, metaStore ha.VacuumStor
 		return nil, err
 	}
 	return ha.NewSnapshotter(ha.SnapshotterConfig{
-		Cluster: cfg.HA.Cluster, Store: metaStore, Storage: rt.storage(), Fence: rt, Passphrase: passphrase,
-		TempDir: cfg.DataDir, Interval: cfg.HA.SnapshotInterval, Logger: logger,
+		Cluster: cfg.HA.Cluster, InstanceID: rt.state.InstanceID, Store: metaStore, Storage: rt.storage(), Fence: rt,
+		Passphrase: passphrase, TempDir: cfg.DataDir, Interval: cfg.HA.SnapshotInterval, Logger: logger,
+		OnReject: func(ha.SnapshotCheck) { rt.snapshotsRejected.Add(1) },
 	})
 }
 
@@ -176,16 +178,18 @@ func (a *App) importNewerArchives(ctx context.Context, since time.Time) map[stri
 }
 
 // prepareTakeover readies the data directory before the App opens as the active
-// instance: it restores the newest usable snapshot of the cluster (the highest
-// epoch, then the newest), unless this instance's own database is at least as new.
-// It fails when snapshots exist but none can be used.
+// instance: it restores the newest snapshot of the cluster whose authenticated
+// header matches its name (the highest epoch, then the newest), unless this
+// instance's own database is at least as new. Snapshots without a header (written
+// by an older version) are restored only when the cluster has no snapshot with
+// one. It fails when snapshots exist but none can be used.
 func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	st := s.rt.storage()
-	snaps, err := ha.ListSnapshots(ctx, st, s.cfg.HA.Cluster)
+	sel, err := s.selectSnapshots(ctx, st, s.rt.key, haSnapshotsTried)
 	if err != nil {
 		return err
 	}
-	if len(snaps) == 0 {
+	if sel.Listed == 0 {
 		// Without a snapshot this instance's database is used only when there was
 		// no lease either: the cluster's first activation, or a new HA target or
 		// cluster name, whose instance keeps its own database (never an empty one
@@ -204,12 +208,25 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		}
 		return nil
 	}
-	newest := snaps[0]
-	if s.rt.state.Cluster == s.cfg.HA.Cluster && newest.Epoch != 0 && newest.Epoch == s.rt.state.LastActiveEpoch {
+	candidates, legacy := sel.Candidates()
+	if len(candidates) == 0 {
+		var errs []error
+		for _, c := range slices.Concat(sel.Refused, sel.Failed, sel.Legacy) {
+			errs = append(errs, c.Err)
+		}
+		return fmt.Errorf("no usable metadata snapshot among the %d on the HA target: %w", sel.Listed, errors.Join(errs...))
+	}
+	newest := candidates[0]
+	if s.rt.state.Cluster == s.cfg.HA.Cluster && newest.Epoch != 0 && newest.Epoch == s.rt.state.LastActiveEpoch &&
+		(legacy || newest.Header.InstanceID == s.rt.state.InstanceID) {
 		s.setSince(newest.CreatedAt)
 		s.logger.Info("takeover: the newest snapshot was written by this instance; its own database is at least as new and is kept",
 			slog.Uint64("epoch", newest.Epoch))
 		return nil
+	}
+	if legacy {
+		s.logger.Warn("takeover: no metadata snapshot of the cluster has an authenticated header; restoring one written by an older version, whose epoch and cluster are not authenticated",
+			logsafe.Attr("key", newest.Key))
 	}
 	passphrase, err := ha.SnapshotPassphrase(s.rt.key)
 	if err != nil {
@@ -220,17 +237,48 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		return err
 	}
 	var errs []error
-	for _, snap := range snaps[:min(len(snaps), haSnapshotsTried)] {
-		if err = s.restoreSnapshot(ctx, st, snap, passphrase, box); err == nil {
+	for _, snap := range candidates[:min(len(candidates), haSnapshotsTried)] {
+		if err = s.restoreSnapshot(ctx, st, snap.SnapshotInfo, passphrase, box, legacy); err == nil {
 			s.setSince(snap.CreatedAt)
 			s.logger.Info("takeover: restored the metadata snapshot", logsafe.Attr("key", snap.Key),
-				slog.Uint64("snapshot_epoch", snap.Epoch), slog.Time("snapshot_time", snap.CreatedAt))
+				slog.Uint64("snapshot_epoch", snap.Epoch), slog.Time("snapshot_time", snap.CreatedAt), slog.Bool("authenticated", !legacy))
 			return nil
 		}
-		s.logger.Warn("takeover: cannot use a metadata snapshot", logsafe.Attr("key", snap.Key), logsafe.Error(err))
+		if errors.Is(err, ha.ErrSnapshotRejected) || errors.Is(err, ha.ErrSnapshotUnreadable) {
+			// Replaced since it was checked.
+			s.reportRefused(ha.SnapshotCheck{SnapshotInfo: snap.SnapshotInfo, Err: err})
+		} else {
+			s.logger.Warn("takeover: cannot use a metadata snapshot", logsafe.Attr("key", snap.Key), logsafe.Error(err))
+		}
 		errs = append(errs, err)
 	}
 	return fmt.Errorf("no usable metadata snapshot: %w", errors.Join(errs...))
+}
+
+// selectSnapshots verifies the snapshots of the cluster on st with the passphrase
+// of secret key until want are verified (ha.SelectSnapshots) and reports those
+// refused.
+func (s *haSupervisor) selectSnapshots(ctx context.Context, st storage.Storage, key []byte, want int) (ha.SnapshotSelection, error) {
+	passphrase, err := ha.SnapshotPassphrase(key)
+	if err != nil {
+		return ha.SnapshotSelection{}, err
+	}
+	sel, err := ha.SelectSnapshots(ctx, st, s.cfg.HA.Cluster, passphrase, want)
+	if err != nil {
+		return ha.SnapshotSelection{}, err
+	}
+	for _, c := range sel.Refused {
+		s.reportRefused(c)
+	}
+	return sel, nil
+}
+
+// reportRefused logs and counts a snapshot that failed authentication: it is
+// never restored, and the next one is used.
+func (s *haSupervisor) reportRefused(c ha.SnapshotCheck) {
+	s.rt.snapshotsRejected.Add(1)
+	s.logger.Error("HA metadata snapshot refused: its authenticated header does not match its name or cluster, or it does not decrypt; someone with write access to the HA target may have copied or altered it. It is never restored",
+		logsafe.Attr("key", c.Key), logsafe.Error(c.Err))
 }
 
 // setSince records the snapshot time of the takeover.
@@ -241,15 +289,15 @@ func (s *haSupervisor) setSince(t time.Time) {
 }
 
 // restoreSnapshot downloads and decrypts snap into the data directory, checks it
-// and swaps it in as the metadata database (the previous one is kept as .bak).
-func (s *haSupervisor) restoreSnapshot(ctx context.Context, st storage.Storage, snap ha.SnapshotInfo, passphrase string, box *secretbox.Box) error {
+// (its authenticated header, unless allowLegacy accepts one without) and swaps it in as the metadata database (the previous one is kept as .bak).
+func (s *haSupervisor) restoreSnapshot(ctx context.Context, st storage.Storage, snap ha.SnapshotInfo, passphrase string, box *secretbox.Box, allowLegacy bool) error {
 	dir, err := os.MkdirTemp(s.cfg.DataDir, ".ha-restore-*")
 	if err != nil {
 		return fmt.Errorf("restore directory: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	tmp := filepath.Join(dir, config.DefaultDatabaseFileName)
-	if err = ha.FetchSnapshot(ctx, st, snap.Key, passphrase, tmp); err != nil {
+	if _, err = ha.FetchSnapshot(ctx, st, s.cfg.HA.Cluster, snap.Key, passphrase, tmp, allowLegacy); err != nil {
 		return err
 	}
 	_, err = store.ReplaceDatabase(ctx, store.Replacement{Path: s.cfg.MetadataDBPath(), NewPath: tmp, Epoch: s.rt.mgr().Epoch(),
@@ -270,25 +318,30 @@ func (s *haSupervisor) finalSnapshot(app *App) {
 	}
 }
 
-// checkSnapshotKey checks at startup that this instance can decrypt the newest
-// snapshot of the cluster, so a wrong secret key fails now instead of at a takeover.
+// checkSnapshotKey checks at startup that this instance can decrypt the cluster's
+// snapshots, so a wrong secret key fails now instead of at a takeover: it fails
+// when none of the snapshots it checks decrypts. It reads headers in the order of
+// a takeover until one is verified, reporting those refused.
 func (s *haSupervisor) checkSnapshotKey(ctx context.Context, st storage.Storage, key []byte) error {
-	snaps, err := ha.ListSnapshots(ctx, st, s.cfg.HA.Cluster)
+	sel, err := s.selectSnapshots(ctx, st, key, 1)
 	if err != nil {
 		s.logger.Warn("cannot list the HA metadata snapshots at startup; the secret key is checked at the takeover", logsafe.Error(err))
 		return nil
 	}
-	if len(snaps) == 0 {
+	for _, c := range sel.Failed {
+		s.logger.Warn("cannot read an HA metadata snapshot at startup", logsafe.Attr("key", c.Key), logsafe.Error(c.Err))
+	}
+	if len(sel.Verified) > 0 || len(sel.Legacy) > 0 {
 		return nil
 	}
-	passphrase, err := ha.SnapshotPassphrase(key)
-	if err != nil {
-		return err
+	var unreadable error
+	for _, c := range sel.Refused {
+		if !errors.Is(c.Err, ha.ErrSnapshotUnreadable) {
+			return nil // it decrypted: the key is right
+		}
+		if unreadable == nil {
+			unreadable = c.Err
+		}
 	}
-	if err = ha.CheckSnapshotReadable(ctx, st, snaps[0].Key, passphrase); errors.Is(err, ha.ErrSnapshotUnreadable) {
-		return err
-	} else if err != nil {
-		s.logger.Warn("cannot read the newest HA metadata snapshot at startup", logsafe.Error(err))
-	}
-	return nil
+	return unreadable
 }

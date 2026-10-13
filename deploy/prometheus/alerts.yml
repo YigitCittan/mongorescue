@@ -154,3 +154,16 @@ groups:
         annotations:
           summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."
+
+      # A metadata snapshot on the HA target failed authentication: its encrypted
+      # header names another cluster, epoch or time than its object key (an old
+      # snapshot copied under a higher epoch, or another cluster's), or it does not
+      # decrypt. It is never restored; someone with write access to the HA target
+      # may be trying to roll the metadata back.
+      - alert: MongoRescueHASnapshotRejected
+        expr: increase(mongorescue_ha_snapshots_rejected_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A metadata snapshot was refused in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} refused a metadata snapshot under _mongorescue/metadata/ha/{{ $labels.cluster }}/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."

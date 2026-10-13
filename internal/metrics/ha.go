@@ -33,6 +33,10 @@ type HAState struct {
 	TakeoverFailures uint64
 	// StepDowns counts the times this instance lost the lease while active.
 	StepDowns uint64
+	// SnapshotsRejected counts the metadata snapshots refused because their
+	// authenticated header did not match their name or cluster, or they did not
+	// decrypt.
+	SnapshotsRejected uint64
 }
 
 // haRoles are the values of the role label.
@@ -49,13 +53,14 @@ type haCollector struct {
 	duration *prometheus.Desc
 	failures *prometheus.Desc
 	down     *prometheus.Desc
+	rejected *prometheus.Desc
 }
 
 // newHACollector returns the collector of mongorescue_ha_role,
 // mongorescue_ha_epoch, mongorescue_ha_lease_healthy,
 // mongorescue_ha_lease_errors_total, mongorescue_ha_takeovers_total and
-// mongorescue_ha_takeover_duration_seconds, mongorescue_ha_takeover_failures_total
-// and mongorescue_ha_step_downs_total.
+// mongorescue_ha_takeover_duration_seconds, mongorescue_ha_takeover_failures_total,
+// mongorescue_ha_step_downs_total and mongorescue_ha_snapshots_rejected_total.
 func newHACollector() *haCollector {
 	name := func(n string) string { return prometheus.BuildFQName(namespace, "ha", n) }
 	cluster := []string{"cluster"}
@@ -68,12 +73,13 @@ func newHACollector() *haCollector {
 		duration: prometheus.NewDesc(name("takeover_duration_seconds"), "Duration of the last takeover, from acquiring the lease to serving as active.", cluster, nil),
 		down:     prometheus.NewDesc(name("step_downs_total"), "Total number of times this instance lost the HA lease while active and stepped down to standby.", cluster, nil),
 		failures: prometheus.NewDesc(name("takeover_failures_total"), "Total number of takeovers this instance gave up because no usable metadata snapshot was found; it stays standby.", cluster, nil),
+		rejected: prometheus.NewDesc(name("snapshots_rejected_total"), "Total number of metadata snapshots this instance refused because their authenticated header did not match their name or cluster, or they did not decrypt (copied, renamed or altered on the HA target).", cluster, nil),
 	}
 }
 
 // Describe implements prometheus.Collector.
 func (c *haCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down} {
+	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down, c.rejected} {
 		ch <- d
 	}
 }
@@ -95,6 +101,7 @@ func (c *haCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.duration, prometheus.GaugeValue, st.LastTakeoverSeconds, st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.failures, prometheus.CounterValue, float64(st.TakeoverFailures), st.Cluster)
 	ch <- prometheus.MustNewConstMetric(c.down, prometheus.CounterValue, float64(st.StepDowns), st.Cluster)
+	ch <- prometheus.MustNewConstMetric(c.rejected, prometheus.CounterValue, float64(st.SnapshotsRejected), st.Cluster)
 }
 
 // boolFloat returns 1 for true and 0 for false.
