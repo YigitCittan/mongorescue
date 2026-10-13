@@ -77,6 +77,11 @@ func (s *Service) checkExpiry(at *time.Time) (*time.Time, error) {
 	return &exp, nil
 }
 
+// maxDays returns a maximum lifetime in whole days, as recorded on keys.
+func maxDays(d time.Duration) int {
+	return int(d / (24 * time.Hour))
+}
+
 // lifetimeText renders a lifetime in whole days ("365 days").
 func lifetimeText(d time.Duration) string {
 	days := int(d / (24 * time.Hour))
@@ -144,7 +149,7 @@ func (s *Service) expiryStatus(keys []*APIKey) ExpiryStatus {
 	for _, k := range keys {
 		switch {
 		case k.ExpiresAt == nil:
-			if policy.MaxLifetime > 0 && k.CreatedBy == "" {
+			if policy.MaxLifetime > 0 && k.Imported {
 				st.NeverExpiring = append(st.NeverExpiring, k)
 			}
 			continue
@@ -162,10 +167,12 @@ func (s *Service) expiryStatus(keys []*APIKey) ExpiryStatus {
 }
 
 // CheckAPIKeyExpiry applies the expiry policy to the stored keys. While a maximum
-// lifetime is set, every key with a creator that has no expiry, or a later one
-// than now + the maximum lifetime, gets that deadline: the change is reported in
-// Capped (and logged), so the caller can announce it. Keys imported from
-// MONGORESCUE_API_KEY keep no expiry and are reported in NeverExpiring. Keys
+// lifetime is set, every key that has no expiry, or a later one than now + the
+// maximum lifetime that was not checked against this maximum yet, gets that
+// deadline: the change is reported in Capped (and logged), so the caller can
+// announce it. Keys minted by a key without a user are capped like any other;
+// only the key imported from MONGORESCUE_API_KEY (APIKey.Imported) keeps no
+// expiry and is reported in NeverExpiring. Keys
 // that newly entered the warning window are returned in Announce and recorded as
 // announced, so each expiry is announced once. It is a system task: the caller
 // publishes the events and runs it on the active instance only.
@@ -174,7 +181,7 @@ func (s *Service) CheckAPIKeyExpiry(ctx context.Context) (*ExpiryCheck, error) {
 	out := &ExpiryCheck{MaxLifetime: policy.MaxLifetime}
 	if policy.MaxLifetime > 0 {
 		out.Deadline = s.now().UTC().Add(policy.MaxLifetime)
-		capped, err := s.repo.CapAPIKeyExpiry(ctx, out.Deadline)
+		capped, err := s.repo.CapAPIKeyExpiry(ctx, out.Deadline, maxDays(policy.MaxLifetime))
 		if err != nil {
 			return nil, err
 		}

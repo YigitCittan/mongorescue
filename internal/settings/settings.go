@@ -210,8 +210,8 @@ type Security struct {
 	RequireLockedCopies bool `json:"require_locked_copies"`
 	// APIKeyMaxLifetimeDays caps the lifetime of API keys in days (0, the default,
 	// is unlimited; at most MaxAPIKeyLifetimeDays). While it is set, a new key needs
-	// an expiry within it, and every existing key with a creator that has no expiry
-	// or a later one gets now + this many days, which is announced (the
+	// an expiry within it, and every existing key except the imported one that has
+	// no expiry or a later one gets now + this many days, which is announced (the
 	// api_key.deadline_set event), not applied silently. Keys imported from
 	// MONGORESCUE_API_KEY keep no expiry and are shown in a warning.
 	APIKeyMaxLifetimeDays int `json:"api_key_max_lifetime_days"`

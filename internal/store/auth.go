@@ -689,7 +689,7 @@ func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time, 
 }
 
 // apiKeyColumns lists column names only; key_hash holds SHA-256 digests.
-const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, all_connections, connection_ids, expires_at, expiry_warned_for" //nolint:gosec // G101: column names, not credentials.
+const apiKeyColumns = "id, name, prefix, key_hash, created_by, created_at, last_used_at, scope, all_connections, connection_ids, expires_at, expiry_warned_for, expiry_max_days, imported, created_by_key" //nolint:gosec // G101: column names, not credentials.
 
 // CreateAPIKey stores k. A key without a scope is stored with the least privileged
 // one, auth.ScopeRead.
@@ -699,9 +699,13 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, k *auth.APIKey) error {
 		scope = auth.ScopeRead
 	}
 	all, ids := accessColumns(k.ConnectionAccess)
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	var maxDays any
+	if k.ExpiryMaxDays > 0 {
+		maxDays = k.ExpiryMaxDays
+	}
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO api_keys ("+apiKeyColumns+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		k.ID, k.Name, k.Prefix, k.Hash, k.CreatedBy, timeKey(k.CreatedAt), nullTime(k.LastUsedAt), string(scope),
-		all, ids, nullTime(k.ExpiresAt), nullTime(k.ExpiryWarnedFor)); err != nil {
+		all, ids, nullTime(k.ExpiresAt), nullTime(k.ExpiryWarnedFor), maxDays, boolInt(k.Imported), k.CreatedByKey); err != nil {
 		return fmt.Errorf("store: create api key: %w", err)
 	}
 	return nil
@@ -755,16 +759,21 @@ func (s *SQLiteStore) TouchAPIKey(ctx context.Context, id string, at time.Time) 
 	return nil
 }
 
-// CapAPIKeyExpiry gives every key with a creator that has no expiry, or a later
-// one than deadline, the expiry deadline, in one transaction, and returns the keys
-// it changed (with their new expiry). Keys imported from MONGORESCUE_API_KEY
-// (created_by "") are left alone.
-func (s *SQLiteStore) CapAPIKeyExpiry(ctx context.Context, deadline time.Time) ([]*auth.APIKey, error) {
+// capWhere selects the keys a maximum lifetime caps (see CapAPIKeyExpiry); its
+// parameters are the deadline and the maximum in days.
+const capWhere = "imported = 0 AND (expires_at IS NULL OR (expires_at > ? AND (expiry_max_days IS NULL OR expiry_max_days <> ?)))" //nolint:gosec // G101: an SQL condition, not a credential.
+
+// CapAPIKeyExpiry gives every key but the imported one that has no expiry, or a
+// later one than deadline that was not checked against maxDays yet, the expiry
+// deadline and records maxDays, in one transaction, and returns the keys it
+// changed (with their new expiry). A key capped or created under the same maximum
+// is never capped again, so a clock stepping back changes nothing.
+func (s *SQLiteStore) CapAPIKeyExpiry(ctx context.Context, deadline time.Time, maxDays int) ([]*auth.APIKey, error) {
 	limit := timeKey(deadline)
 	var out []*auth.APIKey
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		out = nil
-		rows, err := tx.QueryContext(ctx, "SELECT "+apiKeyColumns+" FROM api_keys WHERE created_by <> '' AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC, id", limit)
+		rows, err := tx.QueryContext(ctx, "SELECT "+apiKeyColumns+" FROM api_keys WHERE "+capWhere+" ORDER BY created_at DESC, id", limit, maxDays)
 		if err != nil {
 			return err
 		}
@@ -780,7 +789,7 @@ func (s *SQLiteStore) CapAPIKeyExpiry(ctx context.Context, deadline time.Time) (
 				continue
 			}
 			at := deadline.UTC()
-			k.ExpiresAt = &at
+			k.ExpiresAt, k.ExpiryMaxDays = &at, maxDays
 			out = append(out, k)
 		}
 		if err = rows.Err(); err != nil {
@@ -789,7 +798,7 @@ func (s *SQLiteStore) CapAPIKeyExpiry(ctx context.Context, deadline time.Time) (
 		if err = rows.Close(); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE api_keys SET expires_at = ? WHERE created_by <> '' AND (expires_at IS NULL OR expires_at > ?)", limit, limit)
+		_, err = tx.ExecContext(ctx, "UPDATE api_keys SET expires_at = ?, expiry_max_days = ? WHERE "+capWhere, limit, maxDays, limit, maxDays)
 		return err
 	})
 	if err != nil {
@@ -887,13 +896,15 @@ func scanAPIKey(r rowScanner) (*auth.APIKey, error) {
 // scanAPIKeyInto scans an api_keys row into k, with the errors of scanUserInto.
 func scanAPIKeyInto(r rowScanner, k *auth.APIKey) error {
 	var created int64
-	var lastUsed, expires, warned sql.NullInt64
+	var lastUsed, expires, warned, maxDays sql.NullInt64
 	var scope, conns string
-	var all int64
-	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope, &all, &conns, &expires, &warned); err != nil {
+	var all, imported int64
+	if err := r.Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedBy, &created, &lastUsed, &scope, &all, &conns, &expires, &warned,
+		&maxDays, &imported, &k.CreatedByKey); err != nil {
 		return scanRowError("api key", err)
 	}
 	k.ExpiresAt, k.ExpiryWarnedFor = nullableKey(expires), nullableKey(warned)
+	k.ExpiryMaxDays, k.Imported = int(maxDays.Int64), imported != 0
 	access, err := parseAccess(all, conns)
 	if err != nil {
 		return err

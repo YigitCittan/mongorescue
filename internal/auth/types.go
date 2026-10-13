@@ -193,6 +193,16 @@ type APIKey struct {
 	// ExpiryWarnedFor is the expiry the last api_key.expiring notice was sent for,
 	// so each expiry is announced once; it is never serialised.
 	ExpiryWarnedFor *time.Time `json:"-"`
+	// ExpiryMaxDays is the maximum lifetime (days) the expiry was checked against
+	// on creation or capped to (0: none), so one maximum never caps a key twice,
+	// also not after the clock stepped back; it is never serialised.
+	ExpiryMaxDays int `json:"-"`
+	// Imported marks the key imported from MONGORESCUE_API_KEY, the only key that
+	// keeps no expiry under a maximum lifetime.
+	Imported bool `json:"imported,omitempty"`
+	// CreatedByKey is the ID of the API key that created this key ("" when a
+	// session did); it attributes keys minted by a key without a user.
+	CreatedByKey string `json:"created_by_key,omitempty"`
 	// EffectiveScope is what the key may do today: its scope, capped by the current
 	// role of its creator. It is computed by Service.ListAPIKeys and never stored.
 	EffectiveScope Scope `json:"effective_scope,omitempty"`
@@ -364,11 +374,11 @@ type Repository interface {
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error)
 	// TouchAPIKey sets LastUsedAt.
 	TouchAPIKey(ctx context.Context, id string, at time.Time) error
-	// CapAPIKeyExpiry sets ExpiresAt to deadline on every key with a creator whose
-	// expiry is unset or later than deadline (keys imported from
-	// MONGORESCUE_API_KEY keep theirs), in one transaction, and returns the keys it
-	// changed with their new expiry.
-	CapAPIKeyExpiry(ctx context.Context, deadline time.Time) ([]*APIKey, error)
+	// CapAPIKeyExpiry sets ExpiresAt to deadline and ExpiryMaxDays to maxDays on
+	// every key but the imported one (Imported) whose expiry is unset, or later
+	// than deadline while it was not yet checked against maxDays, in one
+	// transaction, and returns the keys it changed with their new expiry.
+	CapAPIKeyExpiry(ctx context.Context, deadline time.Time, maxDays int) ([]*APIKey, error)
 	// MarkAPIKeyExpiryWarned records that the expiry expiresAt of key id was
 	// announced (ExpiryWarnedFor); an unknown key is not an error.
 	MarkAPIKeyExpiryWarned(ctx context.Context, id string, expiresAt time.Time) error

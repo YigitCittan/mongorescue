@@ -202,3 +202,68 @@ func TestExpiryStatusShowsOnlyTheCallersKeys(t *testing.T) {
 		t.Fatalf("admin status = %+v, %v", st, err)
 	}
 }
+
+func TestKeysMintedByTheImportedKeyAreCapped(t *testing.T) {
+	pol := &policy{}
+	f := newFixture(t, auth.WithAPIKeyPolicy(pol.get))
+	ctx := context.Background()
+	f.setup(t)
+	const imported = "an-imported-key-of-some-length"
+	if _, err := f.svc.ImportAPIKey(ctx, imported); err != nil {
+		t.Fatal(err)
+	}
+	importer, err := f.svc.AuthenticateAPIKey(ctx, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted, _, err := f.svc.CreateAPIKey(ctx, importer, "minted", auth.ScopeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minted.CreatedBy != "" || minted.CreatedByKey != importer.APIKeyID || minted.Imported {
+		t.Fatalf("minted = %+v; want no user, created_by_key %s, not imported", minted, importer.APIKeyID)
+	}
+	pol.set(auth.APIKeyPolicy{MaxLifetime: 30 * 24 * time.Hour})
+	c, err := f.svc.CheckAPIKeyExpiry(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Capped) != 1 || c.Capped[0].ID != minted.ID {
+		t.Fatalf("capped %+v; want only the minted key", c.Capped)
+	}
+	if len(c.NeverExpiring) != 1 || c.NeverExpiring[0].ID != importer.APIKeyID || !c.NeverExpiring[0].Imported {
+		t.Fatalf("never expiring %+v; want only the imported key", c.NeverExpiring)
+	}
+	// The imported key may not mint a key without an expiry under the maximum either.
+	if _, _, err = f.svc.CreateAPIKey(ctx, importer, "forever", auth.ScopeRead); !errors.Is(err, auth.ErrInvalidExpiry) {
+		t.Fatalf("minting without an expiry: %v", err)
+	}
+}
+
+func TestAClockSteppingBackDoesNotCapAgain(t *testing.T) {
+	pol := &policy{}
+	f := newFixture(t, auth.WithAPIKeyPolicy(pol.get))
+	ctx := context.Background()
+	admin := f.session(t, f.setup(t).Token)
+	if _, _, err := f.svc.CreateAPIKey(ctx, admin, "old", auth.ScopeRead); err != nil {
+		t.Fatal(err)
+	}
+	pol.set(auth.APIKeyPolicy{MaxLifetime: 30 * 24 * time.Hour})
+	// Created under the maximum: checked against it already.
+	if _, _, err := f.svc.CreateAPIKeyWithOptions(ctx, admin, auth.APIKeyOptions{Name: "new", ExpiresAt: at(f.clock.Now().Add(30 * 24 * time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.svc.CheckAPIKeyExpiry(ctx)
+	if err != nil || len(c.Capped) != 1 || c.Capped[0].Name != "old" {
+		t.Fatalf("first check = %+v, %v; want old capped", c, err)
+	}
+	f.clock.Advance(-2 * time.Hour)
+	if c, err = f.svc.CheckAPIKeyExpiry(ctx); err != nil || len(c.Capped) != 0 || len(c.Announce) != 0 {
+		t.Fatalf("after the clock stepped back: %+v, %v; want nothing capped or announced", c, err)
+	}
+	// A lower maximum is a new one: it caps again.
+	pol.set(auth.APIKeyPolicy{MaxLifetime: 10 * 24 * time.Hour})
+	if c, err = f.svc.CheckAPIKeyExpiry(ctx); err != nil || len(c.Capped) != 2 {
+		t.Fatalf("a lower maximum capped %d keys, %v; want 2", len(c.Capped), err)
+	}
+}

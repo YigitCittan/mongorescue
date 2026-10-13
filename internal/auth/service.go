@@ -957,7 +957,9 @@ func (s *Service) CreateAPIKeyWithOptions(ctx context.Context, actor *Principal,
 		return nil, "", err
 	}
 	k := &APIKey{ID: id, Name: name, Prefix: prefix, Scope: scope, Hash: HashToken(plain), CreatedBy: actor.UserID(), CreatedAt: s.now().UTC(),
-		ExpiresAt: expiresAt, ConnectionAccess: access}
+		ExpiresAt: expiresAt, ExpiryMaxDays: maxDays(s.APIKeyPolicy().MaxLifetime), ConnectionAccess: access}
+	// A key minted by an API key names it (APIKeyID is set for API keys only).
+	k.CreatedByKey = actor.APIKeyID
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return nil, "", err
 	}
@@ -1201,7 +1203,7 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	// rather than a plain digest.
 	hash := importedKeyHash(s.macKey(), key)
 	k := &APIKey{ID: id, Name: importedKeyName, Prefix: prefix, Scope: ScopeAdmin, Hash: hash, CreatedAt: s.now().UTC(),
-		ConnectionAccess: EveryConnection()}
+		Imported: true, ConnectionAccess: EveryConnection()}
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}

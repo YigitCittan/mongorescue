@@ -397,7 +397,9 @@ var compatSteps = []compatStep{
 				t.Errorf("key_v4 = %+v, %v", key, err)
 			}
 			keys, err := s.ListAPIKeys(context.Background())
-			keys = slices.DeleteFunc(keys, func(k *auth.APIKey) bool { return k.ID == "key_v24_limited" || k.ID == "key_v30_expiring" })
+			keys = slices.DeleteFunc(keys, func(k *auth.APIKey) bool {
+				return k.ID == "key_v24_limited" || k.ID == "key_v30_expiring" || strings.HasPrefix(k.ID, "key_v29_")
+			})
 			if err != nil || len(keys) != 2 {
 				t.Errorf("ListAPIKeys = %d, %v", len(keys), err)
 			}
@@ -1235,7 +1237,15 @@ var compatSteps = []compatStep{
 	},
 	{
 		version: 29,
-		seed:    func(*testing.T, *compatFixture) {},
+		seed: func(t *testing.T, f *compatFixture) {
+			// Two keys without a creator before 0030: the one imported from
+			// MONGORESCUE_API_KEY (a MAC hash, an upper-case lookup prefix) and one
+			// another such key minted (a plain digest).
+			f.exec(t, `INSERT INTO api_keys (id, name, prefix, key_hash, created_by, created_at, last_used_at, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"key_v29_imported", "Imported from MONGORESCUE_API_KEY", "Kv29aaaa", "hmac-sha256:0011223344556677:"+strings.Repeat("e5", 32), "", ns(39*time.Hour), nil, "admin")
+			f.exec(t, `INSERT INTO api_keys (id, name, prefix, key_hash, created_by, created_at, last_used_at, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				"key_v29_minted", "minted by the imported key", "v29bbbbb", strings.Repeat("f6", 32), "", ns(39*time.Hour), nil, "read")
+		},
 		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
 			// The jobs written by every earlier version get their filter columns
 			// (opening the database) and their last status (the migration).
@@ -1273,19 +1283,34 @@ var compatSteps = []compatStep{
 					}
 				}
 			}
-			// A maximum lifetime gives every older key with a creator the deadline.
+			// Only the key imported from MONGORESCUE_API_KEY is flagged.
+			for _, k := range keys {
+				if k.Imported != (k.ID == "key_v29_imported") {
+					t.Errorf("key %s imported = %v", k.ID, k.Imported)
+				}
+			}
+			// A maximum lifetime gives every older key but the imported one the
+			// deadline, a minted key without a creator included, and only once.
 			deadline := compatT0.Add(100 * time.Hour)
-			capped, err := s.CapAPIKeyExpiry(ctx, deadline)
+			capped, err := s.CapAPIKeyExpiry(ctx, deadline, 4)
 			if err != nil {
 				t.Fatal(err)
 			}
+			ids := map[string]bool{}
 			for _, k := range capped {
-				if k.ID == "key_v30_expiring" || k.ExpiresAt == nil || !k.ExpiresAt.Equal(deadline) {
+				ids[k.ID] = true
+				if k.ID == "key_v30_expiring" || k.ID == "key_v29_imported" || k.ExpiresAt == nil || !k.ExpiresAt.Equal(deadline) || k.ExpiryMaxDays != 4 {
 					t.Errorf("capped %+v", k)
 				}
 			}
-			if len(capped) == 0 {
-				t.Error("no key from an earlier version got the deadline")
+			if len(capped) == 0 || !ids["key_v1"] {
+				t.Errorf("capped %v; want the keys of earlier versions", ids)
+			}
+			if _, has := ids["key_v29_minted"]; !has && slices.ContainsFunc(keys, func(k *auth.APIKey) bool { return k.ID == "key_v29_minted" }) {
+				t.Error("the key minted without a creator escaped the maximum lifetime")
+			}
+			if again, err := s.CapAPIKeyExpiry(ctx, deadline.Add(-time.Hour), 4); err != nil || len(again) != 0 {
+				t.Errorf("the same maximum capped again after the clock stepped back: %d keys, %v", len(again), err)
 			}
 		},
 	},
