@@ -9,8 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,13 +18,9 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
+	"github.com/yigitcittan/mongorescue/internal/server"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
-
-// appStartBudget bounds how long a member may take to open an App and serve it.
-// Opening an App takes well under a second normally, but about ten seconds with the
-// race detector on one slow CPU (CI runners), and a takeover opens two.
-const appStartBudget = 90 * time.Second
 
 // haTestKey is the secret key shared by the members of a test cluster.
 func haTestKey(t *testing.T) string {
@@ -172,37 +168,180 @@ func TestStandbyAppIsReadOnlyAndRunsNothing(t *testing.T) {
 	}
 }
 
-// roleOf reads the role from the health endpoint of a member ("" when it does not
-// answer).
-func roleOf(port int) string {
-	client := http.Client{Timeout: time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/api/v1/health")
-	if err != nil {
-		return ""
+// fakeClock is a lease clock that moves only when the test advances it, so a lease
+// expires only when the test means it to, however slowly the test runs.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+// newFakeClock returns a fake clock standing at the current time.
+func newFakeClock() *fakeClock { return &fakeClock{now: time.Now()} }
+
+// Now returns the time of the clock.
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// Advance moves the clock forward by d.
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// haWaitBound bounds a wait for something that must happen. It is no timing
+// assumption: it only turns a hang into a failure shortly before the test binary's
+// own timeout would.
+func haWaitBound(t *testing.T) time.Duration {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return max(time.Until(deadline)-10*time.Second, time.Second)
 	}
-	defer resp.Body.Close()
+	return 10 * time.Minute
+}
+
+// await receives the next value of ch.
+func await[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	timer := time.NewTimer(haWaitBound(t))
+	defer timer.Stop()
+	select {
+	case v := <-ch:
+		return v
+	case <-timer.C:
+		t.Fatalf("%s did not happen before the test deadline", what)
+		var zero T
+		return zero
+	}
+}
+
+// healthRole reads the role from the health endpoint of app ("" when it does not
+// answer with one).
+func healthRole(app *App) string {
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 	var body struct {
 		Data struct {
 			Role string `json:"role"`
 		} `json:"data"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&body) != nil {
+	if json.Unmarshal(rec.Body.Bytes(), &body) != nil {
 		return ""
 	}
 	return body.Data.Role
 }
 
-// waitRole waits until the member on port reports role.
-func waitRole(t *testing.T, port int, role string, within time.Duration) {
+// haServed is an App a member started serving: its role, the role its health
+// endpoint reported then, and what the test's hook of an active App returned.
+type haServed struct {
+	active bool
+	health string
+	marker string
+}
+
+// haMember is a member of a test cluster run by its supervisor in the process. Its
+// lease manager runs no loop of its own: the test steps it.
+type haMember struct {
+	name   string
+	sup    *haSupervisor
+	served chan haServed
+	done   chan error
+	cancel context.CancelFunc
+	once   sync.Once
+	err    error
+}
+
+// startHAMember starts a member on cfg with the lease clock clock; onActive, when
+// set, runs on every App that started as active, and its result is the marker of
+// the haServed.
+func startHAMember(t *testing.T, name string, cfg *config.Config, clock *fakeClock, onActive func(*App) string) *haMember {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if roleOf(port) == role {
+	sup := newTestSupervisor(t, cfg)
+	m := &haMember{name: name, sup: sup, served: make(chan haServed, 8), done: make(chan error, 1)}
+	sup.clock = clock.Now
+	sup.leaseLoop = func(ctx context.Context, _ *ha.Manager) { <-ctx.Done() }
+	sup.onStandby = func(app *App) { m.served <- haServed{health: healthRole(app)} }
+	sup.onActive = func(app *App) {
+		s := haServed{active: true, health: healthRole(app)}
+		if onActive != nil {
+			s.marker = onActive(app)
+		}
+		m.served <- s
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	go func() { m.done <- sup.run(ctx) }()
+	t.Cleanup(func() { _ = m.stop(t) })
+	return m
+}
+
+// stop stops the member gracefully, once, and returns the error of its run.
+func (m *haMember) stop(t *testing.T) error {
+	t.Helper()
+	m.once.Do(func() {
+		m.cancel()
+		m.err = await(t, m.done, "the stop of member "+m.name)
+	})
+	return m.err
+}
+
+// expectServed waits for the next App the member serves and checks its role.
+func (m *haMember) expectServed(t *testing.T, active bool) haServed {
+	t.Helper()
+	role := server.HARoleStandby
+	if active {
+		role = server.HARoleActive
+	}
+	s := await(t, m.served, "member "+m.name+" serving as "+role)
+	if s.active != active || s.health != role {
+		t.Fatalf("member %s served active=%v with health role %q; want %s", m.name, s.active, s.health, role)
+	}
+	return s
+}
+
+// role returns the role the member reports (its health endpoint's).
+func (m *haMember) role() string { return m.sup.rt.serverStatus().Role }
+
+// step runs one lease step of the member, then checks that at most one member of
+// the cluster is active.
+func (m *haMember) step(t *testing.T, cluster ...*haMember) {
+	t.Helper()
+	m.sup.rt.mgr().Step(context.Background())
+	var active []string
+	for _, c := range cluster {
+		if c.role() == server.HARoleActive {
+			active = append(active, c.name)
+		}
+	}
+	if len(active) > 1 {
+		t.Fatalf("more than one active member: %v", active)
+	}
+}
+
+// stepUntilActive steps the member until it holds the lease. Only a failed write of
+// the lease takes more than one step.
+func (m *haMember) stepUntilActive(t *testing.T, cluster ...*haMember) {
+	t.Helper()
+	for range 20 {
+		m.step(t, cluster...)
+		if m.role() == server.HARoleActive {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("the member on port %d did not become %s within %s (now %q)", port, role, within, roleOf(port))
+	t.Fatalf("member %s did not acquire the lease: %+v", m.name, m.sup.rt.status())
+}
+
+// expectRoles checks the role every member reports.
+func expectRoles(t *testing.T, want map[*haMember]string) {
+	t.Helper()
+	for m, role := range want {
+		if got := m.role(); got != role {
+			t.Fatalf("member %s is %s; want %s", m.name, got, role)
+		}
+	}
 }
 
 // haMarker is a state document the test writes on the active member and reads on
@@ -210,85 +349,90 @@ func waitRole(t *testing.T, port int, role string, within time.Duration) {
 const haMarker = "ha_test.marker"
 
 // TestSupervisorHandsOverBetweenTwoMembers runs two members of a cluster in the
-// process: the first becomes active, the second standby; a graceful stop of the
-// active member writes a last snapshot and releases the lease, and the standby takes
-// over at its next read with the first member's metadata (its own database kept as
-// .bak); a restarted member comes back as standby.
+// process, on a lease clock and lease steps the test drives: the first becomes
+// active, the second standby while the first renews; a graceful stop of the active
+// member writes a last snapshot and releases the lease, and the standby takes over
+// at its next read with the first member's metadata (its own database kept as
+// .bak); a restarted member comes back as standby. At most one member is active
+// after every step, and no member serves a role twice.
 func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	t.Parallel() // independent: own data directories, HA targets and ports
 	if testing.Short() {
-		t.Skip("runs two HA members for several seconds")
+		t.Skip("opens five Apps of two HA members")
 	}
 	shared, key := t.TempDir(), haTestKey(t)
 	cfgA, cfgB := haTestConfig(t, shared, key), haTestConfig(t, shared, key)
-	handedOver := make(chan string, 4)
+	renew := cfgA.HA.RenewInterval
+	clock := newFakeClock()
 
-	start := func(cfg *config.Config, onActive func(*App)) (stop func() error) {
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		sup := newTestSupervisor(t, cfg)
-		sup.onActive = onActive
-		go func() { done <- sup.run(ctx) }()
-		return func() error {
-			cancel()
-			select {
-			case err := <-done:
-				return err
-			case <-time.After(30 * time.Second):
-				t.Fatal("the member did not stop")
-				return nil
-			}
-		}
-	}
-
-	stopA := start(cfgA, func(app *App) {
+	// Both members start at once (opening an App is slow under -race); neither
+	// holds the lease before its manager steps.
+	a := startHAMember(t, "A", cfgA, clock, func(app *App) string {
 		if err := app.metaStore.(*store.SQLiteStore).SaveIntegrityState(context.Background(), haMarker, map[string]string{"from": "A"}); err != nil {
 			t.Error(err)
 		}
+		return ""
 	})
-	waitRole(t, cfgA.Port, "active", appStartBudget)
-	stopB := start(cfgB, func(app *App) {
+	b := startHAMember(t, "B", cfgB, clock, func(app *App) string {
 		var v map[string]string
-		ok, err := app.metaStore.(*store.SQLiteStore).LoadIntegrityState(context.Background(), haMarker, &v)
-		if err != nil || !ok {
-			handedOver <- ""
-			return
+		if ok, err := app.metaStore.(*store.SQLiteStore).LoadIntegrityState(context.Background(), haMarker, &v); err != nil || !ok {
+			return ""
 		}
-		handedOver <- v["from"]
+		return v["from"]
 	})
-	waitRole(t, cfgB.Port, "standby", appStartBudget)
-	if roleOf(cfgA.Port) != "active" {
-		t.Fatal("the first member lost the active role when the second joined")
+	a.expectServed(t, false)
+	b.expectServed(t, false)
+
+	// A creates the lease and reopens as active; B reads it and stays standby
+	// while A renews it. The lease clock never gets near the TTL.
+	a.stepUntilActive(t, a, b)
+	a.expectServed(t, true)
+	for range 3 {
+		clock.Advance(renew)
+		a.step(t, a, b)
+		b.step(t, a, b)
+		expectRoles(t, map[*haMember]string{a: server.HARoleActive, b: server.HARoleStandby})
 	}
 
-	if err := stopA(); err != nil {
+	// A graceful stop releases the lease: B takes over at its next read, from A's
+	// last snapshot.
+	if err := a.stop(t); err != nil {
 		t.Fatalf("graceful stop of the active member: %v", err)
 	}
-	// The lease was released: the standby takes over at its next read.
-	waitRole(t, cfgB.Port, "active", 3*cfgB.HA.RenewInterval+appStartBudget)
-	select {
-	case from := <-handedOver:
-		if from != "A" {
-			t.Fatalf("the new active member does not have the metadata of the previous one (marker %q)", from)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the new active member did not start")
+	expectRoles(t, map[*haMember]string{a: server.HARoleStandby, b: server.HARoleStandby})
+	b.stepUntilActive(t, a, b)
+	if s := b.expectServed(t, true); s.marker != "A" {
+		t.Fatalf("the new active member does not have the metadata of the previous one (marker %q)", s.marker)
 	}
 	if backups, err := store.DatabaseBackups(cfgB.MetadataDBPath()); err != nil || len(backups) != 1 {
 		t.Fatalf("the standby's own database was not kept as a backup: %v, %v", backups, err)
 	}
 
-	stopA = start(cfgA, nil)
-	waitRole(t, cfgA.Port, "standby", appStartBudget)
-	time.Sleep(2 * cfgA.HA.RenewInterval)
-	if roleOf(cfgA.Port) != "standby" || roleOf(cfgB.Port) != "active" {
-		t.Fatalf("after the restart: A %q, B %q; want standby and active", roleOf(cfgA.Port), roleOf(cfgB.Port))
+	// A restarted member comes back as standby and stays one while B renews.
+	restarted := *cfgA
+	restarted.Port = freeLoopbackPort(t)
+	a2 := startHAMember(t, "A (restarted)", &restarted, clock, nil)
+	a2.expectServed(t, false)
+	for range 3 {
+		clock.Advance(renew)
+		b.step(t, b, a2)
+		a2.step(t, b, a2)
+		expectRoles(t, map[*haMember]string{a2: server.HARoleStandby, b: server.HARoleActive})
 	}
-	if err := stopB(); err != nil {
+
+	if err := b.stop(t); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopA(); err != nil {
+	if err := a2.stop(t); err != nil {
 		t.Fatal(err)
+	}
+	// No member served a role twice: no second active App, no takeover run twice.
+	for _, m := range []*haMember{a, b, a2} {
+		select {
+		case s := <-m.served:
+			t.Fatalf("member %s served once more (active=%v)", m.name, s.active)
+		default:
+		}
 	}
 }
 

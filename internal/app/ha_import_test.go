@@ -20,6 +20,7 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 	ctx := context.Background()
 	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
 	sup := newTestSupervisor(t, cfg)
+	sup.clock = newFakeClock().Now // the lease cannot expire however slowly the App opens
 	standby, err := sup.open(false)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +87,7 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 		}
 	}
 	// The import hashes the archive in the background.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(haWaitBound(t))
 	for time.Now().Before(deadline) {
 		rec, getErr := app.metaStore.GetBackupRecord(ctx, page.Rows[0].Record.ID)
 		if getErr == nil && rec.Status == models.StatusCompleted {
@@ -98,7 +99,8 @@ func TestTakeoverImportsArchivesNewerThanTheSnapshot(t *testing.T) {
 }
 
 // runManager runs m's lease loop until the test ends and waits until it holds the
-// lease.
+// lease. Give m's supervisor a fakeClock before its bootstrap: the lease then cannot
+// expire however slowly the test runs.
 func runManager(t *testing.T, m *ha.Manager) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,11 +113,7 @@ func runManager(t *testing.T, m *ha.Manager) {
 		cancel()
 		<-done
 	})
-	deadline := time.Now().Add(30 * time.Second)
 	for m.Check() != nil {
-		if time.Now().After(deadline) {
-			t.Fatal("did not acquire the lease")
-		}
-		time.Sleep(10 * time.Millisecond)
+		await(t, m.Changes(), "the acquisition of the lease")
 	}
 }
