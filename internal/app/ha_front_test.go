@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/ha"
+	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/server"
 )
 
@@ -234,5 +237,111 @@ func TestHAFrontReportsStuckRequests(t *testing.T) {
 	}
 	if err = closeApp(nil, fmt.Errorf("shutdown: %w", err)); !errors.Is(err, errHTTPHandlersRunning) {
 		t.Fatalf("closeApp under a stuck request = %v", err)
+	}
+}
+
+// TestHAFrontDeliversAFinishedResponse checks that an abort coming right after a
+// handler returned (its change committed) leaves its response alone: the client
+// gets it instead of a cut connection.
+func TestHAFrontDeliversAFinishedResponse(t *testing.T) {
+	t.Parallel()
+	f, base := startTestFront(t)
+	f.attach(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("committed"))
+	}))
+	slot := f.cur.Load()
+	f.afterRelease = func() { slot.abortAll() }
+	resp, err := http.Post(base+"/api/v1/jobs", "application/json", nil) //nolint:noctx // a local test server
+	if err != nil {
+		t.Fatalf("the response of a finished handler was not delivered: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusCreated || string(body) != "committed" {
+		t.Fatalf("finished handler aborted afterwards = %d %q (%v); want 201 committed", resp.StatusCode, body, err)
+	}
+}
+
+// TestLostLeaseStopsRunsBeforeWaitingForRequests checks the order of a step-down
+// (ttl 8s, renew 3s): the runs, and so the processes of the Database Tools, are
+// cancelled at the instant the lease is lost, not after the wait for the aborted
+// HTTP requests; a request that ignores its abort still keeps the App open.
+func TestLostLeaseStopsRunsBeforeWaitingForRequests(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	ctx := context.Background()
+	cfg := haTestConfig(t, t.TempDir(), haTestKey(t))
+	cfg.HA.LeaseTTL, cfg.HA.RenewInterval = 8*time.Second, 3*time.Second
+	sup := newTestSupervisor(t, cfg)
+	sup.clock = newFakeClock().Now // the lease cannot expire however slowly the App opens
+	standby, err := sup.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sup.bootstrap(ctx, standby); err != nil {
+		_ = standby.Close()
+		t.Fatal(err)
+	}
+	if err = standby.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sup.rt.mgr().Step(ctx)
+	if sup.rt.mgr().Role() != ha.RoleActive {
+		t.Fatal("did not acquire the lease")
+	}
+	front, base := startTestFront(t)
+	sup.front = front
+	app, err := sup.open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = app.Start(ctx); err != nil {
+		_ = app.Close()
+		t.Fatal(err)
+	}
+
+	// A run, like a backup whose mongodump runs under the run's context.
+	run, err := app.registry.Register(runs.Meta{Kind: models.RunBackup, ID: "bkp_lost_lease", Database: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := make(chan time.Time, 1)
+	if err = app.runs.Go(runs.BackupKey("c", "shop"), func(runCtx context.Context) {
+		defer run.End()
+		<-run.Bind(runCtx).Done()
+		cancelledAt <- time.Now()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An HTTP request that ignores its abort.
+	started, unblock := make(chan struct{}), make(chan struct{})
+	front.attach(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(started)
+		<-unblock
+	}))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, getErr := http.Get(base + "/api/v1/jobs"); getErr == nil { //nolint:noctx // bounded by unblock
+			_ = resp.Body.Close()
+		}
+	}()
+	await(t, started, "the start of the request")
+
+	lost := time.Now()
+	err = sup.loseLease(app, 1)
+	waited := time.Since(lost)
+	stopped := await(t, cancelledAt, "the cancellation of the run")
+	close(unblock)
+	<-done
+	_ = app.Close()
+	if !errors.Is(err, errHTTPHandlersRunning) {
+		t.Fatalf("step-down under a stuck request = %v; want errHTTPHandlersRunning", err)
+	}
+	if d := stopped.Sub(lost); d >= front.abortWait/2 {
+		t.Fatalf("the run was cancelled %s after the lease was lost; want at once, before the wait for the requests (%s)", d, front.abortWait)
+	}
+	if waited < front.abortWait {
+		t.Fatalf("the step-down returned after %s; want the wait for the aborted requests (%s) after the runs stopped", waited, front.abortWait)
 	}
 }

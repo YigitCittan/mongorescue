@@ -57,6 +57,9 @@ func (s *Service) UpdateConnection(ctx context.Context, id string, in connection
 	if err != nil {
 		return nil, err
 	}
+	if err = s.checkFence(); err != nil {
+		return nil, err
+	}
 	if in.PostRestoreCommands == nil {
 		auditlog.Annotate(ctx, auditPostRestoreChanged, "false")
 		return ed.Update(ctx, id, in)
@@ -181,6 +184,9 @@ func (s *Service) DropKeptClones(ctx context.Context, id string) (*models.Restor
 	}
 	conn, err := s.ResolveConnection(ctx, rec.TargetConnectionID)
 	if err != nil {
+		return nil, err
+	}
+	if err = s.checkFence(); err != nil {
 		return nil, err
 	}
 	var failed []string

@@ -39,6 +39,9 @@ type haFront struct {
 	// abortWait bounds the wait for aborted requests (haHandlerAbortWait; tests
 	// shorten it).
 	abortWait time.Duration
+	// afterRelease, when set, runs after a handler returned and its request was
+	// released (tests).
+	afterRelease func()
 
 	cur   atomic.Pointer[frontSlot]
 	errCh chan error
@@ -92,7 +95,7 @@ func (f *haFront) errs() <-chan error { return f.errCh }
 // request reaches it before.
 func (f *haFront) attach(h http.Handler) {
 	ctx, cancel := context.WithCancel(context.Background())
-	slot := &frontSlot{h: h, ctx: ctx, abort: cancel, inflight: map[*http.ResponseController]struct{}{}, idle: make(chan struct{})}
+	slot := &frontSlot{h: h, ctx: ctx, abort: cancel, inflight: map[*frontRequest]struct{}{}, idle: make(chan struct{})}
 	if old := f.cur.Swap(slot); old != nil {
 		// Not reached: every App is detached before the next one is attached.
 		old.refuse()
@@ -107,14 +110,46 @@ func (f *haFront) attach(h http.Handler) {
 // errHTTPHandlersRunning when some did not end within abortWait after the abort.
 // A nil front (an App driven without a listener, in tests) has nothing to detach.
 func (f *haFront) detach(drain time.Duration) error {
+	return f.settle(f.take(), drain)
+}
+
+// cut detaches the App without any drain and without waiting: its requests in
+// progress are aborted at once. When the lease is lost, the App's runs are stopped
+// right after, and settle(slot, 0) waits for the requests only then.
+func (f *haFront) cut() *frontSlot {
+	slot := f.take()
+	if slot != nil {
+		f.abortSlot(slot)
+	}
+	return slot
+}
+
+// take stops dispatching requests to the attached App and returns its slot (nil
+// when none is attached, or for a nil front).
+func (f *haFront) take() *frontSlot {
 	if f == nil {
 		return nil
 	}
 	slot := f.cur.Swap(nil)
+	if slot != nil {
+		slot.refuse()
+	}
+	return slot
+}
+
+// abortSlot aborts the requests in progress of slot.
+func (f *haFront) abortSlot(slot *frontSlot) {
+	if n := slot.abortAll(); n > 0 {
+		f.logger.Info("aborted the HTTP requests still running on the previous App", slog.Int("requests", n))
+	}
+}
+
+// settle lets the requests in progress of a detached slot finish within drain,
+// aborts the rest and waits at most abortWait for them (see detach).
+func (f *haFront) settle(slot *frontSlot, drain time.Duration) error {
 	if slot == nil {
 		return nil
 	}
-	slot.refuse()
 	select {
 	case <-slot.idle:
 		slot.abort()
@@ -131,8 +166,7 @@ func (f *haFront) detach(drain time.Duration) error {
 		case <-timer.C:
 		}
 	}
-	n := slot.abortAll()
-	f.logger.Info("aborted the HTTP requests still running on the previous App", slog.Int("requests", n))
+	f.abortSlot(slot)
 	timer := time.NewTimer(f.abortWait)
 	defer timer.Stop()
 	select {
@@ -182,20 +216,31 @@ func (f *haFront) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.switching.ServeHTTP(w, r)
 		return
 	}
-	rc, ok := slot.acquire(w)
+	req, ok := slot.acquire(w)
 	if !ok {
 		f.switching.ServeHTTP(w, r)
 		return
 	}
-	defer slot.release(rc)
+	released := false
+	defer func() {
+		if !released {
+			slot.release(req)
+		}
+	}()
 	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	stop := context.AfterFunc(slot.ctx, cancel)
-	defer stop()
 	slot.h.ServeHTTP(w, r.WithContext(ctx))
-	if slot.ctx.Err() != nil {
-		// The request was aborted: cut the connection, so a partial response is
-		// not taken for a complete one.
+	stop()
+	cancel()
+	// The handler has finished: from now on an abort leaves its response alone.
+	released = true
+	aborted := slot.release(req)
+	if f.afterRelease != nil {
+		f.afterRelease()
+	}
+	if aborted {
+		// The handler was still running when its request was aborted: cut the
+		// connection, so a partial response is not taken for a complete one.
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -209,30 +254,40 @@ type frontSlot struct {
 
 	mu       sync.Mutex
 	refused  bool
-	inflight map[*http.ResponseController]struct{}
+	inflight map[*frontRequest]struct{}
 	// idle is closed once the slot refuses requests and none runs.
 	idle   chan struct{}
 	closed bool
 }
 
+// frontRequest is a request in progress on a frontSlot.
+type frontRequest struct {
+	rc *http.ResponseController
+	// aborted is set (under the slot's mutex) when the request is aborted while
+	// its handler runs.
+	aborted bool
+}
+
 // acquire registers a request; false once the slot refuses requests.
-func (s *frontSlot) acquire(w http.ResponseWriter) (*http.ResponseController, bool) {
+func (s *frontSlot) acquire(w http.ResponseWriter) (*frontRequest, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.refused {
 		return nil, false
 	}
-	rc := http.NewResponseController(w)
-	s.inflight[rc] = struct{}{}
-	return rc, true
+	req := &frontRequest{rc: http.NewResponseController(w)}
+	s.inflight[req] = struct{}{}
+	return req, true
 }
 
-// release unregisters a request that ended.
-func (s *frontSlot) release(rc *http.ResponseController) {
+// release unregisters a request whose handler returned, and reports whether it
+// was aborted while the handler ran.
+func (s *frontSlot) release(req *frontRequest) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.inflight, rc)
+	delete(s.inflight, req)
 	s.closeIdleLocked()
+	return req.aborted
 }
 
 // refuse makes the slot refuse new requests.
@@ -259,16 +314,18 @@ func (s *frontSlot) running() int {
 }
 
 // abortAll cancels the contexts of the requests in progress and makes their
-// connections' reads and writes fail at once, like the close of a server. It
-// returns the number of requests aborted.
+// connections' reads and writes fail at once, like the close of a server. A
+// request whose handler has returned is not touched: its response is delivered.
+// It returns the number of requests aborted.
 func (s *frontSlot) abortAll() int {
 	s.abort()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	for rc := range s.inflight {
-		_ = rc.SetReadDeadline(now)
-		_ = rc.SetWriteDeadline(now)
+	for req := range s.inflight {
+		req.aborted = true
+		_ = req.rc.SetReadDeadline(now)
+		_ = req.rc.SetWriteDeadline(now)
 	}
 	return len(s.inflight)
 }

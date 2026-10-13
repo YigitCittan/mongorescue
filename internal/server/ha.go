@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
 // HA roles reported by HAStatus.Role.
@@ -132,6 +135,49 @@ func (s *Server) healthHA(body map[string]any) {
 	st := s.haStatus()
 	body["role"] = st.Role
 	body["ha"] = st
+}
+
+// WithFence makes every request that may change something (any method but GET,
+// HEAD and OPTIONS: the API, sign-ins, MCP) check fence before it is served: the
+// HA fence of the runs, which fails once this instance no longer holds the lease.
+// Such a request answers 503 with Retry-After and does nothing. The operations
+// service checks the fence again before it commits (operations.Config.Fence), and
+// the HA supervisor cancels the requests in progress when the lease is lost.
+func WithFence(fence models.Fence) Option {
+	return func(s *Server) { s.fence = fence }
+}
+
+// fenceGate refuses the requests that may change something once the HA fence
+// fails (see WithFence).
+func (s *Server) fenceGate(next http.Handler) http.Handler {
+	if s.fence == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.fence.Check() != nil {
+			s.writeFenced(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// writeFenced answers a request refused because this instance no longer holds the
+// HA lease: 503 with Retry-After.
+func (s *Server) writeFenced(w http.ResponseWriter) {
+	retry := 10
+	if s.haStatus != nil {
+		if r := s.haStatus().RetryAfterSeconds; r > 0 {
+			retry = r
+		}
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeError(w, http.StatusServiceUnavailable, operations.ErrNotActive.Error())
 }
 
 // SwitchingHandler answers the requests an active-passive HA member receives while

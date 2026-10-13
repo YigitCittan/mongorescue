@@ -709,10 +709,10 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 		case <-ctx.Done():
 			return false, s.shutdownActive(app)
 		case err := <-errCh:
-			httpErr := s.front.detach(0)
+			slot := s.front.cut()
 			app.ForceStop(ShutdownReason)
 			_ = mgr.Release(context.Background())
-			return false, errors.Join(err, closeApp(app, httpErr))
+			return false, errors.Join(err, closeApp(app, s.front.settle(slot, 0)))
 		case <-mgr.Changes():
 			if mgr.Role() == ha.RoleActive {
 				continue
@@ -748,11 +748,14 @@ func (s *haSupervisor) loseLease(app *App, epoch uint64) error {
 	s.logger.Error("this instance lost the HA lease: cancelling its runs and stepping down to standby",
 		slog.Uint64("epoch", epoch), slog.String("error", st.LastError))
 	// Work stops first; the alert follows before the App closes. The requests in
-	// progress are aborted at once, but the listener stays open: until the
-	// standby App serves, requests get 503 and the health check "switching".
-	httpErr := s.front.detach(0)
+	// progress are aborted, and the runs (mongodump, mongorestore, the collector,
+	// copies) stopped, at once: the wait for the aborted requests comes only after
+	// both. The listener stays open: until the standby App serves, requests get
+	// 503 and the health check "switching".
+	slot := s.front.cut()
 	app.ForceStop(LostLeaseReason)
 	s.notifyStepDown(app, epoch)
+	httpErr := s.front.settle(slot, 0)
 	if app.runsAbandoned.Load() {
 		return errors.New("runs did not stop after the HA lease was lost; exiting so that the restart policy starts a fresh standby")
 	}

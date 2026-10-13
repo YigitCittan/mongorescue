@@ -470,6 +470,9 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	// against, and the run history taken from, what is stored right now, so a run that
 	// finished since the first read is not reverted.
 	persist := func() error {
+		if fenceErr := s.checkFence(); fenceErr != nil {
+			return fenceErr
+		}
 		current, getErr := s.store.GetJob(ctx, id)
 		if getErr != nil {
 			return notFound(getErr, "job not found")

@@ -69,6 +69,9 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, in targets.Input)
 			in.S3, held = &s3, h
 		}
 	}
+	if err = s.checkFence(); err != nil {
+		return nil, err
+	}
 	t, err := u.Update(ctx, id, in)
 	if err != nil {
 		return nil, err

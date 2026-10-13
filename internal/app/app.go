@@ -782,6 +782,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		PITRSwap:    restoreEngine,
 		// In-place point-in-time restores are refused in active-passive HA mode.
 		HAMode: o.ha != nil,
+		// Synchronous changes of the API and MCP are fenced like the runs.
+		Fence: o.fence(),
 		ToolsVersion: func(ctx context.Context) (string, error) {
 			return mongotools.NewResolver(cfg.ToolsDir).ToolVersion(ctx, "mongorestore")
 		},
@@ -938,7 +940,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.ha != nil {
-		serverOpts = append(serverOpts, server.WithHA(o.ha.serverStatus, metricSet.StandbyHandler()))
+		serverOpts = append(serverOpts, server.WithHA(o.ha.serverStatus, metricSet.StandbyHandler()), server.WithFence(o.fence()))
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
