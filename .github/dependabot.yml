@@ -57,9 +57,12 @@ updates:
           - "minor"
           - "patch"
 
-  # Base images in the root Dockerfile (golang builder, alpine runtime).
+  # Base images in the root Dockerfile (golang builder, alpine runtime) and the
+  # ClusterFuzzLite builder (.clusterfuzzlite/Dockerfile, pinned by digest).
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.clusterfuzzlite"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

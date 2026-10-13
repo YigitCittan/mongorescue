@@ -9,8 +9,13 @@ import (
 // fuzzKey is a fixed key so that fuzz inputs are reproducible.
 var fuzzKey = bytes.Repeat([]byte{0x42}, KeySize)
 
+// fataler is the part of testing.TB the fuzz seed helpers use. Fuzz targets pass
+// their *testing.F, which in libFuzzer builds (ClusterFuzzLite, go-118-fuzz-build)
+// is a stand-in that does not implement all of testing.TB.
+type fataler interface{ Fatal(args ...any) }
+
 // fuzzBox returns a Box with fuzzKey.
-func fuzzBox(t testing.TB) *Box {
+func fuzzBox(t fataler) *Box {
 	b, err := New(fuzzKey)
 	if err != nil {
 		t.Fatal(err)

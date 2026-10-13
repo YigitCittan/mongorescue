@@ -26,8 +26,16 @@ var fixtureScenarios = map[string][]string{
 	"replace":    {"fx_rep"},
 }
 
+// helperT is the part of testing.TB the fixture helpers use. Fuzz targets pass
+// their *testing.F, which in libFuzzer builds (ClusterFuzzLite, go-118-fuzz-build)
+// is a stand-in that does not implement all of testing.TB.
+type helperT interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
 // readFixture returns the raw bytes of a fixture.
-func readFixture(t testing.TB, version, scenario string) []byte {
+func readFixture(t helperT, version, scenario string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "fixtures", version, scenario+".bson"))
 	if err != nil {
@@ -54,7 +62,7 @@ func splitEntries(t testing.TB, b []byte) []bson.Raw {
 }
 
 // mustMarshal marshals d.
-func mustMarshal(t testing.TB, d any) bson.Raw {
+func mustMarshal(t helperT, d any) bson.Raw {
 	t.Helper()
 	b, err := bson.Marshal(d)
 	if err != nil {
@@ -68,7 +76,7 @@ func ts(secs, inc uint32) bson.Timestamp { return bson.Timestamp{T: secs, I: inc
 
 // entryAt builds a top-level oplog entry at timestamp at: the given fields, then ts,
 // t, v and wall as the server writes them.
-func entryAt(t testing.TB, at bson.Timestamp, fields bson.D) bson.Raw {
+func entryAt(t helperT, at bson.Timestamp, fields bson.D) bson.Raw {
 	t.Helper()
 	d := append(bson.D{}, fields...)
 	d = append(d,

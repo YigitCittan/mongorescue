@@ -46,9 +46,14 @@ func FuzzArchiveTarget(f *testing.F) {
 	})
 }
 
+// fataler is the part of testing.TB the fuzz seed helpers use. Fuzz targets pass
+// their *testing.F, which in libFuzzer builds (ClusterFuzzLite, go-118-fuzz-build)
+// is a stand-in that does not implement all of testing.TB.
+type fataler interface{ Fatal(args ...any) }
+
 // fuzzZip returns an archive with a file for each name ("/"-suffixed names are
 // directories); body is the content of every file.
-func fuzzZip(t testing.TB, body []byte, names ...string) []byte {
+func fuzzZip(t fataler, body []byte, names ...string) []byte {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, n := range names {

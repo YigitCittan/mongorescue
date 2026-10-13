@@ -61,8 +61,18 @@ var (
 )
 
 // ParseProgress parses one line of mongodump or mongorestore output (with or without
-// the tools' leading timestamp). ok is false for lines that carry no progress.
-func ParseProgress(line string) (p Progress, ok bool) {
+// the tools' leading timestamp). ok is false for lines that carry no progress,
+// including lines whose namespace is empty (two backticks).
+func ParseProgress(line string) (Progress, bool) {
+	p, ok := parseProgress(line)
+	if !ok || p.Namespace == "" {
+		return Progress{}, false
+	}
+	return p, true
+}
+
+// parseProgress is ParseProgress without the check of the namespace.
+func parseProgress(line string) (p Progress, ok bool) {
 	msg := strings.TrimSpace(stripTimestamp(line))
 	switch {
 	case strings.HasPrefix(msg, "["):

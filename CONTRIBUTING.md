@@ -64,7 +64,7 @@ make test-integration                        # against services you configured y
 make docker-smoke                            # build the image and smoke-test it
 ```
 
-**Fuzz tests** (`func FuzzXxx(f *testing.F)`) cover every parser and validator that handles untrusted input: connection strings and their redaction, the tools config file, sealed values, age ciphertext, the update archive and checksums, versions, notification channels, the legacy configuration, cron expressions, storage keys and restore namespaces. A plain `go test` runs only their seed corpora (and any regression inputs in `testdata/fuzz/`), so it stays fast. `make fuzz` fuzzes each target in turn:
+**Fuzz tests** (`func FuzzXxx(f *testing.F)`) cover every parser and validator that handles untrusted input: connection strings and their redaction, the tools config file, sealed values, age ciphertext, the archive prelude, the oplog codec and the synthetic oplog archive, PEM and PKCS#8 TLS keys, the HA storage location, tool progress lines, the update archive and checksums, versions, notification channels, the legacy configuration, cron expressions, storage keys and restore namespaces. A plain `go test` runs only their seed corpora (and any regression inputs in `testdata/fuzz/`), so it stays fast. `make fuzz` fuzzes each target in turn:
 
 ```bash
 make fuzz                                    # every target, 30s each
@@ -89,7 +89,7 @@ E2E_OUT=/tmp/desktop-e2e make test-desktop-update-e2e   # keep the builds and re
 go test -tags desktop_e2e -run E2E ./internal/desktop/  # the release-server override's own tests
 ```
 
-When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths).
+When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths). The targets also run under [ClusterFuzzLite](.clusterfuzzlite/build.sh) (libFuzzer, on pull requests and in daily batch runs), which builds every target in `FUZZ_TARGETS` with the test files of its package: there `*testing.F` is a stand-in that does not implement all of `testing.TB`, so a seed helper a target calls with `f` must take a narrower interface (as `fataler` and `helperT` do), and work that must not repeat on every input (key generation, for example) belongs in a `sync.Once`, because libFuzzer runs the whole `Fuzz` function for each input.
 
 The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only by `internal/mongoconn` and `_test.go` files**, plus its `bson` codec (and nothing else from the driver) by `internal/oplog`; CI fails on any other import. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
 
@@ -236,6 +236,7 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | `make test-e2e` | Playwright browser suite (`e2e/`) against the built binary and disposable MongoDB 7 and MinIO containers | Docker, curl 7.75+, Go, Node.js 20+ and npm, MongoDB Database Tools |
 | `make test-desktop-update-e2e` | Desktop app in-app update, end to end, on the host OS: two Wails builds, the release's packaging, a fake GitHub release; an update and a tampered archive | Go, Wails CLI, jq, the webview build dependencies (7z and Git Bash on Windows) |
 | `make fuzz` | Each fuzz target in `FUZZ_TARGETS` for `FUZZTIME` (default `30s`), one after another | Go |
+| `make fuzz-list` | Prints `FUZZ_TARGETS`, one `<package>:<FuzzFunc>` per line (the list ClusterFuzzLite builds) | |
 | `make docker-smoke` | Builds the image and checks health, auth, dashboard and bundled tools | Docker, curl |
 
 The integration suite (`internal/integration`) drives the real `mongodump`/`mongorestore` binaries: round-trip fidelity (options, indexes, every BSON type, document hashes) with gzip, encryption and collection filters, corruption and interruption handling, concurrency, the full HTTP API in-process, and a storage conformance suite run against local disk and every configured S3 provider; [docs/testing.md](docs/testing.md) lists what each test guarantees. Every test also asserts that the MongoDB password never appears in API responses, records or logs.

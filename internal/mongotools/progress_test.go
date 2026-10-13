@@ -51,6 +51,9 @@ func TestParseProgressRealLines(t *testing.T) {
 		{"[##..] broken bar", Progress{}, false},
 		{"", Progress{}, false},
 		{"Failed: error connecting to db server: no reachable servers", Progress{}, false},
+		// An empty quoted namespace carries no progress (found by FuzzParseProgress).
+		{"finished restoring `` (0 document, 0 failure)", Progress{}, false},
+		{"writing `` to archive", Progress{}, false},
 	}
 	for _, c := range cases {
 		got, ok := ParseProgress(c.line)

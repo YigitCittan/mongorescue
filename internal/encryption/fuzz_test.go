@@ -19,8 +19,13 @@ const (
 	otherRecipient = "age1fqa7lp48axu29pv9l0tcqn3mgukjv2u3x6vknr4g9x0kl7npt40qj4n7rn"
 )
 
+// fataler is the part of testing.TB the fuzz seed helpers use. Fuzz targets pass
+// their *testing.F, which in libFuzzer builds (ClusterFuzzLite, go-118-fuzz-build)
+// is a stand-in that does not implement all of testing.TB.
+type fataler interface{ Fatal(args ...any) }
+
 // fuzzDecryptor returns a Decryptor for identity.
-func fuzzDecryptor(t testing.TB, identity string) *Decryptor {
+func fuzzDecryptor(t fataler, identity string) *Decryptor {
 	d, err := NewDecryptor(DecryptorConfig{Identity: identity})
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +34,7 @@ func fuzzDecryptor(t testing.TB, identity string) *Decryptor {
 }
 
 // fuzzEncrypt encrypts plaintext to recipients, writing it in pieces of step bytes.
-func fuzzEncrypt(t testing.TB, plaintext []byte, step int, recipients ...string) []byte {
+func fuzzEncrypt(t fataler, plaintext []byte, step int, recipients ...string) []byte {
 	enc, err := NewX25519Encryptor(recipients)
 	if err != nil {
 		t.Fatal(err)
