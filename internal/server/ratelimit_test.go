@@ -27,15 +27,25 @@ type rateFixture struct {
 
 func newRateFixture(t *testing.T, general, burst, work, workBurst int) *rateFixture {
 	t.Helper()
+	return newRateFixtureWith(t, general, burst, work, workBurst, nil, false)
+}
+
+// newRateFixtureWith is newRateFixture with a logger (nil: the default) and the
+// trust_proxy_headers setting.
+func newRateFixtureWith(t *testing.T, general, burst, work, workBurst int, logger *slog.Logger, trustProxy bool) *rateFixture {
+	t.Helper()
 	srv, _, _ := setupTestServer(t)
 	st := storetest.New(t)
 	cfg := newTestConfig()
 	cfg.Security.APIRateLimitPerMinute, cfg.Security.APIRateLimitBurst = general, burst
 	cfg.Security.APIWorkRateLimitPerMinute, cfg.Security.APIWorkRateLimitBurst = work, workBurst
+	cfg.Security.TrustProxyHeaders = trustProxy
 	svc := newTestAuth(t, st, testAPIKey)
 	f := &rateFixture{log: auditlog.New(auditlog.Config{Repo: st, Logger: slog.New(slog.DiscardHandler)})}
-	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, nil,
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, logger,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, cfg.Security)), WithAuditLog(f.log),
+		WithMetricsHandler(metrics),
 		WithRateLimitObserver(func(caller, budget string) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -146,13 +156,33 @@ func TestRateLimitPerSessionAndAudit(t *testing.T) {
 func TestRateLimitPerAddressWithoutCredentials(t *testing.T) {
 	f := newRateFixture(t, 1000, 1000, 0, 1)
 	var last *httptest.ResponseRecorder
+	// Wrong credentials, on any route, exhaust the address's anonymous budget...
 	for range anonymousRateLimit.Burst + 1 {
-		last = f.request("GET", "/api/v1/setup/status", "", "203.0.113.5")
+		last = f.request("GET", "/api/v1/jobs", "wrong-key-of-some-length", "203.0.113.5")
 	}
 	assertRateLimited(t, last, "an address over the anonymous burst")
-	assertRateLimited(t, f.request("GET", "/api/v1/jobs", "wrong-key-of-some-length", "203.0.113.5"), "a wrong key from that address")
+	assertRateLimited(t, f.request("GET", "/metrics", "wrong-key-of-some-length", "203.0.113.5"), "/metrics with a wrong key from that address")
+	// ...but not its budget of the sign-in routes, which is separate.
+	for _, path := range []string{"/api/v1/setup/status", authMethodsPath, meRoute} {
+		if rec := f.request("GET", path, "", "203.0.113.5"); rec.Code != http.StatusOK {
+			t.Fatalf("GET %s after the anonymous budget ran out = %d", path, rec.Code)
+		}
+	}
+	for range authRateLimit.Burst {
+		last = f.request("GET", "/api/v1/setup/status", "", "203.0.113.5")
+	}
+	assertRateLimited(t, last, "an address over the sign-in burst")
+	f.mu.Lock()
+	if !slices.Contains(f.observed, "anonymous/auth") || !slices.Contains(f.observed, "anonymous/general") {
+		t.Errorf("observed %v; want refusals of both anonymous budgets", f.observed)
+	}
+	f.mu.Unlock()
 	if rec := f.request("GET", "/api/v1/setup/status", "", "203.0.113.6"); rec.Code != http.StatusOK {
 		t.Fatalf("another address = %d", rec.Code)
+	}
+	// A valid key reads /metrics whatever its address's anonymous budget.
+	if rec := f.request("GET", "/metrics", testAPIKey, "203.0.113.5"); rec.Code != http.StatusOK {
+		t.Fatalf("/metrics with a valid key from the limited address = %d", rec.Code)
 	}
 	if rec := f.request("GET", healthPath, "", "203.0.113.5"); rec.Code != http.StatusOK {
 		t.Fatalf("health from the limited address = %d", rec.Code)
@@ -160,6 +190,26 @@ func TestRateLimitPerAddressWithoutCredentials(t *testing.T) {
 	// Valid credentials are not held back by their address's anonymous budget.
 	if rec := f.request("GET", "/api/v1/jobs", testAPIKey, "203.0.113.5"); rec.Code != http.StatusOK {
 		t.Fatalf("a valid key from the limited address = %d", rec.Code)
+	}
+}
+
+func TestForwardedHeadersWithoutTrustAreWarnedOnce(t *testing.T) {
+	const warning = "trust_proxy_headers is off"
+	for _, trust := range []bool{false, true} {
+		logs := &lockedBuffer{}
+		f := newRateFixtureWith(t, 1000, 1000, 0, 1, slog.New(slog.NewTextHandler(logs, nil)), trust)
+		for range 3 {
+			req := httptest.NewRequest("GET", healthPath, nil)
+			req.Header.Set("X-Forwarded-For", "198.51.100.20")
+			f.h.ServeHTTP(httptest.NewRecorder(), req)
+		}
+		want := 1
+		if trust {
+			want = 0
+		}
+		if n := strings.Count(logs.String(), warning); n != want {
+			t.Errorf("trust_proxy_headers %v: %d warnings; want %d", trust, n, want)
+		}
 	}
 }
 
@@ -205,6 +255,21 @@ func TestWorkRoutesAreRegisteredAndComplete(t *testing.T) {
 		cheap := strings.HasSuffix(p, "/cancel") || strings.HasSuffix(p, "/pin")
 		if !cheap && !workRoutes[p] {
 			t.Errorf("operator route %q starts work but is not in workRoutes", p)
+		}
+	}
+	// Admin routes that start work or reach another system.
+	for _, p := range []string{
+		"POST /api/v1/connections/test", "POST /api/v1/connections/{id}/test",
+		"POST /api/v1/storage-targets/test", "POST /api/v1/storage-targets/{id}/test",
+		"POST /api/v1/notifications/channels/{id}/test",
+		"POST /api/v1/storage-targets/{id}/scan", "POST /api/v1/storage-targets/{id}/import",
+		"POST /api/v1/metadata-backup/run", "POST /api/v1/integrity/sweep", "POST /api/v1/backups/{id}/copies/retry",
+		pitrChainTestRoute,
+	} {
+		if !workRoutes[p] {
+			t.Errorf("admin work route %q is not in workRoutes", p)
+		} else if routeScopes[p] != auth.ScopeAdmin {
+			t.Errorf("%q needs %q; the list names admin routes", p, routeScopes[p])
 		}
 	}
 	for p, need := range routeScopes {

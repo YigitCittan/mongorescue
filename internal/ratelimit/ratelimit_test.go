@@ -87,6 +87,44 @@ func TestIdleBucketsAreEvictedAndTheCapHolds(t *testing.T) {
 	}
 }
 
+// TestAFloodOfNewKeysDoesNotResetAThrottledKey floods the limiter with new keys
+// while one key keeps being refused: its bucket must survive, both when idle full
+// buckets can be dropped instead and when only the least recently used can.
+func TestAFloodOfNewKeysDoesNotResetAThrottledKey(t *testing.T) {
+	c := &fakeClock{now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+	l := New(WithClock(c.Now), WithMaxKeys(200))
+	slow := Limit{PerMinute: 1, Burst: 1}
+	fast := Limit{PerMinute: 600, Burst: 1}
+	if ok, _ := l.Allow("throttled", slow); !ok {
+		t.Fatal("first request refused")
+	}
+	// Idle buckets that refill within a second fill the map; the throttled key is
+	// the least recently used of all, but those full buckets go first.
+	for i := range 199 {
+		l.Allow(fmt.Sprint("idle-", i), fast)
+	}
+	c.now = c.now.Add(time.Second)
+	for i := range 150 {
+		l.Allow(fmt.Sprint("new-", i), slow)
+	}
+	if ok, _ := l.Allow("throttled", slow); ok {
+		t.Fatal("new keys reset the throttled bucket while full ones could be dropped")
+	}
+	// Now a flood of keys that stay drained: the throttled key, still refused on
+	// every request, is never the least recently used.
+	for i := range 10_000 {
+		l.Allow(fmt.Sprint("flood-", i), slow)
+		if i%50 == 0 {
+			if ok, _ := l.Allow("throttled", slow); ok {
+				t.Fatalf("the flood reset the throttled bucket after %d new keys", i)
+			}
+		}
+		if n := l.Len(); n > 200 {
+			t.Fatalf("%d buckets; the cap is 200", n)
+		}
+	}
+}
+
 func TestGatePassesOncePerInterval(t *testing.T) {
 	c := &fakeClock{now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
 	g := NewGate(time.Minute, c.Now)

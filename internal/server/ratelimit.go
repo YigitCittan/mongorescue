@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
@@ -22,20 +23,37 @@ const (
 	rateCallerAnonymous = "anonymous"
 	rateBudgetGeneral   = "general"
 	rateBudgetWork      = "work"
+	rateBudgetAuth      = "auth"
 )
 
 // RateLimitCallers and RateLimitBudgets list the label values of the rate limit
 // observer (see WithRateLimitObserver), so its series can start at zero.
 var (
 	RateLimitCallers = []string{rateCallerAPIKey, rateCallerSession, rateCallerAnonymous}
-	RateLimitBudgets = []string{rateBudgetGeneral, rateBudgetWork}
+	RateLimitBudgets = []string{rateBudgetGeneral, rateBudgetWork, rateBudgetAuth}
 )
 
-// anonymousRateLimit is the budget of unauthenticated requests per client address
-// (an IPv6 address counts by its /64): the public routes (sign-in, setup, single
-// sign-on) and requests refused for missing or wrong credentials. Login and setup
-// failures are throttled further by internal/auth.
-var anonymousRateLimit = ratelimit.Limit{PerMinute: 300, Burst: 100}
+// Budgets of unauthenticated requests per client address (an IPv6 address counts
+// by its /64), in two buckets so that one cannot exhaust the other:
+// authRateLimit for the routes that sign in (setup, login, the sign-in methods,
+// single sign-on and GET /api/v1/auth/me), anonymousRateLimit for every other
+// request without valid credentials (a missing or wrong API key or session, on
+// any route, /mcp and /metrics included). Login and setup failures are throttled
+// further by internal/auth. Behind a reverse proxy every client has the proxy's
+// address unless security.trust_proxy_headers is on (see warnUntrustedProxy).
+var (
+	authRateLimit      = ratelimit.Limit{PerMinute: 300, Burst: 100}
+	anonymousRateLimit = ratelimit.Limit{PerMinute: 300, Burst: 100}
+)
+
+// isAuthPath reports whether path is one of the sign-in routes of authRateLimit.
+func isAuthPath(path string) bool {
+	switch path {
+	case "/api/v1/setup/status", "/api/v1/setup", "/api/v1/auth/login", authMethodsPath, meRoute:
+		return true
+	}
+	return strings.HasPrefix(path, oidcFlowCookiePath)
+}
 
 // rateLimitLogInterval is how often a refused caller is logged and, when its
 // refusal is not recorded anyway, audited.
@@ -138,11 +156,13 @@ func (s *Server) allowRate(w http.ResponseWriter, r *http.Request, p *auth.Princ
 		return true
 	}
 	key, caller := s.rateKey(r, p)
-	limit := general
+	limit, budget := general, rateBudgetGeneral
 	if caller == rateCallerAnonymous {
 		limit = anonymousRateLimit
+		if isAuthPath(r.URL.Path) {
+			key, limit, budget = "auth-"+key, authRateLimit, rateBudgetAuth
+		}
 	}
-	budget := rateBudgetGeneral
 	ok, wait := s.rateBuckets.Allow(key, limit)
 	if ok && caller != rateCallerAnonymous && work.Enabled() && workRoutes[pattern] {
 		budget, limit = rateBudgetWork, work
@@ -153,6 +173,24 @@ func (s *Server) allowRate(w http.ResponseWriter, r *http.Request, p *auth.Princ
 	}
 	s.refuseRate(w, r, p, pattern, caller, budget, limit, wait, key, recorded)
 	return false
+}
+
+// warnUntrustedProxy logs once per process that requests carry forwarding headers
+// while security.trust_proxy_headers is off: behind a reverse proxy every client
+// then has the proxy's address, and all of them share one budget of
+// unauthenticated requests (and one login throttle).
+func (s *Server) warnUntrustedProxy(r *http.Request) {
+	if r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("X-Real-IP") == "" {
+		return
+	}
+	if s.security().TrustProxyHeaders {
+		return
+	}
+	s.proxyWarning.Do(func() {
+		s.logger.Warn("requests carry X-Forwarded-For or X-Real-IP but security.trust_proxy_headers is off: " +
+			"behind a reverse proxy every client has the proxy's address and they share one rate limit and login throttle; " +
+			"turn trust_proxy_headers on if the proxy sets these headers (see docs/production.md)")
+	})
 }
 
 // refuseRate answers 429 with Retry-After, counts the refusal and, at most once a

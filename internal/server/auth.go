@@ -87,6 +87,7 @@ func (s *Server) registerAuthRoutes(mux *router) {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		s.warnUntrustedProxy(r)
 		isMetrics := path == "/metrics"
 		isMCP := path == MCPPath
 		switch {
@@ -155,8 +156,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// Requests without valid credentials share the budget of their client
-			// address (not /metrics, which has its own path).
-			if !isMetrics && !s.allowRate(w, r, nil, pattern, recorded) {
+			// address, /metrics with a wrong key included.
+			if !s.allowRate(w, r, nil, pattern, recorded) {
 				return
 			}
 			// GET /api/v1/auth/me tells a signed-out visitor so with 200 and an empty

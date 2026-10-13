@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/audit"
@@ -164,6 +165,8 @@ type Server struct {
 	rateBuckets *ratelimit.Limiter
 	rateLog     *ratelimit.Gate
 	rateObserve func(caller, budget string)
+	// proxyWarning logs the untrusted forwarding headers once (warnUntrustedProxy).
+	proxyWarning sync.Once
 }
 
 // WithDesktopCSP makes the server send desktopContentSecurityPolicy, which also

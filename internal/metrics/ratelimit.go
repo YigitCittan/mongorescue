@@ -9,7 +9,7 @@ func (m *Metrics) newAPIRateLimitSeries() prometheus.Collector {
 	m.apiRateLimited = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "api_rate_limited_total",
-		Help:      "REST API requests refused with 429 by the rate limit, by caller (api_key|session|anonymous) and budget (general|work).",
+		Help:      "REST API requests refused with 429 by the rate limit, by caller (api_key|session|anonymous) and budget (general|work|auth).",
 	}, []string{"caller", "budget"})
 	return m.apiRateLimited
 }

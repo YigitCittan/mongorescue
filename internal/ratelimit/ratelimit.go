@@ -5,6 +5,8 @@
 package ratelimit
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 
@@ -45,12 +47,17 @@ type Limiter struct {
 	mu        sync.Mutex
 	buckets   map[string]*bucket
 	nextSweep int
+	// uses counts the requests, the clock of the least-recently-used order.
+	uses uint64
 }
 
 // bucket is one key's token bucket and the limit it was made for.
 type bucket struct {
 	lim   *rate.Limiter
 	limit Limit
+	// used orders the buckets by their last request (Limiter.uses at the time),
+	// for evicting the least recently used.
+	used uint64
 }
 
 // Option customises a Limiter.
@@ -60,8 +67,9 @@ type Option func(*Limiter)
 func WithClock(now func() time.Time) Option { return func(l *Limiter) { l.now = now } }
 
 // WithMaxKeys bounds the buckets kept at once (DefaultMaxKeys by default). When it
-// is reached after a sweep, an arbitrary bucket is evicted for each new key: its
-// key starts with a full bucket again.
+// is reached, the buckets that refilled completely go first (losing nothing);
+// only when none is left are the least recently used ones evicted, an eighth of
+// the cap at a time, and their keys start with a full bucket again.
 func WithMaxKeys(n int) Option {
 	return func(l *Limiter) {
 		if n > 0 {
@@ -101,6 +109,8 @@ func (l *Limiter) Allow(key string, limit Limit) (ok bool, wait time.Duration) {
 		b.lim.SetBurstAt(now, limit.size())
 		b.limit = limit
 	}
+	l.uses++
+	b.used = l.uses
 	r := b.lim.ReserveN(now, 1)
 	if !r.OK() {
 		return false, time.Minute
@@ -112,23 +122,36 @@ func (l *Limiter) Allow(key string, limit Limit) (ok bool, wait time.Duration) {
 	return true, 0
 }
 
-// makeRoom evicts the buckets that refilled completely once the map reached
-// nextSweep, and arbitrary buckets while it holds maxKeys. Caller holds mu.
+// makeRoom makes room for a new bucket. Once the map reached nextSweep (never
+// beyond maxKeys) it drops the buckets that refilled completely, which are as good
+// as new. When the map still holds maxKeys, it evicts the least recently used
+// eighth of the cap: a bucket that is still being refused stays as long as it is
+// used more recently than those, so a flood of new keys cannot reset it, and never
+// while full buckets exist. Caller holds mu.
 func (l *Limiter) makeRoom(now time.Time) {
-	if len(l.buckets) >= l.nextSweep {
+	if len(l.buckets) < l.nextSweep && len(l.buckets) < l.maxKeys {
+		return
+	}
+	for k, b := range l.buckets {
+		if b.lim.TokensAt(now) >= float64(b.limit.size()) {
+			delete(l.buckets, k)
+		}
+	}
+	if len(l.buckets) >= l.maxKeys {
+		type entry struct {
+			key  string
+			used uint64
+		}
+		all := make([]entry, 0, len(l.buckets))
 		for k, b := range l.buckets {
-			if b.lim.TokensAt(now) >= float64(b.limit.size()) {
-				delete(l.buckets, k)
-			}
+			all = append(all, entry{k, b.used})
 		}
-		l.nextSweep = max(sweepSize, 2*len(l.buckets))
-	}
-	for k := range l.buckets {
-		if len(l.buckets) < l.maxKeys {
-			break
+		slices.SortFunc(all, func(a, b entry) int { return cmp.Compare(a.used, b.used) })
+		for _, e := range all[:max(l.maxKeys/8, 1)] {
+			delete(l.buckets, e.key)
 		}
-		delete(l.buckets, k)
 	}
+	l.nextSweep = min(max(sweepSize, 2*len(l.buckets)), l.maxKeys)
 }
 
 // Len returns the number of buckets kept.
