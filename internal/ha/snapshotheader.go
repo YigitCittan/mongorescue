@@ -245,8 +245,13 @@ type SnapshotSelection struct {
 
 // Candidates returns the snapshots a takeover may restore, in order: the verified
 // ones; or, only when every snapshot was checked and none of the cluster's has an
-// authentic header, the legacy ones (legacy is then true).
+// authentic header, the legacy ones (legacy is then true). There are none while
+// a snapshot sorting before the first verified one could not be checked (see
+// FailedAhead): an older snapshot never stands in for one that may be newer.
 func (s SnapshotSelection) Candidates() (list []SnapshotCheck, legacy bool) {
+	if s.failedAhead {
+		return nil, false
+	}
 	if len(s.Verified) > 0 {
 		return s.Verified, false
 	}
@@ -254,6 +259,15 @@ func (s SnapshotSelection) Candidates() (list []SnapshotCheck, legacy bool) {
 		return s.Legacy, true
 	}
 	return nil, false
+}
+
+// FailedAhead returns the first snapshot whose check failed (a storage error, a
+// newer format) and that sorts before the first verified one: it may be the newest.
+func (s SnapshotSelection) FailedAhead() (SnapshotCheck, bool) {
+	if !s.failedAhead || len(s.Failed) == 0 {
+		return SnapshotCheck{}, false
+	}
+	return s.Failed[0], true
 }
 
 // AuthenticEpoch returns the highest epoch the selection proves was used: of the

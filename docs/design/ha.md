@@ -27,13 +27,16 @@ The lease is one small JSON object on a storage target, `_mongorescue/ha/<cluste
 
 ```json
 {"cluster":"prod","holder":"a1b2…","holder_name":"mongorescue-0","epoch":7,"seq":4211,
- "renewed_at":"2026-10-12T10:00:00Z","ttl_seconds":30,"key_id":"9f…"}
+ "renewed_at":"2026-10-12T10:00:00Z","ttl_seconds":30,"key_id":"9f…",
+ "last_snapshot_epoch":7,"last_snapshot_at":"2026-10-12T09:58:41.517Z","mac":"3c…"}
 ```
 
 - `holder` is the instance ID (random, kept in `<data dir>/ha.json`). An empty holder means the lease was released.
 - `epoch` is the fencing token. It grows on every takeover and never decreases: an acquired lease gets an epoch above the old lease's, above every epoch the cluster's snapshots on the HA target authenticate (see [Metadata snapshots](#metadata-snapshots); a name alone counts for nothing) and above the last one the instance held, so a lease deleted or corrupted by hand never restarts the epochs below existing snapshots (an acquisition waits while the snapshots cannot be listed, or while a snapshot that sorts above the newest verified one cannot be checked, since it may carry the highest epoch). Every run record and every metadata snapshot carries the epoch it was written under.
 - `seq` grows with every renewal, so every write has distinct content (and an S3 ETag of its own).
 - `renewed_at` is for people only. No decision reads it.
+- `last_snapshot_epoch` and `last_snapshot_at` name the newest metadata snapshot the active instances wrote: the active instance updates them, and writes the lease at once, after every snapshot it stores, and a takeover sets them to the snapshot it restored. A takeover must find a verified snapshot at least as new ([Rollback protection](#rollback-protection)).
+- `mac` authenticates `cluster`, `epoch`, `holder`, `last_snapshot_epoch` and `last_snapshot_at`: HMAC-SHA256 with an HKDF subkey of `secret.key` (domain `ha-lease`). The holder name, `seq`, `renewed_at` and `ttl_seconds` are not authenticated (changing them can only delay a takeover). A lease taken over from one that is not trusted stays unsigned until the takeover is confirmed, so it never vouches for a last snapshot nobody authenticated.
 - `key_id` is derived from `secret.key` (like the install ID of metadata backups). An instance whose key differs refuses to start, since it could not read the active instance's snapshots or credentials. For the same reason an instance in HA mode refuses to rotate `secret.key` on its own (`keyrotation.ErrHAMode`); the key of a cluster changes in a maintenance window ([production.md](../production.md#rotating-the-secret-key-of-an-ha-cluster)).
 
 ### Conditional writes
@@ -94,11 +97,38 @@ Timing alone does not cover a process that is paused (GC, VM freeze, `SIGSTOP`) 
 When the standby acquires the lease:
 
 1. It stops its standby components and closes its database (the HTTP listener is down for about a second). Until the App of the active role serves, the standby App keeps reporting `standby` and refusing the API and sign-ins, so a health check never sends a client to it as the active instance.
-2. **Metadata handover.** It lists the snapshots under `_mongorescue/metadata/ha/<cluster>/` and, in the order of their names (the highest epoch, then the newest), decrypts the start of each until three are verified: a snapshot whose authenticated header names another cluster, epoch or time than its key, or that does not decrypt, is refused (see [Security](#security)). It takes the first verified one, downloads it to a temporary file in the data directory, decrypts it, and opens it as a metadata database. Opening checks `secret.key` and applies migrations, so a snapshot from an older version is upgraded. If that fails it tries the next two verified ones. Then it swaps the file in, crash-safe and under the data directory lock: both databases are checkpointed (`wal_checkpoint(TRUNCATE)`) and closed, a journal (`mongorescue.db.replace.json`) records the swap, the previous database is linked to its backup name, the snapshot is renamed over it, and the directory is synced after each step; the next start settles a swap a crash interrupted (before the rename the previous database stays, after it the new one) and refuses to start when the database is missing. It keeps the previous database as `mongorescue.db.bak-<UTC time>-epoch<N>` (the newest three such copies are kept, so no previous database is ever lost). If the newest verified snapshot was written by this instance under the epoch it last held (`<data dir>/ha.json`), its own database is at least as new and is kept.
+2. **Metadata handover.** It lists the snapshots under `_mongorescue/metadata/ha/<cluster>/` and, in the order of their names (the highest epoch, then the newest), decrypts the start of each until one is verified: a snapshot whose authenticated header names another cluster, epoch or time than its key, or that does not decrypt, is refused (see [Security](#security)). It checks that restoring it cannot roll the metadata back ([Rollback protection](#rollback-protection)), then downloads it to a temporary file in the data directory, decrypts it, and opens it as a metadata database. Opening checks `secret.key` and applies migrations, so a snapshot from an older version is upgraded. If that fails, it tries again (four attempts, with a pause of 1, 2 and 4 seconds) and then gives up: an older snapshot never stands in for the newest. Then it swaps the file in, crash-safe and under the data directory lock: both databases are checkpointed (`wal_checkpoint(TRUNCATE)`) and closed, a journal (`mongorescue.db.replace.json`) records the swap, the previous database is linked to its backup name, the snapshot is renamed over it, and the directory is synced after each step; the next start settles a swap a crash interrupted (before the rename the previous database stays, after it the new one) and refuses to start when the database is missing. It keeps the previous database as `mongorescue.db.bak-<UTC time>-epoch<N>` (the newest three such copies are kept, so no previous database is ever lost). If the newest verified snapshot was written by this instance under the epoch it last held (`<data dir>/ha.json`), its own database is at least as new and is kept.
 3. It opens the App in the active role. Before the components start, it marks the runs the snapshot shows in progress as interrupted (the existing startup recovery). After they start, it scans every storage target and imports the orphan archives written since the snapshot (the existing scan and import, which never deletes anything).
 4. **Missed schedules.** Each enabled job whose most recent cron fire fell between its last recorded scheduled run and now runs once, as a scheduled run, unless a backup of its databases started at or after that fire is already recorded (an imported archive counts), or the next fire is less than half an interval away. At most one run per job, never one per missed fire. **Unknown means covered**: the fire runs only when it is certain that no backup was taken for it, that is, a snapshot was restored, the scan of the job's storage target succeeded and imported every newer archive, and the job's databases are known (a multi-database job's known databases). Otherwise it does not run, and the event `ha.catch_up_skipped` ("missed fire not caught up: could not verify", sent to every channel) asks for a manual run.
 
-If no snapshot can be used, the instance releases the lease, stays standby and tries again after `ttl`; `mongorescue_ha_takeover_failures_total` grows and the `MongoRescueHATakeoverFailed` and `MongoRescueHANoActiveInstance` alerts fire. **No snapshot at all** is accepted only when there was no lease either (the lease was created, not taken over): the cluster's first activation, or a new HA target or cluster name, where the instance keeps its own database, populated or not, and never swaps in an empty one. A lease that existed (expired, released or unreadable) had a holder whose metadata would be lost, so the takeover is refused as above ("no metadata snapshot to take over from").
+If no snapshot can be used, the instance releases the lease, stays standby and tries again after `ttl`; `mongorescue_ha_takeover_failures_total` grows and the `MongoRescueHATakeoverFailed` and `MongoRescueHANoActiveInstance` alerts fire. **No snapshot at all** is accepted only on a genuine first activation: no lease existed (it was created, not taken over), the instance's `ha.json` has never seen the cluster (its lease, its snapshots or an epoch it held), and its database holds no jobs and no storage targets besides the default one. The instance then keeps its own database and confirms the takeover. A lease that existed (expired, released or unreadable) had a holder whose metadata would be lost, so the takeover is refused as above ("no metadata snapshot to take over from"); with no lease but an instance that knows the cluster or a populated database, it is refused as a suspected rollback.
+
+### Rollback protection
+
+Whoever can write to the HA target can delete objects as well as copy them. Deleting the newest snapshots (or the lease) would make an older genuine snapshot the newest left, and a takeover would silently roll the metadata back: revoked API keys and removed users return, records written since are lost. The takeover therefore refuses, with `mongorescue_ha_rollback_suspected_total{reason}` and the `MongoRescueHARollbackSuspected` alert, when:
+
+| Reason | Condition |
+| :--- | :--- |
+| `lease_untrusted` | The lease it took over is unreadable, or its `mac` is missing or wrong (an earlier version, an instance whose takeover never completed, or someone without `secret.key` wrote it) |
+| `lease_missing` | No lease existed although the HA target holds snapshots, or although this instance has seen the cluster or its database is populated |
+| `snapshot_behind_lease` | The newest verified snapshot is older (epoch, then time) than the last snapshot the lease names, or than one an authentic lease this instance saw named (a replayed older lease does not lower it) |
+| `snapshot_behind_local` | It is older than this instance's high-water mark: the newest snapshot it wrote or restored, kept per cluster in `ha.json` |
+| `legacy_after_upgrade` | Only snapshots without a header are left, but the lease or the high-water mark names a snapshot with one |
+
+A snapshot that sorts before the newest verified one but cannot be checked (a storage error, or a format of a newer version) may itself be the newest: the takeover tries again four times and then gives up instead of restoring the older one, and a new lease is not acquired below it.
+
+The instance stays standby, releases the lease and tries again after `ttl`, so the alerts keep firing until an operator acts.
+
+### Forcing a takeover
+
+After checking the HA target (who can write to it, which snapshots and lease are there, what the log says), an operator forces the next takeover of one instance, on its host:
+
+```sh
+mongorescue ha force-takeover --from-snapshot _mongorescue/metadata/ha/<cluster>/mongorescue-<time>Z-e<epoch>.db.age
+mongorescue ha force-takeover --keep-local-database
+```
+
+`--data-dir` and `--cluster` default to `MONGORESCUE_DATA_DIR` and `MONGORESCUE_HA_CLUSTER`. The command writes `<data dir>/ha-override.json` (mode `0600`): a standby serves no API, and write access to its data directory is the authority. At its next takeover (within the lease TTL) the instance uses the request once and removes it. It restores the named snapshot, whose header is still verified when it has one (a renamed copy stays refused; a header-less snapshot of an earlier version is accepted), or keeps its own database; skips the rollback checks; resets its high-water mark to that snapshot; and signs the lease. The forced takeover is logged as an error, recorded in the audit log (`SYSTEM ha.force_takeover`, with the operator's user name, the snapshot and the epoch) and sent to every channel as `security.destructive_action` (`ha_force_takeover`). The new active instance writes a snapshot at once, under an epoch above every one on record.
 
 ### Step-down
 
@@ -144,7 +174,9 @@ A target given by ID or name must exist in the instance's own database when it s
 | Wall clock jumps on either side | A standby ignores it. The active instance steps down when its wall clock jumped forward past the deadline (a suspend looks like that); a jump back has no effect | |
 | Active machine or VM suspended longer than `ttl − renew` | On resume the fencing check fails on the wall clock before any run starts or completes; the scheduler renews before it fires, and the instance steps down | |
 | Both instances start at once on an empty bucket | `If-None-Match: *` lets exactly one create the lease | |
-| Lease object deleted by hand | Active's renewal fails and it steps down; the standby creates a new lease with a higher epoch than any it saw | Up to `ttl + renew` without an active instance |
+| Lease object deleted by hand | Active's renewal fails and it steps down; the standby creates a new lease with a higher epoch than any it saw, but refuses the takeover while snapshots exist (`lease_missing`) | No active instance until an operator forces the takeover; alerted |
+| Lease replaced by one without a valid MAC | The takeover is refused (`lease_untrusted`) | No active instance until an operator forces the takeover; alerted |
+| Newest snapshots deleted | The takeover is refused (`snapshot_behind_lease` or `snapshot_behind_local`) | No active instance until an operator forces the takeover; alerted |
 | Storage provider ignores conditional headers | HA refuses to start (startup probe) | |
 | Standby has a different `secret.key` | It refuses to start | |
 | No usable snapshot at takeover | Takeover is abandoned; the lease is released; retried after `ttl` | Alerted |
@@ -167,7 +199,8 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - `mongorescue_ha_role{role="active"|"standby"}` (1 for the current role), `mongorescue_ha_epoch`, `mongorescue_ha_lease_errors_total`, `mongorescue_ha_takeovers_total`, `mongorescue_ha_takeover_duration_seconds` (the last takeover, from acquiring the lease to serving as active), `mongorescue_ha_lease_healthy`, `mongorescue_ha_snapshots_rejected_total` (snapshots refused because their authenticated header did not match their name or cluster, or they did not decrypt; once per stored object version and process), `mongorescue_ha_refused_snapshots` (how many such snapshots the HA target holds, as of the last check).
 - `/api/v1/health` adds `role` and an `ha` object (cluster, epoch, holder, lease health).
 - Events `ha.took_over` and `ha.stepped_down`, sent to every enabled notification channel.
-- Alert rule `MongoRescueHANoActiveInstance`: no instance reports `role="active"` for twice the lease TTL (1 minute with the defaults). `MongoRescueHASnapshotRejected`: the HA target holds a refused snapshot, or one was refused in the last 15 minutes.
+- `mongorescue_ha_rollback_suspected_total{reason}`: takeovers refused because they could roll the metadata back ([Rollback protection](#rollback-protection)).
+- Alert rule `MongoRescueHANoActiveInstance`: no instance reports `role="active"` for twice the lease TTL (1 minute with the defaults). `MongoRescueHARollbackSuspected`: a takeover was refused in the last 15 minutes as a suspected rollback. `MongoRescueHASnapshotRejected`: the HA target holds a refused snapshot, or one was refused in the last 15 minutes.
 - A standby serves a static standby page instead of the dashboard; a dashboard open on an instance that becomes standby reloads into it.
 
 ## Security
@@ -176,7 +209,8 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - Snapshots are encrypted with a passphrase derived from `secret.key`; credentials inside stay sealed with `secret.key` as in every metadata copy.
 - A snapshot's cluster, epoch and time are authenticated by its encrypted header, not taken from its object key. Whoever can write the snapshot prefix but does not hold `secret.key` cannot replay an older snapshot under a higher epoch or a later time, nor bring in a snapshot of another cluster that shares the key: the copy is refused and alerted, and the newest genuine snapshot is restored (#189). They can still delete snapshots, so that an older genuine one is the newest left, or keep a takeover from succeeding; and while a cluster has only snapshots written before the header existed, the names of those are not authenticated.
 - Refused snapshots are never deleted by MongoRescue: they are evidence. The log names each one (`HA metadata snapshot refused`, with its key). After the investigation, delete them with the storage's own tools, for example `aws s3 rm s3://<bucket>/<prefix>_mongorescue/metadata/ha/<cluster>/<name>`; `mongorescue_ha_refused_snapshots` drops at the next check (the next snapshot on the active instance) and the alert resolves.
-- Whoever can write the lease prefix can stop the cluster (by holding the lease) but cannot make an instance run anything it would not run anyway. Give the HA target's credentials only to MongoRescue.
+- The lease is authenticated (`mac`) and names the cluster's last snapshot; deleting snapshots or the lease, or replacing the lease, makes the next takeover refuse instead of rolling the metadata back ([Rollback protection](#rollback-protection)). Only an operator with access to an instance's data directory forces it past that ([Forcing a takeover](#forcing-a-takeover)).
+- Whoever can write the lease prefix can stop the cluster (by holding the lease, or by deleting or altering the HA objects so that every takeover is refused) but cannot make an instance run anything it would not run anyway, nor roll its metadata back. Give the HA target's credentials only to MongoRescue.
 
 ## Testing
 

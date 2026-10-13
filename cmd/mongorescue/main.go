@@ -8,7 +8,8 @@
 // "restore", "list", "verify" and "status" run the CLI (internal/cli), a client of a
 // running server's REST API. "mongorescue key" runs the offline commands of the KMS
 // wrapping of secret.key (status, rewrap, unwrap) on a stopped instance's data
-// directory.
+// directory, and "mongorescue ha force-takeover" forces the next takeover of an HA
+// instance (it writes to the data directory).
 package main
 
 import (
@@ -42,8 +43,9 @@ func main() {
 }
 
 // dispatch runs the command args name: "mcp" (the stdio bridge), "key" (the
-// offline key wrapping commands), a CLI command (backup, restore, list, verify,
-// status, help) or, without one, the server. It
+// offline key wrapping commands), "ha" (the HA operator tools, on the data
+// directory), a CLI command (backup, restore, list, verify, status, help) or,
+// without one, the server. It
 // returns the process exit code.
 func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
@@ -52,6 +54,8 @@ func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout
 			return runMCP(args[1:], getenv, stdin, stdout, stderr)
 		case args[0] == keyCommand:
 			return runKey(args[1:], getenv, stdout, stderr)
+		case args[0] == haCommand:
+			return runHA(args[1:], getenv, stdout, stderr)
 		case cli.IsCommand(args[0]):
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()

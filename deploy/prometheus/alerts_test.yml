@@ -301,6 +301,31 @@ tests:
         alertname: MongoRescueHATakeoverFailed
         exp_alerts: []
 
+  - name: HA rollback suspected
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_rollback_suspected_total{job="backup", instance="b:8080", cluster="prod", reason="snapshot_behind_lease"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+              reason: snapshot_behind_lease
+            exp_annotations:
+              summary: "A takeover was refused as a suspected rollback in MongoRescue HA cluster prod on b:8080"
+              description: "b:8080 refused to take over HA cluster prod (snapshot_behind_lease): restoring the snapshots left on the HA target could roll the metadata back. Check who can write to the HA target and what the log says, then run mongorescue ha force-takeover on the instance that should become active."
+      - eval_time: 25m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts: []
+
   - name: HA snapshot rejected
     interval: 1m
     input_series:

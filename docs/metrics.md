@@ -63,6 +63,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_ha_step_downs_total` | counter | `cluster` | HA only: times this instance lost the lease while active and stepped down |
 | `mongorescue_ha_takeover_failures_total` | counter | `cluster` | HA only: takeovers given up because no usable metadata snapshot was found (the instance stayed standby) |
 | `mongorescue_ha_snapshots_rejected_total` | counter | `cluster` | HA only: metadata snapshots refused because their authenticated header did not match their name or cluster, or they did not decrypt (copied, renamed or altered on the HA target); never restored nor deleted. Counted once per stored object version and process |
+| `mongorescue_ha_rollback_suspected_total` | counter | `cluster`, `reason` | HA only: takeovers refused because they could roll the metadata back: `lease_untrusted`, `lease_missing`, `snapshot_behind_lease`, `snapshot_behind_local`, `legacy_after_upgrade` ([rollback protection](design/ha.md#rollback-protection)) |
 | `mongorescue_ha_refused_snapshots` | gauge | `cluster` | HA only: how many such refused snapshots the HA target holds, as of this instance's last check; they stay until someone deletes them ([how](design/ha.md#security)) |
 | `mongorescue_pitr_collector_up` | gauge | `stream` | 1 while the [PITR](pitr.md) collector of the stream stores chunks, 0 while it fails or is stopped |
 | `mongorescue_pitr_lag_seconds` | gauge | `stream` | Seconds between the replica set's newest write and the end of the last stored chunk |

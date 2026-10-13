@@ -84,6 +84,13 @@ type SnapshotInfo struct {
 	ETag    string
 }
 
+// Mark returns how new the snapshot is (from its name: authenticate it first).
+func (i SnapshotInfo) Mark() SnapshotMark { return SnapshotMark{Epoch: i.Epoch, At: i.CreatedAt} }
+
+// ParseSnapshotKey reads the time and epoch from the name of snapshot key; ok is
+// false when it is not a snapshot name. The values are not authenticated.
+func ParseSnapshotKey(key string) (at time.Time, epoch uint64, ok bool) { return parseSnapshotKey(key) }
+
 // parseSnapshotKey reads the time and epoch from a snapshot key.
 func parseSnapshotKey(key string) (time.Time, uint64, bool) {
 	m := snapshotName.FindStringSubmatch(key[strings.LastIndex(key, "/")+1:])
@@ -202,6 +209,10 @@ type SnapshotterConfig struct {
 	Now func() time.Time
 	// Observe receives the outcome of every snapshot (metrics); may be nil.
 	Observe func(ok bool)
+	// OnWritten is called after every snapshot is stored, before retention: the
+	// lease names it as the last snapshot (Manager.RecordSnapshot) and the
+	// instance's high-water mark rises. May be nil.
+	OnWritten func(ctx context.Context, info SnapshotInfo)
 	// Checker checks the snapshots for retention; nil means a checker of its own
 	// that logs refused snapshots and calls OnReject.
 	Checker *SnapshotChecker
@@ -371,6 +382,9 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 		info.SizeBytes = obj.SizeBytes
 	}
 	s.cfg.Logger.Debug("HA metadata snapshot written", logsafe.Attr("key", key), slog.Uint64("epoch", epoch))
+	if s.cfg.OnWritten != nil {
+		s.cfg.OnWritten(ctx, info)
+	}
 	s.prune(ctx, epoch)
 	return info, nil
 }

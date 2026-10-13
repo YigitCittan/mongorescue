@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"os/signal"
@@ -98,9 +99,13 @@ func haKey(role *haRole, key []byte) []byte {
 type haRuntime struct {
 	cfg    config.HAConfig
 	target config.HATarget
-	state  ha.State
-	name   string
-	logger *slog.Logger
+	// state is the instance's HA state (ha.json in dataDir); stateMu serialises
+	// its changes and writes (see updateState).
+	state   ha.State
+	stateMu sync.Mutex
+	dataDir string
+	name    string
+	logger  *slog.Logger
 
 	mu      sync.RWMutex
 	manager *ha.Manager
@@ -112,6 +117,16 @@ type haRuntime struct {
 	// checker checks the cluster's snapshots for every decision and remembers the
 	// outcomes (nil before the bootstrap).
 	checker *ha.SnapshotChecker
+	// localPopulated reports that this instance's own database held jobs, or
+	// storage targets besides the default one, at the bootstrap: it is not a
+	// fresh installation.
+	localPopulated bool
+	// forced is the operator override the last takeover used; the active instance
+	// records it in the audit log once it serves.
+	forced *ha.Override
+	// rollbacks counts the takeovers refused because a rollback was suspected, by
+	// reason (guarded by mu).
+	rollbacks map[string]uint64
 	// since is the creation time of the snapshot the last takeover restored or
 	// kept; zero when there was none. Archives written after it are imported.
 	since time.Time
@@ -139,6 +154,53 @@ func (rt *haRuntime) storage() storage.Storage {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.store
+}
+
+// updateState applies fn to the instance's HA state and writes it to ha.json.
+func (rt *haRuntime) updateState(fn func(*ha.State)) error {
+	rt.stateMu.Lock()
+	defer rt.stateMu.Unlock()
+	fn(&rt.state)
+	return ha.SaveState(rt.dataDir, rt.state)
+}
+
+// stateCopy returns a copy of the instance's HA state.
+func (rt *haRuntime) stateCopy() ha.State {
+	rt.stateMu.Lock()
+	defer rt.stateMu.Unlock()
+	st := rt.state
+	st.Clusters = maps.Clone(st.Clusters)
+	return st
+}
+
+// countRollback counts a takeover refused for reason.
+func (rt *haRuntime) countRollback(reason string) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.rollbacks == nil {
+		rt.rollbacks = map[string]uint64{}
+	}
+	rt.rollbacks[reason]++
+}
+
+// rollbackCounts returns the refusals of countRollback, every reason included.
+func (rt *haRuntime) rollbackCounts() map[string]uint64 {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	out := make(map[string]uint64, len(rollbackReasons))
+	for _, r := range rollbackReasons {
+		out[r] = rt.rollbacks[r]
+	}
+	return out
+}
+
+// takeForced returns and clears the override the last takeover used.
+func (rt *haRuntime) takeForced() *ha.Override {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	o := rt.forced
+	rt.forced = nil
+	return o
 }
 
 // snapshotChecker returns the checker of the cluster's snapshots (nil before the
@@ -221,7 +283,7 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
 		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
 		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load(), SnapshotsRejected: rt.snapshotsRejected.Load(),
-		RefusedSnapshots: rt.refusedSnapshots()}
+		RefusedSnapshots: rt.refusedSnapshots(), RollbackSuspected: rt.rollbackCounts()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -259,7 +321,7 @@ func RunHA(cfg *config.Config, logger *slog.Logger, opts ...Option) error {
 	if name == "" {
 		name = state.InstanceID
 	}
-	rt := &haRuntime{cfg: cfg.HA, target: target, state: state, name: name,
+	rt := &haRuntime{cfg: cfg.HA, target: target, state: state, dataDir: cfg.DataDir, name: name,
 		logger: logger.With(slog.String("ha_cluster", cfg.HA.Cluster))}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -304,6 +366,9 @@ type haSupervisor struct {
 	// leaseLoop, when set, replaces the lease manager's Run loop (tests that step the
 	// manager themselves).
 	leaseLoop func(context.Context, *ha.Manager)
+	// retryPause, when set, is the first pause between two attempts of a takeover
+	// to read or restore the newest snapshot (tests); 0 means haTakeoverBackoff.
+	retryPause time.Duration
 }
 
 // open builds the App of a role.
@@ -385,8 +450,12 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	if err != nil {
 		return err
 	}
+	macKey, err := ha.LeaseMACKey(app.haKey)
+	if err != nil {
+		return err
+	}
 	mgr, err := ha.New(ha.Config{
-		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID,
+		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID, MACKey: macKey,
 		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Now: s.clock, Wall: s.clock, Logger: s.logger,
 		EpochFloor: s.epochFloor,
 	})
@@ -404,7 +473,13 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	default:
 		s.logger.Info("joined the HA cluster as standby", slog.String("ha_cluster", s.cfg.HA.Cluster),
 			logsafe.Attr("holder", lease.HolderName), slog.Uint64("epoch", lease.Epoch))
+		s.observeCluster(ha.SnapshotMark{}, false)
+		if !lease.Authentic(macKey) {
+			s.logger.Warn("the HA lease carries no valid MAC (written by an earlier version, by an instance whose takeover did not complete, or by someone without the secret key): a takeover from it is refused until `mongorescue ha force-takeover`",
+				slog.String("ha_cluster", s.cfg.HA.Cluster))
+		}
 	}
+	s.rt.localPopulated = localPopulated(ctx, app, s.logger)
 	passphrase, err := ha.SnapshotPassphrase(app.haKey)
 	if err != nil {
 		return err
@@ -422,6 +497,32 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	return nil
 }
 
+// localPopulated reports whether app's database holds jobs, or storage targets
+// besides the default one: then it is not a fresh installation, and taking over
+// with it without a lease and snapshots needs an operator (an unknown answer counts
+// as populated).
+func localPopulated(ctx context.Context, app *App, logger *slog.Logger) bool {
+	jobs, err := app.metaStore.ListJobs(ctx)
+	if err != nil {
+		logger.Warn("cannot read this instance's jobs; its database counts as populated", logsafe.Error(err))
+		return true
+	}
+	if len(jobs) > 0 {
+		return true
+	}
+	list, err := app.targets.List(ctx)
+	if err != nil {
+		logger.Warn("cannot read this instance's storage targets; its database counts as populated", logsafe.Error(err))
+		return true
+	}
+	for _, t := range list {
+		if !t.IsDefault || t.Type != models.StorageLocal {
+			return true
+		}
+	}
+	return false
+}
+
 // epochFloor returns the highest epoch on record outside the lease: of the
 // cluster's snapshots on the HA target whose header authenticates it (a renamed
 // snapshot's name counts for nothing), and the last one this instance held.
@@ -432,9 +533,10 @@ func (s *haSupervisor) epochFloor(ctx context.Context) (uint64, error) {
 	}
 	epoch, ok := sel.AuthenticEpoch(s.cfg.HA.Cluster)
 	if !ok {
-		return 0, fmt.Errorf("none of the %d metadata snapshots on the HA target could be verified", sel.Listed)
+		return 0, fmt.Errorf("the highest snapshot epoch on the HA target is unknown: %d snapshots listed, a newer one than the first verified could not be checked or none is verified", sel.Listed)
 	}
-	return max(s.rt.state.LastActiveEpoch, epoch), nil
+	local := s.rt.stateCopy()
+	return max(local.LastActiveEpoch, local.HighWater(s.cfg.HA.Cluster).Epoch, epoch), nil
 }
 
 // haStorage opens the storage of the lease: a location of the bootstrap
@@ -562,6 +664,9 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 	epoch := mgr.Epoch()
 	s.rt.lastTakeover.Store(math.Float64bits(time.Since(start).Seconds()))
 	s.recordActiveEpoch(epoch)
+	if o := s.rt.takeForced(); o != nil {
+		s.auditForcedTakeover(ctx, app, o, epoch)
+	}
 	app.publishHA(ctx, events.HATookOver, fmt.Sprintf("instance %s (%s) is now the active instance of HA cluster %s (epoch %d)",
 		s.rt.name, s.rt.state.InstanceID, s.cfg.HA.Cluster, epoch))
 	s.logger.Info("mongorescue ready as HA active", slog.String("ha_cluster", s.cfg.HA.Cluster), slog.Uint64("epoch", epoch),
@@ -643,8 +748,11 @@ func (s *haSupervisor) notifyStepDown(app *App, epoch uint64) {
 // recordActiveEpoch remembers the epoch under which this instance's database is
 // the cluster's.
 func (s *haSupervisor) recordActiveEpoch(epoch uint64) {
-	s.rt.state.Cluster, s.rt.state.LastActiveEpoch = s.cfg.HA.Cluster, epoch
-	if err := ha.SaveState(s.cfg.DataDir, s.rt.state); err != nil {
+	cluster := s.cfg.HA.Cluster
+	if err := s.rt.updateState(func(st *ha.State) {
+		st.Cluster, st.LastActiveEpoch = cluster, epoch
+		st.Observe(cluster, ha.SnapshotMark{}, false)
+	}); err != nil {
 		s.logger.Warn("could not record the HA epoch in the data directory", logsafe.Error(err))
 	}
 }

@@ -155,6 +155,19 @@ groups:
           summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."
 
+      # A standby refused a takeover because it could roll the cluster's metadata
+      # back: the lease is not authentic or missing, or the newest snapshot is
+      # older than the one the lease or the instance knows (snapshots or the lease
+      # were deleted or replaced). No instance becomes active until an operator
+      # forces the takeover (mongorescue ha force-takeover).
+      - alert: MongoRescueHARollbackSuspected
+        expr: increase(mongorescue_ha_rollback_suspected_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A takeover was refused as a suspected rollback in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} refused to take over HA cluster {{ $labels.cluster }} ({{ $labels.reason }}): restoring the snapshots left on the HA target could roll the metadata back. Check who can write to the HA target and what the log says, then run mongorescue ha force-takeover on the instance that should become active."
+
       # A metadata snapshot on the HA target failed authentication: its encrypted
       # header names another cluster, epoch or time than its object key (an old
       # snapshot copied under a higher epoch, or another cluster's), or it does not
