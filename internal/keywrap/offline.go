@@ -20,6 +20,12 @@ type OpenFunc func(ctx context.Context, spec Spec) (Wrapper, error)
 type OfflineConfig struct {
 	// DataDir is the data directory.
 	DataDir string
+	// Source is the KMS key the wrapped files must be wrapped with: the
+	// configured MONGORESCUE_KEY_WRAP, or a spec the operator named and confirmed
+	// (required). The provider and key URI recorded in a file are never used to
+	// reach a KMS: a file wrapped with another key is refused (ErrKeyMismatch), so
+	// credentials never go to a URI that came only from the data directory.
+	Source Spec
 	// Open returns the wrapper of a spec (required).
 	Open OpenFunc
 	// Actor is who runs the command, recorded in the journal.
@@ -34,6 +40,9 @@ type OfflineConfig struct {
 func (c OfflineConfig) normalized() (OfflineConfig, error) {
 	if c.DataDir == "" || c.Open == nil {
 		return c, errors.New("keywrap: a data directory and an opener are required")
+	}
+	if !c.Source.Enabled() {
+		return c, fmt.Errorf("%w: name the KMS key the files are wrapped with (%s)", ErrInvalidSpec, EnvKeyWrap)
 	}
 	if c.Retry == (Retry{}) {
 		c.Retry = DefaultRetry
@@ -75,30 +84,29 @@ func wrappedFiles(dataDir string) ([]offlineFile, error) {
 	return out, nil
 }
 
-// wrappers caches the wrapper of each spec.
-type wrappers struct {
-	open OpenFunc
-	m    map[Spec]Wrapper
+// checkSources refuses the files whose recorded spec is neither the source nor one
+// of also, before any KMS call or change.
+func checkSources(files []offlineFile, source Spec, also ...Spec) error {
+	for _, of := range files {
+		spec := of.file.Spec()
+		if spec == source {
+			continue
+		}
+		known := false
+		for _, a := range also {
+			known = known || spec == a
+		}
+		if !known {
+			return fmt.Errorf("%w: %s is wrapped with %s, not with %s; set %s to that key, or name it with --from and confirm it with --confirm-from",
+				ErrKeyMismatch, of.name+Suffix, spec, source, EnvKeyWrap)
+		}
+	}
+	return nil
 }
 
-func (w *wrappers) get(ctx context.Context, spec Spec) (Wrapper, error) {
-	if wr, ok := w.m[spec]; ok {
-		return wr, nil
-	}
-	wr, err := w.open(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("keywrap: open %s: %w", spec, err)
-	}
-	if w.m == nil {
-		w.m = map[Spec]Wrapper{}
-	}
-	w.m[spec] = wr
-	return wr, nil
-}
-
-// UnwrapToFiles leaves the KMS: every wrapped key file of the data directory is
-// unwrapped, written back as a plaintext key file (atomically, mode 0600), read
-// back and only then removed. It journals ActionUnwrappedToFile and returns the
+// UnwrapToFiles leaves the KMS: every wrapped key file of the data directory
+// (each must be wrapped with cfg.Source) is unwrapped, written back as a
+// plaintext key file (atomically, mode 0600), read back and only then removed. It journals ActionUnwrappedToFile and returns the
 // change. A plaintext file that already holds the same key is kept (a rerun after
 // an interruption); one that holds another key stops the command (ErrConflict).
 func UnwrapToFiles(ctx context.Context, cfg OfflineConfig) (*Change, error) {
@@ -110,13 +118,15 @@ func UnwrapToFiles(ctx context.Context, cfg OfflineConfig) (*Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws := &wrappers{open: cfg.Open}
+	if err = checkSources(files, cfg.Source); err != nil {
+		return nil, err
+	}
+	w, err := cfg.Open(ctx, cfg.Source)
+	if err != nil {
+		return nil, fmt.Errorf("keywrap: open %s: %w", cfg.Source, err)
+	}
 	change := &Change{Action: ActionUnwrappedToFile, At: cfg.Now().UTC(), Actor: cfg.Actor}
 	for _, of := range files {
-		w, err := ws.get(ctx, of.file.Spec())
-		if err != nil {
-			return nil, err
-		}
 		key, _, err := openRetry(ctx, of.file, w, cfg.Retry, nil, of.name+Suffix)
 		if err != nil {
 			return nil, err
@@ -155,9 +165,10 @@ func UnwrapToFiles(ctx context.Context, cfg OfflineConfig) (*Change, error) {
 	return change, nil
 }
 
-// Rewrap moves every wrapped key file of the data directory to the KMS key of to:
-// each key is unwrapped with the KMS key it was wrapped with, wrapped with the new
-// one, checked by unwrapping it again and written atomically over the old file.
+// Rewrap moves every wrapped key file of the data directory from the KMS key of
+// cfg.Source to the KMS key of to: each key is unwrapped with cfg.Source,
+// wrapped with the new one, checked by unwrapping it again and written atomically
+// over the old file.
 // Files already wrapped with to are left alone, so a rerun after an interruption
 // finishes the job. It journals ActionRewrapped and returns the change. The old
 // KMS key must stay available until no backup of the data directory (and no
@@ -174,22 +185,28 @@ func Rewrap(ctx context.Context, cfg OfflineConfig, to Spec) (*Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws := &wrappers{open: cfg.Open}
-	next, err := ws.get(ctx, to)
-	if err != nil {
+	// Files already wrapped with the target are what an interrupted run left.
+	if err = checkSources(files, cfg.Source, to); err != nil {
 		return nil, err
 	}
-	change := &Change{Action: ActionRewrapped, At: cfg.Now().UTC(), Actor: cfg.Actor, Provider: to.Provider, KeyURI: to.KeyURI, KeyID: next.KeyID()}
+	next, err := cfg.Open(ctx, to)
+	if err != nil {
+		return nil, fmt.Errorf("keywrap: open %s: %w", to, err)
+	}
+	change := &Change{Action: ActionRewrapped, At: cfg.Now().UTC(), Actor: cfg.Actor, Provider: to.Provider, KeyURI: to.KeyURI, KeyID: next.KeyID(),
+		PreviousProvider: cfg.Source.Provider, PreviousKeyURI: cfg.Source.KeyURI}
+	var old Wrapper
 	for _, of := range files {
 		if of.name == secretbox.KeyFileName {
-			change.PreviousProvider, change.PreviousKeyURI, change.Fingerprint = of.file.Provider, of.file.KeyURI, of.file.Fingerprint
+			change.Fingerprint = of.file.Fingerprint
 		}
 		if of.file.Spec() == to {
 			continue
 		}
-		old, err := ws.get(ctx, of.file.Spec())
-		if err != nil {
-			return nil, err
+		if old == nil {
+			if old, err = cfg.Open(ctx, cfg.Source); err != nil {
+				return nil, fmt.Errorf("keywrap: open %s: %w", cfg.Source, err)
+			}
 		}
 		key, _, err := openRetry(ctx, of.file, old, cfg.Retry, nil, of.name+Suffix)
 		if err != nil {

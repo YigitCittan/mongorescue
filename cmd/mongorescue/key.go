@@ -39,10 +39,14 @@ directory and an identity that may use the KMS keys involved.
 
 Commands:
   status   Show how secret.key is stored (no KMS call).
-  rewrap   Move secret.key.wrapped to another KMS key: --to <provider>:<key URI>
-           (default: ` + config.EnvKeyWrap + `). Then set ` + config.EnvKeyWrap + ` to it.
+  rewrap   Move secret.key.wrapped from the KMS key of ` + config.EnvKeyWrap + ` to another
+           one: --to <provider>:<key URI>. Then set ` + config.EnvKeyWrap + ` to it.
   unwrap   Leave the KMS: write secret.key back in plain form and remove
            secret.key.wrapped. Needs --confirm-plaintext. Then unset ` + config.EnvKeyWrap + `.
+
+The KMS key the files are wrapped with comes from ` + config.EnvKeyWrap + `, never from the
+data directory: a file wrapped with another key is refused. To use another key,
+name it with --from <provider>:<key URI> and confirm it with --confirm-from.
 
 Each change is published as the security.key_wrapping_changed event and recorded in
 the audit log at the next start.
@@ -63,15 +67,21 @@ func runKey(args []string, getenv func(string) string, stdout, stderr io.Writer)
 	dataDir := fs.String("data-dir", "", "Data directory (env "+config.EnvDataDir+", default "+config.DefaultDataDir+")")
 	var to *string
 	var confirm *bool
+	from := new(string)
+	confirmFrom := new(bool)
 	switch sub {
 	case "status":
 	case "rewrap":
-		to = fs.String("to", "", "The new KMS key, <provider>:<key URI> (default "+config.EnvKeyWrap+")")
+		to = fs.String("to", "", "The new KMS key, <provider>:<key URI> (required)")
 	case "unwrap":
 		confirm = fs.Bool("confirm-plaintext", false, "Confirm that secret.key is written to the data directory in plain form")
 	default:
 		fmt.Fprintf(stderr, "unknown key command %q\n\n%s", sub, keyUsage)
 		return 2
+	}
+	if sub != "status" {
+		from = fs.String("from", "", "The KMS key the files are wrapped with, <provider>:<key URI>, instead of "+config.EnvKeyWrap+" (needs --confirm-from)")
+		confirmFrom = fs.Bool("confirm-from", false, "Confirm that the KMS key of --from is used with this instance's credentials")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -95,15 +105,15 @@ func runKey(args []string, getenv func(string) string, stdout, stderr io.Writer)
 	if sub == "status" {
 		return keyStatus(dir, stdout, stderr)
 	}
+	source, code := keySource(sub, *from, *confirmFrom, getenv, stderr)
+	if code != 0 {
+		return code
+	}
 	var spec keywrap.Spec
 	if sub == "rewrap" {
-		v := strings.TrimSpace(*to)
-		if v == "" {
-			v = getenv(config.EnvKeyWrap)
-		}
 		var err error
-		if spec, err = keywrap.ParseSpec(v); err != nil || !spec.Enabled() {
-			fmt.Fprintln(stderr, "mongorescue key rewrap: --to (or "+config.EnvKeyWrap+") must name the new KMS key as <provider>:<key URI>")
+		if spec, err = keywrap.ParseSpec(*to); err != nil || !spec.Enabled() {
+			fmt.Fprintln(stderr, "mongorescue key rewrap: --to must name the new KMS key as <provider>:<key URI>")
 			return 2
 		}
 	}
@@ -126,7 +136,7 @@ func runKey(args []string, getenv func(string) string, stdout, stderr io.Writer)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg := keywrap.OfflineConfig{DataDir: dir, Open: openKeyWrapper, Actor: localActor(), Retry: keyRetry}
+	cfg := keywrap.OfflineConfig{DataDir: dir, Source: source, Open: openKeyWrapper, Actor: localActor(), Retry: keyRetry}
 	var change *keywrap.Change
 	if sub == "rewrap" {
 		change, err = keywrap.Rewrap(ctx, cfg, spec)
@@ -150,6 +160,34 @@ func runKey(args []string, getenv func(string) string, stdout, stderr io.Writer)
 			strings.Join(change.Files, ", "), config.EnvKeyWrap)
 	}
 	return 0
+}
+
+// keySource returns the KMS key the wrapped files must be wrapped with:
+// MONGORESCUE_KEY_WRAP, or --from when it is confirmed with --confirm-from. The
+// spec recorded in the data directory is never used to reach a KMS. A non-zero
+// code is the exit code of a usage error.
+func keySource(sub, from string, confirmed bool, getenv func(string) string, stderr io.Writer) (keywrap.Spec, int) {
+	name := "mongorescue key " + sub
+	if strings.TrimSpace(from) != "" {
+		spec, err := keywrap.ParseSpec(from)
+		if err != nil || !spec.Enabled() {
+			fmt.Fprintln(stderr, name+": --from must name a KMS key as <provider>:<key URI>")
+			return keywrap.Spec{}, 2
+		}
+		if !confirmed {
+			fmt.Fprintf(stderr, "%s: --from names %s, so this instance's KMS credentials are sent there.\n"+
+				"Check that it is your KMS key and run it again with --confirm-from.\n", name, spec)
+			return keywrap.Spec{}, 2
+		}
+		return spec, 0
+	}
+	spec, err := keywrap.ParseSpec(getenv(config.EnvKeyWrap))
+	if err != nil || !spec.Enabled() {
+		fmt.Fprintln(stderr, name+": set "+config.EnvKeyWrap+" to the KMS key the files are wrapped with, "+
+			"or name it with --from <provider>:<key URI> --confirm-from")
+		return keywrap.Spec{}, 2
+	}
+	return spec, 0
 }
 
 // keyStatus prints how secret.key of dir is stored.

@@ -240,7 +240,7 @@ path "transit/decrypt/mongorescue" { capabilities = ["update"] }`
 			return ""
 		}})
 	}
-	change, err := keywrap.Rewrap(ctx, keywrap.OfflineConfig{DataDir: dir, Open: open, Actor: "it", Retry: itRetry}, nextSpec)
+	change, err := keywrap.Rewrap(ctx, keywrap.OfflineConfig{DataDir: dir, Source: spec, Open: open, Actor: "it", Retry: itRetry}, nextSpec)
 	if err != nil || len(change.Files) != 1 {
 		t.Fatalf("rewrap = %+v, %v", change, err)
 	}
@@ -256,7 +256,7 @@ path "transit/decrypt/mongorescue" { capabilities = ["update"] }`
 	}
 
 	// Leaving the KMS writes the plaintext key back.
-	if _, err = keywrap.UnwrapToFiles(ctx, keywrap.OfflineConfig{DataDir: dir, Open: open, Actor: "it", Retry: itRetry}); err != nil {
+	if _, err = keywrap.UnwrapToFiles(ctx, keywrap.OfflineConfig{DataDir: dir, Source: nextSpec, Open: open, Actor: "it", Retry: itRetry}); err != nil {
 		t.Fatal(err)
 	}
 	if got, readErr := secretbox.ReadKeyFile(filepath.Join(dir, secretbox.KeyFileName)); readErr != nil || !bytes.Equal(got, first.Key) {

@@ -54,7 +54,7 @@ Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`,
 | `azure-keyvault:https://<vault>.vault.azure.net/keys/<name>[/<version>]` | `DefaultAzureCredential` (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`, Azure Workload Identity, managed identity) |
 | `vault-transit:https://<vault>:8200/<mount>/keys/<name>` | `VAULT_TOKEN`; or AppRole: `VAULT_ROLE_ID`, `VAULT_SECRET_ID` (`VAULT_APPROLE_MOUNT`, default `approle`); or Kubernetes: `VAULT_K8S_ROLE` (`VAULT_K8S_MOUNT`, default `kubernetes`; `VAULT_K8S_TOKEN_PATH`, default the pod's service account token); `VAULT_NAMESPACE`; `VAULT_CACERT` (PEM file of the CAs that verify Vault). The address is the key URI's; `VAULT_ADDR` is not read |
 
-The offline commands `mongorescue key status`, `mongorescue key rewrap --to <provider>:<key URI>` and `mongorescue key unwrap --confirm-plaintext` (all with `--data-dir`) show, move or remove the wrapping while MongoRescue is stopped.
+The offline commands `mongorescue key status`, `mongorescue key rewrap --to <provider>:<key URI>` and `mongorescue key unwrap --confirm-plaintext` (all with `--data-dir`) show, move or remove the wrapping while MongoRescue is stopped. `rewrap` and `unwrap` use the KMS key of `MONGORESCUE_KEY_WRAP` (or `--from <provider>:<key URI> --confirm-from`), never the one recorded in the data directory.
 
 The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
 

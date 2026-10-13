@@ -80,21 +80,24 @@ func TestKeyStatus(t *testing.T) {
 	}
 }
 
+// oldEnv configures the KMS key the test directory is wrapped with.
+var oldEnv = map[string]string{"MONGORESCUE_KEY_WRAP": "aws-kms:" + keyTestOld}
+
 func TestKeyUnwrapNeedsConfirmationAndAStoppedServer(t *testing.T) {
 	dir, key, _ := keyTestDir(t)
-	if code, _, errOut := runKeyCmd(nil, "unwrap", "--data-dir", dir); code != 2 || !strings.Contains(errOut, "--confirm-plaintext") {
+	if code, _, errOut := runKeyCmd(oldEnv, "unwrap", "--data-dir", dir); code != 2 || !strings.Contains(errOut, "--confirm-plaintext") {
 		t.Fatalf("unwrap without confirmation = %d %q", code, errOut)
 	}
 	lock, err := store.LockDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, _, errOut := runKeyCmd(nil, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 1 || !strings.Contains(errOut, "stop it first") {
+	if code, _, errOut := runKeyCmd(oldEnv, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 1 || !strings.Contains(errOut, "stop it first") {
 		t.Fatalf("unwrap while running = %d %q", code, errOut)
 	}
 	_ = lock.Release()
 
-	code, out, errOut := runKeyCmd(nil, "unwrap", "--data-dir", dir, "--confirm-plaintext")
+	code, out, errOut := runKeyCmd(oldEnv, "unwrap", "--data-dir", dir, "--confirm-plaintext")
 	if code != 0 || !strings.Contains(out, "Unset MONGORESCUE_KEY_WRAP") {
 		t.Fatalf("unwrap = %d %q %q", code, out, errOut)
 	}
@@ -106,18 +109,51 @@ func TestKeyUnwrapNeedsConfirmationAndAStoppedServer(t *testing.T) {
 	if len(journal) != 1 || journal[0].Action != keywrap.ActionUnwrappedToFile || !strings.HasPrefix(journal[0].Actor, "local") {
 		t.Fatalf("journal = %+v", journal)
 	}
-	if code, _, errOut = runKeyCmd(nil, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 1 || !strings.Contains(errOut, "no secret.key.wrapped") {
+	if code, _, errOut = runKeyCmd(oldEnv, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 1 || !strings.Contains(errOut, "no secret.key.wrapped") {
 		t.Fatalf("second unwrap = %d %q", code, errOut)
+	}
+}
+
+// TestKeyCommandsTakeTheKMSKeyFromTheConfiguration checks that the KMS key comes
+// from MONGORESCUE_KEY_WRAP or a confirmed --from, never from the data directory.
+func TestKeyCommandsTakeTheKMSKeyFromTheConfiguration(t *testing.T) {
+	dir, key, _ := keyTestDir(t)
+	var opened []string
+	inner := openKeyWrapper
+	openKeyWrapper = func(ctx context.Context, s keywrap.Spec) (keywrap.Wrapper, error) {
+		opened = append(opened, s.KeyURI)
+		return inner(ctx, s)
+	}
+	if code, _, errOut := runKeyCmd(nil, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 2 || !strings.Contains(errOut, "MONGORESCUE_KEY_WRAP") {
+		t.Fatalf("unwrap without a configured key = %d %q", code, errOut)
+	}
+	other := map[string]string{"MONGORESCUE_KEY_WRAP": "vault-transit:" + keyTestNew}
+	if code, _, errOut := runKeyCmd(other, "unwrap", "--data-dir", dir, "--confirm-plaintext"); code != 1 || !strings.Contains(errOut, "--from") {
+		t.Fatalf("unwrap with another configured key = %d %q", code, errOut)
+	}
+	if code, _, errOut := runKeyCmd(other, "unwrap", "--data-dir", dir, "--confirm-plaintext", "--from", "aws-kms:"+keyTestOld); code != 2 ||
+		!strings.Contains(errOut, "--confirm-from") {
+		t.Fatalf("unconfirmed --from = %d %q", code, errOut)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("KMS opened for %v before the key was confirmed", opened)
+	}
+	code, _, errOut := runKeyCmd(other, "unwrap", "--data-dir", dir, "--confirm-plaintext", "--from", "aws-kms:"+keyTestOld, "--confirm-from")
+	if code != 0 || len(opened) != 1 || opened[0] != keyTestOld {
+		t.Fatalf("confirmed --from = %d %q, opened %v", code, errOut, opened)
+	}
+	if got, err := secretbox.ReadKeyFile(filepath.Join(dir, secretbox.KeyFileName)); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("secret.key after unwrap: %v", err)
 	}
 }
 
 func TestKeyRewrap(t *testing.T) {
 	dir, key, fakes := keyTestDir(t)
-	if code, _, errOut := runKeyCmd(nil, "rewrap", "--data-dir", dir); code != 2 || !strings.Contains(errOut, "--to") {
+	to := "vault-transit:" + keyTestNew
+	if code, _, errOut := runKeyCmd(oldEnv, "rewrap", "--data-dir", dir); code != 2 || !strings.Contains(errOut, "--to") {
 		t.Fatalf("rewrap without a target = %d %q", code, errOut)
 	}
-	to := "vault-transit:" + keyTestNew
-	code, out, errOut := runKeyCmd(map[string]string{"MONGORESCUE_KEY_WRAP": to}, "rewrap", "--data-dir", dir)
+	code, out, errOut := runKeyCmd(oldEnv, "rewrap", "--data-dir", dir, "--to", to)
 	if code != 0 || !strings.Contains(out, "Set MONGORESCUE_KEY_WRAP="+to) {
 		t.Fatalf("rewrap = %d %q %q", code, out, errOut)
 	}
@@ -126,12 +162,13 @@ func TestKeyRewrap(t *testing.T) {
 	if err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("secret.key.wrapped after rewrap: %v", err)
 	}
-	code, out, _ = runKeyCmd(nil, "rewrap", "--data-dir", dir, "--to", to)
+	code, out, _ = runKeyCmd(oldEnv, "rewrap", "--data-dir", dir, "--to", to)
 	if code != 0 || !strings.Contains(out, "nothing changed") {
 		t.Fatalf("second rewrap = %d %q", code, out)
 	}
 	fakes[keyTestNew].SetDown(-1)
-	if code, _, errOut = runKeyCmd(nil, "rewrap", "--data-dir", dir, "--to", "aws-kms:"+keyTestOld); code != 1 || !strings.Contains(errOut, "unreachable") {
+	newEnv := map[string]string{"MONGORESCUE_KEY_WRAP": to}
+	if code, _, errOut = runKeyCmd(newEnv, "rewrap", "--data-dir", dir, "--to", "aws-kms:"+keyTestOld); code != 1 || !strings.Contains(errOut, "unreachable") {
 		t.Fatalf("rewrap with the KMS down = %d %q", code, errOut)
 	}
 }

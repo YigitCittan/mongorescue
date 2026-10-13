@@ -34,8 +34,54 @@ func wrappedDir(t *testing.T, kms keywrap.Wrapper) (dir string, cur, prev []byte
 }
 
 func offline(dir string, fakes map[string]*keywraptest.Fake) keywrap.OfflineConfig {
-	return keywrap.OfflineConfig{DataDir: dir, Open: keywraptest.Opener(fakes), Actor: "local:alice", Retry: fastRetry,
+	return keywrap.OfflineConfig{DataDir: dir, Source: testSpec, Open: keywraptest.Opener(fakes), Actor: "local:alice", Retry: fastRetry,
 		Now: func() time.Time { return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC) }}
+}
+
+// TestOfflineCommandsNeverUseTheFilesSpec checks that a wrapped file recording
+// another KMS key than the configured source is refused before any KMS is
+// opened: a data directory cannot send the instance's credentials elsewhere.
+func TestOfflineCommandsNeverUseTheFilesSpec(t *testing.T) {
+	kms := keywraptest.New("kms")
+	dir, _, _ := wrappedDir(t, kms)
+	// The data directory claims an attacker's KMS.
+	path := filepath.Join(dir, keywrap.WrappedKeyFileName)
+	f, err := keywrap.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Provider, f.KeyURI = keywrap.ProviderVaultTransit, "https://attacker.example:8200/transit/keys/k"
+	if err = keywrap.WriteFile(path, f); err != nil {
+		t.Fatal(err)
+	}
+	var opened []keywrap.Spec
+	cfg := offline(dir, nil)
+	cfg.Open = func(_ context.Context, s keywrap.Spec) (keywrap.Wrapper, error) {
+		opened = append(opened, s)
+		return kms, nil
+	}
+	if _, err = keywrap.UnwrapToFiles(context.Background(), cfg); !errors.Is(err, keywrap.ErrKeyMismatch) || !strings.Contains(err.Error(), "--from") {
+		t.Fatalf("unwrap of a file wrapped with another key = %v; want ErrKeyMismatch", err)
+	}
+	if _, err = keywrap.Rewrap(context.Background(), cfg, otherSpec); !errors.Is(err, keywrap.ErrKeyMismatch) {
+		t.Fatalf("rewrap of a file wrapped with another key = %v; want ErrKeyMismatch", err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("KMS opened for %v; want none", opened)
+	}
+	// Naming that key explicitly (--from, confirmed) is what reaches it.
+	cfg.Source = f.Spec()
+	if _, err = keywrap.UnwrapToFiles(context.Background(), cfg); !errors.Is(err, keywrap.ErrKeyMismatch) {
+		// secret.key.previous.wrapped is still wrapped with the original key.
+		t.Fatalf("unwrap with mixed keys = %v; want ErrKeyMismatch", err)
+	}
+	cfg.Source = keywrap.Spec{}
+	if _, err = keywrap.UnwrapToFiles(context.Background(), cfg); !errors.Is(err, keywrap.ErrInvalidSpec) {
+		t.Fatalf("unwrap without a source = %v; want ErrInvalidSpec", err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("KMS opened for %v; want none", opened)
+	}
 }
 
 func TestUnwrapToFiles(t *testing.T) {
