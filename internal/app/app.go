@@ -705,7 +705,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetSchedulerTickSource(sched.LastTick)
 	metricSet.SetSettingsWarningsSource(func() int { return len(settingsSvc.Warnings()) })
 	if o.ha != nil {
-		metricSet.SetHASource(o.ha.rt.metricsState)
+		metricSet.SetHASource(o.ha.metricsState)
 	}
 
 	// 6. Initialize the embedded web dashboard (only with cfg.Dashboard) & HTTP API.
@@ -913,7 +913,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithHeartbeat(heartbeatSvc),
 	}
 	if o.ha != nil {
-		serverOpts = append(serverOpts, server.WithHA(o.ha.rt.serverStatus, metricSet.StandbyHandler()))
+		serverOpts = append(serverOpts, server.WithHA(o.ha.serverStatus, metricSet.StandbyHandler()))
 	}
 	if o.desktop {
 		serverOpts = append(serverOpts, server.WithDesktopCSP())
