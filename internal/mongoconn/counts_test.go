@@ -42,8 +42,14 @@ func TestOplogDerivedCounts(t *testing.T) {
 		deltaWriter{delta}); err != nil {
 		t.Fatal(err)
 	}
-	namespaces := []string{"shop.orders", "shop.users", "shop.busy", "shop.quiet", "shop.gone"}
-	now := map[string]int64{"shop.orders": 101, "shop.users": 5, "shop.busy": 9, "shop.quiet": 3}
+	namespaces := []string{"shop.orders", "shop.users", "shop.busy", "shop.quiet", "shop.gone", "shop.metrics", "shop.log", "shop.broken"}
+	now := nowCounts{
+		counts: map[string]int64{"shop.orders": 101, "shop.users": 5, "shop.busy": 9, "shop.quiet": 3},
+		absent: map[string]bool{"shop.gone": true},
+		// What readNow skips: a time-series and a capped collection, and one whose
+		// count failed; the others are still derived.
+		skip: map[string]string{"shop.metrics": "a time-series collection", "shop.log": "a capped collection", "shop.broken": "its count could not be read"},
+	}
 	got := deriveCounts(at, namespaces, now, delta)
 	want := map[string]int64{"shop.orders": 100, "shop.users": 6, "shop.quiet": 3, "shop.gone": 0}
 	if got.At != at || got.Method != models.CountMethodOplog || len(got.Counts) != len(want) {
@@ -54,8 +60,14 @@ func TestOplogDerivedCounts(t *testing.T) {
 			t.Errorf("%s = %d (%v), want %d", ns, c, ok, n)
 		}
 	}
-	if why := got.Unverified["shop.busy"]; !strings.Contains(why, "while the counts were read") {
-		t.Errorf("shop.busy: %q", why)
+	if !got.Absent["shop.gone"] || len(got.Absent) != 1 {
+		t.Errorf("absent = %v", got.Absent)
+	}
+	for ns, why := range map[string]string{"shop.busy": "while the counts were read", "shop.metrics": "time-series",
+		"shop.log": "capped", "shop.broken": "could not be read"} {
+		if !strings.Contains(got.Unverified[ns], why) {
+			t.Errorf("%s: %q", ns, got.Unverified[ns])
+		}
 	}
 }
 
@@ -64,8 +76,16 @@ func TestOplogDerivedCountNeverNegative(t *testing.T) {
 	if err := delta.Add(crudEntry(t, 11, "i", "shop.orders")); err != nil {
 		t.Fatal(err)
 	}
-	got := deriveCounts(pitr.Timestamp{T: 10, I: 1}, []string{"shop.orders"}, map[string]int64{}, delta)
+	if err := delta.Add(crudEntry(t, 12, "i", "shop.gone")); err != nil {
+		t.Fatal(err)
+	}
+	got := deriveCounts(pitr.Timestamp{T: 10, I: 1}, []string{"shop.orders", "shop.gone"},
+		nowCounts{counts: map[string]int64{}, absent: map[string]bool{"shop.gone": true}}, delta)
 	if _, ok := got.Counts["shop.orders"]; ok || !strings.Contains(got.Unverified["shop.orders"], "negative") {
+		t.Fatalf("counts = %+v", got)
+	}
+	// Absent now, yet written since: its existence at the point is not known.
+	if _, ok := got.Counts["shop.gone"]; ok || got.Absent["shop.gone"] || !strings.Contains(got.Unverified["shop.gone"], "does not exist now") {
 		t.Fatalf("counts = %+v", got)
 	}
 }

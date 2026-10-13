@@ -75,6 +75,10 @@ type Manifest struct {
 	ExactMethod CountMethod     `json:"exact_method,omitempty"`
 }
 
+// ChainTestOldBaseReason is why a chain test could not verify the counts of a
+// newer base taken by an earlier release, which recorded no exact counts.
+const ChainTestOldBaseReason = "the base was taken by an earlier release and recorded no exact counts"
+
 // CountMethod says how the exact counts of a manifest were taken.
 type CountMethod string
 
@@ -98,9 +102,11 @@ type ExactCounts struct {
 	At     pitr.Timestamp
 	Method CountMethod
 	// Counts holds the exact counts and Unverified the collections without one,
-	// with the reason.
+	// with the reason. A collection has an exact count only when it is also known
+	// whether it existed at At; Absent lists those that did not (count 0).
 	Counts     map[string]int64
 	Unverified map[string]string
+	Absent     map[string]bool
 }
 
 // SetExact records counts, taken at the consistent point of a PITR base, on m:
@@ -113,9 +119,9 @@ func (m *Manifest) SetExact(counts *ExactCounts) {
 	m.ExactAt, m.ExactMethod = &at, counts.Method
 	for i := range m.Collections {
 		c := &m.Collections[i]
-		c.Exact, c.ExactNote = nil, ""
+		c.Exact, c.ExactNote, c.ExactAbsent = nil, "", false
 		if n, ok := counts.Counts[c.Name]; ok {
-			c.Exact = &n
+			c.Exact, c.ExactAbsent = &n, counts.Absent[c.Name]
 			continue
 		}
 		if c.ExactNote = counts.Unverified[c.Name]; c.ExactNote == "" {
@@ -138,6 +144,11 @@ type CollectionManifest struct {
 	// without one, and ExactNote then says why.
 	Exact     *int64 `json:"exact,omitempty"`
 	ExactNote string `json:"exact_note,omitempty"`
+	// ExactAbsent reports that the collection did not exist at that point (it was
+	// dropped during the dump): the restore must not hold it. With an exact count
+	// and ExactAbsent false, it existed there and the restore must hold it, even
+	// empty.
+	ExactAbsent bool `json:"exact_absent,omitempty"`
 	// Indexes lists the index specifications, sorted by name.
 	Indexes []IndexSpec `json:"indexes,omitempty"`
 }

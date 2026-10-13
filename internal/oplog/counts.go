@@ -20,6 +20,12 @@ import (
 // earlier entries, and so the namespaces it wrote, were not seen). Entries after
 // TaintAfter make the namespaces they change unknown instead of counting.
 //
+// The oplog does not hold every change of every count: a full capped collection
+// evicts documents without a delete entry, and a time-series collection's writes
+// land on its system.buckets namespace (bucket documents, not measurements).
+// Callers must not derive the counts of such collections (internal/mongoconn marks
+// them unverified).
+//
 // Feed the entries in oplog order with Add, then read the result with Delta.
 type CountDelta struct {
 	// TaintAfter, when set, ends the counted part of the run: an entry after it

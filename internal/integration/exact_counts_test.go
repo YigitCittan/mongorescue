@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongoconn"
@@ -28,6 +29,9 @@ func testExactCountsAt(t *testing.T) {
 	env.seed(t, db, "busy", 100)
 	env.seed(t, db, "txn", 100)
 	busy, txn := env.Client.Database(db).Collection("busy"), env.Client.Database(db).Collection("txn")
+	if err := env.Client.Database(db).CreateCollection(ctx, "capped", options.CreateCollection().SetCapped(true).SetSizeInBytes(1<<20)); err != nil {
+		t.Fatal(err)
+	}
 	namespaces := []string{db + ".busy", db + ".txn"}
 
 	// The position: every write so far is majority-committed, 100 documents each.
@@ -71,6 +75,30 @@ func testExactCountsAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertExactCounts(t, "oplog", derived, models.CountMethodOplog, want)
+
+	// A collection that never existed is absent at the position; a capped one is
+	// counted by the snapshot read only (its evictions leave no oplog entry). MongoDB
+	// 5.0 refuses snapshot reads of capped collections, so its count falls back to
+	// the oplog and is unverified there.
+	more := []string{db + ".capped", db + ".never"}
+	snap, err := prober.CountsAt(ctx, env.URI, more, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Absent[db+".never"] || snap.Counts[db+".never"] != 0 {
+		t.Errorf("snapshot of never: %+v", snap)
+	}
+	if n, ok := snap.Counts[db+".capped"]; (ok && (n != 0 || snap.Absent[db+".capped"])) ||
+		(!ok && !strings.Contains(snap.Unverified[db+".capped"], "capped")) {
+		t.Errorf("snapshot of capped: %+v", snap)
+	}
+	derived, err = prober.OplogCountsAt(ctx, env.URI, more, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(derived.Unverified[db+".capped"], "capped") || !derived.Absent[db+".never"] {
+		t.Errorf("oplog of capped and never: %+v", derived)
+	}
 
 	// A collection renamed since the position has no count there.
 	if err = env.Client.Database("admin").RunCommand(ctx, bson.D{{Key: "renameCollection", Value: db + ".txn"}, {Key: "to", Value: db + ".moved"}}).Err(); err != nil {

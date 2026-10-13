@@ -497,9 +497,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetAuditQueueSource(auditLog.QueueDepth)
 	auditSvc := audit.NewService(metaStore, logger, audit.WithObserver(auditLog.Mirror()))
 	// The PITR collector is built below; the sweep's chunk item calls it.
-	// chainTestFailed reports failed PITR chain tests to readiness once the
-	// operations service is built.
-	var chainTestFailed func(ctx context.Context, streamID string) bool
+	// lastChainTest reports the newest PITR chain test of a stream to readiness
+	// once the operations service is built.
+	var lastChainTest func(ctx context.Context, streamID string) *readiness.ChainTestInfo
 	// pitrEstimate gives readiness the measured RTO of PITR streams, once the
 	// operations service is built.
 	var pitrEstimate pitrEstimator
@@ -589,7 +589,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Store:        metaStore,
 		Connections:  connSvc,
 		KeysEscrowed: func() bool { return settingsSvc.RecoveryKitStatus().UpToDate },
-		Streams:      pitrStreams(&pitrSvc, &chainTestFailed, metaStore, &pitrEstimate),
+		Streams:      pitrStreams(&pitrSvc, &lastChainTest, metaStore, &pitrEstimate),
 		Targets:      targetSvc.List,
 		Publisher:    bus,
 		// Bursts of job writes (an import, the API creating thousands of jobs)
@@ -724,6 +724,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// server, so both adapters apply exactly the same rules.
 	ops = operations.New(operations.Config{
 		PITRPins:    pitrPins,
+		OnChainTest: metricSet.SetPITRChainTestUnverified,
 		Store:       metaStore,
 		WakeCopies:  copySvc.Notify,
 		Backup:      backupEngine,
@@ -864,9 +865,17 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// With the two-person rule, admin users, promotions and admin API keys wait for a
 	// second administrator too.
 	authSvc.SetAdminGrantGate(ops)
-	chainTestFailed = func(ctx context.Context, streamID string) bool {
+	lastChainTest = func(ctx context.Context, streamID string) *readiness.ChainTestInfo {
 		r := ops.LastChainTest(ctx, streamID)
-		return r != nil && r.Failed
+		if r == nil {
+			return nil
+		}
+		// Also after a restart, the series follows the newest chain test.
+		if r.Verification != "" {
+			metricSet.SetPITRChainTestUnverified(streamID, r.Unverified)
+		}
+		return &readiness.ChainTestInfo{RestoreID: r.RestoreID, StartedAt: r.StartedAt, Failed: r.Failed,
+			Verification: string(r.Verification), Unverified: r.Unverified, UnverifiedReason: r.UnverifiedReason, OldBase: r.OldBase}
 	}
 	pitrEstimate = ops.EstimatePITR
 	mcpSrv := mcp.New(mcp.Config{

@@ -195,8 +195,12 @@ type RestoreVerification struct {
 	// Unverified counts the compared collections of a PITR chain test whose
 	// document count could not be checked, because the newer base recorded no
 	// exact count at its consistent point (see Notes); their presence and indexes
-	// were checked.
-	Unverified int `json:"unverified,omitempty"`
+	// were checked. UnverifiedReason is the reason of the first of them, and
+	// UnverifiedOldBase reports that the newer base was taken by an earlier release,
+	// which recorded no exact counts: a new base backup fixes both.
+	Unverified        int    `json:"unverified,omitempty"`
+	UnverifiedReason  string `json:"unverified_reason,omitempty"`
+	UnverifiedOldBase bool   `json:"unverified_old_base,omitempty"`
 	// CheckedAt is when the comparison ran.
 	CheckedAt time.Time `json:"checked_at"`
 }

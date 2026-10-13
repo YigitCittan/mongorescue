@@ -589,6 +589,10 @@ function renderRestoreDetails() {
   setText("restore-details-warning-text", r.warning || "");
   // Mismatches and notes of the comparison with the backup's manifest.
   const lines = v ? [...(v.mismatches || []), ...(v.notes || [])] : [];
+  // What to do about counts a chain test could not verify (pitr.js).
+  if (v && Number(v.unverified) > 0 && typeof pitrChainTestHint === "function") {
+    lines.unshift(pitrChainTestHint({ old_base: v.unverified_old_base, unverified_reason: v.unverified_reason }));
+  }
   document.getElementById("restore-details-verification").hidden = lines.length === 0;
   setText("restore-details-verification-text", lines.join("\n"));
   // The checks that ran before the restore started.
@@ -608,6 +612,10 @@ function renderRestoreDetails() {
 function restoreVerificationBadge(v) {
   switch (v.status) {
     case "passed":
+      // A PITR chain test whose counts were partly unverified is not a clean pass.
+      if (Number(v.unverified) > 0) {
+        return statusBadge("warn", tf("restore_checks.verification_passed_unverified", { n: Number(v.unverified) }), v.unverified_reason || "");
+      }
       return statusBadge("success", tf("restore_checks.verification_passed", { n: Number(v.collections) || 0 }));
     case "failed":
       return statusBadge("danger", tf("restore_checks.verification_failed", { n: (v.mismatches || []).length }));

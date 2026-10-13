@@ -153,8 +153,13 @@ func TestChainTestExactCountIsStrict(t *testing.T) {
 func TestChainTestWithoutExactCountsIsUnverified(t *testing.T) {
 	res, v := chainTestVerification(t, chainTestBaseCounts(20000, 20000, nil), 20001)
 	if res.Failed || v.Status != models.RestoreVerificationPassed || v.Unverified != 1 || len(v.Mismatches) != 0 ||
-		len(v.Notes) != 1 || !strings.Contains(v.Notes[0], "shop.orders: 20001 documents restored, count not verified: the base recorded no count") {
+		!v.UnverifiedOldBase || v.UnverifiedReason != models.ChainTestOldBaseReason ||
+		len(v.Notes) != 1 || !strings.Contains(v.Notes[0], "shop.orders: 20001 documents restored, count not verified: the base was taken by an earlier release") {
 		t.Fatalf("result = %+v, verification = %+v", res, v)
+	}
+	// The stream's newest chain test says so, not just that it passed.
+	if res.Unverified != 1 || !res.OldBase || res.UnverifiedReason != models.ChainTestOldBaseReason {
+		t.Fatalf("result = %+v", res)
 	}
 	b2 := chainTestBaseCounts(20000, 20000, nil)
 	b2.Manifest.SetExact(&models.ExactCounts{At: b2.TAfter.TS, Method: models.CountMethodOplog,
@@ -162,20 +167,47 @@ func TestChainTestWithoutExactCountsIsUnverified(t *testing.T) {
 	b2.Manifest.Collections = append(b2.Manifest.Collections, models.CollectionManifest{Name: "shop.gone", ExactNote: "dropped"})
 	res, v = chainTestVerification(t, b2, 7)
 	if !res.Failed || v.Unverified != 2 || len(v.Mismatches) != 1 || !strings.Contains(v.Mismatches[0], "shop.gone is missing") ||
+		v.UnverifiedOldBase || v.UnverifiedReason != "dropped" || // shop.gone's, the first by name
+
 		!strings.Contains(strings.Join(v.Notes, "|"), "count not verified: dropped at Timestamp(126, 1)") {
 		t.Fatalf("result = %+v, verification = %+v", res, v)
 	}
 }
 
-// TestChainTestEmptyCollectionGoneAtTheConsistentPoint: a collection listed before
-// the dump and dropped before its consistent point is not expected.
-func TestChainTestEmptyCollectionGoneAtTheConsistentPoint(t *testing.T) {
-	b2 := chainTestBase(7)
-	b2.Manifest.Collections = append(b2.Manifest.Collections, models.CollectionManifest{Name: "shop.tmp", DocumentsMin: 4, DocumentsMax: 4})
-	b2.Manifest.SetExact(&models.ExactCounts{At: b2.TAfter.TS, Method: models.CountMethodSnapshot, Counts: map[string]int64{"shop.orders": 7, "shop.tmp": 0}})
-	res, v := chainTestVerification(t, b2, 7)
-	if res.Failed || v.Status != models.RestoreVerificationPassed || len(v.Notes) != 1 || !strings.Contains(v.Notes[0], "shop.tmp held no documents") {
-		t.Fatalf("result = %+v, verification = %+v", res, v)
+// TestChainTestChecksExistenceAtTheConsistentPoint: a collection that existed at
+// the consistent point must be restored, even empty; one that did not (dropped
+// during the base backup) must not be.
+func TestChainTestChecksExistenceAtTheConsistentPoint(t *testing.T) {
+	base := func(absent bool) *models.BackupRecord {
+		b2 := chainTestBase(7)
+		b2.Manifest.Collections = append(b2.Manifest.Collections, models.CollectionManifest{Name: "shop.tmp", DocumentsMin: 4, DocumentsMax: 4})
+		counts := &models.ExactCounts{At: b2.TAfter.TS, Method: models.CountMethodSnapshot, Counts: map[string]int64{"shop.orders": 7, "shop.tmp": 0}}
+		if absent {
+			counts.Absent = map[string]bool{"shop.tmp": true}
+		}
+		b2.Manifest.SetExact(counts)
+		return b2
+	}
+	// Existed, empty, and missing from the restore: a divergence.
+	res, v := chainTestVerification(t, base(false), 7)
+	if !res.Failed || len(v.Mismatches) != 1 || !strings.Contains(v.Mismatches[0], "shop.tmp is missing") {
+		t.Fatalf("existed: result = %+v, verification = %+v", res, v)
+	}
+	// Gone at the consistent point and not restored: a note.
+	res, v = chainTestVerification(t, base(true), 7)
+	if res.Failed || v.Status != models.RestoreVerificationPassed || len(v.Notes) != 1 || !strings.Contains(v.Notes[0], "shop.tmp did not exist") {
+		t.Fatalf("absent: result = %+v, verification = %+v", res, v)
+	}
+	// Gone at the consistent point, yet restored: a divergence.
+	inspector := healthyInspector()
+	inspector.manifest = &models.Manifest{Collections: []models.CollectionManifest{
+		{Name: "orders", DocumentsMin: 7, DocumentsMax: 7}, {Name: "tmp", DocumentsMin: 0, DocumentsMax: 0}}}
+	svc, fake := pitrService(t, inspector, base(true))
+	if _, err := svc.StartChainTest(admin(), "str_a"); err != nil {
+		t.Fatal(err)
+	}
+	if res = awaitChainTest(t, svc, fake); !res.Failed || res.Verification != models.RestoreVerificationFailed {
+		t.Fatalf("absent but restored: result = %+v", res)
 	}
 }
 
