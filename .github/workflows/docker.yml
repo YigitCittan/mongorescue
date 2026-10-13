@@ -21,7 +21,7 @@ jobs:
     permissions:
       contents: read
       packages: write # push to GHCR
-      id-token: write # keyless signing of the provenance attestation
+      id-token: write # keyless signing of the provenance attestation and the cosign signature
       attestations: write # store the attestation
     steps:
       - name: Checkout Code
@@ -95,3 +95,14 @@ jobs:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless cosign signature of the image index, by digest (never by tag, which
+      # can move), stored in GHCR next to the image. Verification:
+      # docs/security.md#verifying-releases.
+      - name: Sign the image (cosign)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
