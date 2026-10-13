@@ -37,6 +37,7 @@ func (m *mongoEnv) collectionNames(t *testing.T, db string) []string {
 // database (it excludes "ab" and "abc", not the collection named "a*"), never passed
 // to mongodump as a name, and refused without a collection lister.
 func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st, err := storage.NewLocalStorage(t.TempDir())
 	if err != nil {
@@ -121,6 +122,7 @@ func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
 // clone and checks that only that one exists there. A second, in-place restore of one
 // collection with --drop must drop only that collection in the target.
 func TestSelectiveRestore(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st, err := storage.NewLocalStorage(t.TempDir())
 	if err != nil {

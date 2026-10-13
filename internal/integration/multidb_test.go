@@ -20,6 +20,7 @@ import (
 // second run backs the new database up (and records it as known); without it, the
 // run reports it as new and does not back it up.
 func TestPatternJobOverRealDatabases(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	for _, auto := range []bool{true, false} {
 		name := "auto_off"

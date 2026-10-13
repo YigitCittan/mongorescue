@@ -129,7 +129,7 @@ A point-in-time restore takes the time of its two passes: the base restore, whic
 
 | Setup | Entries | Replay time | Entries per second | Stored oplog per second |
 | :--- | ---: | ---: | ---: | ---: |
-| Single-member replica set, idle (integration suite, `TestPITRChainTest`) | 10,036 | 4.3 s | 2,345 | 0.02 MiB/s |
+| Single-member replica set, idle (integration suite, `TestWholeInstance/PITRChainTest`) | 10,036 | 4.3 s | 2,345 | 0.02 MiB/s |
 | Three members, idle (replica set scenarios, `TestFailoverDuringRestore` retries) | 40,080 | 15.0 to 16.2 s | 2,470 to 2,670 | 0.03 MiB/s |
 | Three members under 200 writes per second (soak test, final chain test) | 26,800 | 54.3 s | 493 | 0.01 MiB/s |
 

@@ -143,6 +143,7 @@ func assertRestoreFailed(t *testing.T, env *mongoEnv, rec *models.RestoreRecord,
 // that the restore fails with a clear error, never reports success, and that the
 // source database is never touched.
 func TestCorruptedBackupsFailLoudly(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "cor")
 	env.seedText(t, db, "notes", 300)
@@ -261,6 +262,7 @@ func TestCorruptedBackupsFailLoudly(t *testing.T) {
 // requests that name an existing database without the explicit opt-in are refused
 // and write nothing, and the default restore leaves the source untouched.
 func TestRestoreNeverTouchesExistingDataWithoutOptIn(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st := storageTargets(t)[0].Storage
 	db := env.uniqueDB(t, "safe")

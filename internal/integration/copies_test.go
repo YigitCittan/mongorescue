@@ -45,6 +45,7 @@ func (c copyTargets) List(context.Context) ([]*models.StorageTarget, error) {
 // in MinIO and restores: the restore reads the copy instead, says so in its record,
 // and the clone holds every document.
 func TestCopyToALocalTargetAndRestoreFallsBack(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	var minio *s3Provider
 	for _, p := range configuredS3Providers() {

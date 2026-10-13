@@ -71,7 +71,7 @@ type pitrRig struct {
 // wires it.
 func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 	t.Helper()
-	env := requireMongo(t)
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(cancel)
@@ -312,12 +312,12 @@ func (r *pitrRig) systemState(t *testing.T) string {
 	return fmt.Sprintf("%s;users=%d", strings.Join(parts, ";"), users)
 }
 
-// TestPITRRestoreToJustBeforeADrop takes a base, writes (including an index build
+// testPITRRestoreToJustBeforeADrop takes a base, writes (including an index build
 // and a rename), drops one database and keeps writing, then restores the whole
 // instance and one database to the second before the drop into safe clones: the
 // clones hold the state before the drop, while the source databases and admin,
 // config and local stay untouched.
-func TestPITRRestoreToJustBeforeADrop(t *testing.T) {
+func testPITRRestoreToJustBeforeADrop(t *testing.T) {
 	r := newPITRRig(t)
 	env, ctx := r.env, r.ctx
 	dbA, dbB := env.uniqueDB(t, "pitra"), env.uniqueDB(t, "pitrb")
@@ -413,10 +413,10 @@ func TestPITRRestoreToJustBeforeADrop(t *testing.T) {
 	assertSameState(t, "source database after the second restore", env.state(t, dbB), srcB)
 }
 
-// TestPITRRestoreStopsInsideATransaction restores to the commit of a transaction
+// testPITRRestoreStopsInsideATransaction restores to the commit of a transaction
 // split into several oplog entries: the limit falls inside the transaction, which
 // must not be applied at all.
-func TestPITRRestoreStopsInsideATransaction(t *testing.T) {
+func testPITRRestoreStopsInsideATransaction(t *testing.T) {
 	r := newPITRRig(t)
 	env, ctx := r.env, r.ctx
 	db := env.uniqueDB(t, "pitrtx")
@@ -466,11 +466,11 @@ func TestPITRRestoreStopsInsideATransaction(t *testing.T) {
 	}
 }
 
-// TestPITRChainTest takes two bases and lets the stream's chain_test_cron run a
+// testPITRChainTest takes two bases and lets the stream's chain_test_cron run a
 // chain test: base one is restored to the consistent point of base two (every
 // write up to and including its t_after), the clones match base two's manifest,
 // and they go. The test's measured replay rate then drives the RTO estimate.
-func TestPITRChainTest(t *testing.T) {
+func testPITRChainTest(t *testing.T) {
 	r := newPITRRig(t, "* * * * *")
 	env, ctx := r.env, r.ctx
 	db := env.uniqueDB(t, "pitrct")

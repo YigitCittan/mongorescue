@@ -9,6 +9,9 @@
 // Environment:
 //
 //	MONGORESCUE_TEST_MONGO_URI                  MongoDB URI with credentials (required for Mongo tests)
+//	MONGORESCUE_TEST_WHOLE_INSTANCE_URI         a second MongoDB of the same topology, used only by
+//	                                            TestWholeInstance, which then runs in parallel with
+//	                                            the other tests (see whole_instance_test.go)
 //	MONGORESCUE_TEST_S3_<PROVIDER>_BUCKET       enables a provider; PROVIDER is one of
 //	                                            MINIO, LOCALSTACK, AWS, R2, B2, SPACES, WASABI
 //	MONGORESCUE_TEST_S3_<PROVIDER>_ENDPOINT     custom endpoint (empty for AWS)
@@ -23,6 +26,10 @@
 //	MONGORESCUE_TEST_TLS_DIR                    its CA and x509 client material (internal/integration/gencerts)
 //	MONGORESCUE_TEST_LARGE                      "1" runs TestThroughputAndMemory with ~2 GiB and a memory limit
 //	MONGORESCUE_TEST_LARGE_MB                   size of that test's generated data in MiB
+//
+// Tests run in parallel against unique databases (mongoEnv.uniqueDB), storage
+// prefixes and ports; the tests that act on the whole MongoDB instance run one after
+// another in TestWholeInstance.
 //
 // docs/testing.md describes what each test guarantees.
 package integration
@@ -56,8 +63,9 @@ import (
 )
 
 const (
-	envMongoURI = "MONGORESCUE_TEST_MONGO_URI"
-	envS3Prefix = "MONGORESCUE_TEST_S3_"
+	envMongoURI         = "MONGORESCUE_TEST_MONGO_URI"
+	envWholeInstanceURI = "MONGORESCUE_TEST_WHOLE_INSTANCE_URI"
+	envS3Prefix         = "MONGORESCUE_TEST_S3_"
 
 	// opTimeout bounds individual driver and storage operations in tests.
 	opTimeout = 2 * time.Minute
@@ -65,6 +73,15 @@ const (
 
 // s3ProviderNames lists every S3-compatible provider the suite knows how to target.
 var s3ProviderNames = []string{"MINIO", "LOCALSTACK", "AWS", "R2", "B2", "SPACES", "WASABI"}
+
+// TestMain runs the suite and removes what its tests share (the built binary).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sharedBinary.dir != "" {
+		_ = os.RemoveAll(sharedBinary.dir)
+	}
+	os.Exit(code)
+}
 
 // mongoEnv describes the MongoDB deployment under test.
 type mongoEnv struct {
@@ -77,24 +94,43 @@ type mongoEnv struct {
 // database tools are installed, and returns a connected client (disconnected on cleanup).
 func requireMongo(t *testing.T) *mongoEnv {
 	t.Helper()
+	return connectMongo(t, envMongoURI)
+}
 
-	uri := os.Getenv(envMongoURI)
+// requireWholeInstance is requireMongo for the tests of TestWholeInstance, which act
+// on the whole instance: it connects to MONGORESCUE_TEST_WHOLE_INSTANCE_URI when set
+// (a server no other test uses), and to MONGORESCUE_TEST_MONGO_URI otherwise.
+func requireWholeInstance(t *testing.T) *mongoEnv {
+	t.Helper()
+	if os.Getenv(envWholeInstanceURI) != "" {
+		return connectMongo(t, envWholeInstanceURI)
+	}
+	return requireMongo(t)
+}
+
+// connectMongo skips the test unless the variable env holds a MongoDB URI, verifies
+// the database tools are installed, and returns a connected client (disconnected on
+// cleanup).
+func connectMongo(t *testing.T, env string) *mongoEnv {
+	t.Helper()
+
+	uri := os.Getenv(env)
 	if uri == "" {
-		t.Skipf("%s not set; skipping MongoDB integration test", envMongoURI)
+		t.Skipf("%s not set; skipping MongoDB integration test", env)
 	}
 	for _, bin := range []string{"mongodump", "mongorestore"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Fatalf("%s is set but %s is not on PATH: %v", envMongoURI, bin, err)
+			t.Fatalf("%s is set but %s is not on PATH: %v", env, bin, err)
 		}
 	}
 
 	parsed, err := url.Parse(uri)
 	if err != nil {
-		t.Fatalf("parse %s: %v", envMongoURI, err)
+		t.Fatalf("parse %s: %v", env, err)
 	}
 	password, _ := parsed.User.Password()
 	if password == "" {
-		t.Logf("%s has no password; credential leak assertions are vacuous", envMongoURI)
+		t.Logf("%s has no password; credential leak assertions are vacuous", env)
 	}
 
 	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetTimeout(opTimeout))

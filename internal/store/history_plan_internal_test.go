@@ -61,6 +61,64 @@ func historyFixture(tb testing.TB, jobs, rows int) (*SQLiteStore, time.Time) {
 	return s, now
 }
 
+// scaleStats are the sqlite_stat1 rows ANALYZE records for the jobs and backups at
+// the scale the plan tests check (TestScaleQueryPlans' 10,000 jobs on 500
+// connections, 20 jobs with 20,000 backups). Record them again (run ANALYZE on that
+// data and copy the rows) when a migration adds or changes an index of these tables.
+var scaleStats = []struct{ tbl, idx, stat string }{
+	{"backups", "backups_by_connection", "20000 20000 20000"},
+	{"backups", "backups_by_database", "20000 20000 1 1"},
+	{"backups", "backups_by_job_database", "20000 1000 1000 1000 1"},
+	{"backups", "backups_by_job_started", "20000 1000 1 1"},
+	{"backups", "backups_by_retry_of_started", "20000 20000 1 1"},
+	{"backups", "backups_by_run", "20000 20000 1 1"},
+	{"backups", "backups_by_started", "20000 1 1"},
+	{"backups", "backups_by_started_status_size", "20000 1 1 1"},
+	{"backups", "backups_by_status_started", "20000 10000 1 1"},
+	{"backups", "backups_by_status_started_size", "20000 10000 1 1"},
+	{"backups", "backups_by_storage_target", "20000 20000 10000"},
+	{"backups", "sqlite_autoindex_backups_1", "20000 1"},
+	{"jobs", "jobs_by_connection_created", "10020 20 20 1"},
+	{"jobs", "jobs_by_connection_last_status", "10020 20 20 20 1"},
+	{"jobs", "jobs_by_connection_name", "10020 20 1 1"},
+	{"jobs", "jobs_by_connection_next_run", "5020 20 1 1"},
+	{"jobs", "jobs_by_created", "10020 478 1"},
+	{"jobs", "jobs_by_enabled_created", "10020 5010 456 1"},
+	{"jobs", "jobs_by_enabled_last_status", "10020 5010 2505 456 1"},
+	{"jobs", "jobs_by_enabled_name", "10020 5010 1 1"},
+	{"jobs", "jobs_by_last_status", "10020 3340 478 1"},
+	{"jobs", "jobs_by_name", "10020 1 1"},
+	{"jobs", "jobs_by_next_run", "5020 60 1"},
+	{"jobs", "jobs_by_storage_target", "10020 10020"},
+	{"jobs", "jobs_discovering", "0 0"},
+	{"jobs", "jobs_filter", "10020 5010 3340 2505 20 20 1 1 1 1 1"},
+	{"jobs", "sqlite_autoindex_jobs_1", "10020 1"},
+}
+
+// useScaleStats makes the planner plan as at the scale of scaleStats: the plan
+// tests seed a few hundred rows instead of tens of thousands (they run under -race
+// in the unit suite), and the plans depend on the statistics, not the rows.
+func useScaleStats(tb testing.TB, s *SQLiteStore) {
+	tb.Helper()
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM sqlite_stat1 WHERE tbl IN ('jobs', 'backups')"); err != nil {
+		tb.Fatal(err)
+	}
+	// The samples of the seeded rows (SQLITE_ENABLE_STAT4) would contradict them.
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM sqlite_stat4 WHERE tbl IN ('jobs', 'backups')"); err != nil {
+		tb.Fatal(err)
+	}
+	for _, r := range scaleStats {
+		if _, err := s.db.ExecContext(ctx, "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)", r.tbl, r.idx, r.stat); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	// Reloads the statistics into the connection's planner.
+	if _, err := s.db.ExecContext(ctx, "ANALYZE sqlite_schema"); err != nil {
+		tb.Fatal(err)
+	}
+}
+
 func historyDayStarts(now time.Time, days int) []time.Time {
 	first := time.Date(now.Year(), now.Month(), now.Day()-days+1, 0, 0, 0, 0, time.UTC)
 	out := make([]time.Time, days+1)
@@ -90,11 +148,12 @@ func queryPlan(t *testing.T, db *sql.DB, query string, args ...any) []string {
 	return out
 }
 
-// TestHistoryQueryPlans checks, on 20,000 backups, that every history query reads
-// backups through an index (no "SCAN backups" or "SCAN b") and that the whole
-// history stays fast.
+// TestHistoryQueryPlans checks, with the statistics of 20,000 backups (1,000
+// seeded, see useScaleStats), that every history query reads backups through an
+// index (no "SCAN backups" or "SCAN b").
 func TestHistoryQueryPlans(t *testing.T) {
-	s, now := historyFixture(t, 20, 20000)
+	s, now := historyFixture(t, 20, 1000)
+	useScaleStats(t, s)
 	starts := historyDayStarts(now, 30)
 	from := timeKey(starts[0])
 	completed := string(models.StatusCompleted)
@@ -141,7 +200,7 @@ func TestHistoryQueryPlans(t *testing.T) {
 	// The query plans above are what keeps this fast; wall-clock limits are not
 	// asserted because CI runs this under -race and coverage on shared runners
 	// (BenchmarkBackupHistory measures the speed).
-	t.Logf("BackupHistory over 20,000 backups took %v", elapsed)
+	t.Logf("BackupHistory over 1,000 backups took %v", elapsed)
 }
 
 // BenchmarkBackupHistory measures the overview's query on 20,000 backups.

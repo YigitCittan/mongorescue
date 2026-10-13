@@ -137,6 +137,8 @@ func (s *SQLiteStore) UpdateJobKnownDatabases(ctx context.Context, id string, up
 		if err != nil {
 			return err
 		}
-		return execOne(ctx, tx, ErrNotFound, "UPDATE jobs SET data = ? WHERE id = ?", data, id)
+		// The known databases are part of the search text and the databases filter.
+		args := append([]any{data}, jobIndexColumns(job).args()...)
+		return execOne(ctx, tx, ErrNotFound, "UPDATE jobs SET data = ?, "+jobIndexSet+" WHERE id = ?", append(args, id)...)
 	})
 }

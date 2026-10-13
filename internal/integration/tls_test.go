@@ -137,6 +137,7 @@ func tlsRoundTrip(t *testing.T, env *tlsEnv, uri string, material *models.Connec
 // TestTLSWithCustomCA backs up and restores over requireTLS with a CA the system
 // does not trust, given as tls_ca_pem; without it the same backup fails.
 func TestTLSWithCustomCA(t *testing.T) {
+	t.Parallel()
 	env := requireTLS(t)
 	db := env.uniqueDB(t, "tlsca")
 	env.seed(t, db, "orders", ordersCount)
@@ -189,6 +190,7 @@ func TestTLSWithCustomCA(t *testing.T) {
 // password passed through the tools' --config file. It also runs the connection
 // service end to end: save (key sealed and masked), test.
 func TestX509ClientCertificate(t *testing.T) {
+	t.Parallel()
 	env := requireTLS(t)
 	db := env.uniqueDB(t, "x509")
 	env.seed(t, db, "orders", ordersCount)

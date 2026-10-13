@@ -1233,6 +1233,103 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 29,
+		seed:    func(*testing.T, *compatFixture) {},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			// The jobs written by every earlier version get their filter columns
+			// (opening the database) and their last status (the migration).
+			assertJobColumnsCurrent(t, s)
+			if _, err := s.ChangeStamp(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		},
+	},
+}
+
+// assertJobColumnsCurrent fails unless every readable job's filter columns are
+// those of jobIndexColumns and its last status those of its newest backup (a
+// multi-database job: its newest run that was not skipped).
+func assertJobColumnsCurrent(t *testing.T, s *SQLiteStore) {
+	t.Helper()
+	ctx := context.Background()
+	jobs, err := s.ListJobs(ctx)
+	if err != nil || len(jobs) == 0 {
+		t.Fatalf("jobs = %d, %v", len(jobs), err)
+	}
+	var multi []string
+	for _, j := range jobs {
+		if j.MultiDatabase() {
+			multi = append(multi, j.ID)
+		}
+	}
+	backups, err := s.LatestJobBackups(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.LatestJobRuns(ctx, multi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range jobs {
+		var (
+			idx     jobIndex
+			version int
+			rank    sql.NullInt64
+			at      sql.NullInt64
+		)
+		if err := s.db.QueryRow(`SELECT search_text, schedule, databases, discovers, index_version, last_status, last_status_at
+			FROM jobs WHERE id = ?`, j.ID).Scan(&idx.search, &idx.schedule, &idx.databases, &idx.discovers, &version, &rank, &at); err != nil {
+			t.Fatal(err)
+		}
+		if want := jobIndexColumns(j); idx != want || version != jobIndexVersion {
+			t.Errorf("job %s: columns %+v (version %d); want %+v (version %d)", j.ID, idx, version, want, jobIndexVersion)
+		}
+		wantRank, wantAt := int64(-1), int64(0)
+		if j.MultiDatabase() {
+			if r := runs[j.ID]; r != nil {
+				wantRank, wantAt = runRank(r.Status), timeKey(r.StartedAt)
+			}
+		} else if b := backups[j.ID]; b != nil {
+			wantRank, wantAt = backupRank(b.Status), timeKey(b.StartedAt)
+		}
+		gotRank, gotAt := int64(-1), int64(0)
+		if rank.Valid {
+			gotRank, gotAt = rank.Int64, at.Int64
+		}
+		if gotRank != wantRank || gotAt != wantAt {
+			t.Errorf("job %s: last status %d at %d; want %d at %d", j.ID, gotRank, gotAt, wantRank, wantAt)
+		}
+	}
+}
+
+// backupRank and runRank are the last-status ranks of a newest backup or run, as
+// the operations service maps them (failed, partial, cancelled, in progress,
+// completed).
+func backupRank(st models.BackupStatus) int64 {
+	switch st {
+	case models.StatusFailed:
+		return 0
+	case models.StatusCancelled:
+		return 2
+	case models.StatusPending, models.StatusInProgress:
+		return 3
+	}
+	return 4
+}
+
+func runRank(st models.JobRunStatus) int64 {
+	switch st {
+	case models.JobRunOK:
+		return 4
+	case models.JobRunPartial:
+		return 1
+	case models.JobRunFailed:
+		return 0
+	case models.JobRunCancelled:
+		return 2
+	}
+	return 3
 }
 
 // assertChecksumsRecorded fails unless every applied migration carries the

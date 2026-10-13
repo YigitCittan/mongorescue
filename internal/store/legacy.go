@@ -190,11 +190,7 @@ func (s *SQLiteStore) putLegacyJob(ctx context.Context, e execer, j *legacyJob) 
 	if err != nil {
 		return err
 	}
-	if _, err := e.ExecContext(ctx, upsertJobSQL,
-		j.ID, j.Name, j.Database, boolInt(j.Enabled), timeKey(j.CreatedAt), j.ConnectionID, j.StorageTargetID, data); err != nil {
-		return fmt.Errorf("store: save job %s: %w", j.ID, err)
-	}
-	return nil
+	return execUpsertJob(ctx, e, &j.Job, data)
 }
 
 // importMap writes the non-nil values of records with put and checks the row count of

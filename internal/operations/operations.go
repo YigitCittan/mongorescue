@@ -293,6 +293,14 @@ type Config struct {
 	// earlier. 0 disables the cache (every call computes); a negative value means
 	// DefaultHistoryCacheTTL.
 	HistoryCacheTTL time.Duration
+	// StatsCacheTTL shares computed Stats for this long among the callers with
+	// the same connection access while the store's change stamp (every write to
+	// jobs, backups, runs and restores) is unchanged, computing them once however
+	// many ask at the same time; events (HandleEvent) and InvalidateHistory drop
+	// them earlier. Without a store that counts its writes (ChangeStamp), the TTL
+	// and the events alone decide. 0 disables the cache; a negative value means
+	// DefaultStatsCacheTTL.
+	StatsCacheTTL time.Duration
 }
 
 // Service implements the backup and restore use cases. It is safe for concurrent use.
@@ -316,6 +324,8 @@ type Service struct {
 
 	// historyCache shares computed Histories (nil when Config.HistoryCacheTTL is 0).
 	historyCache *historyCache
+	// statsCache shares computed Stats (nil when Config.StatsCacheTTL is 0).
+	statsCache *statsCache
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a
@@ -338,6 +348,12 @@ func New(cfg Config) *Service {
 		s.historyCache = newHistoryCache(DefaultHistoryCacheTTL)
 	case ttl > 0:
 		s.historyCache = newHistoryCache(ttl)
+	}
+	switch ttl := cfg.StatsCacheTTL; {
+	case ttl < 0:
+		s.statsCache = newStatsCache(DefaultStatsCacheTTL)
+	case ttl > 0:
+		s.statsCache = newStatsCache(ttl)
 	}
 	s.registerBulkActions()
 	return s

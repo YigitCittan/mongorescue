@@ -2,13 +2,10 @@ package operations
 
 import (
 	"context"
-	"slices"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/sharedcache"
 )
 
 // DefaultHistoryCacheTTL is how long a computed History is served again when
@@ -16,133 +13,64 @@ import (
 // earlier.
 const DefaultHistoryCacheTTL = 10 * time.Second
 
+// DefaultStatsCacheTTL is how long computed Stats are served again when
+// Config.StatsCacheTTL asks for the default; any write to the jobs, backups, runs
+// or restores (the store's change stamp), events and job changes drop them
+// earlier.
+const DefaultStatsCacheTTL = 10 * time.Second
+
 // maxHistoryCacheEntries bounds the cached History windows (window, zone and
 // connection access); finished entries are dropped when it is reached.
 const maxHistoryCacheEntries = 64
 
 // historyKey identifies a cached History: the window, the zone its days are cut
-// in and the caller's connection access.
+// in and the caller's connection access (sharedcache.AccessKey).
 type historyKey struct {
 	days   int
 	zone   string
 	access string
 }
 
-// accessKey renders a connection set for historyKey: "*" for every connection,
-// else the sorted IDs (an empty limited set is "").
-func accessKey(set auth.ConnectionSet) string {
-	if !set.Limited() {
-		return "*"
-	}
-	ids := set.IDs()
-	slices.Sort(ids)
-	return strings.Join(ids, ",")
-}
-
-// historyEntry is one cached or in-flight History. h, err and at are written
-// before done is closed and read only after.
-type historyEntry struct {
-	done chan struct{}
-	gen  uint64
-	h    *History
-	err  error
-	at   time.Time
-}
-
-// finished reports whether e's computation ended.
-func (e *historyEntry) finished() bool {
-	select {
-	case <-e.done:
-		return true
-	default:
-		return false
-	}
-}
-
 // historyCache shares computed Histories for a TTL and computes each one once
 // however many callers ask at the same time (single flight).
-type historyCache struct {
-	ttl time.Duration
-	mu  sync.Mutex
-	// gen counts invalidations: entries of an older generation are never served.
-	gen     uint64
-	entries map[historyKey]*historyEntry
-}
+type historyCache = sharedcache.Cache[historyKey, *History]
 
 func newHistoryCache(ttl time.Duration) *historyCache {
-	return &historyCache{ttl: ttl, entries: map[historyKey]*historyEntry{}}
+	return sharedcache.New[historyKey, *History](sharedcache.Options{TTL: ttl, MaxEntries: maxHistoryCacheEntries})
 }
 
-// get returns the History of key: a cached one younger than the TTL, the one
-// being computed by another caller (waiting for it, or ctx), or a new one from
-// compute. A failed computation is not cached; callers that waited for it compute
-// their own, so one cancelled request never fails the others.
-func (c *historyCache) get(ctx context.Context, key historyKey, compute func(context.Context) (*History, error)) (*History, error) {
-	c.mu.Lock()
-	if e := c.entries[key]; e != nil && e.gen == c.gen {
-		if !e.finished() {
-			c.mu.Unlock()
-			select {
-			case <-e.done:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			if e.err == nil {
-				return e.h, nil
-			}
-			return compute(ctx)
-		}
-		if e.err == nil && time.Since(e.at) < c.ttl {
-			c.mu.Unlock()
-			return e.h, nil
-		}
-	}
-	if len(c.entries) >= maxHistoryCacheEntries {
-		for k, e := range c.entries {
-			if e.finished() {
-				delete(c.entries, k)
-			}
-		}
-	}
-	e := &historyEntry{done: make(chan struct{}), gen: c.gen}
-	c.entries[key] = e
-	c.mu.Unlock()
+// statsCache shares computed Stats among the callers with the same connection
+// access (sharedcache.AccessKey) while the store's change stamp is unchanged, for
+// a TTL; a caller that asks while an expired value is recomputed gets the
+// previous one.
+type statsCache = sharedcache.Cache[string, *Stats]
 
-	e.h, e.err = compute(ctx)
-	e.at = time.Now()
-	close(e.done)
-	if e.err != nil {
-		c.mu.Lock()
-		if c.entries[key] == e {
-			delete(c.entries, key)
-		}
-		c.mu.Unlock()
-	}
-	return e.h, e.err
+func newStatsCache(ttl time.Duration) *statsCache {
+	return sharedcache.New[string, *Stats](sharedcache.Options{TTL: ttl, ServeStale: true})
 }
 
-// invalidate drops every cached History; computations under way finish for the
-// callers waiting for them but are not served afterwards.
-func (c *historyCache) invalidate() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.gen++
-	clear(c.entries)
+// changeStamper is implemented by stores that count the writes to their tables
+// (*store.SQLiteStore, see store.SQLiteStore.ChangeStamp).
+type changeStamper interface {
+	ChangeStamp(ctx context.Context) (int64, error)
 }
 
-// InvalidateHistory drops the cached History (see Config.HistoryCacheTTL), for
-// callers that changed jobs outside the operations service. It does nothing
-// without the cache.
+// InvalidateHistory drops the cached History and Stats (see
+// Config.HistoryCacheTTL and Config.StatsCacheTTL), for callers that changed jobs
+// outside the operations service. It does nothing without the caches.
 func (s *Service) InvalidateHistory() {
 	if s.historyCache != nil {
-		s.historyCache.invalidate()
+		s.historyCache.Invalidate()
+	}
+	if s.statsCache != nil {
+		s.statsCache.Invalidate()
 	}
 }
 
-// historyEvents are the events after which the cached History is out of date: a
-// backup or job run ended, a verification or retention changed what is stored, a
-// job's databases changed, a bulk action ran, or a destructive action (a deleted
-// backup or job, a purge) went through.
+// historyEvents are the events after which the cached History and Stats are out of
+// date: a backup or job run ended, a verification or retention changed what is
+// stored, a job's databases changed, a bulk action ran, a destructive action (a
+// deleted backup or job, a purge) went through, or a restore ended.
 var historyEvents = map[events.EventType]bool{
 	events.SecurityDestructiveAction: true,
 	events.BackupSucceeded:           true,
@@ -155,10 +83,13 @@ var historyEvents = map[events.EventType]bool{
 	events.RetentionDeleted:          true,
 	events.JobDatabasesAdded:         true,
 	events.BulkCompleted:             true,
+	events.RestoreSucceeded:          true,
+	events.RestoreFailed:             true,
+	events.RestoreCancelled:          true,
 }
 
-// HandleEvent drops the cached History after the events that change it (subscribe
-// it to the event bus).
+// HandleEvent drops the cached History and Stats after the events that change them
+// (subscribe it to the event bus).
 func (s *Service) HandleEvent(_ context.Context, e events.Event) {
 	if historyEvents[e.Type] {
 		s.InvalidateHistory()

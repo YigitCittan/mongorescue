@@ -14,6 +14,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/sharedcache"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
@@ -217,8 +218,8 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (*History, er
 	if s.historyCache == nil {
 		return s.history(ctx, days, loc, zoneName)
 	}
-	key := historyKey{days: days, zone: zoneName, access: accessKey(auth.ConnectionFilter(ctx))}
-	return s.historyCache.get(ctx, key, func(ctx context.Context) (*History, error) {
+	key := historyKey{days: days, zone: zoneName, access: sharedcache.AccessKey(auth.ConnectionFilter(ctx))}
+	return s.historyCache.Get(ctx, key, 0, func(ctx context.Context) (*History, error) {
 		return s.history(ctx, days, loc, zoneName)
 	})
 }

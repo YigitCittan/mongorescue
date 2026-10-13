@@ -92,6 +92,7 @@ func restoreBackup(t *testing.T, api *apiClient, id string) string {
 // (re-encrypting the existing backup), restarts the application with the rotated
 // key, then backs up and restores the old and the new backup.
 func TestKeyRotationEndToEnd(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := seedSource(t, env, "keyrot")
 	cfg := config.Default()

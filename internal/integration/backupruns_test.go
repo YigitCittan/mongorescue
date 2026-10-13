@@ -22,6 +22,7 @@ import (
 // run ID, two at a time, with users and roles; one of them is restored into a safe
 // clone and compared with its source.
 func TestBackupNowOfThreeDatabases(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	base := env.uniqueDB(t, "now")
 	dbs := []string{base + "_a", base + "_b", base + "_c"}

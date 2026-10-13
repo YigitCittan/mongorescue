@@ -359,8 +359,10 @@ func TestLoad(t *testing.T) {
 	tickLag := watchTicks(t, c, 100*time.Second, func() {
 		endpoints := map[string]string{
 			"jobs_page": "/api/v1/jobs?limit=50", "jobs_first": "/api/v1/jobs", "jobs_search": "/api/v1/jobs?q=load-01&limit=50",
-			"backups_page": "/api/v1/backups?limit=50",
-			"connections":  "/api/v1/connections", "overview": "/api/v1/stats", "history": "/api/v1/stats/history",
+			"jobs_filter":      "/api/v1/jobs?database=load_small_01&schedule=daily&last_status=never&limit=50",
+			"jobs_last_status": "/api/v1/jobs?sort=last_status&limit=50",
+			"backups_page":     "/api/v1/backups?limit=50",
+			"connections":      "/api/v1/connections", "overview": "/api/v1/stats", "history": "/api/v1/stats/history",
 			"readiness": "/api/v1/readiness", "health": "/api/v1/health",
 		}
 		for name, path := range endpoints {

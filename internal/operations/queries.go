@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/sharedcache"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
@@ -341,11 +343,61 @@ type Stats struct {
 	CorruptRecords []store.CorruptRecord `json:"corrupt_records,omitempty"`
 }
 
+// errStatsDegraded keeps degraded Stats out of the cache.
+var errStatsDegraded = errors.New("operations: the statistics are degraded")
+
 // Stats computes the dashboard KPIs from SQL aggregates, never reading every record.
 // Aggregates that cannot be read count as zero, so the dashboard keeps working while
 // the store is degraded; Degraded and DegradedReason then say so, and the failure is
 // logged.
+//
+// With Config.StatsCacheTTL, the KPIs are shared: callers with the same connection
+// access get the same figures (the maps are shared: treat them as read-only) while
+// the store's change stamp is unchanged, for up to that long, computed once however
+// many ask at the same time. Degraded figures are never shared. The default
+// storage target is read for every call.
 func (s *Service) Stats(ctx context.Context) Stats {
+	stamper, ok := s.cfg.Store.(changeStamper)
+	if s.statsCache == nil {
+		return s.computeStats(ctx)
+	}
+	var stamp int64
+	if ok {
+		var err error
+		if stamp, err = stamper.ChangeStamp(ctx); err != nil {
+			return s.computeStats(ctx)
+		}
+	}
+	shared, _ := s.statsCache.Get(ctx, sharedcache.AccessKey(auth.ConnectionFilter(ctx)), stamp, func(ctx context.Context) (*Stats, error) {
+		st := s.computeStats(ctx)
+		if st.Degraded {
+			return &st, errStatsDegraded
+		}
+		return &st, nil
+	})
+	if shared == nil {
+		return s.computeStats(ctx)
+	}
+	st := *shared
+	st.StorageType, st.DefaultStorageTarget = s.defaultTarget(ctx)
+	return st
+}
+
+// defaultTarget returns the type and reference of the default storage target, or
+// zero values without one.
+func (s *Service) defaultTarget(ctx context.Context) (models.StorageType, *TargetRef) {
+	if s.cfg.Targets == nil {
+		return "", nil
+	}
+	def, err := s.cfg.Targets.Resolve(ctx, "")
+	if err != nil {
+		return "", nil
+	}
+	return def.Type, &TargetRef{ID: def.ID, Name: def.Name, Type: def.Type}
+}
+
+// computeStats computes Stats without the cache.
+func (s *Service) computeStats(ctx context.Context) Stats {
 	var reasons []string
 	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
@@ -394,12 +446,7 @@ func (s *Service) stats(ctx context.Context, jobs []*models.Job, now time.Time) 
 			}
 		}
 	}
-	if s.cfg.Targets != nil {
-		if def, err := s.cfg.Targets.Resolve(ctx, ""); err == nil {
-			st.StorageType = def.Type
-			st.DefaultStorageTarget = &TargetRef{ID: def.ID, Name: def.Name, Type: def.Type}
-		}
-	}
+	st.StorageType, st.DefaultStorageTarget = s.defaultTarget(ctx)
 	bs, err := s.store.BackupStats(ctx, now.Add(-24*time.Hour))
 	if err != nil {
 		return st, nil, nil, fmt.Errorf("backup stats: %w", err)

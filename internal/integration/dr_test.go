@@ -27,6 +27,7 @@ import (
 // the copy waits for that lock. Both targets share MinIO's key, which
 // models.SameCredentials reports.
 func TestCrossRegionCopiesOnMinIO(t *testing.T) {
+	t.Parallel()
 	f := requireLockBucket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()

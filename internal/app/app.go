@@ -594,6 +594,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		// Bursts of job writes (an import, the API creating thousands of jobs)
 		// coalesce into one check every few seconds.
 		MinKickInterval: readiness.DefaultMinKickInterval,
+		// Dashboards asking at once share one report; any write to what it reads,
+		// every event and every kick drop it, and it is never older than the
+		// kick interval (plus one computation), so a failure shows at once.
+		ReportCacheTTL: readiness.DefaultMinKickInterval,
 		// Every job requires locked copies while the setting is on.
 		RequireLockedCopies: func() bool { return settingsSvc.Current().Security.RequireLockedCopies },
 		Observe: func(started time.Time, samples []readiness.Sample) {
@@ -763,6 +767,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		// The overview's history is shared for a few seconds among the dashboards
 		// asking at once; backup and run events drop it (ops.HandleEvent below).
 		HistoryCacheTTL: operations.DefaultHistoryCacheTTL,
+		// The overview's statistics likewise, until anything they count changes
+		// (the store's change stamp).
+		StatsCacheTTL: operations.DefaultStatsCacheTTL,
 		// Deleted jobs (single or bulk) drop their metric series and are no longer
 		// checked.
 		OnJobDeleted: func(jobID string) {
