@@ -54,7 +54,7 @@ func newHASnapshotter(cfg *config.Config, rt *haRuntime, metaStore ha.VacuumStor
 	return ha.NewSnapshotter(ha.SnapshotterConfig{
 		Cluster: cfg.HA.Cluster, InstanceID: rt.state.InstanceID, Store: metaStore, Storage: rt.storage(), Fence: rt,
 		Passphrase: passphrase, TempDir: cfg.DataDir, Interval: cfg.HA.SnapshotInterval, Logger: logger,
-		OnReject: func(ha.SnapshotCheck) { rt.snapshotsRejected.Add(1) },
+		Checker: rt.snapshotChecker(),
 	})
 }
 
@@ -185,7 +185,7 @@ func (a *App) importNewerArchives(ctx context.Context, since time.Time) map[stri
 // one. It fails when snapshots exist but none can be used.
 func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	st := s.rt.storage()
-	sel, err := s.selectSnapshots(ctx, st, s.rt.key, haSnapshotsTried)
+	sel, err := s.selectSnapshots(ctx, haSnapshotsTried)
 	if err != nil {
 		return err
 	}
@@ -255,26 +255,18 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	return fmt.Errorf("no usable metadata snapshot: %w", errors.Join(errs...))
 }
 
-// selectSnapshots verifies the snapshots of the cluster on st with the passphrase
-// of secret key until want are verified (ha.SelectSnapshots) and reports those
-// refused.
-func (s *haSupervisor) selectSnapshots(ctx context.Context, st storage.Storage, key []byte, want int) (ha.SnapshotSelection, error) {
-	passphrase, err := ha.SnapshotPassphrase(key)
-	if err != nil {
-		return ha.SnapshotSelection{}, err
+// selectSnapshots verifies the snapshots of the cluster until want are verified
+// (ha.SnapshotChecker.Select); refused ones are reported once per stored object.
+func (s *haSupervisor) selectSnapshots(ctx context.Context, want int) (ha.SnapshotSelection, error) {
+	checker := s.rt.snapshotChecker()
+	if checker == nil {
+		return ha.SnapshotSelection{}, errors.New("the HA target is not open yet")
 	}
-	sel, err := ha.SelectSnapshots(ctx, st, s.cfg.HA.Cluster, passphrase, want)
-	if err != nil {
-		return ha.SnapshotSelection{}, err
-	}
-	for _, c := range sel.Refused {
-		s.reportRefused(c)
-	}
-	return sel, nil
+	return checker.Select(ctx, want)
 }
 
 // reportRefused logs and counts a snapshot that failed authentication: it is
-// never restored, and the next one is used.
+// never restored, never deleted, and the next one is used.
 func (s *haSupervisor) reportRefused(c ha.SnapshotCheck) {
 	s.rt.snapshotsRejected.Add(1)
 	s.logger.Error("HA metadata snapshot refused: its authenticated header does not match its name or cluster, or it does not decrypt; someone with write access to the HA target may have copied or altered it. It is never restored",
@@ -322,8 +314,8 @@ func (s *haSupervisor) finalSnapshot(app *App) {
 // snapshots, so a wrong secret key fails now instead of at a takeover: it fails
 // when none of the snapshots it checks decrypts. It reads headers in the order of
 // a takeover until one is verified, reporting those refused.
-func (s *haSupervisor) checkSnapshotKey(ctx context.Context, st storage.Storage, key []byte) error {
-	sel, err := s.selectSnapshots(ctx, st, key, 1)
+func (s *haSupervisor) checkSnapshotKey(ctx context.Context) error {
+	sel, err := s.selectSnapshots(ctx, 1)
 	if err != nil {
 		s.logger.Warn("cannot list the HA metadata snapshots at startup; the secret key is checked at the takeover", logsafe.Error(err))
 		return nil

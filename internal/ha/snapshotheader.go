@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -28,10 +29,6 @@ const (
 	snapshotMagic = "mongorescue-ha-snapshot\n"
 	// maxSnapshotHeader bounds the JSON line of a header.
 	maxSnapshotHeader = 4096
-	// MaxSnapshotsChecked bounds how many snapshot headers one decision (takeover,
-	// epoch floor, retention, startup check) reads; snapshots beyond it are neither
-	// restored nor deleted.
-	MaxSnapshotsChecked = 64
 )
 
 // Errors of the snapshot header.
@@ -186,6 +183,8 @@ type SnapshotCheck struct {
 	// ErrSnapshotRejected, ErrSnapshotUnreadable (it does not decrypt: tampered, or
 	// another secret key), ErrSnapshotFormat or a storage error.
 	Err error
+	// index is the snapshot's position in the order of ListSnapshots.
+	index int
 }
 
 // Verified reports whether the snapshot's header matched its key and cluster.
@@ -281,9 +280,9 @@ func (s SnapshotSelection) AuthenticEpoch(cluster string) (epoch uint64, ok bool
 }
 
 // SelectSnapshots reads the headers of the snapshots of cluster in the order of
-// ListSnapshots until it has found want verified ones (at most
-// MaxSnapshotsChecked headers). It fails only when the snapshots cannot be listed
-// or ctx ends.
+// ListSnapshots, through the whole listing, until it has found want verified ones
+// (want <= 0: every snapshot). It fails only when the snapshots cannot be listed or
+// ctx ends. A SnapshotChecker does the same and remembers the outcomes.
 func SelectSnapshots(ctx context.Context, st storage.Storage, cluster, passphrase string, want int) (SnapshotSelection, error) {
 	list, err := ListSnapshots(ctx, st, cluster)
 	if err != nil {
@@ -295,11 +294,11 @@ func SelectSnapshots(ctx context.Context, st storage.Storage, cluster, passphras
 }
 
 // selectSnapshots classifies list (ListSnapshots order) of cluster with check,
-// stopping after want verified snapshots or MaxSnapshotsChecked checks.
+// stopping after want verified snapshots (want <= 0: never).
 func selectSnapshots(ctx context.Context, cluster string, list []SnapshotInfo, want int, check func(SnapshotInfo) SnapshotCheck) (SnapshotSelection, error) {
 	sel := SnapshotSelection{Listed: len(list), Complete: true}
 	for i, info := range list {
-		if len(sel.Verified) >= max(want, 1) || i >= MaxSnapshotsChecked {
+		if want > 0 && len(sel.Verified) >= want {
 			sel.Complete = false
 			break
 		}
@@ -307,6 +306,7 @@ func selectSnapshots(ctx context.Context, cluster string, list []SnapshotInfo, w
 		if err := ctx.Err(); err != nil {
 			return SnapshotSelection{}, err
 		}
+		c.index = i
 		switch {
 		case c.Verified():
 			sel.Verified = append(sel.Verified, c)
@@ -327,6 +327,84 @@ func selectSnapshots(ctx context.Context, cluster string, list []SnapshotInfo, w
 		}
 	}
 	return sel, nil
+}
+
+// SnapshotChecker checks the snapshots of one cluster and remembers each outcome
+// per stored object version (key, size, modification time and ETag), so that a
+// snapshot is downloaded once however often decisions read it, and many planted
+// objects cost one download each. Refused snapshots are reported once per object
+// version. It is safe for concurrent use; checks are serialised.
+type SnapshotChecker struct {
+	st         storage.Storage
+	cluster    string
+	passphrase string
+	onRefused  func(SnapshotCheck)
+
+	mu      sync.Mutex
+	cache   map[string]SnapshotCheck
+	refused int
+}
+
+// NewSnapshotChecker returns a checker of the snapshots of cluster on st.
+// onRefused, when set, is called the first time a stored object is found refused
+// (see SnapshotCheck.Refused): log and count it there.
+func NewSnapshotChecker(st storage.Storage, cluster, passphrase string, onRefused func(SnapshotCheck)) *SnapshotChecker {
+	return &SnapshotChecker{st: st, cluster: cluster, passphrase: passphrase, onRefused: onRefused, cache: map[string]SnapshotCheck{}}
+}
+
+// Select is SelectSnapshots with the remembered outcomes: it reads the headers of
+// the snapshots in the order of ListSnapshots, through the whole listing, until it
+// has found want verified ones (want <= 0: every snapshot).
+func (c *SnapshotChecker) Select(ctx context.Context, want int) (SnapshotSelection, error) {
+	list, err := ListSnapshots(ctx, c.st, c.cluster)
+	if err != nil {
+		return SnapshotSelection{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	listed := make(map[string]SnapshotInfo, len(list))
+	for _, info := range list {
+		listed[info.Key] = info
+	}
+	for key, old := range c.cache {
+		if info, ok := listed[key]; !ok || !sameObject(old.SnapshotInfo, info) {
+			delete(c.cache, key)
+		}
+	}
+	sel, err := selectSnapshots(ctx, c.cluster, list, want, func(info SnapshotInfo) SnapshotCheck {
+		if old, ok := c.cache[info.Key]; ok {
+			return old
+		}
+		check := CheckSnapshot(ctx, c.st, c.cluster, c.passphrase, info)
+		if !check.determinate() {
+			return check
+		}
+		c.cache[info.Key] = check
+		if check.Refused() && c.onRefused != nil {
+			c.onRefused(check)
+		}
+		return check
+	})
+	c.refused = 0
+	for _, check := range c.cache {
+		if check.Refused() {
+			c.refused++
+		}
+	}
+	return sel, err
+}
+
+// Refused returns how many of the listed snapshots were found refused, as of the
+// last Select.
+func (c *SnapshotChecker) Refused() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refused
+}
+
+// sameObject reports whether a and b describe the same stored object version.
+func sameObject(a, b SnapshotInfo) bool {
+	return a.Key == b.Key && a.SizeBytes == b.SizeBytes && a.ModTime.Equal(b.ModTime) && a.ETag == b.ETag
 }
 
 // FetchSnapshot downloads snapshot key of cluster from st, decrypts it, verifies

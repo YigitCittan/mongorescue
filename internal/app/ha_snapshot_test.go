@@ -84,8 +84,10 @@ func TestTakeoverRefusesAReplayedSnapshot(t *testing.T) {
 	if err = sup.prepareTakeover(ctx); err != nil {
 		t.Fatalf("the takeover was refused: %v", err)
 	}
-	if n := sup.rt.metricsState().SnapshotsRejected; n == 0 {
-		t.Fatal("the copied snapshot was not counted")
+	// Every decision read the copy (startup check, epoch floor, takeover); it was
+	// downloaded and counted once, and stays listed as refused.
+	if st := sup.rt.metricsState(); st.SnapshotsRejected != 1 || st.RefusedSnapshots != 1 {
+		t.Fatalf("rejected %d, refused %d; want the copy counted once and listed", st.SnapshotsRejected, st.RefusedSnapshots)
 	}
 	active, err := sup.open(true)
 	if err != nil {

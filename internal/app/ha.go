@@ -109,6 +109,9 @@ type haRuntime struct {
 	key []byte
 	// wrapped keeps the key unwrapped by the KMS across the Apps of the roles.
 	wrapped wrappedKeyCache
+	// checker checks the cluster's snapshots for every decision and remembers the
+	// outcomes (nil before the bootstrap).
+	checker *ha.SnapshotChecker
 	// since is the creation time of the snapshot the last takeover restored or
 	// kept; zero when there was none. Archives written after it are imported.
 	since time.Time
@@ -136,6 +139,23 @@ func (rt *haRuntime) storage() storage.Storage {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.store
+}
+
+// snapshotChecker returns the checker of the cluster's snapshots (nil before the
+// bootstrap).
+func (rt *haRuntime) snapshotChecker() *ha.SnapshotChecker {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.checker
+}
+
+// refusedSnapshots returns how many listed snapshots were found refused at the
+// last check.
+func (rt *haRuntime) refusedSnapshots() int {
+	if c := rt.snapshotChecker(); c != nil {
+		return c.Refused()
+	}
+	return 0
 }
 
 // takeoverSince returns the creation time of the snapshot of the last takeover.
@@ -200,7 +220,8 @@ func (rt *haRuntime) metricsState() metrics.HAState {
 	ms := rt.status()
 	return metrics.HAState{Cluster: st.Cluster, Role: st.Role, Epoch: st.Epoch, LeaseHealthy: st.LeaseHealthy, LeaseErrors: ms.LeaseErrors,
 		Takeovers: ms.Takeovers, LastTakeoverSeconds: math.Float64frombits(rt.lastTakeover.Load()),
-		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load(), SnapshotsRejected: rt.snapshotsRejected.Load()}
+		TakeoverFailures: rt.takeoverFailures.Load(), StepDowns: rt.stepDowns.Load(), SnapshotsRejected: rt.snapshotsRejected.Load(),
+		RefusedSnapshots: rt.refusedSnapshots()}
 }
 
 // RunHA runs MongoRescue as a member of the active-passive HA cluster of cfg.HA
@@ -367,7 +388,7 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	mgr, err := ha.New(ha.Config{
 		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID,
 		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Now: s.clock, Wall: s.clock, Logger: s.logger,
-		EpochFloor: func(ctx context.Context) (uint64, error) { return s.epochFloor(ctx, st) },
+		EpochFloor: s.epochFloor,
 	})
 	if err != nil {
 		return err
@@ -384,7 +405,15 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 		s.logger.Info("joined the HA cluster as standby", slog.String("ha_cluster", s.cfg.HA.Cluster),
 			logsafe.Attr("holder", lease.HolderName), slog.Uint64("epoch", lease.Epoch))
 	}
-	if err = s.checkSnapshotKey(ctx, st, app.haKey); err != nil {
+	passphrase, err := ha.SnapshotPassphrase(app.haKey)
+	if err != nil {
+		return err
+	}
+	checker := ha.NewSnapshotChecker(st, s.cfg.HA.Cluster, passphrase, s.reportRefused)
+	s.rt.mu.Lock()
+	s.rt.checker = checker
+	s.rt.mu.Unlock()
+	if err = s.checkSnapshotKey(ctx); err != nil {
 		return err
 	}
 	s.rt.mu.Lock()
@@ -396,11 +425,8 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 // epochFloor returns the highest epoch on record outside the lease: of the
 // cluster's snapshots on the HA target whose header authenticates it (a renamed
 // snapshot's name counts for nothing), and the last one this instance held.
-func (s *haSupervisor) epochFloor(ctx context.Context, st storage.Storage) (uint64, error) {
-	s.rt.mu.RLock()
-	key := s.rt.key
-	s.rt.mu.RUnlock()
-	sel, err := s.selectSnapshots(ctx, st, key, 1)
+func (s *haSupervisor) epochFloor(ctx context.Context) (uint64, error) {
+	sel, err := s.selectSnapshots(ctx, 1)
 	if err != nil {
 		return 0, err
 	}

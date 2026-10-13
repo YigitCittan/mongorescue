@@ -158,10 +158,11 @@ groups:
       # A metadata snapshot on the HA target failed authentication: its encrypted
       # header names another cluster, epoch or time than its object key (an old
       # snapshot copied under a higher epoch, or another cluster's), or it does not
-      # decrypt. It is never restored; someone with write access to the HA target
-      # may be trying to roll the metadata back.
+      # decrypt. It is never restored nor deleted; someone with write access to the
+      # HA target may be trying to roll the metadata back. The alert lasts while
+      # the HA target holds such a snapshot (or for 15 minutes after a refusal).
       - alert: MongoRescueHASnapshotRejected
-        expr: increase(mongorescue_ha_snapshots_rejected_total[15m]) > 0
+        expr: mongorescue_ha_refused_snapshots > 0 or increase(mongorescue_ha_snapshots_rejected_total[15m]) > 0
         labels:
           severity: critical
         annotations:

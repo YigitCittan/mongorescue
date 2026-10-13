@@ -303,7 +303,7 @@ func TestLegacySnapshotsAreRestoredOnlyWithoutAHeader(t *testing.T) {
 func TestPruneIgnoresForgedKeys(t *testing.T) {
 	f := newSnapshotFixture(t)
 	var rejected []string
-	f.snap.cfg.OnReject = func(c SnapshotCheck) { rejected = append(rejected, c.Key) }
+	f.snap.cfg.Checker = NewSnapshotChecker(f.st, "prod", f.pass, func(c SnapshotCheck) { rejected = append(rejected, c.Key) })
 	legacy := f.writeLegacy(t, f.clock.Now().Add(-time.Hour), 1, "legacy")
 	old := f.write(t, 5, "old")
 	var forged []string
@@ -349,11 +349,11 @@ func TestPruneIgnoresForgedKeys(t *testing.T) {
 	}
 }
 
-// TestSelectionBound checks that a takeover never falls back to legacy snapshots
-// it could not reach: more refused snapshots than MaxSnapshotsChecked sort first.
-func TestSelectionBound(t *testing.T) {
+// TestSelectionReadsTheWholeListing checks that planted objects sorting first do
+// not hide the snapshots below them: the selection reads past them.
+func TestSelectionReadsTheWholeListing(t *testing.T) {
 	var list []SnapshotInfo
-	for i := range MaxSnapshotsChecked + 1 {
+	for i := range 200 {
 		list = append(list, SnapshotInfo{Key: fmt.Sprintf("refused-%d", i)})
 	}
 	list = append(list, SnapshotInfo{Key: "legacy"})
@@ -368,16 +368,13 @@ func TestSelectionBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checks != MaxSnapshotsChecked || sel.Complete {
-		t.Fatalf("%d checks, complete %v; want %d, incomplete", checks, sel.Complete, MaxSnapshotsChecked)
+	if checks != len(list) || !sel.Complete || len(sel.Refused) != 200 {
+		t.Fatalf("%d checks, complete %v, %d refused; want the whole listing", checks, sel.Complete, len(sel.Refused))
 	}
-	if candidates, _ := sel.Candidates(); len(candidates) != 0 {
-		t.Fatalf("candidates %+v; want none", candidates)
+	if candidates, legacy := sel.Candidates(); !legacy || len(candidates) != 1 {
+		t.Fatalf("candidates %+v; want the legacy snapshot", candidates)
 	}
-	if _, ok := sel.AuthenticEpoch("prod"); ok {
-		t.Fatal("the epoch is known although no snapshot was verified")
-	}
-	// A storage error leaves the selection incomplete too.
+	// A storage error leaves the selection incomplete.
 	sel, _ = selectSnapshots(context.Background(), "prod", list[len(list)-2:], 1, func(info SnapshotInfo) SnapshotCheck {
 		if info.Key == "legacy" {
 			return SnapshotCheck{SnapshotInfo: info, Err: ErrSnapshotLegacy}
@@ -502,5 +499,105 @@ func TestEpochFloorWaitsForAFailedNewerSnapshot(t *testing.T) {
 	}
 	if epoch, ok := sel.AuthenticEpoch("prod"); !ok || epoch != 5 {
 		t.Fatalf("authentic epoch %d, %v; want 5", epoch, ok)
+	}
+}
+
+// storedKeys returns the keys of the snapshots of prod on f's target.
+func (f *snapshotFixture) storedKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	list, err := ListSnapshots(f.ctx, f.st, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make(map[string]bool, len(list))
+	for _, sn := range list {
+		keys[sn.Key] = true
+	}
+	return keys
+}
+
+// TestRetentionStaysBoundedWithManyRefusedSnapshots plants 100 copies under higher
+// epochs, which sort before every genuine snapshot: retention still reads the
+// whole listing, keeps the genuine snapshots bounded, keeps the copies, and
+// downloads and reports each copy once.
+func TestRetentionStaysBoundedWithManyRefusedSnapshots(t *testing.T) {
+	f := newSnapshotFixture(t)
+	var reported int
+	f.snap.cfg.Checker = NewSnapshotChecker(f.st, "prod", f.pass, func(SnapshotCheck) { reported++ })
+	old := f.write(t, 5, "old")
+	var planted []string
+	for i := range 100 {
+		key := SnapshotKey("prod", f.clock.Now(), uint64(100+i))
+		f.copyObject(t, old.Key, key)
+		planted = append(planted, key)
+	}
+	var genuine []SnapshotInfo
+	for range 10 {
+		genuine = append(genuine, f.write(t, 5, "current"))
+	}
+	stored := f.storedKeys(t)
+	if len(stored) != 100+3 {
+		t.Fatalf("%d snapshots stored; want the 100 planted ones and the three newest genuine ones", len(stored))
+	}
+	for _, sn := range genuine[len(genuine)-3:] {
+		if !stored[sn.Key] {
+			t.Errorf("a newest genuine snapshot was deleted: %s", sn.Key)
+		}
+	}
+	for _, key := range planted {
+		if !stored[key] {
+			t.Errorf("a planted snapshot was deleted: %s", key)
+		}
+	}
+	if reported != 100 || f.snap.cfg.Checker.Refused() != 100 {
+		t.Fatalf("%d refusals reported, %d refused listed; want each planted snapshot once", reported, f.snap.cfg.Checker.Refused())
+	}
+}
+
+// TestPruneAroundASnapshotThatCannotBeChecked covers a snapshot of a newer format
+// (a permanent failure) between genuine ones: it may be the newest, so nothing
+// that sorts before it is deleted, while the older ones are pruned as usual.
+func TestPruneAroundASnapshotThatCannotBeChecked(t *testing.T) {
+	f := newSnapshotFixture(t)
+	f.snap.cfg.Keep = 100
+	var genuine []SnapshotInfo
+	for range 6 {
+		genuine = append(genuine, f.write(t, 5, "db"))
+	}
+	// A snapshot of a newer format, taken between the second and the third.
+	at := genuine[1].CreatedAt.Add(time.Second)
+	enc, err := encryption.NewScryptEncryptor(f.pass, snapshotWorkFactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	w, err := enc.Encrypt(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(w, snapshotMagic+`{"format":2,"cluster":"prod","epoch":5}`+"\n")
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	newer := SnapshotKey("prod", at, 5)
+	if _, err = f.st.Save(f.ctx, newer, &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	f.snap.cfg.Keep = 3
+	latest := f.write(t, 5, "db")
+	stored := f.storedKeys(t)
+	for _, sn := range append(genuine[2:], latest) {
+		if !stored[sn.Key] {
+			t.Errorf("a snapshot sorting before the unreadable one was deleted: %s", sn.Key)
+		}
+	}
+	if !stored[newer] {
+		t.Error("the snapshot of a newer format was deleted")
+	}
+	for _, sn := range genuine[:2] {
+		if stored[sn.Key] {
+			t.Errorf("an older snapshot was not pruned: %s", sn.Key)
+		}
 	}
 }

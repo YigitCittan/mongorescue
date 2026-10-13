@@ -202,9 +202,12 @@ type SnapshotterConfig struct {
 	Now func() time.Time
 	// Observe receives the outcome of every snapshot (metrics); may be nil.
 	Observe func(ok bool)
-	// OnReject is called once per stored object for every snapshot retention
-	// finds refused (see SnapshotCheck.Refused), after it was logged (metrics);
-	// may be nil.
+	// Checker checks the snapshots for retention; nil means a checker of its own
+	// that logs refused snapshots and calls OnReject.
+	Checker *SnapshotChecker
+	// OnReject is called once per stored object for every snapshot the checker of
+	// its own finds refused (see SnapshotCheck.Refused), after it was logged
+	// (metrics); may be nil. It is not used with Checker.
 	OnReject func(SnapshotCheck)
 }
 
@@ -216,9 +219,6 @@ type Snapshotter struct {
 	kick chan struct{}
 	// runMu makes snapshots single-flight.
 	runMu sync.Mutex
-	// checked caches retention's checks of the stored snapshots by key (under
-	// runMu).
-	checked map[string]SnapshotCheck
 }
 
 // NewSnapshotter returns a Snapshotter.
@@ -243,6 +243,16 @@ func NewSnapshotter(cfg SnapshotterConfig) (*Snapshotter, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Checker == nil {
+		logger, onReject := cfg.Logger, cfg.OnReject
+		cfg.Checker = NewSnapshotChecker(cfg.Storage, cfg.Cluster, cfg.Passphrase, func(c SnapshotCheck) {
+			logger.Error("HA snapshot refused: its authenticated header does not match its name or cluster, or it does not decrypt; someone with write access to the HA target may have copied or altered it. It is kept for investigation and never restored",
+				logsafe.Attr("key", c.Key), slog.String("error", redact.Text(c.Err.Error())))
+			if onReject != nil {
+				onReject(c)
+			}
+		})
 	}
 	return &Snapshotter{cfg: cfg, kick: make(chan struct{}, 1)}, nil
 }
@@ -366,63 +376,46 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 }
 
 // prune deletes the snapshots retention does not keep (see keptSnapshots) for the
-// current epoch. It decides on verified snapshots only: a name nobody
-// authenticated never displaces one. Snapshots whose header does not match are
-// logged and kept for investigation; legacy snapshots (no header) are deleted once
-// a verified one exists, since they are never restored then. Failures are logged.
+// current epoch. It reads the whole listing and decides on verified snapshots
+// only: a name nobody authenticated never displaces one. Refused snapshots are
+// kept for investigation (the checker reports them); legacy snapshots (no header)
+// are deleted once a verified one exists, since they are never restored then. A
+// snapshot whose check failed (a storage error, a newer format) may be the newest:
+// nothing that sorts before it is deleted, while older snapshots are pruned as
+// usual. Failures are logged.
 func (s *Snapshotter) prune(ctx context.Context, current uint64) {
-	list, err := ListSnapshots(ctx, s.cfg.Storage, s.cfg.Cluster)
+	sel, err := s.cfg.Checker.Select(ctx, 0)
 	if err != nil {
 		s.cfg.Logger.Warn("HA snapshot retention: cannot list the snapshots", slog.String("error", redact.Text(err.Error())))
 		return
 	}
-	checked := make(map[string]SnapshotCheck, len(list))
-	sel, err := selectSnapshots(ctx, s.cfg.Cluster, list, len(list), func(info SnapshotInfo) SnapshotCheck {
-		if c, ok := s.checked[info.Key]; ok && c.SizeBytes == info.SizeBytes && c.ModTime.Equal(info.ModTime) && c.ETag == info.ETag {
-			checked[info.Key] = c
-			return c
-		}
-		c := CheckSnapshot(ctx, s.cfg.Storage, s.cfg.Cluster, s.cfg.Passphrase, info)
-		if !c.determinate() {
-			return c
-		}
-		checked[info.Key] = c
-		if c.Refused() {
-			s.cfg.Logger.Error("HA snapshot refused: its authenticated header does not match its name or cluster, or it does not decrypt; someone with write access to the HA target may have copied or altered it. It is kept for investigation and never restored",
-				logsafe.Attr("key", info.Key), slog.String("error", redact.Text(c.Err.Error())))
-			if s.cfg.OnReject != nil {
-				s.cfg.OnReject(c)
-			}
-		}
-		return c
-	})
-	s.checked = checked
-	if err != nil || len(sel.Failed) > 0 {
-		// A snapshot that could not be checked might be one retention keeps.
-		return
+	// Snapshots sorting before a failed one are not deleted.
+	lastFailed := -1
+	for _, c := range sel.Failed {
+		lastFailed = max(lastFailed, c.index)
 	}
 	verified := make([]SnapshotInfo, 0, len(sel.Verified))
 	for _, c := range sel.Verified {
 		verified = append(verified, c.SnapshotInfo)
 	}
 	kept := keptSnapshots(verified, current, max(s.cfg.Keep, 1))
-	var drop []SnapshotInfo
-	for _, sn := range verified {
-		if !kept[sn.Key] {
-			drop = append(drop, sn)
+	var drop []SnapshotCheck
+	for _, c := range sel.Verified {
+		if !kept[c.Key] {
+			drop = append(drop, c)
 		}
 	}
 	if len(verified) > 0 {
-		for _, c := range sel.Legacy {
-			drop = append(drop, c.SnapshotInfo)
-		}
+		drop = append(drop, sel.Legacy...)
 	}
 	for _, old := range drop {
+		if old.index < lastFailed {
+			continue
+		}
 		if delErr := s.cfg.Storage.Delete(ctx, old.Key); delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
 			s.cfg.Logger.Warn("HA snapshot retention: cannot delete a snapshot", logsafe.Attr("key", old.Key),
 				slog.String("error", redact.Text(delErr.Error())))
 		}
-		delete(s.checked, old.Key)
 	}
 }
 
