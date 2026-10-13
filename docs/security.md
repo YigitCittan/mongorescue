@@ -2,7 +2,7 @@
 
 MongoRescue holds the means to destroy your backups: an administrator, or anyone with a stolen administrator session or API key, can delete backups, shorten retention and delete or repoint storage targets. Ransomware operators look for exactly this before they encrypt production. Delete protection makes sure that **nothing done through MongoRescue makes a backup unrecoverable faster than the delete grace period**, and optionally that **no single administrator can finish a destructive action alone**.
 
-This page is the threat model. Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
+This page is the threat model of delete protection. The threat model of every component (STRIDE: assets, trust boundaries, threats, mitigations with their code, residual risk and open items) is in [threat-model.md](threat-model.md). Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
 
 `secret.key`, the root key of every stored credential, can be [wrapped by an external KMS](#wrapping-secretkey-with-a-kms) so that the data directory never holds it in plain form.
 
