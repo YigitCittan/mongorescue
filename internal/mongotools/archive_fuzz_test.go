@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -46,30 +47,46 @@ func (d *deadlineReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// preludeSeedFiles returns the plain and the gunzipped prelude fixtures. It reads
+// them once per process, as libFuzzer runs the whole Fuzz function for every input,
+// and returns an error, never a nil reader, when they cannot be read.
+var preludeSeedFiles = sync.OnceValues(func() ([][]byte, error) {
+	plain, err := os.ReadFile(filepath.Join("testdata", "prelude", "shop.archive"))
+	if err != nil {
+		return nil, err
+	}
+	gz, err := os.ReadFile(filepath.Join("testdata", "prelude", "shop.archive.gz"))
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return nil, err
+	}
+	unzipped, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{plain, unzipped}, nil
+})
+
 // FuzzReadPrelude checks the prelude reader on arbitrary input, optionally cut off by
 // a timeout after cut bytes: it never panics, never reads past the limit, never
 // allocates more than a small multiple of the limit (whatever document lengths the
 // input declares), stops at the first read error without reading again, and fails
 // only with its sentinels or the read error.
 func FuzzReadPrelude(f *testing.F) {
-	plain, err := os.ReadFile(filepath.Join("testdata", "prelude", "shop.archive"))
+	seeds, err := preludeSeedFiles()
 	if err != nil {
-		f.Fatal(err)
-	}
-	gz, err := os.ReadFile(filepath.Join("testdata", "prelude", "shop.archive.gz"))
-	if err != nil {
-		f.Fatal(err)
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(gz))
-	if err != nil {
-		f.Fatal(err)
-	}
-	unzipped, err := io.ReadAll(zr)
-	if err != nil {
+		// Under go test this fails the target. libFuzzer builds (ClusterFuzzLite)
+		// run the binary away from testdata/ and their f.Fatal does not stop, so
+		// the target then runs without the file seeds; nothing below may depend
+		// on them.
 		f.Fatal(err)
 	}
 	const noCut = 0xffff
-	for _, seed := range [][]byte{plain, unzipped} {
+	f.Add([]byte{}, uint16(noCut))
+	for _, seed := range seeds {
 		f.Add(seed, uint16(noCut))
 		for _, cut := range []int{0, 3, 4, 8, 0x6c, 0x100, 0x200, len(seed) / 2} {
 			f.Add(seed[:cut], uint16(noCut)) // truncated stream
