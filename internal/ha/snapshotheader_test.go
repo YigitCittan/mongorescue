@@ -474,3 +474,33 @@ func FuzzParseSnapshotHeader(f *testing.F) {
 		}
 	})
 }
+
+// TestEpochFloorWaitsForAFailedNewerSnapshot checks that the epoch a selection
+// proves is unknown while a snapshot sorting before the first verified one could
+// not be checked: it may carry the highest epoch, so a lease must not be acquired
+// below it (the acquisition is deferred, as after a listing error).
+func TestEpochFloorWaitsForAFailedNewerSnapshot(t *testing.T) {
+	failed := SnapshotInfo{Key: "failed", Epoch: 9}
+	verified := SnapshotInfo{Key: "verified", Epoch: 5}
+	check := func(info SnapshotInfo) SnapshotCheck {
+		if info.Key == "failed" {
+			return SnapshotCheck{SnapshotInfo: info, Err: errors.New("network")}
+		}
+		return SnapshotCheck{SnapshotInfo: info, Header: &SnapshotHeader{Format: SnapshotFormat, Cluster: "prod", Epoch: 5}}
+	}
+	sel, err := selectSnapshots(context.Background(), "prod", []SnapshotInfo{failed, verified}, 1, check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch, ok := sel.AuthenticEpoch("prod"); ok {
+		t.Fatalf("authentic epoch %d known although a newer snapshot could not be checked", epoch)
+	}
+	// A failure after the first verified snapshot does not matter: it sorts lower.
+	sel, err = selectSnapshots(context.Background(), "prod", []SnapshotInfo{verified, {Key: "failed", Epoch: 2}}, 2, check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch, ok := sel.AuthenticEpoch("prod"); !ok || epoch != 5 {
+		t.Fatalf("authentic epoch %d, %v; want 5", epoch, ok)
+	}
+}

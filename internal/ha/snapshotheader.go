@@ -239,6 +239,9 @@ type SnapshotSelection struct {
 	// headerSeen reports an authentic header of the cluster (verified, renamed or
 	// of a newer format): the cluster writes headers, so legacy snapshots are stale.
 	headerSeen bool
+	// failedAhead reports a snapshot whose check failed (see Failed) sorting before
+	// the first verified one: it may be the newest.
+	failedAhead bool
 }
 
 // Candidates returns the snapshots a takeover may restore, in order: the verified
@@ -257,7 +260,9 @@ func (s SnapshotSelection) Candidates() (list []SnapshotCheck, legacy bool) {
 // AuthenticEpoch returns the highest epoch the selection proves was used: of the
 // verified snapshots and of the authentic headers of the cluster's renamed ones;
 // or, when a takeover would restore legacy snapshots, of their keys. ok is false
-// when it is unknown: no snapshot is verified and not all could be checked.
+// when it is unknown: a snapshot sorting before the first verified one could not
+// be checked (it may be the newest), or none is verified and not all could be
+// checked.
 func (s SnapshotSelection) AuthenticEpoch(cluster string) (epoch uint64, ok bool) {
 	for _, c := range s.Verified {
 		epoch = max(epoch, c.Header.Epoch)
@@ -272,7 +277,7 @@ func (s SnapshotSelection) AuthenticEpoch(cluster string) (epoch uint64, ok bool
 			epoch = max(epoch, c.Epoch)
 		}
 	}
-	return epoch, len(s.Verified) > 0 || s.Complete
+	return epoch, !s.failedAhead && (len(s.Verified) > 0 || s.Complete)
 }
 
 // SelectSnapshots reads the headers of the snapshots of cluster in the order of
@@ -311,6 +316,7 @@ func selectSnapshots(ctx context.Context, cluster string, list []SnapshotInfo, w
 			sel.Refused = append(sel.Refused, c)
 		default:
 			sel.Failed = append(sel.Failed, c)
+			sel.failedAhead = sel.failedAhead || len(sel.Verified) == 0
 		}
 		if (c.Header != nil && c.Header.Cluster == cluster) || errors.Is(c.Err, ErrSnapshotFormat) {
 			// A renamed snapshot's header, or a newer one, is still authentic.
