@@ -113,6 +113,8 @@ type Server struct {
 
 	// readiness reports the RPO, RTO and evidence of every database a job backs up.
 	readiness *readiness.Service
+	// readinessBodies holds the encoded responses of the newest shared reports.
+	readinessBodies encodedReports
 
 	// pitr runs the PITR oplog collectors and serves the stream API.
 	pitr *collector.Service

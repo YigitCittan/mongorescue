@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -43,11 +44,6 @@ var JobSorts = []string{JobSortName, JobSortNextRun, JobSortLastStatus, JobSortC
 
 // jobCursorPrefix versions the jobs cursor format.
 const jobCursorPrefix = "j1:"
-
-// lastStatusRank orders the JobSortLastStatus values: failures first.
-var lastStatusRank = map[string]int64{
-	LastRunFailed: 0, LastRunPartial: 1, LastRunCancelled: 2, LastRunInProgress: 3, LastRunCompleted: 4,
-}
 
 // JobListRequest selects a page of ListJobsPage.
 type JobListRequest struct {
@@ -120,10 +116,11 @@ func decodeJobCursor(v, sortBy string, desc bool) (*store.JobKey, error) {
 // req.Sort and req.Desc (stable: ties are broken by ID), with the total number of
 // matches and the cursor of the next page. Paging is by key: a job created or
 // deleted between two pages moves no other job across a page boundary. Pages by
-// name, creation time and next run, with the connection and state filters, are
-// answered from the jobs indexes; the other filters (q, database, schedule,
-// last_status) and the last_status order read the jobs of the indexed filters once.
-// Invalid filters, orders, limits or cursors return ErrInvalid errors.
+// name, creation time, next run and last status, with every filter, are answered in
+// SQL from the jobs indexes and the jobs' search, schedule, database and last
+// status columns (see indexedJobFilter); otherwise the jobs of the connection and
+// state filters are read once and matched as FilterJobs does. Invalid filters,
+// orders, limits or cursors return ErrInvalid errors.
 func (s *Service) ListJobsPage(ctx context.Context, req JobListRequest) (*JobPage, error) {
 	limit := req.Limit
 	if limit == 0 {
@@ -152,7 +149,12 @@ func (s *Service) ListJobsPage(ctx context.Context, req JobListRequest) (*JobPag
 	}
 	q := store.JobQuery{ConnectionID: f.ConnectionID, Enabled: f.Enabled}
 	page := &JobPage{Limit: limit}
-	if sortBy != JobSortLastStatus && f.Q == "" && f.Database == "" && f.Schedule == "" && f.LastStatus == "" {
+	indexed, err := s.indexedJobFilter(ctx, &f, sortBy)
+	if err != nil {
+		return nil, err
+	}
+	if indexed {
+		q.Search, q.Database, q.Schedule, q.LastStatus = f.Q, f.Database, f.Schedule, f.LastStatus
 		if page.Total, err = s.store.CountJobs(ctx, q); err != nil {
 			return nil, fmt.Errorf("count jobs: %w", err)
 		}
@@ -201,9 +203,40 @@ func (s *Service) ListJobsPage(ctx context.Context, req JobListRequest) (*JobPag
 	return page, nil
 }
 
+// foreignLastBackups is implemented by stores that keep the jobs' last status
+// (*store.SQLiteStore, see store.SQLiteStore.HasForeignLastBackups).
+type foreignLastBackups interface {
+	HasForeignLastBackups(ctx context.Context, set auth.ConnectionSet) (bool, error)
+}
+
+// indexedJobFilter reports whether the store answers the jobs list for filter f in
+// order sortBy with the same result as FilterJobs: always, except for a search or
+// database containing store.JobSearchSeparator, and for a last-status filter or
+// order of a caller limited to some connections while one of its jobs has its
+// newest backup on another connection (the stored last status is then not the one
+// of the newest backup the caller may see), or without a store that keeps it.
+func (s *Service) indexedJobFilter(ctx context.Context, f *BulkFilter, sortBy string) (bool, error) {
+	if strings.Contains(f.Q, store.JobSearchSeparator) || strings.Contains(f.Database, store.JobSearchSeparator) {
+		return false, nil
+	}
+	set := auth.ConnectionFilter(ctx)
+	if (f.LastStatus == "" && sortBy != JobSortLastStatus) || !set.Limited() {
+		return true, nil
+	}
+	fs, ok := s.cfg.Store.(foreignLastBackups)
+	if !ok {
+		return false, nil
+	}
+	foreign, err := fs.HasForeignLastBackups(ctx, set)
+	if err != nil {
+		return false, fmt.Errorf("list jobs: %w", err)
+	}
+	return !foreign, nil
+}
+
 // jobKeys returns the key of each job of jobs in order sortBy (as the store orders
 // them; for JobSortLastStatus the rank of the last run's outcome, then the newest
-// run first).
+// backup or run first, as the store keeps them on the jobs).
 func (s *Service) jobKeys(ctx context.Context, jobs []*models.Job, sortBy string) ([]store.JobKey, error) {
 	keys := make([]store.JobKey, len(jobs))
 	if sortBy != JobSortLastStatus {
@@ -221,14 +254,18 @@ func (s *Service) jobKeys(ctx context.Context, jobs []*models.Job, sortBy string
 	}
 	for i, j := range jobs {
 		k := store.JobKey{ID: j.ID}
-		rank, ran := lastStatusRank[jobLastStatus(j, lastBackups, lastRuns)]
+		// The ranks the store keeps on the jobs (the LastRun* values are its
+		// JobLast* values), so both answers page with the same cursors.
+		rank, ran := store.JobLastStatusRank(jobLastStatus(j, lastBackups, lastRuns))
 		switch {
 		case !ran:
 			k.Null = true
 		default:
 			k.Int = rank
-			if j.LastRun != nil {
-				k.Real = -float64(j.LastRun.UnixNano()) / 1e9
+			if r := lastRuns[j.ID]; j.MultiDatabase() && r != nil {
+				k.Time = store.JobStatusTime(r.StartedAt)
+			} else if b := lastBackups[j.ID]; !j.MultiDatabase() && b != nil {
+				k.Time = store.JobStatusTime(b.StartedAt)
 			}
 		}
 		keys[i] = k

@@ -2,7 +2,7 @@
   "note": "Load test baselines per profile (internal/load). A lower-is-better metric fails above value x tolerance + slack, a higher-is-better one below value / tolerance. Record a profile with MONGORESCUE_LOAD_UPDATE_BASELINE=1; see docs/testing.md.",
   "profiles": {
     "ci": {
-      "recorded": "2026-10-12 on linux/amd64, 4 CPUs (GitHub-hosted ubuntu-latest: the worst of the Load jobs of nightly runs 38132430021 and 38256324531); api.jobs_* and api.history*: 2026-10-09 on darwin/arm64, 8 CPUs",
+      "recorded": "2026-10-12 on linux/amd64, 4 CPUs (GitHub-hosted ubuntu-latest: the worst of the Load jobs of nightly runs 38132430021 and 38256324531); api.jobs_*, api.history*, api.overview*, api.readiness* and primary.dump_throttled: 2026-10-13, the worst of the Load jobs of runs 38321781363 and 38324159288 on the same runners (api.readiness*: 38324159288)",
       "config": {
         "profile": "ci",
         "data_mb": 5120,
@@ -48,82 +48,116 @@
           "slack": 10
         },
         "api.history.p95_ms": {
-          "value": 4.128,
+          "value": 12.744,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.history_x16.p95_ms": {
-          "value": 24.203,
+          "value": 201.079,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_filter.p95_ms": {
+          "value": 7.349,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_filter_x16.p95_ms": {
+          "value": 159.745,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.jobs_first.p95_ms": {
-          "value": 1.125,
+          "value": 4.484,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.jobs_first_x16.p95_ms": {
-          "value": 14.888,
+          "value": 46.527,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_last_status.p95_ms": {
+          "value": 2.568,
+          "better": "lower",
+          "tolerance": 3,
+          "slack": 10,
+          "max": 300
+        },
+        "api.jobs_last_status_x16.p95_ms": {
+          "value": 41.228,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.jobs_search.p95_ms": {
-          "value": 65.113,
+          "value": 9.583,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_search_x16.p95_ms": {
-          "value": 1328.046,
+          "value": 157.99,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.jobs_page.p95_ms": {
-          "value": 0.741,
+          "value": 1.806,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.jobs_page_x16.p95_ms": {
-          "value": 8.753,
+          "value": 112.862,
           "better": "lower",
           "tolerance": 3,
           "slack": 10,
           "max": 300
         },
         "api.overview.p95_ms": {
-          "value": 147.281,
+          "value": 0.548,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview_x16.p95_ms": {
-          "value": 2641.619,
+          "value": 7.546,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness.p95_ms": {
-          "value": 369.382,
+          "value": 6.399,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness_x16.p95_ms": {
-          "value": 4265.414,
+          "value": 33.574,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "backup.size_mb": {
           "value": 5369.303544,
@@ -201,7 +235,7 @@
           "slack": 10
         },
         "primary.dump_throttled.p95_ms": {
-          "value": 3.525,
+          "value": 60.591,
           "better": "lower",
           "tolerance": 3,
           "slack": 10
@@ -316,25 +350,29 @@
           "value": 6.102,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.overview_x16.p95_ms": {
           "value": 124.214,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness.p95_ms": {
           "value": 23.487,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "api.readiness_x16.p95_ms": {
           "value": 173.89,
           "better": "lower",
           "tolerance": 3,
-          "slack": 10
+          "slack": 10,
+          "max": 300
         },
         "backup.size_mb": {
           "value": 536.930808,

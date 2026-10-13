@@ -111,12 +111,12 @@ func (s *SQLiteStore) LatestJobBackupsIn(ctx context.Context, status models.Back
 	bClause := strings.Replace(clause, "connection_id", "b.connection_id", 1)
 	query := `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != ''` + clause + ` GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE 1` + bClause
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE 1` + bClause + latestJobOrder
 	args := append(slices.Clone(connArgs), connArgs...)
 	if status != "" {
 		query = `SELECT b.id, b.job_id, b.data FROM backups b JOIN (
 			SELECT job_id, max(started_at) AS latest FROM backups WHERE job_id != '' AND status = ?` + clause + ` GROUP BY job_id
-		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?` + bClause
+		) l ON b.job_id = l.job_id AND b.started_at = l.latest WHERE b.status = ?` + bClause + latestJobOrder
 		args = append(append(append([]any{string(status)}, connArgs...), string(status)), connArgs...)
 	}
 	out, skipped, err := s.latestJobRows(ctx, query, args...)
@@ -146,8 +146,14 @@ func (s *SQLiteStore) LatestJobBackupsIn(ctx context.Context, status models.Back
 	return out, nil
 }
 
+// latestJobOrder orders the rows sharing a job's newest start time as the
+// jobs.last_status triggers pick them (view job_last_outcomes, migration 0029) and
+// as the lists do: the greatest ID first.
+const latestJobOrder = " ORDER BY b.started_at DESC, b.id DESC"
+
 // latestJobRows reads the newest backup rows per job selected by query (id, job_id,
-// data). It returns the readable ones by job ID, and the jobs with a skipped row.
+// data) in latestJobOrder. It returns the first readable one of each job by job
+// ID, and the jobs with a skipped row.
 func (s *SQLiteStore) latestJobRows(ctx context.Context, query string, args ...any) (map[string]*models.BackupRecord, map[string]bool, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -168,8 +174,9 @@ func (s *SQLiteStore) latestJobRows(ctx context.Context, query string, args ...a
 			continue
 		}
 		s.clearCorrupt(tableBackups, id)
-		// Records sharing the newest start time: the greatest ID wins, as in the lists.
-		if prev, ok := out[jobID]; !ok || b.ID > prev.ID {
+		// Records sharing the newest start time: the first in latestJobOrder (the
+		// greatest ID) wins.
+		if _, ok := out[jobID]; !ok {
 			out[jobID] = b
 		}
 	}

@@ -129,6 +129,9 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 	if err := s.migrate(ctx); err != nil {
 		return err
 	}
+	if err := s.reindexJobs(ctx); err != nil {
+		return err
+	}
 	if err := restrictPermissions(s.path); err != nil {
 		return err
 	}
