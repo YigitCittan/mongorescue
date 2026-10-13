@@ -25,6 +25,7 @@ import (
 // a three-member replica set (the nightly integration job, once it exists), where
 // the recorded source member must then be in state "secondary".
 func TestBackupReadPreferenceOnAReplicaSet(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	requireReplicaSet(t, env)
 	db := env.uniqueDB(t, "readpref")

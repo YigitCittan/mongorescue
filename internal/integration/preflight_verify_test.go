@@ -54,6 +54,7 @@ func (l *eventLog) of(t events.EventType) []events.Event {
 // not match the manifest is flagged and announced, all through the operations service
 // wired as internal/app wires it.
 func TestRestorePreflightAndVerification(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "preflt")
 	env.seed(t, db, "orders", 50)

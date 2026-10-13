@@ -25,6 +25,7 @@ import (
 // LocalStack) that the object survives the deletion, the deletion can be undone, and
 // only the purge after the grace period removes it.
 func TestSoftDeleteThenPurgeOnRealStorage(t *testing.T) {
+	t.Parallel()
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {
 			runSoftDeleteThenPurge(t, target.Storage)

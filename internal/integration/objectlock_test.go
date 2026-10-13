@@ -89,6 +89,7 @@ func (f *lockFixture) driver(t *testing.T, mode models.ObjectLockMode, days int)
 // (MongoRescue's own purge waits, see the unit tests), that deleting the key only
 // adds a delete marker the recorded version survives, and that legal holds toggle.
 func TestObjectLockOnMinIO(t *testing.T) {
+	t.Parallel()
 	f := requireLockBucket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
@@ -183,6 +184,7 @@ func TestObjectLockOnMinIO(t *testing.T) {
 // target on a bucket without Object Lock, accepts one on a lock-enabled bucket,
 // and that its connection test leaves no probe version behind.
 func TestObjectLockTargetsOnMinIO(t *testing.T) {
+	t.Parallel()
 	f := requireLockBucket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
@@ -218,6 +220,7 @@ func TestObjectLockTargetsOnMinIO(t *testing.T) {
 // record carries the version and the retention, and a restore reads the recorded
 // version even after the key got a delete marker.
 func TestObjectLockBackupRestoreOnMinIO(t *testing.T) {
+	t.Parallel()
 	f := requireLockBucket(t)
 	env := requireMongo(t)
 	st := f.driver(t, models.ObjectLockGovernance, 1)

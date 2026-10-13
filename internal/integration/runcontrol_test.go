@@ -23,6 +23,7 @@ import (
 // backup ends as cancelled with who cancelled it, leaves no object, temporary file or
 // incomplete multipart upload, and its log holds mongodump's own output.
 func TestCancelRealBackupMidRun(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "cnl")
 	env.seedBulk(t, db, 40)
@@ -84,6 +85,7 @@ func TestCancelRealBackupMidRun(t *testing.T) {
 // TestCancelRealRestoreMidRun cancels a real mongorestore into a safe clone halfway
 // through the archive: the restore ends as cancelled and the partial clone is dropped.
 func TestCancelRealRestoreMidRun(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "cnr")
 	env.seedBulk(t, db, 40)

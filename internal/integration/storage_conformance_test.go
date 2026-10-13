@@ -22,6 +22,7 @@ const multipartPayloadSize = 12 << 20
 // TestStorageConformance runs the provider-agnostic storage contract against local disk
 // and every configured S3-compatible provider.
 func TestStorageConformance(t *testing.T) {
+	t.Parallel()
 	for _, target := range storageTargets(t) {
 		t.Run(target.Name, func(t *testing.T) {
 			runStorageConformance(t, target.Storage)

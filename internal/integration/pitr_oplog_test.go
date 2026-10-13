@@ -111,12 +111,12 @@ func readRange(ctx context.Context, t *testing.T, s *mongoconn.OplogSession, r p
 	return entries, stats
 }
 
-// TestOplogWindowAndRangeReads checks the oplog adapter the PITR collector uses: the
+// testOplogWindowAndRangeReads checks the oplog adapter the PITR collector uses: the
 // window's shape, range reads that return exactly the inserted entries with no gap
 // or duplicate across consecutive ranges, the divergence lookup and a read past the
 // member's newest entry.
-func TestOplogWindowAndRangeReads(t *testing.T) {
-	env := requireMongo(t)
+func testOplogWindowAndRangeReads(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
@@ -241,10 +241,10 @@ func TestOplogWindowAndRangeReads(t *testing.T) {
 	}
 }
 
-// TestCanReadOplog checks the collector's privilege check against real users: read
+// testCanReadOplog checks the collector's privilege check against real users: read
 // on local grants find on local.oplog.rs, readAnyDatabase does not.
-func TestCanReadOplog(t *testing.T) {
-	env := requireMongo(t)
+func testCanReadOplog(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	if env.Password == "" {
 		t.Skip("needs a server with access control (a URI with credentials)")

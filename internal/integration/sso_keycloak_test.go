@@ -207,6 +207,7 @@ func (b *ssoBrowser) identity() (name, provider, role string) {
 // Keycloak's login form, group mappings to roles, the domain filter, provider
 // logout and the audit log.
 func TestKeycloakSingleSignOn(t *testing.T) {
+	t.Parallel()
 	kc := requireKeycloak(t)
 	issuer := kc + "/realms/" + keycloakRealm
 	s := newSSOServer(t)
