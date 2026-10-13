@@ -753,9 +753,105 @@ const PITR_TRANSLATIONS = {
   }
 };
 
+// The outcome of a stream's newest chain test, including counts it could not
+// verify (readiness streams[].chain_test, a restore's verification.unverified).
+const PITR_CHAIN_TEST_TRANSLATIONS = {
+  en: {
+    pitr: {
+      chain_test_passed: "Chain test passed",
+      chain_test_failed: "Chain test failed",
+      chain_test_unverified: "Chain test passed, {n} collections not verified",
+      chain_test_hint_old_base: "The newer base was taken by an earlier release and recorded no exact document counts. Take a new base backup.",
+      chain_test_hint_unverified: "The newer base has no exact document count at its consistent point for these collections ({reason}). Take a new base backup."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "PITR chain test: counts not verified" },
+    restore_checks: { verification_passed_unverified: "Passed, {n} collections not verified" }
+  },
+  tr: {
+    pitr: {
+      chain_test_passed: "Zincir testi geçti",
+      chain_test_failed: "Zincir testi başarısız",
+      chain_test_unverified: "Zincir testi geçti, {n} koleksiyon doğrulanamadı",
+      chain_test_hint_old_base: "Yeni temel yedek önceki bir sürümle alınmış ve kesin belge sayılarını kaydetmemiş. Yeni bir temel yedek alın.",
+      chain_test_hint_unverified: "Yeni temel yedekte bu koleksiyonlar için tutarlı noktada kesin belge sayısı yok ({reason}). Yeni bir temel yedek alın."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "PITR zincir testi: sayılar doğrulanamadı" },
+    restore_checks: { verification_passed_unverified: "Geçti, {n} koleksiyon doğrulanamadı" }
+  },
+  de: {
+    pitr: {
+      chain_test_passed: "Kettentest bestanden",
+      chain_test_failed: "Kettentest fehlgeschlagen",
+      chain_test_unverified: "Kettentest bestanden, {n} Collections nicht geprüft",
+      chain_test_hint_old_base: "Das neuere Basis-Backup stammt aus einer früheren Version und hat keine exakten Dokumentanzahlen. Erstellen Sie ein neues Basis-Backup.",
+      chain_test_hint_unverified: "Das neuere Basis-Backup hat für diese Collections keine exakte Dokumentanzahl an seinem konsistenten Punkt ({reason}). Erstellen Sie ein neues Basis-Backup."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "PITR-Kettentest: Anzahlen nicht geprüft" },
+    restore_checks: { verification_passed_unverified: "Bestanden, {n} Collections nicht geprüft" }
+  },
+  es: {
+    pitr: {
+      chain_test_passed: "Prueba de cadena superada",
+      chain_test_failed: "Prueba de cadena fallida",
+      chain_test_unverified: "Prueba de cadena superada, {n} colecciones sin verificar",
+      chain_test_hint_old_base: "La copia base más reciente se tomó con una versión anterior y no registró recuentos exactos de documentos. Tome una nueva copia base.",
+      chain_test_hint_unverified: "La copia base más reciente no tiene un recuento exacto de documentos en su punto consistente para estas colecciones ({reason}). Tome una nueva copia base."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "Prueba de cadena PITR: recuentos sin verificar" },
+    restore_checks: { verification_passed_unverified: "Correcta, {n} colecciones sin verificar" }
+  },
+  fr: {
+    pitr: {
+      chain_test_passed: "Test de chaîne réussi",
+      chain_test_failed: "Test de chaîne en échec",
+      chain_test_unverified: "Test de chaîne réussi, {n} collections non vérifiées",
+      chain_test_hint_old_base: "La sauvegarde de base la plus récente provient d'une version antérieure et n'a pas enregistré de nombres exacts de documents. Faites une nouvelle sauvegarde de base.",
+      chain_test_hint_unverified: "La sauvegarde de base la plus récente n'a pas de nombre exact de documents à son point cohérent pour ces collections ({reason}). Faites une nouvelle sauvegarde de base."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "Test de chaîne PITR : nombres non vérifiés" },
+    restore_checks: { verification_passed_unverified: "Réussie, {n} collections non vérifiées" }
+  },
+  zh: {
+    pitr: {
+      chain_test_passed: "链测试已通过",
+      chain_test_failed: "链测试失败",
+      chain_test_unverified: "链测试已通过，{n} 个集合未验证",
+      chain_test_hint_old_base: "较新的基础备份由早期版本创建，未记录精确的文档数。请创建新的基础备份。",
+      chain_test_hint_unverified: "较新的基础备份在其一致点没有这些集合的精确文档数（{reason}）。请创建新的基础备份。"
+    },
+    readiness: { reason_pitr_chain_test_unverified: "PITR 链测试：文档数未验证" },
+    restore_checks: { verification_passed_unverified: "已通过，{n} 个集合未验证" }
+  },
+  ja: {
+    pitr: {
+      chain_test_passed: "チェーンテスト合格",
+      chain_test_failed: "チェーンテストが失敗",
+      chain_test_unverified: "チェーンテスト合格、{n} コレクションは未検証",
+      chain_test_hint_old_base: "新しい方のベースバックアップは以前のリリースで取得され、正確なドキュメント数を記録していません。新しいベースバックアップを取得してください。",
+      chain_test_hint_unverified: "新しい方のベースバックアップには、これらのコレクションの整合点での正確なドキュメント数がありません（{reason}）。新しいベースバックアップを取得してください。"
+    },
+    readiness: { reason_pitr_chain_test_unverified: "PITR チェーンテスト: 件数未検証" },
+    restore_checks: { verification_passed_unverified: "合格、{n} コレクションは未検証" }
+  },
+  ru: {
+    pitr: {
+      chain_test_passed: "Тест цепочки пройден",
+      chain_test_failed: "Тест цепочки не пройден",
+      chain_test_unverified: "Тест цепочки пройден, коллекций не проверено: {n}",
+      chain_test_hint_old_base: "Более новая базовая копия создана предыдущей версией и не содержит точного числа документов. Создайте новую базовую копию.",
+      chain_test_hint_unverified: "У более новой базовой копии нет точного числа документов в её согласованной точке для этих коллекций ({reason}). Создайте новую базовую копию."
+    },
+    readiness: { reason_pitr_chain_test_unverified: "Тест цепочки PITR: число документов не проверено" },
+    restore_checks: { verification_passed_unverified: "Пройдена, коллекций не проверено: {n}" }
+  }
+};
+
 if (typeof translations === "object" && typeof mergeTranslations === "function") {
   Object.keys(PITR_TRANSLATIONS).forEach(lang => {
     if (translations[lang]) mergeTranslations(translations[lang], PITR_TRANSLATIONS[lang]);
+  });
+  Object.keys(PITR_CHAIN_TEST_TRANSLATIONS).forEach(lang => {
+    if (translations[lang]) mergeTranslations(translations[lang], PITR_CHAIN_TEST_TRANSLATIONS[lang]);
   });
 }
 
@@ -816,7 +912,7 @@ function pitrRender() {
            <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="pitr-delete" data-id="${id}">${escapeHtml(t("pitr.delete"))}</button>`;
       return `<tr>
         <td class="cell-primary">${ellipsis(pitrConnectionName(st.connection_id))}<div class="cell-sub mono">${escapeHtml(st.replica_set || "")}</div></td>
-        <td>${pitrStatusBadge(s)}</td>
+        <td>${pitrStatusBadge(s)}${pitrStreamChainTest(st.id)}</td>
         <td>${pitrWindow(s)}</td>
         <td>${pitrSeconds(s.lag_seconds, s.state && s.state.lag_since)}</td>
         <td>${pitrSeconds(s.headroom_seconds, live.window_low)}</td>
@@ -1183,6 +1279,49 @@ async function pitrRestoreSubmit(e) {
     showFormError("pitr-restore-error", err.message);
     submit.disabled = false;
   }
+}
+
+// pitrReadinessStreams returns the PITR streams of the readiness report, or [].
+function pitrReadinessStreams() {
+  if (typeof readiness !== "object" || !readiness || !readiness.data || !Array.isArray(readiness.data.streams)) return [];
+  return readiness.data.streams;
+}
+
+// pitrChainTestHint says why a chain test left counts unverified and what to do.
+function pitrChainTestHint(ct) {
+  return ct.old_base
+    ? t("pitr.chain_test_hint_old_base")
+    : tf("pitr.chain_test_hint_unverified", { reason: ct.unverified_reason || "" });
+}
+
+// pitrChainTestLine renders the newest chain test of a stream (readiness
+// streams[].chain_test) under its collector state: failed, passed, or passed with
+// collections whose counts it could not verify, which is not a clean pass.
+function pitrChainTestLine(ct) {
+  if (!ct || (!ct.verification && !ct.failed)) return "";
+  if (ct.failed) return `<div class="cell-sub">${statusBadge("danger", t("pitr.chain_test_failed"))}</div>`;
+  const n = Number(ct.unverified) || 0;
+  if (n > 0) {
+    const hint = pitrChainTestHint(ct);
+    return `<div class="cell-sub">${statusBadge("warn", tf("pitr.chain_test_unverified", { n }), hint)}</div><div class="cell-sub">${escapeHtml(hint)}</div>`;
+  }
+  return `<div class="cell-sub">${statusBadge("success", t("pitr.chain_test_passed"))}</div>`;
+}
+
+// pitrStreamChainTest renders the newest chain test of stream id, or "".
+function pitrStreamChainTest(id) {
+  const st = pitrReadinessStreams().find(s => s.id === id);
+  return st ? pitrChainTestLine(st.chain_test) : "";
+}
+
+// pitrReadinessChainTest explains, under the readiness status of the row's
+// connection, a chain test that left counts unverified. Empty otherwise.
+function pitrReadinessChainTest(row) {
+  if (!(row.reasons || []).includes("pitr_chain_test_unverified")) return "";
+  const st = pitrReadinessStreams().find(s => s.connection_id === row.connection_id && s.chain_test && s.chain_test.unverified > 0);
+  if (!st) return "";
+  const ct = st.chain_test;
+  return `<div class="cell-sub">${escapeHtml(tf("pitr.chain_test_unverified", { n: ct.unverified }))}: ${escapeHtml(pitrChainTestHint(ct))}</div>`;
 }
 
 // The estimated time of a point-in-time restore of the row's connection to the

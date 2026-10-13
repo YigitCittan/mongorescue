@@ -119,12 +119,10 @@ type soakReport struct {
 	// ChainTestsDuring counts the chain tests that completed during the load,
 	// ChainTestsAcrossBases those during which a base backup completed (retention
 	// then wanted their base or chunks gone), and BasesDuringChainTests those bases.
-	// ChainTestMismatchesDuring counts those whose comparison with the newer base's
-	// manifest did not pass: a manifest taken under writes is not exact.
-	ChainTestsDuring          int `json:"chain_tests_during"`
-	ChainTestsAcrossBases     int `json:"chain_tests_across_bases"`
-	BasesDuringChainTests     int `json:"bases_during_chain_tests"`
-	ChainTestMismatchesDuring int `json:"chain_test_mismatches_during"`
+	// Each must match the exact counts of the newer base at its consistent point.
+	ChainTestsDuring      int `json:"chain_tests_during"`
+	ChainTestsAcrossBases int `json:"chain_tests_across_bases"`
+	BasesDuringChainTests int `json:"bases_during_chain_tests"`
 	// ChainTest is the outcome of the final chain test and its replay rates.
 	ChainTest *chainTestReport `json:"chain_test,omitempty"`
 }
@@ -159,21 +157,16 @@ func (r *rig) soakChainTick(t *testing.T, report *soakReport, ct *soakChains) {
 	ct.id = rec.ID
 }
 
-// soakChainDone waits for the chain test in flight, whose restore must complete,
-// and counts it. Its comparison is only counted: the manifest of a base taken
-// under the load's writes need not match the restored state exactly.
+// soakChainDone waits for the chain test in flight, whose restore must complete
+// and match the exact counts of the newer base, taken under the load's writes, at
+// its consistent point (issue #181), and counts it.
 func (r *rig) soakChainDone(t *testing.T, report *soakReport, ct *soakChains) {
 	t.Helper()
 	if ct.id == "" {
 		return
 	}
-	final := r.waitChainTest(t, ct.id, false)
+	final := r.waitChainTest(t, ct.id)
 	report.ChainTestsDuring++
-	verdict := "passed"
-	if final.Verification == nil || final.Verification.Status != models.RestoreVerificationPassed {
-		report.ChainTestMismatchesDuring++
-		verdict = fmt.Sprintf("completed, comparison %+v", final.Verification)
-	}
 	// The bases that completed while it ran.
 	bases, err := r.repo.ListBaseBackups(r.ctx, streamID)
 	if err != nil {
@@ -189,7 +182,8 @@ func (r *rig) soakChainDone(t *testing.T, report *soakReport, ct *soakChains) {
 		report.ChainTestsAcrossBases++
 		report.BasesDuringChainTests += n
 	}
-	t.Logf("chain test %s during the load %s in %.1fs (%d base(s) completed meanwhile)", final.ID, verdict, final.DurationSeconds, n)
+	t.Logf("chain test %s during the load passed (%d collection(s) at their exact counts) in %.1fs (%d base(s) completed meanwhile)",
+		final.ID, final.Verification.Collections, final.DurationSeconds, n)
 	ct.id = ""
 }
 
@@ -316,8 +310,11 @@ func TestSoak(t *testing.T) {
 	// back the purge they expect.
 	r.soakChainDone(t, report, &chainTests)
 	if cfg.ChainTests {
-		t.Logf("%d chain test(s) completed during the load (%d comparison(s) off), %d across %d base backup(s)",
-			report.ChainTestsDuring, report.ChainTestMismatchesDuring, report.ChainTestsAcrossBases, report.BasesDuringChainTests)
+		t.Logf("%d chain test(s) passed during the load, %d across %d base backup(s)",
+			report.ChainTestsDuring, report.ChainTestsAcrossBases, report.BasesDuringChainTests)
+		if report.ChainTestsDuring == 0 && report.BasesTaken > 2 {
+			t.Fatalf("%d bases taken during the load, but no chain test completed", report.BasesTaken)
+		}
 	}
 	report.Writes, report.WriteErrors = load.halt()
 	if report.Writes == 0 {
@@ -365,8 +362,8 @@ func TestSoak(t *testing.T) {
 	assertSameHistory(t, "retained chain against the primary", tail, primary, after, last)
 
 	// A chain test restores the base before the newest to the newest's point. The
-	// newest is taken now that the load stopped: the manifest of a base taken
-	// under writes need not match the state at its consistent point exactly.
+	// newest is taken now that the load stopped, so the final chain test also
+	// covers a base whose consistent point is the end of the history.
 	quiet := r.base(t)
 	// The chain test replays through T_after, so the collector must hold an entry
 	// after it (the primary writes a no-op every 10 seconds while idle).
@@ -511,7 +508,7 @@ func (r *rig) soakChainTest(t *testing.T) *chainTestReport {
 	if err != nil {
 		t.Fatalf("StartChainTest: %v", err)
 	}
-	final := r.waitChainTest(t, rec.ID, true)
+	final := r.waitChainTest(t, rec.ID)
 	out := &chainTestReport{ID: final.ID, Verification: string(final.Verification.Status), DurationSeconds: final.DurationSeconds,
 		BaseBytes: final.PITR.BaseBytes, OplogBytes: final.PITR.OplogBytes, OpsReplayed: final.PITR.OpsReplayed,
 		ReplaySeconds: final.PITR.ReplaySeconds}
@@ -527,8 +524,8 @@ func (r *rig) soakChainTest(t *testing.T) *chainTestReport {
 }
 
 // waitChainTest waits for chain test id and its verification. The restore must
-// complete and, when strict, the verification must pass.
-func (r *rig) waitChainTest(t *testing.T, id string, strict bool) *models.RestoreRecord {
+// complete and the verification pass with every count checked exactly.
+func (r *rig) waitChainTest(t *testing.T, id string) *models.RestoreRecord {
 	t.Helper()
 	final := r.waitRestore(t, id)
 	deadline := time.Now().Add(5 * time.Minute)
@@ -536,9 +533,9 @@ func (r *rig) waitChainTest(t *testing.T, id string, strict bool) *models.Restor
 		time.Sleep(time.Second)
 		final = r.waitRestore(t, id)
 	}
-	if final.Status != models.RestoreStatusCompleted || (strict && (final.Verification == nil ||
-		final.Verification.Status != models.RestoreVerificationPassed)) {
-		t.Fatalf("chain test %s: %s %s %+v", final.ID, final.Status, final.ErrorMessage, final.Verification)
+	if v := final.Verification; final.Status != models.RestoreStatusCompleted || v == nil ||
+		v.Status != models.RestoreVerificationPassed || v.Unverified != 0 || v.Collections == 0 {
+		t.Fatalf("chain test %s: %s %s %+v", final.ID, final.Status, final.ErrorMessage, v)
 	}
 	return final
 }

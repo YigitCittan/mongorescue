@@ -40,7 +40,7 @@ func (l lazyStreamControl) ResumeStream(ctx context.Context, id string) error {
 // collector's status (*svc is set once the collector is built), with the RTO
 // estimate of each open window (*estimate is set once the operations service is
 // built).
-func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Context, streamID string) bool,
+func pitrStreams(svc **collector.Service, lastChainTest *func(ctx context.Context, streamID string) *readiness.ChainTestInfo,
 	repo pitr.Repository, estimate *pitrEstimator) readiness.StreamLister {
 	return func(ctx context.Context) ([]readiness.StreamInfo, error) {
 		if *svc == nil {
@@ -53,8 +53,10 @@ func pitrStreams(svc **collector.Service, chainTestFailed *func(ctx context.Cont
 		out := make([]readiness.StreamInfo, 0, len(list))
 		for _, st := range list {
 			info := streamInfo(st)
-			if *chainTestFailed != nil {
-				info.ChainTestFailed = (*chainTestFailed)(ctx, info.ID)
+			if *lastChainTest != nil {
+				if ct := (*lastChainTest)(ctx, info.ID); ct != nil {
+					info.ChainTest, info.ChainTestFailed = ct, ct.Failed
+				}
 			}
 			if *estimate != nil && info.WindowOpen {
 				info.RTO = pitrRTO(ctx, repo, *estimate, st)

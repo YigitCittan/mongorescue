@@ -552,8 +552,10 @@ const READINESS_STATUS = { ok: ["success", "readiness.status_ok"], warn: ["warn"
 function readinessStatusCell(row) {
   const [kind, key] = READINESS_STATUS[row.status] || READINESS_STATUS.warn;
   const reasons = (row.reasons || []).map(r => t(`readiness.reason_${r}`, r));
+  // A PITR chain test that left counts unverified says why (pitr.js).
+  const chainTest = typeof pitrReadinessChainTest === "function" ? pitrReadinessChainTest(row) : "";
   return statusBadge(kind, t(key)) +
-    (reasons.length ? `<span class="rd-reasons">${escapeHtml(reasons.join(" · "))}</span>` : "");
+    (reasons.length ? `<span class="rd-reasons">${escapeHtml(reasons.join(" · "))}</span>` : "") + chainTest;
 }
 
 function readinessRpoCell(row) {

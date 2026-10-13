@@ -25,6 +25,7 @@ type pitrSeries struct {
 	windowStart *prometheus.GaugeVec
 	windowEnd   *prometheus.GaugeVec
 	breaks      *prometheus.CounterVec
+	unverified  *prometheus.GaugeVec
 }
 
 // newPITRSeries creates the PITR series and returns their collectors.
@@ -45,9 +46,10 @@ func (m *Metrics) newPITRSeries() []prometheus.Collector {
 		windowEnd:   gauge("window_end_timestamp_seconds", "End of the newest point-in-time window (the end of its newest chunk)."),
 		breaks: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Subsystem: "pitr", Name: "chain_breaks_total",
 			Help: "Oplog chains ended by a gap, a replica set change or a divergence, by reason."}, []string{"stream", "reason"}),
+		unverified: gauge("chain_test_unverified_collections", "Collections whose document count the newest chain test of the stream could not verify (the newer base recorded no exact count at its consistent point); 0 when every count was checked."),
 	}
 	p := m.pitr
-	return []prometheus.Collector{p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks}
+	return []prometheus.Collector{p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified}
 }
 
 // unix returns t as fractional Unix seconds.
@@ -98,12 +100,18 @@ func (m *Metrics) IncPITRChainBreak(stream, reason string) {
 	m.pitr.breaks.WithLabelValues(stream, reason).Inc()
 }
 
+// SetPITRChainTestUnverified records how many collections the newest chain test of
+// stream could not verify (mongorescue_pitr_chain_test_unverified_collections).
+func (m *Metrics) SetPITRChainTestUnverified(stream string, n int) {
+	m.pitr.unverified.WithLabelValues(stream).Set(float64(n))
+}
+
 // ForgetPITRStream drops every series of a deleted stream.
 func (m *Metrics) ForgetPITRStream(stream string) {
 	by := prometheus.Labels{"stream": stream}
 	p := m.pitr
 	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
-		p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks,
+		p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified,
 	} {
 		v.DeletePartialMatch(by)
 	}

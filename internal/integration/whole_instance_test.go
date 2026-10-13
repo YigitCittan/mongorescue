@@ -37,6 +37,7 @@ func TestWholeInstance(t *testing.T) {
 		{"PITRRestoreStopsInsideATransaction", testPITRRestoreStopsInsideATransaction},
 		{"PITRRestoreInPlace", testPITRRestoreInPlace},
 		{"PITRChainTest", testPITRChainTest},
+		{"ExactCountsAt", testExactCountsAt},
 	} {
 		t.Run(tc.name, tc.run)
 	}

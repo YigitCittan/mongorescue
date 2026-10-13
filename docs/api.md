@@ -323,7 +323,7 @@ A preflight applies the scope rules of the restore it checks: an in-place or cro
 }
 ```
 
-`status` is `passed`, `failed` or `skipped` (a dry run, a backup without a manifest, a target that could not be inspected; `notes` says why). A failed verification keeps the restore `completed`, adds a warning to it and publishes `restore.verification_failed` (selectable in notification rules): the data is applied, but it does not match what the backup recorded. The dashboard shows the result in the restore details.
+`status` is `passed`, `failed` or `skipped` (a dry run, a backup without a manifest, a target that could not be inspected; `notes` says why). A [PITR chain test](pitr.md#chain-tests) compares exact counts and adds `unverified`, the number of collections whose count could not be checked (with a note each), `unverified_reason` (the first reason) and `unverified_old_base` (the newer base predates exact counts); such a pass is not clean: readiness warns with `pitr_chain_test_unverified`. A failed verification keeps the restore `completed`, adds a warning to it and publishes `restore.verification_failed` (selectable in notification rules): the data is applied, but it does not match what the backup recorded. The dashboard shows the result in the restore details.
 
 ### Post-restore commands
 

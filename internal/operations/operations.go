@@ -213,6 +213,10 @@ type Config struct {
 	// OnJobDeleted is called after a job has been deleted (for example to drop its
 	// metric series); nil disables it.
 	OnJobDeleted func(jobID string)
+	// OnChainTest is called when a chain test of a stream finished its comparison,
+	// with the number of collections whose count it could not verify (for the
+	// mongorescue_pitr_chain_test_unverified_collections series); nil disables it.
+	OnChainTest func(streamID string, unverified int)
 	// Settings returns the live settings; nil means the defaults.
 	Settings func() settings.Settings
 	// SettingsUpdater applies settings changes for UpdateSettings and for the

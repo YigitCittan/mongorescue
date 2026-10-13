@@ -28,7 +28,30 @@ const (
 	// ReasonPITRChainTestFailed: the newest chain test of the stream failed, or its
 	// restore did not match the manifest of the newer base.
 	ReasonPITRChainTestFailed = "pitr_chain_test_failed"
+	// ReasonPITRChainTestUnverified: the newest chain test of the stream passed,
+	// but the document counts of some collections could not be verified, because
+	// the newer base recorded no exact count at its consistent point (a base of an
+	// earlier release, or no snapshot read possible). A new base backup fixes it.
+	ReasonPITRChainTestUnverified = "pitr_chain_test_unverified"
 )
+
+// ChainTestInfo is the outcome of the newest finished chain test of a stream.
+type ChainTestInfo struct {
+	// RestoreID is the chain test's restore and StartedAt when it started.
+	RestoreID string    `json:"restore_id"`
+	StartedAt time.Time `json:"started_at"`
+	// Failed reports a chain test whose restore or comparison failed;
+	// Verification is the comparison's status (empty when it did not run).
+	Failed       bool   `json:"failed"`
+	Verification string `json:"verification,omitempty"`
+	// Unverified counts the collections whose document count the comparison could
+	// not check, UnverifiedReason says why (the first collection's reason) and
+	// OldBase reports that the newer base was taken by an earlier release, which
+	// recorded no exact counts.
+	Unverified       int    `json:"unverified,omitempty"`
+	UnverifiedReason string `json:"unverified_reason,omitempty"`
+	OldBase          bool   `json:"old_base,omitempty"`
+}
 
 // RPO sources of a row.
 const (
@@ -67,6 +90,8 @@ type StreamInfo struct {
 	Broken bool `json:"broken"`
 	// ChainTestFailed reports that the newest chain test failed.
 	ChainTestFailed bool `json:"chain_test_failed,omitempty"`
+	// ChainTest is the newest finished chain test; nil without one.
+	ChainTest *ChainTestInfo `json:"chain_test,omitempty"`
 	// RTO estimates how long a point-in-time restore of the whole instance to the
 	// newest point of the current window takes: the newest eligible base plus the
 	// oplog after it, at the rates measured on the stream's recent restores and
@@ -104,8 +129,11 @@ func streamReasons(st StreamInfo) (fail, warn []string) {
 	if st.LagHigh {
 		warn = append(warn, ReasonPITRLagHigh)
 	}
-	if st.ChainTestFailed {
+	switch {
+	case st.ChainTestFailed:
 		warn = append(warn, ReasonPITRChainTestFailed)
+	case st.ChainTest != nil && st.ChainTest.Unverified > 0:
+		warn = append(warn, ReasonPITRChainTestUnverified)
 	}
 	if st.WindowLow {
 		warn = append(warn, ReasonPITRWindowLow)

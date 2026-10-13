@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
 // VerificationStatus is the outcome of re-reading a stored archive and comparing its
@@ -66,6 +68,66 @@ type Manifest struct {
 	// ServerVersion is the MongoDB version (buildInfo) of the server the manifest was
 	// read from; empty when it could not be read. It never takes part in comparisons.
 	ServerVersion string `json:"server_version,omitempty"`
+	// ExactAt is the consistent point (T_after) of a PITR base that recorded exact
+	// counts there (CollectionManifest.Exact), and ExactMethod how they were
+	// taken. Both are empty for other backups and in manifests of earlier releases.
+	ExactAt     *pitr.Timestamp `json:"exact_at,omitempty"`
+	ExactMethod CountMethod     `json:"exact_method,omitempty"`
+}
+
+// ChainTestOldBaseReason is why a chain test could not verify the counts of a
+// newer base taken by an earlier release, which recorded no exact counts.
+const ChainTestOldBaseReason = "the base was taken by an earlier release and recorded no exact counts"
+
+// CountMethod says how the exact counts of a manifest were taken.
+type CountMethod string
+
+// Count methods.
+const (
+	// CountMethodSnapshot counts with a snapshot read at the consistent point
+	// (readConcern snapshot with atClusterTime).
+	CountMethodSnapshot CountMethod = "snapshot"
+	// CountMethodOplog derives the counts at the consistent point from counts read
+	// afterwards and the oplog entries in between.
+	CountMethodOplog CountMethod = "oplog"
+	// CountMethodMixed took some counts with a snapshot read and derived the others
+	// from the oplog.
+	CountMethodMixed CountMethod = "snapshot+oplog"
+)
+
+// ExactCounts are the document counts of collections ("<database>.<collection>")
+// at one oplog position.
+type ExactCounts struct {
+	// At is the position and Method how the counts were taken.
+	At     pitr.Timestamp
+	Method CountMethod
+	// Counts holds the exact counts and Unverified the collections without one,
+	// with the reason. A collection has an exact count only when it is also known
+	// whether it existed at At; Absent lists those that did not (count 0).
+	Counts     map[string]int64
+	Unverified map[string]string
+	Absent     map[string]bool
+}
+
+// SetExact records counts, taken at the consistent point of a PITR base, on m:
+// each collection gets its exact count or the reason it has none.
+func (m *Manifest) SetExact(counts *ExactCounts) {
+	if m == nil || counts == nil {
+		return
+	}
+	at := counts.At
+	m.ExactAt, m.ExactMethod = &at, counts.Method
+	for i := range m.Collections {
+		c := &m.Collections[i]
+		c.Exact, c.ExactNote, c.ExactAbsent = nil, "", false
+		if n, ok := counts.Counts[c.Name]; ok {
+			c.Exact, c.ExactAbsent = &n, counts.Absent[c.Name]
+			continue
+		}
+		if c.ExactNote = counts.Unverified[c.Name]; c.ExactNote == "" {
+			c.ExactNote = "no count was taken at the consistent point"
+		}
+	}
 }
 
 // CollectionManifest describes one collection of a Manifest.
@@ -77,6 +139,16 @@ type CollectionManifest struct {
 	// range. A restored copy matches when its count lies within it.
 	DocumentsMin int64 `json:"documents_min"`
 	DocumentsMax int64 `json:"documents_max"`
+	// Exact is the document count at the consistent point of a PITR base
+	// (Manifest.ExactAt), which a chain test's restore must hold exactly. It is nil
+	// without one, and ExactNote then says why.
+	Exact     *int64 `json:"exact,omitempty"`
+	ExactNote string `json:"exact_note,omitempty"`
+	// ExactAbsent reports that the collection did not exist at that point (it was
+	// dropped during the dump): the restore must not hold it. With an exact count
+	// and ExactAbsent false, it existed there and the restore must hold it, even
+	// empty.
+	ExactAbsent bool `json:"exact_absent,omitempty"`
 	// Indexes lists the index specifications, sorted by name.
 	Indexes []IndexSpec `json:"indexes,omitempty"`
 }

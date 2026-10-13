@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -178,10 +179,19 @@ func (s *Service) finishChainTest(ctx context.Context, rec *models.RestoreRecord
 		}
 	}
 	actual.Normalize()
-	v.Mismatches, v.Notes, v.Collections = compareRestored(expected, actual, nil, false, false)
+	compareChainTest(v, expected, actual)
 	v.CheckedAt = s.now().UTC()
+	if s.cfg.OnChainTest != nil && rec.PITR != nil {
+		s.cfg.OnChainTest(rec.PITR.StreamID, v.Unverified)
+	}
 	if len(v.Mismatches) == 0 {
 		v.Status = models.RestoreVerificationPassed
+		if v.Unverified > 0 {
+			addRecordWarning(rec, fmt.Sprintf("chain test passed, but %d collection(s) not verified: %s; take a new base backup", v.Unverified, v.UnverifiedReason))
+			tracker.Printf("chain test passed: %d collection(s) match the manifest of base %s, %d of them not verified (%s)",
+				v.Collections, b2, v.Unverified, v.UnverifiedReason)
+			return
+		}
 		tracker.Printf("chain test passed: %d collection(s) match the manifest of base %s", v.Collections, b2)
 		return
 	}
@@ -189,6 +199,54 @@ func (s *Service) finishChainTest(ctx context.Context, rec *models.RestoreRecord
 	addRecordWarning(rec, fmt.Sprintf("chain test failed: %d mismatch(es) with the manifest of base %s: %s", len(v.Mismatches), b2, v.Mismatches[0]))
 	s.logger.Warn("PITR chain test does not match the manifest of the newer base",
 		logsafe.Attr("restore_id", rec.ID), logsafe.Attr("base_id", b2), slog.Int("mismatches", len(v.Mismatches)))
+}
+
+// compareChainTest compares the clones of a chain test (actual) with the manifest
+// of the newer base (expected), which the restore replayed to: every collection
+// must be there with its indexes and hold exactly the base's document count at its
+// consistent point (CollectionManifest.Exact). The counts read before and after
+// the dump need not be the state at that point on a database written to
+// meanwhile, so a collection without an exact count (a base of an earlier release,
+// or one whose count could not be taken) is unverified: its count is noted, never
+// a mismatch. An exact count also says whether the collection existed at that
+// point (CollectionManifest.ExactAbsent): one that existed must be restored, even
+// empty, and one that did not must not be. It sets the mismatches, the notes, the
+// number of collections compared and those whose count is unverified (with the
+// first reason) on v.
+func compareChainTest(v *models.RestoreVerification, expected, actual *models.Manifest) {
+	want := &models.Manifest{CapturedAt: expected.CapturedAt}
+	var mismatches, notes []string
+	for _, c := range expected.Collections {
+		got := actual.Collection(c.Name)
+		switch {
+		case c.Exact != nil && c.ExactAbsent && got == nil:
+			notes = append(notes, fmt.Sprintf("collection %s did not exist at the base's consistent point (dropped during the base backup) and is not in the restored copy", c.Name))
+			continue
+		case c.Exact != nil && c.ExactAbsent:
+			mismatches = append(mismatches, fmt.Sprintf("collection %s did not exist at the base's consistent point, but the restored copy holds it (%d documents)", c.Name, got.DocumentsMax))
+			continue
+		case c.Exact != nil:
+			c.DocumentsMin, c.DocumentsMax = *c.Exact, *c.Exact
+		default:
+			why := c.ExactNote
+			if expected.ExactAt == nil {
+				why, v.UnverifiedOldBase = models.ChainTestOldBaseReason, true
+			} else if why == "" {
+				why = "no count was taken at the consistent point"
+			}
+			if v.Unverified == 0 {
+				v.UnverifiedReason = why
+			}
+			v.Unverified++
+			if got != nil {
+				notes = append(notes, fmt.Sprintf("collection %s: %d documents restored, count not verified: %s", c.Name, got.DocumentsMax, why))
+			}
+			c.DocumentsMin, c.DocumentsMax = 0, math.MaxInt64
+		}
+		want.Collections = append(want.Collections, c)
+	}
+	more, extra := models.CompareManifests(want, actual)
+	v.Mismatches, v.Notes, v.Collections = append(mismatches, more...), append(notes, extra...), len(expected.Collections)
 }
 
 // ChainTestResult is the outcome of the newest chain test of a stream.
@@ -204,6 +262,12 @@ type ChainTestResult struct {
 	Verification models.RestoreVerificationStatus `json:"verification,omitempty"`
 	// Failed reports a chain test that failed or whose comparison failed.
 	Failed bool `json:"failed"`
+	// Unverified counts the collections whose document count the comparison could
+	// not check, UnverifiedReason says why and OldBase reports a newer base of an
+	// earlier release (models.RestoreVerification).
+	Unverified       int    `json:"unverified,omitempty"`
+	UnverifiedReason string `json:"unverified_reason,omitempty"`
+	OldBase          bool   `json:"old_base,omitempty"`
 }
 
 // LastChainTest returns the outcome of the newest finished chain test of stream
@@ -216,8 +280,9 @@ func (s *Service) LastChainTest(ctx context.Context, streamID string) *ChainTest
 		return nil
 	}
 	out := &ChainTestResult{RestoreID: r.ID, StartedAt: r.StartedAt, DurationSeconds: r.DurationSeconds, Status: r.Status}
-	if r.Verification != nil {
-		out.Verification = r.Verification.Status
+	if v := r.Verification; v != nil {
+		out.Verification = v.Status
+		out.Unverified, out.UnverifiedReason, out.OldBase = v.Unverified, v.UnverifiedReason, v.UnverifiedOldBase
 	}
 	out.Failed = r.Status == models.RestoreStatusFailed || out.Verification == models.RestoreVerificationFailed
 	return out
