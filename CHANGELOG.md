@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Observability.** The event `security.key_wrapping_changed` (`wrapped`, `rewrapped`, `unwrapped_to_file`) with audit entries `keywrap.*`, the series `mongorescue_key_wrapping_active`, `mongorescue_key_wrap_duration_seconds` and `mongorescue_key_wrap_errors_total`, and `key_wrapping` in `GET /api/v1/readiness`.
   - The Helm chart has a `keyWrap` value, and docs/kubernetes.md covers IRSA, GKE and Azure Workload Identity and Vault's Kubernetes auth. The integration suite tests AWS KMS on LocalStack and Vault Transit on a Vault dev server; Google Cloud KMS and Azure Key Vault are covered by contract tests against `httptest` fakes.
 
+### Security
+- `golang.org/x/net` v0.58.0 → v0.60.0. The Azure SDK used for key wrapping links `golang.org/x/net/http2` into the binary, which made five HTTP/2 advisories reachable (govulncheck): GO-2026-6617 (HPACK encoder race), GO-2026-6612 (double flow control refund), GO-2026-6611 (excessive CPU from repeated initial window changes), GO-2026-6610 (malformed framing headers accepted) and GO-2026-6603 (memory exhaustion through trailers); the image scan reported it as CVE-2026-78669.
+
 ## [0.27.1] - 2026-10-13
 
 ### Fixed
