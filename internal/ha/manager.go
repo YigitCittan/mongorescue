@@ -58,6 +58,9 @@ type Config struct {
 	// lease acquired from one that is not trusted stays unsigned until Confirm.
 	// nil signs nothing and trusts every readable lease (tests).
 	MACKey []byte
+	// OnAuthenticLease, when set, is called whenever this instance reads or writes
+	// a lease with a valid MAC (trust on first use: see Predecessor.Legacy).
+	OnAuthenticLease func()
 	// TTL is how long a lease lives without renewal; Renew how often the active
 	// instance renews it and a standby reads it (see ValidateTiming).
 	TTL   time.Duration
@@ -99,6 +102,10 @@ type Predecessor struct {
 	Lease Lease
 	// Reason explains an untrusted lease.
 	Reason string
+	// Legacy reports an untrusted lease that is readable but has no MAC, as an
+	// earlier version writes it: it may be trusted while this instance has never
+	// seen an authenticated lease of the cluster.
+	Legacy bool
 	// Mark is the newest snapshot that an authentic lease this instance saw named
 	// (the replaced one or an earlier one): a takeover needs a verified snapshot at
 	// least as new.
@@ -407,6 +414,9 @@ func (m *Manager) observe(ctx context.Context) {
 		return
 	}
 	lease, decodeErr := DecodeLease(data)
+	if decodeErr == nil {
+		m.noteAuthentic(lease)
+	}
 	m.mu.Lock()
 	m.healthy, m.lastErr = true, ""
 	if decodeErr != nil {
@@ -509,6 +519,9 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 	m.signed, m.pred = signed, pred
 	m.takeovers++
 	m.mu.Unlock()
+	if signed {
+		m.noteAuthentic(next.sign(m.cfg.MACKey))
+	}
 	m.logger.Info("acquired the HA lease: this instance is now active", slog.Uint64("epoch", epoch))
 	m.notify()
 }
@@ -533,7 +546,7 @@ func (m *Manager) assess(prev []byte) Predecessor {
 	case err != nil:
 		pred.Trust, pred.Reason = LeaseUntrusted, "the lease is unreadable"
 	case !m.authentic(l) && l.MAC == "":
-		pred.Trust, pred.Lease = LeaseUntrusted, l
+		pred.Trust, pred.Lease, pred.Legacy = LeaseUntrusted, l, true
 		pred.Reason = "the lease has no MAC (written by an earlier version, by an instance whose takeover did not complete, or by someone without secret.key)"
 	case !m.authentic(l):
 		pred.Trust, pred.Lease, pred.Reason = LeaseUntrusted, l, "the lease's MAC does not match its content (altered, or written without secret.key)"
@@ -542,6 +555,13 @@ func (m *Manager) assess(prev []byte) Predecessor {
 		pred.Mark = LaterMark(pred.Mark, l.SnapshotMark())
 	}
 	return pred
+}
+
+// noteAuthentic calls Config.OnAuthenticLease when l carries a valid MAC.
+func (m *Manager) noteAuthentic(l Lease) {
+	if m.cfg.OnAuthenticLease != nil && m.cfg.MACKey != nil && l.Authentic(m.cfg.MACKey) {
+		m.cfg.OnAuthenticLease()
+	}
 }
 
 // encode returns the content of l, with its MAC when signed.
@@ -574,9 +594,14 @@ func (m *Manager) Confirm(ctx context.Context, mark SnapshotMark) error {
 	}
 	m.signed = true
 	m.lease = m.lease.withSnapshotMark(LaterMark(m.lease.SnapshotMark(), mark))
+	held := m.lease
 	m.mu.Unlock()
 	m.renew(ctx)
-	return m.Check()
+	if err := m.Check(); err != nil {
+		return err
+	}
+	m.noteAuthentic(held.sign(m.cfg.MACKey))
+	return nil
 }
 
 // RecordSnapshot names mark in the held lease as the last snapshot when it is

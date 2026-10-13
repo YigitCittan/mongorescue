@@ -89,8 +89,8 @@ func TestLeaseTakenOverFromAnUntrustedOneStaysUnsigned(t *testing.T) {
 		t.Fatal("the released lease was not acquired")
 	}
 	pred := m.Predecessor()
-	if pred.Trust != LeaseUntrusted || pred.Reason == "" || !pred.Mark.IsZero() {
-		t.Fatalf("predecessor %+v; want untrusted, with no mark", pred)
+	if pred.Trust != LeaseUntrusted || pred.Reason == "" || !pred.Mark.IsZero() || !pred.Legacy {
+		t.Fatalf("predecessor %+v; want untrusted and legacy (no MAC), with no mark", pred)
 	}
 	if l := st.lease(t); l.MAC != "" || l.Authentic(key) {
 		t.Fatalf("the lease taken over from an untrusted one is signed: %+v", l)
@@ -125,7 +125,12 @@ func TestAuthenticLeaseCarriesItsLastSnapshot(t *testing.T) {
 	a.RecordSnapshot(ctx, old)
 	oldLease := st.data[LeaseKey("prod")]
 	b := newMACManager(t, st, clock, "b", key)
+	authenticSeen := 0
+	b.cfg.OnAuthenticLease = func() { authenticSeen++ }
 	b.Step(ctx) // sees the lease naming old
+	if authenticSeen == 0 {
+		t.Fatal("reading a signed lease was not reported")
+	}
 	clock.Advance(5 * time.Second)
 	a.Step(ctx) // renews
 	newest := SnapshotMark{Epoch: a.Epoch(), At: clock.Now()}

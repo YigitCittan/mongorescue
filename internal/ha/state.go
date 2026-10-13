@@ -33,6 +33,10 @@ type State struct {
 	// high-water mark): a takeover never restores an older one without an
 	// operator override.
 	Clusters map[string]SnapshotMark `json:"clusters,omitempty"`
+	// AuthenticatedLease holds the clusters whose lease this instance has seen or
+	// written with a valid MAC. Until then a lease without a MAC (an earlier
+	// version's) is trusted on first use; afterwards it is refused.
+	AuthenticatedLease map[string]bool `json:"seen_authenticated_lease,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -58,6 +62,19 @@ func (st *State) Observe(cluster string, mark SnapshotMark, reset bool) {
 		mark = LaterMark(st.Clusters[cluster], mark)
 	}
 	st.Clusters[cluster] = mark
+}
+
+// SeenAuthenticatedLease reports whether this instance has seen or written a
+// lease of cluster with a valid MAC.
+func (st State) SeenAuthenticatedLease(cluster string) bool { return st.AuthenticatedLease[cluster] }
+
+// MarkAuthenticatedLease records that this instance has seen or written a lease of
+// cluster with a valid MAC.
+func (st *State) MarkAuthenticatedLease(cluster string) {
+	if st.AuthenticatedLease == nil {
+		st.AuthenticatedLease = map[string]bool{}
+	}
+	st.AuthenticatedLease[cluster] = true
 }
 
 // LoadState reads the state from dataDir, creating it with a new instance ID when it

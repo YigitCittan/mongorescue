@@ -273,7 +273,14 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	case ha.LeaseAbsent:
 		return s.suspectRollback(rollbackLeaseMissing, errors.New("no lease exists although the HA target holds metadata snapshots: the lease was deleted, so the cluster's last snapshot is unknown"))
 	case ha.LeaseUntrusted:
-		return s.suspectRollback(rollbackLeaseUntrusted, fmt.Errorf("the replaced lease is not trusted: %s", pred.Reason))
+		if !pred.Legacy || local.SeenAuthenticatedLease(cluster) {
+			return s.suspectRollback(rollbackLeaseUntrusted, fmt.Errorf("the replaced lease is not trusted: %s", pred.Reason))
+		}
+		// Trust on first use: during a rolling upgrade the lease of an earlier
+		// version has no MAC. Once this instance has seen an authenticated lease of
+		// the cluster, a lease without one is refused.
+		s.logger.Warn("takeover from a lease without a MAC (an earlier version wrote it): trusted because this instance has never seen an authenticated lease of the cluster",
+			slog.Uint64("previous_epoch", pred.Lease.Epoch))
 	}
 	candidates, legacy := sel.Candidates()
 	if len(candidates) == 0 {
@@ -427,6 +434,21 @@ func (s *haSupervisor) forceTakeover(ctx context.Context, o *ha.Override) error 
 func (s *haSupervisor) confirmTakeover(ctx context.Context, mark ha.SnapshotMark, reset bool) error {
 	s.observeCluster(mark, reset)
 	return s.rt.mgr().Confirm(ctx, mark)
+}
+
+// sawAuthenticLease records that this instance has seen or written a lease of the
+// cluster with a valid MAC: from then on a lease without one is refused.
+func (s *haSupervisor) sawAuthenticLease() {
+	cluster := s.cfg.HA.Cluster
+	if s.rt.stateCopy().SeenAuthenticatedLease(cluster) {
+		return
+	}
+	if err := s.rt.updateState(func(st *ha.State) {
+		st.MarkAuthenticatedLease(cluster)
+		st.Observe(cluster, ha.SnapshotMark{}, false)
+	}); err != nil {
+		s.logger.Warn("could not record the authenticated HA lease in the data directory", logsafe.Error(err))
+	}
 }
 
 // observeCluster records that this instance has seen the cluster, with mark as its

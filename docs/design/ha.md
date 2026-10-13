@@ -37,6 +37,7 @@ The lease is one small JSON object on a storage target, `_mongorescue/ha/<cluste
 - `renewed_at` is for people only. No decision reads it.
 - `last_snapshot_epoch` and `last_snapshot_at` name the newest metadata snapshot the active instances wrote: the active instance updates them, and writes the lease at once, after every snapshot it stores, and a takeover sets them to the snapshot it restored. A takeover must find a verified snapshot at least as new ([Rollback protection](#rollback-protection)).
 - `mac` authenticates `cluster`, `epoch`, `holder`, `last_snapshot_epoch` and `last_snapshot_at`: HMAC-SHA256 with an HKDF subkey of `secret.key` (domain `ha-lease`). The holder name, `seq`, `renewed_at` and `ttl_seconds` are not authenticated (changing them can only delay a takeover). A lease taken over from one that is not trusted stays unsigned until the takeover is confirmed, so it never vouches for a last snapshot nobody authenticated.
+- **Trust on first use.** Earlier versions write the lease without `mac`. Such a lease is trusted only while this instance has never seen an authenticated lease of the cluster: the first time it reads or writes one, it records `seen_authenticated_lease` for the cluster in `ha.json`, and from then on a lease without a MAC (like one with a wrong MAC, always) is refused. A rolling upgrade therefore needs no operator: upgrade the standbys first and the active instance last; whichever upgraded instance takes over from the old lease signs it, and every instance has the flag within one renew interval.
 - `key_id` is derived from `secret.key` (like the install ID of metadata backups). An instance whose key differs refuses to start, since it could not read the active instance's snapshots or credentials. For the same reason an instance in HA mode refuses to rotate `secret.key` on its own (`keyrotation.ErrHAMode`); the key of a cluster changes in a maintenance window ([production.md](../production.md#rotating-the-secret-key-of-an-ha-cluster)).
 
 ### Conditional writes
@@ -109,7 +110,7 @@ Whoever can write to the HA target can delete objects as well as copy them. Dele
 
 | Reason | Condition |
 | :--- | :--- |
-| `lease_untrusted` | The lease it took over is unreadable, or its `mac` is missing or wrong (an earlier version, an instance whose takeover never completed, or someone without `secret.key` wrote it) |
+| `lease_untrusted` | The lease it took over is unreadable, its `mac` is wrong, or its `mac` is missing although this instance has seen an authenticated lease of the cluster (trust on first use, see [Lease](#lease)) |
 | `lease_missing` | No lease existed although the HA target holds snapshots, or although this instance has seen the cluster or its database is populated |
 | `snapshot_behind_lease` | The newest verified snapshot is older (epoch, then time) than the last snapshot the lease names, or than one an authentic lease this instance saw named (a replayed older lease does not lower it) |
 | `snapshot_behind_local` | It is older than this instance's high-water mark: the newest snapshot it wrote or restored, kept per cluster in `ha.json` |
@@ -175,7 +176,7 @@ A target given by ID or name must exist in the instance's own database when it s
 | Active machine or VM suspended longer than `ttl − renew` | On resume the fencing check fails on the wall clock before any run starts or completes; the scheduler renews before it fires, and the instance steps down | |
 | Both instances start at once on an empty bucket | `If-None-Match: *` lets exactly one create the lease | |
 | Lease object deleted by hand | Active's renewal fails and it steps down; the standby creates a new lease with a higher epoch than any it saw, but refuses the takeover while snapshots exist (`lease_missing`) | No active instance until an operator forces the takeover; alerted |
-| Lease replaced by one without a valid MAC | The takeover is refused (`lease_untrusted`) | No active instance until an operator forces the takeover; alerted |
+| Lease replaced by one without a valid MAC | The takeover is refused (`lease_untrusted`), by every instance that has seen an authenticated lease of the cluster | No active instance until an operator forces the takeover; alerted |
 | Newest snapshots deleted | The takeover is refused (`snapshot_behind_lease` or `snapshot_behind_local`) | No active instance until an operator forces the takeover; alerted |
 | Storage provider ignores conditional headers | HA refuses to start (startup probe) | |
 | Standby has a different `secret.key` | It refuses to start | |

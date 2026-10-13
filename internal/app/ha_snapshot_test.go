@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -254,9 +255,9 @@ func TestTakeoverRefusesARollbackBehindTheLease(t *testing.T) {
 }
 
 // TestTakeoverRefusesAnUntrustedLease replaces the lease by one without a MAC
-// (as an earlier version, or someone without secret.key, writes it). The standby
-// that takes it over does not sign its own lease, refuses the takeover, and signs
-// only once an operator forces it.
+// (as someone without secret.key writes it) after the standby has seen an
+// authenticated one. The standby that takes it over does not sign its own lease,
+// refuses the takeover, and signs only once an operator forces it.
 func TestTakeoverRefusesAnUntrustedLease(t *testing.T) {
 	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
@@ -264,6 +265,12 @@ func TestTakeoverRefusesAnUntrustedLease(t *testing.T) {
 	w := newHAWriter(t, shared, key)
 	w.write(t, "genuine")
 	w.release(t)
+	// The standby sees the authenticated lease first: from then on a lease without
+	// a MAC is no longer trusted on first use.
+	sup := bootstrappedSupervisor(t, haTestConfig(t, shared, key))
+	if !sup.rt.stateCopy().SeenAuthenticatedLease(w.cluster) {
+		t.Fatal("the standby did not record the authenticated lease it saw")
+	}
 	forged := w.lease(t)
 	forged.MAC, forged.LastSnapshotEpoch, forged.LastSnapshotAt = "", 0, time.Time{}
 	data, err := forgedLease(forged)
@@ -274,7 +281,10 @@ func TestTakeoverRefusesAnUntrustedLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sup := standbyThatAcquired(t, shared, key, 0)
+	sup.rt.mgr().Step(ctx)
+	if sup.rt.mgr().Role() != ha.RoleActive {
+		t.Fatal("the released lease was not acquired")
+	}
 	expectRollback(t, sup, sup.prepareTakeover(ctx), rollbackLeaseUntrusted)
 	if l := w.lease(t); l.MAC != "" {
 		t.Fatal("a lease taken over from an untrusted one was signed before the takeover was confirmed")
@@ -460,4 +470,151 @@ func TestLocalPopulated(t *testing.T) {
 	if !localPopulated(ctx, app, logger) {
 		t.Fatal("a database with a storage target of its own counts as fresh")
 	}
+}
+
+// TestRollingUpgradeTrustsTheFirstLeaseWithoutAMAC covers the upgrade from a
+// version without lease MACs or snapshot headers: the old active instance leaves a
+// lease without a MAC and a snapshot without a header, and an upgraded standby that
+// has never seen an authenticated lease takes over from them (trust on first use),
+// signs the lease, and refuses a lease without a MAC from then on.
+func TestRollingUpgradeTrustsTheFirstLeaseWithoutAMAC(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	ctx := context.Background()
+	shared, key := t.TempDir(), haTestKey(t)
+	target, err := storage.NewLocalStorage(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The old active instance: its database, snapshotted as an earlier version
+	// does (the encrypted database alone), and its released lease without a MAC.
+	old := newTestSupervisor(t, haTestConfig(t, shared, key))
+	app, err := old.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := app.metaStore.(*store.SQLiteStore)
+	if err = meta.SaveIntegrityState(ctx, haMarker, map[string]string{"from": "old version"}); err != nil {
+		t.Fatal(err)
+	}
+	pass, err := ha.SnapshotPassphrase(app.haKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	macKey, err := ha.LeaseMACKey(app.haKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbCopy := t.TempDir() + "/copy.db"
+	if err = meta.VacuumInto(ctx, dbCopy); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.Close(); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := os.ReadFile(dbCopy) //nolint:gosec // a file of the test
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := encryption.NewScryptEncryptor(pass, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	wc, err := enc.Encrypt(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = wc.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err = wc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cluster := old.cfg.HA.Cluster
+	if _, err = target.Save(ctx, ha.SnapshotKey(cluster, time.Now(), 3), &buf); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := forgedLease(ha.Lease{Cluster: cluster, Epoch: 3, Seq: 40, TTLSeconds: 5, RenewedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = target.Save(ctx, ha.LeaseKey(cluster), bytes.NewReader(lease)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The upgraded standby takes over.
+	sup := standbyThatAcquired(t, shared, key, 4)
+	if sup.rt.stateCopy().SeenAuthenticatedLease(cluster) {
+		t.Fatal("the standby recorded an authenticated lease it never saw")
+	}
+	if err = sup.prepareTakeover(ctx); err != nil {
+		t.Fatalf("the takeover from the old version was refused: %v", err)
+	}
+	readLease := func() ha.Lease {
+		t.Helper()
+		rc, readErr := target.Retrieve(ctx, ha.LeaseKey(cluster))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		defer rc.Close()
+		data, readErr := io.ReadAll(rc)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		l, readErr := ha.DecodeLease(data)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return l
+	}
+	if l := readLease(); !l.Authentic(macKey) {
+		t.Fatalf("the lease after the takeover %+v is not signed", l)
+	}
+	if !sup.rt.stateCopy().SeenAuthenticatedLease(cluster) {
+		t.Fatal("the standby did not record the authenticated lease it wrote")
+	}
+	if got := marker(t, sup); got != "old version" {
+		t.Fatalf("restored %q; want the old version's metadata", got)
+	}
+
+	// From now on a lease without a MAC is refused: it is released by hand and
+	// replaced by one without a MAC.
+	if err = sup.rt.mgr().Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stripped := readLease()
+	stripped.MAC = ""
+	if lease, err = forgedLease(stripped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = target.Save(ctx, ha.LeaseKey(cluster), bytes.NewReader(lease)); err != nil {
+		t.Fatal(err)
+	}
+	m := useManagerWithKey(t, sup, macKey)
+	m.Step(ctx)
+	if m.Role() != ha.RoleActive {
+		t.Fatalf("the released lease was not acquired: %s", m.Status().LastError)
+	}
+	expectRollback(t, sup, sup.prepareTakeover(ctx), rollbackLeaseUntrusted)
+}
+
+// useManagerWithKey replaces the supervisor's lease manager with one that signs
+// with macKey (a restart: no cooldown).
+func useManagerWithKey(t *testing.T, sup *haSupervisor, macKey []byte) *ha.Manager {
+	t.Helper()
+	ls, err := storage.AsLeaseStore(sup.rt.storage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ha.New(ha.Config{Store: ls, Cluster: sup.cfg.HA.Cluster, InstanceID: sup.rt.state.InstanceID,
+		TTL: sup.cfg.HA.LeaseTTL, Renew: sup.cfg.HA.RenewInterval, MACKey: macKey, OnAuthenticLease: sup.sawAuthenticLease,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), EpochFloor: sup.epochFloor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.rt.mu.Lock()
+	sup.rt.manager = m
+	sup.rt.mu.Unlock()
+	return m
 }

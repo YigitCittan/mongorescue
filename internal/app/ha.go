@@ -456,7 +456,8 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	}
 	mgr, err := ha.New(ha.Config{
 		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID, MACKey: macKey,
-		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Now: s.clock, Wall: s.clock, Logger: s.logger,
+		OnAuthenticLease: s.sawAuthenticLease,
+		TTL:              s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Now: s.clock, Wall: s.clock, Logger: s.logger,
 		EpochFloor: s.epochFloor,
 	})
 	if err != nil {
@@ -474,8 +475,14 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 		s.logger.Info("joined the HA cluster as standby", slog.String("ha_cluster", s.cfg.HA.Cluster),
 			logsafe.Attr("holder", lease.HolderName), slog.Uint64("epoch", lease.Epoch))
 		s.observeCluster(ha.SnapshotMark{}, false)
-		if !lease.Authentic(macKey) {
-			s.logger.Warn("the HA lease carries no valid MAC (written by an earlier version, by an instance whose takeover did not complete, or by someone without the secret key): a takeover from it is refused until `mongorescue ha force-takeover`",
+		switch {
+		case lease.Authentic(macKey):
+			s.sawAuthenticLease()
+		case lease.MAC == "" && !s.rt.stateCopy().SeenAuthenticatedLease(s.cfg.HA.Cluster):
+			s.logger.Info("the HA lease carries no MAC (an earlier version wrote it): it is trusted until this instance sees an authenticated one",
+				slog.String("ha_cluster", s.cfg.HA.Cluster))
+		default:
+			s.logger.Warn("the HA lease carries no valid MAC although this instance has seen authenticated ones: a takeover from it is refused until `mongorescue ha force-takeover`",
 				slog.String("ha_cluster", s.cfg.HA.Cluster))
 		}
 	}
