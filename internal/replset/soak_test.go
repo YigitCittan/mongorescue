@@ -367,9 +367,28 @@ func TestSoak(t *testing.T) {
 	// A chain test restores the base before the newest to the newest's point. The
 	// newest is taken now that the load stopped: the manifest of a base taken
 	// under writes need not match the state at its consistent point exactly.
-	r.base(t)
-	r.waitCovered(t)
+	quiet := r.base(t)
+	// The chain test replays through T_after, so the collector must hold an entry
+	// after it (the primary writes a no-op every 10 seconds while idle).
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		s, stateErr := r.repo.LoadState(r.ctx, streamID)
+		if stateErr == nil && quiet.TAfter != nil && s.Last.TS.Compare(quiet.TAfter.TS) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the collector did not pass the consistent point of base %s (state %+v, %v)", quiet.ID, s, stateErr)
+		}
+		time.Sleep(time.Second)
+	}
 	report.ChainTest = r.soakChainTest(t)
+	final, err := r.repo.GetRestoreRecord(r.ctx, report.ChainTest.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (pitr.Timestamp{T: quiet.TAfter.TS.T, I: quiet.TAfter.TS.I + 1}); final.PITR.Limit != want {
+		t.Fatalf("the final chain test replayed to %s, not to the base %s taken after the load (%s)", final.PITR.Limit, quiet.ID, want)
+	}
 }
 
 // soakSample checks the invariants once and updates the report.
