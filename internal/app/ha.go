@@ -52,6 +52,29 @@ type haRole struct {
 	active bool
 }
 
+// serverStatus is the HA status the App serves (health check, standby gate): the
+// lease's, but standby for an App opened as standby even once this instance holds
+// the lease. Until the App of the active role serves, the standby App must neither
+// serve data and sign-ins from its database nor tell a client or load balancer
+// that it is active.
+func (r *haRole) serverStatus() server.HAStatus {
+	st := r.rt.serverStatus()
+	if !r.active {
+		st.Role = server.HARoleStandby
+	}
+	return st
+}
+
+// metricsState is the source of the App's HA metrics, with the role of
+// serverStatus.
+func (r *haRole) metricsState() metrics.HAState {
+	ms := r.rt.metricsState()
+	if !r.active {
+		ms.Role = server.HARoleStandby
+	}
+	return ms
+}
+
 // fence returns the fencing check of the App's runs (nil outside HA mode).
 func (o options) fence() models.Fence {
 	if o.ha == nil {

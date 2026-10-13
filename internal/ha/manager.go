@@ -135,6 +135,9 @@ type Manager struct {
 	// fresh reports that the held lease was created: no lease object existed
 	// when this instance acquired it.
 	fresh bool
+	// retrying reports that the last renewal of the held lease failed: Run tries
+	// again after a short pause instead of a renew interval.
+	retrying bool
 
 	changes chan struct{}
 }
@@ -247,14 +250,17 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
-// untilNextStep returns how long Run waits for the next step: the renew interval,
-// or the time left to the step-down deadline of an active instance when that is
-// shorter.
+// untilNextStep returns how long Run waits for the next step: the renew interval
+// (a retry pause after a failed renewal), or the time left to the step-down
+// deadline of an active instance when that is shorter.
 func (m *Manager) untilNextStep() time.Duration {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	wait := m.cfg.Renew
 	if m.role == RoleActive {
+		if m.retrying {
+			wait = m.retryPause()
+		}
 		wait = min(wait, max(m.deadlineLocked().Sub(m.cfg.Now()), 0),
 			max(m.sentWall.Add(m.cfg.TTL-m.cfg.Renew).Sub(m.wallNow()), 0))
 	}
@@ -296,28 +302,42 @@ func (m *Manager) renew(ctx context.Context) {
 		return
 	}
 	// The request may not outlive the deadline: the step-down must not wait for it.
-	rctx, cancel := context.WithTimeout(ctx, min(m.cfg.Renew, deadline.Sub(now)))
+	rctx, cancel := context.WithTimeout(ctx, m.renewTimeout(deadline.Sub(now)))
 	newVersion, err := m.cfg.Store.ReplaceIfMatch(rctx, m.key, data, version)
 	cancel()
 	switch {
 	case err == nil:
 		m.mu.Lock()
 		m.lease, m.version, m.sentAt, m.sentWall = next, newVersion, now, wall
-		m.healthy, m.lastErr = true, ""
+		m.healthy, m.lastErr, m.retrying = true, "", false
 		m.mu.Unlock()
 	case errors.Is(err, storage.ErrPreconditionFailed):
 		m.recordError(err)
 		m.stepDown("another instance wrote the lease", true)
 	default:
 		m.recordError(err)
-		m.mu.RLock()
+		m.mu.Lock()
 		expired = m.expiredLocked(m.cfg.Now(), m.wallNow())
-		m.mu.RUnlock()
+		m.retrying = !expired
+		m.mu.Unlock()
 		if expired {
 			m.stepDown("the lease storage did not answer in time", true)
 		}
 	}
 }
+
+// renewTimeout bounds one renewal request, given the time left to the step-down
+// deadline: half of it, so a request that stalls (a dead connection) leaves time for
+// another attempt, but at least half a renew interval (all that is left when less)
+// and at most a renew interval.
+func (m *Manager) renewTimeout(left time.Duration) time.Duration {
+	return min(m.cfg.Renew, max(left/2, min(left, m.cfg.Renew/2)))
+}
+
+// retryPause is how long Run waits after a failed renewal before it tries again
+// (never past the step-down deadline): a tenth of the renew interval, so a storage
+// that fails fast is not hammered.
+func (m *Manager) retryPause() time.Duration { return m.cfg.Renew / 10 }
 
 // observe reads the lease as a standby and takes it over when it is free or
 // expired.
@@ -436,6 +456,7 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 	m.seen, m.seenVersion, m.seenAt, m.seenEpoch = next, newVersion, sent, epoch
 	m.healthy, m.lastErr = true, ""
 	m.fresh = prev == nil
+	m.retrying = false
 	m.takeovers++
 	m.mu.Unlock()
 	m.logger.Info("acquired the HA lease: this instance is now active", slog.Uint64("epoch", epoch))

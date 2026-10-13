@@ -466,3 +466,49 @@ func TestStartupRefusesAnotherSecretKey(t *testing.T) {
 		t.Fatalf("bootstrap with another secret key = %v; want ErrKeyMismatch", err)
 	}
 }
+
+// TestStandbyAppStaysStandbyOnceTheLeaseIsAcquired checks the moment between the
+// acquisition of the lease and the start of the active App: the standby App still
+// serving must report standby and refuse sign-ins (its database and users are not
+// trusted), and only the App opened as active reports active.
+func TestStandbyAppStaysStandbyOnceTheLeaseIsAcquired(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	ctx := context.Background()
+	sup := newTestSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
+	sup.clock = newFakeClock().Now // the lease cannot expire however slowly the Apps open
+	standby, err := sup.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sup.bootstrap(ctx, standby); err != nil {
+		_ = standby.Close()
+		t.Fatal(err)
+	}
+	sup.rt.mgr().Step(ctx)
+	if sup.rt.mgr().Role() != ha.RoleActive {
+		_ = standby.Close()
+		t.Fatal("did not acquire the lease")
+	}
+	role, metricsRole := healthRole(standby), standby.ha.metricsState().Role
+	rec := httptest.NewRecorder()
+	standby.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"username":"x","password":"y"}`)))
+	if err = standby.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if role != server.HARoleStandby || metricsRole != server.HARoleStandby {
+		t.Fatalf("the standby App reports %q (metrics %q) once the lease is acquired; want standby", role, metricsRole)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("sign-in on the standby App once the lease is acquired = %d; want 503", rec.Code)
+	}
+
+	active, err := sup.open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = active.Close() }()
+	if role = healthRole(active); role != server.HARoleActive {
+		t.Fatalf("the active App reports %q; want active", role)
+	}
+}
