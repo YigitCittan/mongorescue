@@ -3,7 +3,9 @@ package keywrap
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -165,6 +167,7 @@ func Load(ctx context.Context, cfg LoadConfig) (*Loaded, error) {
 		cfg.Retry = DefaultRetry
 	}
 	l := &loader{cfg: cfg, log: cfg.Logger.With(slog.String("key_wrap", cfg.Spec.String()))}
+	l.removeLeftovers()
 	out, err := l.current(ctx)
 	if err != nil {
 		return nil, err
@@ -334,13 +337,10 @@ func (l *loader) migrateAside(ctx context.Context, name string) (bool, error) {
 	if err != nil || !hasPlain {
 		return false, err
 	}
-	key, err := secretbox.ReadKeyFile(plain)
-	if err != nil {
-		return false, err
-	}
 	f, err := ReadFile(wrapped)
 	switch {
 	case err == nil:
+		// A wrapped counterpart that unwraps decides; the plaintext file goes.
 		back, _, openErr := l.open(ctx, f, name)
 		if openErr != nil {
 			return false, openErr
@@ -350,6 +350,10 @@ func (l *loader) migrateAside(ctx context.Context, name string) (bool, error) {
 		}
 		return false, nil
 	case !errors.Is(err, fs.ErrNotExist):
+		return false, err
+	}
+	key, err := secretbox.ReadKeyFile(plain)
+	if err != nil {
 		return false, err
 	}
 	if f, err = sealChecked(ctx, l.cfg.Wrapper, l.cfg.Spec, key, l.cfg.Now(), l.cfg.Retry, l.cfg.Sleep); err != nil {
@@ -366,12 +370,20 @@ func (l *loader) migrateAside(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-// dropPlain removes the plaintext key file at plain when it holds key, and
-// refuses when it holds another one.
+// dropPlain removes the plaintext key file at plain, which sits next to a wrapped
+// counterpart that unwrapped to key: when it holds key, or holds no readable key
+// at all (a crash while it was being overwritten), with a warning then. It
+// refuses when the file holds another key.
 func (l *loader) dropPlain(plain string, key []byte) error {
-	pk, err := secretbox.ReadKeyFile(plain)
+	data, err := os.ReadFile(plain) //nolint:gosec // G304: a key file in the configured data directory.
 	if err != nil {
-		return err
+		return fmt.Errorf("keywrap: read %s: %w", filepath.Base(plain), err)
+	}
+	pk, err := secretbox.ParseKey(string(data))
+	if err != nil {
+		l.log.Warn("removed an unreadable plaintext key file next to its verified wrapped counterpart (left by a crash while it was removed)",
+			slog.String("file", filepath.Base(plain)))
+		return secureRemove(plain)
 	}
 	if subtle.ConstantTimeCompare(pk, key) != 1 {
 		return fmt.Errorf("%w: %s and %s; keep the one the database uses and remove the other", ErrConflict,
@@ -380,10 +392,39 @@ func (l *loader) dropPlain(plain string, key []byte) error {
 	return secureRemove(plain)
 }
 
-// secureRemove overwrites the file at path with zeros, syncs it and removes it.
-// On copy-on-write file systems and SSDs the old blocks may survive the
-// overwrite; the file is gone from the directory either way.
+// removePrefix starts the temporary name a plaintext key file is renamed to before
+// it is overwritten and removed (a secretbox.TempKeyFilePrefix name, so every
+// cleanup of stale temporary key files finds it).
+const removePrefix = secretbox.TempKeyFilePrefix + "rm-"
+
+// secureRemove removes the plaintext key file at path: it is renamed to a
+// temporary name first (and the directory synced), so a crash never leaves a
+// half-overwritten file under the name a start reads; then the temporary file is
+// overwritten with zeros, synced and removed, and the directory synced again. A
+// crash leaves at most the temporary file, which the next Load removes. On
+// copy-on-write file systems and SSDs the old blocks may survive the overwrite.
 func secureRemove(path string) error {
+	dir := filepath.Dir(path)
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return fmt.Errorf("keywrap: %w", err)
+	}
+	tmp := filepath.Join(dir, removePrefix+hex.EncodeToString(rnd[:]))
+	if err := os.Rename(path, tmp); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("keywrap: move %s aside: %w", filepath.Base(path), err)
+	}
+	if err := secretbox.SyncDir(dir); err != nil {
+		return err
+	}
+	return overwriteAndRemove(tmp)
+}
+
+// overwriteAndRemove overwrites the file at path with zeros, syncs it, removes it
+// and syncs its directory.
+func overwriteAndRemove(path string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY, 0) //nolint:gosec // G304: a key file in the configured data directory.
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -398,6 +439,24 @@ func secureRemove(path string) error {
 	}
 	_ = f.Close()
 	return secretbox.RemoveKeyFile(path)
+}
+
+// removeLeftovers overwrites and removes the temporary key files a crash left in
+// the data directory (a plaintext key file moved aside for removal, or the
+// temporary file of an interrupted atomic write), with a warning: nothing writes
+// key files while the application starts.
+func (l *loader) removeLeftovers() {
+	matches, err := filepath.Glob(filepath.Join(l.cfg.DataDir, secretbox.TempKeyFilePrefix+"*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if err := overwriteAndRemove(m); err != nil {
+			l.log.Warn("could not remove a temporary key file left by a crash", slog.String("file", filepath.Base(m)), logsafe.Error(err))
+			continue
+		}
+		l.log.Warn("removed a temporary key file left by a crash", slog.String("file", filepath.Base(m)))
+	}
 }
 
 // Codec reads and writes the wrapped key files of a key rotation

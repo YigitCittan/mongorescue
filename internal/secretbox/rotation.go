@@ -79,7 +79,22 @@ func RemoveKeyFile(path string) error {
 }
 
 // tempKeyPattern matches the temporary files writeFileAtomic creates.
-const tempKeyPattern = ".secret.key.tmp-*"
+const tempKeyPattern = TempKeyFilePrefix + "*"
+
+// TempKeyFilePrefix starts the name of every temporary key file in the data
+// directory (RemoveStaleTempFiles removes them): the temporary files of an atomic
+// write, and the plaintext key files internal/keywrap renames before it overwrites
+// and removes them.
+const TempKeyFilePrefix = ".secret.key.tmp-"
+
+// SyncDir syncs the directory dir, so that a rename or removal in it survives a
+// power loss.
+func SyncDir(dir string) error {
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("secretbox: sync key directory: %w", err)
+	}
+	return nil
+}
 
 // RemoveStaleTempFiles removes temporary key files a crash left in dir (they are
 // renamed into place on success, so any that remain belong to an interrupted write)
