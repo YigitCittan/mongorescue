@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -178,17 +179,58 @@ func (s *Service) finishChainTest(ctx context.Context, rec *models.RestoreRecord
 		}
 	}
 	actual.Normalize()
-	v.Mismatches, v.Notes, v.Collections = compareRestored(expected, actual, nil, false, false)
+	v.Mismatches, v.Notes, v.Collections, v.Unverified = compareChainTest(expected, actual)
 	v.CheckedAt = s.now().UTC()
 	if len(v.Mismatches) == 0 {
 		v.Status = models.RestoreVerificationPassed
-		tracker.Printf("chain test passed: %d collection(s) match the manifest of base %s", v.Collections, b2)
+		unverified := ""
+		if v.Unverified > 0 {
+			unverified = fmt.Sprintf(" (%d document count(s) unverified)", v.Unverified)
+		}
+		tracker.Printf("chain test passed: %d collection(s) match the manifest of base %s%s", v.Collections, b2, unverified)
 		return
 	}
 	v.Status = models.RestoreVerificationFailed
 	addRecordWarning(rec, fmt.Sprintf("chain test failed: %d mismatch(es) with the manifest of base %s: %s", len(v.Mismatches), b2, v.Mismatches[0]))
 	s.logger.Warn("PITR chain test does not match the manifest of the newer base",
 		logsafe.Attr("restore_id", rec.ID), logsafe.Attr("base_id", b2), slog.Int("mismatches", len(v.Mismatches)))
+}
+
+// compareChainTest compares the clones of a chain test (actual) with the manifest
+// of the newer base (expected), which the restore replayed to: every collection
+// must be there with its indexes and hold exactly the base's document count at its
+// consistent point (CollectionManifest.Exact). The counts read before and after
+// the dump need not be the state at that point on a database written to
+// meanwhile, so a collection without an exact count (a base of an earlier release,
+// or one whose count could not be taken) is unverified: its count is noted, never
+// a mismatch. It returns the mismatches, the notes, the number of collections
+// compared and the number of them whose count is unverified.
+func compareChainTest(expected, actual *models.Manifest) (mismatches, notes []string, compared, unverified int) {
+	want := &models.Manifest{CapturedAt: expected.CapturedAt}
+	for _, c := range expected.Collections {
+		got := actual.Collection(c.Name)
+		switch {
+		case c.Exact != nil && *c.Exact == 0 && got == nil:
+			// Listed before the dump but gone at the consistent point.
+			notes = append(notes, fmt.Sprintf("collection %s held no documents at the base's consistent point and is not in the restored copy (dropped during the base backup?)", c.Name))
+			continue
+		case c.Exact != nil:
+			c.DocumentsMin, c.DocumentsMax = *c.Exact, *c.Exact
+		default:
+			unverified++
+			why := c.ExactNote
+			if why == "" {
+				why = "the base recorded no count at its consistent point"
+			}
+			if got != nil {
+				notes = append(notes, fmt.Sprintf("collection %s: %d documents restored, count not verified: %s", c.Name, got.DocumentsMax, why))
+			}
+			c.DocumentsMin, c.DocumentsMax = 0, math.MaxInt64
+		}
+		want.Collections = append(want.Collections, c)
+	}
+	mismatches, more := models.CompareManifests(want, actual)
+	return mismatches, append(notes, more...), len(expected.Collections), unverified
 }
 
 // ChainTestResult is the outcome of the newest chain test of a stream.

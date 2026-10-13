@@ -192,6 +192,11 @@ type RestoreVerification struct {
 	Notes []string `json:"notes,omitempty"`
 	// Collections counts the collections compared.
 	Collections int `json:"collections"`
+	// Unverified counts the compared collections of a PITR chain test whose
+	// document count could not be checked, because the newer base recorded no
+	// exact count at its consistent point (see Notes); their presence and indexes
+	// were checked.
+	Unverified int `json:"unverified,omitempty"`
 	// CheckedAt is when the comparison ran.
 	CheckedAt time.Time `json:"checked_at"`
 }

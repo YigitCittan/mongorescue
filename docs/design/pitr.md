@@ -114,7 +114,7 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
 - **Verification:**
   - Chunk hashes are checked inline.
   - The filter counts the operations it emits, with `applyOps` expanded and skipped entries left out, and compares that with mongorestore's "applied N oplog entries". The chunk entry count is not comparable (S1).
-  - A scheduled **chain test** PITR-restores base B1 up to the consistent point of B2 into a `_rescue_verify_` clone, compares the result with B2's manifest, then drops the clone.
+  - A scheduled **chain test** PITR-restores base B1 up to the consistent point of B2 into a `_rescue_verify_` clone, compares the result with B2's manifest, then drops the clone. The counts it compares are B2's exact counts at its consistent point (a snapshot read at `t_after`, or derived from the oplog after it), not the counts read around the dump (#181).
 - **In place (#142): restore into a clone, verify, swap.** An opt-in (`pitr.in_place`, admin, two-person rule) for a list of databases confirmed by name (`pitr.confirm_in_place`):
   - The restore into clones runs unchanged, with its verification, op-count cross-check and the post-restore commands (applied to the clones, so erased data never reaches the originals).
   - A mandatory **safety backup** of each original (a regular backup labelled `pre-pitr-in-place`, linked to the restore) follows; its failure drops the clones and leaves the originals untouched.

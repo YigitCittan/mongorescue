@@ -11,7 +11,9 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
+	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/verify"
 )
 
@@ -90,6 +92,55 @@ func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *model
 	return out
 }
 
+// ExactCountFunc returns the exact document counts of namespaces
+// ("<database>.<collection>") on the replica set at uri at oplog position at
+// (implemented by mongoconn.Prober.CountsAt). A collection without one is listed as
+// unverified with the reason; an error means none could be taken. Implementations
+// must never include the URI's credentials in errors or reasons.
+type ExactCountFunc func(ctx context.Context, uri string, namespaces []string, at pitr.Timestamp) (*models.ExactCounts, error)
+
+// exactCountTimeout bounds the exact counts of a PITR base.
+const exactCountTimeout = 10 * time.Minute
+
+// WithExactCounter makes PITR base backups record, in their manifest, the exact
+// document count of every collection at their consistent point (T_after) with fn.
+// PITR chain tests restore to that point and compare their clones with these
+// counts; without them the counts are unverified.
+func WithExactCounter(fn ExactCountFunc) Option {
+	return func(e *Engine) {
+		e.exactCounts = fn
+	}
+}
+
+// recordExactCounts records on m the exact counts of its collections at the
+// consistent point of record, a PITR base. A failure only logs a warning: the
+// chain tests of the base then report its counts as unverified.
+func (e *Engine) recordExactCounts(ctx context.Context, uri string, m *models.Manifest, record *models.BackupRecord) {
+	if e.exactCounts == nil || record.TAfter == nil || !record.InstanceScope() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, exactCountTimeout)
+	defer cancel()
+	names := make([]string, 0, len(m.Collections))
+	for _, c := range m.Collections {
+		names = append(names, c.Name)
+	}
+	tracker := runs.FromContext(ctx)
+	counts, err := e.exactCounts(ctx, uri, names, record.TAfter.TS)
+	if err != nil {
+		e.logger.Warn("could not count the documents at the consistent point of a PITR base; chain tests of it will not verify counts",
+			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(err.Error())))
+		tracker.Printf("no exact counts at T_after: %s", redact.Text(err.Error()))
+		return
+	}
+	for ns, why := range counts.Unverified {
+		counts.Unverified[ns] = redact.Text(why)
+	}
+	m.SetExact(counts)
+	tracker.Printf("exact counts at T_after %s (%s): %d collection(s), %d unverified", record.TAfter.TS, counts.Method,
+		len(counts.Counts), len(m.Collections)-len(counts.Counts))
+}
+
 // instanceDatabases lists the databases of the instance at uri except admin, config
 // and local (clones included), or nil when the listing fails.
 func (e *Engine) instanceDatabases(ctx context.Context, uri string) []string {
@@ -163,6 +214,9 @@ func (e *Engine) finishManifest(ctx context.Context, uri string, opts models.Bac
 	if before == nil {
 		return
 	}
+	// The counts at the consistent point first: a snapshot read there needs the
+	// server to still hold that history.
+	e.recordExactCounts(ctx, uri, before, record)
 	if after := e.captureManifest(ctx, uri, opts); after != nil {
 		before.MergeCounts(after)
 		if before.ServerVersion == "" {

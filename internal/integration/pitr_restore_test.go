@@ -165,7 +165,7 @@ func newPITRRig(t *testing.T, chainTestCron ...string) *pitrRig {
 		return out, listErr
 	}
 	r.backups = newBackupEngine(env, st, backup.WithEncryptor(enc), backup.WithOpTimeReader(r.prober.WriteOpTimes),
-		backup.WithManifestCapturer(r.prober.Manifest), backup.WithDatabaseLister(names))
+		backup.WithManifestCapturer(r.prober.Manifest), backup.WithDatabaseLister(names), backup.WithExactCounter(r.prober.CountsAt))
 	restores := newRestoreEngine(env, st, restore.WithDecryptor(dec), restore.WithDatabaseLister(names), restore.WithCollectionAdmin(r.prober),
 		restore.WithServerVersion(func(ctx context.Context, uri string) (string, error) {
 			info, pingErr := r.prober.Ping(ctx, uri)
@@ -492,9 +492,22 @@ func testPITRChainTest(t *testing.T) {
 	if _, err := events.UpdateMany(ctx, bson.D{}, bson.D{{Key: "$set", Value: bson.D{{Key: "status", Value: "done"}}}}); err != nil {
 		t.Fatal(err)
 	}
+	// Writes race the second base (issue #181): its counts before and after the dump
+	// need not be the state at its consistent point, its exact counts are.
+	stopChurn := churn(ctx, t, env.Client.Database(db).Collection("churn"))
 	second := r.base(t)
-	if !second.HasManifest {
+	stopChurn()
+	m := second.Manifest
+	if !second.HasManifest || m == nil {
 		t.Fatal("the base has no instance manifest")
+	}
+	if m.ExactAt == nil || *m.ExactAt != second.TAfter.TS || m.ExactMethod != models.CountMethodSnapshot {
+		t.Fatalf("the base recorded no exact counts at its T_after %s: %+v", second.TAfter.TS, m)
+	}
+	for _, c := range m.Collections {
+		if c.Exact == nil {
+			t.Fatalf("collection %s has no exact count: %s", c.Name, c.ExactNote)
+		}
 	}
 	r.waitCovered(t)
 	// The schedule fires once a minute; a run before both bases were eligible
@@ -519,7 +532,7 @@ func testPITRChainTest(t *testing.T) {
 	if !final.PITR.ChainTest || final.PITR.BaseID != first.ID || final.PITR.Limit != limit {
 		t.Fatalf("the chain test restored base %s up to %s; want base %s up to %s", final.PITR.BaseID, final.PITR.Limit, first.ID, limit)
 	}
-	if v := final.Verification; v.Collections == 0 || len(v.Mismatches) != 0 {
+	if v := final.Verification; v.Collections == 0 || len(v.Mismatches) != 0 || v.Unverified != 0 {
 		t.Fatalf("the comparison with the manifest of %s: %+v", second.ID, v)
 	}
 	for _, name := range r.databases(t) {
@@ -538,5 +551,57 @@ func testPITRChainTest(t *testing.T) {
 		final.PITR.BaseBytes, final.PITR.BaseSeconds)
 	if e := r.ops.EstimatePITR(ctx, r.stream.ID, 1<<30, 1<<30, 1_000_000); e.Source != models.PITREstimateMeasured || e.Samples != 1 {
 		t.Fatalf("the estimate after a timed chain test: %+v", e)
+	}
+
+	// A divergence still fails the next scheduled chain test: the restore is one
+	// document off the state at the consistent point, as after a lost oplog entry.
+	orders := m.Collection(db + ".orders")
+	diverged := *orders.Exact + 1
+	orders.Exact = &diverged
+	if err = r.repo.SaveBackupRecord(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	changed := time.Now()
+	deadline = time.Now().Add(4 * time.Minute)
+	for res = r.ops.LastChainTest(ctx, r.stream.ID); !res.StartedAt.After(changed); res = r.ops.LastChainTest(ctx, r.stream.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("no scheduled chain test finished after the divergence")
+		}
+		time.Sleep(time.Second)
+	}
+	if final, err = r.repo.GetRestoreRecord(ctx, res.RestoreID); err != nil {
+		t.Fatal(err)
+	}
+	if v := final.Verification; !res.Failed || v == nil || v.Status != models.RestoreVerificationFailed || len(v.Mismatches) != 1 ||
+		!strings.Contains(v.Mismatches[0], fmt.Sprintf("collection %s.orders: %d documents restored, %d expected", db, diverged-1, diverged)) {
+		t.Fatalf("the chain test after the divergence: %+v %+v", res, final.Verification)
+	}
+}
+
+// churn creates coll, then inserts a document into it and deletes the oldest one,
+// without pause, until the returned function is called.
+func churn(ctx context.Context, t *testing.T, coll *mongo.Collection) (stop func()) {
+	t.Helper()
+	if _, err := coll.InsertOne(ctx, bson.D{{Key: "_id", Value: int64(-1)}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for n := int64(0); ctx.Err() == nil; n++ {
+			if _, err := coll.InsertOne(ctx, bson.D{{Key: "_id", Value: n}}); err != nil {
+				return
+			}
+			if n >= 20 {
+				if _, err := coll.DeleteOne(ctx, bson.D{{Key: "_id", Value: n - 20}}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
 	}
 }

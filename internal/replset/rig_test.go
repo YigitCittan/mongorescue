@@ -225,7 +225,7 @@ func newRig(t *testing.T, c *cluster, o rigOptions) *rig {
 	log := logger()
 	r.backups = backup.NewEngine(st, c.uri, backup.WithLogger(log), backup.WithCollectionLister(collections),
 		backup.WithEncryptor(enc), backup.WithOpTimeReader(r.prober.WriteOpTimes),
-		backup.WithManifestCapturer(r.prober.Manifest), backup.WithDatabaseLister(names))
+		backup.WithManifestCapturer(r.prober.Manifest), backup.WithDatabaseLister(names), backup.WithExactCounter(r.prober.CountsAt))
 	restores := restore.NewEngine(st, c.uri, restore.WithLogger(log),
 		restore.WithValidationBypassCheck(r.prober.CanBypassDocumentValidation), restore.WithDatabaseAdmin(r.prober),
 		restore.WithDecryptor(dec), restore.WithDatabaseLister(names),
