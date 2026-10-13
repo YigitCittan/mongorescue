@@ -226,6 +226,15 @@ type haSupervisor struct {
 	rt     *haRuntime
 	// onActive, when set, is called with every App that started as active (tests).
 	onActive func(*App)
+	// onStandby, when set, is called with every App that started as a standby and
+	// serves (tests).
+	onStandby func(*App)
+	// clock, when set, is the lease manager's monotonic and wall clock (tests); nil
+	// means time.Now.
+	clock func() time.Time
+	// leaseLoop, when set, replaces the lease manager's Run loop (tests that step the
+	// manager themselves).
+	leaseLoop func(context.Context, *ha.Manager)
 }
 
 // open builds the App of a role.
@@ -246,7 +255,11 @@ func (s *haSupervisor) run(ctx context.Context) error {
 	}
 	managerCtx, cancelManager := context.WithCancel(context.Background())
 	var managerWG sync.WaitGroup
-	managerWG.Go(func() { s.rt.mgr().Run(managerCtx) })
+	loop, mgr := s.leaseLoop, s.rt.mgr()
+	if loop == nil {
+		loop = func(ctx context.Context, m *ha.Manager) { m.Run(ctx) }
+	}
+	managerWG.Go(func() { loop(managerCtx, mgr) })
 	defer func() {
 		cancelManager()
 		managerWG.Wait()
@@ -305,7 +318,7 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	}
 	mgr, err := ha.New(ha.Config{
 		Store: ls, Cluster: s.cfg.HA.Cluster, InstanceID: s.rt.state.InstanceID, InstanceName: s.rt.name, KeyID: keyID,
-		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Logger: s.logger,
+		TTL: s.cfg.HA.LeaseTTL, Renew: s.cfg.HA.RenewInterval, Now: s.clock, Wall: s.clock, Logger: s.logger,
 		EpochFloor: func(ctx context.Context) (uint64, error) { return s.epochFloor(ctx, st) },
 	})
 	if err != nil {
@@ -402,6 +415,9 @@ func (s *haSupervisor) serveStandby(ctx context.Context, app *App) (bool, error)
 	errCh := serve(app)
 	s.logger.Info("mongorescue ready as HA standby (read-only)", slog.String("ha_cluster", s.cfg.HA.Cluster),
 		slog.Int("port", s.cfg.Port))
+	if s.onStandby != nil {
+		s.onStandby(app)
+	}
 	for {
 		select {
 		case <-ctx.Done():
