@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-13
+
 ### Added
 - Active-passive high availability (#65, phase 1). With `MONGORESCUE_HA_MODE=active-passive` (default `off`) and `MONGORESCUE_HA_TARGET`, `_CLUSTER`, `_LEASE_TTL` (30s), `_RENEW_INTERVAL` (10s) and `_SNAPSHOT_INTERVAL` (5m), or the matching flags, two or more instances with their own data directories and the same secret key share a lease on a storage target: the holder is active, the others are read-only standbys. Design and failure matrix in [docs/design/ha.md](docs/design/ha.md), operations in [docs/production.md](docs/production.md#high-availability). See also [docs/kubernetes.md](docs/kubernetes.md#high-availability).
   - **Lease.** The optional storage capability `storage.LeaseStore` writes with compare-and-swap: S3 `PutObject` with `If-None-Match`/`If-Match` (AWS S3, MinIO), local disk with `O_EXCL` and a `flock` on a sidecar file; HA refuses to start on a storage that ignores the conditions (startup probe) or on a target with Object Lock. The lease `_mongorescue/ha/<cluster>/lease.json` carries an epoch that grows with every takeover; expiry is measured on each instance's own monotonic clock from the last observed change, never from another clock. The active instance steps down `ttl − renew` after its last successful renewal.
