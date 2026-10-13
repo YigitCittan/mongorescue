@@ -87,6 +87,7 @@ func archiveBytes(t *testing.T, st storage.Storage, key string) []byte {
 // include_users_and_roles does not use --dumpDbUsersAndRoles, so users and roles
 // defined on the database are neither in the archive nor in the restored clone.
 func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st := storageTargets(t)[0].Storage
 	db, _, count := usersRolesDB(t, env)
@@ -116,6 +117,7 @@ func TestUsersAndRolesAreNotBackedUp(t *testing.T) {
 // include_users_and_roles, drops its users and roles, and restores them in place
 // with restore_users_and_roles. A safe clone of the same backup refuses the option.
 func TestUsersAndRolesSurviveInPlaceRestore(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st := storageTargets(t)[0].Storage
 	db, run, count := usersRolesDB(t, env)
@@ -160,6 +162,7 @@ func TestUsersAndRolesSurviveInPlaceRestore(t *testing.T) {
 // and a document a validator would reject fails the restore loudly instead of being
 // dropped silently. The fidelity suite covers users with the privilege (root).
 func TestRestoreWithReadWriteUser(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	if env.Password == "" {
 		t.Skip("needs a server with access control (a URI with credentials)")

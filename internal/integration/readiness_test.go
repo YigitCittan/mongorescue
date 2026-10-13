@@ -43,6 +43,7 @@ func (r *rpoEvents) take() []events.Event {
 // across a restart of the checker), and the breach heals when the backup is recent
 // again.
 func TestReadinessAfterRealBackup(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "rpo")
 	env.seed(t, db, "orders", 20)

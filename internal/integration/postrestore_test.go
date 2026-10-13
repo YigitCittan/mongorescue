@@ -26,6 +26,7 @@ import (
 // untouched. A command that fails on the server fails the restore and keeps the
 // clone for inspection.
 func TestPostRestoreCommandsReapplyErasures(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	st, err := storage.NewLocalStorage(t.TempDir())
 	if err != nil {

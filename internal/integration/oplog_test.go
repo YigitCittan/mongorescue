@@ -232,11 +232,11 @@ func assertSameState(t *testing.T, what string, got, want dbState) {
 	}
 }
 
-// TestOplogSyntheticArchiveReplay replays a synthetic oplog-only archive, written by
+// testOplogSyntheticArchiveReplay replays a synthetic oplog-only archive, written by
 // oplog.ArchiveWriter, with mongorestore --archive --oplogReplay from stdin, with and
 // without an --oplogLimit the archive ends before.
-func TestOplogSyntheticArchiveReplay(t *testing.T) {
-	env := requireMongo(t)
+func testOplogSyntheticArchiveReplay(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	opts := env.archiveOptions(t)
 	db := env.uniqueDB(t, "oplogar")
@@ -310,14 +310,14 @@ func TestOplogSyntheticArchiveReplay(t *testing.T) {
 	}
 }
 
-// TestOplogFilterReplaysIntoSafeClone is a point-in-time restore of one database into
+// testOplogFilterReplaysIntoSafeClone is a point-in-time restore of one database into
 // a safe clone: a base backup (mongodump --oplog), then writes, a rename, an index
 // build, a drop, a transaction, a rename from another database and a view; the oplog
 // since the base, filtered and renamed to <db>_rescue, is replayed through a synthetic
 // archive onto the restored base. The clone must equal the source, and the source and
 // the other database must be untouched by the replay.
-func TestOplogFilterReplaysIntoSafeClone(t *testing.T) {
-	env := requireMongo(t)
+func testOplogFilterReplaysIntoSafeClone(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	opts := env.archiveOptions(t)
 	src := env.uniqueDB(t, "pitr")

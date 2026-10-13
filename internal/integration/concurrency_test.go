@@ -47,6 +47,7 @@ func (s staticConnections) List(ctx context.Context) ([]*models.Connection, erro
 // (409), a backup and a restore of the same database run side by side (they hold
 // different keys), and two restores into the same target are refused like backups.
 func TestConcurrentRuns(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "conc")
 	env.seedBulk(t, db, 40)

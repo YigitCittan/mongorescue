@@ -123,6 +123,7 @@ func (c *apiClient) data(method, path string, body any, want int, out any) {
 // metadata store, the real MongoDB driver adapter, local storage and the embedded
 // dashboard: setup -> session -> connection -> job -> backup -> restore.
 func TestServerEndToEnd(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := seedSource(t, env, "e2e")
 
@@ -529,6 +530,7 @@ func TestServerEndToEnd(t *testing.T) {
 
 // TestMongoConnProber exercises the driver adapter directly against the real server.
 func TestMongoConnProber(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := seedSource(t, env, "probe")
 	p := mongoconn.New()

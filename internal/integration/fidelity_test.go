@@ -22,6 +22,7 @@ import (
 // document counts and a per-collection hash of canonical extended JSON in _id order.
 // It runs with gzip and age encryption on and off, and with the collection filters.
 func TestRestoreFidelity(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	f := seedFidelity(t, env, "fid")
 	want := env.snapshotDB(t, f.Name)
@@ -30,89 +31,99 @@ func TestRestoreFidelity(t *testing.T) {
 	}
 	enc, dec := keyPair(t)
 
-	type variant struct{ gzip, encrypted bool }
-	for _, target := range storageTargets(t) {
-		variants := []variant{{true, true}}
-		if target.Name == "local" {
-			variants = []variant{{false, false}, {true, false}, {false, true}, {true, true}}
-		}
-		for _, v := range variants {
-			t.Run(fmt.Sprintf("%s/gzip=%v/encrypted=%v", target.Name, v.gzip, v.encrypted), func(t *testing.T) {
-				var bOpts []backup.Option
-				var rOpts []restore.Option
-				if v.encrypted {
-					bOpts = append(bOpts, backup.WithEncryptor(enc))
-					rOpts = append(rOpts, restore.WithDecryptor(dec))
-				}
-				bkp := mustBackup(t, env, target.Storage, models.BackupOptions{Database: f.Name, Gzip: v.gzip}, bOpts...)
-				if bkp.Encrypted != v.encrypted {
-					t.Fatalf("record encrypted = %v; want %v", bkp.Encrypted, v.encrypted)
-				}
-				if bkp.SizeBytes < fidelityBlobs*fidelityBlobSize {
-					t.Fatalf("archive of %d bytes cannot hold the %d blobs", bkp.SizeBytes, fidelityBlobs)
-				}
-				rst := mustRestore(t, env, target.Storage, models.RestoreRequest{}, bkp, rOpts...)
-				defer env.dropDB(t, rst.TargetDatabase)
-				if !strings.HasPrefix(rst.TargetDatabase, f.Name+"_rescue_") {
-					t.Fatalf("restore target %q; want the safe clone %s_rescue_<timestamp>_<id>", rst.TargetDatabase, f.Name)
-				}
-				assertSnapshotsEqual(t, want, env.snapshotDB(t, rst.TargetDatabase))
-			})
-		}
-	}
-
-	st := storageTargets(t)[0].Storage // local
-	included := []string{"orders", "types", "validated"}
-	if f.TimeSeries {
-		included = append(included, "metrics")
-	}
-
-	t.Run("backup includes several collections", func(t *testing.T) {
-		bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, Collections: included})
-		if !slices.Equal(bkp.Collections, included) {
-			t.Fatalf("record collections = %v; want %v", bkp.Collections, included)
-		}
-		rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
-		defer env.dropDB(t, rst.TargetDatabase)
-		assertSnapshotsEqual(t, want.only(included...), env.snapshotDB(t, rst.TargetDatabase))
-		if env.collectionExists(t, rst.TargetDatabase, "system.js") {
-			t.Fatal("system.js was not requested but was backed up")
-		}
-	})
-
-	t.Run("backup of a missing collection fails", func(t *testing.T) {
-		for _, cols := range [][]string{{"no_such_collection"}, {"orders", "no_such_collection"}} {
-			ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-			rec, err := newBackupEngine(env, st).Run(ctx, models.BackupOptions{Database: f.Name, MongoURI: env.URI, Collections: cols})
-			cancel()
-			if !errors.Is(err, backup.ErrCollectionFilter) || rec.Status != models.StatusFailed || !strings.Contains(rec.ErrorMessage, "no_such_collection not found") {
-				t.Fatalf("%v: want a failed backup naming the missing collection, got %v (%+v)", cols, err, rec)
+	// Every subtest restores into a safe clone of its own, so they run in parallel;
+	// the group returns once all of them have finished.
+	t.Run("restores", func(t *testing.T) {
+		type variant struct{ gzip, encrypted bool }
+		for _, target := range storageTargets(t) {
+			variants := []variant{{true, true}}
+			if target.Name == "local" {
+				variants = []variant{{false, false}, {true, false}, {false, true}, {true, true}}
 			}
-			assertObjectGone(t, st, rec.StorageKey)
+			for _, v := range variants {
+				t.Run(fmt.Sprintf("%s/gzip=%v/encrypted=%v", target.Name, v.gzip, v.encrypted), func(t *testing.T) {
+					t.Parallel()
+					var bOpts []backup.Option
+					var rOpts []restore.Option
+					if v.encrypted {
+						bOpts = append(bOpts, backup.WithEncryptor(enc))
+						rOpts = append(rOpts, restore.WithDecryptor(dec))
+					}
+					bkp := mustBackup(t, env, target.Storage, models.BackupOptions{Database: f.Name, Gzip: v.gzip}, bOpts...)
+					if bkp.Encrypted != v.encrypted {
+						t.Fatalf("record encrypted = %v; want %v", bkp.Encrypted, v.encrypted)
+					}
+					if bkp.SizeBytes < fidelityBlobs*fidelityBlobSize {
+						t.Fatalf("archive of %d bytes cannot hold the %d blobs", bkp.SizeBytes, fidelityBlobs)
+					}
+					rst := mustRestore(t, env, target.Storage, models.RestoreRequest{}, bkp, rOpts...)
+					defer env.dropDB(t, rst.TargetDatabase)
+					if !strings.HasPrefix(rst.TargetDatabase, f.Name+"_rescue_") {
+						t.Fatalf("restore target %q; want the safe clone %s_rescue_<timestamp>_<id>", rst.TargetDatabase, f.Name)
+					}
+					assertSnapshotsEqual(t, want, env.snapshotDB(t, rst.TargetDatabase))
+				})
+			}
 		}
-	})
 
-	t.Run("backup includes one collection", func(t *testing.T) {
-		bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Collections: []string{"places"}})
-		rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
-		defer env.dropDB(t, rst.TargetDatabase)
-		assertSnapshotsEqual(t, want.only("places"), env.snapshotDB(t, rst.TargetDatabase))
-	})
+		st := storageTargets(t)[0].Storage // local
+		included := []string{"orders", "types", "validated"}
+		if f.TimeSeries {
+			included = append(included, "metrics")
+		}
 
-	t.Run("backup excludes collections", func(t *testing.T) {
-		excluded := []string{"blobs", "capped", "big_orders"}
-		bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, ExcludeCollections: excluded})
-		rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
-		defer env.dropDB(t, rst.TargetDatabase)
-		assertSnapshotsEqual(t, want.without(excluded...), env.snapshotDB(t, rst.TargetDatabase))
-	})
+		t.Run("backup includes several collections", func(t *testing.T) {
+			t.Parallel()
+			bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, Collections: included})
+			if !slices.Equal(bkp.Collections, included) {
+				t.Fatalf("record collections = %v; want %v", bkp.Collections, included)
+			}
+			rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
+			defer env.dropDB(t, rst.TargetDatabase)
+			assertSnapshotsEqual(t, want.only(included...), env.snapshotDB(t, rst.TargetDatabase))
+			if env.collectionExists(t, rst.TargetDatabase, "system.js") {
+				t.Fatal("system.js was not requested but was backed up")
+			}
+		})
 
-	t.Run("restore selects collections", func(t *testing.T) {
-		bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, ExcludeCollections: []string{"blobs"}})
-		selected := []string{"types", "places", "collated"}
-		rst := mustRestore(t, env, st, models.RestoreRequest{SelectedCollections: selected}, bkp)
-		defer env.dropDB(t, rst.TargetDatabase)
-		assertSnapshotsEqual(t, want.only(selected...), env.snapshotDB(t, rst.TargetDatabase))
+		t.Run("backup of a missing collection fails", func(t *testing.T) {
+			t.Parallel()
+			for _, cols := range [][]string{{"no_such_collection"}, {"orders", "no_such_collection"}} {
+				ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+				rec, err := newBackupEngine(env, st).Run(ctx, models.BackupOptions{Database: f.Name, MongoURI: env.URI, Collections: cols})
+				cancel()
+				if !errors.Is(err, backup.ErrCollectionFilter) || rec.Status != models.StatusFailed || !strings.Contains(rec.ErrorMessage, "no_such_collection not found") {
+					t.Fatalf("%v: want a failed backup naming the missing collection, got %v (%+v)", cols, err, rec)
+				}
+				assertObjectGone(t, st, rec.StorageKey)
+			}
+		})
+
+		t.Run("backup includes one collection", func(t *testing.T) {
+			t.Parallel()
+			bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Collections: []string{"places"}})
+			rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
+			defer env.dropDB(t, rst.TargetDatabase)
+			assertSnapshotsEqual(t, want.only("places"), env.snapshotDB(t, rst.TargetDatabase))
+		})
+
+		t.Run("backup excludes collections", func(t *testing.T) {
+			t.Parallel()
+			excluded := []string{"blobs", "capped", "big_orders"}
+			bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, ExcludeCollections: excluded})
+			rst := mustRestore(t, env, st, models.RestoreRequest{}, bkp)
+			defer env.dropDB(t, rst.TargetDatabase)
+			assertSnapshotsEqual(t, want.without(excluded...), env.snapshotDB(t, rst.TargetDatabase))
+		})
+
+		t.Run("restore selects collections", func(t *testing.T) {
+			t.Parallel()
+			bkp := mustBackup(t, env, st, models.BackupOptions{Database: f.Name, Gzip: true, ExcludeCollections: []string{"blobs"}})
+			selected := []string{"types", "places", "collated"}
+			rst := mustRestore(t, env, st, models.RestoreRequest{SelectedCollections: selected}, bkp)
+			defer env.dropDB(t, rst.TargetDatabase)
+			assertSnapshotsEqual(t, want.only(selected...), env.snapshotDB(t, rst.TargetDatabase))
+		})
 	})
 
 	// The safe-clone restores above never wrote to the source database.

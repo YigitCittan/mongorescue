@@ -243,6 +243,7 @@ The integration suite (`internal/integration`) drives the real `mongodump`/`mong
 | Variable | Purpose |
 |---|---|
 | `MONGORESCUE_TEST_MONGO_URI` | MongoDB URI **with credentials**, e.g. `mongodb://root:pw@127.0.0.1:27017/?authSource=admin` |
+| `MONGORESCUE_TEST_WHOLE_INSTANCE_URI` | Optional second MongoDB of the same topology for `TestWholeInstance`, which then runs in parallel with the other tests instead of alone before them |
 | `MONGORESCUE_TEST_S3_<PROVIDER>_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY` | Enables a provider (`MINIO`, `LOCALSTACK`, `AWS`, `R2`, `B2`, `SPACES`, `WASABI`) |
 | `MONGORESCUE_TEST_S3_<PROVIDER>_ENDPOINT` / `_REGION` / `_PATH_STYLE` | Endpoint, region (`auto` for R2) and path-style addressing (`true` for MinIO/LocalStack) |
 | `MONGORESCUE_TEST_S3_<PROVIDER>_CREATE_BUCKET` | `true` creates the bucket if missing (emulators) |

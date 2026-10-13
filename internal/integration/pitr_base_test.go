@@ -18,11 +18,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
 
-// TestPITRBaseBackupOfTheWholeInstance takes an instance-scope base backup of the
+// testPITRBaseBackupOfTheWholeInstance takes an instance-scope base backup of the
 // replica set (mongodump --oplog) and checks its key, its T_before/T_after and that
 // the encrypted, gzipped archive carries the dump's oplog namespace.
-func TestPITRBaseBackupOfTheWholeInstance(t *testing.T) {
-	env := requireMongo(t)
+func testPITRBaseBackupOfTheWholeInstance(t *testing.T) {
+	env := requireWholeInstance(t)
 	requireReplicaSet(t, env)
 	db := env.uniqueDB(t, "pitrbase")
 	env.seed(t, db, "items", 50)

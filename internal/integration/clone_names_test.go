@@ -22,6 +22,7 @@ import (
 // once the first clone exists, with the preflight on: both complete, each into a
 // <db>_rescue_<YYYYMMDD_HHMMSS>_<id> clone of its own holding every document.
 func TestSameSecondSafeClonesBothSucceed(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	db := env.uniqueDB(t, "samesec")
 	env.seed(t, db, "orders", 40)

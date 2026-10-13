@@ -21,14 +21,14 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
-// TestPITRRestoreInPlace writes data, takes a base, writes more, then drops a
+// testPITRRestoreInPlace writes data, takes a base, writes more, then drops a
 // collection, updates documents and creates a new collection, and restores the
 // database in place to just before the drop (issue #142). The original database
 // then equals its state before the destructive writes, the collection created
 // afterwards is gone, the safety backup holds the state after them, no clone is
 // left behind, and the stream collects again in a new chain whose base was taken
 // after the restore.
-func TestPITRRestoreInPlace(t *testing.T) {
+func testPITRRestoreInPlace(t *testing.T) {
 	r := newPITRRig(t)
 	env, ctx := r.env, r.ctx
 	db := env.uniqueDB(t, "pitrip")
@@ -149,6 +149,7 @@ func TestPITRRestoreInPlace(t *testing.T) {
 // in-place restore compares counts a time-series collection's measurements (it
 // is no view), and leaves only real views uncounted.
 func TestCollectionCountsCountsTimeSeries(t *testing.T) {
+	t.Parallel()
 	env := requireMongo(t)
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
