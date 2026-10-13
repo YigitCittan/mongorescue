@@ -117,10 +117,6 @@ type haRuntime struct {
 	// checker checks the cluster's snapshots for every decision and remembers the
 	// outcomes (nil before the bootstrap).
 	checker *ha.SnapshotChecker
-	// localPopulated reports that this instance's own database held jobs, or
-	// storage targets besides the default one, at the bootstrap: it is not a
-	// fresh installation.
-	localPopulated bool
 	// forced is the operator override the last takeover used; the active instance
 	// records it in the audit log once it serves.
 	forced *ha.Override
@@ -486,7 +482,6 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 				slog.String("ha_cluster", s.cfg.HA.Cluster))
 		}
 	}
-	s.rt.localPopulated = localPopulated(ctx, app, s.logger)
 	passphrase, err := ha.SnapshotPassphrase(app.haKey)
 	if err != nil {
 		return err
@@ -502,32 +497,6 @@ func (s *haSupervisor) bootstrap(ctx context.Context, app *App) error {
 	s.rt.manager, s.rt.store, s.rt.key = mgr, st, slices.Clone(app.haKey)
 	s.rt.mu.Unlock()
 	return nil
-}
-
-// localPopulated reports whether app's database holds jobs, or storage targets
-// besides the default one: then it is not a fresh installation, and taking over
-// with it without a lease and snapshots needs an operator (an unknown answer counts
-// as populated).
-func localPopulated(ctx context.Context, app *App, logger *slog.Logger) bool {
-	jobs, err := app.metaStore.ListJobs(ctx)
-	if err != nil {
-		logger.Warn("cannot read this instance's jobs; its database counts as populated", logsafe.Error(err))
-		return true
-	}
-	if len(jobs) > 0 {
-		return true
-	}
-	list, err := app.targets.List(ctx)
-	if err != nil {
-		logger.Warn("cannot read this instance's storage targets; its database counts as populated", logsafe.Error(err))
-		return true
-	}
-	for _, t := range list {
-		if !t.IsDefault || t.Type != models.StorageLocal {
-			return true
-		}
-	}
-	return false
 }
 
 // epochFloor returns the highest epoch on record outside the lease: of the

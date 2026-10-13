@@ -261,6 +261,12 @@ func (s SnapshotSelection) Candidates() (list []SnapshotCheck, legacy bool) {
 	return nil, false
 }
 
+// HeaderSeen reports that a snapshot of the cluster with an authentic header was
+// found (verified, renamed, or of a newer format): the cluster runs a version that
+// authenticates, so nothing written without authentication (a lease without a
+// MAC, a snapshot without a header) is trusted any more.
+func (s SnapshotSelection) HeaderSeen() bool { return s.headerSeen }
+
 // FailedAhead returns the first snapshot whose check failed (a storage error, a
 // newer format) and that sorts before the first verified one: it may be the newest.
 func (s SnapshotSelection) FailedAhead() (SnapshotCheck, bool) {

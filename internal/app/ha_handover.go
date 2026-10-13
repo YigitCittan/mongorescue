@@ -57,10 +57,17 @@ const (
 	// rollbackLegacy: only snapshots without a header are left although the
 	// cluster wrote snapshots with one.
 	rollbackLegacy = "legacy_after_upgrade"
+	// rollbackLeaseReplayed: a verified snapshot was written under a higher epoch
+	// than the replaced lease's, so an older lease was put back.
+	rollbackLeaseReplayed = "lease_replayed"
+	// rollbackLeaseStale: the replaced lease names a last snapshot older than the
+	// two newest verified ones: it lags more than one write behind.
+	rollbackLeaseStale = "lease_stale"
 )
 
 // rollbackReasons lists every reason, for the metric.
-var rollbackReasons = []string{rollbackLeaseUntrusted, rollbackLeaseMissing, rollbackBehindLease, rollbackBehindLocal, rollbackLegacy}
+var rollbackReasons = []string{rollbackLeaseUntrusted, rollbackLeaseMissing, rollbackBehindLease, rollbackBehindLocal, rollbackLegacy,
+	rollbackLeaseReplayed, rollbackLeaseStale}
 
 // ErrNoSnapshotToTakeOver is returned by a takeover that finds no metadata snapshot
 // although the lease had a holder before: the previous active instance's metadata
@@ -247,7 +254,7 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 		return s.forceTakeover(ctx, override)
 	}
 	pred := mgr.Predecessor()
-	sel, err := s.selectForTakeover(ctx)
+	sel, err := s.selectForTakeover(ctx, 2)
 	if err != nil {
 		return err
 	}
@@ -255,16 +262,17 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	epoch := mgr.Epoch()
 	if sel.Listed == 0 {
 		// Without a snapshot this instance's database is used only on a genuine
-		// first activation: no lease, an instance that never saw the cluster, and
-		// a database without jobs or storage targets of its own. A lease that
-		// existed had a holder whose metadata would be lost.
+		// first activation: no lease and an instance without HA history for the
+		// cluster (a new cluster, or HA enabled on an existing instance, whose
+		// database is kept). A lease that existed had a holder whose metadata would
+		// be lost, and an instance that was in the cluster finds its objects gone.
 		switch {
-		case pred.Trust == ha.LeaseAbsent && !local.Seen(cluster) && !s.rt.localPopulated:
+		case pred.Trust == ha.LeaseAbsent && !local.Seen(cluster):
 			s.setSince(time.Time{})
 			s.logger.Info("takeover: the cluster's first activation; keeping this instance's database", slog.Uint64("epoch", epoch))
 			return s.confirmTakeover(ctx, ha.SnapshotMark{}, false)
 		case pred.Trust == ha.LeaseAbsent:
-			return s.suspectRollback(rollbackLeaseMissing, fmt.Errorf("%w: no lease and no metadata snapshot on the HA target, but this instance has seen the cluster before or its database holds jobs or storage targets: the cluster's objects may have been deleted", ErrNoSnapshotToTakeOver))
+			return s.suspectRollback(rollbackLeaseMissing, fmt.Errorf("%w: no lease and no metadata snapshot on the HA target, but this instance has HA history for the cluster (ha.json): the cluster's objects may have been deleted", ErrNoSnapshotToTakeOver))
 		default:
 			return fmt.Errorf("%w: a lease existed before (this is epoch %d), but the HA target holds no snapshot of its holder's metadata", ErrNoSnapshotToTakeOver, epoch)
 		}
@@ -273,13 +281,19 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	case ha.LeaseAbsent:
 		return s.suspectRollback(rollbackLeaseMissing, errors.New("no lease exists although the HA target holds metadata snapshots: the lease was deleted, so the cluster's last snapshot is unknown"))
 	case ha.LeaseUntrusted:
-		if !pred.Legacy || local.SeenAuthenticatedLease(cluster) {
+		switch {
+		case !pred.Legacy:
 			return s.suspectRollback(rollbackLeaseUntrusted, fmt.Errorf("the replaced lease is not trusted: %s", pred.Reason))
+		case sel.HeaderSeen():
+			return s.suspectRollback(rollbackLeaseUntrusted, fmt.Errorf("the replaced lease has no MAC although the HA target holds snapshots with an authenticated header: %s", pred.Reason))
+		case local.SeenAuthenticatedLease(cluster):
+			return s.suspectRollback(rollbackLeaseUntrusted, fmt.Errorf("the replaced lease has no MAC although this instance has seen authenticated ones: %s", pred.Reason))
 		}
-		// Trust on first use: during a rolling upgrade the lease of an earlier
-		// version has no MAC. Once this instance has seen an authenticated lease of
-		// the cluster, a lease without one is refused.
-		s.logger.Warn("takeover from a lease without a MAC (an earlier version wrote it): trusted because this instance has never seen an authenticated lease of the cluster",
+		// Trust on first use, cluster-wide: during a rolling upgrade the lease of an
+		// earlier version has no MAC. Once the cluster wrote a snapshot with a header
+		// (or this instance saw an authenticated lease), a lease without one is
+		// refused on every instance.
+		s.logger.Warn("takeover from a lease without a MAC (an earlier version wrote it): trusted because the cluster has no snapshot with an authenticated header yet",
 			slog.Uint64("previous_epoch", pred.Lease.Epoch))
 	}
 	candidates, legacy := sel.Candidates()
@@ -293,6 +307,11 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	newest := candidates[0]
 	high := local.HighWater(cluster)
 	switch {
+	case !legacy && pred.Trust == ha.LeaseAuthentic && newest.Header.Epoch > pred.Lease.Epoch:
+		return s.suspectRollback(rollbackLeaseReplayed, fmt.Errorf("a verified snapshot was written under epoch %d, above the replaced lease's epoch %d: an older lease was put back", newest.Header.Epoch, pred.Lease.Epoch))
+	case !legacy && pred.Trust == ha.LeaseAuthentic && len(candidates) > 1 && pred.Lease.SnapshotMark().Before(candidates[1].Mark()):
+		return s.suspectRollback(rollbackLeaseStale, fmt.Errorf("the replaced lease names %s as the last snapshot, more than one write behind the newest verified ones (%s, %s): an older lease was put back",
+			pred.Lease.SnapshotMark(), newest.Mark(), candidates[1].Mark()))
 	case legacy && (!pred.Mark.IsZero() || !high.IsZero()):
 		return s.suspectRollback(rollbackLegacy, fmt.Errorf("only snapshots without an authenticated header are left, but the cluster wrote snapshots with one (the lease names %s, this instance knows %s)", pred.Mark, high))
 	case !legacy && newest.Mark().Before(pred.Mark):
@@ -324,13 +343,13 @@ func (s *haSupervisor) prepareTakeover(ctx context.Context) error {
 	return s.confirmTakeover(ctx, mark, false)
 }
 
-// selectForTakeover selects the newest verified snapshot. While a snapshot that
+// selectForTakeover selects the want newest verified snapshots. While a snapshot that
 // sorts before it cannot be checked (it may be newer), it tries again with a
 // growing pause, and gives up after haTakeoverAttempts: an older snapshot never
 // stands in for it.
-func (s *haSupervisor) selectForTakeover(ctx context.Context) (ha.SnapshotSelection, error) {
+func (s *haSupervisor) selectForTakeover(ctx context.Context, want int) (ha.SnapshotSelection, error) {
 	for attempt := 1; ; attempt++ {
-		sel, err := s.selectSnapshots(ctx, 1)
+		sel, err := s.selectSnapshots(ctx, want)
 		if err != nil {
 			return ha.SnapshotSelection{}, err
 		}

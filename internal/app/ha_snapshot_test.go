@@ -32,6 +32,9 @@ type haWriter struct {
 	snap    *ha.Snapshotter
 	macKey  []byte
 	pass    string
+	// skipRecord stops naming new snapshots in the lease (a crash between the
+	// snapshot and the lease update).
+	skipRecord bool
 }
 
 // newHAWriter returns the active instance of a cluster on shared, key.
@@ -70,7 +73,11 @@ func newHAWriter(t *testing.T, shared, key string) *haWriter {
 	}
 	w.snap, err = ha.NewSnapshotter(ha.SnapshotterConfig{Cluster: w.cluster, InstanceID: "previous", Store: w.meta, Storage: target,
 		Fence: w.mgr, Passphrase: w.pass, TempDir: t.TempDir(), Keep: 100,
-		OnWritten: func(ctx context.Context, info ha.SnapshotInfo) { w.mgr.RecordSnapshot(ctx, info.Mark()) }})
+		OnWritten: func(ctx context.Context, info ha.SnapshotInfo) {
+			if !w.skipRecord {
+				w.mgr.RecordSnapshot(ctx, info.Mark())
+			}
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,9 +415,10 @@ func TestTakeoverRefusesASnapshotOlderThanTheLocalHighWater(t *testing.T) {
 }
 
 // TestFirstActivationNeedsAFreshInstance covers a takeover without a lease and
-// without snapshots: allowed only for an instance that never saw the cluster and
-// whose database holds nothing of its own; otherwise refused until an operator
-// keeps the local database.
+// without snapshots: allowed for an instance without HA history for the cluster,
+// even with a populated database (HA enabled on an existing instance, whose
+// database is kept); refused for an instance that was in the cluster until an
+// operator keeps the local database.
 func TestFirstActivationNeedsAFreshInstance(t *testing.T) {
 	t.Parallel() // independent: own data directories, HA targets and ports
 	ctx := context.Background()
@@ -424,14 +432,33 @@ func TestFirstActivationNeedsAFreshInstance(t *testing.T) {
 	if !errors.Is(err, ErrNoSnapshotToTakeOver) {
 		t.Fatalf("takeover = %v; want ErrNoSnapshotToTakeOver too", err)
 	}
-
-	populated := standbyThatAcquiredFresh(t, func(sup *haSupervisor) { sup.rt.localPopulated = true })
-	expectRollback(t, populated, populated.prepareTakeover(ctx), rollbackLeaseMissing)
-	if err = ha.WriteOverride(populated.cfg.DataDir, ha.Override{Cluster: populated.cfg.HA.Cluster, KeepLocal: true, RequestedBy: "carol", RequestedAt: time.Now()}); err != nil {
+	if err = ha.WriteOverride(seen.cfg.DataDir, ha.Override{Cluster: seen.cfg.HA.Cluster, KeepLocal: true, RequestedBy: "carol", RequestedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err = populated.prepareTakeover(ctx); err != nil {
+	if err = seen.prepareTakeover(ctx); err != nil {
 		t.Fatalf("the forced takeover with the local database failed: %v", err)
+	}
+
+	// An existing single instance with its own storage target enables HA.
+	enabled := standbyThatAcquiredFresh(t, func(sup *haSupervisor) {
+		app, openErr := sup.open(false)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		defer app.Close()
+		if _, openErr = app.targets.Create(ctx, targets.Input{Name: "second", Type: models.StorageLocal,
+			Local: &models.LocalTarget{Path: t.TempDir()}}); openErr != nil {
+			t.Fatal(openErr)
+		}
+	})
+	if err = enabled.prepareTakeover(ctx); err != nil {
+		t.Fatalf("enabling HA on a populated instance without HA history was refused: %v", err)
+	}
+	if backups, _ := store.DatabaseBackups(enabled.cfg.MetadataDBPath()); len(backups) != 0 {
+		t.Fatal("the populated database was swapped out")
+	}
+	if !enabled.rt.stateCopy().Seen(enabled.cfg.HA.Cluster) {
+		t.Fatal("the first activation was not recorded as HA history")
 	}
 }
 
@@ -448,27 +475,107 @@ func standbyThatAcquiredFresh(t *testing.T, prepare func(*haSupervisor)) *haSupe
 	return sup
 }
 
-// TestLocalPopulated checks what counts as a database of its own: a job or a
-// storage target besides the default one.
-func TestLocalPopulated(t *testing.T) {
-	t.Parallel() // independent: own data directories, HA targets and ports
-	ctx := context.Background()
-	sup := newTestSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
-	app, err := sup.open(false)
+// stripLeaseMAC replaces the lease on w's target by the same content without a
+// MAC, as an earlier version (or someone without secret.key) writes it.
+func stripLeaseMAC(t *testing.T, w *haWriter) {
+	t.Helper()
+	l := w.lease(t)
+	l.MAC = ""
+	data, err := forgedLease(l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Close()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if localPopulated(ctx, app, logger) {
-		t.Fatal("a fresh database counts as populated")
-	}
-	if _, err = app.targets.Create(ctx, targets.Input{Name: "second", Type: models.StorageLocal,
-		Local: &models.LocalTarget{Path: t.TempDir()}}); err != nil {
+	if _, err = w.target.Save(context.Background(), ha.LeaseKey(w.cluster), bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	if !localPopulated(ctx, app, logger) {
-		t.Fatal("a database with a storage target of its own counts as fresh")
+}
+
+// TestFreshInstanceRefusesALeaseWithoutAMAC covers trust on first use across the
+// cluster: an instance that never saw an authenticated lease (a new joiner, a
+// reset data directory) still refuses a lease without a MAC once the HA target
+// holds a snapshot with an authenticated header.
+func TestFreshInstanceRefusesALeaseWithoutAMAC(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	shared, key := t.TempDir(), haTestKey(t)
+	w := newHAWriter(t, shared, key)
+	w.write(t, "with header")
+	w.release(t)
+	stripLeaseMAC(t, w)
+
+	sup := standbyThatAcquired(t, shared, key, 0)
+	if sup.rt.stateCopy().SeenAuthenticatedLease(w.cluster) {
+		t.Fatal("the fresh instance saw an authenticated lease")
+	}
+	expectRollback(t, sup, sup.prepareTakeover(context.Background()), rollbackLeaseUntrusted)
+}
+
+// TestFreshInstanceRefusesAReplayedLease puts an older genuine lease back after a
+// newer holder wrote snapshots under a higher epoch: a fresh instance, which has
+// no history to compare with, sees the verified snapshot above the lease's epoch.
+func TestFreshInstanceRefusesAReplayedLease(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	ctx := context.Background()
+	shared, key := t.TempDir(), haTestKey(t)
+	first := newHAWriter(t, shared, key)
+	first.write(t, "epoch 1")
+	first.release(t)
+	old, err := first.target.Retrieve(ctx, ha.LeaseKey(first.cluster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLease, err := io.ReadAll(old)
+	_ = old.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := newHAWriter(t, shared, key)
+	if second.mgr.Epoch() != 2 {
+		t.Fatalf("second holder under epoch %d; want 2", second.mgr.Epoch())
+	}
+	second.write(t, "epoch 2")
+	second.release(t)
+	if _, err = first.target.Save(ctx, ha.LeaseKey(first.cluster), bytes.NewReader(oldLease)); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := standbyThatAcquired(t, shared, key, 0)
+	expectRollback(t, sup, sup.prepareTakeover(ctx), rollbackLeaseReplayed)
+}
+
+// TestFreshInstanceRefusesAStaleLease covers a lease whose last snapshot lags the
+// newest verified ones: one write behind (a crash between the snapshot and the
+// lease update) is accepted, more is refused.
+func TestFreshInstanceRefusesAStaleLease(t *testing.T) {
+	t.Parallel() // independent: own data directories, HA targets and ports
+	ctx := context.Background()
+	for _, tc := range []struct {
+		unrecorded int
+		refused    bool
+	}{{1, false}, {2, true}} {
+		shared, key := t.TempDir(), haTestKey(t)
+		w := newHAWriter(t, shared, key)
+		w.write(t, "recorded")
+		w.skipRecord = true
+		var newest ha.SnapshotInfo
+		for range tc.unrecorded {
+			newest = w.write(t, "not recorded")
+		}
+		w.release(t)
+		if w.lease(t).SnapshotMark() == newest.Mark() {
+			t.Fatal("the lease names a snapshot it should not")
+		}
+		sup := standbyThatAcquired(t, shared, key, 0)
+		err := sup.prepareTakeover(ctx)
+		if tc.refused {
+			expectRollback(t, sup, err, rollbackLeaseStale)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("a lease one write behind was refused: %v", err)
+		}
+		if got := marker(t, sup); got != "not recorded" {
+			t.Fatalf("restored %q; want the newest snapshot", got)
+		}
 	}
 }
 
