@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -186,8 +187,13 @@ func TestOverride(t *testing.T) {
 	if err := WriteOverride(dir, want); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(filepath.Join(dir, OverrideFileName)); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("override file %v, %v; want mode 0600", info, err)
+	info, err := os.Stat(filepath.Join(dir, OverrideFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// File modes are not checked on Windows.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("override file mode %v; want 0600", info.Mode().Perm())
 	}
 	got, err := TakeOverride(dir)
 	if err != nil || got == nil || got.Snapshot != key || got.RequestedBy != "alice" || !got.RequestedAt.Equal(want.RequestedAt) {
