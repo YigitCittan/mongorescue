@@ -364,7 +364,11 @@ func TestSoak(t *testing.T) {
 	after := pitr.Timestamp{T: from.T, I: from.I + 1}
 	assertSameHistory(t, "retained chain against the primary", tail, primary, after, last)
 
-	// A chain test restores the base before the newest to the newest's point.
+	// A chain test restores the base before the newest to the newest's point. The
+	// newest is taken now that the load stopped: the manifest of a base taken
+	// under writes need not match the state at its consistent point exactly.
+	r.base(t)
+	r.waitCovered(t)
 	report.ChainTest = r.soakChainTest(t)
 }
 
