@@ -1,8 +1,12 @@
 package pitr_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,47 +14,93 @@ import (
 )
 
 func TestPinSetPinsUntilReleased(t *testing.T) {
-	pins := pitr.NewPinSet(0, nil)
-	r1 := pins.Pin("restore 1", []string{"b1"}, []string{"c1", "c2"})
-	r2 := pins.Pin("restore 2", nil, []string{"c2"})
+	pins := pitr.NewPinSet(pitr.PinOptions{})
+	p1 := pins.Pin("restore 1", pitr.PinTarget{Bases: []string{"b1"}, Chunks: []string{"c1", "c2"},
+		Archives: []pitr.ArchiveRef{{TargetID: "t", Key: "k1"}}})
+	p2 := pins.Pin("restore 2", pitr.PinTarget{Chunks: []string{"c2"}})
 	snap := pins.Snapshot()
-	if !snap.Base("b1") || !snap.Chunk("c1") || !snap.Chunk("c2") || snap.Chunk("c3") || snap.Empty() {
+	if !snap.Base("b1") || !snap.Chunk("c1") || !snap.Chunk("c2") || snap.Chunk("c3") || snap.Empty() ||
+		!snap.Archive("t", "k1") || snap.Archive("t", "k2") || snap.Archive("u", "k1") {
 		t.Fatalf("snapshot with two pins: %+v", snap)
 	}
-	r1()
-	r1() // a second release does nothing
+	p1.Release()
+	p1.Release() // a second release does nothing
 	snap = pins.Snapshot()
-	if snap.Base("b1") || snap.Chunk("c1") || !snap.Chunk("c2") || pins.Len() != 1 {
+	if snap.Base("b1") || snap.Chunk("c1") || !snap.Chunk("c2") || snap.Archive("t", "k1") || pins.Len() != 1 {
 		t.Fatalf("snapshot after one release: %+v (%d pins)", snap, pins.Len())
 	}
-	r2()
+	p2.Release()
 	if !pins.Snapshot().Empty() || pins.Len() != 0 {
 		t.Fatal("pins left after every release")
 	}
 	var none *pitr.PinSet
-	none.Pin("x", []string{"b"}, nil)()
-	if !none.Snapshot().Empty() || none.Len() != 0 {
+	h := none.Pin("x", pitr.PinTarget{Bases: []string{"b"}})
+	h.Release()
+	h.KeepAlive()()
+	if h.Refresh() || !none.Snapshot().Empty() || none.Len() != 0 {
 		t.Fatal("a nil pin set pins something")
 	}
 }
 
-func TestPinSetDropsStalePins(t *testing.T) {
-	now := time.Unix(1000, 0)
-	pins := pitr.NewPinSet(time.Hour, func() time.Time { return now })
-	release := pins.Pin("forgotten restore", []string{"b1"}, []string{"c1"})
-	now = now.Add(59 * time.Minute)
-	if !pins.Snapshot().Chunk("c1") {
-		t.Fatal("a young pin does not count")
+// fakeNow is a clock tests move by hand.
+type fakeNow struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeNow) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeNow) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+func TestPinSetDropsAbandonedPins(t *testing.T) {
+	clock := &fakeNow{t: time.Unix(1000, 0)}
+	var logs bytes.Buffer
+	pins := pitr.NewPinSet(pitr.PinOptions{MaxAge: time.Hour, Now: clock.Now, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	running := pins.Pin("running restore", pitr.PinTarget{Bases: []string{"b0"}})
+	abandoned := pins.Pin("forgotten restore", pitr.PinTarget{Bases: []string{"b1"}, Chunks: []string{"c1"}})
+	for range 3 { // the running restore refreshes its pin, the abandoned one does not
+		clock.add(50 * time.Minute)
+		if !running.Refresh() {
+			t.Fatal("refreshing a held pin failed")
+		}
 	}
-	now = now.Add(2 * time.Minute)
 	snap := pins.Snapshot()
+	if !snap.Base("b0") {
+		t.Fatal("a refreshed pin expired after 150 minutes")
+	}
 	if snap.Chunk("c1") || snap.Base("b1") || len(snap.Expired) != 1 || snap.Expired[0].Owner != "forgotten restore" {
-		t.Fatalf("a pin older than its maximum age still counts: %+v", snap)
+		t.Fatalf("an abandoned pin still counts: %+v", snap)
 	}
-	if pins.Len() != 0 || len(pins.Snapshot().Expired) != 0 {
-		t.Fatal("the stale pin was not dropped once")
+	if !strings.Contains(logs.String(), "forgotten restore") || !strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("no warning about the abandoned pin:\n%s", logs.String())
 	}
-	release() // releasing a dropped pin is harmless
+	if pins.Len() != 1 || len(pins.Snapshot().Expired) != 0 || abandoned.Refresh() {
+		t.Fatal("the abandoned pin was not dropped once")
+	}
+	abandoned.Release() // releasing a dropped pin is harmless
+	running.Release()
+}
+
+func TestPinKeepAliveRefreshes(t *testing.T) {
+	pins := pitr.NewPinSet(pitr.PinOptions{MaxAge: 60 * time.Millisecond})
+	pin := pins.Pin("long restore", pitr.PinTarget{Bases: []string{"b"}})
+	stop := pin.KeepAlive()
+	time.Sleep(300 * time.Millisecond) // five times the maximum age
+	ok := pins.Snapshot().Base("b")
+	stop()
+	stop() // a second stop does nothing
+	if !ok {
+		t.Fatal("a kept-alive pin expired")
+	}
+	pin.Release()
 }
 
 // liveRepo is a Repository whose ListChunks returns fixed chunks.

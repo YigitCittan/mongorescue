@@ -100,8 +100,23 @@ type purgeRun struct {
 	locate   LocateFunc
 	logger   *slog.Logger
 	onPurged func(ctx context.Context, o PurgeOutcome)
+	// pins are the pins of the point-in-time restores in flight; nil means
+	// pitr.SharedPins.
+	pins *pitr.PinSet
 	// holders is the location index of this run (see physicalHolder), set by run.
 	holders *holderIndex
+}
+
+// pinned reports whether a point-in-time restore in flight reads rec: its base ID
+// or its archive is pinned (the archive also covers the tombstone a re-encryption
+// leaves on a pinned base's old archive).
+func (p purgeRun) pinned(rec *models.BackupRecord) bool {
+	pins := p.pins
+	if pins == nil {
+		pins = pitr.SharedPins()
+	}
+	snap := pins.Snapshot()
+	return snap.Base(rec.ID) || (rec.StorageKey != "" && snap.Archive(rec.StorageTargetID, rec.StorageKey))
 }
 
 // run purges every due deleted backup.
@@ -239,7 +254,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		return PurgeOutcome{}, fmt.Errorf("load deleted backup %s: %w", rec.ID, err)
 	case !current.PurgeDue(now, grace):
 		return PurgeOutcome{}, errPurgeSkip
-	case pitr.SharedPins().Snapshot().Base(current.ID):
+	case p.pinned(current):
 		// A point-in-time restore in flight reads this PITR base: a later run purges it.
 		logger.Info("deleted backup waits for the point-in-time restore that reads it", logsafe.Attr("backup_id", current.ID))
 		return PurgeOutcome{}, errPurgeSkip
@@ -492,7 +507,8 @@ func (s *Scheduler) Maintain(ctx context.Context) {
 		s.logger.Warn("maintenance skipped: this instance does not hold the HA lease", logsafe.Error(err))
 		return
 	}
-	run := purgeRun{now: s.clock(), grace: s.deleteGrace, store: s.metadataStore, storages: s.storageFor, logger: s.logger, onPurged: s.purged}
+	run := purgeRun{now: s.clock(), grace: s.deleteGrace, store: s.metadataStore, storages: s.storageFor, logger: s.logger, onPurged: s.purged,
+		pins: s.pins}
 	if l, ok := s.targets.(objectLocator); ok {
 		run.locate = l.ObjectLocation
 	}
@@ -560,6 +576,13 @@ func WithClock(now func() time.Time) Option {
 // models.DefaultDeleteGraceDays applies.
 func WithDeleteGrace(grace func() time.Duration) Option {
 	return func(s *Scheduler) { s.grace = grace }
+}
+
+// WithPITRPins sets the pins of the point-in-time restores in flight: the purge
+// skips a deleted base backup (or the tombstone of its re-encrypted archive)
+// that one still reads. Without it pitr.SharedPins applies.
+func WithPITRPins(pins *pitr.PinSet) Option {
+	return func(s *Scheduler) { s.pins = pins }
 }
 
 // WithMaintenance adds fn to the hooks Maintain runs every ten minutes after the

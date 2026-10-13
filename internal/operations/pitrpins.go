@@ -25,8 +25,8 @@ func (s *Service) pitrPins() *pitr.PinSet {
 
 // pinPITRPlan pins the base backup and the oplog chunks pp's run reads (by ID,
 // which covers a copy chain too) for the whole restore, so retention and the
-// purges skip them; runPITRRestore releases the pin (pp.unpin) on every exit
-// path. It pins first and checks second: what retention deletes after the pin
+// purges skip them; runPITRRestore keeps the pin (pp.pin) alive while the
+// restore runs and releases it on every exit path. It pins first and checks second: what retention deletes after the pin
 // keeps its object until the release, and what it deleted before fails the
 // check. Then replan plans again, up to pitrPinAttempts times in all; a plan
 // that keeps changing fails with ErrPITRNotRestorable instead of starting a
@@ -52,7 +52,7 @@ func (s *Service) pinPITRPlan(ctx context.Context, pp *pitrPlan, replan func() (
 }
 
 // pinAndCheck pins the run of pp and checks that it still exists (see
-// pinPITRPlan); on success pp.unpin releases the pin, on failure it is released.
+// pinPITRPlan); on success pp.pin holds the pin, on failure it is released.
 func (s *Service) pinAndCheck(ctx context.Context, pp *pitrPlan) error {
 	run := pp.run
 	if run.Plan == nil || run.Base == nil {
@@ -66,12 +66,15 @@ func (s *Service) pinAndCheck(ctx context.Context, pp *pitrPlan) error {
 	if pp.chainTest {
 		owner = "chain test of stream " + pp.stream.ID
 	}
-	release := s.pitrPins().Pin(owner, []string{run.Base.ID}, chunks)
+	// The archive is pinned too: a re-encryption of the base meanwhile leaves the
+	// object the restore reads under a tombstone record with another ID.
+	pin := s.pitrPins().Pin(owner, pitr.PinTarget{Bases: []string{run.Base.ID}, Chunks: chunks,
+		Archives: []pitr.ArchiveRef{{TargetID: run.Base.StorageTargetID, Key: run.Base.StorageKey}}})
 	if err := s.checkPinnedPlan(ctx, pp); err != nil {
-		release()
+		pin.Release()
 		return err
 	}
-	pp.unpin = release
+	pp.pin = pin
 	return nil
 }
 

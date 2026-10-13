@@ -61,7 +61,7 @@ func pinnedPITRServiceRuns(t *testing.T, bases func(st *store.SQLiteStore, call 
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
 	mock := storage.NewMockStorage()
 	fake := &blockingPITR{fakePITR: &fakePITR{keys: true, done: make(chan struct{})}, release: make(chan struct{})}
-	pins := pitr.NewPinSet(0, nil)
+	pins := pitr.NewPinSet(pitr.PinOptions{})
 	svc := operations.New(operations.Config{
 		Store:       st,
 		Backup:      backup.NewEngine(mock, ""),

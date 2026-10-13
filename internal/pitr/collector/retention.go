@@ -161,7 +161,7 @@ func (s *Service) RetainStream(ctx context.Context, id string) error {
 	if orphanErr := s.sweepOrphans(ctx, st, now); orphanErr != nil {
 		s.logger.Warn("cannot remove the orphan oplog chunks of a PITR stream", logsafe.Attr("stream_id", id), logsafe.Error(orphanErr))
 	}
-	pins := s.pinSnapshot()
+	pins := s.pinSet().Snapshot()
 	var skipped pinSkips
 	defer func() { skipped.log(s.logger, id) }()
 	if skipped.purge, err = s.purgeChunks(ctx, st, now, pins); err != nil {
@@ -314,16 +314,6 @@ func (s *Service) pinSet() *pitr.PinSet {
 		return s.cfg.Pins
 	}
 	return pitr.SharedPins()
-}
-
-// pinSnapshot returns the current pins and logs those dropped for their age.
-func (s *Service) pinSnapshot() pitr.PinSnapshot {
-	snap := s.pinSet().Snapshot()
-	for _, e := range snap.Expired {
-		s.logger.Warn("dropped a PITR restore pin older than its maximum age; retention may now delete what it held",
-			logsafe.Attr("owner", e.Owner), slog.Duration("age", e.Age))
-	}
-	return snap
 }
 
 // pinSkips counts what one retention run left for a later one because a

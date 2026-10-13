@@ -18,6 +18,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
@@ -78,6 +79,8 @@ type Scheduler struct {
 	now         func() time.Time
 	grace       func() time.Duration
 	maintenance []func(ctx context.Context)
+	// pins are the pins of the point-in-time restores in flight (WithPITRPins).
+	pins *pitr.PinSet
 
 	// databases lists a connection's databases for multi-database jobs.
 	databases DatabaseLister

@@ -20,7 +20,7 @@ import (
 func TestRetentionSkipsWhatARestorePinned(t *testing.T) {
 	fx := newFixture(t)
 	ctx := context.Background()
-	pins := pitr.NewPinSet(0, fx.clock.Now)
+	pins := pitr.NewPinSet(pitr.PinOptions{MaxAge: 24 * time.Hour, Now: fx.clock.Now})
 	fx.svc.cfg.Pins = pins
 	var logs bytes.Buffer
 	fx.svc.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -65,7 +65,7 @@ func TestRetentionSkipsWhatARestorePinned(t *testing.T) {
 	for i, c := range plan.Chunks {
 		ids[i] = c.ID
 	}
-	release := pins.Pin("restore of B1", []string{b1.ID}, ids)
+	pin := pins.Pin("restore of B1", pitr.PinTarget{Bases: []string{b1.ID}, Chunks: ids})
 	if err = pitr.CheckPlanLive(ctx, fx.repo, plan); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRetentionSkipsWhatARestorePinned(t *testing.T) {
 	}
 
 	// Once the restore ends, the next runs delete B1 and purge its chunks.
-	release()
+	pin.Release()
 	retain()
 	retain()
 	if rec, err := fx.repo.GetBackupRecord(ctx, b1.ID); err != nil || !rec.Status.Deleted() {
@@ -123,14 +123,13 @@ func TestRetentionSkipsWhatARestorePinned(t *testing.T) {
 }
 
 // TestRetentionIgnoresAStalePin checks that a pin never released stops counting
-// after its maximum age, with a warning.
+// (nor refreshed) stops counting after its maximum age, with a warning.
 func TestRetentionIgnoresAStalePin(t *testing.T) {
 	fx := newFixture(t)
 	ctx := context.Background()
-	pins := pitr.NewPinSet(time.Hour, fx.clock.Now)
-	fx.svc.cfg.Pins = pins
 	var logs bytes.Buffer
-	fx.svc.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	pins := pitr.NewPinSet(pitr.PinOptions{MaxAge: time.Hour, Now: fx.clock.Now, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	fx.svc.cfg.Pins = pins
 	w := fx.worker()
 	fx.step(w)
 	fx.step(w)
@@ -138,7 +137,7 @@ func TestRetentionIgnoresAStalePin(t *testing.T) {
 	fx.step(w)
 	chain := fx.state().ChainID
 	cs := fx.chunks(chain)
-	pins.Pin("leaked", nil, []string{cs[0].ID})
+	pins.Pin("leaked", pitr.PinTarget{Chunks: []string{cs[0].ID}})
 	if _, err := fx.repo.DeleteChunks(ctx, []string{cs[0].ID}, fx.clock.Now(), fx.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +155,7 @@ func TestRetentionIgnoresAStalePin(t *testing.T) {
 	if fx.chunks(chain)[0].Status != pitr.ChunkPruned || pins.Len() != 0 {
 		t.Fatalf("a stale pin still holds the purge (%d pins)", pins.Len())
 	}
-	if !strings.Contains(logs.String(), "older than its maximum age") {
+	if !strings.Contains(logs.String(), "was not refreshed") {
 		t.Fatalf("no warning about the stale pin:\n%s", logs.String())
 	}
 }
