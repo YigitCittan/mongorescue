@@ -367,6 +367,8 @@ type haSupervisor struct {
 	logger *slog.Logger
 	opts   []Option
 	rt     *haRuntime
+	// front serves the HTTP listener across the Apps of the roles (set by run).
+	front *haFront
 	// onActive, when set, is called with every App that started as active (tests).
 	onActive func(*App)
 	// onStandby, when set, is called with every App that started as a standby and
@@ -383,14 +385,39 @@ type haSupervisor struct {
 	retryPause time.Duration
 }
 
-// open builds the App of a role.
+// open builds the App of a role. With a front, the graceful shutdown of the App
+// shuts the front down.
 func (s *haSupervisor) open(active bool) (*App, error) {
 	opts := append(slices.Clone(s.opts), func(o *options) { o.ha = &haRole{rt: s.rt, active: active} })
-	return New(s.cfg, s.logger, opts...)
+	app, err := New(s.cfg, s.logger, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if s.front != nil {
+		app.httpShutdown = s.front.shutdown
+	}
+	return app, nil
 }
 
-// run is the role loop of RunHA.
+// listen opens the HTTP listener the Apps of all roles serve on (see haFront).
+func (s *haSupervisor) listen() (*haFront, error) {
+	var o options
+	for _, fn := range s.opts {
+		fn(&o)
+	}
+	return newHAFront(s.cfg, s.logger, s.rt, o.version, o.commit)
+}
+
+// run is the role loop of RunHA. The HTTP listener stays open from the start to
+// the end, across the role changes.
 func (s *haSupervisor) run(ctx context.Context) error {
+	front, err := s.listen()
+	if err != nil {
+		return err
+	}
+	s.front = front
+	front.start()
+	defer front.close()
 	app, err := s.open(false)
 	if err != nil {
 		return err
@@ -558,19 +585,22 @@ func (s *haSupervisor) haStorage(ctx context.Context, app *App) (storage.Storage
 	return nil, errors.New("no storage target has this ID or name in this instance's database (a fresh standby has none yet): use a location URL such as s3://bucket/prefix?endpoint=… instead")
 }
 
-// serve starts the HTTP server of app; the channel receives its error when it stops.
-func serve(app *App) <-chan error {
-	errCh := make(chan error, 1)
-	go func() { errCh <- app.server.Start() }()
-	return errCh
+// serve makes the front serve app; the channel receives the front's error if its
+// server fails.
+func (s *haSupervisor) serve(app *App) <-chan error {
+	s.front.attach(app.Handler())
+	return s.front.errs()
 }
 
-// closeHTTP stops the HTTP server of app, waiting at most drain for requests.
-func closeHTTP(app *App, drain time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), drain)
-	defer cancel()
-	_ = app.server.Shutdown(ctx)
-	_ = app.server.Close()
+// closeApp closes app once the front no longer serves it. httpErr is the error of
+// the front's detach or shutdown: when requests of app still run
+// (errHTTPHandlersRunning), app is left open under them and the error returned, so
+// the process exits.
+func closeApp(app *App, httpErr error) error {
+	if errors.Is(httpErr, errHTTPHandlersRunning) {
+		return httpErr
+	}
+	return app.Close()
 }
 
 // serveStandby runs app as a standby until the lease is acquired (true) or ctx
@@ -584,7 +614,7 @@ func (s *haSupervisor) serveStandby(ctx context.Context, app *App) (bool, error)
 		_ = app.Close()
 		return false, err
 	}
-	errCh := serve(app)
+	errCh := s.serve(app)
 	s.logger.Info("mongorescue ready as HA standby (read-only)", slog.String("ha_cluster", s.cfg.HA.Cluster),
 		slog.Int("port", s.cfg.Port))
 	if s.onStandby != nil {
@@ -593,21 +623,26 @@ func (s *haSupervisor) serveStandby(ctx context.Context, app *App) (bool, error)
 	for {
 		select {
 		case <-ctx.Done():
-			closeHTTP(app, httpDrainTimeout)
+			httpErr := s.front.stop(httpDrainTimeout)
 			app.Stop()
-			return false, app.Close()
+			return false, closeApp(app, httpErr)
 		case err := <-errCh:
+			httpErr := s.front.detach(0)
 			app.Stop()
-			_ = app.Close()
-			return false, err
+			return false, errors.Join(err, closeApp(app, httpErr))
 		case <-mgr.Changes():
 			if mgr.Role() != ha.RoleActive {
 				continue
 			}
 			s.logger.Info("this instance acquired the HA lease; taking over", slog.Uint64("epoch", mgr.Epoch()))
-			closeHTTP(app, haStandbyDrain)
+			// The listener stays open: until the active App serves, requests get
+			// 503 with Retry-After and the health check reports "switching".
+			httpErr := s.front.detach(haStandbyDrain)
 			app.Stop()
-			return true, app.Close()
+			if err := closeApp(app, httpErr); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 	}
 }
@@ -649,7 +684,7 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 		_ = mgr.StepDown(context.Background(), "the active instance could not start", true)
 		return false, err
 	}
-	errCh := serve(app)
+	errCh := s.serve(app)
 	if s.onActive != nil {
 		s.onActive(app)
 	}
@@ -674,10 +709,10 @@ func (s *haSupervisor) serveActive(ctx context.Context, app *App, start time.Tim
 		case <-ctx.Done():
 			return false, s.shutdownActive(app)
 		case err := <-errCh:
+			httpErr := s.front.detach(0)
 			app.ForceStop(ShutdownReason)
 			_ = mgr.Release(context.Background())
-			_ = app.Close()
-			return false, err
+			return false, errors.Join(err, closeApp(app, httpErr))
 		case <-mgr.Changes():
 			if mgr.Role() == ha.RoleActive {
 				continue
@@ -701,7 +736,7 @@ func (s *haSupervisor) shutdownActive(app *App) error {
 	} else {
 		s.logger.Info("released the HA lease")
 	}
-	return errors.Join(err, app.Close())
+	return errors.Join(err, closeApp(app, err))
 }
 
 // loseLease stops the active instance that lost the lease: it cancels its runs and
@@ -712,14 +747,16 @@ func (s *haSupervisor) loseLease(app *App, epoch uint64) error {
 	s.rt.stepDowns.Add(1)
 	s.logger.Error("this instance lost the HA lease: cancelling its runs and stepping down to standby",
 		slog.Uint64("epoch", epoch), slog.String("error", st.LastError))
-	// Work stops first; the alert follows before the App closes.
-	_ = app.server.Close()
+	// Work stops first; the alert follows before the App closes. The requests in
+	// progress are aborted at once, but the listener stays open: until the
+	// standby App serves, requests get 503 and the health check "switching".
+	httpErr := s.front.detach(0)
 	app.ForceStop(LostLeaseReason)
 	s.notifyStepDown(app, epoch)
 	if app.runsAbandoned.Load() {
 		return errors.New("runs did not stop after the HA lease was lost; exiting so that the restart policy starts a fresh standby")
 	}
-	return app.Close()
+	return closeApp(app, httpErr)
 }
 
 // haStepDownNotifyTimeout bounds the direct delivery of the step-down alert.

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,11 @@ func haTestConfig(t *testing.T, shared, key string) *config.Config {
 	cfg.HA = config.HAConfig{Mode: config.HAModeActivePassive, Target: config.FileURL(shared), Cluster: "test",
 		LeaseTTL: ha.MinTTL, RenewInterval: ha.MinRenew, SnapshotInterval: config.MinHASnapshotInterval}
 	return cfg
+}
+
+// baseURL returns the URL of the HTTP server of cfg.
+func baseURL(cfg *config.Config) string {
+	return "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 }
 
 // newTestSupervisor returns the supervisor RunHA would run for cfg.
@@ -382,6 +388,10 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	})
 	a.expectServed(t, false)
 	b.expectServed(t, false)
+	// Both members are polled through their role changes: the listener stays open,
+	// so every request gets an answer (#192).
+	pollA := startPoller(baseURL(cfgA), 2, "/api/v1/health", "/api/v1/jobs")
+	pollB := startPoller(baseURL(cfgB), 2, "/api/v1/health", "/api/v1/jobs")
 
 	// A creates the lease and reopens as active; B reads it and stays standby
 	// while A renews it. The lease clock never gets near the TTL.
@@ -396,6 +406,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 
 	// A graceful stop releases the lease: B takes over at its next read, from A's
 	// last snapshot.
+	pollA.check(t, "requests to A through its takeover", http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable)
 	if err := a.stop(t); err != nil {
 		t.Fatalf("graceful stop of the active member: %v", err)
 	}
@@ -420,6 +431,7 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 		expectRoles(t, map[*haMember]string{a2: server.HARoleStandby, b: server.HARoleActive})
 	}
 
+	pollB.check(t, "requests to B through its takeover", http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable)
 	if err := b.stop(t); err != nil {
 		t.Fatal(err)
 	}

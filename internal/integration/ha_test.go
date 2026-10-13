@@ -7,13 +7,17 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -148,6 +152,105 @@ func (m *haMember) waitRole(role string, within time.Duration) time.Duration {
 	return 0
 }
 
+// haPoller polls the API of a member continuously, so the test sees every refused
+// connection of a role change (#192).
+type haPoller struct {
+	name   string
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	mu      sync.Mutex
+	codes   map[int]int
+	roles   map[string]int
+	refused []error
+	other   []error
+}
+
+// startPoller polls the health check and the job list of m every 20 ms, until
+// check or the end of t.
+func startPoller(t *testing.T, m *haMember) *haPoller {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &haPoller{name: m.name, cancel: cancel, done: make(chan struct{}), codes: map[int]int{}, roles: map[string]int{}}
+	t.Cleanup(func() {
+		cancel()
+		<-p.done
+	})
+	base := m.base()
+	go func() {
+		defer close(p.done)
+		client := &http.Client{Timeout: 10 * time.Second}
+		defer client.CloseIdleConnections()
+		for i := 0; ; i++ {
+			path := "/api/v1/jobs"
+			if i%2 == 0 {
+				path = "/api/v1/health"
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+			if err != nil {
+				return
+			}
+			resp, err := client.Do(req)
+			var body struct {
+				Data struct {
+					Role string `json:"role"`
+				} `json:"data"`
+			}
+			if err == nil {
+				if path == "/api/v1/health" {
+					_ = json.NewDecoder(resp.Body).Decode(&body)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			p.mu.Lock()
+			switch {
+			case errors.Is(err, syscall.ECONNREFUSED):
+				p.refused = append(p.refused, err)
+			case err != nil:
+				p.other = append(p.other, err)
+			default:
+				p.codes[resp.StatusCode]++
+				if body.Data.Role != "" {
+					p.roles[body.Data.Role]++
+				}
+			}
+			p.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	return p
+}
+
+// check stops the poller and fails t when a connection was refused or an answer
+// had a status other than 200, 401 (the job list without credentials) or 503
+// (a standby, or the switch between two roles).
+func (p *haPoller) check(t *testing.T) {
+	t.Helper()
+	p.cancel()
+	<-p.done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t.Logf("requests to %s: status codes %v, health roles %v, refused %d, other errors %d", p.name, p.codes, p.roles, len(p.refused), len(p.other))
+	for _, err := range p.other {
+		t.Logf("request to %s failed: %v", p.name, err)
+	}
+	if len(p.refused) > 0 {
+		t.Errorf("%d connections to %s were refused through its role changes, the first: %v", len(p.refused), p.name, p.refused[0])
+	}
+	for code, n := range p.codes {
+		if code != http.StatusOK && code != http.StatusUnauthorized && code != http.StatusServiceUnavailable {
+			t.Errorf("%d answers of %s with status %d; want 200, 401 or 503", n, p.name, code)
+		}
+	}
+}
+
 // linesWith returns the lines of logs that contain one of words.
 func linesWith(logs string, words ...string) string {
 	var out []string
@@ -179,7 +282,10 @@ func completedBackups(api *apiClient, db string) []*models.BackupRecord {
 // one MinIO bucket and one MongoDB, with a job every minute. The active process is
 // killed with SIGKILL; the standby must become active within ttl + renew + 30s with
 // the killed one's metadata, run the next scheduled backup, and never complete two
-// backups for the same cron fire. The old process then comes back as standby.
+// backups for the same cron fire. The old process then comes back as standby. At
+// last the lease is deleted, so the active process steps down to standby and a
+// member takes the lease over again. B, from the kill on, and A, once back, are
+// polled throughout: no connection is refused, every request gets 200, 401 or 503.
 func TestHAActivePassiveFailover(t *testing.T) {
 	t.Parallel()
 	m := requireMongo(t)
@@ -311,6 +417,9 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	for sec := time.Now().Second(); sec < 50 || sec >= 55; sec = time.Now().Second() {
 		time.Sleep(200 * time.Millisecond)
 	}
+	// B is polled from now on, through its takeover and its step-down: its
+	// listener stays open, so no connection is refused.
+	pollB := startPoller(t, b)
 	a.kill()
 	killedAt := time.Now()
 	missedFire := killedAt.Truncate(time.Minute).Add(time.Minute)
@@ -370,4 +479,34 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	if a.role() != "standby" || b.role() != "active" {
 		t.Fatalf("after A's restart: A %q, B %q; want standby and active", a.role(), b.role())
 	}
+
+	// B steps down: the lease disappears, so its next renewal fails its condition.
+	// B reopens as standby, and a member takes the new lease over. Neither member
+	// refuses a connection meanwhile.
+	pollA := startPoller(t, a)
+	time.Sleep(time.Second)
+	if err = haStore.Delete(ctx, ha.LeaseKey(cluster)); err != nil {
+		t.Fatal(err)
+	}
+	// B may take the new lease over again at once, so its log tells the step-down.
+	deadline = time.Now().Add(2*haTestRenew + 30*time.Second)
+	for !strings.Contains(b.logs.String(), "this instance lost the HA lease") {
+		if time.Now().After(deadline) {
+			t.Fatalf("B did not step down once the lease was deleted\n%s", b.logs.String())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		t.Logf("B's step-down:\n%s", linesWith(b.logs.String(), "lost the HA lease", "stepping down", "stepped down"))
+	})
+	deadline = time.Now().Add(haTestTTL + haTestRenew + 60*time.Second)
+	for a.role() != "active" && b.role() != "active" {
+		if time.Now().After(deadline) {
+			t.Fatalf("no member became active after B's step-down: A %q, B %q", a.role(), b.role())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	time.Sleep(time.Second)
+	pollA.check(t)
+	pollB.check(t)
 }

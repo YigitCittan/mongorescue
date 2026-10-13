@@ -286,15 +286,22 @@ func NewServer(
 		csp = desktopContentSecurityPolicy
 	}
 	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.authMiddleware(mux)))))
-	s.httpServer = &http.Server{
+	s.httpServer = NewHTTPServer(addr, handler)
+
+	return s
+}
+
+// NewHTTPServer returns an HTTP server for addr serving h with the timeouts of the
+// API server. An active-passive HA member serves its listener with it across the
+// Apps of its roles.
+func NewHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           h,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 	}
-
-	return s
 }
 
 // Handler returns the fully composed HTTP handler (logging, CORS, authentication and

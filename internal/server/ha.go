@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HA roles reported by HAStatus.Role.
@@ -13,6 +14,9 @@ const (
 	HARoleActive = "active"
 	// HARoleStandby is the role of an instance waiting for the lease.
 	HARoleStandby = "standby"
+	// HARoleSwitching is the role an instance reports while it changes role: the
+	// App of the old role is closed and the App of the new one not yet serving.
+	HARoleSwitching = "switching"
 )
 
 // StandbyPage is the static file a standby serves instead of the dashboard.
@@ -21,7 +25,8 @@ const StandbyPage = "standby.html"
 // HAStatus describes the instance's place in an active-passive HA cluster, as
 // reported by GET /api/v1/health.
 type HAStatus struct {
-	// Role is HARoleActive or HARoleStandby.
+	// Role is HARoleActive, HARoleStandby or, between the Apps of two roles,
+	// HARoleSwitching.
 	Role string `json:"role"`
 	// Cluster is the cluster name.
 	Cluster string `json:"cluster"`
@@ -127,4 +132,31 @@ func (s *Server) healthHA(body map[string]any) {
 	st := s.haStatus()
 	body["role"] = st.Role
 	body["ha"] = st
+}
+
+// SwitchingHandler answers the requests an active-passive HA member receives while
+// it changes role, when no App serves: GET /api/v1/health reports the status of fn
+// with the role HARoleSwitching (200), GET /metrics is served by metrics when not
+// nil, and every other request answers 503 with Retry-After: 1, so clients and
+// load balancers retry instead of seeing a refused connection.
+func SwitchingHandler(fn func() HAStatus, version string, metrics http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		read := r.Method == http.MethodGet || r.Method == http.MethodHead
+		st := fn()
+		st.Role = HARoleSwitching
+		switch {
+		case read && r.URL.Path == "/api/v1/health":
+			writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "version": version,
+				"time": time.Now().UTC(), "role": st.Role, "ha": st})
+			return
+		case read && r.URL.Path == "/metrics" && metrics != nil:
+			metrics.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Retry-After", "1")
+		writeErrorData(w, http.StatusServiceUnavailable,
+			"this instance of HA cluster "+st.Cluster+" is changing role; retry in a second",
+			map[string]any{"role": st.Role, "cluster": st.Cluster})
+	})
 }

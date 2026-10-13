@@ -164,6 +164,9 @@ type App struct {
 	// loop and the takeover tasks (see startHAActive).
 	haSnap  *ha.Snapshotter
 	haTasks haTasks
+	// httpShutdown, when set, replaces the shutdown of the App's HTTP server: in HA
+	// mode the supervisor's listener serves the App (see haFront).
+	httpShutdown func(context.Context) error
 }
 
 // options holds optional App settings.
@@ -1212,7 +1215,11 @@ const ShutdownReason = "interrupted: MongoRescue shut down before the run finish
 func (a *App) shutdown(ctx context.Context) error {
 	idle := a.Drain(ctx, a.cfg.ShutdownGrace)
 	drainCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
-	err := a.server.Shutdown(drainCtx)
+	shutdownHTTP := a.server.Shutdown
+	if a.httpShutdown != nil {
+		shutdownHTTP = a.httpShutdown
+	}
+	err := shutdownHTTP(drainCtx)
 	cancel()
 	if !idle && a.Busy() {
 		a.logger.Warn("cancelling the backups and restores still running",
