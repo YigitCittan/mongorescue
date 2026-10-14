@@ -161,12 +161,13 @@ Assumptions:
 | I | A leaked key | Rotation (`internal/keyrotation`; `POST /api/v1/security/rotate-secret-key`, a signed-in administrator who confirms their password, API keys refused, an approval first with the two-person rule; `handleRotateSecretKey`, `internal/server/keyrotation.go`) re-seals every value in one transaction, signs out every session, and recovers from a crash at any step; snapshots sealed with the old key are deleted after the grace period and `secret.key.previous` after them once a new recovery kit was downloaded ([encryption.md](encryption.md)). |
 | I | The recovery kit (which contains `secret.key`) downloaded with a stolen key | `POST /api/v1/recovery-kit` needs a signed-in administrator who confirms their password; API keys are refused; the kit is sealed with a passphrase from the request (`handleDownloadRecoveryKit`, `internal/server/recovery.go`). |
 | R | Unrecorded rotation | Rotations are announced durably and audited. |
+| I | A copy of the data directory or volume (a backup, a snapshot, a stolen disk) | Key wrapping (#61, [security.md](security.md#wrapping-secretkey-with-a-kms)): with `MONGORESCUE_KEY_WRAP` the data directory holds only `secret.key.wrapped`, which AWS KMS, Google Cloud KMS, Azure Key Vault or Vault Transit unwraps at every start with the instance's own identity (`Load`, `internal/keywrap/load.go`; providers in `internal/keywrap/provider`); the unwrapped key is checked against the recorded fingerprint (`File.Open`, `internal/keywrap/file.go`), never falls back to a plaintext file, and rotated keys are wrapped before they are written (`internal/keyrotation`). A recovery kit with the plaintext key needs an approved `plaintext_recovery_kit` request under the two-person rule (`internal/server/recovery.go`). |
 | D | Crash mid-rotation | The marker and the `secret.key.next` / `.previous` files let `keyrotation.Open` settle it at the next start. |
 | E | — | — |
 
-**Residual risk**: `secret.key` next to `mongorescue.db` on the same volume means one copy of the volume holds both; keys from `MONGORESCUE_SECRET_KEY` are never rotated by the application.
+**Residual risk**: without key wrapping, `secret.key` next to `mongorescue.db` on the same volume means one copy of the volume holds both; with it, whoever can use the KMS key with an instance's identity, or read the running process's memory, still gets the key. Keys from `MONGORESCUE_SECRET_KEY` are never rotated by the application.
 
-**Open items**: an external key provider (KMS) for `secret.key`.
+**Open items**: none; the former gap "no external key provider (KMS) for `secret.key`" is mitigated by key wrapping (#61).
 
 ## 7. age encryption
 
@@ -284,7 +285,7 @@ Assumptions:
 | | Threat | Mitigations (code) |
 | :--- | :--- | :--- |
 | E | Container breakout, privilege escalation | Non-root UID 10001 (`Dockerfile`), `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, dropped capabilities and the `RuntimeDefault` seccomp profile, no service account token (`deploy/helm/mongorescue/values.yaml`). |
-| I | `secret.key` on the data volume | `secretKey.existingSecret` takes it from a Secret managed elsewhere; by default a random key is generated into a Secret that `helm uninstall` keeps (`templates/secret.yaml`). |
+| I | `secret.key` on the data volume | `keyWrap` (key wrapping, component 6) keeps only `secret.key.wrapped` on the volume; `secretKey.existingSecret` takes the key from a Secret managed elsewhere; by default a random key is generated into a Secret that `helm uninstall` keeps (`templates/secret.yaml`). |
 | I, T | Lateral movement | An optional NetworkPolicy for ingress and egress (`templates/networkpolicy.yaml`), off by default. |
 | T | A tampered image | Images are built with BuildKit provenance and SBOM, attested with GitHub artifact attestations, and signed with cosign by digest ([verifying releases](security.md#verifying-releases)). |
 | D | — | Resource requests and limits are configurable. |
@@ -310,7 +311,6 @@ Assumptions:
 | HTTP API | Rate limits per API key and per session on the REST API ([#191](https://github.com/YigitCittan/mongorescue/issues/191)); HSTS when served over TLS. |
 | Auth | Optional API key expiry ([#190](https://github.com/YigitCittan/mongorescue/issues/190)); MFA for local accounts. |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
-| secretbox | An external key provider (KMS) for `secret.key`. |
 | Notifications | An option to deny private ranges. |
 | Release | SLSA Build Level 3 provenance for the container images (the images have Level 2 attestations and cosign signatures). |
 | Process | An independent security review of auth and RBAC, the two-person rule, secretbox and key rotation, PITR restore and Object Lock (issue #144). |
