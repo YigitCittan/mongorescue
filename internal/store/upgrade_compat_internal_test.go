@@ -1499,6 +1499,7 @@ func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
 // TestUpgradeFromEverySchemaVersion opens a fixture of every earlier schema version
 // with this build and checks that every row and field survives the upgrade.
 func TestUpgradeFromEverySchemaVersion(t *testing.T) {
+	t.Parallel()
 	migrations, err := loadMigrations()
 	if err != nil {
 		t.Fatal(err)
@@ -1615,6 +1616,7 @@ func schemaSnapshot(t *testing.T, path string) string {
 // the open must fail with ErrSchemaTooNew and change nothing, not even the secret
 // key check or the format marker.
 func TestNewerSchemaIsRefusedUntouched(t *testing.T) {
+	t.Parallel()
 	key, _ := secretbox.GenerateKey()
 	box, _ := secretbox.New(key)
 	path := filepath.Join(t.TempDir(), "mongorescue.db")

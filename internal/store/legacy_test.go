@@ -208,6 +208,7 @@ func TestMigrateLegacyStateNoFile(t *testing.T) {
 }
 
 func TestMigrateLegacyStateFailureLeavesFileUntouched(t *testing.T) {
+	t.Parallel()
 	duplicate := fullFixture()
 	// Two keys holding the same record ID: the count check must reject the import
 	// after rows were already written, proving the transaction rolls back.
@@ -248,6 +249,7 @@ func TestMigrateLegacyStateFailureLeavesFileUntouched(t *testing.T) {
 }
 
 func TestMigrateLegacyStateNamesConflictingIDs(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		state any
 		want  []string

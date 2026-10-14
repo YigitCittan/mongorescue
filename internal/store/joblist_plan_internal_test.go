@@ -17,6 +17,7 @@ import (
 // history's per-day and stored-size aggregates and the newest backup per job and
 // database read covering indexes only.
 func TestScaleQueryPlans(t *testing.T) {
+	t.Parallel()
 	s, now := historyFixture(t, 20, 1000)
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
