@@ -57,6 +57,8 @@ func (s *Server) storageFor(ctx context.Context, id string) (storage.Storage, er
 // contain secret keys.
 func (s *Server) writeTargetError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, operations.ErrNotActive):
+		s.writeFenced(w)
 	case errors.Is(err, ErrUnknownStorageTarget):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, targets.ErrNotFound):

@@ -153,6 +153,7 @@ func TestReplaceHoldsTheDataDirectoryLock(t *testing.T) {
 // TestReplaceCheckpointsTheOldDatabase checks that the copy of a database left with
 // a write-ahead log (its last writes only in the log) holds those writes.
 func TestReplaceCheckpointsTheOldDatabase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	box := testBox(t)
 	dir := t.TempDir()

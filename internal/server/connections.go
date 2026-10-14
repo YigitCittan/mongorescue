@@ -44,6 +44,8 @@ func (s *Server) requireConnections(w http.ResponseWriter) (*connections.Service
 // contain connection strings.
 func (s *Server) writeConnectionError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, operations.ErrNotActive):
+		s.writeFenced(w)
 	case errors.Is(err, connections.ErrNotFound):
 		writeError(w, http.StatusNotFound, "connection not found")
 	case errors.Is(err, connections.ErrInUse):

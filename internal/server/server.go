@@ -150,7 +150,10 @@ type Server struct {
 
 	// haStatus reports the role in an active-passive HA cluster (see WithHA); nil
 	// outside HA mode; standbyMetrics answers GET /metrics on a standby.
-	haStatus       func() HAStatus
+	haStatus func() HAStatus
+	// fence must pass before a request that may change something is served (see
+	// WithFence); nil outside HA mode.
+	fence          models.Fence
 	standbyMetrics http.Handler
 
 	// oidc talks to the single sign-on provider, oidcBox seals the flow cookie and
@@ -285,16 +288,23 @@ func NewServer(
 	if s.desktopCSP {
 		csp = desktopContentSecurityPolicy
 	}
-	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.authMiddleware(mux)))))
-	s.httpServer = &http.Server{
+	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.fenceGate(s.authMiddleware(mux))))))
+	s.httpServer = NewHTTPServer(addr, handler)
+
+	return s
+}
+
+// NewHTTPServer returns an HTTP server for addr serving h with the timeouts of the
+// API server. An active-passive HA member serves its listener with it across the
+// Apps of its roles.
+func NewHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
 		Addr:              addr,
-		Handler:           handler,
+		Handler:           h,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 	}
-
-	return s
 }
 
 // Handler returns the fully composed HTTP handler (logging, CORS, authentication and
@@ -855,6 +865,8 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, operations.ErrBusy), errors.Is(err, operations.ErrNotRunning):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, operations.ErrNotActive):
+		s.writeFenced(w)
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, operations.ErrDatabaseListing), errors.Is(err, operations.ErrLegalHold):
@@ -952,6 +964,7 @@ func (s *Server) operationsConfig() operations.Config {
 		Settings:  s.currentSettings,
 		Logger:    s.logger,
 		Version:   s.version,
+		Fence:     s.fence,
 
 		Storage:      s.storageFor,
 		OnJobDeleted: s.onJobDeleted,
