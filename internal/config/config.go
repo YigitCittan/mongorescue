@@ -22,6 +22,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/keywrap"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
+	"github.com/yigitcittan/mongorescue/internal/vault"
 )
 
 // Bootstrap environment variables. They are the only environment variables
@@ -65,6 +66,18 @@ const (
 	// EnvNotificationMaxAge sets how long a notification may wait in the delivery
 	// queue before it is dropped as stale: a Go duration such as "24h".
 	EnvNotificationMaxAge = "MONGORESCUE_NOTIFICATION_MAX_AGE"
+	// EnvVaultAddr is the address of the HashiCorp Vault that connections and S3
+	// storage targets with credential_source vault read their credentials from
+	// (https://<host>:<port>). The authentication is the one key wrapping uses:
+	// VAULT_TOKEN, AppRole (VAULT_ROLE_ID, VAULT_SECRET_ID) or Kubernetes
+	// (VAULT_K8S_ROLE), with VAULT_NAMESPACE and VAULT_CACERT (see internal/vault).
+	EnvVaultAddr = "MONGORESCUE_VAULT_ADDR"
+	// EnvVaultAllowInsecure ("true") allows a plain http:// Vault address (a
+	// development Vault only).
+	EnvVaultAllowInsecure = "MONGORESCUE_VAULT_ALLOW_INSECURE"
+	// EnvVaultCacheTTL sets how long static kv-v2 credentials read from Vault are
+	// reused before Vault is read again: a Go duration such as "5m".
+	EnvVaultCacheTTL = "MONGORESCUE_VAULT_CACHE_TTL"
 )
 
 // Defaults.
@@ -92,6 +105,11 @@ const (
 	// MinNotificationMaxAge and MaxNotificationMaxAge bound it.
 	MinNotificationMaxAge = 10 * time.Minute
 	MaxNotificationMaxAge = 30 * 24 * time.Hour
+	// DefaultVaultCacheTTL is how long static kv-v2 credentials are reused.
+	DefaultVaultCacheTTL = 5 * time.Minute
+	// MinVaultCacheTTL and MaxVaultCacheTTL bound it.
+	MinVaultCacheTTL = time.Second
+	MaxVaultCacheTTL = 24 * time.Hour
 )
 
 // Sentinel errors.
@@ -127,7 +145,53 @@ var (
 	// ErrInvalidNotificationMaxAge is returned for a notification maximum age that
 	// is not a duration from 10m to 720h.
 	ErrInvalidNotificationMaxAge = errors.New("config: notification max age must be a duration from 10m to 720h (such as 24h)")
+	// ErrInvalidVaultCacheTTL is returned for a Vault cache TTL that is not a
+	// duration from 1s to 24h.
+	ErrInvalidVaultCacheTTL = errors.New("config: vault cache TTL must be a duration from 1s to 24h (such as 5m)")
 )
+
+// VaultConfig configures the credentials read from HashiCorp Vault (connections
+// and S3 storage targets with credential_source vault).
+type VaultConfig struct {
+	// Addr is the Vault address (MONGORESCUE_VAULT_ADDR); empty turns credentials
+	// from Vault off.
+	Addr string
+	// AllowInsecure accepts a plain http:// Addr (MONGORESCUE_VAULT_ALLOW_INSECURE;
+	// development only).
+	AllowInsecure bool
+	// CacheTTL is how long static kv-v2 credentials are reused
+	// (MONGORESCUE_VAULT_CACHE_TTL; DefaultVaultCacheTTL when zero).
+	CacheTTL time.Duration
+}
+
+// Enabled reports whether a Vault address is set.
+func (v VaultConfig) Enabled() bool { return strings.TrimSpace(v.Addr) != "" }
+
+// Validate checks the address and the cache TTL.
+func (v VaultConfig) Validate() error {
+	if v.Enabled() {
+		if _, err := vault.ParseAddr(v.Addr, v.AllowInsecure); err != nil {
+			if errors.Is(err, vault.ErrInsecureAddr) {
+				return fmt.Errorf("%s: %w, or set %s=true for a development Vault only", EnvVaultAddr, err, EnvVaultAllowInsecure)
+			}
+			return fmt.Errorf("%s: %w", EnvVaultAddr, err)
+		}
+	}
+	if v.CacheTTL != 0 && (v.CacheTTL < MinVaultCacheTTL || v.CacheTTL > MaxVaultCacheTTL) {
+		return fmt.Errorf("%s: %w", EnvVaultCacheTTL, ErrInvalidVaultCacheTTL)
+	}
+	return nil
+}
+
+// ParseVaultCacheTTL parses a Vault cache TTL: a Go duration from
+// MinVaultCacheTTL to MaxVaultCacheTTL.
+func ParseVaultCacheTTL(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d < MinVaultCacheTTL || d > MaxVaultCacheTTL {
+		return 0, ErrInvalidVaultCacheTTL
+	}
+	return d, nil
+}
 
 // Config is the bootstrap configuration.
 type Config struct {
@@ -176,6 +240,9 @@ type Config struct {
 	NotificationMaxAge time.Duration
 	// HA holds the active-passive high availability settings (off by default).
 	HA HAConfig
+	// Vault configures the credentials read from HashiCorp Vault (off by
+	// default).
+	Vault VaultConfig
 }
 
 // Default returns the defaults of the binary.
@@ -255,6 +322,21 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 	if err := haFromEnv(&cfg.HA, getenv); err != nil {
 		return nil, err
 	}
+	cfg.Vault.Addr = strings.TrimSpace(getenv(EnvVaultAddr))
+	if v := strings.TrimSpace(getenv(EnvVaultAllowInsecure)); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: must be true or false", EnvVaultAllowInsecure)
+		}
+		cfg.Vault.AllowInsecure = b
+	}
+	if v := strings.TrimSpace(getenv(EnvVaultCacheTTL)); v != "" {
+		d, err := ParseVaultCacheTTL(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvVaultCacheTTL, err)
+		}
+		cfg.Vault.CacheTTL = d
+	}
 	return cfg, nil
 }
 
@@ -317,6 +399,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s: %w", EnvNotificationMaxAge, ErrInvalidNotificationMaxAge)
 	}
 	if err := c.HA.Validate(); err != nil {
+		return err
+	}
+	if err := c.Vault.Validate(); err != nil {
 		return err
 	}
 	if c.KeyWrap.Enabled() {

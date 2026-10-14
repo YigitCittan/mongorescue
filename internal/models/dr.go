@@ -45,7 +45,8 @@ func CrossRegion(primary, cp *StorageTarget) bool {
 // SameCredentials reports whether one credential or account detectably reaches
 // both a and b, so a single leaked key can delete from both: two local targets
 // (one host, one operating system user), two S3 targets with the same access key
-// ID, two S3 targets on the same endpoint without keys (both use the process's
+// ID or the same Vault secret or role, two S3 targets on the same endpoint without
+// keys (both use the process's
 // default credentials), or two S3 targets on the same endpoint whose host names
 // the account (Cloudflare R2). Anything else, including an unknown account, is not
 // reported.
@@ -59,6 +60,11 @@ func SameCredentials(a, b *StorageTarget) bool {
 	case StorageS3:
 		if a.S3 == nil || b.S3 == nil {
 			return false
+		}
+		if a.S3.FromVault() || b.S3.FromVault() {
+			// Keys from one Vault secret or role reach both; keys from different
+			// ones cannot be told apart.
+			return a.S3.FromVault() && b.S3.FromVault() && a.S3.Vault.Key() == b.S3.Vault.Key()
 		}
 		ka, kb := strings.TrimSpace(a.S3.AccessKeyID), strings.TrimSpace(b.S3.AccessKeyID)
 		if ka != "" && ka == kb {

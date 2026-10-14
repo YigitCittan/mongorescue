@@ -26,6 +26,9 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-key-wrap` | `MONGORESCUE_KEY_WRAP` | off | Wrap `secret.key` with an external KMS: `<provider>:<key URI>` with provider `aws-kms`, `gcp-kms`, `azure-keyvault` or `vault-transit`. The data directory then holds `secret.key.wrapped` only, unwrapped at every start with the instance's identity. Cannot be combined with `MONGORESCUE_SECRET_KEY`. See [Key wrapping](#key-wrapping) |
 | | `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE` | `false` | `true` accepts a `vault-transit` key URI with plain `http://`, which sends the Vault token and the key unencrypted: **development only**, logged as a warning at every start |
+| `-vault-addr` | `MONGORESCUE_VAULT_ADDR` | off | Address of the HashiCorp Vault that connections and S3 storage targets with `credential_source: vault` read their credentials from: `https://<host>:<port>`. Authentication as for key wrapping (`VAULT_TOKEN`, AppRole or Kubernetes). See [Credentials from Vault](#credentials-from-vault) |
+| | `MONGORESCUE_VAULT_ALLOW_INSECURE` | `false` | `true` accepts a plain `http://` Vault address, which sends the Vault token and the credentials unencrypted: **development only**, logged as a warning at every start |
+| `-vault-cache-ttl` | `MONGORESCUE_VAULT_CACHE_TTL` | `5m` | How long static `kv-v2` credentials read from Vault are reused (in memory only) before Vault is read again: `1s` to `24h` |
 | `-version` | | | Print the version and exit |
 
 ### High availability
@@ -55,6 +58,19 @@ Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`,
 | `vault-transit:https://<vault>:8200/<mount>/keys/<name>` | `VAULT_TOKEN`; or AppRole: `VAULT_ROLE_ID`, `VAULT_SECRET_ID` (`VAULT_APPROLE_MOUNT`, default `approle`); or Kubernetes: `VAULT_K8S_ROLE` (`VAULT_K8S_MOUNT`, default `kubernetes`; `VAULT_K8S_TOKEN_PATH`, default the pod's service account token); `VAULT_NAMESPACE`; `VAULT_CACERT` (PEM file of the CAs that verify Vault). The address is the key URI's; `VAULT_ADDR` is not read |
 
 The offline commands `mongorescue key status`, `mongorescue key rewrap --to <provider>:<key URI>` and `mongorescue key unwrap --confirm-plaintext` (all with `--data-dir`) show, move or remove the wrapping while MongoRescue is stopped. `rewrap` and `unwrap` use the KMS key of `MONGORESCUE_KEY_WRAP` (or `--from <provider>:<key URI> --confirm-from`), never the one recorded in the data directory.
+
+### Credentials from Vault
+
+With `MONGORESCUE_VAULT_ADDR` set, connections and S3 storage targets can read their credentials from HashiCorp Vault whenever they are used instead of storing them ([security.md](security.md#credentials-from-hashicorp-vault) has the details, the Vault policy and the threat model). The authentication is shared with `vault-transit` key wrapping:
+
+| Variable | Description |
+| :--- | :--- |
+| `MONGORESCUE_VAULT_ADDR` | `https://<host>:<port>` of Vault, without a path (`VAULT_ADDR` is not read) |
+| `VAULT_TOKEN` | A Vault token; or AppRole: `VAULT_ROLE_ID`, `VAULT_SECRET_ID` (`VAULT_APPROLE_MOUNT`, default `approle`); or Kubernetes: `VAULT_K8S_ROLE` (`VAULT_K8S_MOUNT`, default `kubernetes`; `VAULT_K8S_TOKEN_PATH`, default the pod's service account token). A login token that Vault refuses (expired) is renewed by logging in again |
+| `VAULT_NAMESPACE` | Vault Enterprise namespace |
+| `VAULT_CACERT` | PEM file of the CAs that verify Vault's certificate (default: the system roots) |
+
+A start where connections or targets read credentials from Vault but no Vault is configured is refused; a Vault that does not answer at the start is only logged. Without `MONGORESCUE_VAULT_ADDR`, the dashboard shows the option as not configured and the API refuses `credential_source: vault` (`400`).
 
 The desktop app has its own defaults (dashboard always on, data directory in the per-user configuration directory, no listener); see [desktop.md](desktop.md#data-and-logs).
 
@@ -230,6 +246,7 @@ A storage target is where backup archives are written: a directory on the MongoR
 | `s3.bucket` | Bucket name (must exist) |
 | `s3.prefix` | Optional key prefix, e.g. `mongorescue/` |
 | `s3.access_key_id`, `s3.secret_access_key` | Static credentials. Leave both empty to use the AWS default credential chain (instance role, `AWS_*` variables of the container). The secret key is encrypted in the database and shown as `******`; sending `******` back keeps it only while endpoint, bucket and access key are unchanged |
+| `s3.credential_source`, `s3.vault` | `stored` (default) or `vault`: read the access keys from Vault whenever the target is used, through the reference `s3.vault` (`engine` `kv-v2` with `mount`, `path`, `access_key_field`, `secret_key_field`, optional `session_token_field`; or `engine` `aws` with `mount` and `role`). `s3.access_key_id` and `s3.secret_access_key` stay empty. Needs `MONGORESCUE_VAULT_ADDR`; see [Credentials from Vault](#credentials-from-vault) |
 | `s3.use_path_style` | Path-style URLs (required by MinIO and some gateways) |
 | `s3.part_size_mb` | Multipart upload part size in MiB, 5 to 512 (default 16). S3 allows 10,000 parts, so it caps one archive: 16 MiB allows about 156 GiB, 64 MiB about 625 GiB. Each running upload buffers part size × 2. Backups warn when a database's expected archive exceeds 80% of that limit; see [S3 multipart limits](production.md#s3-multipart-limits). Changing it needs no connection test and applies to the next backup |
 

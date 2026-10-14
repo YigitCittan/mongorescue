@@ -162,6 +162,29 @@ type Engine struct {
 	// fence, when set, stamps every run with its HA epoch and must pass before a
 	// backup completes (see WithFence).
 	fence models.Fence
+
+	// credentials, when set, keeps the credentials of the run's connection valid
+	// while it runs (see WithCredentialHolder).
+	credentials models.CredentialHolder
+}
+
+// WithCredentialHolder makes every backup from a managed connection hold its
+// credentials for the run (credentials leased from Vault are renewed until the
+// run ends, then revoked): the run uses the URI h returns and fails when h's
+// context ends.
+func WithCredentialHolder(h models.CredentialHolder) Option {
+	return func(e *Engine) {
+		e.credentials = h
+	}
+}
+
+// holdCredentials holds the credentials of the connection of opts for the run,
+// returning the context and URI to use and the release to call when it ends.
+func (e *Engine) holdCredentials(ctx context.Context, opts models.BackupOptions, uri string) (context.Context, string, func(), error) {
+	if e.credentials == nil || opts.ConnectionID == "" || opts.MongoURI == "" {
+		return ctx, uri, func() {}, nil
+	}
+	return e.credentials.Hold(ctx, opts.ConnectionID, uri)
 }
 
 // WithFence makes every backup carry the HA epoch of fence and fail instead of
@@ -538,6 +561,13 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		return e.fail(ctx, record, err)
 	}
 	defer releaseSlot()
+	// Credentials leased from Vault are held (renewed) until the run ends; the
+	// held context ends the run when they can no longer be kept valid.
+	ctx, mongoURI, releaseCredentials, err := e.holdCredentials(ctx, opts, mongoURI)
+	if err != nil {
+		return e.fail(ctx, record, err)
+	}
+	defer releaseCredentials()
 	record.Phases.Started = models.Stamp(time.Now())
 	if record.Phases.Queued == nil {
 		record.Phases.Queued = models.Stamp(startTime)
@@ -968,6 +998,10 @@ func (e *Engine) classifyFailure(ctx context.Context, saveErr, waitErr, stageErr
 			return fmt.Errorf("%w for %s%s", ErrStalled, e.stallTimeout, stderrNote)
 		case runs.CancellationOf(ctx) != nil:
 			return fmt.Errorf("backup %w", runs.CancellationOf(ctx))
+		case cause != nil && !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded):
+			// The run was stopped for a reason of its own, such as credentials whose
+			// Vault lease could not be kept valid.
+			return fmt.Errorf("backup stopped: %w%s", cause, stderrNote)
 		default:
 			return fmt.Errorf("backup cancelled: %w", ctx.Err())
 		}

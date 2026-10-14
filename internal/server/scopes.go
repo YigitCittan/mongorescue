@@ -47,6 +47,8 @@ var routeScopes = map[string]auth.Scope{
 	"PUT /api/v1/connections/{id}":       auth.ScopeAdmin,
 	"DELETE /api/v1/connections/{id}":    auth.ScopeAdmin,
 	"POST /api/v1/connections/{id}/test": auth.ScopeAdmin,
+	vaultStatusRoute:                     auth.ScopeRead,
+	vaultTestRoute:                       auth.ScopeAdmin,
 
 	"GET /api/v1/connections/{id}/databases":                  auth.ScopeRead,
 	"GET /api/v1/connections/{id}/databases/{db}/collections": auth.ScopeRead,

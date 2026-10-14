@@ -60,6 +60,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/targets"
+	"github.com/yigitcittan/mongorescue/internal/vaultcreds"
 	"github.com/yigitcittan/mongorescue/web"
 )
 
@@ -144,6 +145,10 @@ type App struct {
 	dirLock     *store.DirLock
 	closeOnce   sync.Once
 	closeErr    error
+
+	// vault resolves credentials read from Vault; Close stops its renewals and
+	// revokes its leases.
+	vault *vaultcreds.Resolver
 
 	// runsAbandoned is set when shutdown gave up waiting for background runs; the
 	// metadata database is then left open for the process exit to release, so no
@@ -291,11 +296,31 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
+	// Credentials of connections and S3 targets read from Vault (MONGORESCUE_VAULT_ADDR)
+	// are resolved when they are used; a start with such connections or targets but
+	// no Vault configured is refused.
+	vaultResolver, err := openVaultResolver(cfg, o.getenv, logger)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			vaultResolver.Close()
+		}
+	}()
+	if err = checkVaultUse(ctx, metaStore, vaultResolver, logger); err != nil {
+		return nil, err
+	}
+	var vaultS3 storage.VaultCredentials
+	if vaultResolver.Configured() {
+		vaultS3 = vaultResolver.S3Provider
+	}
 	// Every driver reads the live upload stall timeout at the start of each upload.
-	storageFactory := storage.TargetFactory(func() time.Duration { return settingsSvc.Current().General.StorageStallTimeout.Std() })
-	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger))
+	storageFactory := storage.TargetFactoryWith(func() time.Duration { return settingsSvc.Current().General.StorageStallTimeout.Std() }, vaultS3)
+	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger),
+		targets.WithVault(vaultResolver.Configured()))
 	prober := mongoconn.New()
-	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger))
+	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger), connections.WithCredentials(vaultResolver))
 	importedKeySecret, err := secretbox.DeriveSubkey(key.Key, auth.ImportedKeySubkeyPurpose)
 	if err != nil {
 		return nil, fmt.Errorf("initialize authentication: %w", err)
@@ -402,6 +427,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return cfg
 		}),
 		backup.WithFence(o.fence()),
+		// Credentials leased from Vault are renewed for the run and revoked after it.
+		backup.WithCredentialHolder(connSvc),
 	)
 	// The audit log (built in step 4) records every post-restore command.
 	var auditLog *auditlog.Service
@@ -425,6 +452,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 		restore.WithCommandRunner(commandRunner(prober)),
 		restore.WithFence(o.fence()),
+		restore.WithCredentialHolder(connSvc),
 		// auditLog is built below; restores only run once the app has started.
 		restore.WithCommandAudit(func(ctx context.Context, rec *models.RestoreRecord, res models.PostRestoreResult) {
 			auditLog.Record(ctx, postRestoreAuditEvent(rec, res))
@@ -447,6 +475,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		key.wrap.wrapper.SetObserver(metricSet.ObserveKeyWrap)
 	}
 	bus := events.NewBus(events.WithLogger(logger), events.WithDropHook(metricSet.IncEventsDropped))
+	vaultResolver.SetAlert(vaultAlert(bus))
 	// Deliveries are stored in the metadata database before they are sent
 	// (notification_outbox), so a crash or a kill does not lose them.
 	notifySvc := notify.NewService(metaStore,
@@ -821,12 +850,10 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		OnWriteError: func(ctx context.Context, err error) {
 			diskGuard.Observe(ctx, err)
 		},
+		// Credentials from Vault are held for the session's life; it reconnects
+		// with fresh ones before they end or once they were rotated.
 		Open: func(ctx context.Context, st *pitr.Stream) (collector.Session, error) {
-			conn, err := connSvc.Resolve(ctx, st.ConnectionID)
-			if err != nil {
-				return nil, err
-			}
-			return openOplogSession(mongotls.NewContext(ctx, conn.TLS()), prober, conn.URI, st.ReadPreference)
+			return openHeldOplogSession(ctx, connSvc, prober, st)
 		},
 		Storage:   targetSvc.Storage,
 		Encryptor: settingsSvc.Encryptor,
@@ -917,6 +944,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 
 	serverOpts := []server.Option{
 		server.WithOperations(ops),
+		server.WithVaultCredentials(vaultResolver),
 		server.WithMCPHandler(mcpSrv.Handler()),
 		server.WithAudit(auditSvc),
 		server.WithAuditLog(auditLog),
@@ -991,6 +1019,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		keyExpiry:     newAPIKeyExpiryMonitor(authSvc, ops, metricSet, settingsSvc, logger),
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
+		vault:         vaultResolver,
 		ha:            o.ha,
 		haKey:         haKey(o.ha, key.Key),
 		haSnap:        haSnap,
@@ -1030,6 +1059,8 @@ func (a *App) Close() error {
 		return nil
 	}
 	a.closeOnce.Do(func() {
+		// Every run ended: the leases they held are revoked, best effort.
+		a.vault.Close()
 		var errs []error
 		if a.storeCloser != nil {
 			errs = append(errs, a.storeCloser.Close())

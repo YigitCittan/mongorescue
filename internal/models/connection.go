@@ -58,6 +58,21 @@ type Connection struct {
 	// ConnectionTLS is the TLS material of the connection (a custom CA, an x509
 	// client certificate), used instead of tls* file options in the URI.
 	ConnectionTLS
+
+	// CredentialSource is where the user name and password come from:
+	// CredentialsStored (or empty) in the URI, or CredentialsVault, read from
+	// Vault (see Vault) whenever the connection is used. With Vault the URI holds no
+	// credentials.
+	CredentialSource CredentialSource `json:"credential_source,omitempty"`
+
+	// Vault names the credentials in Vault (kv-v2 or the database secrets
+	// engine) when CredentialSource is CredentialsVault. It holds no secret.
+	Vault VaultRef `json:"vault,omitzero"`
+}
+
+// FromVault reports whether the connection's credentials are read from Vault.
+func (c *Connection) FromVault() bool {
+	return c != nil && c.CredentialSource == CredentialsVault
 }
 
 // ConnectionTLS is the optional TLS material of a connection. Its PEM values are

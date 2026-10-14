@@ -113,6 +113,11 @@ func (e *Engine) SwapPITRClones(ctx context.Context, req models.RestoreRequest, 
 	if req.MongoURI != "" {
 		ctx = mongotls.NewContext(ctx, req.MongoTLS)
 	}
+	ctx, uri, releaseCredentials, err := e.holdCredentials(ctx, req, uri)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrSwapFailed, err)
+	}
+	defer releaseCredentials()
 	tracker := runs.FromContext(ctx)
 	info := record.PITR
 	toolURI := mongotools.WithReadPreference(mongotools.WithConnectionDefaults(uri), "primary", nil)

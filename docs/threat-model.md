@@ -30,7 +30,7 @@ Assumptions:
 ## Assets
 
 - **Backups**: archives, PITR base backups and oplog chunks on storage, and their records (checksums, encryption mode, retention) in `mongorescue.db`.
-- **Credentials**: MongoDB connection URIs, TLS client keys, S3 secret keys, notification secrets, the age identity or passphrase, all sealed with `secret.key` in the database; `secret.key` itself; password hashes, session and API key hashes.
+- **Credentials**: MongoDB connection URIs, TLS client keys, S3 secret keys, notification secrets, the age identity or passphrase, all sealed with `secret.key` in the database; `secret.key` itself; password hashes, session and API key hashes. Connections and S3 targets with `credential_source: vault` store only a Vault reference: their credentials exist in MongoRescue's memory while they are used (component 6).
 - **Source databases**: restores and post-restore commands write into MongoDB.
 - **Control**: who can delete, restore in place, change retention, protections, users and keys.
 - **Evidence**: the audit log and run logs.
@@ -42,6 +42,7 @@ Assumptions:
 2. MongoRescue → MongoDB (driver in `internal/mongoconn`, tools via `internal/mongotools`).
 3. MongoRescue → storage (`internal/storage`): everything written there is assumed readable and writable by the storage's other principals.
 4. MongoRescue → outbound HTTP/SMTP (notifications, SSO): the destination is untrusted, and the request must not be steerable into the host's own network services.
+4a. MongoRescue → HashiCorp Vault (`internal/vault`, for key wrapping and credentials): the address is a bootstrap setting, never request input; requests carry the Vault token, so they never follow a redirect and need `https` unless an operator opts out for development.
 5. Process → host: the data directory, temporary files and child processes.
 6. Release pipeline → users: archives, images and their signatures.
 
@@ -140,7 +141,7 @@ Assumptions:
 | T | Deletion on the storage side | S3 Object Lock (`internal/storage/s3_lock.go`): every upload carries the target's retention; compliance mode resists every principal; a target with a lock mode is refused unless the bucket has Object Lock and versioning; lowering a lock waits for the grace period. |
 | T | Two targets overwriting each other | Overlapping locations are refused and the purge checks aliases ([security.md](security.md#storage-targets)). |
 | I | Archive contents read on storage | Optional age encryption (component 7); PITR requires it (`ErrEncryptionRequired`, `internal/pitr/collector/collector.go`). Local files are written `0640` in `0750` directories (`internal/storage/local.go`). |
-| I | S3 credentials at rest | Sealed with `secret.key` (component 6). |
+| I | S3 credentials at rest | Sealed with `secret.key` (component 6), or not stored at all: a target with `credential_source: vault` keeps only a Vault reference and its driver reads the keys through an AWS credentials cache that asks Vault again before they expire (`TargetFactoryWith`, `internal/storage/target.go`; `S3Provider`, `internal/vaultcreds/s3.go`), never falling back to the default credential chain. |
 | D | A full data directory, stalled writes | `internal/diskguard` refuses new runs while the data directory is short of space; a stall watch on local writes (`WithStallWatch`). |
 | E | — | The drivers act only for MongoRescue's own requests. |
 
@@ -163,9 +164,10 @@ Assumptions:
 | R | Unrecorded rotation | Rotations are announced durably and audited. |
 | I | A copy of the data directory or volume (a backup, a snapshot, a stolen disk) | Key wrapping (#61, [security.md](security.md#wrapping-secretkey-with-a-kms)): with `MONGORESCUE_KEY_WRAP` the data directory holds only `secret.key.wrapped`, which AWS KMS, Google Cloud KMS, Azure Key Vault or Vault Transit unwraps at every start with the instance's own identity (`Load`, `internal/keywrap/load.go`; providers in `internal/keywrap/provider`); the unwrapped key is checked against the recorded fingerprint (`File.Open`, `internal/keywrap/file.go`), never falls back to a plaintext file, and rotated keys are wrapped before they are written (`internal/keyrotation`). A recovery kit with the plaintext key needs an approved `plaintext_recovery_kit` request under the two-person rule (`internal/server/recovery.go`). |
 | D | Crash mid-rotation | The marker and the `secret.key.next` / `.previous` files let `keyrotation.Open` settle it at the next start. |
+| I | Connection and S3 credentials at rest (with the key, a copy of the volume opens them) | Credentials from Vault (#62, [security.md](security.md#credentials-from-hashicorp-vault)): a connection or S3 target with `credential_source: vault` stores only a reference (mount, path or role, field names; `models.VaultRef`), and the credentials are read when used (`connections.Service.Resolve` and `Hold`, `internal/connections/vault.go`; `internal/vaultcreds`). Nothing read is stored, logged or returned: the store saves the URI without user information (`mongouri.HasUserinfo` refuses one), test results are recorded from the stored connection, errors name the Vault path and field only, and `POST /api/v1/vault/test` reports field names and lease TTLs. Static values are cached in memory only (`MONGORESCUE_VAULT_CACHE_TTL`); dynamic leases (database, AWS engines) are renewed while a run holds them and revoked when it ends or MongoRescue stops; a lease that cannot be kept valid ends the run (`ErrLeaseLost`) and the PITR collector reconnects (`collector.StaleSession`). Vault failures fail the use without a fallback and raise `vault.unavailable` to every channel. |
 | E | — | — |
 
-**Residual risk**: without key wrapping, `secret.key` next to `mongorescue.db` on the same volume means one copy of the volume holds both; with it, whoever can use the KMS key with an instance's identity, or read the running process's memory, still gets the key. Keys from `MONGORESCUE_SECRET_KEY` are never rotated by the application.
+**Residual risk**: without key wrapping, `secret.key` next to `mongorescue.db` on the same volume means one copy of the volume holds both; with it, whoever can use the KMS key with an instance's identity, or read the running process's memory, still gets the key. Keys from `MONGORESCUE_SECRET_KEY` are never rotated by the application. With credentials from Vault, the credentials are in the process's memory while used and whoever holds the instance's Vault identity can read what MongoRescue reads; Vault becomes a dependency of every run that uses it. Connections and targets that keep `credential_source: stored`, notification secrets and TLS client keys stay sealed with `secret.key`.
 
 **Open items**: none; the former gap "no external key provider (KMS) for `secret.key`" is mitigated by key wrapping (#61).
 

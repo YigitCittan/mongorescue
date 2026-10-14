@@ -2386,6 +2386,61 @@
               </div>
             </div>
             <p class="form-hint form-hint-tight" id="storage-secret-hint" data-i18n="storage.secret_hint">Stored encrypted. Shown as ****** when set; leave it unchanged to keep it.</p>
+            <!-- Access keys read from HashiCorp Vault (vault.js) -->
+            <details class="form-group form-details" id="storage-vault">
+              <summary data-i18n="vault.section">Credentials from Vault</summary>
+              <p class="form-hint" data-i18n="vault.target_intro">Optional. Read the access keys from HashiCorp Vault whenever the target is used, instead of storing them. Nothing read from Vault is stored.</p>
+              <p class="form-hint" id="storage-vault-off" data-i18n="vault.not_configured" hidden>Vault is not configured on this server: set MONGORESCUE_VAULT_ADDR and a Vault authentication (VAULT_TOKEN, AppRole or Kubernetes), then restart.</p>
+              <div class="form-group">
+                <label class="check" for="storage-vault-enabled"><input type="checkbox" id="storage-vault-enabled"> <span data-i18n="vault.use_target">Read the access keys from Vault</span></label>
+              </div>
+              <div id="storage-vault-fields" hidden>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label" for="storage-vault-engine" data-i18n="vault.engine">Secrets engine</label>
+                    <select id="storage-vault-engine" class="form-input">
+                      <option value="kv-v2" data-i18n="vault.engine_kv">KV version 2 (static secret)</option>
+                      <option value="aws" data-i18n="vault.engine_aws">AWS secrets engine (dynamic keys)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="storage-vault-mount" data-i18n="vault.mount">Mount</label>
+                    <input type="text" id="storage-vault-mount" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" aria-describedby="storage-vault-mount-hint">
+                  </div>
+                </div>
+                <span class="form-hint" id="storage-vault-mount-hint" data-i18n="vault.mount_hint">Path of the secrets engine, without /v1/. Empty uses the default (secret, database or aws).</span>
+                <div class="form-group" data-vault-engine="kv-v2">
+                  <label class="form-label" for="storage-vault-path" data-i18n="vault.path">Secret path</label>
+                  <input type="text" id="storage-vault-path" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" placeholder="mongorescue/s3" aria-describedby="storage-vault-path-hint">
+                  <span class="form-hint" id="storage-vault-path-hint" data-i18n="vault.path_hint">Path of the secret below the mount, without data/ (for example mongorescue/production).</span>
+                </div>
+                <div class="form-row" data-vault-engine="kv-v2">
+                  <div class="form-group">
+                    <label class="form-label" for="storage-vault-access-field" data-i18n="vault.access_key_field">Access key field</label>
+                    <input type="text" id="storage-vault-access-field" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="128" placeholder="access_key" aria-describedby="storage-vault-fields-hint">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="storage-vault-secret-field" data-i18n="vault.secret_key_field">Secret key field</label>
+                    <input type="text" id="storage-vault-secret-field" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="128" placeholder="secret_key" aria-describedby="storage-vault-fields-hint">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="storage-vault-token-field" data-i18n="vault.session_token_field">Session token field</label>
+                    <input type="text" id="storage-vault-token-field" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="128" aria-describedby="storage-vault-fields-hint">
+                  </div>
+                </div>
+                <span class="form-hint" id="storage-vault-fields-hint" data-vault-engine="kv-v2" data-i18n="vault.fields_hint">Field names in the secret; empty uses the defaults shown. The session token is optional.</span>
+                <div class="form-group" data-vault-engine="dynamic">
+                  <label class="form-label" for="storage-vault-role" data-i18n="vault.role">Role</label>
+                  <input type="text" id="storage-vault-role" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" placeholder="mongorescue-s3" aria-describedby="storage-vault-role-hint">
+                  <span class="form-hint" id="storage-vault-role-hint" data-i18n="vault.role_hint">Role that issues the credentials. They are leased: renewed while a run uses them and revoked after it.</span>
+                </div>
+                <p class="form-hint" data-i18n="vault.target_keys_hint">The access key fields are not used: Vault supplies the keys.</p>
+                <div class="test-row">
+                  <button type="button" class="btn btn-secondary" id="storage-vault-test" data-i18n="vault.test">Test Vault</button>
+                  <span class="test-result" id="storage-vault-result" role="status" aria-live="polite"></span>
+                </div>
+              </div>
+            </details>
             <label class="check check-plain" for="storage-path-style">
               <input type="checkbox" id="storage-path-style">
               <span class="check-text"><span class="check-title" data-i18n="storage.path_style_label">Use path-style URLs</span></span>
@@ -2572,6 +2627,57 @@
             <span class="form-hint" id="connection-post-restore-hint" data-i18n="postrestore.hint">Optional. A JSON array of {"database", "command"} run against the clones of every safe-clone restore into this connection before it completes, for example to re-apply erasures. "database" is a restored database or "*" for all of them. Allowed: delete, update, findAndModify, dropIndexes, collMod, drop. A failing command fails the restore and keeps the clone.</span>
             <span class="field-error" id="connection-post-restore-error" role="alert" hidden></span>
           </div>
+          <!-- Credentials read from HashiCorp Vault (vault.js) -->
+          <details class="form-group form-details" id="connection-vault">
+            <summary data-i18n="vault.section">Credentials from Vault</summary>
+            <p class="form-hint" data-i18n="vault.conn_intro">Optional. Read the user name and password from HashiCorp Vault whenever the connection is used, instead of storing them. Nothing read from Vault is stored.</p>
+            <p class="form-hint" id="connection-vault-off" data-i18n="vault.not_configured" hidden>Vault is not configured on this server: set MONGORESCUE_VAULT_ADDR and a Vault authentication (VAULT_TOKEN, AppRole or Kubernetes), then restart.</p>
+            <div class="form-group">
+              <label class="check" for="connection-vault-enabled"><input type="checkbox" id="connection-vault-enabled"> <span data-i18n="vault.use_conn">Read the user name and password from Vault</span></label>
+            </div>
+            <div id="connection-vault-fields" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="connection-vault-engine" data-i18n="vault.engine">Secrets engine</label>
+                  <select id="connection-vault-engine" class="form-input">
+                    <option value="kv-v2" data-i18n="vault.engine_kv">KV version 2 (static secret)</option>
+                    <option value="database" data-i18n="vault.engine_database">Database secrets engine (dynamic user)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="connection-vault-mount" data-i18n="vault.mount">Mount</label>
+                  <input type="text" id="connection-vault-mount" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" aria-describedby="connection-vault-mount-hint">
+                </div>
+              </div>
+              <span class="form-hint" id="connection-vault-mount-hint" data-i18n="vault.mount_hint">Path of the secrets engine, without /v1/. Empty uses the default (secret, database or aws).</span>
+              <div class="form-group" data-vault-engine="kv-v2">
+                <label class="form-label" for="connection-vault-path" data-i18n="vault.path">Secret path</label>
+                <input type="text" id="connection-vault-path" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" placeholder="mongorescue/production" aria-describedby="connection-vault-path-hint">
+                <span class="form-hint" id="connection-vault-path-hint" data-i18n="vault.path_hint">Path of the secret below the mount, without data/ (for example mongorescue/production).</span>
+              </div>
+              <div class="form-row" data-vault-engine="kv-v2">
+                <div class="form-group">
+                  <label class="form-label" for="connection-vault-user-field" data-i18n="vault.username_field">User name field</label>
+                  <input type="text" id="connection-vault-user-field" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="128" placeholder="username" aria-describedby="connection-vault-fields-hint">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="connection-vault-password-field" data-i18n="vault.password_field">Password field</label>
+                  <input type="text" id="connection-vault-password-field" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="128" placeholder="password" aria-describedby="connection-vault-fields-hint">
+                </div>
+              </div>
+              <span class="form-hint" id="connection-vault-fields-hint" data-vault-engine="kv-v2" data-i18n="vault.fields_hint">Field names in the secret; empty uses the defaults shown. The session token is optional.</span>
+              <div class="form-group" data-vault-engine="dynamic">
+                <label class="form-label" for="connection-vault-role" data-i18n="vault.role">Role</label>
+                <input type="text" id="connection-vault-role" class="form-input mono" spellcheck="false" autocomplete="off" maxlength="512" placeholder="mongorescue-backup" aria-describedby="connection-vault-role-hint">
+                <span class="form-hint" id="connection-vault-role-hint" data-i18n="vault.role_hint">Role that issues the credentials. They are leased: renewed while a run uses them and revoked after it.</span>
+              </div>
+              <p class="form-hint" data-i18n="vault.conn_uri_hint">Leave the user name and password out of the connection string: Vault supplies both.</p>
+              <div class="test-row">
+                <button type="button" class="btn btn-secondary" id="connection-vault-test" data-i18n="vault.test">Test Vault</button>
+                <span class="test-result" id="connection-vault-result" role="status" aria-live="polite"></span>
+              </div>
+            </div>
+          </details>
           <!-- TLS material: a custom CA, an x509 client certificate (tls.js) -->
           <details class="form-group form-details" id="connection-tls">
             <summary data-i18n="tls.section">TLS / client certificate</summary>
@@ -3303,6 +3409,7 @@
   <script src="/throttle.js"></script>
   <script src="/postrestore.js"></script>
   <script src="/tls.js"></script>
+  <script src="/vault.js"></script>
   <script src="/stall.js"></script>
   <script src="/apikeys.js"></script>
   <script src="/ratelimit.js"></script>
