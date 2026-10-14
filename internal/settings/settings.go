@@ -208,6 +208,39 @@ type Security struct {
 	// jobs: every copy target of the job must have S3 Object Lock. Turning it off is
 	// a lowered protection, delayed like the grace period (see protection.go).
 	RequireLockedCopies bool `json:"require_locked_copies"`
+	// APIKeyMaxLifetimeDays caps the lifetime of API keys in days (0, the default,
+	// is unlimited; at most MaxAPIKeyLifetimeDays). While it is set, a new key needs
+	// an expiry within it, and every existing key except the imported one that has
+	// no expiry or a later one gets now + this many days, which is announced (the
+	// api_key.deadline_set event), not applied silently. Keys imported from
+	// MONGORESCUE_API_KEY keep no expiry and are shown in a warning.
+	APIKeyMaxLifetimeDays int `json:"api_key_max_lifetime_days"`
+	// APIKeyExpiryWarningDays is how many days before its expiry a key is reported
+	// (a settings warning, the api_key.expiring event and the
+	// mongorescue_api_keys_expiring metric); 1 to MaxAPIKeyExpiryWarningDays,
+	// default DefaultAPIKeyExpiryWarningDays.
+	APIKeyExpiryWarningDays int `json:"api_key_expiry_warning_days"`
+}
+
+// Limits and defaults of the API key expiry settings.
+const (
+	// MaxAPIKeyLifetimeDays is the largest security.api_key_max_lifetime_days.
+	MaxAPIKeyLifetimeDays = 3650
+	// DefaultAPIKeyExpiryWarningDays is the default security.api_key_expiry_warning_days.
+	DefaultAPIKeyExpiryWarningDays = 14
+	// MaxAPIKeyExpiryWarningDays is the largest security.api_key_expiry_warning_days.
+	MaxAPIKeyExpiryWarningDays = 365
+)
+
+// APIKeyMaxLifetime returns security.api_key_max_lifetime_days as a duration (0:
+// unlimited).
+func (s Security) APIKeyMaxLifetime() time.Duration {
+	return time.Duration(s.APIKeyMaxLifetimeDays) * 24 * time.Hour
+}
+
+// APIKeyExpiryWarning returns security.api_key_expiry_warning_days as a duration.
+func (s Security) APIKeyExpiryWarning() time.Duration {
+	return time.Duration(s.APIKeyExpiryWarningDays) * 24 * time.Hour
 }
 
 // DeleteGrace returns the delete grace period as a duration.
@@ -261,12 +294,13 @@ func Defaults() Settings {
 			StorageStallTimeout:       Duration(DefaultStorageStallTimeout),
 		},
 		Security: Security{
-			SessionIdleTimeout:     Duration(12 * time.Hour),
-			SessionAbsoluteTimeout: Duration(7 * 24 * time.Hour),
-			SecureCookies:          CookiesAuto,
-			CORSOrigins:            []string{},
-			MCPEnabled:             true,
-			DeleteGraceDays:        models.DefaultDeleteGraceDays,
+			SessionIdleTimeout:      Duration(12 * time.Hour),
+			SessionAbsoluteTimeout:  Duration(7 * 24 * time.Hour),
+			SecureCookies:           CookiesAuto,
+			CORSOrigins:             []string{},
+			MCPEnabled:              true,
+			DeleteGraceDays:         models.DefaultDeleteGraceDays,
+			APIKeyExpiryWarningDays: DefaultAPIKeyExpiryWarningDays,
 		},
 		Encryption: Encryption{
 			Mode:        ModeX25519,
@@ -357,16 +391,18 @@ type GeneralPatch struct {
 
 // SecurityPatch updates Security; see Security for the fields.
 type SecurityPatch struct {
-	SessionIdleTimeout     *Duration     `json:"session_idle_timeout,omitempty"`
-	SessionAbsoluteTimeout *Duration     `json:"session_absolute_timeout,omitempty"`
-	SecureCookies          *CookiePolicy `json:"secure_cookies,omitempty"`
-	TrustProxyHeaders      *bool         `json:"trust_proxy_headers,omitempty"`
-	CORSOrigins            *[]string     `json:"cors_origins,omitempty"`
-	MetricsPublic          *bool         `json:"metrics_public,omitempty"`
-	MCPEnabled             *bool         `json:"mcp_enabled,omitempty"`
-	DeleteGraceDays        *int          `json:"delete_grace_days,omitempty"`
-	RequireSecondApprover  *bool         `json:"require_second_approver,omitempty"`
-	RequireLockedCopies    *bool         `json:"require_locked_copies,omitempty"`
+	SessionIdleTimeout      *Duration     `json:"session_idle_timeout,omitempty"`
+	SessionAbsoluteTimeout  *Duration     `json:"session_absolute_timeout,omitempty"`
+	SecureCookies           *CookiePolicy `json:"secure_cookies,omitempty"`
+	TrustProxyHeaders       *bool         `json:"trust_proxy_headers,omitempty"`
+	CORSOrigins             *[]string     `json:"cors_origins,omitempty"`
+	MetricsPublic           *bool         `json:"metrics_public,omitempty"`
+	MCPEnabled              *bool         `json:"mcp_enabled,omitempty"`
+	DeleteGraceDays         *int          `json:"delete_grace_days,omitempty"`
+	RequireSecondApprover   *bool         `json:"require_second_approver,omitempty"`
+	RequireLockedCopies     *bool         `json:"require_locked_copies,omitempty"`
+	APIKeyMaxLifetimeDays   *int          `json:"api_key_max_lifetime_days,omitempty"`
+	APIKeyExpiryWarningDays *int          `json:"api_key_expiry_warning_days,omitempty"`
 }
 
 // EncryptionPatch updates Encryption. Identity and Passphrase follow the keep-secret
@@ -410,6 +446,8 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
 		setIf(&next.Security.RequireSecondApprover, sec.RequireSecondApprover)
 		setIf(&next.Security.RequireLockedCopies, sec.RequireLockedCopies)
+		setIf(&next.Security.APIKeyMaxLifetimeDays, sec.APIKeyMaxLifetimeDays)
+		setIf(&next.Security.APIKeyExpiryWarningDays, sec.APIKeyExpiryWarningDays)
 	}
 	if enc := p.Encryption; enc != nil {
 		setIf(&next.Encryption.Enabled, enc.Enabled)
@@ -520,6 +558,10 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: security.session_absolute_timeout must not be shorter than session_idle_timeout", ErrInvalid)
 	case sec.DeleteGraceDays < models.MinDeleteGraceDays || sec.DeleteGraceDays > models.MaxDeleteGraceDays:
 		return fmt.Errorf("%w: security.delete_grace_days must be between %d and %d", ErrInvalid, models.MinDeleteGraceDays, models.MaxDeleteGraceDays)
+	case sec.APIKeyMaxLifetimeDays < 0 || sec.APIKeyMaxLifetimeDays > MaxAPIKeyLifetimeDays:
+		return fmt.Errorf("%w: security.api_key_max_lifetime_days must be between 0 (unlimited) and %d", ErrInvalid, MaxAPIKeyLifetimeDays)
+	case sec.APIKeyExpiryWarningDays < 1 || sec.APIKeyExpiryWarningDays > MaxAPIKeyExpiryWarningDays:
+		return fmt.Errorf("%w: security.api_key_expiry_warning_days must be between 1 and %d", ErrInvalid, MaxAPIKeyExpiryWarningDays)
 	}
 	switch sec.SecureCookies {
 	case CookiesAuto, CookiesAlways, CookiesNever:

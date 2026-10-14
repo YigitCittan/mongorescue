@@ -186,7 +186,7 @@ The exit codes are a stable contract:
 | `0` | Success |
 | `1` | The operation failed: a backup, restore or verification failed, a restore preflight failed, a readiness check failed, or the server refused the request as invalid (`400`, `422`, `429`), or Ctrl-C before a run was known to have started |
 | `2` | Usage: unknown command or flag, missing or extra arguments, `--in-place` without `--confirm`, an invalid URL, no API key |
-| `3` | The server refused the API key (`401`) or its scope does not allow the request (`403`) |
+| `3` | The server refused the API key (`401`; an [expired key](security.md#api-key-expiry) says so and how to replace it) or its scope does not allow the request (`403`) |
 | `4` | Not found (`404`): the backup, restore or job does not exist |
 | `5` | Conflict (`409`): for example a backup of the same database is already running |
 | `6` | `--wait` stopped (`--timeout`, the one-hour default of `verify --wait`, or Ctrl-C) before the run finished; it goes on on the server |

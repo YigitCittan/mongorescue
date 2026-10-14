@@ -142,6 +142,18 @@ function runtimeRenderWarnings(list) {
       });
       body.append(ul);
     }
+    // The API keys of api_keys_expiring and api_key_never_expires (apikeys.js).
+    const keys = Array.isArray(w.api_keys) ? w.api_keys : [];
+    if (keys.length > 0) {
+      const ul = document.createElement("ul");
+      ul.className = "postrestore-kept-list";
+      keys.forEach(k => {
+        const li = document.createElement("li");
+        li.textContent = typeof apiKeyWarningLine === "function" ? apiKeyWarningLine(k) : String((k && k.name) || "");
+        ul.append(li);
+      });
+      body.append(ul);
+    }
     section.append(body);
     box.append(section);
   });

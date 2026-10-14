@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
@@ -43,13 +44,15 @@ func (s *Server) handleDropKeptClones(w http.ResponseWriter, r *http.Request) {
 }
 
 // warnings returns the persistent warnings of svc, one about the connections whose
-// TLS checks are loosened, and, from the restore records, one per restore whose
-// clones were kept after a failed post-restore command.
+// TLS checks are loosened, those about API keys that expire soon (see
+// apiKeyWarnings) and, from the restore records, one per restore whose clones were
+// kept after a failed post-restore command.
 func (s *Server) warnings(ctx context.Context, svc *settings.Service) []settings.Warning {
 	out := svc.Warnings()
 	if w, ok := s.tlsWarning(ctx); ok {
 		out = append(out, w)
 	}
+	out = append(out, s.apiKeyWarnings(ctx)...)
 	if s.ops == nil {
 		return out
 	}
@@ -171,6 +174,39 @@ func logFileName(id string) string {
 		clean = "run"
 	}
 	return clean + ".log"
+}
+
+// apiKeyWarnings returns settings.WarningAPIKeysExpiring while API keys the caller
+// may see expire within the warning window or have expired, and
+// settings.WarningAPIKeyNeverExpires while a maximum lifetime is set and a key
+// imported from MONGORESCUE_API_KEY has no expiry.
+func (s *Server) apiKeyWarnings(ctx context.Context) []settings.Warning {
+	p := auth.PrincipalFrom(ctx)
+	if s.auth == nil || p == nil {
+		return nil
+	}
+	st, err := s.auth.APIKeyExpiryStatus(ctx, p)
+	if err != nil {
+		s.logger.Warn("could not check the API key expiries for the warnings", logsafe.Error(err))
+		return nil
+	}
+	var out []settings.Warning
+	if len(st.Expiring) > 0 {
+		out = append(out, settings.APIKeysExpiring(warningKeys(st.Expiring)))
+	}
+	if len(st.NeverExpiring) > 0 {
+		out = append(out, settings.APIKeyNeverExpires(warningKeys(st.NeverExpiring)))
+	}
+	return out
+}
+
+// warningKeys describes keys for a warning (never their secrets).
+func warningKeys(keys []*auth.APIKey) []settings.WarningAPIKey {
+	out := make([]settings.WarningAPIKey, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, settings.WarningAPIKey{ID: k.ID, Name: k.Name, Prefix: k.Prefix, ExpiresAt: k.ExpiresAt})
+	}
+	return out
 }
 
 // tlsWarning returns the settings.WarningConnectionTLSLoosened warning when any

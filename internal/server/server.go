@@ -415,7 +415,16 @@ type apiResponse struct {
 	Data    any    `json:"data,omitempty"`
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Code is a stable, machine-readable reason of some refusals (such as
+	// codeAPIKeyExpired); clients match it instead of the English error text.
+	Code string `json:"code,omitempty"`
 }
+
+// Error codes of refusals (apiResponse.Code).
+const (
+	// codeAPIKeyExpired is the 401 of an API key past its expiry.
+	codeAPIKeyExpired = "api_key_expired"
+)
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -428,6 +437,13 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeErrorData(w, status, message, nil)
+}
+
+// writeErrorCode writes an error response with a machine-readable code.
+func writeErrorCode(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(apiResponse{Success: false, Error: message, Code: code})
 }
 
 // writeErrorData writes an error response that also carries data (e.g. the checks of

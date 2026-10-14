@@ -266,3 +266,28 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 // RoundTrip implements http.RoundTripper.
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestClientRecognisesAnExpiredKey(t *testing.T) {
+	var expired atomic.Bool
+	expired.Store(true)
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		if expired.Load() {
+			_, _ = io.WriteString(w, `{"success":false,"error":"unauthorized: the API key expired at 2026-10-01T12:00:00Z","code":"api_key_expired"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"success":false,"error":"unauthorized"}`)
+	})
+	_, err := c.Me(context.Background())
+	if !errors.Is(err, ErrAPIKeyExpired) || !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expired key: %v; want ErrAPIKeyExpired and ErrUnauthorized", err)
+	}
+	if apiErr, ok := AsAPIError(err); !ok || apiErr.Code != CodeAPIKeyExpired {
+		t.Fatalf("APIError = %+v", apiErr)
+	}
+	expired.Store(false)
+	if _, err = c.Me(context.Background()); errors.Is(err, ErrAPIKeyExpired) || !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unknown key: %v; want ErrUnauthorized only", err)
+	}
+}

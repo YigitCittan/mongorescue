@@ -1311,6 +1311,18 @@
                 <span class="form-hint" data-i18n="settings.mcp_enabled_hint">Serve the Model Context Protocol at /mcp so assistants such as Claude, Copilot or Cursor can use MongoRescue with an API key. Browser sessions are never accepted there.</span>
               </span>
             </label>
+            <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="set-api-key-max-lifetime" data-i18n="apikeys.max_lifetime">Maximum API key lifetime (days)</label>
+              <input type="number" id="set-api-key-max-lifetime" class="form-input" min="0" max="3650" step="1" inputmode="numeric" aria-describedby="set-api-key-max-lifetime-hint">
+              <span class="form-hint" id="set-api-key-max-lifetime-hint" data-i18n="apikeys.max_lifetime_hint">0 is unlimited. When set, new keys need an expiry within it, and existing keys without one (or with a later one) expire this many days from now; this is announced.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="set-api-key-warning" data-i18n="apikeys.warning_days">Expiry warning (days)</label>
+              <input type="number" id="set-api-key-warning" class="form-input" min="1" max="365" step="1" inputmode="numeric" aria-describedby="set-api-key-warning-hint">
+              <span class="form-hint" id="set-api-key-warning-hint" data-i18n="apikeys.warning_days_hint">Warn this many days before a key expires (1–365).</span>
+            </div>
+            </div>
           </fieldset>
           <fieldset class="settings-group">
             <legend class="settings-group-title" data-i18n="protection.group_title">Delete protection</legend>
@@ -1700,11 +1712,12 @@
                 <th scope="col" data-i18n="settings.col_created_by">Created by</th>
                 <th scope="col" data-i18n="settings.col_created">Created</th>
                 <th scope="col" data-i18n="settings.col_last_used">Last used</th>
+                <th scope="col" data-i18n="apikeys.col_expires">Expires</th>
                 <th scope="col" class="col-actions"><span class="sr-only" data-i18n="tables.actions">Actions</span></th>
               </tr>
             </thead>
             <tbody id="apikeys-tbody">
-              <tr class="empty-row"><td colspan="7"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
+              <tr class="empty-row"><td colspan="8"><div class="empty-state"><p data-i18n="tables.loading">Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -2945,6 +2958,19 @@
             <span class="form-hint" id="api-key-scope-hint" data-i18n="settings.key_scope_hint">Read only: view everything (GET requests and read-only MCP tools). Operator: also start backups, run jobs and restore into safe clones. Admin: full access, including deletions and settings.</span>
             <span class="form-hint" id="api-key-scope-limit" data-i18n="settings.user_role_scope_limit" hidden>Scopes above your role are not offered.</span>
           </div>
+          <div class="form-group">
+            <label class="form-label" for="api-key-expiry" data-i18n="apikeys.expiry_label">Expires</label>
+            <select id="api-key-expiry" class="form-select" aria-describedby="api-key-expiry-hint">
+              <option value="never" data-i18n="apikeys.expiry_never">Never</option>
+              <option value="30">30</option>
+              <option value="90">90</option>
+              <option value="180">180</option>
+              <option value="365">365</option>
+              <option value="date" data-i18n="apikeys.expiry_date">On a date…</option>
+            </select>
+            <input type="date" id="api-key-expiry-date" class="form-input" aria-label="Expiry date" data-i18n-aria-label="apikeys.expiry_date_label" hidden>
+            <span class="form-hint" id="api-key-expiry-hint" data-i18n="apikeys.expiry_hint">The key stops working at this time. Create a replacement before then; you are warned in advance.</span>
+          </div>
           <fieldset class="form-group access-fieldset" id="api-key-connections-group" aria-describedby="api-key-connections-hint" hidden>
             <legend class="form-label" data-i18n="access.label">Connections</legend>
             <div class="access-checklist" id="api-key-connections"></div>
@@ -3254,6 +3280,7 @@
   <script src="/postrestore.js"></script>
   <script src="/tls.js"></script>
   <script src="/stall.js"></script>
+  <script src="/apikeys.js"></script>
   <script src="/runtimewarnings.js"></script>
   <script src="/ha.js"></script>
   <script src="/widgets.js"></script>

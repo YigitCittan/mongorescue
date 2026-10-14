@@ -150,7 +150,7 @@ func RunBridge(ctx context.Context, cfg BridgeConfig) error {
 func connectError(status int, endpoint string, err error) error {
 	switch status {
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%w (401): check MONGORESCUE_MCP_API_KEY", ErrBridgeAuth)
+		return fmt.Errorf("%w (401): check MONGORESCUE_MCP_API_KEY (unknown, revoked or expired)", ErrBridgeAuth)
 	case http.StatusForbidden:
 		return fmt.Errorf("%w (403): the MCP endpoint may be disabled (Settings → Security) or the request origin was refused", ErrBridgeAuth)
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:

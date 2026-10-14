@@ -59,6 +59,19 @@ type Service struct {
 	// oidcGuard checks and applies changes of the OIDC section (see OIDCGuard);
 	// guarded by writeMu.
 	oidcGuard OIDCGuard
+	// changeHooks are called after every committed change (see OnChange); guarded
+	// by mu.
+	changeHooks []func(keys []string)
+}
+
+// OnChange registers fn, which is called with the sorted keys of the settings that
+// changed after every committed change (updates, applied pending changes and
+// imports). It runs while the change is still serialised against other updates, so
+// it must return quickly and must not update settings itself.
+func (s *Service) OnChange(fn func(keys []string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.changeHooks = append(s.changeHooks, fn)
 }
 
 // Option customises a Service.
@@ -230,12 +243,16 @@ func (s *Service) commit(ctx context.Context, cur, next Settings, pre ...Precond
 	for k := range changes {
 		s.stored[k] = true
 	}
+	hooks := slices.Clone(s.changeHooks)
 	s.mu.Unlock()
 	keys := make([]string, 0, len(changes))
 	for k := range changes {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
+	for _, fn := range hooks {
+		fn(slices.Clone(keys))
+	}
 	return keys, nil
 }
 

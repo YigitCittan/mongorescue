@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // WarningEncryptionOff identifies the warning raised when the previous (deprecated)
@@ -30,6 +31,46 @@ type Warning struct {
 	Connections []WarningConnection `json:"connections,omitempty"`
 	// Channels names the notification channels of a WarningChannelUnreadable.
 	Channels []string `json:"channels,omitempty"`
+	// APIKeys names the API keys of a WarningAPIKeysExpiring or a
+	// WarningAPIKeyNeverExpires.
+	APIKeys []WarningAPIKey `json:"api_keys,omitempty"`
+}
+
+// WarningAPIKey is an API key a warning is about (never its secret).
+type WarningAPIKey struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
+	// ExpiresAt is when the key expires or expired (nil: never).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// WarningAPIKeysExpiring identifies the warning about API keys that expire within
+// security.api_key_expiry_warning_days or have expired. It is raised by the server
+// from the keys (not stored here) while any does.
+const WarningAPIKeysExpiring = "api_keys_expiring" //nolint:gosec // G101: a warning ID, not a credential.
+
+// APIKeysExpiring returns the WarningAPIKeysExpiring warning for keys.
+func APIKeysExpiring(keys []WarningAPIKey) Warning {
+	names := make([]string, 0, len(keys))
+	for _, k := range keys {
+		names = append(names, k.Name)
+	}
+	return Warning{ID: WarningAPIKeysExpiring, Setting: "apikeys", APIKeys: keys,
+		Message: fmt.Sprintf("These API keys expire soon or have expired; create replacements and update the clients that use them: %s.",
+			strings.Join(names, ", "))}
+}
+
+// WarningAPIKeyNeverExpires identifies the warning about API keys imported from
+// MONGORESCUE_API_KEY while security.api_key_max_lifetime_days is set: they keep no
+// expiry. It is raised by the server from the keys (not stored here).
+const WarningAPIKeyNeverExpires = "api_key_never_expires" //nolint:gosec // G101: a warning ID, not a credential.
+
+// APIKeyNeverExpires returns the WarningAPIKeyNeverExpires warning for keys.
+func APIKeyNeverExpires(keys []WarningAPIKey) Warning {
+	return Warning{ID: WarningAPIKeyNeverExpires, Setting: "apikeys", APIKeys: keys,
+		Message: "The API key imported from MONGORESCUE_API_KEY never expires, although a maximum API key lifetime is set. " +
+			"Replace it with a key created in Settings → API keys and revoke it."}
 }
 
 // WarningConnection is a connection a warning is about.
