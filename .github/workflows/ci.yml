@@ -475,4 +475,4 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       - name: Lint Shell Scripts (shellcheck)
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh .clusterfuzzlite/build.sh

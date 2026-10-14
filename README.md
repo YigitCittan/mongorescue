@@ -186,6 +186,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 - [Encryption and verified restores](docs/encryption.md)
 - [Verification, restore tests and retention safety](docs/verification.md)
 - [Delete protection and its threat model](docs/security.md)
+- [Threat model (STRIDE, per component)](docs/threat-model.md) and [verifying releases](docs/security.md#verifying-releases)
 - [Privacy, retention and erasure requests](docs/privacy.md)
 - [Notifications](docs/notifications.md)
 - [Metrics and alerting](docs/metrics.md)
@@ -215,6 +216,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full testing setup and how to sen
 
 MongoRescue holds the credentials of your databases and your storage, so it is built to limit what one stolen credential can do. Deletes through MongoRescue are soft and wait out a grace period, lowered protections wait too, and an optional two-person rule needs a second administrator for destructive actions ([delete protection](docs/security.md#delete-protection)). S3 targets can lock every object in compliance mode, so not even the bucket's credentials can delete an archive early ([Object Lock](docs/security.md#immutable-backups-s3-object-lock)). Users and API keys get a role (viewer, operator, admin) and can be limited to some connections ([roles](docs/design/roles.md), [per-connection access](docs/security.md#per-connection-access)); every action lands in a hash-chained [audit log](docs/audit.md); connections to MongoDB can use [TLS and x509](docs/connections.md#tls-settings). What this does and does not protect against is in the [threat model](docs/security.md#what-this-protects-against).
 
+**Security:** the [threat model](docs/threat-model.md) covers every component (STRIDE, with the code behind each mitigation and the open items); release archives, checksums, SBOMs, desktop assets and container images are signed with Sigstore cosign and carry SLSA provenance ([how to verify them](docs/security.md#verifying-releases)); the parsers of untrusted input are fuzzed continuously with ClusterFuzzLite.
+
 ## Known limitations
 
 As of v0.25.0. Run through the [production checklist](docs/production.md#production-checklist) before you rely on MongoRescue.
@@ -224,7 +227,7 @@ As of v0.25.0. Run through the [production checklist](docs/production.md#product
 - **Sharded clusters are not supported** ([#58](https://github.com/YigitCittan/mongorescue/issues/58)). Dumps through `mongos` are not tested and not consistent across shards; point-in-time recovery needs a replica set.
 - **Point-in-time recovery: replica sets only, in place with downtime.** Point-in-time recovery (a supported feature since [#141](https://github.com/YigitCittan/mongorescue/issues/141)) restores replica sets only, never sharded clusters, into new safe-clone databases; replacing the original databases ([#142](https://github.com/YigitCittan/mongorescue/issues/142)) is an administrator's opt-in that restores into clones first, takes a safety backup and needs applications to stop writing until it completes ([procedure](docs/pitr.md#replacing-the-original-databases-in-place)). The oplog replays on one thread, so the restore time grows with the oplog after the base ([measured rates](docs/pitr.md#restore-time-rto)). See [docs/pitr.md](docs/pitr.md#not-there-yet).
 - **No cross-region DR policy** ([#143](https://github.com/YigitCittan/mongorescue/issues/143)). [Copies](docs/production.md#3-2-1-backups) go to any second target, but MongoRescue does not know regions or accounts: it does not check that a copy is locked, in another region or under other credentials, PITR oplog chunks and base backups are not copied, and there is no DR drill that restores from the other region.
-- **No independent security audit** ([#144](https://github.com/YigitCittan/mongorescue/issues/144)). The threat model is [docs/security.md](docs/security.md); there has been no third-party review or pentest yet.
+- **No independent security audit** ([#144](https://github.com/YigitCittan/mongorescue/issues/144)). The threat model is [docs/threat-model.md](docs/threat-model.md); there has been no third-party review or pentest yet.
 - **Single sign-on** sessions do not follow the identity provider's (no refresh tokens, no back-channel logout), and the desktop app has no single sign-on ([docs/sso.md](docs/sso.md)).
 - **Platforms.** The macOS app is not signed or notarized yet, a [1.0 criterion](docs/versioning.md#what-10-means) ([desktop](docs/desktop.md#install)). Windows binaries are unit-tested in CI, but the integration tests (real MongoDB, S3 emulators) run on Linux only. The standalone server binary needs the [MongoDB Database Tools](docs/configuration.md#mongodb-database-tools) on the host; the Docker image and the desktop app include them.
 

@@ -61,6 +61,31 @@ sboms:
   - id: archive-sboms
     artifacts: archive
 
+# Keyless Sigstore signatures (cosign, GitHub Actions OIDC; no key, no secret): one
+# <asset>.sigstore.json bundle (certificate, signature and Rekor entry) per archive,
+# SBOM and checksums.txt, uploaded with them. The release workflow installs cosign
+# and grants id-token: write. Verification: docs/security.md#verifying-releases.
+# Local runs without an OIDC identity skip signing: goreleaser release --skip=sign.
+signs:
+  - id: cosign-checksum
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    output: true
+  - id: cosign-archive
+    cmd: cosign
+    artifacts: archive
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    output: true
+  - id: cosign-sbom
+    cmd: cosign
+    artifacts: sbom
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    output: true
+
 # Local runs only: the release workflow passes the CHANGELOG.md section of the
 # tag with --release-notes (scripts/changelog-section.sh), which replaces the
 # generated commit list in the GitHub release.

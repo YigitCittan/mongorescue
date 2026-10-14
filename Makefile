@@ -31,7 +31,10 @@ PROMETHEUS_IMAGE?=prom/prometheus:v3.15.0
 # (override FUZZ_TARGETS to run a subset).
 FUZZTIME?=30s
 FUZZ_TARGETS?= \
+	./internal/config:FuzzFileTargetPath \
+	./internal/config:FuzzHATargetLabel \
 	./internal/config:FuzzLoadLegacy \
+	./internal/config:FuzzParseHATarget \
 	./internal/desktop:FuzzArchiveTarget \
 	./internal/desktop:FuzzExtractArchive \
 	./internal/desktop:FuzzExtractArchiveNames \
@@ -39,6 +42,10 @@ FUZZ_TARGETS?= \
 	./internal/encryption:FuzzRoundTrip \
 	./internal/models:FuzzRescueDatabaseName \
 	./internal/models:FuzzValidateNamespace \
+	./internal/mongotls:FuzzCheckKDF \
+	./internal/mongotls:FuzzConfig \
+	./internal/mongotls:FuzzDecryptKey \
+	./internal/mongotools:FuzzParseProgress \
 	./internal/mongotools:FuzzReadPrelude \
 	./internal/mongotools:FuzzWithConnectionDefaults \
 	./internal/mongotools:FuzzWriteURIConfig \
@@ -48,6 +55,7 @@ FUZZ_TARGETS?= \
 	./internal/notify:FuzzValidateEmail \
 	./internal/notify:FuzzValidateWebhook \
 	./internal/notify:FuzzWebhookHostForms \
+	./internal/oplog:FuzzArchiveWriter \
 	./internal/oplog:FuzzFilter \
 	./internal/oplog:FuzzScanner \
 	./internal/redact:FuzzTextPassword \
@@ -62,7 +70,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-pitr-soak test-e2e test-prometheus-rules test-desktop-update-e2e fuzz cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-pitr-soak test-e2e test-prometheus-rules test-desktop-update-e2e fuzz fuzz-list cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -141,6 +149,10 @@ test-desktop-update-e2e:
 fuzz:
 	@./scripts/fuzz.sh $(FUZZTIME) $(FUZZ_TARGETS)
 
+## fuzz-list: Prints FUZZ_TARGETS, one <package>:<FuzzFunc> per line (read by .clusterfuzzlite/build.sh)
+fuzz-list:
+	@printf '%s\n' $(FUZZ_TARGETS)
+
 ## clean: Removes build artifacts
 clean:
 	@echo "==> Cleaning artifacts..."
@@ -198,7 +210,7 @@ vulncheck:
 ## lint-ci: Lints GitHub workflows (actionlint) and shell scripts (shellcheck)
 lint-ci:
 	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-	shellcheck scripts/*.sh
+	shellcheck scripts/*.sh .clusterfuzzlite/build.sh
 
 ## release-snapshot: Builds a local GoReleaser snapshot in $(DIST_DIR)/ (needs syft for SBOMs)
 release-snapshot:

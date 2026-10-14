@@ -185,6 +185,12 @@ func ParseHATarget(v string) (HATarget, error) {
 		if u.Host == "" {
 			return HATarget{}, fmt.Errorf("%w: s3:// needs a bucket, as in s3://bucket/prefix", ErrInvalidHA)
 		}
+		if strings.Contains(u.Host, ":") {
+			// A bucket name has no colon. "s3://key:123/secret@bucket" (a secret
+			// with a '/') parses as the host "key:123": refuse it rather than
+			// take part of a credential for the bucket and the rest for the prefix.
+			return HATarget{}, fmt.Errorf("%w: the bucket of an s3:// location must not contain ':'; set the endpoint with ?endpoint= and take credentials from the AWS default chain", ErrInvalidHA)
+		}
 		q := u.Query()
 		for k := range q {
 			switch k {

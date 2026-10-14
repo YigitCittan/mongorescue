@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,6 +87,14 @@ func TestParseHATarget(t *testing.T) {
 	}
 	if _, err = ParseHATarget("s3://bkt?endpoint=ftp://x"); err == nil {
 		t.Fatal("a non-http endpoint was accepted")
+	}
+	// A secret with a '/' after a numeric first part must not become a bucket
+	// "key:123" with the rest of the secret as the prefix (found by FuzzHATargetLabel).
+	if _, err = ParseHATarget("s3://key:123/secret@bucket"); !errors.Is(err, ErrInvalidHA) {
+		t.Fatalf("a bucket with a port was accepted: %v", err)
+	}
+	if label := HATargetLabel("s3://key:123/secret@bucket"); strings.Contains(label, "secret") {
+		t.Fatalf("HATargetLabel leaks the secret: %q", label)
 	}
 	if _, err = ParseHATarget("file://relative/dir"); runtime.GOOS != "windows" && err == nil {
 		t.Fatal("a file location with a host was accepted outside Windows (where it is a UNC path)")

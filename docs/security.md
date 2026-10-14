@@ -2,7 +2,7 @@
 
 MongoRescue holds the means to destroy your backups: an administrator, or anyone with a stolen administrator session or API key, can delete backups, shorten retention and delete or repoint storage targets. Ransomware operators look for exactly this before they encrypt production. Delete protection makes sure that **nothing done through MongoRescue makes a backup unrecoverable faster than the delete grace period**, and optionally that **no single administrator can finish a destructive action alone**.
 
-This page is the threat model. Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
+This page is the threat model of delete protection. The threat model of every component (STRIDE: assets, trust boundaries, threats, mitigations with their code, residual risk and open items) is in [threat-model.md](threat-model.md), and [Verifying releases](#verifying-releases) below shows how to check the signatures and provenance of what you download. Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
 
 `secret.key`, the root key of every stored credential, can be [wrapped by an external KMS](#wrapping-secretkey-with-a-kms) so that the data directory never holds it in plain form.
 
@@ -192,3 +192,74 @@ with `MONGORESCUE_KEY_WRAP` still naming the current key: it unwraps every wrapp
 - **The encryption settings.** Delete protection does not cover them. A replaced or removed age identity or passphrase is kept as a retired key, so older backups stay restorable; keep the recovery kit offline anyway.
 - **The source data.** An in-place restore (admin, with confirmation) overwrites a database; delete protection covers backups, not MongoDB. With the two-person rule, an in-place restore that drops the target first waits for a second administrator; one that only overwrites does not.
 - **Metadata snapshots** are not soft-deleted: they are kept for at least the grace period and then removed by their own retention.
+
+## Verifying releases
+
+Every release after v0.27.0 can be verified without trusting the download location. The release workflow (`.github/workflows/release.yml`) and the image workflow (`.github/workflows/docker.yml`) sign with [Sigstore](https://www.sigstore.dev/) keyless signing: GitHub Actions proves the workflow's identity with an OIDC token, Fulcio issues a short-lived certificate for it, and the signature is recorded in the Rekor transparency log. No key exists that could leak, and no secret is involved.
+
+| What | Signed with | Provenance |
+| :--- | :--- | :--- |
+| Server archives (`mongorescue_<version>_<os>_<arch>.tar.gz` / `.zip`), `checksums.txt` | cosign: `<asset>.sigstore.json` next to each asset | SLSA Build Level 3 (`mongorescue_<version>.intoto.jsonl`) and a GitHub artifact attestation |
+| SBOMs (`<archive>.sbom.json`) | cosign: `<asset>.sigstore.json` | |
+| Desktop assets and `MongoRescue-desktop_<version>_checksums.txt` | cosign: `<asset>.sigstore.json` | GitHub artifact attestation (assets) |
+| Container image `ghcr.io/yigitcittan/mongorescue` | cosign, by digest, stored in GHCR | GitHub artifact attestation, BuildKit SLSA provenance and SBOM |
+
+The examples use version `0.28.0`; replace it with the release you downloaded. They need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later, [slsa-verifier](https://github.com/slsa-framework/slsa-verifier) 2.7 or later and the [GitHub CLI](https://cli.github.com/).
+
+### Archives and checksums (cosign)
+
+Verify `checksums.txt` against the release workflow's identity, then the archives against it:
+
+```sh
+cosign verify-blob checksums.txt \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/YigitCittan/mongorescue/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --ignore-missing -c checksums.txt
+```
+
+Or verify one archive directly:
+
+```sh
+cosign verify-blob mongorescue_0.28.0_linux_amd64.tar.gz \
+  --bundle mongorescue_0.28.0_linux_amd64.tar.gz.sigstore.json \
+  --certificate-identity https://github.com/YigitCittan/mongorescue/.github/workflows/release.yml@refs/tags/v0.28.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The exact identity (`@refs/tags/v0.28.0`) also proves which tag built the file; the regular expression accepts any release tag of this repository. The desktop assets, their checksums file and the SBOMs verify the same way.
+
+### SLSA provenance (slsa-verifier)
+
+```sh
+slsa-verifier verify-artifact mongorescue_0.28.0_linux_amd64.tar.gz \
+  --provenance-path mongorescue_0.28.0.intoto.jsonl \
+  --source-uri github.com/YigitCittan/mongorescue \
+  --source-tag v0.28.0
+```
+
+### GitHub artifact attestations
+
+```sh
+gh attestation verify mongorescue_0.28.0_linux_amd64.tar.gz --repo YigitCittan/mongorescue
+gh attestation verify oci://ghcr.io/yigitcittan/mongorescue:0.28.0 --repo YigitCittan/mongorescue
+```
+
+### Container images (cosign)
+
+Images are signed by digest. Tag builds are signed by the `refs/tags/v…` ref, builds of `main` (the `latest` and `sha-…` tags) by `refs/heads/main`:
+
+```sh
+cosign verify ghcr.io/yigitcittan/mongorescue:0.28.0 \
+  --certificate-identity-regexp '^https://github\.com/YigitCittan/mongorescue/\.github/workflows/docker\.yml@refs/(tags/v.*|heads/main)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Pin the digest that `cosign verify` prints (`ghcr.io/yigitcittan/mongorescue@sha256:…`) in your deployment, so what runs is what you verified.
+
+### How the provenance maps to SLSA build levels
+
+- **SLSA Build Level 3**: the server archives and `checksums.txt`. Their provenance (`*.intoto.jsonl`) is generated and signed by [slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator)'s generic generator, a reusable workflow that runs in its own job with its own OIDC identity, so the build job cannot forge or alter it, on GitHub-hosted runners. The release build uses no cache from earlier runs.
+- **SLSA Build Level 2**: the GitHub artifact attestations (`actions/attest-build-provenance`) of the archives, the desktop assets and the image, and the image's BuildKit provenance. They are signed SLSA v1 provenance from a hosted build platform, but are generated in the same job as the build, which is what Level 3 rules out. They stay as a second, independent check and as the way to verify images.
+
+The images have no Level 3 provenance yet (slsa-github-generator's container generator); that, and an independent security review, are listed in [threat-model.md](threat-model.md#open-items).
