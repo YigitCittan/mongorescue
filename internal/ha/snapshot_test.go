@@ -52,7 +52,7 @@ func testPassphrase(t *testing.T) string {
 func newTestSnapshotter(t *testing.T, st storage.Storage, fence *staticFence, db *fileVacuum, passphrase string, clock *fakeClock) *Snapshotter {
 	t.Helper()
 	s, err := NewSnapshotter(SnapshotterConfig{
-		Cluster: "prod", Store: db, Storage: st, Fence: fence, Passphrase: passphrase, TempDir: t.TempDir(),
+		Cluster: "prod", InstanceID: "instance-a", Store: db, Storage: st, Fence: fence, Passphrase: passphrase, TempDir: t.TempDir(),
 		Interval: time.Hour, MinGap: 10 * time.Millisecond, Keep: 3, Now: clock.Now,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -106,20 +106,25 @@ func TestSnapshotWriteFetchAndRetention(t *testing.T) {
 		t.Fatal("the snapshot is stored in clear text")
 	}
 	out := filepath.Join(t.TempDir(), "restored.db")
-	if err = FetchSnapshot(ctx, st, info.Key, pass, out); err != nil {
+	h, err := FetchSnapshot(ctx, st, "prod", info.Key, pass, out, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(out); string(got) != "sqlite bytes" {
 		t.Fatalf("restored %q", got)
 	}
-	if err = CheckSnapshotReadable(ctx, st, info.Key, pass); err != nil {
-		t.Fatal(err)
+	want := SnapshotHeader{Format: SnapshotFormat, Cluster: "prod", Epoch: 5, InstanceID: "instance-a", CreatedAt: info.CreatedAt}
+	if h == nil || *h != want {
+		t.Fatalf("header %+v; want %+v", h, want)
+	}
+	if c := CheckSnapshot(ctx, st, "prod", pass, info); !c.Verified() {
+		t.Fatalf("CheckSnapshot = %v", c.Err)
 	}
 	other := testPassphrase(t)
-	if err = CheckSnapshotReadable(ctx, st, info.Key, other); !errors.Is(err, ErrSnapshotUnreadable) {
-		t.Fatalf("CheckSnapshotReadable with another key = %v; want ErrSnapshotUnreadable", err)
+	if c := CheckSnapshot(ctx, st, "prod", other, info); !errors.Is(c.Err, ErrSnapshotUnreadable) || !c.Refused() {
+		t.Fatalf("CheckSnapshot with another key = %v; want ErrSnapshotUnreadable", c.Err)
 	}
-	if err = FetchSnapshot(ctx, st, info.Key, other, filepath.Join(t.TempDir(), "x.db")); !errors.Is(err, ErrSnapshotUnreadable) {
+	if _, err = FetchSnapshot(ctx, st, "prod", info.Key, other, filepath.Join(t.TempDir(), "x.db"), false); !errors.Is(err, ErrSnapshotUnreadable) {
 		t.Fatalf("FetchSnapshot with another key = %v; want ErrSnapshotUnreadable", err)
 	}
 

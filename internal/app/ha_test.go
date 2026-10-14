@@ -66,7 +66,7 @@ func newTestSupervisor(t *testing.T, cfg *config.Config) *haSupervisor {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rt := &haRuntime{cfg: cfg.HA, target: target, state: state, name: "test-" + state.InstanceID, logger: logger}
+	rt := &haRuntime{cfg: cfg.HA, target: target, state: state, dataDir: cfg.DataDir, name: "test-" + state.InstanceID, logger: logger}
 	return &haSupervisor{cfg: cfg, logger: logger, opts: []Option{WithGetenv(noEnv)}, rt: rt}
 }
 

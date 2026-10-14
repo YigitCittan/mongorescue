@@ -40,6 +40,7 @@ FUZZ_TARGETS?= \
 	./internal/desktop:FuzzExtractArchiveNames \
 	./internal/encryption:FuzzDecrypt \
 	./internal/encryption:FuzzRoundTrip \
+	./internal/ha:FuzzParseSnapshotHeader \
 	./internal/models:FuzzRescueDatabaseName \
 	./internal/models:FuzzValidateNamespace \
 	./internal/mongotls:FuzzCheckKDF \
