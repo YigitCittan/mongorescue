@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-14
+
 ### Added
 - KMS wrapping of `secret.key` (#61; the Vault Transit part of #62). With `MONGORESCUE_KEY_WRAP=<provider>:<key URI>` (or `-key-wrap`) the data directory holds only `secret.key.wrapped`, which every start unwraps with the instance's own identity. See [docs/security.md](docs/security.md#wrapping-secretkey-with-a-kms).
   - **Providers.** `aws-kms` (AWS SDK, default credential chain, encryption context), `gcp-kms` (Cloud KMS REST API with Application Default Credentials and CRC32C checks), `azure-keyvault` (`wrapKey`/`unwrapKey` with `RSA-OAEP-256` and `DefaultAzureCredential`) and `vault-transit` (a minimal HTTP client with token, AppRole or Kubernetes authentication). Key URIs are validated and never hold credentials; `http://` (Vault only) needs `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE=true` (development only, logged as a warning), and no KMS client follows redirects.
