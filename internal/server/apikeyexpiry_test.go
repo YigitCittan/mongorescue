@@ -31,7 +31,7 @@ func TestExpiredAPIKeysAreRefusedWithACode(t *testing.T) {
 	log := auditlog.New(auditlog.Config{Repo: st, Logger: slog.New(slog.DiscardHandler)})
 	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, nil,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(set),
-		WithAudit(audit.NewService(st, slog.New(slog.DiscardHandler), audit.WithObserver(log.Mirror()))), WithAuditLog(log))
+		WithAudit(audit.NewService(st, slog.New(slog.DiscardHandler), audit.WithObserver(log.Mirror()))), WithAuditLog(log), withFrozenRateClock())
 	f := &auditLogFixture{authFixture: &authFixture{h: full.Handler(), auth: svc}, log: log, srv: full}
 	b := f.browser(t)
 	b.setup(f.authFixture)

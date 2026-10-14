@@ -203,15 +203,13 @@ func (s *Server) refuseRate(w http.ResponseWriter, r *http.Request, p *auth.Prin
 		s.rateObserve(caller, budget)
 	}
 	if s.rateLog.Pass(key) {
-		attrs := []any{slog.String("caller", caller), slog.String("budget", budget), slog.String("route", routeLabel(r.Method, pattern)),
-			slog.Int("per_minute", limit.PerMinute), slog.Int("burst", limit.Burst)}
-		switch {
-		case p != nil && p.Method == auth.MethodAPIKey:
-			attrs = append(attrs, slog.String("api_key_id", p.APIKeyID))
-		case p != nil:
-			attrs = append(attrs, logsafe.Attr("user_id", p.UserID()))
-		default:
-			attrs = append(attrs, logsafe.Attr("client_ip", s.clientIP(r)))
+		// The route of a public request is its raw path: every request-derived value
+		// goes through logsafe. Nothing of an API key is logged; the audit log names
+		// the key of a refused request.
+		attrs := []any{slog.String("caller", caller), slog.String("budget", budget), logsafe.Attr("route", routeLabel(r.Method, pattern)),
+			slog.Int("per_minute", limit.PerMinute), slog.Int("burst", limit.Burst), logsafe.Attr("client_ip", s.clientIP(r))}
+		if uid := p.UserID(); uid != "" {
+			attrs = append(attrs, logsafe.Attr("user_id", uid))
 		}
 		s.logger.Warn("API rate limit exceeded; further refusals of this caller are not logged for a minute", attrs...)
 		if s.auditLog != nil && !recorded {

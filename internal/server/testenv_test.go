@@ -14,6 +14,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/ratelimit"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 )
 
@@ -178,6 +179,16 @@ var errUnreachable = errors.New("server selection error: dial tcp 10.0.0.1:27017
 // every route with the same keys (the limit has tests of its own).
 func withoutRateLimit() Option {
 	return func(s *Server) { s.rateBuckets = nil }
+}
+
+// withFrozenRateClock runs the REST API rate limit on a clock that never moves,
+// so tests counting requests against a burst do not see tokens refill however
+// slow the machine is.
+func withFrozenRateClock() Option {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	return func(s *Server) {
+		s.rateBuckets = ratelimit.New(ratelimit.WithClock(func() time.Time { return at }))
+	}
 }
 
 // asPrincipal serves h with p attached to every request, like the auth middleware

@@ -45,7 +45,7 @@ func newRateFixtureWith(t *testing.T, general, burst, work, workBurst int, logge
 	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	full := NewServer(bootConfig(), st, srv.backupEngine, srv.restoreEngine, srv.storageDriver, srv.scheduler, nil, logger,
 		WithAuth(svc), withTestConnection(t, st, nil), WithSettings(newTestSettings(t, st, cfg.Security)), WithAuditLog(f.log),
-		WithMetricsHandler(metrics),
+		WithMetricsHandler(metrics), withFrozenRateClock(),
 		WithRateLimitObserver(func(caller, budget string) {
 			f.mu.Lock()
 			defer f.mu.Unlock()

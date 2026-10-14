@@ -106,7 +106,7 @@ A leaked or runaway API key, or a session left polling in a loop, cannot hammer 
 - **Not limited.** `GET /api/v1/health` (probes and load balancers), `/metrics` with a valid key (or when public) and the dashboard's own files. `/mcp` has its own limit per key ([mcp.md](mcp.md#audit-log-rate-limit-and-metrics)), so a key's MCP calls and REST requests are counted apart.
 - **Observability.**
   - Every refusal counts in `mongorescue_api_rate_limited_total{caller, budget}` ([metrics](metrics.md)).
-  - A refused caller is logged at most once a minute, with its API key ID, user ID or address, never a secret.
+  - A refused caller is logged at most once a minute, with its address and user ID, never anything of its API key (the audit log names the key).
   - A refused change is recorded in the [audit log](audit.md) like any other change: outcome `rate_limited`, with identical refusals coalesced. A caller's first refusal in a minute is recorded there even when it is a read.
 - **Clients back off.**
   - The dashboard waits for the `Retry-After` (at most a minute) before its next request and sends the refused request once more.
