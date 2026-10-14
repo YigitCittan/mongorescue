@@ -360,13 +360,7 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	b.waitRole("standby", 60*time.Second)
 
 	// Set up A: the first user, a connection, an S3 target and a job every minute.
-	var setupCode string
-	for _, match := range setupCodePattern.FindAllStringSubmatch(a.logs.String(), -1) {
-		setupCode = match[1]
-	}
-	if setupCode == "" {
-		t.Fatalf("no setup code in A's logs:\n%s", a.logs.String())
-	}
+	setupCode := waitSetupCode(t, a.logs, 30*time.Second)
 	const password = "integration-password-1"
 	apiA := newAPIClient(t, a.base())
 	var session struct {
