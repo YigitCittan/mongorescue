@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,8 @@ func newTestClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Retries after a 429 do not wait in tests.
+	c.sleep = func(context.Context, time.Duration) error { return nil }
 	return c, srv
 }
 
@@ -289,5 +292,59 @@ func TestClientRecognisesAnExpiredKey(t *testing.T) {
 	expired.Store(false)
 	if _, err = c.Me(context.Background()); errors.Is(err, ErrAPIKeyExpired) || !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unknown key: %v; want ErrUnauthorized only", err)
+	}
+}
+
+func TestClientBacksOffAfterRateLimits(t *testing.T) {
+	var calls atomic.Int32
+	var bodies []string
+	var mu sync.Mutex
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		if calls.Add(1) <= 2 {
+			w.Header().Set("Retry-After", "3")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"success":false,"error":"too many requests","code":"rate_limited"}`)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"success":true,"data":{"id":"bkp_1","database":"shop","status":"in_progress"}}`)
+	})
+	var waits []time.Duration
+	c.sleep = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	if _, err := c.StartBackup(context.Background(), BackupRequest{ConnectionID: "c", Database: "shop"}); err != nil {
+		t.Fatalf("after two 429s: %v", err)
+	}
+	if calls.Load() != 3 || len(waits) != 2 || waits[0] != 3*time.Second || waits[1] != 3*time.Second {
+		t.Fatalf("calls %d, waits %v; want 3 calls after two 3s waits", calls.Load(), waits)
+	}
+	mu.Lock()
+	if bodies[0] == "" || bodies[2] != bodies[0] {
+		t.Errorf("the retried body %q differs from the first %q", bodies[2], bodies[0])
+	}
+	mu.Unlock()
+
+	// Every attempt refused: the last 429 is the error, after MaxRateLimitRetries waits.
+	calls.Store(-100)
+	waits = nil
+	if _, err := c.Stats(context.Background()); !errors.Is(err, ErrRateLimited) || len(waits) != MaxRateLimitRetries {
+		t.Fatalf("err %v after %d waits; want ErrRateLimited after %d", err, len(waits), MaxRateLimitRetries)
+	}
+	// A Retry-After beyond MaxRateLimitWait is not waited for.
+	c2, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"success":false,"error":"slow down"}`)
+	})
+	waited := false
+	c2.sleep = func(context.Context, time.Duration) error { waited = true; return nil }
+	if _, err := c2.Stats(context.Background()); !errors.Is(err, ErrRateLimited) || waited {
+		t.Fatalf("long Retry-After: err %v, waited %v", err, waited)
 	}
 }

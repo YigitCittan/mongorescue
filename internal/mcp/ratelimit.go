@@ -1,10 +1,9 @@
 package mcp
 
 import (
-	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
+	"github.com/yigitcittan/mongorescue/internal/ratelimit"
 )
 
 // RateLimit bounds MCP calls per API key with a token bucket.
@@ -18,28 +17,11 @@ type RateLimit struct {
 // DefaultRateLimit allows 60 calls per minute with bursts of 20, per API key.
 var DefaultRateLimit = RateLimit{PerMinute: 60, Burst: 20}
 
-// Limiter bookkeeping.
-const (
-	// limiterSweepSize triggers a sweep of idle buckets.
-	limiterSweepSize = 1024
-	// limiterIdle is how long an unused bucket is kept.
-	limiterIdle = 10 * time.Minute
-)
-
-// limiter keeps one token bucket per API key.
+// limiter keeps one token bucket per API key (internal/ratelimit, which evicts
+// idle buckets).
 type limiter struct {
-	limit rate.Limit
-	burst int
-	now   func() time.Time
-
-	mu      sync.Mutex
-	buckets map[string]*bucket
-}
-
-// bucket is one key's token bucket and its last use.
-type bucket struct {
-	lim  *rate.Limiter
-	seen time.Time
+	buckets *ratelimit.Limiter
+	limit   ratelimit.Limit
 }
 
 // newLimiter returns a limiter for rl (DefaultRateLimit for the zero value).
@@ -51,36 +33,13 @@ func newLimiter(rl RateLimit, now func() time.Time) *limiter {
 		rl.Burst = DefaultRateLimit.Burst
 	}
 	return &limiter{
-		limit:   rate.Limit(float64(rl.PerMinute) / 60),
-		burst:   rl.Burst,
-		now:     now,
-		buckets: map[string]*bucket{},
+		buckets: ratelimit.New(ratelimit.WithClock(now)),
+		limit:   ratelimit.Limit{PerMinute: rl.PerMinute, Burst: rl.Burst},
 	}
 }
 
 // allow consumes one token of key's bucket. When the bucket is empty it returns false
 // and the time until the next token.
 func (l *limiter) allow(key string) (bool, time.Duration) {
-	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.buckets) >= limiterSweepSize {
-		for k, b := range l.buckets {
-			if now.Sub(b.seen) > limiterIdle {
-				delete(l.buckets, k)
-			}
-		}
-	}
-	b, ok := l.buckets[key]
-	if !ok {
-		b = &bucket{lim: rate.NewLimiter(l.limit, l.burst)}
-		l.buckets[key] = b
-	}
-	b.seen = now
-	r := b.lim.ReserveN(now, 1)
-	if delay := r.DelayFrom(now); delay > 0 {
-		r.CancelAt(now)
-		return false, delay
-	}
-	return true, 0
+	return l.buckets.Allow(key, l.limit)
 }

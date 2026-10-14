@@ -263,7 +263,7 @@ func TestLimiter(t *testing.T) {
 	if ok, _ := l.allow("k"); !ok {
 		t.Fatal("a token must be available after a second at 60/min")
 	}
-	if d := newLimiter(RateLimit{}, time.Now); d.burst != DefaultRateLimit.Burst {
-		t.Fatalf("zero RateLimit must use the default, got burst %d", d.burst)
+	if d := newLimiter(RateLimit{}, time.Now); d.limit.Burst != DefaultRateLimit.Burst {
+		t.Fatalf("zero RateLimit must use the default, got burst %d", d.limit.Burst)
 	}
 }

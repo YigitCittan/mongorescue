@@ -721,6 +721,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 	metricSet.SetSchedulerTickSource(sched.LastTick)
 	metricSet.SetSettingsWarningsSource(func() int { return len(settingsSvc.Warnings()) })
+	metricSet.InitAPIRateLimited(server.RateLimitCallers, server.RateLimitBudgets)
 	if o.ha != nil {
 		metricSet.SetHASource(o.ha.metricsState)
 	}
@@ -917,6 +918,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithEventPublisher(bus),
 		server.WithNotifications(notifySvc),
 		server.WithMetricsHandler(metricSet.Handler()),
+		server.WithRateLimitObserver(metricSet.ObserveAPIRateLimited),
 		server.WithRunManager(runManager),
 		server.WithRunRegistry(registry),
 		server.WithAuth(authSvc),

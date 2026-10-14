@@ -92,6 +92,31 @@ API keys are long-lived credentials for automation; a key copied into a CI syste
 - **The imported key.** The key imported from the deprecated `MONGORESCUE_API_KEY` is flagged `imported` (`GET /api/v1/api-keys`) and keeps no expiry, also under a maximum lifetime; while one is set, the `api_key_never_expires` warning asks to replace it with a key created by a user.
 - **Clients.** The [command line](cli.md) exits `3` with a hint to create a new key, `apiclient` reports `ErrAPIKeyExpired` (also matching `ErrUnauthorized`), and `GET /api/v1/auth/me` shows a key's `key_expires_at`, so automation can check its own deadline.
 
+## REST API rate limits
+
+A leaked or runaway API key, or a session left polling in a loop, cannot hammer the REST API: every request is charged to a token bucket, and a request over its budget is refused with `429 Too Many Requests`, a `Retry-After` header and the code `rate_limited`, before it runs.
+
+- **Per API key and per session.** `security.api_rate_limit_per_minute` (default 1200) and `security.api_rate_limit_burst` (default 300) are the budget of each API key and each session, whatever address it comes from. That is far above what the dashboard needs (a tab polls a few requests every 10 seconds, every 2 seconds while runs are active; several tabs of one session share the budget) and what the CLI's `--wait` polling sends. `0` per minute turns every REST limit off.
+- **Routes that start work.** Backups, restores and their preflight, job runs, verifications, restore tests, PITR base backups and chain tests, sweeps, storage scans and imports, metadata snapshots, bulk actions and the connection, storage and notification tests also spend `security.api_work_rate_limit_per_minute` (default 60) with `security.api_work_rate_limit_burst` (default 20). `0` leaves them to the general budget. The list is the `workRoutes` table in `internal/server/ratelimit.go`, which a test keeps in step with the routes.
+- **Without credentials.** Two fixed budgets per client address, 300 per minute with bursts of 100 each, kept apart so that one cannot exhaust the other:
+  - the sign-in routes (setup, login, `GET /api/v1/auth/methods`, `GET /api/v1/auth/me` and single sign-on; budget `auth`);
+  - every other request without valid credentials, a missing, wrong or [expired](#api-key-expiry) API key or session on any route, `/mcp` and `/metrics` included (budget `general`). An expired key is charged before its `401 api_key_expired`.
+  An IPv6 address counts by its /64. Failed sign-ins are throttled further, as before.
+- **Behind a reverse proxy, turn on `security.trust_proxy_headers`.** Without it every client has the proxy's address, so all of them share these two budgets (and the login throttle). MongoRescue logs a warning once when requests carry `X-Forwarded-For` or `X-Real-IP` while it is off. See [production.md](production.md#tls-and-the-reverse-proxy).
+- **Not limited.** `GET /api/v1/health` (probes and load balancers), `/metrics` with a valid key (or when public) and the dashboard's own files. `/mcp` has its own limit per key ([mcp.md](mcp.md#audit-log-rate-limit-and-metrics)), so a key's MCP calls and REST requests are counted apart.
+- **Observability.**
+  - Every refusal counts in `mongorescue_api_rate_limited_total{caller, budget}` ([metrics](metrics.md)).
+  - A refused caller is logged at most once a minute, with its address and user ID, never anything of its API key (the audit log names the key).
+  - A refused change is recorded in the [audit log](audit.md) like any other change: outcome `rate_limited`, with identical refusals coalesced. A caller's first refusal in a minute is recorded there even when it is a read.
+- **Clients back off.**
+  - The dashboard waits for the `Retry-After` (at most a minute) before its next request and sends the refused request once more.
+  - `apiclient` and the [command line](cli.md) send a refused request again after `Retry-After`, twice, each wait at most 30 seconds.
+- **Memory.** The buckets live in memory, one per active key, session or address, and at most 100,000 are kept, so a flood of new addresses cannot exhaust memory.
+  - At the cap, buckets that have refilled go first; they are as good as new.
+  - Only then are the least recently used ones evicted, an eighth of the cap at a time.
+  - A caller that keeps being refused stays among the most recently used, so a flood of new keys cannot reset its bucket.
+  - A restart or an HA takeover starts every budget afresh.
+
 ## Immutable backups (S3 Object Lock)
 
 Delete protection guards the paths through MongoRescue; an S3 target with an object lock mode also guards the storage itself. Every object MongoRescue uploads to it (backup archives, PITR base backups, oplog chunks, metadata snapshots) is locked for the target's `retention_days` ([configuration](configuration.md#immutable-backups-s3-object-lock)):

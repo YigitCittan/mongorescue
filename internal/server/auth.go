@@ -87,6 +87,7 @@ func (s *Server) registerAuthRoutes(mux *router) {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		s.warnUntrustedProxy(r)
 		isMetrics := path == "/metrics"
 		isMCP := path == MCPPath
 		switch {
@@ -94,10 +95,20 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowPublicWriteAudited(w, r) {
 				return
 			}
+			// The public routes share a budget per client address; the health check
+			// (probes, load balancers) is never limited.
+			if path != healthPath && !s.allowRate(w, r, nil, path, false) {
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		case isMetrics && s.security().MetricsPublic,
 			!isMetrics && !isMCP && !strings.HasPrefix(path, "/api/"):
+			// Single sign-on talks to the provider: limited per client address like
+			// the other public routes; the dashboard assets are not.
+			if strings.HasPrefix(path, oidcFlowCookiePath) && !s.allowRate(w, r, nil, path, false) {
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -126,14 +137,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			err = auth.ErrUnauthenticated
 		}
 		if err != nil {
-			// An expired key is refused with its own code, and recorded with the key.
+			// An expired key is refused with its own code, and recorded with the key,
+			// after it was charged to the budget of its client address like any other
+			// request without valid credentials.
 			var expired *auth.ExpiredKeyError
 			if errors.As(err, &expired) {
-				s.refuseExpiredKey(w, r, pattern, expired, isMCP)
+				if s.allowRate(w, r, nil, pattern, false) {
+					s.refuseExpiredKey(w, r, pattern, expired, isMCP)
+				}
 				return
 			}
 			// Refused mutating requests are recorded, anonymously.
-			if s.auditLog != nil && auditsAction(r.Method, path, pattern) {
+			recorded := s.auditLog != nil && auditsAction(r.Method, path, pattern)
+			if recorded {
 				rec, done := s.auditedAction(w, r, nil, pattern)
 				defer done()
 				w = rec
@@ -141,6 +157,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if !errors.Is(err, auth.ErrUnauthenticated) {
 				s.logger.Error("authentication failed", slog.Any("error", err))
 				writeError(w, http.StatusInternalServerError, "authentication failed")
+				return
+			}
+			// Requests without valid credentials share the budget of their client
+			// address, /metrics with a wrong key included.
+			if !s.allowRate(w, r, nil, pattern, recorded) {
 				return
 			}
 			// GET /api/v1/auth/me tells a signed-out visitor so with 200 and an empty
@@ -176,6 +197,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				defer s.auditREST(req, principal, pattern, rec, time.Now())
 			}
 			w = rec
+		}
+		// The request budget of the API key or session (see ratelimit.go). /metrics
+		// is not limited, /mcp has its own limit per API key.
+		if !isMetrics && !isMCP && !s.allowRate(w, req, principal, pattern, recordsAction) {
+			return
 		}
 		// Refused CSRF tokens are recorded too: they may be a cross-site attack.
 		if err := auth.CheckCSRF(principal, r.Method, r.Header.Get(CSRFHeader)); err != nil {

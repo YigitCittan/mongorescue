@@ -59,7 +59,9 @@ func TestWaitRetriesTransientErrors(t *testing.T) {
 		polls++
 	})
 	code, stdout, stderr := runCLI(context.Background(), t, api, nil, "backup", "--connection", "c", "--database", "shop", "--wait")
-	if code != ExitOK || polls != 4 || strings.Count(stderr, "retrying in") != 3 || !strings.Contains(stdout, "completed") {
+	// The 429 is retried by the API client itself (after its Retry-After), so only
+	// the 503 and the 502 reach the wait loop.
+	if code != ExitOK || polls != 4 || strings.Count(stderr, "retrying in") != 2 || !strings.Contains(stdout, "completed") {
 		t.Fatalf("exit %d after %d polls\nstdout: %s\nstderr: %s", code, polls, stdout, stderr)
 	}
 

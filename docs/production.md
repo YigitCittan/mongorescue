@@ -45,6 +45,8 @@ MongoRescue serves plain HTTP. Put it behind a proxy that terminates TLS, and ma
 
 Two optional settings (Settings → Security) make the proxy setup complete. With *Trust proxy headers* on, MongoRescue takes the client address for login throttling from the last `X-Forwarded-For` entry and marks the session cookie `Secure` when `X-Forwarded-Proto` is `https`. Enable it only when a proxy sets these headers: otherwise clients could spoof them. If your proxy does not send `X-Forwarded-Proto`, set *Secure cookies* to `always` instead.
 
+**A reverse proxy requires *Trust proxy headers*.** Without it every request comes from the proxy's address, so all clients share one [rate limit budget](security.md#rest-api-rate-limits) for sign-ins and unauthenticated requests, and one login throttle: a few bad clients, or one script with a wrong key, lock everybody out. MongoRescue logs a warning once (`requests carry X-Forwarded-For or X-Real-IP but security.trust_proxy_headers is off`) when it sees forwarding headers while the setting is off.
+
 Caddy example:
 
 ```

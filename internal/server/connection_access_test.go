@@ -276,7 +276,7 @@ func newAccessFixture(t *testing.T) *accessFixture {
 		},
 		Logger: slog.New(slog.DiscardHandler),
 	})
-	srv := NewServer(bootConfig(), st, bEngine, rEngine, mock, sched, nil, nil, WithPITR(col),
+	srv := NewServer(bootConfig(), st, bEngine, rEngine, mock, sched, nil, nil, WithPITR(col), withoutRateLimit(),
 		WithAuth(svc), WithConnections(conns), WithStorageTargets(tg), WithRunManager(manager),
 		WithIntegrity(integrity.New(integrity.Config{Store: st, Targets: tg, Runs: manager})),
 		WithSettings(newTestSettings(t, st, newTestConfig().Security)),

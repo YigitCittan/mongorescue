@@ -30,6 +30,15 @@ const (
 	DefaultTimeout = time.Minute
 	// maxResponseBytes bounds the response body a client reads.
 	maxResponseBytes = 64 << 20
+	// MaxRateLimitRetries is how often a request refused with 429 is sent again
+	// after the server's Retry-After (the server refused it before running it, so
+	// every method is retried).
+	MaxRateLimitRetries = 2
+	// MaxRateLimitWait is the longest Retry-After a client waits for; a longer one
+	// is returned as the error at once.
+	MaxRateLimitWait = 30 * time.Second
+	// defaultRateLimitWait is the wait of a 429 without a usable Retry-After.
+	defaultRateLimitWait = time.Second
 )
 
 // Sentinel errors. An *APIError unwraps to the one of its HTTP status; transport
@@ -175,6 +184,20 @@ type Client struct {
 	base      *url.URL
 	http      *http.Client
 	transport *BearerTransport
+	// sleep waits d or until ctx ends (tests replace it).
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// sleepCtx waits d or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // ParseURL validates a base URL: http or https, with a host, without credentials, a
@@ -225,7 +248,7 @@ func New(cfg Config) (*Client, error) {
 	// Never follow redirects: the next request could go to another origin. The 3xx
 	// response is returned as an *APIError.
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{base: base, http: hc, transport: tr}, nil
+	return &Client{base: base, http: hc, transport: tr, sleep: sleepCtx}, nil
 }
 
 // BaseURL returns the base URL the client talks to.
@@ -245,25 +268,52 @@ type envelope struct {
 }
 
 // do sends one request to path (under /api/v1) with the query and the JSON body (nil
-// for none) and returns the decoded envelope of a 2xx response.
+// for none) and returns the decoded envelope of a 2xx response. A 429 is sent again
+// after the server's Retry-After (MaxRateLimitRetries times, each wait at most
+// MaxRateLimitWait); then, or for a longer Retry-After, the 429 is the error.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*envelope, error) {
-	u := *c.base
-	u.Path = c.base.Path + "/api/v1" + path
-	u.RawQuery = query.Encode()
-	var rd io.Reader
+	var raw []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("apiclient: encode %s %s: %w", method, path, err)
 		}
-		rd = bytes.NewReader(b)
+		raw = b
+	}
+	for attempt := 0; ; attempt++ {
+		env, err := c.send(ctx, method, path, query, raw)
+		apiErr, ok := AsAPIError(err)
+		if !ok || apiErr.StatusCode != http.StatusTooManyRequests || attempt >= MaxRateLimitRetries {
+			return env, err
+		}
+		delay := apiErr.RetryAfter
+		if delay <= 0 {
+			delay = defaultRateLimitWait
+		}
+		if delay > MaxRateLimitWait {
+			return env, err
+		}
+		if c.sleep(ctx, delay) != nil {
+			return env, err
+		}
+	}
+}
+
+// send sends one request with the encoded body raw (nil for none).
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, raw []byte) (*envelope, error) {
+	u := *c.base
+	u.Path = c.base.Path + "/api/v1" + path
+	u.RawQuery = query.Encode()
+	var rd io.Reader
+	if raw != nil {
+		rd = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s %s: %s", ErrInvalidConfig, method, path, redact.Text(err.Error()))
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
+	if raw != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
