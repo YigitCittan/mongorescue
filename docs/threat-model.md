@@ -88,9 +88,9 @@ Assumptions:
 | E | A key outliving its creator's rights | A key's effective scope and connections are capped by its creator's current role and connections on every request (`EffectiveScope`, `internal/auth/types.go`; [design/roles.md](design/roles.md)); deleting a user revokes their keys. |
 | E | One stolen admin credential doing damage | The two-person rule (`internal/auth/approval.go`, [security.md](security.md#the-two-person-rule)); a password reset by someone else forces a new password (`PasswordChangeRequired`). |
 
-**Residual risk**: local accounts have no second factor; API keys do not expire; an attacker who obtains a key keeps it until it is revoked. Whoever controls the identity provider's groups controls SSO roles.
+**Residual risk**: local accounts have no second factor; an API key without an expiry (allowed while no maximum lifetime is set) stays valid until it is revoked. API keys can expire and a maximum lifetime can be enforced since #190 (`APIKeyPolicy`, `internal/auth/expiry.go`; `security.api_key_max_lifetime_days`). Whoever controls the identity provider's groups controls SSO roles.
 
-**Open items**: optional expiry for API keys; MFA for local accounts (until then, use SSO with MFA at the provider and keep local administrators to the break-glass account).
+**Open items**: MFA for local accounts (until then, use SSO with MFA at the provider and keep local administrators to the break-glass account).
 
 ## 3. MCP
 
@@ -309,7 +309,7 @@ Assumptions:
 | :--- | :--- |
 | HA | Bind the cluster and epoch to the snapshot content and refuse a mismatch on takeover ([#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
 | HTTP API | Rate limits per API key and per session on the REST API ([#191](https://github.com/YigitCittan/mongorescue/issues/191)); HSTS when served over TLS. |
-| Auth | Optional API key expiry ([#190](https://github.com/YigitCittan/mongorescue/issues/190)); MFA for local accounts. |
+| Auth | MFA for local accounts (API key expiry is done: [#190](https://github.com/YigitCittan/mongorescue/issues/190)). |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
 | Notifications | An option to deny private ranges. |
 | Release | SLSA Build Level 3 provenance for the container images (the images have Level 2 attestations and cosign signatures). |
