@@ -31,6 +31,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/vaultcreds"
 )
 
 // Sentinel errors.
@@ -177,6 +178,9 @@ type Service struct {
 	// mu serialises writes (default switching, cache invalidation) and guards drivers.
 	mu      sync.Mutex
 	drivers map[string]cached
+	// vault reports that Vault is configured, so S3 targets may read their access
+	// keys from it (the Factory resolves them).
+	vault bool
 }
 
 // Option customises a Service.
@@ -190,6 +194,11 @@ func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = 
 
 // WithTestTimeout overrides DefaultTestTimeout.
 func WithTestTimeout(d time.Duration) Option { return func(s *Service) { s.testTimeout = d } }
+
+// WithVault allows S3 targets whose access keys are read from Vault
+// (s3.credential_source vault); the Factory must resolve them. Without it such
+// targets are refused when saved.
+func WithVault(configured bool) Option { return func(s *Service) { s.vault = configured } }
 
 // NewService returns a Service. dataDir is MongoRescue's data directory: local
 // targets must not be it or lie inside it.
@@ -917,6 +926,9 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		if err != nil {
 			return nil, err
 		}
+		if s3.FromVault() && !s.vault {
+			return nil, fmt.Errorf("%w: %w", ErrInvalid, vaultcreds.ErrNotConfigured)
+		}
 		if s3.SecretAccessKey == models.SecretMask {
 			if existing == nil || existing.S3 == nil || existing.S3.SecretAccessKey == "" ||
 				existing.S3.Endpoint != s3.Endpoint || existing.S3.Bucket != s3.Bucket || existing.S3.AccessKeyID != s3.AccessKeyID {
@@ -1057,6 +1069,23 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 		ObjectLock:      models.ObjectLockMode(strings.ToLower(strings.TrimSpace(string(in.ObjectLock)))),
 		RetentionDays:   in.RetentionDays,
 		LegalHoldOnPin:  in.LegalHoldOnPin,
+	}
+	src, err := models.NormalizeCredentialSource(in.CredentialSource)
+	if err != nil {
+		return out, fmt.Errorf("%w: s3.%w", ErrInvalid, err)
+	}
+	if src == models.CredentialsVault {
+		out.CredentialSource, out.Vault = src, in.Vault
+		if err = out.Vault.Normalize(models.VaultForS3); err != nil {
+			return out, fmt.Errorf("%w: s3.vault: %w", ErrInvalid, err)
+		}
+		if out.SecretAccessKey == models.SecretMask {
+			// The masked key of a target switched to Vault: dropped with it.
+			out.SecretAccessKey = ""
+		}
+		if out.AccessKeyID != "" || out.SecretAccessKey != "" {
+			return out, fmt.Errorf("%w: with s3.credential_source vault the access keys come from Vault; leave s3.access_key_id and s3.secret_access_key empty", ErrInvalid)
+		}
 	}
 	switch out.ObjectLock {
 	case "", models.ObjectLockNone:

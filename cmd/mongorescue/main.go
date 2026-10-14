@@ -126,6 +126,8 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	minFreeSpace := fs.String("min-free-space-mb", "", fmt.Sprintf("Free space (MiB) the data directory needs for a backup or restore to start, 0 to turn the check off (env %s, default %d)", config.EnvMinFreeSpace, config.DefaultMinFreeSpaceMB))
 	notifyMaxAge := fs.String("notification-max-age", "", "How long a notification may wait to be sent before it is dropped as stale, e.g. 24h (env "+config.EnvNotificationMaxAge+", default 24h)")
 	keyWrap := fs.String("key-wrap", "", "Wrap secret.key with an external KMS: <provider>:<key URI> with provider aws-kms, gcp-kms, azure-keyvault or vault-transit (env "+config.EnvKeyWrap+", default off)")
+	vaultAddr := fs.String("vault-addr", "", "HashiCorp Vault address that connections and S3 storage targets with credentials from Vault read them from, https://<host>:<port> (env "+config.EnvVaultAddr+", default off; authentication: VAULT_TOKEN, AppRole or Kubernetes)")
+	vaultCacheTTL := fs.String("vault-cache-ttl", "", "How long static kv-v2 credentials read from Vault are reused, e.g. 5m (env "+config.EnvVaultCacheTTL+", default 5m)")
 	haMode := fs.String("ha-mode", "", "High availability mode: off or active-passive (env "+config.EnvHAMode+", default off)")
 	haTarget := fs.String("ha-target", "", "Storage target of the HA lease and metadata handover: a target ID or name, or s3://bucket/prefix?endpoint=…&region=…&path_style=true or file:///path (env "+config.EnvHATarget+")")
 	haCluster := fs.String("ha-cluster", "", "HA cluster name (env "+config.EnvHACluster+", default "+config.DefaultHACluster+")")
@@ -151,7 +153,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr, spaceErr, ageErr, haErr, wrapErr error
+	var graceErr, spaceErr, ageErr, haErr, wrapErr, vaultErr error
 	haDuration := func(name, v string, dst *time.Duration) {
 		d, err := config.ParseHADuration(v)
 		if err != nil && haErr == nil {
@@ -188,6 +190,10 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.NotificationMaxAge, ageErr = config.ParseNotificationMaxAge(*notifyMaxAge)
 		case "key-wrap":
 			cfg.KeyWrap, wrapErr = keywrap.ParseSpec(*keyWrap)
+		case "vault-addr":
+			cfg.Vault.Addr = strings.TrimSpace(*vaultAddr)
+		case "vault-cache-ttl":
+			cfg.Vault.CacheTTL, vaultErr = config.ParseVaultCacheTTL(*vaultCacheTTL)
 		case "ha-mode":
 			cfg.HA.Mode = strings.ToLower(strings.TrimSpace(*haMode))
 		case "ha-target":
@@ -207,6 +213,9 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	}
 	if wrapErr != nil {
 		return nil, 0, false, fmt.Errorf("-key-wrap: %w", wrapErr)
+	}
+	if vaultErr != nil {
+		return nil, 0, false, fmt.Errorf("-vault-cache-ttl: %w", vaultErr)
 	}
 	if graceErr != nil {
 		return nil, 0, false, fmt.Errorf("-shutdown-grace: %w", graceErr)

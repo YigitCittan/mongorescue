@@ -219,6 +219,12 @@ func (w *worker) event(t events.EventType, status, errMsg, detail string) events
 // confirm), since a lagging or freshly synced secondary can lack entries the
 // replica set still holds.
 func (w *worker) step(ctx context.Context) (time.Duration, error) {
+	if s, ok := w.sess.(StaleSession); ok && s.Stale(ctx) {
+		// Its credentials end or were rotated: reconnect with fresh ones.
+		w.svc.logger.Info("PITR collector reconnects with fresh credentials", logsafe.Attr("stream_id", w.stream.ID))
+		w.sess.Close()
+		w.sess = nil
+	}
 	if w.sess == nil {
 		sess, err := w.svc.cfg.Open(ctx, w.stream)
 		if err != nil {

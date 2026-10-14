@@ -64,7 +64,7 @@ func (s *Service) UpdateConnection(ctx context.Context, id string, in connection
 		auditlog.Annotate(ctx, auditPostRestoreChanged, "false")
 		return ed.Update(ctx, id, in)
 	}
-	cur, err := s.cfg.Connections.Resolve(ctx, id)
+	cur, err := s.storedConnection(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (s *Service) applyPostRestoreChange(ctx context.Context, a *models.Approval
 	if err = json.Unmarshal([]byte(a.Secret), &cmds); err != nil {
 		return "", public("the request's post-restore commands cannot be read", ErrInvalid)
 	}
-	cur, err := s.cfg.Connections.Resolve(ctx, a.Subject)
+	cur, err := s.storedConnection(ctx, a.Subject)
 	if err != nil {
 		return "", err
 	}
