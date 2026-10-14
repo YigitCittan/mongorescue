@@ -58,6 +58,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.HASteppedDown:             {"⚠️", "HA step-down"},
 	events.HACatchUpSkipped:          {"⚠️", "Missed fire not caught up: could not verify"},
 	events.HAEmptyStart:              {"🚨", "HA cluster started from empty state"},
+	events.VaultUnavailable:          {"🚨", "Credentials from Vault unavailable"},
 }
 
 // Render turns an event into a short human-readable Message. The subject is a single
@@ -135,6 +136,8 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("backup %s (db %s) to storage target %s", e.BackupID, e.Database, name)
 	case events.SystemDiskFull:
 		target = "the MongoRescue metadata database cannot be written; new backups and restores are refused until space is freed"
+	case events.VaultUnavailable:
+		target = "connections and storage targets with credentials from Vault cannot be used; their backups and restores fail until Vault answers again"
 	case events.HATookOver, events.HASteppedDown, events.HACatchUpSkipped, events.HAEmptyStart:
 		target = e.Detail
 	case events.MetadataBackupFailed:

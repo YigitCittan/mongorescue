@@ -154,6 +154,9 @@ type Input struct {
 	// TLSInput holds the TLS material (a custom CA, an x509 client certificate);
 	// omitted fields keep the stored values.
 	TLSInput
+	// CredentialInput is the credential source (stored, or read from Vault);
+	// omitted fields keep the stored values.
+	CredentialInput
 }
 
 // CommandChecker is implemented by Probers that can check that a post-restore
@@ -186,6 +189,8 @@ type Service struct {
 	logger      *slog.Logger
 	testTimeout time.Duration
 	now         func() time.Time
+	// creds resolves credentials read from Vault (nil: none can be used).
+	creds Credentials
 }
 
 // Option customises a Service.
@@ -246,8 +251,22 @@ func (s *Service) Get(ctx context.Context, id string) (*models.Connection, error
 }
 
 // Resolve returns the connection with its full URI, for the backup and restore engines.
-// The result must never be serialised to clients or logged.
+// Credentials read from Vault are resolved now and put into the URI (see Hold
+// for a run that outlives a dynamic credential's freshness); a Vault failure
+// returns an error wrapping ErrCredentials. The result must never be serialised to
+// clients or logged.
 func (s *Service) Resolve(ctx context.Context, id string) (*models.Connection, error) {
+	c, err := s.Stored(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.withCredentials(ctx, c)
+}
+
+// Stored returns the connection as stored, without resolving credentials read
+// from Vault, for uses that do not connect (such as editing its post-restore
+// commands). The result must never be serialised to clients or logged.
+func (s *Service) Stored(ctx context.Context, id string) (*models.Connection, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: connection_id is required", ErrInvalid)
 	}
@@ -286,6 +305,9 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	c := &models.Connection{ID: id, Name: in.Name, URI: uri, Description: in.Description, CreatedAt: now, UpdatedAt: now,
 		ConnectionTLS: tlsMaterial}
 	in.apply(c)
+	if _, err = s.applyCredentials(in.CredentialInput, c); err != nil {
+		return nil, err
+	}
 	if err := s.repo.SaveConnection(ctx, c); err != nil {
 		return nil, err
 	}
@@ -325,12 +347,16 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 	}
 	updated := *existing
 	tlsChanged := tlsMaterial != existing.ConnectionTLS
-	if uri != existing.URI || tlsChanged {
-		updated.LastTestAt, updated.LastTestOK, updated.LastTestError, updated.ServerVersion = nil, false, "", ""
-	}
 	updated.Name, updated.URI, updated.Description = in.Name, uri, in.Description
 	updated.ConnectionTLS = tlsMaterial
 	in.apply(&updated)
+	credsChanged, err := s.applyCredentials(in.CredentialInput, &updated)
+	if err != nil {
+		return nil, err
+	}
+	if uri != existing.URI || tlsChanged || credsChanged {
+		updated.LastTestAt, updated.LastTestOK, updated.LastTestError, updated.ServerVersion = nil, false, "", ""
+	}
 	updated.UpdatedAt = s.now().UTC()
 	if err := s.repo.SaveConnection(ctx, &updated); err != nil {
 		return nil, err
@@ -404,7 +430,12 @@ func (s *Service) Test(ctx context.Context, id string) (TestResult, error) {
 	if err != nil {
 		return TestResult{}, err
 	}
-	res := s.probe(mongotls.NewContext(ctx, &c.ConnectionTLS), c.URI, c.ReadPref())
+	var res TestResult
+	if resolved, credErr := s.withCredentials(ctx, c); credErr != nil {
+		res = TestResult{Error: redact.Text(credErr.Error())}
+	} else {
+		res = s.probe(mongotls.NewContext(ctx, &c.ConnectionTLS), resolved.URI, c.ReadPref())
+	}
 
 	now := s.now().UTC()
 	c.LastTestAt, c.LastTestOK, c.LastTestError = &now, res.OK, res.Error
@@ -438,14 +469,23 @@ func (s *Service) TestURIWith(ctx context.Context, uri, id string, rp models.Rea
 // secrets keep the stored values) as long as uri names the stored hosts. For
 // other hosts the stored material is not used at all.
 func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.ReadPreference, tlsIn TLSInput) (TestResult, error) {
+	return s.TestURIWithCredentials(ctx, uri, id, rp, tlsIn, CredentialInput{})
+}
+
+// TestURIWithCredentials is TestURIWithTLS with the credential source of the
+// form: with credential_source vault the credentials are read from Vault (the
+// form's reference, else the stored one of connection id) and put into uri,
+// which must hold none. Omitted fields keep the stored source of connection id.
+func (s *Service) TestURIWithCredentials(ctx context.Context, uri, id string, rp models.ReadPreference, tlsIn TLSInput, credIn CredentialInput) (TestResult, error) {
 	if err := rp.Validate(); err != nil {
 		return TestResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	stored := ""
 	var storedTLS models.ConnectionTLS
+	var existing *models.Connection
 	if id != "" && strings.Contains(uri, redact.Mask) {
-		existing, err := s.repo.GetConnection(ctx, id)
-		if err != nil {
+		var err error
+		if existing, err = s.repo.GetConnection(ctx, id); err != nil {
 			return TestResult{}, err
 		}
 		if uri, err = KeepSecret(uri, existing.URI); err != nil {
@@ -455,7 +495,8 @@ func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.
 	} else if id != "" {
 		// The unchanged URI of a stored connection (one without a password) is not
 		// new input either; a lookup failure just means the strict rules apply.
-		if existing, err := s.repo.GetConnection(ctx, id); err == nil {
+		if found, err := s.repo.GetConnection(ctx, id); err == nil {
+			existing = found
 			stored, storedTLS = existing.URI, existing.ConnectionTLS
 		}
 	}
@@ -474,13 +515,31 @@ func (s *Service) TestURIWithTLS(ctx context.Context, uri, id string, rp models.
 	if err != nil {
 		return TestResult{}, err
 	}
+	// Like the TLS material, a stored Vault reference only applies to the hosts it
+	// was saved for: its credentials are never sent to other ones.
+	form := &models.Connection{Name: "under test", URI: uri}
+	if existing != nil && sameEndpoint(stored, uri) {
+		form.CredentialSource, form.Vault = existing.CredentialSource, existing.Vault
+	}
+	if credIn.CredentialSource != nil || credIn.Vault != nil {
+		if _, err = s.applyCredentials(credIn, form); err != nil {
+			return TestResult{}, err
+		}
+	}
+	if form.FromVault() {
+		resolved, credErr := s.withCredentials(ctx, form)
+		if credErr != nil {
+			return TestResult{Error: redact.Text(credErr.Error())}, nil
+		}
+		uri = resolved.URI
+	}
 	return s.probe(mongotls.NewContext(ctx, &tlsMaterial), uri, rp), nil
 }
 
 // Databases lists the databases of connection id, hiding admin, config and local
 // unless includeSystem is set. Results are sorted by name.
 func (s *Service) Databases(ctx context.Context, id string, includeSystem bool) ([]Database, error) {
-	c, err := s.repo.GetConnection(ctx, id)
+	c, err := s.forUse(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +567,7 @@ func (s *Service) Collections(ctx context.Context, id, database string) ([]Colle
 	if strings.TrimSpace(database) == "" {
 		return nil, fmt.Errorf("%w: database is required", ErrInvalid)
 	}
-	c, err := s.repo.GetConnection(ctx, id)
+	c, err := s.forUse(ctx, id)
 	if err != nil {
 		return nil, err
 	}

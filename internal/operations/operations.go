@@ -165,6 +165,21 @@ type Connections interface {
 	List(ctx context.Context) ([]*models.Connection, error)
 }
 
+// storedConnections is implemented by Connections that return a connection as
+// stored, without resolving credentials read from Vault (connections.Service).
+type storedConnections interface {
+	Stored(ctx context.Context, id string) (*models.Connection, error)
+}
+
+// storedConnection returns connection id for a use that does not connect (its
+// post-restore commands), without reading its credentials from Vault.
+func (s *Service) storedConnection(ctx context.Context, id string) (*models.Connection, error) {
+	if sc, ok := s.cfg.Connections.(storedConnections); ok {
+		return sc.Stored(ctx, id)
+	}
+	return s.cfg.Connections.Resolve(ctx, id)
+}
+
 // Targets resolves storage targets (implemented by *targets.Service).
 type Targets interface {
 	// Resolve returns target id, or the default target for "".

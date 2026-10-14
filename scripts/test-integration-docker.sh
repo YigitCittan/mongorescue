@@ -11,7 +11,10 @@
 #   - MinIO and LocalStack as S3-compatible emulators; LocalStack also serves
 #     KMS for the key wrapping test (MONGORESCUE_TEST_KMS_LOCALSTACK_ENDPOINT)
 #   - a HashiCorp Vault dev server with the Transit engine, for the key
-#     wrapping test (MONGORESCUE_TEST_VAULT_ADDR, MONGORESCUE_TEST_VAULT_TOKEN)
+#     wrapping test (MONGORESCUE_TEST_VAULT_ADDR, MONGORESCUE_TEST_VAULT_TOKEN),
+#     and its KV v2 and database secrets engines for the credentials read from
+#     Vault; it reaches the test MongoDB on a network of their own
+#     (MONGORESCUE_TEST_VAULT_MONGO_HOST)
 # Containers bind to random loopback ports and are always removed on exit.
 #
 # The MONGORESCUE_TEST_* variables below only tell the test suite which services
@@ -72,6 +75,7 @@ MONGO_PW="itPw$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 # Root token of the throwaway Vault dev server (masked in the failure logs).
 VAULT_TOKEN_IT="vt$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 CONTAINERS=()
+NETWORKS=()
 
 # mongod writes its log synchronously and logs every connection (accepted, client
 # metadata, authenticated, ended). In docker's default blocking log mode a log
@@ -99,6 +103,9 @@ cleanup() {
   fi
   for c in "${CONTAINERS[@]:-}"; do
     if [ -n "$c" ]; then docker rm -f "$c" >/dev/null 2>&1 || true; fi
+  done
+  for n in "${NETWORKS[@]:-}"; do
+    if [ -n "$n" ]; then docker network rm "$n" >/dev/null 2>&1 || true; fi
   done
   if [ -n "$TLS_DIR" ]; then rm -rf "$TLS_DIR"; fi
   if [ -n "$PRECOMPILE_PID" ]; then kill "$PRECOMPILE_PID" 2>/dev/null || true; fi
@@ -347,6 +354,13 @@ if [[ " $IT_PROVIDERS " == *" vault "* ]]; then
   vault_api transit/keys/mongorescue '{"type":"aes256-gcm96"}'
   export MONGORESCUE_TEST_VAULT_ADDR="$VAULT_URL"
   export MONGORESCUE_TEST_VAULT_TOKEN="$VAULT_TOKEN_IT"
+  # The database secrets engine creates MongoDB users: Vault reaches the test
+  # MongoDB by name on a network of their own (removed on exit).
+  docker network create "$PREFIX-net" >/dev/null
+  NETWORKS+=("$PREFIX-net")
+  docker network connect --alias mongo "$PREFIX-net" "$PREFIX-mongo"
+  docker network connect "$PREFIX-net" "$PREFIX-vault"
+  export MONGORESCUE_TEST_VAULT_MONGO_HOST="mongo:27017"
 fi
 
 # --- Keycloak (single sign-on) ---------------------------------------------------

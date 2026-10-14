@@ -285,6 +285,9 @@ type ConnectionView struct {
 	ServerVersion string     `json:"server_version,omitempty"`
 	LastTestOK    bool       `json:"last_test_ok"`
 	LastTestAt    *time.Time `json:"last_test_at,omitempty"`
+	// CredentialSource is "stored" or "vault" (credentials read from Vault when
+	// used); never a credential or a Vault path.
+	CredentialSource models.CredentialSource `json:"credential_source"`
 }
 
 type connectionList struct {
@@ -328,6 +331,9 @@ type TargetView struct {
 	IsDefault  bool               `json:"is_default"`
 	Location   string             `json:"location"`
 	LastTestOK bool               `json:"last_test_ok"`
+	// CredentialSource is "stored" or "vault" for S3 targets (access keys read
+	// from Vault when used); never a key or a Vault path.
+	CredentialSource models.CredentialSource `json:"credential_source,omitempty"`
 }
 
 type targetList struct {
@@ -686,6 +692,14 @@ func requireID(name, v string) error {
 	return nil
 }
 
+// credentialSource names where credentials come from, for the views.
+func credentialSource(fromVault bool) models.CredentialSource {
+	if fromVault {
+		return models.CredentialsVault
+	}
+	return models.CredentialsStored
+}
+
 func (s *Server) listConnections(ctx context.Context, _ noInput) (connectionList, string, error) {
 	out := connectionList{Connections: []ConnectionView{}}
 	if s.cfg.Connections == nil {
@@ -700,6 +714,7 @@ func (s *Server) listConnections(ctx context.Context, _ noInput) (connectionList
 		out.Connections = append(out.Connections, ConnectionView{
 			ID: c.ID, Name: c.Name, Hosts: connections.HostList(c.URI), Description: c.Description,
 			ServerVersion: c.ServerVersion, LastTestOK: c.LastTestOK, LastTestAt: c.LastTestAt,
+			CredentialSource: credentialSource(c.FromVault()),
 		})
 		ids = append(ids, idText(c.ID))
 	}
@@ -903,9 +918,13 @@ func (s *Server) listStorageTargets(ctx context.Context, _ noInput) (targetList,
 	}
 	def := "none"
 	for _, t := range list {
-		out.StorageTargets = append(out.StorageTargets, TargetView{
+		view := TargetView{
 			ID: t.ID, Name: t.Name, Type: t.Type, IsDefault: t.IsDefault, Location: t.Location(), LastTestOK: t.LastTestOK,
-		})
+		}
+		if t.Type == models.StorageS3 {
+			view.CredentialSource = credentialSource(t.FromVault())
+		}
+		out.StorageTargets = append(out.StorageTargets, view)
 		if t.IsDefault {
 			def = idText(t.ID)
 		}

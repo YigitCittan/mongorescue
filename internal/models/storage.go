@@ -219,6 +219,27 @@ type S3Target struct {
 	// LegalHoldOnPin sets an S3 legal hold on a backup's object while the backup is
 	// pinned (needs ObjectLock).
 	LegalHoldOnPin bool `json:"legal_hold_on_pin,omitempty"`
+
+	// CredentialSource is where the access keys come from: CredentialsStored (or
+	// empty) in AccessKeyID and SecretAccessKey, or CredentialsVault, read from
+	// Vault (see Vault) whenever the target is used; both key fields are then
+	// empty.
+	CredentialSource CredentialSource `json:"credential_source,omitempty"`
+
+	// Vault names the access keys in Vault (kv-v2 or the AWS secrets engine)
+	// when CredentialSource is CredentialsVault. It holds no secret.
+	Vault VaultRef `json:"vault,omitzero"`
+}
+
+// FromVault reports whether the target's access keys are read from Vault.
+func (t *S3Target) FromVault() bool {
+	return t != nil && t.CredentialSource == CredentialsVault
+}
+
+// FromVault reports whether t is an S3 target whose access keys are read from
+// Vault.
+func (t *StorageTarget) FromVault() bool {
+	return t != nil && t.Type == StorageS3 && t.S3.FromVault()
 }
 
 // ObjectLockMode is the S3 Object Lock retention mode of a storage target.

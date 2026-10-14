@@ -225,6 +225,11 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	if req.MongoURI != "" {
 		ctx = mongotls.NewContext(ctx, req.MongoTLS)
 	}
+	ctx, uri, releaseCredentials, holdErr := e.holdCredentials(ctx, req, uri)
+	if holdErr != nil {
+		return e.failRun(ctx, record, holdErr, holdErr.Error())
+	}
+	defer releaseCredentials()
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, e.timeout, ErrTimeout)

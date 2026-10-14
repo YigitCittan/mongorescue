@@ -4442,7 +4442,7 @@ function renderConnections() {
     return `<tr>
       <td class="cell-primary">${ellipsis(c.name)}${desc}${idCopy(c.id, "cell-sub")}</td>
       <td><span class="mono host-cell" title="${escapeHtml(c.uri || "")}">${escapeHtml(maskedHost(c.uri))}</span></td>
-      <td>${connectionTestBadge(c)}${typeof tlsConnectionBadges === "function" ? tlsConnectionBadges(c) : ""}${errorLine}</td>
+      <td>${connectionTestBadge(c)}${typeof tlsConnectionBadges === "function" ? tlsConnectionBadges(c) : ""}${typeof vaultConnectionBadges === "function" ? vaultConnectionBadges(c) : ""}${errorLine}</td>
       <td>${c.server_version ? `<span class="mono">${escapeHtml(c.server_version)}</span>` : mutedDash()}</td>
       <td>${timeCell(c.last_test_at)}</td>
       <td class="col-actions"><div class="row-actions">
@@ -4479,6 +4479,7 @@ function openConnectionModal(id) {
   if (typeof throttleFillConnectionForm === "function") throttleFillConnectionForm(c);
   if (typeof postRestoreFillConnectionForm === "function") postRestoreFillConnectionForm(c);
   if (typeof tlsFillConnectionForm === "function") tlsFillConnectionForm(c);
+  if (typeof vaultFillConnectionForm === "function") vaultFillConnectionForm(c);
   setText("connection-modal-title", c ? t("conn.modal_edit") : t("conn.modal_new"));
   resetConnectionTest();
   // Paste URI or Build, as last used (forms.js).
@@ -4522,8 +4523,12 @@ async function testConnectionForm() {
   }
   const existing = id ? state.connections.find(c => c.id === id) : null;
   if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return false;
+  // Credentials from Vault (vault.js); null means the reference is incomplete.
+  const vault = typeof vaultConnectionPayload === "function" ? vaultConnectionPayload() : {};
+  if (vault === null) return false;
   const tlsChanged = typeof tlsFormChanged === "function" && tlsFormChanged();
-  const useStored = existing && existing.uri === uri && !tlsChanged;
+  const vaultChanged = typeof vaultFormChanged === "function" && vaultFormChanged();
+  const useStored = existing && existing.uri === uri && !tlsChanged && !vaultChanged;
   const btn = document.getElementById("connection-test-btn");
   btn.disabled = true;
   showConnectionTestResult("pending", t("conn.testing"));
@@ -4538,7 +4543,8 @@ async function testConnectionForm() {
           uri,
           ...(existing ? { connection_id: id } : {}),
           ...(typeof throttleConnectionReadPref === "function" ? throttleConnectionReadPref() : {}),
-          ...(typeof tlsConnectionPayload === "function" ? tlsConnectionPayload(uri) : {})
+          ...(typeof tlsConnectionPayload === "function" ? tlsConnectionPayload(uri) : {}),
+          ...vault
         })
       });
     data = json.success ? (json.data || {}) : { ok: false, error: json.error || "" };
@@ -4562,12 +4568,16 @@ async function saveConnection(e) {
   const postRestore = typeof postRestoreConnectionPayload === "function" ? postRestoreConnectionPayload() : {};
   if (postRestore === null) return;
   if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return;
+  // Credentials from Vault (vault.js); null means the reference is incomplete.
+  const vault = typeof vaultConnectionPayload === "function" ? vaultConnectionPayload() : {};
+  if (vault === null) return;
   const payload = {
     name: getValue("connection-name"),
     uri,
     description: getValue("connection-description"),
     ...(typeof throttleConnectionPayload === "function" ? throttleConnectionPayload() : {}),
     ...(typeof tlsConnectionPayload === "function" ? tlsConnectionPayload(uri) : {}),
+    ...vault,
     ...postRestore
   };
 
@@ -5829,6 +5839,8 @@ function openStorageModal(id) {
   setValue("storage-part-size", String(s3.part_size_mb || S3_PART_SIZE_DEFAULT));
   updatePartSizeHint();
   if (typeof objectLockFillForm === "function") objectLockFillForm(s3);
+  // Access keys from Vault (vault.js).
+  if (typeof vaultFillTargetForm === "function") vaultFillTargetForm(target ? s3 : null);
   // The region label (dr.js).
   if (typeof drFillTargetForm === "function") drFillTargetForm(target);
   const provider = target ? inferProvider(target) : state.storageTargets.some(s => s.type === "local") ? "aws" : "local";
@@ -5876,7 +5888,9 @@ function storagePayload() {
   if (provider === "aws" && !region) throw new FieldError("storage-region", t("storage.err_region"));
   const accessKey = getValue("storage-access-key");
   const secretKey = document.getElementById("storage-secret-key").value;
-  if (!!accessKey !== !!secretKey) {
+  // Access keys from Vault replace the stored ones (vault.js).
+  const vault = typeof vaultTargetPayload === "function" ? vaultTargetPayload() : {};
+  if (vault.credential_source !== "vault" && !!accessKey !== !!secretKey) {
     throw new FieldError(accessKey ? "storage-secret-key" : "storage-access-key", t("storage.err_credentials"));
   }
   const partSize = Number(getValue("storage-part-size") || S3_PART_SIZE_DEFAULT);
@@ -5893,6 +5907,7 @@ function storagePayload() {
       prefix: getValue("storage-prefix").replace(/^\/+/, ""),
       access_key_id: accessKey,
       secret_access_key: secretKey,
+      ...vault,
       use_path_style: document.getElementById("storage-path-style").checked,
       part_size_mb: partSize,
       // object_lock, retention_days, legal_hold_on_pin (objectlock.js)
@@ -5910,7 +5925,8 @@ function storageUnchanged(target, payload) {
   const b = payload.s3;
   return ["endpoint", "region", "bucket", "prefix", "access_key_id", "secret_access_key", "retention_days"].every(k => String(a[k] || "") === String(b[k] || "")) &&
     String(a.object_lock || "none") === String(b.object_lock || "none") &&
-    !!a.use_path_style === !!b.use_path_style && !!a.legal_hold_on_pin === !!b.legal_hold_on_pin;
+    !!a.use_path_style === !!b.use_path_style && !!a.legal_hold_on_pin === !!b.legal_hold_on_pin &&
+    (typeof vaultTargetUnchanged !== "function" || vaultTargetUnchanged(a, b));
 }
 
 function resetStorageTest() {

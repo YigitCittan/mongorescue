@@ -185,6 +185,12 @@ const (
 	// once for a new cluster; otherwise the cluster's objects may have been
 	// deleted. It is a critical alert sent to every enabled channel.
 	HAEmptyStart EventType = "ha.empty_start"
+	// VaultUnavailable is emitted when credentials read from HashiCorp Vault (of a
+	// connection or an S3 storage target) cannot be resolved or a lease of them
+	// cannot be renewed (Event.Error, redacted): the runs that need them fail, as
+	// there is no stored copy to fall back to. It is sent once per episode and at
+	// most hourly while it lasts, to every enabled channel (see Broadcast).
+	VaultUnavailable EventType = "vault.unavailable"
 )
 
 // Sources of verification events.
@@ -220,7 +226,7 @@ type BulkSummary struct {
 // instead of the channels of matching rules.
 func (t EventType) Broadcast() bool {
 	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull || t == HATookOver || t == HASteppedDown || t == HACatchUpSkipped ||
-		t == HAEmptyStart
+		t == HAEmptyStart || t == VaultUnavailable
 }
 
 // optInTypes lists the event types a notification rule receives only when it
@@ -267,7 +273,7 @@ func (t EventType) Failed() bool {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
 		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull,
-		HASteppedDown, HACatchUpSkipped, HAEmptyStart:
+		HASteppedDown, HACatchUpSkipped, HAEmptyStart, VaultUnavailable:
 		return true
 	default:
 		return false

@@ -1314,6 +1314,42 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 31,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO connections (id, name, data) VALUES (?, ?, ?)`, "conn_v31_vault", "from vault", jsonDoc(t, map[string]any{
+				"id": "conn_v31_vault", "name": "from vault",
+				"uri":               f.seal(t, tableConnections, "conn_v31_vault", fieldConnectionURI, "mongodb://db3.internal:27017/?authSource=admin"),
+				"credential_source": "vault",
+				"vault":             map[string]any{"engine": "database", "mount": "database", "role": "backup"},
+				"created_at":        rfc(60 * time.Hour), "updated_at": rfc(60 * time.Hour),
+			}))
+			f.exec(t, `INSERT INTO storage_targets (id, name, is_default, data) VALUES (?, ?, ?, ?)`,
+				"tgt_v31_vault", "Vault keys", 0, jsonDoc(t, map[string]any{
+					"id": "tgt_v31_vault", "name": "Vault keys", "type": "s3", "is_default": false,
+					"s3": map[string]any{"endpoint": "https://s3.example.com", "bucket": "vault-backups",
+						"credential_source": "vault", "vault": map[string]any{"engine": "kv-v2", "mount": "secret", "path": "mongorescue/s3",
+							"access_key_field": "access_key", "secret_key_field": "secret_key"}},
+					"created_at": rfc(60 * time.Hour), "updated_at": rfc(60 * time.Hour),
+				}))
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			// Rows of earlier versions keep their stored credentials.
+			conns, tgts, err := s.CountVaultCredentials(ctx)
+			if err != nil || conns != 1 || tgts != 1 {
+				t.Errorf("CountVaultCredentials = %d, %d, %v; want 1, 1", conns, tgts, err)
+			}
+			conn, err := s.GetConnection(ctx, "conn_v31_vault")
+			if err != nil || !conn.FromVault() || conn.Vault.Role != "backup" || conn.Vault.Engine != models.VaultDatabase {
+				t.Errorf("conn_v31_vault = %+v, %v", conn, err)
+			}
+			tgt, err := s.GetStorageTarget(ctx, "tgt_v31_vault")
+			if err != nil || !tgt.FromVault() || tgt.S3.Vault.Path != "mongorescue/s3" || tgt.S3.SecretAccessKey != "" {
+				t.Errorf("tgt_v31_vault = %+v, %v", tgt, err)
+			}
+		},
+	},
 }
 
 // assertJobColumnsCurrent fails unless every readable job's filter columns are

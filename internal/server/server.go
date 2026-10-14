@@ -47,6 +47,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/targets"
+	"github.com/yigitcittan/mongorescue/internal/vaultcreds"
 )
 
 // Sentinel errors surfaced by the HTTP API.
@@ -98,6 +99,8 @@ type Server struct {
 	// auth authenticates requests; connections manages MongoDB servers.
 	auth        *auth.Service
 	connections *connections.Service
+	// vault resolves credentials read from Vault (its test and status).
+	vault *vaultcreds.Resolver
 
 	// settings holds the dashboard-managed configuration and targets the storage
 	// targets; without them, defaults and the fixed storageDriver apply.
@@ -355,6 +358,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Managed MongoDB connections
 	s.registerConnectionRoutes(mux)
+	s.registerVaultRoutes(mux)
 
 	// Settings and storage targets
 	s.registerSettingsRoutes(mux)

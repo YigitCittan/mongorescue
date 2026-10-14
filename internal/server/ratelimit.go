@@ -96,6 +96,7 @@ var workRoutes = map[string]bool{
 	"POST /api/v1/connections/{id}/test":            true,
 	"POST /api/v1/storage-targets/test":             true,
 	"POST /api/v1/storage-targets/{id}/test":        true,
+	vaultTestRoute:                                  true,
 	"POST /api/v1/notifications/channels/{id}/test": true,
 }
 
