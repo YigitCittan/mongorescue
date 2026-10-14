@@ -256,6 +256,7 @@ Things to know:
 - **Metadata changed after the last snapshot** (a job edited a minute before the active instance died) is lost; backups recorded after it are imported from the storage again, as manual backups. Notifications pending in the snapshot may be sent twice; receivers can de-duplicate on the event ID.
 - **A shared data directory** (two processes on one volume) is not supported: the data directory lock refuses the second process. Where the volume survives the node, run one instance with a restart policy instead.
 - **Use the active instance** for the dashboard, the API, the CLI and MCP. Point a load balancer at the instance whose `GET /api/v1/health` reports `"role": "active"`, or accept `503` from the standby.
+- **Load balancer health checks: treat `503` as not ready, not as down.** An instance keeps its port open while it changes role (a takeover or a step-down takes a second or more): every request but the health check and `/metrics` answers `503` with `Retry-After: 1`, and the health check answers `200` with `"role": "switching"`. Route only to `"role": "active"`; retry a `503` (honouring `Retry-After`) instead of marking the instance failed. A refused connection means the process is down. See [Role changes and the HTTP listener](design/ha.md#role-changes-and-the-http-listener).
 
 ### Checklist
 

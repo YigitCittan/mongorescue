@@ -59,6 +59,9 @@ var (
 	// ErrShuttingDown is returned once the application stops accepting new runs. It
 	// aliases runs.ErrShuttingDown.
 	ErrShuttingDown = runs.ErrShuttingDown
+	// ErrNotActive is returned by a change refused because this instance no longer
+	// holds the HA lease (see Config.Fence); the REST API answers 503.
+	ErrNotActive = errors.New("this instance no longer holds the HA lease, so it accepts no changes: use the active instance")
 	// ErrSchedulerUnavailable is returned by RunJob when no scheduler is configured.
 	ErrSchedulerUnavailable = errors.New("scheduler not initialized")
 	// ErrKeyRequired is returned when an encrypted backup is restored without a
@@ -286,6 +289,10 @@ type Config struct {
 	ToolsVersion func(ctx context.Context) (string, error)
 	// Logger receives operational logs; nil means slog.Default().
 	Logger *slog.Logger
+	// Fence, when set, must pass right before a synchronous change is committed to
+	// the store, the storage or MongoDB (active-passive HA): a change of an
+	// instance that lost the lease fails with ErrNotActive and does nothing.
+	Fence models.Fence
 	// Version is the build version reported by Status.
 	Version string
 	// PreviewTimeout bounds reading the collection list of an archive in
