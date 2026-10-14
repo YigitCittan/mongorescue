@@ -67,6 +67,7 @@ func runConformance(t *testing.T, open opener) {
 }
 
 func TestSQLiteStoreConformance(t *testing.T) {
+	t.Parallel()
 	runConformance(t, func(t *testing.T, dir string) backend {
 		return storetest.OpenWithBox(t, filepath.Join(dir, dbFile), testBox)
 	})

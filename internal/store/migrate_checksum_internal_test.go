@@ -23,6 +23,7 @@ func TestMigrationChecksumsOnFreshDatabase(t *testing.T) {
 }
 
 func TestMigrationChecksumsBackfilledOnUpgrade(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mongorescue.db")
 	key, _ := secretbox.GenerateKey()
 	box, _ := secretbox.New(key)
