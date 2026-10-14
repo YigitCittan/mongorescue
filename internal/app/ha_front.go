@@ -317,15 +317,20 @@ func (s *frontSlot) running() int {
 // connections' reads and writes fail at once, like the close of a server. A
 // request whose handler has returned is not touched: its response is delivered.
 // It returns the number of requests aborted.
+//
+// The requests are marked aborted before their contexts are cancelled: a handler
+// that returns because of the cancellation must find its request marked, or its
+// cut-short response (an event stream) would end like a complete one.
 func (s *frontSlot) abortAll() int {
-	s.abort()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
 	for req := range s.inflight {
 		req.aborted = true
 		_ = req.rc.SetReadDeadline(now)
 		_ = req.rc.SetWriteDeadline(now)
 	}
-	return len(s.inflight)
+	n := len(s.inflight)
+	s.mu.Unlock()
+	s.abort()
+	return n
 }

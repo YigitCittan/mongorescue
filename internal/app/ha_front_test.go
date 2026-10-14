@@ -164,10 +164,17 @@ func TestHAFrontSwitchesUnderLoad(t *testing.T) {
 	}
 }
 
+// Outcomes of an aborted stream that mean its cut is not detected.
+var (
+	errComplete   = errors.New("it ended like a complete response")
+	errNotChunked = errors.New("it is not chunked, so a cut would not be detectable")
+)
+
 // TestHAFrontAbortsRequestsAfterTheDrain checks that a request still running when
 // the drain ends (an event stream) is aborted: its context is cancelled, the
 // detach waits for it to end, and the client sees the connection cut rather than a
-// complete response.
+// complete response. A handler that returns because of the cancellation must
+// still find its request marked aborted.
 func TestHAFrontAbortsRequestsAfterTheDrain(t *testing.T) {
 	t.Parallel()
 	f, base := startTestFront(t)
@@ -181,11 +188,17 @@ func TestHAFrontAbortsRequestsAfterTheDrain(t *testing.T) {
 		<-r.Context().Done()
 		ended.Store(true)
 	}))
+	// The stream is chunked, so the client detects a cut by the missing last chunk,
+	// whatever the OS reports for the closed connection (an EOF or a reset).
 	result := make(chan error, 1)
 	go func() {
 		resp, err := http.Get(base + "/api/v1/events") //nolint:noctx // bounded by the abort
 		if err == nil {
-			_, err = io.ReadAll(resp.Body)
+			if !slices.Equal(resp.TransferEncoding, []string{"chunked"}) {
+				err = fmt.Errorf("%w (transfer encoding %v)", errNotChunked, resp.TransferEncoding)
+			} else if _, err = io.ReadAll(resp.Body); err == nil {
+				err = errComplete
+			}
 			_ = resp.Body.Close()
 		}
 		result <- err
@@ -197,8 +210,9 @@ func TestHAFrontAbortsRequestsAfterTheDrain(t *testing.T) {
 	if !ended.Load() {
 		t.Fatal("detach returned while the aborted request still ran")
 	}
-	if err := await(t, result, "the end of the stream"); err == nil {
-		t.Fatal("the aborted stream ended like a complete response")
+	// Any error but these is the cut, as the OS reports it.
+	if err := await(t, result, "the end of the stream"); errors.Is(err, errComplete) || errors.Is(err, errNotChunked) {
+		t.Fatalf("the aborted stream: %v", err)
 	}
 	resp, err := http.Get(base + "/api/v1/events") //nolint:noctx // a local test server
 	if err != nil {
