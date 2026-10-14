@@ -21,11 +21,10 @@ func useManager(t *testing.T, sup *haSupervisor, now func() time.Time) *ha.Manag
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := sup.rt.storage()
 	m, err := ha.New(ha.Config{Store: ls, Cluster: sup.cfg.HA.Cluster, InstanceID: sup.rt.state.InstanceID,
 		TTL: sup.cfg.HA.LeaseTTL, Renew: sup.cfg.HA.RenewInterval, Now: now, Wall: now,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		EpochFloor: func(ctx context.Context) (uint64, error) { return sup.epochFloor(ctx, st) }})
+		EpochFloor: sup.epochFloor})
 	if err != nil {
 		t.Fatal(err)
 	}

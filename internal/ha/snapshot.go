@@ -47,7 +47,8 @@ const (
 )
 
 // ErrSnapshotUnreadable reports a snapshot this instance cannot decrypt: its secret
-// key differs from the one of the instance that wrote it.
+// key differs from the one of the instance that wrote it, or the snapshot was
+// altered.
 var ErrSnapshotUnreadable = errors.New("ha: this instance cannot decrypt the cluster's metadata snapshots; give every instance of the cluster the same MONGORESCUE_SECRET_KEY")
 
 // snapshotName is the file name of a snapshot: the UTC time to the millisecond and
@@ -66,17 +67,29 @@ func SnapshotKey(cluster string, t time.Time, epoch uint64) string {
 	return fmt.Sprintf("%smongorescue-%sZ-e%020d.db.age", SnapshotPrefix(cluster), stamp, epoch)
 }
 
-// SnapshotInfo describes a stored snapshot.
+// SnapshotInfo describes a stored snapshot. Its fields come from the object key
+// and listing, which anyone with write access to the HA target can choose; only
+// CheckSnapshot and FetchSnapshot authenticate them.
 type SnapshotInfo struct {
 	// Key is the storage key.
 	Key string
 	// CreatedAt is when the snapshot was taken (from its name).
 	CreatedAt time.Time
-	// Epoch is the lease epoch of the instance that wrote it.
+	// Epoch is the lease epoch of the instance that wrote it (from its name).
 	Epoch uint64
 	// SizeBytes is the stored size.
 	SizeBytes int64
+	// ModTime and ETag identify the stored object version (from the listing).
+	ModTime time.Time
+	ETag    string
 }
+
+// Mark returns how new the snapshot is (from its name: authenticate it first).
+func (i SnapshotInfo) Mark() SnapshotMark { return SnapshotMark{Epoch: i.Epoch, At: i.CreatedAt} }
+
+// ParseSnapshotKey reads the time and epoch from the name of snapshot key; ok is
+// false when it is not a snapshot name. The values are not authenticated.
+func ParseSnapshotKey(key string) (at time.Time, epoch uint64, ok bool) { return parseSnapshotKey(key) }
 
 // parseSnapshotKey reads the time and epoch from a snapshot key.
 func parseSnapshotKey(key string) (time.Time, uint64, bool) {
@@ -96,8 +109,9 @@ func parseSnapshotKey(key string) (time.Time, uint64, bool) {
 	return at, epoch, true
 }
 
-// ListSnapshots returns the snapshots of cluster on st, the one to restore first:
-// the highest epoch, then the newest.
+// ListSnapshots returns the snapshots of cluster on st in the order of their names:
+// the highest epoch, then the newest. The names are not authenticated; decisions
+// go through SelectSnapshots, which verifies each snapshot's header.
 func ListSnapshots(ctx context.Context, st storage.Storage, cluster string) ([]SnapshotInfo, error) {
 	objs, err := st.List(ctx, SnapshotPrefix(cluster))
 	if err != nil {
@@ -112,7 +126,7 @@ func ListSnapshots(ctx context.Context, st storage.Storage, cluster string) ([]S
 		if !ok {
 			continue
 		}
-		out = append(out, SnapshotInfo{Key: o.Key, CreatedAt: at, Epoch: epoch, SizeBytes: o.SizeBytes})
+		out = append(out, SnapshotInfo{Key: o.Key, CreatedAt: at, Epoch: epoch, SizeBytes: o.SizeBytes, ModTime: o.ModTime, ETag: o.ETag})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Epoch != out[j].Epoch {
@@ -138,72 +152,12 @@ func snapshotDecryptor(passphrase string) (*encryption.Decryptor, error) {
 	return encryption.NewDecryptor(encryption.DecryptorConfig{Passphrase: passphrase})
 }
 
-// FetchSnapshot downloads snapshot key from st, decrypts it and writes it to the new
-// file path (mode 0600), streaming. It returns an error wrapping
-// ErrSnapshotUnreadable when passphrase does not decrypt it.
-func FetchSnapshot(ctx context.Context, st storage.Storage, key, passphrase, path string) (err error) {
-	dec, err := snapshotDecryptor(passphrase)
-	if err != nil {
-		return err
-	}
-	rc, err := st.Retrieve(ctx, key)
-	if err != nil {
-		return fmt.Errorf("ha: download snapshot %s: %w", key, err)
-	}
-	defer func() { _ = rc.Close() }()
-	plain, err := dec.Decrypt(rc)
-	if err != nil {
-		return snapshotDecryptError(key, err)
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("ha: create the snapshot file: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("ha: write the snapshot file: %w", closeErr)
-		}
-		if err != nil {
-			_ = os.Remove(path)
-		}
-	}()
-	if _, err = io.Copy(f, &ctxReader{ctx: ctx, r: plain}); err != nil {
-		return snapshotDecryptError(key, err)
-	}
-	if err = f.Sync(); err != nil {
-		return fmt.Errorf("ha: write the snapshot file: %w", err)
-	}
-	return nil
-}
-
 // snapshotDecryptError wraps a decryption failure in ErrSnapshotUnreadable.
 func snapshotDecryptError(key string, err error) error {
 	if errors.Is(err, encryption.ErrDecryptionFailed) {
 		return fmt.Errorf("%w (snapshot %s): %w", ErrSnapshotUnreadable, key, err)
 	}
 	return fmt.Errorf("ha: read snapshot %s: %w", key, err)
-}
-
-// CheckSnapshotReadable decrypts the start of snapshot key (its header and first
-// chunk, which authenticates the key) without downloading the rest.
-func CheckSnapshotReadable(ctx context.Context, st storage.Storage, key, passphrase string) error {
-	dec, err := snapshotDecryptor(passphrase)
-	if err != nil {
-		return err
-	}
-	rc, err := st.Retrieve(ctx, key)
-	if err != nil {
-		return fmt.Errorf("ha: download snapshot %s: %w", key, err)
-	}
-	defer func() { _ = rc.Close() }()
-	plain, err := dec.Decrypt(rc)
-	if err == nil {
-		_, err = plain.Read(make([]byte, 1))
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return snapshotDecryptError(key, err)
-	}
-	return nil
 }
 
 // ctxReader stops a copy when ctx ends.
@@ -226,11 +180,13 @@ type VacuumStore interface {
 	VacuumInto(ctx context.Context, path string) error
 }
 
-// SnapshotterConfig holds the dependencies of a Snapshotter. Cluster, Store,
-// Storage, Fence, Passphrase and TempDir are required.
+// SnapshotterConfig holds the dependencies of a Snapshotter. Cluster, InstanceID,
+// Store, Storage, Fence, Passphrase and TempDir are required.
 type SnapshotterConfig struct {
 	// Cluster is the cluster name.
 	Cluster string
+	// InstanceID identifies this instance in the snapshots' headers.
+	InstanceID string
 	// Store is the metadata database.
 	Store VacuumStore
 	// Storage is the HA target.
@@ -253,6 +209,17 @@ type SnapshotterConfig struct {
 	Now func() time.Time
 	// Observe receives the outcome of every snapshot (metrics); may be nil.
 	Observe func(ok bool)
+	// OnWritten is called after every snapshot is stored, before retention: the
+	// lease names it as the last snapshot (Manager.RecordSnapshot) and the
+	// instance's high-water mark rises. May be nil.
+	OnWritten func(ctx context.Context, info SnapshotInfo)
+	// Checker checks the snapshots for retention; nil means a checker of its own
+	// that logs refused snapshots and calls OnReject.
+	Checker *SnapshotChecker
+	// OnReject is called once per stored object for every snapshot the checker of
+	// its own finds refused (see SnapshotCheck.Refused), after it was logged
+	// (metrics); may be nil. It is not used with Checker.
+	OnReject func(SnapshotCheck)
 }
 
 // Snapshotter writes the metadata snapshots of the active instance: at least every
@@ -267,8 +234,8 @@ type Snapshotter struct {
 
 // NewSnapshotter returns a Snapshotter.
 func NewSnapshotter(cfg SnapshotterConfig) (*Snapshotter, error) {
-	if cfg.Store == nil || cfg.Storage == nil || cfg.Fence == nil || cfg.Passphrase == "" || cfg.TempDir == "" {
-		return nil, fmt.Errorf("%w: a snapshotter needs a store, a storage, a fence, a passphrase and a directory", ErrInvalidConfig)
+	if cfg.Store == nil || cfg.Storage == nil || cfg.Fence == nil || cfg.Passphrase == "" || cfg.TempDir == "" || cfg.InstanceID == "" {
+		return nil, fmt.Errorf("%w: a snapshotter needs an instance ID, a store, a storage, a fence, a passphrase and a directory", ErrInvalidConfig)
 	}
 	if err := ValidateCluster(cfg.Cluster); err != nil {
 		return nil, err
@@ -287,6 +254,16 @@ func NewSnapshotter(cfg SnapshotterConfig) (*Snapshotter, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Checker == nil {
+		logger, onReject := cfg.Logger, cfg.OnReject
+		cfg.Checker = NewSnapshotChecker(cfg.Storage, cfg.Cluster, cfg.Passphrase, func(c SnapshotCheck) {
+			logger.Error("HA snapshot refused: its authenticated header does not match its name or cluster, or it does not decrypt; someone with write access to the HA target may have copied or altered it. It is kept for investigation and never restored",
+				logsafe.Attr("key", c.Key), slog.String("error", redact.Text(c.Err.Error())))
+			if onReject != nil {
+				onReject(c)
+			}
+		})
 	}
 	return &Snapshotter{cfg: cfg, kick: make(chan struct{}, 1)}, nil
 }
@@ -347,7 +324,13 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 		return SnapshotInfo{}, err
 	}
 	epoch := s.cfg.Fence.Epoch()
-	now := s.cfg.Now().UTC()
+	// The key names the time to the millisecond; the header authenticates the same.
+	now := s.cfg.Now().UTC().Truncate(time.Millisecond)
+	header, err := SnapshotHeader{Format: SnapshotFormat, Cluster: s.cfg.Cluster, Epoch: epoch, InstanceID: s.cfg.InstanceID,
+		CreatedAt: now}.encode()
+	if err != nil {
+		return SnapshotInfo{}, err
+	}
 	dir, err := os.MkdirTemp(s.cfg.TempDir, ".ha-snapshot-*")
 	if err != nil {
 		return SnapshotInfo{}, fmt.Errorf("ha: snapshot directory: %w", err)
@@ -377,7 +360,11 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 	wg.Go(func() {
 		w, encErr := enc.Encrypt(pw)
 		if encErr == nil {
-			_, encErr = io.Copy(w, f)
+			// The header goes first into the encrypted stream, so age authenticates
+			// it with the database.
+			if _, encErr = w.Write(header); encErr == nil {
+				_, encErr = io.Copy(w, f)
+			}
 			if closeErr := w.Close(); encErr == nil {
 				encErr = closeErr
 			}
@@ -395,21 +382,48 @@ func (s *Snapshotter) Snapshot(ctx context.Context) (info SnapshotInfo, err erro
 		info.SizeBytes = obj.SizeBytes
 	}
 	s.cfg.Logger.Debug("HA metadata snapshot written", logsafe.Attr("key", key), slog.Uint64("epoch", epoch))
+	if s.cfg.OnWritten != nil {
+		s.cfg.OnWritten(ctx, info)
+	}
 	s.prune(ctx, epoch)
 	return info, nil
 }
 
 // prune deletes the snapshots retention does not keep (see keptSnapshots) for the
-// current epoch. Failures are logged.
+// current epoch. It reads the whole listing and decides on verified snapshots
+// only: a name nobody authenticated never displaces one. Refused snapshots are
+// kept for investigation (the checker reports them); legacy snapshots (no header)
+// are deleted once a verified one exists, since they are never restored then. A
+// snapshot whose check failed (a storage error, a newer format) may be the newest:
+// nothing that sorts before it is deleted, while older snapshots are pruned as
+// usual. Failures are logged.
 func (s *Snapshotter) prune(ctx context.Context, current uint64) {
-	list, err := ListSnapshots(ctx, s.cfg.Storage, s.cfg.Cluster)
+	sel, err := s.cfg.Checker.Select(ctx, 0)
 	if err != nil {
 		s.cfg.Logger.Warn("HA snapshot retention: cannot list the snapshots", slog.String("error", redact.Text(err.Error())))
 		return
 	}
-	kept := keptSnapshots(list, current, max(s.cfg.Keep, 1))
-	for _, old := range list {
-		if kept[old.Key] {
+	// Snapshots sorting before a failed one are not deleted.
+	lastFailed := -1
+	for _, c := range sel.Failed {
+		lastFailed = max(lastFailed, c.index)
+	}
+	verified := make([]SnapshotInfo, 0, len(sel.Verified))
+	for _, c := range sel.Verified {
+		verified = append(verified, c.SnapshotInfo)
+	}
+	kept := keptSnapshots(verified, current, max(s.cfg.Keep, 1))
+	var drop []SnapshotCheck
+	for _, c := range sel.Verified {
+		if !kept[c.Key] {
+			drop = append(drop, c)
+		}
+	}
+	if len(verified) > 0 {
+		drop = append(drop, sel.Legacy...)
+	}
+	for _, old := range drop {
+		if old.index < lastFailed {
 			continue
 		}
 		if delErr := s.cfg.Storage.Delete(ctx, old.Key); delErr != nil && !errors.Is(delErr, storage.ErrNotFound) {
