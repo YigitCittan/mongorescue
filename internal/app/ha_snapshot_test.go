@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
+	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/encryption"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/ha"
@@ -63,8 +64,12 @@ func newHAWriter(t *testing.T, shared, key string) *haWriter {
 	if w.pass, err = ha.SnapshotPassphrase(app.haKey); err != nil {
 		t.Fatal(err)
 	}
+	// The lease clock stands still: the writer holds the lease however slowly the
+	// test runs (it never renews on its own).
+	clock := newFakeClock()
 	w.mgr, err = ha.New(ha.Config{Store: ls, Cluster: w.cluster, InstanceID: "previous", TTL: sup.cfg.HA.LeaseTTL,
-		Renew: sup.cfg.HA.RenewInterval, MACKey: w.macKey, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		Renew: sup.cfg.HA.RenewInterval, MACKey: w.macKey, Now: clock.Now, Wall: clock.Now,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +146,31 @@ func (w *haWriter) lease(t *testing.T) ha.Lease {
 	return l
 }
 
+// clockedSupervisor is bootstrappedSupervisor with a lease clock that stands
+// still: a lease the supervisor acquires never expires while the test acts, however
+// slowly it runs (a released lease is still taken over at once).
+func clockedSupervisor(t *testing.T, cfg *config.Config) *haSupervisor {
+	t.Helper()
+	sup := newTestSupervisor(t, cfg)
+	sup.clock = newFakeClock().Now
+	app, err := sup.open(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sup.bootstrap(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	if err = app.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return sup
+}
+
 // standby returns a bootstrapped standby of the writer's cluster that acquired
 // the lease (epoch want, 0: any).
 func standbyThatAcquired(t *testing.T, shared, key string, want uint64) *haSupervisor {
 	t.Helper()
-	sup := bootstrappedSupervisor(t, haTestConfig(t, shared, key))
+	sup := clockedSupervisor(t, haTestConfig(t, shared, key))
 	sup.retryPause = time.Millisecond
 	m := sup.rt.mgr()
 	m.Step(context.Background())
@@ -275,7 +300,7 @@ func TestTakeoverRefusesAnUntrustedLease(t *testing.T) {
 	w.release(t)
 	// The standby sees the authenticated lease first: from then on a lease without
 	// a MAC is no longer trusted on first use.
-	sup := bootstrappedSupervisor(t, haTestConfig(t, shared, key))
+	sup := clockedSupervisor(t, haTestConfig(t, shared, key))
 	if !sup.rt.stateCopy().SeenAuthenticatedLease(w.cluster) {
 		t.Fatal("the standby did not record the authenticated lease it saw")
 	}
@@ -482,7 +507,7 @@ func TestFirstActivationNeedsAFreshInstance(t *testing.T) {
 // prepare, and lets it create the lease.
 func standbyThatAcquiredFresh(t *testing.T, prepare func(*haSupervisor)) *haSupervisor {
 	t.Helper()
-	sup := bootstrappedSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
+	sup := clockedSupervisor(t, haTestConfig(t, t.TempDir(), haTestKey(t)))
 	prepare(sup)
 	sup.rt.mgr().Step(context.Background())
 	if !sup.rt.mgr().AcquiredFresh() {
@@ -730,8 +755,9 @@ func useManagerWithKey(t *testing.T, sup *haSupervisor, macKey []byte) *ha.Manag
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock := newFakeClock()
 	m, err := ha.New(ha.Config{Store: ls, Cluster: sup.cfg.HA.Cluster, InstanceID: sup.rt.state.InstanceID,
-		TTL: sup.cfg.HA.LeaseTTL, Renew: sup.cfg.HA.RenewInterval, MACKey: macKey, OnAuthenticLease: sup.sawAuthenticLease,
+		TTL: sup.cfg.HA.LeaseTTL, Renew: sup.cfg.HA.RenewInterval, Now: clock.Now, Wall: clock.Now, MACKey: macKey, OnAuthenticLease: sup.sawAuthenticLease,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), EpochFloor: sup.epochFloor})
 	if err != nil {
 		t.Fatal(err)
