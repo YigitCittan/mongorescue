@@ -94,6 +94,8 @@ flowchart TB
 | `internal/secretbox` | AES-256-GCM encryption of credentials at rest and the secret key file |
 | `internal/keywrap` | Root key protection: wraps `secret.key` using cloud KMS providers (AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault Transit) |
 | `internal/keyrotation` | Online rotation of `secret.key`: re-seals all stored secrets in an atomic transaction and manages interrupted rotations |
+| `internal/vault` | Minimal HTTP client of HashiCorp Vault (token, AppRole or Kubernetes login, no redirects, `https` unless allowed), shared by the `vault-transit` key wrapper and the credentials read from Vault |
+| `internal/vaultcreds` | Credentials of connections and S3 targets read from Vault when used ([security.md](security.md#credentials-from-hashicorp-vault)): KV v2 reads with an in-memory cache, leases of the database and AWS engines shared by runs, renewed while held and revoked when released, `Hold` for the engines (`models.CredentialHolder` through `connections.Service`), the AWS credentials provider of S3 drivers and the value-free test |
 | `internal/backup` | Backup engine: runs `mongodump`, hashes, optionally encrypts, streams to storage, cleans up on failure |
 | `internal/restore` | Restore engine: safe-clone namespace mapping, verify-before-restore, decryption, runs `mongorestore` |
 | `internal/postrestore` | Post-restore orchestration: validates and plans post-restore script execution on safely cloned databases |

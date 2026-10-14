@@ -4,7 +4,7 @@ MongoRescue holds the means to destroy your backups: an administrator, or anyone
 
 This page is the threat model of delete protection. The threat model of every component (STRIDE: assets, trust boundaries, threats, mitigations with their code, residual risk and open items) is in [threat-model.md](threat-model.md), and [Verifying releases](#verifying-releases) below shows how to check the signatures and provenance of what you download. Reporting vulnerabilities is described in [SECURITY.md](../SECURITY.md); the API is in [api.md](api.md#delete-protection) and the settings in [configuration.md](configuration.md#security).
 
-`secret.key`, the root key of every stored credential, can be [wrapped by an external KMS](#wrapping-secretkey-with-a-kms) so that the data directory never holds it in plain form.
+`secret.key`, the root key of every stored credential, can be [wrapped by an external KMS](#wrapping-secretkey-with-a-kms) so that the data directory never holds it in plain form, and the credentials of connections and S3 storage targets can be [read from HashiCorp Vault](#credentials-from-hashicorp-vault) when they are used instead of being stored at all.
 
 Delete protection keeps data longer on purpose, which works against erasure requests: [privacy.md](privacy.md#backups-and-erasure-requests) shows what each artefact holds, how long the grace period and retention keep it, and how to re-apply erasures after a restore.
 
@@ -173,6 +173,52 @@ with `MONGORESCUE_KEY_WRAP` still naming the current key: it unwraps every wrapp
 - **Losing the data directory** no longer loses the root of trust, as long as the KMS key exists: a recovery kit or a backup of `secret.key.wrapped` restores it on a new host with the right identity.
 - **It does not protect a running instance**: the key is in its memory, and whoever controls the host, the process or its identity can unwrap the key (or read the credentials) too. Restrict who can assume the instance's role, and alert on KMS decrypt calls from elsewhere (CloudTrail, Cloud Audit Logs, Key Vault and Vault audit logs).
 - **It adds a dependency**: the instance cannot start while the KMS is unreachable or the key is disabled, and deleting the KMS key destroys every credential sealed with `secret.key`. Use the provider's deletion protection (AWS's waiting period, Google Cloud's scheduled destruction, Azure's soft delete and purge protection, Vault's `deletion_allowed=false`), and decide whether to keep a plaintext recovery kit offline as a last resort.
+
+## Credentials from HashiCorp Vault
+
+Instead of storing a connection's user name and password (sealed with `secret.key` in `mongorescue.db`), or an S3 target's access keys, MongoRescue can **read them from HashiCorp Vault whenever they are used**: a backup, a restore, a connection or target test, a database listing, the PITR oplog collection. Only a *reference* is stored (the mount, the secret path or role, the field names), never a value: nothing read from Vault is written to the database, to a log, to an error or to an API or MCP answer.
+
+Set the credential source per connection and per S3 target, in the dashboard ("Credentials from Vault" in the connection and target forms) or the API (`credential_source: "vault"` with a `vault` reference, see [api.md](api.md#credentials-from-vault)):
+
+| Engine | Use | Reference | What MongoRescue reads |
+| :--- | :--- | :--- | :--- |
+| `kv-v2` | connection | `mount` (default `secret`), `path`, `username_field` (default `username`), `password_field` (default `password`) | `GET <mount>/data/<path>`: two string fields of the current version |
+| `kv-v2` | S3 target | `mount`, `path`, `access_key_field` (default `access_key`), `secret_key_field` (default `secret_key`), optional `session_token_field` | the same, for the key pair (and a session token) |
+| `database` | connection | `mount` (default `database`), `role` | `GET <mount>/creds/<role>`: a MongoDB user of the [database secrets engine](https://developer.hashicorp.com/vault/docs/secrets/databases/mongodb), with a lease |
+| `aws` | S3 target | `mount` (default `aws`), `role` | `GET <mount>/creds/<role>`: keys of the [AWS secrets engine](https://developer.hashicorp.com/vault/docs/secrets/aws), with a lease |
+
+A connection that reads its credentials from Vault has **no user name or password in its connection string** (the form and the API refuse one); MongoRescue puts the user and password from Vault into it, percent-encoded, at each use, and keeps the connection string's other options (`authSource`, the read preference, TLS). A target that reads its keys from Vault keeps `access_key_id` and `secret_access_key` empty, and never falls back to the AWS default credential chain.
+
+**Configuration.** The Vault address is a bootstrap setting, `MONGORESCUE_VAULT_ADDR` (`-vault-addr`), and the authentication is the one [key wrapping](#wrapping-secretkey-with-a-kms) uses: `VAULT_TOKEN`, else AppRole (`VAULT_ROLE_ID`, `VAULT_SECRET_ID`), else Kubernetes (`VAULT_K8S_ROLE`), with `VAULT_NAMESPACE` and `VAULT_CACERT` (see [configuration.md](configuration.md#credentials-from-vault)). The address must be `https://`; plain `http://` needs `MONGORESCUE_VAULT_ALLOW_INSECURE=true` (a development Vault only, logged as a warning at every start). Redirects are never followed. A start with connections or targets that read credentials from Vault but no Vault configured is refused; when one is configured, the start checks the authentication and only logs a failure (Vault may come up later).
+
+**Policy.** Give MongoRescue's Vault identity only what its references read, for example:
+
+```hcl
+path "secret/data/mongorescue/*"      { capabilities = ["read"] }
+path "database/creds/mongorescue-*"   { capabilities = ["read"] }
+path "aws/creds/mongorescue-s3"       { capabilities = ["read"] }
+path "sys/leases/renew"               { capabilities = ["update"] }
+path "sys/leases/revoke"              { capabilities = ["update"] }
+```
+
+**Caching.** Static `kv-v2` values are cached in memory for `MONGORESCUE_VAULT_CACHE_TTL` (default `5m`), so a rotation in Vault reaches MongoRescue within that time; nothing is cached on disk. The collector of a [PITR stream](pitr.md) reconnects with the new credentials once Vault holds others.
+
+**Leases.** Dynamic credentials carry a lease:
+
+- A lease of the **database engine** is shared by the runs of one connection while it is fresh (more than a quarter of its TTL left), **renewed while a run uses it** (once a third of its TTL is left) and **revoked, best effort, when the last run that held it ends**, which drops the MongoDB user. Leases still open when MongoRescue stops are revoked too; any others end with their TTL.
+- When a renewal fails, MongoRescue retries while the lease is still valid for more than its safety margin (a fifth of its TTL, at most five minutes); only then does the run **fail with a clear error** (`the vault lease of the credentials could not be kept valid: renewal ... failed`). A lease that reaches the role's `max_ttl` ends the same way: a run longer than `max_ttl` cannot finish, so set `max_ttl` above your longest backup or restore. The PITR collector instead **reconnects with a new lease** before the old one ends, so a stream outlives any `max_ttl`.
+- Keys of the **AWS engine** are requested again before their lease ends (the S3 driver's credential cache refreshes them), so a long upload never signs with expired keys; superseded leases end with their TTL, and those still open are revoked when MongoRescue stops. Prefer the `assumed_role` or `federation_token` credential types: keys of a new `iam_user` take a few seconds to become valid in AWS.
+
+**Failures.** When Vault is unreachable, sealed or refuses a request at use time, **the use fails, without a fallback to any stored copy**: a backup or restore fails with an error naming the Vault path and what to check (reachability, the policy, the path or role), a test reports it, and every enabled notification channel receives *Credentials from Vault unavailable* (`vault.unavailable`), once per episode and at most hourly while it lasts. Fix Vault and retry the run.
+
+**Test.** "Test Vault" in the forms (`POST /api/v1/vault/test`) resolves a reference without returning any value: it reports the fields found and the secret's version, or the lease's TTL of dynamic credentials, which it revokes at once. The connection and target tests use the credentials from Vault as runs do.
+
+### What credentials from Vault change in the threat model
+
+- **A copy of `mongorescue.db` with `secret.key`** (a stolen volume, a backup of the data directory, a recovery kit) no longer holds those credentials: only their references.
+- **Short-lived credentials**: a dynamic MongoDB user exists only while runs use it; a leak is bounded by its lease. Revoking MongoRescue's Vault identity cuts it off at once.
+- **Vault becomes a dependency of every run** that uses it, and of the alerting path: monitor Vault, and the `vault.unavailable` notifications.
+- **It does not protect a running instance**: credentials are in its memory while used, and whoever controls the host, the process or its Vault identity can read what MongoRescue reads. Scope the policy to MongoRescue's paths and roles, and watch Vault's audit log.
 
 ## What this protects against
 

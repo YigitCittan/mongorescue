@@ -113,6 +113,10 @@ type Engine struct {
 	// each run instead of the static values above.
 	config     func() RunConfig
 	storageFor StorageFunc
+
+	// credentials, when set, keeps the credentials of the target connection valid
+	// while a restore runs (WithCredentialHolder).
+	credentials models.CredentialHolder
 }
 
 // RunConfig holds the settings a restore uses, read when it starts.
@@ -497,6 +501,13 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		// Every connection the restore opens (tools and driver) uses the material.
 		ctx = mongotls.NewContext(ctx, req.MongoTLS)
 	}
+	// Credentials leased from Vault are held (renewed) until the run ends; the
+	// held context ends the run when they can no longer be kept valid.
+	ctx, mongoURI, releaseCredentials, holdErr := e.holdCredentials(ctx, req, mongoURI)
+	if holdErr != nil {
+		return e.failRun(ctx, record, holdErr, holdErr.Error())
+	}
+	defer releaseCredentials()
 
 	if e.timeout > 0 {
 		var cancel context.CancelFunc
@@ -857,12 +868,39 @@ func (e *Engine) verifyFirst(req models.RestoreRequest, src *models.BackupRecord
 	return verify
 }
 
-// withCause tags err with ErrTimeout when ctx ended because the run hit its limit.
+// withCause tags err with ErrTimeout when ctx ended because the run hit its limit,
+// and with the cause when ctx ended for another reason of the run's own (such as
+// credentials whose Vault lease could not be kept valid).
 func (e *Engine) withCause(ctx context.Context, err error) error {
-	if errors.Is(context.Cause(ctx), ErrTimeout) && !errors.Is(err, ErrTimeout) {
+	cause := context.Cause(ctx)
+	switch {
+	case errors.Is(cause, ErrTimeout) && !errors.Is(err, ErrTimeout):
 		return fmt.Errorf("%w (limit %s): %w", ErrTimeout, e.timeout, err)
+	case cause != nil && !errors.Is(cause, ErrTimeout) && !errors.Is(cause, context.Canceled) &&
+		!errors.Is(cause, context.DeadlineExceeded) && runs.CancellationOf(ctx) == nil && !errors.Is(err, cause):
+		return fmt.Errorf("%w: %w", cause, err)
 	}
 	return err
+}
+
+// WithCredentialHolder makes every restore into a managed connection hold its
+// credentials for the run (credentials leased from Vault are renewed until the
+// run ends, then revoked): the run uses the URI h returns and fails when h's
+// context ends.
+func WithCredentialHolder(h models.CredentialHolder) Option {
+	return func(e *Engine) {
+		e.credentials = h
+	}
+}
+
+// holdCredentials holds the credentials of the target connection of req for
+// the run, returning the context and URI to use and the release to call when it
+// ends.
+func (e *Engine) holdCredentials(ctx context.Context, req models.RestoreRequest, uri string) (context.Context, string, func(), error) {
+	if e.credentials == nil || req.TargetConnectionID == "" || req.MongoURI == "" {
+		return ctx, uri, func() {}, nil
+	}
+	return e.credentials.Hold(ctx, req.TargetConnectionID, uri)
 }
 
 // addWarning appends w to the record's warnings.

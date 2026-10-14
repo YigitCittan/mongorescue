@@ -83,6 +83,14 @@ type Session interface {
 	Close()
 }
 
+// StaleSession is implemented by sessions whose credentials expire or rotate
+// (credentials read from Vault). Before each step the worker asks Stale; once it
+// reports true, the worker closes the session and opens a new one, with fresh
+// credentials, before the old ones stop working.
+type StaleSession interface {
+	Stale(ctx context.Context) bool
+}
+
 // Opener opens the session of a stream (its connection, with its read
 // preference).
 type Opener func(ctx context.Context, s *pitr.Stream) (Session, error)

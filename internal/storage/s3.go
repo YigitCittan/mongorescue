@@ -46,6 +46,11 @@ type S3Config struct {
 	// SecretKey is the secret access key paired with AccessKey.
 	SecretKey string
 
+	// Credentials, when set, supplies the credentials instead of AccessKey and
+	// SecretKey (keys read from Vault, refreshed before they expire). It must
+	// cache them itself (aws.CredentialsCache).
+	Credentials aws.CredentialsProvider
+
 	// UsePathStyle enables path-style URLs (e.g. http://s3.host/bucket), required for MinIO.
 	UsePathStyle bool
 
@@ -158,7 +163,9 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 	var loadOpts []func(*awsconfig.LoadOptions) error
 	loadOpts = append(loadOpts, awsconfig.WithRegion(region), awsconfig.WithHTTPClient(newS3HTTPClient()))
 
-	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+	if cfg.Credentials != nil {
+		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(cfg.Credentials))
+	} else if cfg.AccessKey != "" && cfg.SecretKey != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		))
