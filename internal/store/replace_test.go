@@ -92,6 +92,7 @@ func TestReplaceDatabaseKeepsTheOldOneAsBackup(t *testing.T) {
 // TestReplaceDatabaseKeepsTheNewestBackups replaces the database four times: the
 // three newest copies of previous databases are kept, never fewer.
 func TestReplaceDatabaseKeepsTheNewestBackups(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	box := storetest.NewBox(t)
 	path := filepath.Join(t.TempDir(), "mongorescue.db")
