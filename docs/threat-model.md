@@ -65,9 +65,9 @@ Assumptions:
 | D | Slow or huge requests | `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` on the server (`internal/server/server.go`); `http.MaxBytesReader` on JSON bodies (`maxAuthBody`, `maxBulkBody`, `maxRotateBody`, …). |
 | E | A route without authorisation | One route → scope table (`routeScopes`, `internal/server/scopes.go`); an unlisted pattern requires admin (`requiredScope`); `TestEveryRouteHasAScope`, `TestScopesAreEnforcedForEveryRoute`. A standby instance serves no data (`standbyGate`, `internal/server/ha.go`). |
 
-**Residual risk**: plain-HTTP deployments send credentials in the clear (the session cookie is `Secure` only over TLS or behind a trusted proxy, `secureRequest`). An authenticated client can issue requests without a rate limit, apart from login throttling and the MCP limit.
+**Residual risk**: plain-HTTP deployments send credentials in the clear (the session cookie is `Secure` only over TLS or behind a trusted proxy, `secureRequest`). Rate limits (#191) bound requests per API key and session (a general budget and a tighter one for routes that start work; MCP keeps its own per-key limit) and unauthenticated requests per client address (`allowRate`, `internal/server/ratelimit.go`; token buckets in `internal/ratelimit`), but they are kept in memory per instance and only slow a leaked key down.
 
-**Open items**: a request rate limit per API key and per session on the REST API; HSTS when the server knows it is behind TLS.
+**Open items**: HSTS when the server knows it is behind TLS.
 
 ## 2. Authentication: sessions, API keys, SSO, CSRF, throttling
 
@@ -308,7 +308,7 @@ Assumptions:
 | Component | Item |
 | :--- | :--- |
 | HA | Bind the cluster and epoch to the snapshot content and refuse a mismatch on takeover ([#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
-| HTTP API | Rate limits per API key and per session on the REST API ([#191](https://github.com/YigitCittan/mongorescue/issues/191)); HSTS when served over TLS. |
+| HTTP API | HSTS when served over TLS (REST rate limits are done: [#191](https://github.com/YigitCittan/mongorescue/issues/191)). |
 | Auth | MFA for local accounts (API key expiry is done: [#190](https://github.com/YigitCittan/mongorescue/issues/190)). |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
 | Notifications | An option to deny private ranges. |
