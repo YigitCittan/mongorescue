@@ -106,6 +106,9 @@ func deleteResult(rec *models.BackupRecord) *DeleteResult {
 // softDelete marks backup id deleted, re-checking it in the same transaction. The
 // caller holds its deletion lock.
 func (s *Service) softDelete(ctx context.Context, id, reason string) (*models.BackupRecord, error) {
+	if err := s.checkFence(); err != nil {
+		return nil, err
+	}
 	now := s.now().UTC()
 	by, approvedBy := actorNames(ctx)
 	d := models.SoftDelete{At: now, PurgeAfter: now.Add(s.deleteGrace()), By: by, ApprovedBy: approvedBy, Reason: reason}
@@ -165,6 +168,9 @@ func (s *Service) UndeleteBackup(ctx context.Context, id string) (*models.Backup
 		return nil, err
 	}
 	defer unlock()
+	if err = s.checkFence(); err != nil {
+		return nil, err
+	}
 	updated, err := s.updateBackup(ctx, id, func(r *models.BackupRecord) error {
 		switch r.Status {
 		case models.StatusDeleted:
@@ -208,6 +214,9 @@ type jobUnregisterer interface {
 // DeleteJob removes job id from the scheduler and the store; its backups are kept.
 // Config.OnJobDeleted is called afterwards. Expected failures: ErrNotFound.
 func (s *Service) DeleteJob(ctx context.Context, id string) error {
+	if err := s.checkFence(); err != nil {
+		return err
+	}
 	if u, ok := s.cfg.Scheduler.(jobUnregisterer); ok {
 		u.UnregisterJob(id)
 	}
@@ -246,6 +255,9 @@ func (s *Service) SetJobEnabled(ctx context.Context, id string, enabled bool) (*
 	}
 	job := existing.Clone()
 	persist := func() error {
+		if fenceErr := s.checkFence(); fenceErr != nil {
+			return fenceErr
+		}
 		current, getErr := s.store.GetJob(ctx, id)
 		if getErr != nil {
 			return notFound(getErr, "job not found")

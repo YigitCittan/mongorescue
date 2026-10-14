@@ -7,13 +7,17 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -148,6 +152,111 @@ func (m *haMember) waitRole(role string, within time.Duration) time.Duration {
 	return 0
 }
 
+// haPoller polls the API of a member continuously, so the test sees every refused
+// connection of a role change (#192).
+type haPoller struct {
+	name   string
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	mu      sync.Mutex
+	codes   map[int]int
+	roles   map[string]int
+	refused []error
+	other   []error
+}
+
+// haAPIPollInterval spaces the unauthenticated job list requests of a poller: 200
+// a minute, within the REST rate limit's 300 a minute (bursts of 100) per address,
+// so a 429 still fails the test. The health check is never rate limited.
+const haAPIPollInterval = 300 * time.Millisecond
+
+// startPoller polls the health check of m every 20 ms and its job list every
+// haAPIPollInterval, until check or the end of t.
+func startPoller(t *testing.T, m *haMember) *haPoller {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &haPoller{name: m.name, cancel: cancel, done: make(chan struct{}), codes: map[int]int{}, roles: map[string]int{}}
+	t.Cleanup(func() {
+		cancel()
+		<-p.done
+	})
+	base := m.base()
+	go func() {
+		defer close(p.done)
+		client := &http.Client{Timeout: 10 * time.Second}
+		defer client.CloseIdleConnections()
+		var lastAPI time.Time
+		for {
+			path := "/api/v1/health"
+			if time.Since(lastAPI) >= haAPIPollInterval {
+				path, lastAPI = "/api/v1/jobs", time.Now()
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+			if err != nil {
+				return
+			}
+			resp, err := client.Do(req)
+			var body struct {
+				Data struct {
+					Role string `json:"role"`
+				} `json:"data"`
+			}
+			if err == nil {
+				if path == "/api/v1/health" {
+					_ = json.NewDecoder(resp.Body).Decode(&body)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			p.mu.Lock()
+			switch {
+			case errors.Is(err, syscall.ECONNREFUSED):
+				p.refused = append(p.refused, err)
+			case err != nil:
+				p.other = append(p.other, err)
+			default:
+				p.codes[resp.StatusCode]++
+				if body.Data.Role != "" {
+					p.roles[body.Data.Role]++
+				}
+			}
+			p.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	return p
+}
+
+// check stops the poller and fails t when a connection was refused or an answer
+// had a status other than 200, 401 (the job list without credentials) or 503
+// (a standby, or the switch between two roles).
+func (p *haPoller) check(t *testing.T) {
+	t.Helper()
+	p.cancel()
+	<-p.done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t.Logf("requests to %s: status codes %v, health roles %v, refused %d, other errors %d", p.name, p.codes, p.roles, len(p.refused), len(p.other))
+	for _, err := range p.other {
+		t.Logf("request to %s failed: %v", p.name, err)
+	}
+	if len(p.refused) > 0 {
+		t.Errorf("%d connections to %s were refused through its role changes, the first: %v", len(p.refused), p.name, p.refused[0])
+	}
+	for code, n := range p.codes {
+		if code != http.StatusOK && code != http.StatusUnauthorized && code != http.StatusServiceUnavailable {
+			t.Errorf("%d answers of %s with status %d; want 200, 401 or 503", n, p.name, code)
+		}
+	}
+}
+
 // linesWith returns the lines of logs that contain one of words.
 func linesWith(logs string, words ...string) string {
 	var out []string
@@ -179,7 +288,11 @@ func completedBackups(api *apiClient, db string) []*models.BackupRecord {
 // one MinIO bucket and one MongoDB, with a job every minute. The active process is
 // killed with SIGKILL; the standby must become active within ttl + renew + 30s with
 // the killed one's metadata, run the next scheduled backup, and never complete two
-// backups for the same cron fire. The old process then comes back as standby.
+// backups for the same cron fire. The old process then comes back as standby. At
+// last the active process is frozen (SIGSTOP) past the lease TTL: the standby takes
+// over, and the thawed process steps down to standby. B, from the kill on (but not
+// while frozen), and A, once back, are polled throughout: no connection is refused,
+// every request gets 200, 401 or 503.
 func TestHAActivePassiveFailover(t *testing.T) {
 	t.Parallel()
 	m := requireMongo(t)
@@ -254,13 +367,7 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	b.waitRole("standby", 60*time.Second)
 
 	// Set up A: the first user, a connection, an S3 target and a job every minute.
-	var setupCode string
-	for _, match := range setupCodePattern.FindAllStringSubmatch(a.logs.String(), -1) {
-		setupCode = match[1]
-	}
-	if setupCode == "" {
-		t.Fatalf("no setup code in A's logs:\n%s", a.logs.String())
-	}
+	setupCode := waitSetupCode(t, a.logs, 30*time.Second)
 	const password = "integration-password-1"
 	apiA := newAPIClient(t, a.base())
 	var session struct {
@@ -311,6 +418,9 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	for sec := time.Now().Second(); sec < 50 || sec >= 55; sec = time.Now().Second() {
 		time.Sleep(200 * time.Millisecond)
 	}
+	// B is polled from now on, through its takeover and its step-down: its
+	// listener stays open, so no connection is refused.
+	pollB := startPoller(t, b)
 	a.kill()
 	killedAt := time.Now()
 	missedFire := killedAt.Truncate(time.Minute).Add(time.Minute)
@@ -370,4 +480,46 @@ func TestHAActivePassiveFailover(t *testing.T) {
 	if a.role() != "standby" || b.role() != "active" {
 		t.Fatalf("after A's restart: A %q, B %q; want standby and active", a.role(), b.role())
 	}
+
+	// B steps down: frozen (SIGSTOP) past the lease TTL, it cannot renew, so A takes
+	// the lease over (a takeover A is polled through); thawed, B finds its lease
+	// lost and reopens as standby (a step-down B is polled through). The lease
+	// itself is never touched: a deleted or rewritten lease is refused as a
+	// suspected rollback (docs/design/ha.md). B is not polled while it is frozen,
+	// since a frozen process answers nothing.
+	pollA := startPoller(t, a)
+	time.Sleep(time.Second)
+	pollB.check(t)
+	if err = b.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	thawed := false
+	thaw := func() {
+		if !thawed {
+			thawed = true
+			_ = b.cmd.Process.Signal(syscall.SIGCONT)
+		}
+	}
+	t.Cleanup(thaw)
+	a.waitRole("active", haTestTTL+haTestRenew+60*time.Second)
+	// Requests sent while B is still frozen wait in its listen queue.
+	pollB = startPoller(t, b)
+	thaw()
+	deadline = time.Now().Add(haTestTTL + 30*time.Second)
+	for !strings.Contains(b.logs.String(), "this instance lost the HA lease") {
+		if time.Now().After(deadline) {
+			t.Fatalf("B did not step down once thawed\n%s", b.logs.String())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		t.Logf("B's step-down:\n%s", linesWith(b.logs.String(), "lost the HA lease", "stepping down", "stepped down"))
+	})
+	b.waitRole("standby", 60*time.Second)
+	time.Sleep(time.Second)
+	if a.role() != "active" || b.role() != "standby" {
+		t.Fatalf("after B's step-down: A %q, B %q; want active and standby", a.role(), b.role())
+	}
+	pollA.check(t)
+	pollB.check(t)
 }

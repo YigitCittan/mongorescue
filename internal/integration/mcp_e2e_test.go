@@ -200,6 +200,23 @@ func tryStartServer(t *testing.T, bin string) (base string, logs *syncBuffer, ok
 // setupCodePattern finds the one-time setup code in the server logs.
 var setupCodePattern = regexp.MustCompile(`setup_code=([A-Z2-7]{4}(?:-[A-Z2-7]{4})+)`)
 
+// waitSetupCode waits at most within for the setup code in logs and returns the
+// last one logged. The server may answer its health check before it logs the
+// code, so the line is waited for rather than expected at once.
+func waitSetupCode(t *testing.T, logs *syncBuffer, within time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		if matches := setupCodePattern.FindAllStringSubmatch(logs.String(), -1); len(matches) > 0 {
+			return matches[len(matches)-1][1]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no setup code in the server logs within %s:\n%s", within, logs.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // bridgeSession spawns "mongorescue mcp" with key and connects an MCP client to it.
 func bridgeSession(t *testing.T, bin, base, key string) (*sdk.ClientSession, *syncBuffer) {
 	t.Helper()
@@ -253,15 +270,12 @@ func TestMCPStdioBridgeEndToEnd(t *testing.T) {
 	bin := buildBinary(t)
 	base, serverLogs := startServer(t, bin)
 
-	match := setupCodePattern.FindStringSubmatch(serverLogs.String())
-	if match == nil {
-		t.Fatalf("no setup code in the server logs:\n%s", serverLogs.String())
-	}
+	setupCode := waitSetupCode(t, serverLogs, 30*time.Second)
 	api := newAPIClient(t, base)
 	var session struct {
 		CSRFToken string `json:"csrf_token"`
 	}
-	api.data("POST", "/api/v1/setup", map[string]string{"setup_code": match[1], "username": "admin", "password": "integration-password-1"}, http.StatusCreated, &session)
+	api.data("POST", "/api/v1/setup", map[string]string{"setup_code": setupCode, "username": "admin", "password": "integration-password-1"}, http.StatusCreated, &session)
 	api.csrf = session.CSRFToken
 	var conn models.Connection
 	api.data("POST", "/api/v1/connections", map[string]string{"name": "integration mongo", "uri": m.URI}, http.StatusCreated, &conn)

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,14 @@ func newAPIClient(t *testing.T, base string) *apiClient {
 
 func (c *apiClient) do(method, path string, body any) (int, []byte) {
 	c.t.Helper()
+	code, _, raw := c.send(method, path, body)
+	return code, raw
+}
+
+// send issues one request and returns its status, headers and body. A request that
+// gets no HTTP answer (a refused connection included) fails the test.
+func (c *apiClient) send(method, path string, body any) (int, http.Header, []byte) {
+	c.t.Helper()
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -97,13 +106,38 @@ func (c *apiClient) do(method, path string, body any) (int, []byte) {
 		c.t.Fatalf("read %s %s: %v", method, path, err)
 	}
 	c.bodies = append(c.bodies, string(raw))
-	return resp.StatusCode, raw
+	return resp.StatusCode, resp.Header, raw
 }
 
+// retryUnavailableFor bounds the retries of data after 503 answers with
+// Retry-After (an HA instance changing role, see docs/design/ha.md).
+const retryUnavailableFor = 2 * time.Minute
+
 // data calls do, requires the expected status, and decodes the envelope data into out.
+// A 503 with Retry-After (an HA instance changing role, a standby, a full disk) is
+// retried after the time it asks for, within retryUnavailableFor and the test's
+// deadline, unless 503 is the status wanted; a refused connection and any other
+// status still fail the test. Such a 503 means the request changed nothing, so
+// retrying a write is safe.
 func (c *apiClient) data(method, path string, body any, want int, out any) {
 	c.t.Helper()
-	code, raw := c.do(method, path, body)
+	deadline := time.Now().Add(retryUnavailableFor)
+	if d, ok := c.t.Deadline(); ok && d.Add(-30*time.Second).Before(deadline) {
+		deadline = d.Add(-30 * time.Second)
+	}
+	code, header, raw := c.send(method, path, body)
+	for code == http.StatusServiceUnavailable && want != http.StatusServiceUnavailable {
+		wait, err := strconv.Atoi(header.Get("Retry-After"))
+		if err != nil || wait <= 0 {
+			break
+		}
+		if time.Now().Add(time.Duration(wait) * time.Second).After(deadline) {
+			break
+		}
+		c.t.Logf("%s %s: 503 with Retry-After %ds (%s); retrying", method, path, wait, raw)
+		time.Sleep(time.Duration(wait) * time.Second)
+		code, header, raw = c.send(method, path, body)
+	}
 	if code != want {
 		c.t.Fatalf("%s %s: status %d, want %d (body: %s)", method, path, code, want, raw)
 	}
