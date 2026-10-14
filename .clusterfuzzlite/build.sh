@@ -44,20 +44,48 @@ find . -name '*_test.go' -regextype posix-extended \
 # looks at the counters, waits for the Go runtime to finish initializing, as every
 # call into an exported Go function does. Coverage builds (go test -c) are plain Go
 # binaries and keep compile_native_go_fuzzer_v2.
+#
+# The Go builder's LIB_FUZZING_ENGINE links gosigfuzz.o, whose LLVMFuzzerInitialize
+# adds SA_ONSTACK to the signal handlers (Go runs signal handlers on an alternate
+# stack). There can be only one LLVMFuzzerInitialize, so goinit.o does both and
+# replaces gosigfuzz.o in the link.
 cat > "$WORK/goinit.c" <<'EOF'
+#include <signal.h>
+#include <stddef.h>
 #include <stdint.h>
 
 extern uintptr_t _cgo_wait_runtime_init_done(void);
 
+/* As OSS-Fuzz's gosigfuzz.c: keep the handler, add SA_ONSTACK. */
+static void on_stack(int signum) {
+	struct sigaction act;
+	if (sigaction(signum, NULL, &act) == 0) {
+		act.sa_flags |= SA_ONSTACK;
+		sigaction(signum, &act, NULL);
+	}
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
+	static const int signals[] = {SIGSEGV, SIGABRT, SIGALRM, SIGINT, SIGTERM,
+		SIGBUS, SIGFPE, SIGXFSZ, SIGUSR1, SIGUSR2};
 	(void)argc;
 	(void)argv;
 	_cgo_wait_runtime_init_done();
+	for (unsigned i = 0; i < sizeof signals / sizeof signals[0]; i++) {
+		on_stack(signals[i]);
+	}
 	return 0;
 }
 EOF
 # shellcheck disable=SC2086 # CFLAGS holds several flags.
 $CC $CFLAGS -c "$WORK/goinit.c" -o "$WORK/goinit.o"
+engine=()
+for flag in $LIB_FUZZING_ENGINE; do
+	case "$flag" in
+	*/gosigfuzz.o) ;;
+	*) engine+=("$flag") ;;
+	esac
+done
 
 make -s fuzz-list | while IFS=: read -r pkg fn; do
 	[ -n "$pkg" ] || continue
@@ -70,6 +98,6 @@ make -s fuzz-list | while IFS=: read -r pkg fn; do
 	# What compile_native_go_fuzzer_v2 runs for these sanitizers, plus goinit.o.
 	dir=$(go list -tags gofuzz -f '{{.Dir}}' "${module}/${pkg#./}")
 	go-118-fuzz-build_v2 -tags gofuzz -o "$name.a" -func "$fn" "$dir"
-	# shellcheck disable=SC2086 # CXXFLAGS and LIB_FUZZING_ENGINE hold several flags.
-	$CXX $CXXFLAGS $LIB_FUZZING_ENGINE "$name.a" "$WORK/goinit.o" -o "$OUT/$name"
+	# shellcheck disable=SC2086 # CXXFLAGS holds several flags.
+	$CXX $CXXFLAGS "${engine[@]}" "$name.a" "$WORK/goinit.o" -o "$OUT/$name"
 done
