@@ -166,8 +166,13 @@ type haPoller struct {
 	other   []error
 }
 
-// startPoller polls the health check and the job list of m every 20 ms, until
-// check or the end of t.
+// haAPIPollInterval spaces the unauthenticated job list requests of a poller: 200
+// a minute, within the REST rate limit's 300 a minute (bursts of 100) per address,
+// so a 429 still fails the test. The health check is never rate limited.
+const haAPIPollInterval = 300 * time.Millisecond
+
+// startPoller polls the health check of m every 20 ms and its job list every
+// haAPIPollInterval, until check or the end of t.
 func startPoller(t *testing.T, m *haMember) *haPoller {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &haPoller{name: m.name, cancel: cancel, done: make(chan struct{}), codes: map[int]int{}, roles: map[string]int{}}
@@ -180,10 +185,11 @@ func startPoller(t *testing.T, m *haMember) *haPoller {
 		defer close(p.done)
 		client := &http.Client{Timeout: 10 * time.Second}
 		defer client.CloseIdleConnections()
-		for i := 0; ; i++ {
-			path := "/api/v1/jobs"
-			if i%2 == 0 {
-				path = "/api/v1/health"
+		var lastAPI time.Time
+		for {
+			path := "/api/v1/health"
+			if time.Since(lastAPI) >= haAPIPollInterval {
+				path, lastAPI = "/api/v1/jobs", time.Now()
 			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 			if err != nil {

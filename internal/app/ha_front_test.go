@@ -32,8 +32,10 @@ type httpPoller struct {
 	errs  []error
 }
 
-// startPoller starts workers polling paths of base in turn.
-func startPoller(base string, workers int, paths ...string) *httpPoller {
+// startPoller starts workers polling paths of base in turn, each waiting interval
+// after every answer (a budget of the REST rate limit, which counts every
+// unauthenticated request but the health check).
+func startPoller(base string, workers int, interval time.Duration, paths ...string) *httpPoller {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &httpPoller{cancel: cancel, tr: &http.Transport{MaxIdleConnsPerHost: workers}, codes: map[int]int{}}
 	client := &http.Client{Transport: p.tr, Timeout: 30 * time.Second}
@@ -58,6 +60,13 @@ func startPoller(base string, workers int, paths ...string) *httpPoller {
 					code = resp.StatusCode
 				}
 				p.record(code, err)
+				if interval > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(interval):
+					}
+				}
 			}
 		})
 	}
@@ -140,7 +149,7 @@ func (a *fakeRoleApp) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 func TestHAFrontSwitchesUnderLoad(t *testing.T) {
 	t.Parallel()
 	f, base := startTestFront(t)
-	p := startPoller(base, 8, "/api/v1/jobs", "/api/v1/backups", "/")
+	p := startPoller(base, 8, 0, "/api/v1/jobs", "/api/v1/backups", "/")
 	const switches = 30
 	apps := make([]*fakeRoleApp, switches)
 	for i := range apps {

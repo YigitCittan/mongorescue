@@ -55,6 +55,10 @@ func haTestConfig(t *testing.T, shared, key string) *config.Config {
 	return cfg
 }
 
+// haAPIPollInterval spaces the unauthenticated API requests of a poller: 200 a
+// minute, within the REST rate limit's 300 a minute (bursts of 100) per address.
+const haAPIPollInterval = 300 * time.Millisecond
+
 // baseURL returns the URL of the HTTP server of cfg.
 func baseURL(cfg *config.Config) string {
 	return "http://" + net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
@@ -389,9 +393,13 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 	a.expectServed(t, false)
 	b.expectServed(t, false)
 	// Both members are polled through their role changes: the listener stays open,
-	// so every request gets an answer (#192).
-	pollA := startPoller(baseURL(cfgA), 2, "/api/v1/health", "/api/v1/jobs")
-	pollB := startPoller(baseURL(cfgB), 2, "/api/v1/health", "/api/v1/jobs")
+	// so every request gets an answer (#192). The health check, never rate limited,
+	// is polled continuously; the API within the budget of unauthenticated requests
+	// (300 a minute per address and App), so a 429 still fails the test.
+	pollA := startPoller(baseURL(cfgA), 2, 0, "/api/v1/health")
+	pollB := startPoller(baseURL(cfgB), 2, 0, "/api/v1/health")
+	apiPollA := startPoller(baseURL(cfgA), 1, haAPIPollInterval, "/api/v1/jobs")
+	apiPollB := startPoller(baseURL(cfgB), 1, haAPIPollInterval, "/api/v1/jobs")
 
 	// A creates the lease and reopens as active; B reads it and stays standby
 	// while A renews it. The lease clock never gets near the TTL.
@@ -406,7 +414,8 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 
 	// A graceful stop releases the lease: B takes over at its next read, from A's
 	// last snapshot.
-	pollA.check(t, "requests to A through its takeover", http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable)
+	pollA.check(t, "health checks of A through its takeover", http.StatusOK)
+	apiPollA.check(t, "API requests to A through its takeover", http.StatusUnauthorized, http.StatusServiceUnavailable)
 	if err := a.stop(t); err != nil {
 		t.Fatalf("graceful stop of the active member: %v", err)
 	}
@@ -431,7 +440,8 @@ func TestSupervisorHandsOverBetweenTwoMembers(t *testing.T) {
 		expectRoles(t, map[*haMember]string{a2: server.HARoleStandby, b: server.HARoleActive})
 	}
 
-	pollB.check(t, "requests to B through its takeover", http.StatusOK, http.StatusUnauthorized, http.StatusServiceUnavailable)
+	pollB.check(t, "health checks of B through its takeover", http.StatusOK)
+	apiPollB.check(t, "API requests to B through its takeover", http.StatusUnauthorized, http.StatusServiceUnavailable)
 	if err := b.stop(t); err != nil {
 		t.Fatal(err)
 	}
