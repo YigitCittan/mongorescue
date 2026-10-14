@@ -66,6 +66,15 @@ import (
 // staleToolsConfigAge is the minimum age of a leftover tools config file removed at startup.
 const staleToolsConfigAge = time.Minute
 
+// Test hooks: the tests of this package open the metadata database from a copy of
+// one migrated once (a fresh database is migrated from scratch in production) and
+// hash passwords at bcrypt's minimum cost, which the race detector otherwise makes
+// cost seconds per App.
+var (
+	openMetadataStore = store.OpenSQLite
+	bcryptCost        = auth.DefaultBcryptCost
+)
+
 // Shutdown budget. In-flight backups and restores are cancelled (their mongo tools get
 // SIGTERM, then SIGKILL after mongotools.KillGracePeriod) and awaited for at most
 // shutdownTimeout; anything still running afterwards is killed outright.
@@ -264,7 +273,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	keyFiles := key.files
 	opened, err := keyrotation.Open(ctx, keyFiles, key.Key, key.FromEnv,
 		func(ctx context.Context, box *secretbox.Box) (*store.SQLiteStore, error) {
-			return store.OpenSQLite(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
+			return openMetadataStore(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
 		}, logger)
 	var metaStore *store.SQLiteStore
 	if opened != nil {
@@ -300,7 +309,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("initialize authentication: %w", err)
 	}
-	authSvc, err := auth.NewService(metaStore, auth.WithLogger(logger),
+	authSvc, err := auth.NewService(metaStore, auth.WithLogger(logger), auth.WithBcryptCost(bcryptCost),
 		auth.WithImportedKeySecret(importedKeySecret),
 		auth.WithSessionPolicy(func() (time.Duration, time.Duration) {
 			sec := settingsSvc.Current().Security
