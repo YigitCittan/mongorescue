@@ -62,6 +62,7 @@ func TestJobColumnsBackfilledOnOpen(t *testing.T) {
 // last status: a single-database job from its newest backup, a multi-database job
 // from its newest run that was not skipped, a job without either as never.
 func TestLastStatusBackfilledByMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "mongorescue.db")
 	db, err := sql.Open("sqlite", path)

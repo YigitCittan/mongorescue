@@ -105,8 +105,10 @@ func realToolRunner(ctx context.Context, _ string, _ ...string) (io.ReadCloser, 
 func TestBackupStallWatchdogAbortsSilentDump(t *testing.T) {
 	t.Setenv(helperEnv, "hang")
 	store := storage.NewMockStorage()
+	// The stall timeout must leave the helper time to start and write its stderr line
+	// (asserted below); 300 ms was too short for a busy Windows runner.
 	engine := NewEngine(store, "mongodb://db.invalid:27017", WithRunner(realToolRunner),
-		WithStallTimeout(300*time.Millisecond), WithTimeout(time.Minute))
+		WithStallTimeout(2*time.Second), WithTimeout(time.Minute))
 
 	start := time.Now()
 	record, err := runWithDeadline(t, func() (*models.BackupRecord, error) {

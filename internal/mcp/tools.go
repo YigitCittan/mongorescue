@@ -177,7 +177,7 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrUnknownStorageTarget), errors.Is(err, operations.ErrBusy),
 		errors.Is(err, operations.ErrNotRunning),
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
-		errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
+		errors.Is(err, operations.ErrNotActive), errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
 		errors.Is(err, operations.ErrPreflightFailed), errors.Is(err, operations.ErrPITRNotRestorable),
 		errors.Is(err, operations.ErrPITRUnavailable),
 		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),

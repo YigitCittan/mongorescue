@@ -507,6 +507,7 @@ func TestLegacySealedValuesAreUpgraded(t *testing.T) {
 }
 
 func TestPlantedSecretsAreRefusedAtStartupOnceUpgraded(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	now := time.Now().UTC()
 	for name, plant := range map[string]struct {

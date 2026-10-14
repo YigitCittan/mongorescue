@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1435,19 +1436,27 @@ func findAudit(t *testing.T, s *SQLiteStore, tool string) *audit.Entry {
 	return nil
 }
 
-// buildCompatFixture writes a database at schema version upTo into path.
-func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
+// buildCompatFixtures writes, into dir, a database at every schema version up to
+// upTo, the way the releases left it, and returns their files by version. One
+// database is migrated and seeded version after version, and copied after each:
+// building every version from scratch repeated every earlier migration and seed.
+func buildCompatFixtures(t *testing.T, dir string, f *compatFixture, upTo int) map[int]string {
 	t.Helper()
 	migrations, err := loadMigrations()
 	if err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(dir, "building.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// One connection in the default rollback journal mode: after each statement the
+	// file holds every committed row, so it can be copied as it is.
+	db.SetMaxOpenConns(1)
 	f.db = db
 	f.exec(t, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL) STRICT`)
+	out := map[int]string{}
 	for _, m := range migrations {
 		if m.version > upTo {
 			break
@@ -1459,8 +1468,30 @@ func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
 				step.seed(t, f)
 			}
 		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		snapshot := filepath.Join(dir, fmt.Sprintf("v%04d.db", m.version))
+		if writeErr := os.WriteFile(snapshot, raw, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		out[m.version] = snapshot
 	}
 	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// buildCompatFixture writes a database at schema version upTo into path.
+func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
+	t.Helper()
+	raw, err := os.ReadFile(buildCompatFixtures(t, t.TempDir(), f, upTo)[upTo])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1468,6 +1499,7 @@ func buildCompatFixture(t *testing.T, path string, f *compatFixture, upTo int) {
 // TestUpgradeFromEverySchemaVersion opens a fixture of every earlier schema version
 // with this build and checks that every row and field survives the upgrade.
 func TestUpgradeFromEverySchemaVersion(t *testing.T) {
+	t.Parallel()
 	migrations, err := loadMigrations()
 	if err != nil {
 		t.Fatal(err)
@@ -1491,11 +1523,22 @@ func TestUpgradeFromEverySchemaVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The fixtures of every version are built once; each upgrade runs in parallel on
+	// its own copy.
+	f := &compatFixture{box: box, ageIdentity: identity, ageRecip: recipient, oldBackupCT: ct.Bytes()}
+	fixtures := buildCompatFixtures(t, t.TempDir(), f, latest)
 	for version := 1; version <= latest; version++ {
 		t.Run(fmt.Sprintf("from_%04d", version), func(t *testing.T) {
+			t.Parallel()
 			f := &compatFixture{box: box, ageIdentity: identity, ageRecip: recipient, oldBackupCT: ct.Bytes()}
+			raw, err := os.ReadFile(fixtures[version])
+			if err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(t.TempDir(), "mongorescue.db")
-			buildCompatFixture(t, path, f, version)
+			if err = os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
 
 			s, err := OpenSQLite(context.Background(), path, slog.New(slog.DiscardHandler), WithSecretBox(box))
 			if err != nil {
@@ -1573,6 +1616,7 @@ func schemaSnapshot(t *testing.T, path string) string {
 // the open must fail with ErrSchemaTooNew and change nothing, not even the secret
 // key check or the format marker.
 func TestNewerSchemaIsRefusedUntouched(t *testing.T) {
+	t.Parallel()
 	key, _ := secretbox.GenerateKey()
 	box, _ := secretbox.New(key)
 	path := filepath.Join(t.TempDir(), "mongorescue.db")
