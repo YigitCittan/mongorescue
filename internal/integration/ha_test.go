@@ -289,9 +289,10 @@ func completedBackups(api *apiClient, db string) []*models.BackupRecord {
 // killed with SIGKILL; the standby must become active within ttl + renew + 30s with
 // the killed one's metadata, run the next scheduled backup, and never complete two
 // backups for the same cron fire. The old process then comes back as standby. At
-// last the lease is deleted, so the active process steps down to standby and a
-// member takes the lease over again. B, from the kill on, and A, once back, are
-// polled throughout: no connection is refused, every request gets 200, 401 or 503.
+// last the active process is frozen (SIGSTOP) past the lease TTL: the standby takes
+// over, and the thawed process steps down to standby. B, from the kill on (but not
+// while frozen), and A, once back, are polled throughout: no connection is refused,
+// every request gets 200, 401 or 503.
 func TestHAActivePassiveFailover(t *testing.T) {
 	t.Parallel()
 	m := requireMongo(t)
@@ -480,33 +481,45 @@ func TestHAActivePassiveFailover(t *testing.T) {
 		t.Fatalf("after A's restart: A %q, B %q; want standby and active", a.role(), b.role())
 	}
 
-	// B steps down: the lease disappears, so its next renewal fails its condition.
-	// B reopens as standby, and a member takes the new lease over. Neither member
-	// refuses a connection meanwhile.
+	// B steps down: frozen (SIGSTOP) past the lease TTL, it cannot renew, so A takes
+	// the lease over (a takeover A is polled through); thawed, B finds its lease
+	// lost and reopens as standby (a step-down B is polled through). The lease
+	// itself is never touched: a deleted or rewritten lease is refused as a
+	// suspected rollback (docs/design/ha.md). B is not polled while it is frozen,
+	// since a frozen process answers nothing.
 	pollA := startPoller(t, a)
 	time.Sleep(time.Second)
-	if err = haStore.Delete(ctx, ha.LeaseKey(cluster)); err != nil {
+	pollB.check(t)
+	if err = b.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
 	}
-	// B may take the new lease over again at once, so its log tells the step-down.
-	deadline = time.Now().Add(2*haTestRenew + 30*time.Second)
+	thawed := false
+	thaw := func() {
+		if !thawed {
+			thawed = true
+			_ = b.cmd.Process.Signal(syscall.SIGCONT)
+		}
+	}
+	t.Cleanup(thaw)
+	a.waitRole("active", haTestTTL+haTestRenew+60*time.Second)
+	// Requests sent while B is still frozen wait in its listen queue.
+	pollB = startPoller(t, b)
+	thaw()
+	deadline = time.Now().Add(haTestTTL + 30*time.Second)
 	for !strings.Contains(b.logs.String(), "this instance lost the HA lease") {
 		if time.Now().After(deadline) {
-			t.Fatalf("B did not step down once the lease was deleted\n%s", b.logs.String())
+			t.Fatalf("B did not step down once thawed\n%s", b.logs.String())
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Cleanup(func() {
 		t.Logf("B's step-down:\n%s", linesWith(b.logs.String(), "lost the HA lease", "stepping down", "stepped down"))
 	})
-	deadline = time.Now().Add(haTestTTL + haTestRenew + 60*time.Second)
-	for a.role() != "active" && b.role() != "active" {
-		if time.Now().After(deadline) {
-			t.Fatalf("no member became active after B's step-down: A %q, B %q", a.role(), b.role())
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	b.waitRole("standby", 60*time.Second)
 	time.Sleep(time.Second)
+	if a.role() != "active" || b.role() != "standby" {
+		t.Fatalf("after B's step-down: A %q, B %q; want active and standby", a.role(), b.role())
+	}
 	pollA.check(t)
 	pollB.check(t)
 }
