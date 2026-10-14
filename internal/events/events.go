@@ -179,6 +179,12 @@ const (
 	// could not be verified that it did not run (Event.JobID, Event.Detail). It is
 	// sent to every enabled channel.
 	HACatchUpSkipped EventType = "ha.catch_up_skipped"
+	// HAEmptyStart is emitted when an instance of an HA cluster became active from
+	// empty state: no lease and no metadata snapshot on the HA target, so it kept
+	// its own database (Event.Detail names the cluster and the instance). Expected
+	// once for a new cluster; otherwise the cluster's objects may have been
+	// deleted. It is a critical alert sent to every enabled channel.
+	HAEmptyStart EventType = "ha.empty_start"
 )
 
 // Sources of verification events.
@@ -213,7 +219,8 @@ type BulkSummary struct {
 // Broadcast reports whether t is delivered to every enabled notification channel
 // instead of the channels of matching rules.
 func (t EventType) Broadcast() bool {
-	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull || t == HATookOver || t == HASteppedDown || t == HACatchUpSkipped
+	return t == EncryptionOffAfterUpgrade || t == SystemDiskFull || t == HATookOver || t == HASteppedDown || t == HACatchUpSkipped ||
+		t == HAEmptyStart
 }
 
 // optInTypes lists the event types a notification rule receives only when it
@@ -260,7 +267,7 @@ func (t EventType) Failed() bool {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
 		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull,
-		HASteppedDown, HACatchUpSkipped:
+		HASteppedDown, HACatchUpSkipped, HAEmptyStart:
 		return true
 	default:
 		return false

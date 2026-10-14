@@ -53,6 +53,14 @@ type Config struct {
 	// KeyID identifies this instance's secret key; a lease with another KeyID is
 	// never taken over (Status.KeyMismatch).
 	KeyID string
+	// MACKey authenticates the lease (see LeaseMACKey): leases are signed with it,
+	// and only a lease with a valid MAC is trusted at a takeover (Predecessor). A
+	// lease acquired from one that is not trusted stays unsigned until Confirm.
+	// nil signs nothing and trusts every readable lease (tests).
+	MACKey []byte
+	// OnAuthenticLease, when set, is called whenever this instance reads or writes
+	// a lease with a valid MAC (trust on first use: see Predecessor.Legacy).
+	OnAuthenticLease func()
 	// TTL is how long a lease lives without renewal; Renew how often the active
 	// instance renews it and a standby reads it (see ValidateTiming).
 	TTL   time.Duration
@@ -70,6 +78,38 @@ type Config struct {
 	// hand never restarts the epochs below snapshots that already exist. An error
 	// defers the acquisition to the next step.
 	EpochFloor func(ctx context.Context) (uint64, error)
+}
+
+// LeaseTrust says what the lease an instance acquired replaced.
+type LeaseTrust string
+
+// Values of LeaseTrust.
+const (
+	// LeaseAbsent: no lease object existed.
+	LeaseAbsent LeaseTrust = "absent"
+	// LeaseAuthentic: the replaced lease carried a valid MAC.
+	LeaseAuthentic LeaseTrust = "authentic"
+	// LeaseUntrusted: the replaced lease was unreadable, or its MAC was missing or
+	// wrong.
+	LeaseUntrusted LeaseTrust = "untrusted"
+)
+
+// Predecessor describes the lease the held lease replaced.
+type Predecessor struct {
+	// Trust says whether it existed and was authentic.
+	Trust LeaseTrust
+	// Lease is the replaced lease when it was readable.
+	Lease Lease
+	// Reason explains an untrusted lease.
+	Reason string
+	// Legacy reports an untrusted lease that is readable but has no MAC, as an
+	// earlier version writes it: it may be trusted while this instance has never
+	// seen an authenticated lease of the cluster.
+	Legacy bool
+	// Mark is the newest snapshot that an authentic lease this instance saw named
+	// (the replaced one or an earlier one): a takeover needs a verified snapshot at
+	// least as new.
+	Mark SnapshotMark
 }
 
 // Status is a snapshot of a Manager's state.
@@ -138,6 +178,14 @@ type Manager struct {
 	// retrying reports that the last renewal of the held lease failed: Run tries
 	// again after a short pause instead of a renew interval.
 	retrying bool
+	// signed reports that the held lease is written with its MAC: the lease it
+	// replaced was authentic, or the takeover was confirmed.
+	signed bool
+	// pred is the lease the held lease replaced.
+	pred Predecessor
+	// seenMark is the newest snapshot an authentic lease seen by this instance
+	// named.
+	seenMark SnapshotMark
 
 	changes chan struct{}
 }
@@ -287,7 +335,7 @@ func (m *Manager) Step(ctx context.Context) {
 func (m *Manager) renew(ctx context.Context) {
 	now, wall := m.cfg.Now(), m.wallNow()
 	m.mu.RLock()
-	deadline, next, version := m.deadlineLocked(), m.lease, m.version
+	deadline, next, version, signed := m.deadlineLocked(), m.lease, m.version, m.signed
 	expired := m.expiredLocked(now, wall)
 	m.mu.RUnlock()
 	if expired {
@@ -296,7 +344,7 @@ func (m *Manager) renew(ctx context.Context) {
 	}
 	next.Seq++
 	next.RenewedAt = m.cfg.Wall().UTC()
-	data, err := next.encode()
+	data, err := m.encode(next, signed)
 	if err != nil {
 		m.recordError(err)
 		return
@@ -366,6 +414,9 @@ func (m *Manager) observe(ctx context.Context) {
 		return
 	}
 	lease, decodeErr := DecodeLease(data)
+	if decodeErr == nil {
+		m.noteAuthentic(lease)
+	}
 	m.mu.Lock()
 	m.healthy, m.lastErr = true, ""
 	if decodeErr != nil {
@@ -381,6 +432,9 @@ func (m *Manager) observe(ctx context.Context) {
 		return
 	}
 	m.keyMismatch = false
+	if decodeErr == nil && m.authentic(lease) {
+		m.seenMark = LaterMark(m.seenMark, lease.SnapshotMark())
+	}
 	if version != m.seenVersion {
 		m.seen, m.seenVersion, m.seenAt = lease, version, now
 	}
@@ -425,11 +479,16 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 		}
 		epoch = max(epoch, floor+1)
 	}
+	pred := m.assess(prev)
 	next := Lease{
 		Cluster: m.cfg.Cluster, Holder: m.cfg.InstanceID, HolderName: m.cfg.InstanceName, Epoch: epoch, Seq: seq,
 		RenewedAt: m.cfg.Wall().UTC(), TTLSeconds: int64(m.cfg.TTL / time.Second), KeyID: m.cfg.KeyID,
-	}
-	data, err := next.encode()
+	}.withSnapshotMark(pred.Mark)
+	// A lease taken over from one that is not authentic stays unsigned until the
+	// takeover is confirmed: it must not vouch for a last snapshot nobody
+	// authenticated.
+	signed := pred.Trust == LeaseAuthentic
+	data, err := m.encode(next, signed)
 	if err != nil {
 		m.recordError(err)
 		return
@@ -457,10 +516,108 @@ func (m *Manager) acquire(ctx context.Context, epoch, seq uint64, prev []byte, v
 	m.healthy, m.lastErr = true, ""
 	m.fresh = prev == nil
 	m.retrying = false
+	m.signed, m.pred = signed, pred
 	m.takeovers++
 	m.mu.Unlock()
+	if signed {
+		m.noteAuthentic(next.sign(m.cfg.MACKey))
+	}
 	m.logger.Info("acquired the HA lease: this instance is now active", slog.Uint64("epoch", epoch))
 	m.notify()
+}
+
+// authentic reports whether l can be trusted: its MAC is valid, or no MAC key is
+// configured.
+func (m *Manager) authentic(l Lease) bool {
+	return m.cfg.MACKey == nil || l.Authentic(m.cfg.MACKey)
+}
+
+// assess returns what the lease content prev (nil: none existed) is worth, with
+// the newest snapshot authentic leases named.
+func (m *Manager) assess(prev []byte) Predecessor {
+	m.mu.RLock()
+	pred := Predecessor{Trust: LeaseAbsent, Mark: m.seenMark}
+	m.mu.RUnlock()
+	if prev == nil {
+		return pred
+	}
+	l, err := DecodeLease(prev)
+	switch {
+	case err != nil:
+		pred.Trust, pred.Reason = LeaseUntrusted, "the lease is unreadable"
+	case !m.authentic(l) && l.MAC == "":
+		pred.Trust, pred.Lease, pred.Legacy = LeaseUntrusted, l, true
+		pred.Reason = "the lease has no MAC (written by an earlier version, by an instance whose takeover did not complete, or by someone without secret.key)"
+	case !m.authentic(l):
+		pred.Trust, pred.Lease, pred.Reason = LeaseUntrusted, l, "the lease's MAC does not match its content (altered, or written without secret.key)"
+	default:
+		pred.Trust, pred.Lease = LeaseAuthentic, l
+		pred.Mark = LaterMark(pred.Mark, l.SnapshotMark())
+	}
+	return pred
+}
+
+// noteAuthentic calls Config.OnAuthenticLease when l carries a valid MAC.
+func (m *Manager) noteAuthentic(l Lease) {
+	if m.cfg.OnAuthenticLease != nil && m.cfg.MACKey != nil && l.Authentic(m.cfg.MACKey) {
+		m.cfg.OnAuthenticLease()
+	}
+}
+
+// encode returns the content of l, with its MAC when signed.
+func (m *Manager) encode(l Lease, signed bool) ([]byte, error) {
+	l.MAC = ""
+	if signed && m.cfg.MACKey != nil {
+		l = l.sign(m.cfg.MACKey)
+	}
+	return l.encode()
+}
+
+// Predecessor returns the lease the held lease replaced (meaningful while
+// active).
+func (m *Manager) Predecessor() Predecessor {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.pred
+}
+
+// Confirm completes a takeover: the held lease is signed from now on and names
+// mark as the last snapshot (at least), and it is written at once. It returns
+// ErrNotActive when this instance no longer holds the lease.
+func (m *Manager) Confirm(ctx context.Context, mark SnapshotMark) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.mu.Lock()
+	if m.role != RoleActive {
+		m.mu.Unlock()
+		return ErrNotActive
+	}
+	m.signed = true
+	m.lease = m.lease.withSnapshotMark(LaterMark(m.lease.SnapshotMark(), mark))
+	held := m.lease
+	m.mu.Unlock()
+	m.renew(ctx)
+	if err := m.Check(); err != nil {
+		return err
+	}
+	m.noteAuthentic(held.sign(m.cfg.MACKey))
+	return nil
+}
+
+// RecordSnapshot names mark in the held lease as the last snapshot when it is
+// newer, and writes the lease at once, so a takeover after a crash knows which
+// snapshot it must find. A failed write is retried by the next renewal.
+func (m *Manager) RecordSnapshot(ctx context.Context, mark SnapshotMark) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.mu.Lock()
+	if m.role != RoleActive || !m.lease.SnapshotMark().Before(mark) {
+		m.mu.Unlock()
+		return
+	}
+	m.lease = m.lease.withSnapshotMark(mark)
+	m.mu.Unlock()
+	m.renew(ctx)
 }
 
 // stepDown makes this instance a standby without touching the lease. With
@@ -515,7 +672,7 @@ func (m *Manager) Release(ctx context.Context) error {
 // releaseLocked writes the held lease without a holder; m.opMu must be held.
 func (m *Manager) releaseLocked(ctx context.Context) error {
 	m.mu.RLock()
-	active, next, version := m.role == RoleActive, m.lease, m.version
+	active, next, version, signed := m.role == RoleActive, m.lease, m.version, m.signed
 	m.mu.RUnlock()
 	if !active {
 		return nil
@@ -523,7 +680,7 @@ func (m *Manager) releaseLocked(ctx context.Context) error {
 	next.Holder, next.HolderName = "", ""
 	next.Seq++
 	next.RenewedAt = m.cfg.Wall().UTC()
-	data, err := next.encode()
+	data, err := m.encode(next, signed)
 	if err != nil {
 		return err
 	}

@@ -28,8 +28,53 @@ type State struct {
 	// LastActiveEpoch is the last epoch under which this instance was active: its
 	// metadata database is at least as new as any snapshot of that epoch.
 	LastActiveEpoch uint64 `json:"last_active_epoch,omitempty"`
+	// Clusters holds the clusters this instance has seen (their lease or
+	// snapshots), each with the newest metadata snapshot it wrote or restored (its
+	// high-water mark): a takeover never restores an older one without an
+	// operator override.
+	Clusters map[string]SnapshotMark `json:"clusters,omitempty"`
+	// AuthenticatedLease holds the clusters whose lease this instance has seen or
+	// written with a valid MAC. Until then a lease without a MAC (an earlier
+	// version's) is trusted on first use; afterwards it is refused.
+	AuthenticatedLease map[string]bool `json:"seen_authenticated_lease,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Seen reports whether this instance has seen cluster: its lease, its snapshots,
+// or an epoch it held.
+func (st State) Seen(cluster string) bool {
+	_, ok := st.Clusters[cluster]
+	return ok || (st.Cluster == cluster && st.LastActiveEpoch > 0)
+}
+
+// HighWater returns the newest snapshot of cluster this instance wrote or
+// restored.
+func (st State) HighWater(cluster string) SnapshotMark { return st.Clusters[cluster] }
+
+// Observe records that this instance has seen cluster and, with reset, sets its
+// high-water mark to mark, else raises it to mark.
+func (st *State) Observe(cluster string, mark SnapshotMark, reset bool) {
+	if st.Clusters == nil {
+		st.Clusters = map[string]SnapshotMark{}
+	}
+	if !reset {
+		mark = LaterMark(st.Clusters[cluster], mark)
+	}
+	st.Clusters[cluster] = mark
+}
+
+// SeenAuthenticatedLease reports whether this instance has seen or written a
+// lease of cluster with a valid MAC.
+func (st State) SeenAuthenticatedLease(cluster string) bool { return st.AuthenticatedLease[cluster] }
+
+// MarkAuthenticatedLease records that this instance has seen or written a lease of
+// cluster with a valid MAC.
+func (st *State) MarkAuthenticatedLease(cluster string) {
+	if st.AuthenticatedLease == nil {
+		st.AuthenticatedLease = map[string]bool{}
+	}
+	st.AuthenticatedLease[cluster] = true
 }
 
 // LoadState reads the state from dataDir, creating it with a new instance ID when it
