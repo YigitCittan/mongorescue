@@ -159,6 +159,19 @@ mongodb+srv://cluster0.abcde.mongodb.net/?authMechanism=MONGODB-AWS&authSource=%
 
 Keys in the URI (`mongodb+srv://AKIA...:SECRET@...`) also work. They are sealed and redacted like a password.
 
+## Credentials from HashiCorp Vault
+
+With `MONGORESCUE_VAULT_ADDR` set, "Credentials from Vault" in the connection form reads the user name and password from Vault at each use instead of storing them: two fields of a KV v2 secret, or a dynamic user of the database secrets engine whose lease is renewed while a run uses it and revoked after it ([security.md](security.md#credentials-from-hashicorp-vault)). The connection string then holds no user name or password, only the hosts and options; keep `authSource` (usually `admin`, where the database engine creates its users). "Test Vault" checks the reference without showing a value; "Test connection" pings with the credentials from Vault.
+
+A role of the database secrets engine for MongoRescue needs the [privileges](#privileges) of its backups and restores, for example:
+
+```bash
+vault write database/roles/mongorescue-backup db_name=mongo default_ttl=1h max_ttl=24h \
+  creation_statements='{"db": "admin", "roles": [{"role": "backup"}, {"role": "restore"}, {"role": "readAnyDatabase"}]}'
+```
+
+Set `max_ttl` above your longest backup or restore: a run cannot outlive its lease.
+
 ## Privileges
 
 The same for every authentication method. Give the roles to the user in `admin`, or in `$external` for x509, LDAP, Kerberos and AWS:

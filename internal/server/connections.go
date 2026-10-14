@@ -10,6 +10,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongouri"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
 // WithConnections enables the /api/v1/connections endpoints and connection-based
@@ -55,6 +56,10 @@ func (s *Server) writeConnectionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, connections.ErrUnavailable):
 		writeError(w, http.StatusBadGateway, err.Error())
+	case errors.Is(err, connections.ErrCredentials):
+		// Vault could not supply the credentials; the message names the path, never
+		// a value.
+		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
 	default:
 		s.logger.Error("connection request failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -176,12 +181,15 @@ func (s *Server) handleTestConnectionURI(w http.ResponseWriter, r *http.Request)
 		ReadPreferenceTags []map[string]string `json:"read_preference_tags"`
 		// TLSInput is the TLS material of the form (see connections.TLSInput).
 		connections.TLSInput
+		// CredentialInput is the credential source of the form: with vault, the
+		// credentials are read from Vault for the test (never returned).
+		connections.CredentialInput
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	res, err := svc.TestURIWithTLS(r.Context(), req.URI, req.ConnectionID,
-		models.ReadPreference{Mode: req.ReadPreference, Tags: req.ReadPreferenceTags}, req.TLSInput)
+	res, err := svc.TestURIWithCredentials(r.Context(), req.URI, req.ConnectionID,
+		models.ReadPreference{Mode: req.ReadPreference, Tags: req.ReadPreferenceTags}, req.TLSInput, req.CredentialInput)
 	if err != nil {
 		s.writeConnectionError(w, err)
 		return

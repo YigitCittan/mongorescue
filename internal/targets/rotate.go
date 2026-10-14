@@ -60,6 +60,9 @@ func (s *Service) RotateCredentials(ctx context.Context, id string, c Credential
 	if existing.Type != models.StorageS3 || existing.S3 == nil {
 		return nil, fmt.Errorf("%w: only S3 targets have credentials to rotate", ErrInvalid)
 	}
+	if existing.S3.FromVault() {
+		return nil, fmt.Errorf("%w: the access keys of this target are read from Vault; rotate them in Vault", ErrInvalid)
+	}
 	c.AccessKeyID, c.SecretAccessKey = strings.TrimSpace(c.AccessKeyID), strings.TrimSpace(c.SecretAccessKey)
 	if c.AccessKeyID == "" || c.SecretAccessKey == "" || c.SecretAccessKey == models.SecretMask {
 		return nil, fmt.Errorf("%w: access_key_id and secret_access_key are required", ErrInvalid)
