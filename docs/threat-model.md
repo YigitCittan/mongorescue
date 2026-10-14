@@ -251,13 +251,15 @@ Assumptions:
 | S | Two active instances | Compare-and-swap writes of the lease (`If-None-Match`/`If-Match`, `internal/storage/lease_s3.go`; a lock file locally), an epoch fencing token, and a fencing check before any run starts or completes (`Manager.Check`, `internal/ha/manager.go`). |
 | I | Snapshots read on storage | age encryption with a passphrase derived from `secret.key` (`SnapshotPassphrase`, `internal/ha/snapshot.go`); credentials inside stay sealed. The lease holds only an HKDF key ID. |
 | T | A forged snapshot | Only a holder of `secret.key` can produce a snapshot that decrypts; an instance with another key refuses to start. |
-| D | Someone holding or corrupting the lease | Anyone who can write the lease prefix can stop the cluster ([design/ha.md](design/ha.md#security)); alerts fire on takeover failures. |
+| T | A genuine snapshot replayed under a higher epoch, a later time or another cluster | Each snapshot starts with an authenticated header (`format`, `cluster`, `epoch`, `instance_id`, `created_at`) inside the age plaintext (`SnapshotHeader`, `parseSnapshotHeader`, `verify`, `internal/ha/snapshotheader.go`); every decision (takeover, epoch floor, retention, startup check) verifies it against the object key and the cluster and refuses a mismatch (`ErrSnapshotRejected`, `SnapshotChecker`), alerted by `mongorescue_ha_snapshots_rejected_total` and `mongorescue_ha_refused_snapshots`. Fuzzed (`FuzzParseSnapshotHeader`). |
+| T | Metadata rolled back by deleting snapshots or replacing the lease | The lease carries an HMAC-SHA256 with an HKDF subkey of `secret.key` (domain `ha-lease`) over cluster, epoch, holder and the last snapshot the active instance wrote (`LeaseMACKey`, `Lease.Authentic`, `internal/ha/lease.go`; `Manager.RecordSnapshot`, `Manager.Confirm`, `internal/ha/manager.go`). A takeover refuses an untrusted or missing lease, a replayed or stale lease, and a newest verified snapshot older than the lease or the instance's high-water mark in `ha.json` (`prepareTakeover`, `internal/app/ha_handover.go`; `mongorescue_ha_rollback_suspected_total`). A lease without a MAC is trusted only while the cluster has no snapshot with a header (rolling upgrade). Only an operator with the data directory forces a takeover past this (`mongorescue ha force-takeover`, audited). |
+| D | Someone holding or corrupting the lease | Anyone who can write the lease prefix can stop the cluster ([design/ha.md](design/ha.md#security)), also by deleting or altering the HA objects so that every takeover is refused; alerts fire on takeover failures and suspected rollbacks. |
 | E | A standby serving stale data | A standby serves no data and accepts no sign-in (`standbyGate`). |
 | R | — | Step-downs and takeovers are logged, counted and notified. |
 
-**Residual risk**: the epoch and cluster of a snapshot are read from its object key (`parseSnapshotKey`) and are not bound inside the encrypted content, so a principal with write access to the HA prefix (but without `secret.key`) can copy an older snapshot under a higher epoch, or another cluster's snapshot that uses the same key, and a takeover would restore it: metadata rolls back (revoked keys or removed users can return, records written since are lost).
+**Residual risk**: fixed in [#189](https://github.com/YigitCittan/mongorescue/issues/189): the epoch and cluster of a snapshot were read from its object key only, so a principal with write access to the HA prefix (but without `secret.key`) could copy an older snapshot under a higher epoch, or another cluster's snapshot that uses the same key, and a takeover restored it. They are now authenticated inside the encrypted content (`internal/ha/snapshotheader.go`), and the lease MAC with the last snapshot detects deleted snapshots and replaced leases (see the table and [design/ha.md](design/ha.md#rollback-protection)). What remains: that principal can still keep the cluster from having an active instance (every takeover refused until an operator forces one), and a fresh instance with no HA history that finds the HA target emptied starts from its own database (alerted: `MongoRescueHAStartedFromEmptyState`, `ha.empty_start`).
 
-**Open items**: bind the cluster and epoch to the snapshot content (for example as authenticated data in the database or the age header) and refuse a mismatch on takeover; separate credentials for the HA prefix.
+**Open items**: separate credentials for the HA prefix.
 
 ## 12. Notifications and webhooks
 
@@ -300,14 +302,14 @@ Assumptions:
 **Assets**: what users download and run.
 
 - **Signed releases**: release archives, SBOMs, `checksums.txt` and the desktop assets carry keyless cosign signatures (`<asset>.sigstore.json`); release archives and `checksums.txt` have SLSA Build Level 3 provenance from `slsa-framework/slsa-github-generator` next to the GitHub artifact attestations; container images are signed by digest ([verifying releases](security.md#verifying-releases)).
-- **Fuzzing**: every parser of untrusted input has a native Go fuzz target (`FUZZ_TARGETS` in the `Makefile`): connection strings and their redaction, the tools config, sealed values, age ciphertext, the archive prelude, the oplog codec, PEM and PKCS#8 TLS keys (`internal/mongotls`), the HA storage location (`internal/config`), notification channels, cron, storage keys, restore namespaces and the desktop updater's archives. They run nightly with Go's engine (`make fuzz`) and with ClusterFuzzLite on pull requests and in daily batch runs (`.github/workflows/cflite.yml`, [testing.md](testing.md)).
+- **Fuzzing**: every parser of untrusted input has a native Go fuzz target (`FUZZ_TARGETS` in the `Makefile`): connection strings and their redaction, the tools config, sealed values, age ciphertext, the archive prelude, the oplog codec, PEM and PKCS#8 TLS keys (`internal/mongotls`), the HA storage location (`internal/config`), the HA snapshot header (`internal/ha`), notification channels, cron, storage keys, restore namespaces and the desktop updater's archives. They run nightly with Go's engine (`make fuzz`) and with ClusterFuzzLite on pull requests and in daily batch runs (`.github/workflows/cflite.yml`, [testing.md](testing.md)).
 - **Dependencies**: Dependabot updates modules, actions and base images; `govulncheck`, CodeQL and the OpenSSF Scorecard run in CI.
 
 ## Open items
 
 | Component | Item |
 | :--- | :--- |
-| HA | Bind the cluster and epoch to the snapshot content and refuse a mismatch on takeover ([#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
+| HA | Separate credentials for the HA prefix (binding the snapshots' cluster and epoch and detecting rollbacks is done: [#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
 | HTTP API | HSTS when served over TLS (REST rate limits are done: [#191](https://github.com/YigitCittan/mongorescue/issues/191)). |
 | Auth | MFA for local accounts (API key expiry is done: [#190](https://github.com/YigitCittan/mongorescue/issues/190)). |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |

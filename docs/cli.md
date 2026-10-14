@@ -13,7 +13,7 @@ mongorescue restore bkp_shop_20261001_030000_3f9a1c2e --wait --verify-restore
 mongorescue verify bkp_shop_20261001_030000_3f9a1c2e --wait
 ```
 
-Without one of these commands `mongorescue` runs the server as before, and `mongorescue mcp` runs the [MCP stdio bridge](mcp.md). `mongorescue help` lists the commands and `mongorescue help <command>` (or `<command> -h`) its flags. Until v0.16 `mongorescue help` was an unexpected argument of the server and exited `2`; it now prints this help and exits `0` (`mongorescue -h` still lists the server's flags).
+Without one of these commands `mongorescue` runs the server as before, and `mongorescue mcp` runs the [MCP stdio bridge](mcp.md). `mongorescue ha force-takeover` (`--from-snapshot <key>` or `--keep-local-database`, with `--data-dir` and `--cluster`) works on an HA instance's data directory, not through the API: it forces that instance's next takeover past the rollback checks ([details](design/ha.md#forcing-a-takeover)); it exits `2` for an invalid request. `mongorescue help` lists the commands and `mongorescue help <command>` (or `<command> -h`) its flags. Until v0.16 `mongorescue help` was an unexpected argument of the server and exited `2`; it now prints this help and exits `0` (`mongorescue -h` still lists the server's flags).
 
 ## Connecting
 

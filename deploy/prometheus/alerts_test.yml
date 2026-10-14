@@ -300,3 +300,90 @@ tests:
       - eval_time: 25m
         alertname: MongoRescueHATakeoverFailed
         exp_alerts: []
+
+  - name: HA started from empty state
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_empty_starts_total{job="backup", instance="b:8080", cluster="prod"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+            exp_annotations:
+              summary: "MongoRescue HA cluster prod started from empty state on b:8080"
+              description: "b:8080 found no lease and no metadata snapshot for HA cluster prod and became active with its own database. If this was not a new cluster, check the HA target (were its objects deleted?) and run a storage scan of every storage target to re-import the archives."
+      - eval_time: 25m
+        alertname: MongoRescueHAStartedFromEmptyState
+        exp_alerts: []
+
+  - name: HA rollback suspected
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_rollback_suspected_total{job="backup", instance="b:8080", cluster="prod", reason="snapshot_behind_lease"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+              reason: snapshot_behind_lease
+            exp_annotations:
+              summary: "A takeover was refused as a suspected rollback in MongoRescue HA cluster prod on b:8080"
+              description: "b:8080 refused to take over HA cluster prod (snapshot_behind_lease): restoring the snapshots left on the HA target could roll the metadata back. Check who can write to the HA target and what the log says, then run mongorescue ha force-takeover on the instance that should become active."
+      - eval_time: 25m
+        alertname: MongoRescueHARollbackSuspected
+        exp_alerts: []
+
+  - name: HA snapshot rejected
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_snapshots_rejected_total{job="backup", instance="b:8080", cluster="prod"}'
+        values: "0 0 0 1 1 1x30"
+      # The refused snapshot stays on the HA target for 40 minutes.
+      - series: 'mongorescue_ha_refused_snapshots{job="backup", instance="b:8080", cluster="prod"}'
+        values: "0 0 0 1x40 0x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHASnapshotRejected
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHASnapshotRejected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+            exp_annotations:
+              summary: "A metadata snapshot was refused in MongoRescue HA cluster prod on b:8080"
+              description: "b:8080 refused a metadata snapshot under _mongorescue/metadata/ha/prod/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+      - eval_time: 25m
+        alertname: MongoRescueHASnapshotRejected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+            exp_annotations:
+              summary: "A metadata snapshot was refused in MongoRescue HA cluster prod on b:8080"
+              description: "b:8080 refused a metadata snapshot under _mongorescue/metadata/ha/prod/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+      - eval_time: 50m
+        alertname: MongoRescueHASnapshotRejected
+        exp_alerts: []
