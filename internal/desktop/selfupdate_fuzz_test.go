@@ -51,6 +51,15 @@ func FuzzArchiveTarget(f *testing.F) {
 // is a stand-in that does not implement all of testing.TB.
 type fataler interface{ Fatal(args ...any) }
 
+// fuzzFail stops a fuzz target or seed helper whose setup failed. Under go test
+// Fatal ends the goroutine and the panic is never reached. In libFuzzer builds
+// (ClusterFuzzLite, go-118-fuzz-build) the *testing.F stand-in's Fatal returns, so
+// the panic reports the real error instead of a nil dereference further on.
+func fuzzFail(t fataler, err error) {
+	t.Fatal(err) //nolint:revive // Fatal returns in libFuzzer builds; the panic is for them.
+	panic(err)
+}
+
 // fuzzZip returns an archive with a file for each name ("/"-suffixed names are
 // directories); body is the content of every file.
 func fuzzZip(t fataler, body []byte, names ...string) []byte {
@@ -65,16 +74,16 @@ func fuzzZip(t fataler, body []byte, names ...string) []byte {
 		}
 		w, err := zw.CreateHeader(h)
 		if err != nil {
-			t.Fatal(err)
+			fuzzFail(t, err)
 		}
 		if !strings.HasSuffix(n, "/") {
-			if _, err := w.Write(body); err != nil {
-				t.Fatal(err)
+			if _, werr := w.Write(body); werr != nil {
+				fuzzFail(t, werr)
 			}
 		}
 	}
 	if err := zw.Close(); err != nil {
-		t.Fatal(err)
+		fuzzFail(t, err)
 	}
 	return buf.Bytes()
 }

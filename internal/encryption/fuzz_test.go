@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 
 	"filippo.io/age"
@@ -24,50 +25,100 @@ const (
 // is a stand-in that does not implement all of testing.TB.
 type fataler interface{ Fatal(args ...any) }
 
+// fuzzFail stops a fuzz target or seed helper whose setup failed. Under go test
+// Fatal ends the goroutine and the panic is never reached. In libFuzzer builds
+// (ClusterFuzzLite, go-118-fuzz-build) the *testing.F stand-in's Fatal returns, so
+// the panic reports the real error instead of a nil dereference further on.
+func fuzzFail(t fataler, err error) {
+	t.Fatal(err) //nolint:revive // Fatal returns in libFuzzer builds; the panic is for them.
+	panic(err)
+}
+
 // fuzzDecryptor returns a Decryptor for identity.
 func fuzzDecryptor(t fataler, identity string) *Decryptor {
 	d, err := NewDecryptor(DecryptorConfig{Identity: identity})
 	if err != nil {
-		t.Fatal(err)
+		fuzzFail(t, err)
 	}
 	return d
 }
 
-// fuzzEncrypt encrypts plaintext to recipients, writing it in pieces of step bytes.
-func fuzzEncrypt(t fataler, plaintext []byte, step int, recipients ...string) []byte {
+// encryptSeed encrypts plaintext to recipients, writing it in pieces of step bytes.
+func encryptSeed(plaintext []byte, step int, recipients ...string) ([]byte, error) {
 	enc, err := NewX25519Encryptor(recipients)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	var buf bytes.Buffer
 	w, err := enc.Encrypt(&buf)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	for rest := plaintext; len(rest) > 0; {
 		n := min(step, len(rest))
-		if _, err := w.Write(rest[:n]); err != nil {
-			t.Fatal(err)
+		if _, err = w.Write(rest[:n]); err != nil {
+			return nil, err
 		}
 		rest = rest[n:]
 	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
+	if err = w.Close(); err != nil {
+		return nil, err
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
+
+// fuzzEncrypt is encryptSeed that fails t.
+func fuzzEncrypt(t fataler, plaintext []byte, step int, recipients ...string) []byte {
+	b, err := encryptSeed(plaintext, step, recipients...)
+	if err != nil {
+		fuzzFail(t, err)
+	}
+	return b
+}
+
+// decryptFuzzSeeds are the seed ciphertexts and the decryptor of FuzzDecrypt.
+type decryptFuzzSeeds struct {
+	valid, large, empty, two []byte
+	dec                      *Decryptor
+}
+
+// decryptSeeds builds them once per process: libFuzzer builds run the whole Fuzz
+// function for every input, and the large seed alone encrypts 64 KiB.
+var decryptSeeds = sync.OnceValues(func() (*decryptFuzzSeeds, error) {
+	s := &decryptFuzzSeeds{}
+	var err error
+	if s.valid, err = encryptSeed([]byte("backup archive"), 7, fuzzRecipient); err != nil {
+		return nil, err
+	}
+	if s.large, err = encryptSeed(bytes.Repeat([]byte{0xab}, ageChunkSize+100), 4096, fuzzRecipient); err != nil {
+		return nil, err
+	}
+	if s.empty, err = encryptSeed(nil, 1, otherRecipient); err != nil {
+		return nil, err
+	}
+	if s.two, err = encryptSeed([]byte("two"), 1, otherRecipient, fuzzRecipient); err != nil {
+		return nil, err
+	}
+	if s.dec, err = NewDecryptor(DecryptorConfig{Identity: fuzzIdentity}); err != nil {
+		return nil, err
+	}
+	return s, nil
+})
 
 // FuzzDecrypt checks that decrypting arbitrary bytes never panics and that every
 // failure wraps ErrDecryptionFailed (the source itself never fails here).
 func FuzzDecrypt(f *testing.F) {
-	valid := fuzzEncrypt(f, []byte("backup archive"), 7, fuzzRecipient)
-	large := fuzzEncrypt(f, bytes.Repeat([]byte{0xab}, ageChunkSize+100), 4096, fuzzRecipient)
+	seeds, err := decryptSeeds()
+	if err != nil {
+		fuzzFail(f, err)
+	}
+	valid, large := seeds.valid, seeds.large
 	f.Add(valid)
 	f.Add(valid[:len(valid)-1])
 	f.Add(large)
 	f.Add(large[:len(large)-200])
-	f.Add(fuzzEncrypt(f, nil, 1, otherRecipient))
-	f.Add(fuzzEncrypt(f, []byte("two"), 1, otherRecipient, fuzzRecipient))
+	f.Add(seeds.empty)
+	f.Add(seeds.two)
 	f.Add([]byte(""))
 	f.Add([]byte("age-encryption.org/v1\n"))
 	f.Add([]byte("age-encryption.org/v1\n-> X25519 AAAA\nAAAA\n--- AAAA\n"))
@@ -78,7 +129,7 @@ func FuzzDecrypt(f *testing.F) {
 	_ = aw.Close()
 	f.Add(armored.Bytes())
 
-	dec := fuzzDecryptor(f, fuzzIdentity)
+	dec := seeds.dec
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r, err := dec.Decrypt(bytes.NewReader(data))
 		if err != nil {

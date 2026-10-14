@@ -14,11 +14,20 @@ var fuzzKey = bytes.Repeat([]byte{0x42}, KeySize)
 // is a stand-in that does not implement all of testing.TB.
 type fataler interface{ Fatal(args ...any) }
 
+// fuzzFail stops a fuzz target or seed helper whose setup failed. Under go test
+// Fatal ends the goroutine and the panic is never reached. In libFuzzer builds
+// (ClusterFuzzLite, go-118-fuzz-build) the *testing.F stand-in's Fatal returns, so
+// the panic reports the real error instead of a nil dereference further on.
+func fuzzFail(t fataler, err error) {
+	t.Fatal(err) //nolint:revive // Fatal returns in libFuzzer builds; the panic is for them.
+	panic(err)
+}
+
 // fuzzBox returns a Box with fuzzKey.
 func fuzzBox(t fataler) *Box {
 	b, err := New(fuzzKey)
 	if err != nil {
-		t.Fatal(err)
+		fuzzFail(t, err)
 	}
 	return b
 }
@@ -29,7 +38,7 @@ func FuzzOpen(f *testing.F) {
 	b := fuzzBox(f)
 	sealed, err := b.Seal(here, "mongodb://u:p@h/db")
 	if err != nil {
-		f.Fatal(err)
+		fuzzFail(f, err)
 	}
 	for _, s := range []string{"", "plaintext", Prefix, Prefix + "!!!", Prefix + "AAAA", LegacyPrefix + "AAAA", sealed, sealed + "\n", sealed[:len(sealed)-1]} {
 		f.Add(s, "connections", "con_1", "uri")

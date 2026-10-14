@@ -171,12 +171,16 @@ var fuzzSeedMaterial = sync.OnceValues(func() (*fuzzMaterial, error) {
 	return m, nil
 })
 
-// seedMaterial returns the seed material or fails f.
+// seedMaterial returns the seed material or fails f. Under go test f.Fatal ends the
+// target and the panic is never reached; in libFuzzer builds (ClusterFuzzLite,
+// go-118-fuzz-build) the *testing.F stand-in's Fatal returns, so the panic reports
+// the real error instead of a nil dereference of m.
 func seedMaterial(f *testing.F) *fuzzMaterial {
 	f.Helper()
 	m, err := fuzzSeedMaterial()
 	if err != nil {
-		f.Fatal(err)
+		f.Fatal(err) //nolint:revive // Fatal returns in libFuzzer builds; the panic is for them.
+		panic(err)
 	}
 	return m
 }
