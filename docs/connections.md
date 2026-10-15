@@ -69,7 +69,7 @@ The directory is the system temporary directory (`TMPDIR`), or `MONGORESCUE_TMP_
 For a server whose certificate is signed by a private CA:
 
 ```text
-mongodb://backup:PASSWORD@db1.internal:27017,db2.internal:27017/?replicaSet=rs0&tls=true&authSource=admin
+mongodb://<username>:<password>@db1.internal:27017,db2.internal:27017/?replicaSet=rs0&tls=true&authSource=admin
 ```
 
 Paste the CA certificate, or a bundle with the intermediates, into **CA certificate (PEM)**, or load it from a file. A server that requires client certificates for every connection (`net.tls.allowConnectionsWithoutCertificates: false`, the default when the server has a CA file) also needs the client certificate and key below, even with password authentication.
@@ -108,7 +108,7 @@ Check the certificate's host names before you turn on **Allow invalid hostnames*
 Requires MongoDB Enterprise or Atlas with LDAP configured. **Not tested.**
 
 ```text
-mongodb://ldapuser:PASSWORD@db1.internal:27017/?authMechanism=PLAIN&authSource=%24external&tls=true
+mongodb://<ldap_user>:<password>@db1.internal:27017/?authMechanism=PLAIN&authSource=%24external&tls=true
 ```
 
 `PLAIN` sends the password as it is, so always use TLS. Set the CA field if the server certificate has a private CA. The user's roles come from the LDAP groups mapped on the server (`security.ldap.authz.queryTemplate`). Map a group to the roles in [Privileges](#privileges).
@@ -128,7 +128,7 @@ mongodb://backup%40EXAMPLE.COM@db1.internal:27017/?authMechanism=GSSAPI&authSour
 Use the SRV connection string from **Connect → Drivers**:
 
 ```text
-mongodb+srv://backup:PASSWORD@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority&appName=mongorescue
+mongodb+srv://<db_username>:<db_password>@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority&appName=mongorescue
 ```
 
 - `mongodb+srv://` turns on TLS. Atlas certificates are signed by public CAs, so leave the TLS fields empty. The Docker image includes the system CA bundle (`ca-certificates`).
