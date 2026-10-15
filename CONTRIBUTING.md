@@ -178,7 +178,7 @@ Signed-off-by: Your Name <you@example.com>
 
 ### DCO sign-off
 
-Every commit needs a Developer Certificate of Origin sign-off, certifying that you have the right to submit the change under the [MIT License](LICENSE):
+Every commit needs a Developer Certificate of Origin sign-off, certifying that you have the right to submit the change under the [GNU Affero General Public License v3.0](LICENSE):
 
 ```bash
 git commit -s -m "feat(storage): add Google Cloud Storage backend"
