@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://github.com/YigitCittan/mongorescue/actions/workflows/ci.yml"><img src="https://github.com/YigitCittan/mongorescue/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/YigitCittan/mongorescue/releases"><img src="https://img.shields.io/github/v/release/YigitCittan/mongorescue?sort=semver" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="AGPL-3.0 license"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/YigitCittan/mongorescue"><img src="https://api.scorecard.dev/projects/github.com/YigitCittan/mongorescue/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
@@ -254,4 +254,4 @@ MongoRescue does not collect telemetry or send data about you or your databases 
 
 ## License
 
-MIT. Security issues: please report them privately, as described in [SECURITY.md](SECURITY.md).
+GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE) for details. Security issues: please report them privately, as described in [SECURITY.md](SECURITY.md).
