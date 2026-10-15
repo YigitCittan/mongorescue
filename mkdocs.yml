@@ -1,0 +1,102 @@
+site_name: MongoRescue
+site_description: Stream, verify, and encrypt MongoDB backups with a single Go binary, built-in dashboard, point-in-time recovery, and S3 immutability.
+site_author: Yigit Cittan
+site_url: https://yigitcittan.github.io/mongorescue/
+
+repo_name: YigitCittan/mongorescue
+repo_url: https://github.com/YigitCittan/mongorescue
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Scheme mode: dark by default (preferred by devops / developers)
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    # Scheme mode: light
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: Roboto Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.edit
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Overview: index.md
+  - Getting Started:
+      - Configuration: configuration.md
+      - MongoDB Connections: connections.md
+      - Desktop Application: desktop.md
+      - Kubernetes & Helm: kubernetes.md
+  - Features:
+      - Point-in-Time Recovery (PITR): pitr.md
+      - Verification & Testing: verification.md
+      - Age Encryption: encryption.md
+      - Notifications & Alerts: notifications.md
+      - Command Line (CLI): cli.md
+      - REST API Reference: api.md
+      - MCP Server (AI Integration): mcp.md
+  - Operations & Production:
+      - Production Checklist: production.md
+      - Security & Key Wrapping: security.md
+      - Threat Model: threat-model.md
+      - Monitoring & Heartbeat: monitoring.md
+      - Prometheus Metrics: metrics.md
+      - Audit Logging: audit.md
+      - Single Sign-On (SSO): sso.md
+      - Troubleshooting: troubleshooting.md
+  - Architecture & Design:
+      - Architecture Overview: architecture.md
+      - High Availability (Active-Passive): design/ha.md
+      - PITR Storage & Codec Design: design/pitr.md
+      - Roles & Permissions Design: design/roles.md
+      - OIDC Architecture: design/oidc.md
+      - Testing Strategy: testing.md
+      - Versioning Policy: versioning.md
+      - Roadmap: roadmap.md
+      - Privacy & Retention: privacy.md
