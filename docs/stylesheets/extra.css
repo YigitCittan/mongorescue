@@ -1,23 +1,22 @@
 /* MongoRescue Documentation Enhancements */
-
-/* Table layout and package map formatting */
+/* Table layout: full width on desktop, scrollable on narrow viewports */
 .md-typeset table:not([class]) {
-  display: table;
-  width: 100%;
   margin-bottom: 1.5em;
   border-collapse: collapse;
 }
-
-/* Ensure package names and IDs in the first column never wrap awkwardly across multiple lines */
+@media screen and (min-width: 60em) {
+  .md-typeset table:not([class]) {
+    display: table;
+    width: 100%;
+  }
+}
+/* Ensure package names, routes, and IDs in the first column never wrap mid-token */
 .md-typeset table:not([class]) th:first-child,
 .md-typeset table:not([class]) td:first-child {
   white-space: nowrap;
   font-weight: 500;
   vertical-align: top;
-  width: 24%;
-  min-width: 190px;
 }
-
 .md-typeset table:not([class]) td:first-child code {
   white-space: nowrap;
   font-size: 0.85em;
@@ -25,13 +24,11 @@
   background-color: var(--md-code-bg-color);
   border-radius: 4px;
 }
-
 /* Second column (Responsibility / Description) styling */
 .md-typeset table:not([class]) td:nth-child(2) {
   vertical-align: top;
   line-height: 1.6;
 }
-
 /* Subtle border and hover highlights for table rows */
 .md-typeset table:not([class]) tr:hover {
   background-color: var(--md-default-fg-color--lightest);

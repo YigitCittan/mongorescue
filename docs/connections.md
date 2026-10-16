@@ -50,7 +50,7 @@ How the material is used:
 - **The driver** builds its TLS configuration in memory (TLS 1.2 or later). No file is written.
 - **The tools** get the material as files in a private directory (`0700`) in the [temporary directory](#temporary-credentials-on-disk): `ca.pem` and `client.pem` (certificate followed by the key), each `0600`. They are named by `--ssl`, `--sslCAFile` and `--sslPEMKeyFile`, and the loosened checks by `--sslAllowInvalidHostnames` and `--sslAllowInvalidCertificates`. The key password goes into the `--config` file with the URI as `sslPEMKeyPassword`, because the tools' configuration file accepts only `uri`, `password` and `sslPEMKeyPassword`. The directory is removed when the tool exits, also after a failure or a panic. Directories left by a crash are removed at the next start.
 - **Neither is logged.** PEM contents and passwords never appear in logs, errors, run logs or API responses.
-- **The client key and its password are sealed with `secret.key`**, bound to their connection, and re-sealed by a [key rotation](encryption.md#key-rotation). The CA and the client certificate are public and stored in plain form.
+- **The client key and its password are sealed with `secret.key`**, bound to their connection, and re-sealed by a [key rotation](encryption.md#key-rotation-runbook). The CA and the client certificate are public and stored in plain form.
 
 ## Temporary credentials on disk
 
