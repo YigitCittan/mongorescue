@@ -37,7 +37,7 @@ The goal: after a disaster, nothing MongoRescue needs to restore is missing, and
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 2.1 | **Roles for users** | L | Viewer, operator and admin for dashboard users, mirroring the API key scopes, enforced in `internal/auth`. A later step adds per-connection access, so an operator can be limited to some servers. Needs a migration and a review of every route in the scope table. Shipped in v0.17.0 (`role` on users, migration 0019, see [design/roles.md](design/roles.md)); per-connection access is still to come. |
+| 2.1 | **Roles for users** | L | Viewer, operator and admin for dashboard users, mirroring the API key scopes, enforced in `internal/auth`, plus per-connection access so an operator or viewer can be limited to specific servers. Shipped (`role` on users in v0.17.0, migration 0019; per-connection access in migration 0024, #98; see [design/roles.md](design/roles.md)). |
 | 2.2 | **Single sign-on (OIDC)** | L | Sign in with an OIDC provider (Entra ID, Google, Okta, Keycloak), map groups to roles, and keep local accounts as a break-glass option. Depends on 2.1. Shipped in v0.18.0 (migration 0020, see [design/oidc.md](design/oidc.md) and [sso.md](sso.md)); not in the desktop app. |
 | 2.3 | **CLI** | M | `mongorescue backup`, `restore`, `list`, `verify` and `status`, talking to a running instance through the REST API with an API key, for scripts and CI. Shipped in v0.17.0 ([cli.md](cli.md)). |
 
@@ -49,9 +49,9 @@ This changes the backup model, so it starts with a design document that has to b
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Open questions: how this fits per-database jobs, where oplog chunks are stored and for how long, encryption and verification of chunks, what happens when the oplog window is lost, and support for sharded clusters (out of scope at first). Agreed: [design/pitr.md](design/pitr.md). |
-| 3.2 | **Oplog collector** | L | A long-running tailer of `local.oplog.rs` that resumes from its last position, writes compressed and encrypted chunks to the storage target, verifies them, and alerts when the gap to the primary grows or the oplog window is about to be overrun. |
-| 3.3 | **PITR restore** | XL | Restore to a chosen time: the nearest base backup, then the oplog chunks replayed with `mongorestore --oplogReplay --oplogLimit`, into a safe clone by default, with the same preflight and verification as other restores. |
+| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Agreed and shipped: [design/pitr.md](design/pitr.md) and [pitr.md](pitr.md). |
+| 3.2 | **Oplog collector** | L | A long-running tailer of `local.oplog.rs` that resumes from its last position, writes compressed and encrypted chunks to the storage target, verifies them, and alerts when the gap to the primary grows or the oplog window is about to be overrun. Shipped (#141, see [pitr.md](pitr.md)). |
+| 3.3 | **PITR restore** | XL | Restore to a chosen time: the nearest base backup, then the oplog chunks replayed with `mongorestore --oplogReplay --oplogLimit`, into a safe clone by default (with opt-in in-place replacement in #142), with preflight, verification and scheduled chain tests. Shipped (#141, #142, see [pitr.md](pitr.md)). |
 | 3.4 | **Sharded clusters** | XL | Research first: consistent backups across shards need cluster-wide coordination, which is a separate project. |
 
 ## Phase 4: storage you can't lose (1.x)
@@ -59,8 +59,8 @@ This changes the backup model, so it starts with a design document that has to b
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
 | 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. Shipped in v0.24.0 (#59), see [configuration.md](configuration.md#immutable-backups-s3-object-lock). |
-| 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. Shipped in v0.25.0 (#60); cross-region policy and drills in #143, see [configuration.md](configuration.md#copies-on-a-second-target-3-2-1). |
-| 4.3 | **KMS** | M–L | Keep `secret.key` and age identities wrapped by AWS KMS, Google Cloud KMS or Azure Key Vault (envelope encryption), so the key material on disk is useless on its own. |
+| 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. Shipped in v0.25.0 (#60), with cross-region policy, PITR copy chains and DR drills shipped in #143; see [production.md](production.md#cross-region-disaster-recovery). |
+| 4.3 | **KMS** | M–L | Keep `secret.key` wrapped by AWS KMS, Google Cloud KMS, Azure Key Vault or Vault Transit (envelope encryption), so the key material on disk is useless on its own. Shipped (see [security.md](security.md#wrapping-secretkey-with-a-kms)). |
 | 4.4 | **HashiCorp Vault** | M–L | Read connection credentials and storage keys from Vault instead of storing them, with lease renewal. |
 | 4.5 | **Cost tracking** | S–M | Stored size per job, database and target over time, an estimated monthly cost per target from a price you enter, and egress used by verification and copies. |
 

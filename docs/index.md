@@ -18,7 +18,20 @@
 
 ---
 
-![The MongoRescue dashboard listing recent backups](assets/screenshots/dashboard-dark.png)
+![The MongoRescue dashboard listing recent backups](assets/screenshots/dashboard-dark.png#only-dark)
+![The MongoRescue dashboard listing recent backups](assets/screenshots/dashboard-light.png#only-light)
+
+??? info "More screenshots"
+    | | |
+    | --- | --- |
+    | ![First-run setup](assets/screenshots/setup.png) | ![MongoDB connections](assets/screenshots/connections.png) |
+    | First-run setup | MongoDB connections |
+    | ![Scheduled jobs](assets/screenshots/jobs.png) | ![Restore dialog with safe clone and verification](assets/screenshots/restore-modal.png) |
+    | Scheduled jobs | Restore into a safe clone |
+    | ![Storage targets](assets/screenshots/storage.png) | ![Notification channels and rules](assets/screenshots/notifications.png) |
+    | Storage targets | Notifications |
+    | ![Restore history](assets/screenshots/restores.png) | ![Backups](assets/screenshots/backups.png) |
+    | Restore history | Backups |
 
 MongoRescue runs `mongodump` on a schedule, streams the archive to local disk or any S3-compatible bucket, and brings it back with `mongorestore` when you need it. The dump is piped straight through, so memory use stays flat no matter how large the database is.
 
@@ -54,5 +67,9 @@ docker run -d --name mongorescue -p 8080:8080 \
 1. Open `http://localhost:8080` in your browser.
 2. Enter the one-time setup code printed in the logs (`docker logs mongorescue`).
 3. Create your administrator account, connect your MongoDB database, and schedule your first backup!
+
+<p align="center">
+  <img src="assets/demo.gif" alt="Taking a backup and restoring it into a safe clone from the dashboard" width="800">
+</p>
 
 For Docker Compose, Kubernetes Helm charts, or standalone binary setups, check the [Configuration Guide](configuration.md) and [Kubernetes Deployment](kubernetes.md).

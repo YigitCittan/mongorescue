@@ -10,6 +10,8 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   language: en
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     # Scheme mode: dark by default (preferred by devops / developers)
     - media: "(prefers-color-scheme: dark)"
@@ -50,6 +52,11 @@ extra_css:
 plugins:
   - search
 
+validation:
+  links:
+    not_found: ignore
+    unrecognized_links: ignore
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -65,7 +72,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
 
