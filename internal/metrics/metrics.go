@@ -94,6 +94,8 @@ type Metrics struct {
 	liveness livenessSources
 	// Active-passive HA series (see ha.go).
 	ha *haCollector
+	// Free disk space of the data directory and local targets (see disk.go).
+	disk *diskCollector
 	// KMS wrapping of secret.key (see keywrap.go).
 	keyWrap keyWrapSeries
 	// API key expiry (see apikeys.go).
@@ -260,6 +262,8 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.rpo)
 	m.ha = newHACollector()
 	m.registry.MustRegister(m.ha)
+	m.disk = newDiskCollector()
+	m.registry.MustRegister(m.disk)
 	// Pre-create the fixed-cardinality series so dashboards see explicit zeros.
 	for _, s := range []string{StatusSucceeded, StatusFailed, StatusCancelled} {
 		m.restoresTotal.WithLabelValues(s)
