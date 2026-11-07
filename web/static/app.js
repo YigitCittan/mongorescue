@@ -5097,6 +5097,7 @@ function fillSecurity(sec) {
   setValue("set-secure-cookies", ["auto", "always", "never"].includes(sec.secure_cookies) ? sec.secure_cookies : "auto");
   document.getElementById("set-trust-proxy").checked = !!sec.trust_proxy_headers;
   setValue("set-cors-origins", (sec.cors_origins || []).join("\n"));
+  setValue("set-trusted-proxies", (sec.trusted_proxies || []).join("\n"));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
   // Delete grace period, two-person rule and pending changes (protection.js).
@@ -5284,12 +5285,20 @@ function collectSecurity() {
     }
     if (!ok) throw new FieldError("set-cors-origins", tf("settings.err_cors", { value: truncate(origin, 60) }));
   });
+  const proxies = parseList(getValue("set-trusted-proxies"));
+  proxies.forEach(entry => {
+    const m = /^([0-9a-fA-F:.]+)(?:\/(\d{1,3}))?$/.exec(entry);
+    if (!m || (!m[1].includes(":") && !/^\d{1,3}(\.\d{1,3}){3}$/.test(m[1])) || (m[2] !== undefined && Number(m[2]) > (m[1].includes(":") ? 128 : 32))) {
+      throw new FieldError("set-trusted-proxies", tf("settings.err_trusted_proxy", { value: truncate(entry, 60) }));
+    }
+  });
   return {
     session_idle_timeout: idle.raw,
     session_absolute_timeout: absolute.raw,
     secure_cookies: getValue("set-secure-cookies"),
     trust_proxy_headers: document.getElementById("set-trust-proxy").checked,
     cors_origins: origins,
+    trusted_proxies: proxies,
     metrics_public: document.getElementById("set-metrics-public").checked,
     mcp_enabled: document.getElementById("set-mcp-enabled").checked,
     ...(typeof apiKeyExpiryCollectSecurity === "function" ? apiKeyExpiryCollectSecurity() : {}),

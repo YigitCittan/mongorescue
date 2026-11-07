@@ -1499,7 +1499,12 @@ func (a *App) Run() error {
 		}
 	}()
 
-	if sec := a.settings.Current().Security; !isLoopbackHost(a.cfg.Host) && sec.SecureCookies != settings.CookiesAlways && !sec.TrustProxyHeaders {
+	sec := a.settings.Current().Security
+	if sec.TrustProxyHeaders && len(sec.TrustedProxies) == 0 {
+		a.logger.Warn("security.trust_proxy_headers is on without security.trusted_proxies: forwarding headers are trusted from every peer, " +
+			"so anyone who can reach the port directly can spoof their address; set security.trusted_proxies to your proxy's CIDR (see docs/production.md)")
+	}
+	if !isLoopbackHost(a.cfg.Host) && sec.SecureCookies != settings.CookiesAlways && !sec.TrustProxyHeaders && len(sec.TrustedProxies) == 0 {
 		a.logger.Warn("listening on a non-loopback address over plain HTTP; put a TLS-terminating reverse proxy in front",
 			slog.String("host", a.cfg.Host),
 		)

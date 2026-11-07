@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 )
 
@@ -248,10 +249,11 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 	expected := s.setupCode
 	s.mu.Unlock()
 	given := normalizeSetupCode(code)
+	ipKey := clientip.AddressKey(clientIP)
 	want := normalizeSetupCode(expected)
 	if expected == "" || subtle.ConstantTimeCompare([]byte(given), []byte(want)) != 1 {
 		s.logger.Warn("setup attempt with an invalid setup code", logsafe.Attr("client_ip", clientIP))
-		if wait := s.throttle.CountFailure("setup|"+clientIP, SetupFreeAttempts, SetupWindow); wait > 0 {
+		if wait := s.throttle.CountFailure("setup|"+ipKey, SetupFreeAttempts, SetupWindow); wait > 0 {
 			return nil, &ThrottledError{RetryAfter: wait}
 		}
 		return nil, ErrInvalidSetupCode
@@ -287,7 +289,8 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 // before the user is looked up, so timing does not reveal which usernames exist or
 // how they sign in.
 func (s *Service) Login(ctx context.Context, clientIP, username, password string) (*LoginResult, error) {
-	attempt, wait := s.throttle.Reserve("login|"+clientIP+"|"+strings.ToLower(username), "ip|"+clientIP)
+	ipKey := clientip.AddressKey(clientIP) // an IPv6 client is throttled by its /64
+	attempt, wait := s.throttle.Reserve("login|"+ipKey+"|"+strings.ToLower(username), "ip|"+ipKey)
 	if attempt == nil {
 		return nil, &ThrottledError{RetryAfter: wait}
 	}

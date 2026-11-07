@@ -56,7 +56,7 @@ func (s *Server) mcpGuard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden: cross-origin request")
 			return
 		}
-		if !sec.TrustProxyHeaders && arrivedOnLoopback(r) && !isLoopbackHost(r.Host) {
+		if !s.trust().PeerTrusted(r) && arrivedOnLoopback(r) && !isLoopbackHost(r.Host) {
 			writeError(w, http.StatusForbidden, "forbidden: invalid Host header for a local MCP endpoint")
 			return
 		}

@@ -268,7 +268,7 @@ All resources are JSON and need the `read` scope.
 | `401 Unauthorized` | Missing or revoked key. Browser sessions do not work on `/mcp`; send `Authorization: Bearer <key>` |
 | `403` "the MCP endpoint is disabled" | Turn on **Settings → Security → MCP server for AI assistants** |
 | `403` "cross-origin request" | The client sent an `Origin` header of another site. Add it to `cors_origins` only if you trust that site |
-| `403` "invalid Host header" | MongoRescue listens on loopback behind a reverse proxy that sets another `Host`: enable `trust_proxy_headers` |
+| `403` "invalid Host header" | MongoRescue listens on loopback behind a reverse proxy that sets another `Host`: add the proxy to `security.trusted_proxies` (a proxy on the same host: `127.0.0.1/32`) |
 | A tool is missing | The key's scope hides it (for example `start_backup` for a read key); restart the stdio client after changing keys |
 | Tool error "forbidden: ... needs the "operator" scope" | Use an operator key for actions; if the message says the key is capped by its creator's role, that user needs the operator or admin role |
 | JSON-RPC error `-32029` | Rate limit; wait the indicated seconds |

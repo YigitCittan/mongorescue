@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -359,5 +360,17 @@ func TestOIDCAttemptThrottle(t *testing.T) {
 	f.clock.Advance(auth.OIDCAttemptWindow)
 	if err = f.svc.AllowOIDCAttempt("start", ip); err != nil {
 		t.Errorf("after the window: %v", err)
+	}
+}
+
+func TestOIDCAttemptThrottleSharesAnIPv6Prefix(t *testing.T) {
+	f := newSSOFixture(t)
+	for i := 0; i < auth.OIDCAttemptsPerWindow; i++ {
+		if err := f.svc.AllowOIDCAttempt("start", fmt.Sprintf("2001:db8:1:2::%x", i+1)); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if err := f.svc.AllowOIDCAttempt("start", "2001:db8:1:2:aaaa::1"); err == nil {
+		t.Fatal("another address of the same /64 must share the budget")
 	}
 }
