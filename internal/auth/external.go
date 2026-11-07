@@ -389,6 +389,9 @@ func (s *Service) LoginOIDC(ctx context.Context, id *ExternalIdentity) (*OIDCLog
 			s.logger.Warn("could not ask for approval of a single sign-on demotion", slog.String("user_id", res.User.ID), logsafe.Error(reqErr))
 		}
 	}
+	if res.Created || res.RoleFrom != res.User.Role {
+		s.changed()
+	}
 	idle, _ := s.sessionTimeouts()
 	if n, purgeErr := s.repo.DeleteExpiredSessions(ctx, now, idle); purgeErr != nil {
 		s.logger.Warn("failed to purge expired sessions", logsafe.Error(purgeErr))
@@ -477,6 +480,7 @@ func (s *Service) ApplyOIDCChange(ctx context.Context, prev, next OIDCPolicy) er
 		return err
 	}
 	if n > 0 {
+		s.changed()
 		s.logger.Info("password sign-in limited to local administrators; ended the sessions of other local users", slog.Int("count", n))
 	}
 	return nil

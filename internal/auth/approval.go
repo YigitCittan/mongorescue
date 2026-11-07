@@ -94,6 +94,7 @@ func (s *Service) ApplyPasswordReset(ctx context.Context, actor *Principal, user
 	if err := s.repo.ResetPassword(ctx, userID, hash, s.now().UTC()); err != nil {
 		return err
 	}
+	s.changed()
 	s.logger.Info("password reset", slog.String("user_id", userID), slog.String("by", actor.UserID()))
 	return nil
 }
@@ -141,6 +142,7 @@ func (s *Service) ApplyProviderRole(ctx context.Context, actor *Principal, id st
 	if err != nil {
 		return nil, err
 	}
+	s.changed()
 	user, err := s.repo.GetUser(ctx, id)
 	if err != nil {
 		return nil, err
@@ -187,6 +189,7 @@ func (s *Service) GrantAPIKeyAdmin(ctx context.Context, actor *Principal, id str
 		return nil, err
 	}
 	k.Scope = ScopeAdmin
+	s.changed()
 	s.logger.Info("api key raised to the admin scope", slog.String("api_key_id", k.ID), slog.String("by", actor.UserID()))
 	return k, nil
 }
