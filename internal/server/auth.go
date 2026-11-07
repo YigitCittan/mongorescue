@@ -374,6 +374,13 @@ func (s *Server) secureRequest(r *http.Request) bool {
 	return s.trust().Proto(r) == "https"
 }
 
+// tlsRequest reports whether r reached the server over TLS: directly (r.TLS) or
+// through a trusted proxy that reports X-Forwarded-Proto: https. Unlike secureRequest
+// it ignores security.secure_cookies, so "always" over plain HTTP does not count.
+func (s *Server) tlsRequest(r *http.Request) bool {
+	return r.TLS != nil || s.trust().Proto(r) == "https"
+}
+
 // sessionCookie builds the session cookie (HttpOnly, SameSite=Strict, Path=/). It is
 // the only place the cookie is constructed, so issuing and clearing it cannot drift.
 //

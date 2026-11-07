@@ -71,11 +71,41 @@ func (s *Server) writeNotifyError(w http.ResponseWriter, err error) {
 	writeError(w, status, err.Error())
 }
 
-// decodeJSON decodes a bounded JSON body into v, writing 400 on failure.
+// decodeJSON decodes a JSON body of at most maxNotificationBody bytes into v, writing
+// 400 (413 above the limit) on failure.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxNotificationBody)
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	return decodeJSONLimit(w, r, v, maxNotificationBody)
+}
+
+// maxAPIBody bounds the JSON bodies of the job, backup and restore endpoints, which
+// carry a whole job or restore request. maxMCPBody bounds a request to /mcp.
+const (
+	maxAPIBody = 1 << 20
+	maxMCPBody = 4 << 20
+)
+
+// readJSON decodes one JSON value of at most limit bytes from the body into v.
+func readJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// writeDecodeError answers a body that readJSON rejected: 413 above the limit,
+// otherwise 400 with msg.
+func writeDecodeError(w http.ResponseWriter, err error, msg string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, msg)
+}
+
+// decodeJSONLimit decodes a JSON body of at most limit bytes into v, writing 400 on
+// malformed JSON and 413 above the limit.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	if err := readJSON(w, r, v, limit); err != nil {
+		writeDecodeError(w, err, "invalid request json")
 		return false
 	}
 	return true

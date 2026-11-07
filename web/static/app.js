@@ -5098,6 +5098,7 @@ function fillSecurity(sec) {
   document.getElementById("set-trust-proxy").checked = !!sec.trust_proxy_headers;
   setValue("set-cors-origins", (sec.cors_origins || []).join("\n"));
   setValue("set-trusted-proxies", (sec.trusted_proxies || []).join("\n"));
+  setValue("set-hsts-max-age", String(Number.isInteger(sec.hsts_max_age) && sec.hsts_max_age >= 0 ? sec.hsts_max_age : 31536000));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
   // Delete grace period, two-person rule and pending changes (protection.js).
@@ -5292,6 +5293,8 @@ function collectSecurity() {
       throw new FieldError("set-trusted-proxies", tf("settings.err_trusted_proxy", { value: truncate(entry, 60) }));
     }
   });
+  const hstsRaw = String(getValue("set-hsts-max-age") || "").trim();
+  if (!/^\d+$/.test(hstsRaw) || Number(hstsRaw) > 63072000) throw new FieldError("set-hsts-max-age", t("settings.err_hsts"));
   return {
     session_idle_timeout: idle.raw,
     session_absolute_timeout: absolute.raw,
@@ -5299,6 +5302,7 @@ function collectSecurity() {
     trust_proxy_headers: document.getElementById("set-trust-proxy").checked,
     cors_origins: origins,
     trusted_proxies: proxies,
+    hsts_max_age: Number(hstsRaw),
     metrics_public: document.getElementById("set-metrics-public").checked,
     mcp_enabled: document.getElementById("set-mcp-enabled").checked,
     ...(typeof apiKeyExpiryCollectSecurity === "function" ? apiKeyExpiryCollectSecurity() : {}),

@@ -195,6 +195,10 @@ type Security struct {
 	// peers only; with TrustProxyHeaders on and the list empty, every peer is trusted
 	// (deprecated).
 	TrustedProxies []string `json:"trusted_proxies"`
+	// HSTSMaxAge is the max-age, in seconds, of the Strict-Transport-Security header
+	// sent on responses the server knows were served over TLS (directly or through a
+	// trusted proxy reporting https). 0 turns the header off.
+	HSTSMaxAge int `json:"hsts_max_age"`
 	// CORSOrigins lists browser origins allowed to call the API cross-origin.
 	CORSOrigins []string `json:"cors_origins"`
 	// MetricsPublic serves /metrics without an API key.
@@ -272,6 +276,10 @@ const (
 	// DefaultAPIWorkRateLimitPerMinute is the default
 	// security.api_work_rate_limit_per_minute.
 	DefaultAPIWorkRateLimitPerMinute = 60
+	// DefaultHSTSMaxAge is the default security.hsts_max_age: one year.
+	DefaultHSTSMaxAge = 365 * 24 * 60 * 60
+	// MaxHSTSMaxAge is the largest security.hsts_max_age: two years.
+	MaxHSTSMaxAge = 2 * DefaultHSTSMaxAge
 	// DefaultAPIWorkRateLimitBurst is the default security.api_work_rate_limit_burst.
 	DefaultAPIWorkRateLimitBurst = 20
 	// MaxAPIRateLimit bounds every rate limit setting.
@@ -334,6 +342,7 @@ func Defaults() Settings {
 			SecureCookies:             CookiesAuto,
 			CORSOrigins:               []string{},
 			TrustedProxies:            []string{},
+			HSTSMaxAge:                DefaultHSTSMaxAge,
 			MCPEnabled:                true,
 			DeleteGraceDays:           models.DefaultDeleteGraceDays,
 			APIKeyExpiryWarningDays:   DefaultAPIKeyExpiryWarningDays,
@@ -441,6 +450,7 @@ type SecurityPatch struct {
 	TrustProxyHeaders         *bool         `json:"trust_proxy_headers,omitempty"`
 	CORSOrigins               *[]string     `json:"cors_origins,omitempty"`
 	TrustedProxies            *[]string     `json:"trusted_proxies,omitempty"`
+	HSTSMaxAge                *int          `json:"hsts_max_age,omitempty"`
 	MetricsPublic             *bool         `json:"metrics_public,omitempty"`
 	MCPEnabled                *bool         `json:"mcp_enabled,omitempty"`
 	DeleteGraceDays           *int          `json:"delete_grace_days,omitempty"`
@@ -493,6 +503,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		if sec.TrustedProxies != nil {
 			next.Security.TrustedProxies = slices.Clone(*sec.TrustedProxies)
 		}
+		setIf(&next.Security.HSTSMaxAge, sec.HSTSMaxAge)
 		setIf(&next.Security.MetricsPublic, sec.MetricsPublic)
 		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
 		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
@@ -612,6 +623,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: security.session_absolute_timeout must be between 1m and 8760h", ErrInvalid)
 	case sec.SessionAbsoluteTimeout < sec.SessionIdleTimeout:
 		return fmt.Errorf("%w: security.session_absolute_timeout must not be shorter than session_idle_timeout", ErrInvalid)
+	case sec.HSTSMaxAge < 0 || sec.HSTSMaxAge > MaxHSTSMaxAge:
+		return fmt.Errorf("%w: security.hsts_max_age must be between 0 (off) and %d seconds", ErrInvalid, MaxHSTSMaxAge)
 	case sec.DeleteGraceDays < models.MinDeleteGraceDays || sec.DeleteGraceDays > models.MaxDeleteGraceDays:
 		return fmt.Errorf("%w: security.delete_grace_days must be between %d and %d", ErrInvalid, models.MinDeleteGraceDays, models.MaxDeleteGraceDays)
 	case sec.APIKeyMaxLifetimeDays < 0 || sec.APIKeyMaxLifetimeDays > MaxAPIKeyLifetimeDays:
