@@ -4,7 +4,7 @@ This is the plan for taking MongoRescue from "works well" to "the backup system 
 
 Versions follow [versioning.md](versioning.md): every phase ships as one or more minor releases, and 1.0 is cut when phases 1 and 2 are done. Sizes are rough: S is a day, M a few days, L about a week, XL several weeks.
 
-## Where we are (v0.13)
+## Where we are (v0.28)
 
 Already in place, so not on this list:
 
@@ -43,25 +43,25 @@ The goal: after a disaster, nothing MongoRescue needs to restore is missing, and
 
 **1.0** is cut after phases 1 and 2, together with the criteria in [versioning.md](versioning.md#what-10-means).
 
-## Phase 3: point-in-time recovery (1.x)
+## Phase 3: point-in-time recovery (0.x)
 
 This changes the backup model, so it starts with a design document that has to be agreed before any code.
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
-| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Agreed and shipped: [design/pitr.md](design/pitr.md) and [pitr.md](pitr.md). |
-| 3.2 | **Oplog collector** | L | A long-running tailer of `local.oplog.rs` that resumes from its last position, writes compressed and encrypted chunks to the storage target, verifies them, and alerts when the gap to the primary grows or the oplog window is about to be overrun. Shipped (#141, see [pitr.md](pitr.md)). |
-| 3.3 | **PITR restore** | XL | Restore to a chosen time: the nearest base backup, then the oplog chunks replayed with `mongorestore --oplogReplay --oplogLimit`, into a safe clone by default (with opt-in in-place replacement in #142), with preflight, verification and scheduled chain tests. Shipped (#141, #142, see [pitr.md](pitr.md)). |
+| 3.1 | **PITR design** | M | Point-in-time recovery needs a replica set and works per server, not per database: a base backup of the whole instance taken with `--oplog`, plus a continuous oplog stream. Design agreed and shipped in v0.19.0: [design/pitr.md](design/pitr.md) and [pitr.md](pitr.md). |
+| 3.2 | **Oplog collector** | L | A long-running tailer of `local.oplog.rs` that resumes from its last position, writes compressed and encrypted chunks to the storage target, verifies them, and alerts when the gap to the primary grows or the oplog window is about to be overrun. Shipped in v0.21.0 (#56, experimental) and production-grade since v0.26.0 (#141); see [pitr.md](pitr.md). |
+| 3.3 | **PITR restore** | XL | Restore to a chosen time: the nearest base backup, then the oplog chunks replayed with `mongorestore --oplogReplay --oplogLimit`, into a safe clone by default (with opt-in in-place replacement in #142), with preflight, verification and scheduled chain tests. Shipped in v0.22.0 (#57, experimental), production-grade since v0.26.0 (#141), in-place replacement in v0.27.0 (#142); see [pitr.md](pitr.md). |
 | 3.4 | **Sharded clusters** | XL | Research first: consistent backups across shards need cluster-wide coordination, which is a separate project. |
 
-## Phase 4: storage you can't lose (1.x)
+## Phase 4: storage you can't lose (0.x)
 
 | # | Item | Size | Notes |
 | :--- | :--- | :--- | :--- |
 | 4.1 | **Immutable backups** | M | S3 Object Lock in governance or compliance mode with a retention period per target. Retention and deletes respect the lock and say why something can't be deleted yet. Shipped in v0.24.0 (#59), see [configuration.md](configuration.md#immutable-backups-s3-object-lock). |
 | 4.2 | **Copy to a second target** | M–L | After a backup is verified, copy it to another target (another region or provider), verify the copy, and track both copies. Restores fall back to the copy when the primary is unavailable. Shipped in v0.25.0 (#60), with cross-region policy, PITR copy chains and DR drills shipped in #143; see [production.md](production.md#cross-region-disaster-recovery). |
-| 4.3 | **KMS** | M–L | Keep `secret.key` wrapped by AWS KMS, Google Cloud KMS, Azure Key Vault or Vault Transit (envelope encryption), so the key material on disk is useless on its own. Shipped (see [security.md](security.md#wrapping-secretkey-with-a-kms)). |
-| 4.4 | **HashiCorp Vault** | M–L | Read connection credentials and storage keys from Vault instead of storing them, with lease renewal. |
+| 4.3 | **KMS** | M–L | Keep `secret.key` wrapped by AWS KMS, Google Cloud KMS, Azure Key Vault or Vault Transit (envelope encryption), so the key material on disk is useless on its own. Shipped in v0.28.0 (#61), see [security.md](security.md#wrapping-secretkey-with-a-kms). |
+| 4.4 | **HashiCorp Vault** | M–L | Read connection credentials and storage keys from Vault instead of storing them, with lease renewal. Partly shipped: Vault Transit wrapping of `secret.key` in v0.28.0 (#61, the Transit part of #62); reading credentials from Vault is not. |
 | 4.5 | **Cost tracking** | S–M | Stored size per job, database and target over time, an estimated monthly cost per target from a price you enter, and egress used by verification and copies. |
 
 ## Phase 5: more than one instance (2.x, on demand)

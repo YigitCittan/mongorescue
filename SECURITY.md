@@ -10,7 +10,7 @@ Before 1.0, security fixes go into the latest minor release only: they ship as a
 
 | Version                       | Supported          |
 | ----------------------------- | ------------------ |
-| Latest 0.x minor (now 0.27.x) | :white_check_mark: |
+| Latest 0.x minor (now 0.28.x) | :white_check_mark: |
 | Older 0.x minors              | :x:                |
 
 ---

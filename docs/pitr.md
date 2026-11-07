@@ -204,4 +204,4 @@ Someone dropped a collection, ran an `updateMany` without a filter or deleted th
 ## Not there yet
 
 - The operation browser (restoring to just before one oplog entry is possible through the API with `ts`).
-- Sharded clusters (#58) and high availability of the collector.
+- Sharded clusters (#58). (The collector itself is highly available: with [active-passive HA](design/ha.md) the standby takes over collection.)
