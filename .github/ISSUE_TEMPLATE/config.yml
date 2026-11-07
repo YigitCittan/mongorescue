@@ -6,3 +6,6 @@ contact_links:
   - name: Questions and ideas
     url: https://github.com/YigitCittan/mongorescue/discussions
     about: Ask usage questions and discuss ideas in GitHub Discussions.
+  - name: Support options
+    url: https://github.com/YigitCittan/mongorescue/blob/main/SUPPORT.md
+    about: Where to ask questions, report bugs and find the documentation.

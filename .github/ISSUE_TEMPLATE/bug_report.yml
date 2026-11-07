@@ -1,0 +1,68 @@
+name: Bug report
+description: Report something that does not work as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Never paste a MongoDB URI with a password, an API key or a secret key. For questions, use [Discussions](https://github.com/YigitCittan/mongorescue/discussions); for vulnerabilities, see [SECURITY.md](https://github.com/YigitCittan/mongorescue/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: MongoRescue version
+      description: Shown in the dashboard footer and by `mongorescue -version`.
+      placeholder: v0.28.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install type
+      options:
+        - Docker
+        - Native binary
+        - Desktop app
+        - Helm / Kubernetes
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: mongodb
+    attributes:
+      label: MongoDB server version
+      placeholder: "7.0.14 (replica set), Atlas, ..."
+    validations:
+      required: true
+  - type: input
+    id: tools
+    attributes:
+      label: MongoDB Database Tools version
+      description: Output of `mongodump --version`.
+      placeholder: 100.10.0
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (redacted)
+      description: Run logs or container output. Remove passwords and tokens first.
+      render: text
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Redaction
+      options:
+        - label: I removed passwords from MongoDB URIs and logs
+          required: true
