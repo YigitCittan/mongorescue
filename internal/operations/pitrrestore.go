@@ -808,12 +808,12 @@ func (p *preflightRun) toolsVersion() {
 	v, err := fn(p.ctx)
 	switch {
 	case errors.Is(err, mongotools.ErrToolNotFound):
-		p.res.Add(id, models.PreflightFail, "mongorestore was not found; install MongoDB Database Tools "+mongotools.MinPITRToolsVersion+" or newer")
+		p.res.Add(id, models.PreflightFail, "mongorestore was not found; install MongoDB Database Tools "+mongotools.MinToolsVersion+" or newer")
 	case err != nil:
 		p.res.Add(id, models.PreflightWarn, "could not read the mongorestore version: "+errText(err))
-	case !mongotools.VersionAtLeast(v, mongotools.MinPITRToolsVersion):
-		p.res.Add(id, models.PreflightFail, fmt.Sprintf("mongorestore %s is older than %s, the oldest version point-in-time restores are tested with", v, mongotools.MinPITRToolsVersion))
+	case !mongotools.VersionAtLeast(v, mongotools.MinToolsVersion):
+		p.res.Add(id, models.PreflightFail, fmt.Sprintf("mongorestore %s is older than %s, the oldest version point-in-time restores are tested with", v, mongotools.MinToolsVersion))
 	default:
-		p.res.Add(id, models.PreflightPass, fmt.Sprintf("mongorestore %s (%s or newer is needed)", v, mongotools.MinPITRToolsVersion))
+		p.res.Add(id, models.PreflightPass, fmt.Sprintf("mongorestore %s (%s or newer is needed)", v, mongotools.MinToolsVersion))
 	}
 }
