@@ -225,6 +225,47 @@ jobs:
           GOTESTFLAGS: -run TestCrossVersionRestore -v
         run: ./scripts/test-integration-docker.sh
 
+  # Native end-to-end on the desktop platforms (scripts/test-native-e2e.sh): the real
+  # mongod and the real Database Tools of the desktop packages (100.12.2) on
+  # Windows and macOS, without Docker (the Windows runners cannot run Linux
+  # containers). The MongoDB Community archive, the Tools and mongosh are downloaded
+  # from MongoDB, mongod starts with access control on a loopback port, and the
+  # tests that depend on the operating system run against it: tool lookup (.exe),
+  # the private --config file, backup and safe-clone restore, checksum
+  # verification, cancellation mid-run and the REST API path.
+  native-e2e:
+    name: Native E2E (${{ matrix.name }})
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Run the native end-to-end tests
+        run: ./scripts/test-native-e2e.sh
+
   fuzz:
     name: Fuzz
     if: >-
