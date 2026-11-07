@@ -1,6 +1,32 @@
 # REST API
 
-Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}`. Some refusals also carry a stable, machine-readable `code` next to `error` (`api_key_expired`, `rate_limited`); match it rather than the English text.
+Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}`. Every error response (status 400 and above) also carries a stable, machine-readable `code` next to `error`; match it rather than the English text, which may change between releases. See [Error codes](#error-codes).
+
+## Error codes
+
+`code` is a snake_case word from the closed set below. It never contains user input or secrets. A route may answer a status with a more precise code than the default of that status, so match the code, and use the status only for codes you do not know (new codes may be added in a minor release; treat an unknown code like the default of its status). The `apiclient` Go package, the command line (exit codes) and the [MCP](mcp.md) tools (the text ends with `(code: <code>)`) use the same codes.
+
+| Code | Status | Meaning |
+| :--- | :--- | :--- |
+| `invalid_request` | 400, 405, 415 | The request is malformed or unacceptable: invalid JSON, an unknown field, a bad parameter, an unknown connection or storage target. Default of other 4xx statuses. |
+| `validation_failed` | 422 | The request is well-formed but its content is refused: a bulk request over its limit, a retry that cannot run, a restore that needs a key, a point in time that is not restorable. |
+| `unauthorized` | 401 | No valid credential: no session or API key, or a bad one. |
+| `api_key_expired` | 401 | The API key is past its expiry. |
+| `forbidden` | 403 | The caller is authenticated but not allowed: scope, role, connection access, a missing CSRF token. |
+| `approval_refused` | 403 | An approval decision is refused: self-approval, an approver without a recent session, an unknown requester. |
+| `approval_required` | 202 | Not an error: the destructive action waits for a second administrator (`data.approval`). |
+| `not_found` | 404 | The record or route does not exist. |
+| `conflict` | 409 | The request conflicts with the current state (already deleted, not running, not retryable, in use, the last administrator). |
+| `busy` | 409 | The same action is already running. |
+| `job_changed` | 409 | The job was changed or recreated since the caller looked at it; reload it and try again. |
+| `protected` | 409 | The record is pinned; unpin it first. |
+| `preflight_failed` | 409 | A restore was refused by its preflight checks (listed in `data`). |
+| `sharded_unsupported` | 409 | The connection is a sharded cluster, which is not supported. |
+| `body_too_large` | 413 | The request body is over the limit (1 MiB for jobs, backups and restores; 4 MiB for `/mcp`). |
+| `rate_limited` | 429 | The request is over a rate limit; wait for `Retry-After`. |
+| `internal_error` | 500 | An unexpected failure; the details are in the server log. Default of other 5xx statuses. |
+| `bad_gateway` | 502 | A system the server called (MongoDB, storage) failed. |
+| `unavailable` | 503 | The service cannot take the request now: a standby or switching instance, a shutdown, a feature that is not configured, a stale scheduler. Retry later (see `Retry-After`). |
 
 ## Authentication
 

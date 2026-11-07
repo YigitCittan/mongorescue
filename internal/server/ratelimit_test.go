@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/clientip"
@@ -75,8 +76,8 @@ func assertRateLimited(t *testing.T, rec *httptest.ResponseRecorder, what string
 	var env apiResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &env)
 	secs, err := strconv.Atoi(rec.Header().Get("Retry-After"))
-	if rec.Code != http.StatusTooManyRequests || env.Code != codeRateLimited || err != nil || secs < 1 {
-		t.Fatalf("%s: %d %q Retry-After %q; want 429 %s with Retry-After", what, rec.Code, rec.Body.String(), rec.Header().Get("Retry-After"), codeRateLimited)
+	if rec.Code != http.StatusTooManyRequests || env.Code != apierr.RateLimited || err != nil || secs < 1 {
+		t.Fatalf("%s: %d %q Retry-After %q; want 429 %s with Retry-After", what, rec.Code, rec.Body.String(), rec.Header().Get("Retry-After"), apierr.RateLimited)
 	}
 }
 

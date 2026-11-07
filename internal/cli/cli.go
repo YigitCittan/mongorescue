@@ -165,7 +165,10 @@ func (s *session) reportedInText(err error) error {
 	return &reportedError{err: err}
 }
 
-// ExitCode maps an error of a command to its exit code.
+// ExitCode maps an error of a command to its exit code. API refusals are matched by
+// the stable error code of the response (apierr, which apiclient maps to its
+// sentinels), never by the message; the HTTP status is only the fallback of a
+// response without a known code.
 func ExitCode(err error) int {
 	switch {
 	case err == nil:
