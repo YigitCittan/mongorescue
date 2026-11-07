@@ -56,7 +56,7 @@ test("creates expiring API keys and enforces a maximum lifetime", async ({ page 
   const security = page.locator("#settings-security");
   await security.getByLabel("Maximum API key lifetime (days)").fill("100");
   await security.getByRole("button", { name: "Save" }).click();
-  await expect(security.getByText("Saved")).toBeVisible();
+  await expect(security.getByText("Saved", { exact: true })).toBeVisible();
   const keysPanel = await openKeys();
   await keysPanel.getByRole("button", { name: "Create API key" }).first().click();
   const dialog = page.getByRole("dialog", { name: "Create API key" });
@@ -70,7 +70,7 @@ test("creates expiring API keys and enforces a maximum lifetime", async ({ page 
   await page.locator(".settings-nav-btn[data-section=security]").click();
   await security.getByLabel("Maximum API key lifetime (days)").fill("0");
   await security.getByRole("button", { name: "Save" }).click();
-  await expect(security.getByText("Saved")).toBeVisible();
+  await expect(security.getByText("Saved", { exact: true })).toBeVisible();
   for (const name of ["e2e-expiring-30", "e2e-expiring-soon"]) {
     key = (await keys()).find(k => k.name === name);
     const status = await page.evaluate(async id => {

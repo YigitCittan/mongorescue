@@ -15,7 +15,7 @@ test("backs off after the REST API rate limit and recovers", async ({ page }) =>
     await security.getByLabel("Requests per minute (per API key or session)").fill(String(perMinute));
     await security.getByLabel("Burst", { exact: true }).fill(String(burst));
     await security.getByRole("button", { name: "Save" }).click();
-    await expect(security.getByText("Saved")).toBeVisible();
+    await expect(security.getByText("Saved", { exact: true })).toBeVisible();
   };
   await save(600, 10);
 
