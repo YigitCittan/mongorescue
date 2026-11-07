@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Smoke-tests a built MongoRescue container image with zero configuration:
-#   - bundled mongodump/mongorestore are >= 100.3.0 (required for --config)
+#   - bundled mongodump/mongorestore are >= 100.12.0 (mongotools.MinToolsVersion)
 #   - the server boots in setup mode; /api/v1/health and setup status are public,
 #     everything else needs a session or an API key
 #   - first-run setup with the setup code from the container logs, login, CSRF,
@@ -21,7 +21,7 @@ set -euo pipefail
 
 IMAGE="${1:-mongorescue:smoke}"
 NAME="mongorescue-smoke-$$"
-MIN_TOOLS="100.3.0"
+MIN_TOOLS="100.12.0"
 PASSWORD="smoke-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')-pw"
 CONN_PW="connpw$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 WORK="$(mktemp -d)"

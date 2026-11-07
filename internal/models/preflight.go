@@ -50,7 +50,7 @@ const (
 	// encryption.
 	PreflightCheckPITRChain = "pitr_chain"
 	// PreflightCheckToolsVersion checks that mongorestore is recent enough for
-	// point-in-time restores (mongotools.MinPITRToolsVersion).
+	// point-in-time restores (mongotools.MinToolsVersion).
 	PreflightCheckToolsVersion = "tools_version"
 	// PreflightCheckPostRestore lists the post-restore commands of the target
 	// connection the restore runs against its clones (only when it has some).

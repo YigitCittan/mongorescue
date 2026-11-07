@@ -1,6 +1,11 @@
 package mongotools
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestParseToolVersion(t *testing.T) {
 	for out, want := range map[string]string{
@@ -22,7 +27,7 @@ func TestVersionAtLeast(t *testing.T) {
 		v    string
 		want bool
 	}{{"100.12.0", true}, {"100.12.2", true}, {"100.16.0", true}, {"100.11.9", false}, {"100.9.4", false}, {"101.0", true}} {
-		if got := VersionAtLeast(c.v, MinPITRToolsVersion); got != c.want {
+		if got := VersionAtLeast(c.v, MinToolsVersion); got != c.want {
 			t.Errorf("VersionAtLeast(%s) = %v, want %v", c.v, got, c.want)
 		}
 	}
@@ -36,5 +41,27 @@ func TestLimitedBuffer(t *testing.T) {
 	_, _ = b.Write([]byte("gh"))
 	if b.String() != "abcd" {
 		t.Fatalf("kept %q", b.String())
+	}
+}
+
+// TestMinToolsVersionDocumented keeps the documentation, the container smoke test
+// and the CI matrix in step with MinToolsVersion: each states the minimum.
+func TestMinToolsVersionDocumented(t *testing.T) {
+	files := []string{
+		"README.md",
+		"CONTRIBUTING.md",
+		"docs/testing.md",
+		"docs/pitr.md",
+		"scripts/docker-smoke.sh",
+		".github/workflows/ci.yml",
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(f)))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		if !strings.Contains(string(b), MinToolsVersion) {
+			t.Errorf("%s does not mention the minimum Database Tools version %s", f, MinToolsVersion)
+		}
 	}
 }

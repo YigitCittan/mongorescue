@@ -41,7 +41,7 @@ When the branch is ready, open a pull request against `main` and fill in the tem
 
 ## Building and testing
 
-Requirements: Go 1.26+ (releases, images and CI use the toolchain in `.go-version`), `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.3.0+ for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
+Requirements: Go 1.26+ (releases, images and CI use the toolchain in `.go-version`), `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.12.0+ (`mongotools.MinToolsVersion`) for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
 
 ```bash
 make build                       # local binary in bin/
