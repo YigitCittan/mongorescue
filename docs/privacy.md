@@ -11,7 +11,7 @@ MongoRescue only makes network connections that you configure or that are listed
 - **MongoDB servers** you add as connections, to run backups and restores.
 - **Storage targets** you configure (local disk or an S3-compatible service), to store and read backup archives.
 - **Notification channels** you configure (for example webhooks or email), to send backup and restore events.
-- **GitHub (desktop app only).** At startup and every 6 hours the desktop app asks `api.github.com` for the latest release of `YigitCittan/mongorescue`, and when you choose to update it downloads the release files from `github.com`. These requests carry the app version in the `User-Agent` header and nothing about your data. GitHub's handling of these requests is covered by the [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
+- **GitHub (desktop app only).** At startup and every 30 minutes (backing off to at most 6 hours after failed checks) the desktop app asks `api.github.com` for the latest release of `YigitCittan/mongorescue`, and when you choose to update it downloads the release files from `github.com`. These requests carry the app version in the `User-Agent` header and nothing about your data. GitHub's handling of these requests is covered by the [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
 
 ## Data stored on your machine
 
