@@ -20,8 +20,9 @@ DESKTOP_TAGS?=desktop
 DESKTOP_FLAGS=-clean -trimpath -s -skipbindings -m -nosyncgomod -tags "$(DESKTOP_TAGS)" -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 # Minimum total statement coverage (percent) enforced by coverage-check.
-COVERAGE_MIN?=60
+COVERAGE_MIN?=80
 COVERAGE_FILE?=coverage.out
+COVERAGE_FLOORS?=coverage-floors.txt
 # Extra flags for integration runs (e.g. INTEGRATION_FLAGS="-coverprofile=integration-coverage.out").
 INTEGRATION_FLAGS?=
 # promtool image of test-prometheus-rules (the version CI pins).
@@ -97,12 +98,9 @@ test-coverage:
 	@echo "==> Running unit tests with coverage..."
 	go test -race -coverprofile=$(COVERAGE_FILE) -covermode=atomic ./...
 
-## coverage-check: Fails if total coverage in $(COVERAGE_FILE) is below $(COVERAGE_MIN)%
+## coverage-check: Fails if total coverage in $(COVERAGE_FILE) is below $(COVERAGE_MIN)% or a package is below its floor in $(COVERAGE_FLOORS)
 coverage-check:
-	@total=$$(go tool cover -func=$(COVERAGE_FILE) | awk '/^total:/ {sub("%", "", $$3); print $$3}'); \
-	echo "==> Total coverage: $${total}% (minimum $(COVERAGE_MIN)%)"; \
-	awk -v t="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { exit (t + 0 < min + 0) ? 1 : 0 }' || \
-		{ echo "coverage $${total}% is below $(COVERAGE_MIN)%"; exit 1; }
+	@./scripts/coverage.sh check $(COVERAGE_FILE) $(COVERAGE_MIN) $(COVERAGE_FLOORS)
 
 ## test-integration: Runs unit + integration tests (needs MONGORESCUE_TEST_* env, see CONTRIBUTING.md)
 test-integration:
