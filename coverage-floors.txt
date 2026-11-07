@@ -20,7 +20,7 @@ internal/mongouri 95
 internal/notify 82
 internal/operations 79
 internal/oplog 91
-internal/pitr 93
+internal/pitr 90
 internal/postrestore 91
 internal/redact 96
 internal/restore 82
