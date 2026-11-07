@@ -15,8 +15,9 @@ Classify every change in a release. The release takes the highest bump any of it
 Rules that follow from the table:
 
 - A patch release never contains a migration or a new feature, so it is always safe to install and to roll back from.
-- A released migration is never edited: since v0.14.0 a binary whose embedded migration differs from the one applied to the database refuses to start (`ErrMigrationChanged`); a downgrade is still refused with `ErrSchemaTooNew`.
-- Every breaking change is listed under `### Changed` in `CHANGELOG.md`, prefixed with **Breaking**, with what to do about it.
+- A released migration is never edited: since v0.14.0 a binary whose embedded migration differs from the one applied to the database refuses to start (`ErrMigrationChanged`); a downgrade is still refused with `ErrSchemaTooNew`. Since the start that applies pending migrations copies the database first (`mongorescue.db.pre-v<from>-to-v<to>`), a feature release can be undone by restoring that copy; see [upgrading.md](upgrading.md#rolling-back).
+- Every breaking change is listed under `### Changed` in `CHANGELOG.md`, prefixed with **Breaking**, with what to do about it, and again under `### Upgrade notes`, which the release page repeats at its top.
+- The one-time imports of deprecated environment variables, `config.json` and `state.json` are removed before 1.0.0, because removing them afterwards would need a major release ([configuration.md](configuration.md#upgrading-deprecated-environment-variables-and-configjson)).
 - From 1.0, a major release is a mandatory update in the desktop app (see [desktop.md](desktop.md#updates)); minor and patch releases are optional.
 
 ## When to release

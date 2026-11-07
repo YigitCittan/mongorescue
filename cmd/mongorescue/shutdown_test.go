@@ -36,6 +36,23 @@ func TestShutdownGraceFlagAndEnvironment(t *testing.T) {
 	}
 }
 
+// TestPreMigrationCopiesFlag proves -pre-migration-copies overrides
+// MONGORESCUE_PRE_MIGRATION_COPIES and refuses invalid values.
+func TestPreMigrationCopiesFlag(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, _, _, err := parseFlags(nil, env(nil), &stderr)
+	if err != nil || cfg.PreMigrationCopies != config.DefaultPreMigrationCopies {
+		t.Fatalf("default = %d, %v", cfg.PreMigrationCopies, err)
+	}
+	cfg, _, _, err = parseFlags([]string{"-pre-migration-copies", "0"}, env(map[string]string{config.EnvPreMigrationCopies: "5"}), &stderr)
+	if err != nil || cfg.PreMigrationCopies != 0 {
+		t.Fatalf("flag over env = %d, %v; want 0", cfg.PreMigrationCopies, err)
+	}
+	if _, _, _, err = parseFlags([]string{"-pre-migration-copies", "-2"}, env(nil), &stderr); err == nil || !strings.Contains(err.Error(), "pre-migration-copies") {
+		t.Fatalf("bad flag = %v", err)
+	}
+}
+
 // TestMinFreeSpaceFlag proves -min-free-space-mb overrides
 // MONGORESCUE_MIN_FREE_SPACE_MB and refuses invalid values.
 func TestMinFreeSpaceFlag(t *testing.T) {

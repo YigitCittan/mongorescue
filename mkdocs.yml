@@ -99,6 +99,7 @@ nav:
       - MCP Server (AI Integration): mcp.md
   - Operations & Production:
       - Production Checklist: production.md
+      - Upgrading & Rollback: upgrading.md
       - Security & Key Wrapping: security.md
       - Threat Model: threat-model.md
       - Monitoring & Heartbeat: monitoring.md

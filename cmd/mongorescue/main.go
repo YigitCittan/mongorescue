@@ -125,6 +125,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	shutdownGrace := fs.String("shutdown-grace", "", "How long a shutdown waits for running backups and restores before it cancels them, e.g. 9m (env "+config.EnvShutdownGrace+", default 0s: cancel at once)")
 	minFreeSpace := fs.String("min-free-space-mb", "", fmt.Sprintf("Free space (MiB) the data directory needs for a backup or restore to start, 0 to turn the check off (env %s, default %d)", config.EnvMinFreeSpace, config.DefaultMinFreeSpaceMB))
 	notifyMaxAge := fs.String("notification-max-age", "", "How long a notification may wait to be sent before it is dropped as stale, e.g. 24h (env "+config.EnvNotificationMaxAge+", default 24h)")
+	preMigrationCopies := fs.String("pre-migration-copies", "", fmt.Sprintf("How many copies of the metadata database, taken before schema migrations run, are kept next to it, 0 for none (env %s, default %d)", config.EnvPreMigrationCopies, config.DefaultPreMigrationCopies))
 	keyWrap := fs.String("key-wrap", "", "Wrap secret.key with an external KMS: <provider>:<key URI> with provider aws-kms, gcp-kms, azure-keyvault or vault-transit (env "+config.EnvKeyWrap+", default off)")
 	vaultAddr := fs.String("vault-addr", "", "HashiCorp Vault address that connections and S3 storage targets with credentials from Vault read them from, https://<host>:<port> (env "+config.EnvVaultAddr+", default off; authentication: VAULT_TOKEN, AppRole or Kubernetes)")
 	vaultCacheTTL := fs.String("vault-cache-ttl", "", "How long static kv-v2 credentials read from Vault are reused, e.g. 5m (env "+config.EnvVaultCacheTTL+", default 5m)")
@@ -153,7 +154,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr, spaceErr, ageErr, haErr, wrapErr, vaultErr error
+	var graceErr, spaceErr, ageErr, copiesErr, haErr, wrapErr, vaultErr error
 	haDuration := func(name, v string, dst *time.Duration) {
 		d, err := config.ParseHADuration(v)
 		if err != nil && haErr == nil {
@@ -186,6 +187,8 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.ShutdownGrace, graceErr = config.ParseShutdownGrace(*shutdownGrace)
 		case "min-free-space-mb":
 			cfg.MinFreeSpaceMB, spaceErr = config.ParseMinFreeSpace(*minFreeSpace)
+		case "pre-migration-copies":
+			cfg.PreMigrationCopies, copiesErr = config.ParsePreMigrationCopies(*preMigrationCopies)
 		case "notification-max-age":
 			cfg.NotificationMaxAge, ageErr = config.ParseNotificationMaxAge(*notifyMaxAge)
 		case "key-wrap":
@@ -222,6 +225,9 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	}
 	if spaceErr != nil {
 		return nil, 0, false, fmt.Errorf("-min-free-space-mb: %w", spaceErr)
+	}
+	if copiesErr != nil {
+		return nil, 0, false, fmt.Errorf("-pre-migration-copies: %w", copiesErr)
 	}
 	if ageErr != nil {
 		return nil, 0, false, fmt.Errorf("-notification-max-age: %w", ageErr)

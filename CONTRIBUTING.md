@@ -194,6 +194,15 @@ A pull request is merged when:
 4. Credentials are redacted and no secrets are committed.
 5. User-visible changes are reflected in `README.md`, `docs/` and `CHANGELOG.md` (in an `[Unreleased]` section, created if missing).
 
+#### CHANGELOG sections
+
+Each version section of `CHANGELOG.md` uses the Keep a Changelog subsections (`### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`, `### Security`) plus two that the release notes are built from:
+
+- `### Highlights`: two to five one-line bullets saying why someone should upgrade. Written when the release is cut; without it the release notes quote the first sentence of the first Added/Changed entries.
+- `### Upgrade notes`: **what an upgrader must do or check**, one bullet each, imperative and short, with the setting, flag or error text to look for and a link to the doc. Add a bullet in the pull request that changes the behaviour, whenever a change: refuses requests that used to work, changes a default or a tag, adds an opt-in the old behaviour now needs, renames or removes a flag, variable, setting or API field, adds a schema migration (note that the release can no longer be rolled back without the [pre-migration copy](docs/upgrading.md)), changes the order or procedure for HA or Helm, or removes a legacy import. Leave the subsection out when there is nothing to do; the release notes then say so. A long explanation belongs under Changed; the Upgrade notes bullet only points at it.
+
+Lines stay readable: one sentence of what and why, details in the docs. `scripts/changelog-section.sh x.y.z` prints the release notes (Highlights, Upgrade notes, then Changes) that the release publishes.
+
 Maintainers merge with **Squash and merge** or **Rebase and merge** to keep `main` linear. Never force-push `main`.
 
 ### Versioning and releases
@@ -203,7 +212,7 @@ MongoRescue follows [Semantic Versioning](https://semver.org). [docs/versioning.
 To cut a release:
 
 1. Review the README's [Known limitations](README.md#known-limitations) and the [production checklist](docs/production.md#production-checklist) against what the release ships (for a minor release at least): drop what shipped, link what is still missing to its issue, and update the "As of" version. Also bump the supported-versions line in [SECURITY.md](SECURITY.md#1-supported-versions) ("now 0.x.x") and, in [docs/roadmap.md](docs/roadmap.md), the "Where we are" version and the version in the Shipped notes of items that this release completes.
-2. Move the `## [Unreleased]` entries in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section (leave an empty `## [Unreleased]` above it) and merge that to `main`. The section becomes the GitHub release notes: `scripts/changelog-section.sh x.y.z` prints it, and the release fails when it is missing or empty.
+2. Move the `## [Unreleased]` entries in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section (leave an empty `## [Unreleased]` above it) and merge that to `main`. The section becomes the GitHub release notes, which start with *Highlights* and *Upgrade notes* (see [CHANGELOG sections](#changelog-sections); add the `### Highlights` now): `scripts/changelog-section.sh x.y.z` prints them, and the release fails when the section is missing or empty. Re-read the Upgrade notes against the diff of the release: they are what upgraders act on.
 3. Tag `vX.Y.Z` with an **annotated** tag and push it:
 
 ```bash
