@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -38,6 +39,9 @@ func (m *mongoEnv) collectionNames(t *testing.T, db string) []string {
 // to mongodump as a name, and refused without a collection lister.
 func TestSelectiveRestoreTreatsWildcardsLiterally(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("mongod on Windows rejects '*' in namespaces, so the literal-wildcard names cannot be seeded")
+	}
 	env := requireMongo(t)
 	st, err := storage.NewLocalStorage(t.TempDir())
 	if err != nil {
