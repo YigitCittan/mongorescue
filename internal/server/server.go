@@ -132,6 +132,8 @@ type Server struct {
 
 	// version is reported by the health endpoint.
 	version string
+	// diskGuard is consulted by the readiness check (see WithDiskGuard).
+	diskGuard diskChecker
 
 	// mux is the router built by buildRoutes; the auth middleware asks it which route
 	// a request matches to enforce that route's scope. patterns lists every
@@ -371,6 +373,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// API System & Stats
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET "+readyPath, s.handleReady)
 	mux.HandleFunc("GET /api/v1/stats", s.handleStats)
 
 	// API Jobs (Cron & Retention)

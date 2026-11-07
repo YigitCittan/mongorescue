@@ -91,6 +91,44 @@ ha:
   # Below half the lease TTL.
   renewInterval: 10s
   snapshotInterval: 5m
+  # Opt-in: the readiness probe asks GET /api/v1/ready instead of /api/v1/health, so
+  # only the ACTIVE instance (not draining, database writable, disk not full) is
+  # Ready. A Service or load balancer that routes by readiness then follows a
+  # failover without a change. Liveness and startup keep /api/v1/health: a standby
+  # is alive, just not Ready. Consequence: the standby release never becomes Ready,
+  # so do not `helm upgrade --wait` it (and its own Service, Ingress and NetworkPolicy
+  # peers have no endpoint until it is active). Needs ha.enabled.
+  readinessActiveOnly: false
+  # Optional Service across the pods of both releases (they carry the label
+  # mongorescue.io/ha-cluster=<cluster>). Enable it in ONE release only, in the
+  # namespace of both. With readinessActiveOnly it always selects the active
+  # instance; without it, both answer and the Service balances over the standby too.
+  sharedService:
+    enabled: false
+    # Empty is mongorescue-<cluster>.
+    name: ""
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+  # Spread the two releases over nodes or zones (see topologySpreadConstraints and
+  # affinity below): two pods on one node fail together, which defeats HA. Both
+  # releases carry the label mongorescue.io/ha-cluster=<cluster>:
+  #
+  # affinity:
+  #   podAntiAffinity:
+  #     requiredDuringSchedulingIgnoredDuringExecution:
+  #       - topologyKey: kubernetes.io/hostname
+  #         labelSelector:
+  #           matchLabels:
+  #             mongorescue.io/ha-cluster: default
+  #
+  # topologySpreadConstraints:
+  #   - maxSkew: 1
+  #     topologyKey: topology.kubernetes.io/zone
+  #     whenUnsatisfiable: ScheduleAnyway
+  #     labelSelector:
+  #       matchLabels:
+  #         mongorescue.io/ha-cluster: default
 
 # Grace period of the pod. A rolling update or a node drain waits this long for
 # running backups and restores (see config.shutdownGrace) before the pod is killed.
@@ -186,6 +224,8 @@ podLabels: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+# See the examples under ha: spread the HA releases over nodes and zones.
+topologySpreadConstraints: []
 priorityClassName: ""
 
 service:
@@ -195,8 +235,10 @@ service:
 
 # Probes on GET /api/v1/health (public). It answers 503 when the scheduler is stale
 # (its last tick is older than 90 seconds), so liveness restarts a hung process; it
-# stays 200 while a shutdown waits for running backups. The startup probe allows
-# database migrations on the first start of a new release.
+# stays 200 while a shutdown waits for running backups, and on an HA standby. The
+# startup probe allows database migrations on the first start of a new release.
+# The readiness probe asks the same endpoint unless ha.readinessActiveOnly is set
+# (then GET /api/v1/ready).
 probes:
   startup:
     enabled: true

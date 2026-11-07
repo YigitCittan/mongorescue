@@ -38,6 +38,7 @@ const maxAuthBody = 1 << 20
 // public too.
 var publicPaths = map[string]bool{
 	"/api/v1/health":       true,
+	readyPath:              true,
 	"/api/v1/setup/status": true,
 	"/api/v1/setup":        true,
 	"/api/v1/auth/login":   true,
@@ -98,7 +99,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 			// The public routes share a budget per client address; the health check
 			// (probes, load balancers) is never limited.
-			if path != healthPath && !s.allowRate(w, r, nil, path, false) {
+			if path != healthPath && path != readyPath && !s.allowRate(w, r, nil, path, false) {
 				return
 			}
 			next.ServeHTTP(w, r)

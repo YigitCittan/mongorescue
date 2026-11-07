@@ -79,3 +79,27 @@ minus the 60 seconds MongoRescue needs to cancel the runs left and stop.
 {{- printf "%ds" (max 0 (sub (int .Values.terminationGracePeriodSeconds) 60)) }}
 {{- end }}
 {{- end }}
+
+{{/*
+The HA cluster label both releases of a cluster put on their pods: the selector of
+the shared Service and of the anti-affinity and topology spread examples.
+*/}}
+{{- define "mongorescue.haClusterLabel" -}}
+mongorescue.io/ha-cluster: {{ .Values.ha.cluster | quote }}
+{{- end }}
+
+{{/*
+The name of the shared Service of the HA cluster.
+*/}}
+{{- define "mongorescue.haServiceName" -}}
+{{- default (printf "mongorescue-%s" .Values.ha.cluster | trunc 63 | trimSuffix "-") .Values.ha.sharedService.name }}
+{{- end }}
+
+{{/*
+The path of the readiness probe: /api/v1/ready (200 only on the active instance,
+not draining, store writable, disk OK) with ha.readinessActiveOnly, otherwise the
+liveness check /api/v1/health.
+*/}}
+{{- define "mongorescue.readinessPath" -}}
+{{- if and .Values.ha.enabled .Values.ha.readinessActiveOnly }}/api/v1/ready{{ else }}/api/v1/health{{ end }}
+{{- end }}

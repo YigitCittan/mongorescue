@@ -959,6 +959,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithReadiness(readinessSvc),
 		server.WithPITR(pitrSvc),
 		server.WithHeartbeat(heartbeatSvc),
+		server.WithDiskGuard(diskGuard),
 	}
 	if o.ha != nil {
 		serverOpts = append(serverOpts, server.WithHA(o.ha.serverStatus, metricSet.StandbyHandler()), server.WithFence(o.fence()))

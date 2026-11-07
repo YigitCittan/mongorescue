@@ -77,7 +77,7 @@ func (s *Server) standbyGate(next http.Handler) http.Handler {
 		read := r.Method == http.MethodGet || r.Method == http.MethodHead
 		path := r.URL.Path
 		switch {
-		case read && path == "/api/v1/health":
+		case read && (path == healthPath || path == readyPath):
 			next.ServeHTTP(w, r)
 			return
 		case read && path == "/metrics" && s.standbyMetrics != nil:
@@ -181,7 +181,7 @@ func (s *Server) writeFenced(w http.ResponseWriter) {
 }
 
 // SwitchingHandler answers the requests an active-passive HA member receives while
-// it changes role, when no App serves: GET /api/v1/health reports the status of fn
+// it changes role, when no App serves: GET /api/v1/ready answers 503 not_active, GET /api/v1/health reports the status of fn
 // with the role HARoleSwitching (200), GET /metrics is served by metrics when not
 // nil, and every other request answers 503 with Retry-After: 1, so clients and
 // load balancers retry instead of seeing a refused connection.
@@ -195,6 +195,12 @@ func SwitchingHandler(fn func() HAStatus, version string, metrics http.Handler) 
 		case read && r.URL.Path == "/api/v1/health":
 			writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "version": version,
 				"time": time.Now().UTC(), "role": st.Role, "ha": st})
+			return
+		case read && r.URL.Path == readyPath:
+			// Not ready, for the instance serves no App: a shared Service takes it
+			// out of its endpoints until a role is attached.
+			writeReady503(w, readyBody{Role: st.Role, Cluster: st.Cluster, Version: version, Reason: ReadyNotActive},
+				"this instance of HA cluster "+st.Cluster+" is not the active one (role "+st.Role+")", 1)
 			return
 		case read && r.URL.Path == "/metrics" && metrics != nil:
 			metrics.ServeHTTP(w, r)

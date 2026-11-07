@@ -13,6 +13,9 @@
 {{- fail "ha.enabled needs ha.target, the storage target of the lease" }}
 {{- end }}
 {{- end }}
+{{- if and (not .Values.ha.enabled) (or .Values.ha.readinessActiveOnly .Values.ha.sharedService.enabled) }}
+{{- fail "ha.readinessActiveOnly and ha.sharedService.enabled need ha.enabled: they follow the role of an HA release" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -36,6 +39,9 @@ spec:
     metadata:
       labels:
         {{- include "mongorescue.selectorLabels" . | nindent 8 }}
+        {{- if .Values.ha.enabled }}
+        {{- include "mongorescue.haClusterLabel" . | nindent 8 }}
+        {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -139,7 +145,7 @@ spec:
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
             httpGet:
-              path: /api/v1/health
+              path: {{ include "mongorescue.readinessPath" . }}
               port: http
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -200,6 +206,10 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
   {{- $dataClaim := and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
