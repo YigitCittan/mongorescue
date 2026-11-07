@@ -163,6 +163,24 @@ jobs:
       - name: Unit test the alert rules
         run: docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool "$PROMETHEUS_IMAGE" test rules alerts_test.yml
 
+  # API contract: docs/openapi.yaml at the last release tag against this commit
+  # (oasdiff). Breaking changes need a "Breaking" entry in CHANGELOG.md [Unreleased];
+  # a spec that does not exist at the tag passes. See scripts/check-openapi-breaking.sh.
+  api-compat:
+    name: API Breaking Changes (oasdiff)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compare docs/openapi.yaml with the last release
+        run: scripts/check-openapi-breaking.sh
+
   # 3. Cross-Platform Compilation Check
   build-check:
     name: Cross-Compilation Verification

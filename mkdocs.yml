@@ -96,6 +96,7 @@ nav:
       - Notifications & Alerts: notifications.md
       - Command Line (CLI): cli.md
       - REST API Reference: api.md
+      - OpenAPI Description: openapi.md
       - MCP Server (AI Integration): mcp.md
   - Operations & Production:
       - Production Checklist: production.md
