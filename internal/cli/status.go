@@ -85,7 +85,7 @@ func runStatus(ctx context.Context, s *session, args []string) error {
 		}
 	case s.opts.quiet:
 	default:
-		if err := writeStatus(s.stdout, s.baseURL, health.Value, me.Value, stats.Value, runs.Value, ready); err != nil {
+		if err := writeStatus(s, s.stdout, s.baseURL, health.Value, me.Value, stats.Value, runs.Value, ready); err != nil {
 			return err
 		}
 	}
@@ -96,7 +96,7 @@ func runStatus(ctx context.Context, s *session, args []string) error {
 }
 
 // writeStatus writes the text output of status.
-func writeStatus(w io.Writer, url string, h apiclient.Health, me apiclient.Me, st apiclient.Stats, runs []models.RunProgress, ready *apiclient.Result[apiclient.Readiness]) error {
+func writeStatus(s *session, w io.Writer, url string, h apiclient.Health, me apiclient.Me, st apiclient.Stats, runs []models.RunProgress, ready *apiclient.Result[apiclient.Readiness]) error {
 	who := "an API key"
 	if me.User != nil && me.User.Username != "" {
 		who = me.User.Username
@@ -161,7 +161,7 @@ func writeStatus(w io.Writer, url string, h apiclient.Health, me apiclient.Me, s
 			if r.LastGoodBackup != nil {
 				last = r.LastGoodBackup.ID
 			}
-			rt.row(conn, r.Database, r.Status, rpo, last, strings.Join(r.Reasons, ","))
+			rt.row(conn, r.Database, s.paint(r.Status), rpo, last, strings.Join(r.Reasons, ","))
 		}
 		return rt.flush()
 	}

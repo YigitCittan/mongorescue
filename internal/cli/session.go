@@ -21,6 +21,7 @@ const maxKeyFileBytes = 4096
 type options struct {
 	url, apiKey, apiKeyFile string
 	json, quiet, wait       bool
+	noColor                 bool
 	timeout                 time.Duration
 }
 
@@ -32,6 +33,11 @@ type session struct {
 	opts           options
 	// set holds the names of the flags given on the command line.
 	set map[string]bool
+	// color is set by parse: whether the text output on stdout is coloured.
+	color bool
+	// inspect, when set, receives the flag set of a command instead of running it
+	// (see commandTable).
+	inspect func(*flag.FlagSet)
 	// baseURL is the validated URL once connect ran (for hints).
 	baseURL string
 }

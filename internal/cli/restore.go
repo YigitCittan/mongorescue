@@ -250,7 +250,7 @@ func (s *session) printRestore(res *apiclient.Result[models.RestoreRecord], star
 			r.ID, r.BackupID, r.SourceDatabase, r.TargetDatabase, mode, r.ID)
 		return err
 	}
-	line := fmt.Sprintf("Restore %s of backup %s %s: %s -> %s (%s)", r.ID, r.BackupID, r.Status, r.SourceDatabase, r.TargetDatabase, mode)
+	line := fmt.Sprintf("Restore %s of backup %s %s: %s -> %s (%s)", r.ID, r.BackupID, s.paint(string(r.Status)), r.SourceDatabase, r.TargetDatabase, mode)
 	if r.Status == models.RestoreStatusCompleted {
 		line += " in " + fmtSeconds(r.DurationSeconds)
 	} else if r.ErrorMessage != "" {

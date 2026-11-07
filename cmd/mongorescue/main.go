@@ -45,7 +45,7 @@ func main() {
 
 // dispatch runs the command args name: "mcp" (the stdio bridge), "key" (the
 // offline key wrapping commands), "ha" (the HA operator tools, on the data
-// directory), a CLI command (backup, restore, list, verify, status, help) or,
+// directory), a CLI command (backup, restore, list, verify, status, completion, help) or,
 // without one, the server. It
 // returns the process exit code.
 func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -60,7 +60,12 @@ func dispatch(args []string, getenv func(string) string, stdin io.Reader, stdout
 		case cli.IsCommand(args[0]):
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return (&cli.App{Version: Version}).Run(ctx, args, getenv, stdout, stderr)
+			app := &cli.App{Version: Version, ExtraCommands: []cli.ExtraCommand{
+				{Name: mcpCommand, Summary: "Run the MCP stdio bridge to a MongoRescue instance"},
+				{Name: keyCommand, Summary: "Offline commands for wrapping the data key"},
+				{Name: haCommand, Summary: "Operator tools for an active-passive HA cluster"},
+			}}
+			return app.Run(ctx, args, getenv, stdout, stderr)
 		}
 	}
 	return run(args, getenv, stdout, stderr)
