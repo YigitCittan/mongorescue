@@ -106,7 +106,9 @@ jobs:
           grep -qx 'startupProbe: /api/v1/health' "$RUNNER_TEMP/p-ready.txt"
           # The pods of an HA release carry the cluster label; no shared Service by default.
           grep -q 'mongorescue.io/ha-cluster: "prod"' "$RUNNER_TEMP/ha-default.yaml"
-          ! grep -q 'name: mongorescue-prod$' "$RUNNER_TEMP/ha-default.yaml"
+          if grep -q 'name: mongorescue-prod$' "$RUNNER_TEMP/ha-default.yaml"; then
+            echo "a shared Service was rendered without ha.sharedService.enabled"; exit 1
+          fi
           helm template "${ha[@]}" --set ha.sharedService.enabled=true > "$RUNNER_TEMP/ha-svc.yaml"
           grep -q 'name: mongorescue-prod$' "$RUNNER_TEMP/ha-svc.yaml"
           # Outside HA the probes never change and the opt-ins are refused.
