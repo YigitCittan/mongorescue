@@ -5,7 +5,10 @@ name: Nightly
 # see docs/testing.md), the fuzz targets, the fault-injection suite, the PITR
 # scenarios on a three-member replica set and the upgrade from the previous
 # releases (nightly), and the load test and the
-# PITR soak test (weekly). None of them runs on pull requests or is required.
+# PITR soak test (weekly), and the cross-version restore, the native Windows and
+# macOS run, the canary on mongo:latest and the shuffled unit tests (nightly). None
+# of them runs on pull requests or is required. The report-failures job at the end
+# opens (or comments on) an issue labelled ci-nightly-failure when a job fails.
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -110,8 +113,7 @@ jobs:
   # Canary: the integration suite against the newest MongoDB image (mongo:latest) with
   # the newest Database Tools release, which the pull request matrix does not follow.
   # A failure here means upstream changed (a new server or Tools release), not that
-  # a change of ours broke; it is never required, and the failure issue says which
-  # version moved.
+  # a change of ours broke; it is never required, and its log names the versions.
   latest-canary:
     name: Canary (mongo:latest ${{ matrix.topology }}, newest Database Tools)
     if: >-
@@ -265,6 +267,33 @@ jobs:
 
       - name: Run the native end-to-end tests
         run: ./scripts/test-native-e2e.sh
+
+  # The unit tests with the race detector, in random order and five times over: a
+  # test that depends on the order of the others, on leftover state or on timing
+  # shows up here and not in the single ordered run of the pull request. The seed
+  # of each package is printed ("-test.shuffle N"); rerun a failure with
+  # "go test -race -shuffle=N ./pkg". Fix it or quarantine it (CONTRIBUTING.md).
+  race-shuffle:
+    name: Unit tests (-race -shuffle=on -count=5)
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Run the unit tests shuffled
+        run: go test -race -shuffle=on -count=5 ./...
 
   fuzz:
     name: Fuzz
@@ -571,3 +600,51 @@ jobs:
             ${{ runner.temp }}/replset-logs
           if-no-files-found: warn
           retention-days: 90
+
+  # A failing job of this workflow opens (or comments on) the issue labelled
+  # ci-nightly-failure, so a red night is not found by chance. The label is created
+  # here when missing. One rolling issue: a maintainer closes it once the cause is
+  # fixed; the next failure reopens the conversation with a new one. Only runs on
+  # main report: a manual run on a branch fails in its own run page.
+  report-failures:
+    name: Report failures
+    needs:
+      - large-data
+      - latest-canary
+      - cross-version
+      - native-e2e
+      - race-shuffle
+      - fuzz
+      - chaos
+      - upgrade
+      - load
+      - pitr-replset
+      - pitr-soak
+    if: ${{ always() && github.ref == 'refs/heads/main' && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      NEEDS_JSON: ${{ toJSON(needs) }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      LABEL: ci-nightly-failure
+    steps:
+      - name: Open or update the failure issue
+        run: |
+          failed="$(jq -r 'to_entries | map(select(.value.result == "failure") | .key) | join(", ")' <<<"${NEEDS_JSON}")"
+          gh label create "${LABEL}" --force --color B60205 \
+            --description "A job of the Nightly workflow failed (opened by the workflow)"
+          comment="The [Nightly run ${GITHUB_RUN_ID}](${RUN_URL}) failed in: ${failed}."
+          existing="$(gh issue list --label "${LABEL}" --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${comment}"
+            echo "Commented on #${existing}"
+          else
+            note='The Nightly workflow (docs/testing.md) opens this issue when a job fails and comments on it for every further failing run. A maintainer closes it once the cause is fixed; the next failure opens a new one. A flaky test is quarantined, not retried away: see "Flaky tests" in CONTRIBUTING.md.'
+            gh issue create --label "${LABEL}" --title "Nightly workflow failed: ${failed}" \
+              --body "$(printf '%s\n\n%s\n' "${comment}" "${note}")"
+          fi

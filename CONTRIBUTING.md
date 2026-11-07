@@ -100,7 +100,7 @@ On every push and pull request (`.github/workflows/ci.yml`):
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint` (with `depguard` for the import rules above and `errorlint` for error wrapping and comparison), and `go mod tidy` with no resulting diff.
 - **Test**: unit tests with `-race` on `ubuntu-latest`, `macos-latest` and `windows-latest` with Go 1.26.x (the `go.mod` minimum) and the release toolchain from `.go-version`; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
-- **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets and the fault-injection suite, and weekly the load test; see [docs/testing.md](docs/testing.md).
+- **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets, the fault-injection suite, a cross-version restore (5.0 and 6.0 into 8.0), a native Windows and macOS run with the real tools, a canary on `mongo:latest` with the newest Database Tools, and the unit tests with `-race -shuffle=on -count=5`, and weekly the load test; see [docs/testing.md](docs/testing.md).
 - **E2E (Playwright)**: the browser suite in `e2e/` against MongoDB 7 and MinIO; the report and traces are uploaded when it fails.
 - **Docker smoke test**: builds the image and checks health, auth, dashboard and bundled tools.
 
@@ -127,6 +127,12 @@ Examples: `MR_TEST_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com` with 
 ### Automated checks
 
 Beyond `ci.yml`, every pull request is checked by CodeQL (Go and the web UI; a full analysis of the merged result, not only the changed lines, and the `Analyze` job fails on any result, since main carries no open alert), dependency review (fails on new high-severity advisories), a Conventional Commits title check and path-based area labels. The CI `security` job runs `govulncheck` (pinned in the Makefile and `ci.yml`), the Go toolchain drift check (`scripts/check-go-version.sh`), `actionlint` and `shellcheck` (`make vulncheck lint-ci` locally), and the Docker smoke job fails on fixable HIGH/CRITICAL findings from Trivy. OpenSSF Scorecard runs weekly. Workflow actions are pinned to commit SHAs and Dependabot keeps Go modules, actions and base images current. Releases ship SPDX SBOMs and GitHub build provenance attestations for archives and container images (`gh attestation verify <file> --repo YigitCittan/mongorescue`).
+
+### Flaky tests and nightly failures
+
+A failing job of the Nightly workflow opens an issue labelled `ci-nightly-failure` (or comments on the open one) with a link to the run; the workflow creates the label when it is missing. Treat it like a failing pull request check: the maintainer on duty looks at it within a working day and closes the issue once the cause is fixed. The canary on `mongo:latest` with the newest Database Tools is allowed to fail because upstream moved, not because of a change here; the fix is then a compatibility change, not a retry.
+
+A test that fails without a change that explains it (`-shuffle=on -count=5` makes order and timing dependence visible) is not retried or tolerated. Open an issue with the failing seed (`-test.shuffle N` in the log) and either fix it the same day or **quarantine** it: skip it with `t.Skip("quarantined: #<issue>: <reason>")`, so the reference stays greppable (`grep -rn "quarantined:" --include=*_test.go .`), and keep the issue open as the only way back. A quarantined test is fixed or deleted within two weeks; a quarantine is never added to make a required check pass without an issue, and tests of security invariants (redaction, authentication, encryption) are fixed, not quarantined.
 
 ## Engineering standards
 
