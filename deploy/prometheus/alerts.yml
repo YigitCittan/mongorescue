@@ -265,6 +265,7 @@ groups:
         annotations:
           summary: "A base backup of PITR stream {{ $labels.stream }} takes {{ $value | humanizePercentage }} of the oplog window"
           description: "The last successful base backup of PITR stream {{ $labels.stream }} on {{ $labels.instance }} took {{ $value | humanizePercentage }} of the current oplog window. If a base takes longer than the window it fails and the recovery window stops moving. Grow the oplog (replSetResizeOplog) or shorten the base backup; see the oplog sizing guide in docs/pitr.md."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrbasewindowrisk"
 
       # A chain ended by a gap, a replica set change or a divergence: a point-in-time
       # restore cannot cross it. The second branch catches the first break of a

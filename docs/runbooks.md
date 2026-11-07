@@ -28,7 +28,7 @@ Responses use the envelope `{"success": ..., "data": ...}` ([api.md](api.md)), s
     | Process and scheduling | [MongoRescueDown](#mongorescuedown), [MongoRescueSchedulerStale](#mongorescueschedulerstale), [MongoRescueDiskFillingUp](#mongorescuediskfillingup) |
     | Backups and recovery objectives | [MongoRescueBackupFailed](#mongorescuebackupfailed), [MongoRescueRPOMissed](#mongorescuerpomissed), [MongoRescueVerificationFailed](#mongorescueverificationfailed), [MongoRescueArchivesMissing](#mongorescuearchivesmissing), [MongoRescueRestoreTestFailed](#mongorescuerestoretestfailed), [MongoRescueMetadataBackupFailed](#mongorescuemetadatabackupfailed), [MongoRescueSettingsWarning](#mongorescuesettingswarning) |
     | High availability | [MongoRescueHANoActiveInstance](#mongorescuehanoactiveinstance), [MongoRescueHATakeoverFailed](#mongorescuehatakeoverfailed), [MongoRescueHAStartedFromEmptyState](#mongorescuehastartedfromemptystate), [MongoRescueHARollbackSuspected](#mongorescueharollbacksuspected), [MongoRescueHASnapshotRejected](#mongorescuehasnapshotrejected) |
-    | Point-in-time recovery | [MongoRescuePITRCollectorDown](#mongorescuepitrcollectordown), [MongoRescuePITRLagHigh](#mongorescuepitrlaghigh), [MongoRescuePITROplogHeadroomLow](#mongorescuepitroplogheadroomlow), [MongoRescuePITRChainBroken](#mongorescuepitrchainbroken), [MongoRescuePITRChunkErrors](#mongorescuepitrchunkerrors), [MongoRescuePITRStale](#mongorescuepitrstale) |
+    | Point-in-time recovery | [MongoRescuePITRCollectorDown](#mongorescuepitrcollectordown), [MongoRescuePITRLagHigh](#mongorescuepitrlaghigh), [MongoRescuePITROplogHeadroomLow](#mongorescuepitroplogheadroomlow), [MongoRescuePITRBaseWindowRisk](#mongorescuepitrbasewindowrisk), [MongoRescuePITRChainBroken](#mongorescuepitrchainbroken), [MongoRescuePITRChunkErrors](#mongorescuepitrchunkerrors), [MongoRescuePITRStale](#mongorescuepitrstale) |
     | Copies | [MongoRescueBackupCopyFailed](#mongorescuebackupcopyfailed), [MongoRescueBackupCopyMismatch](#mongorescuebackupcopymismatch), [MongoRescueBackupCopyQueueGrowing](#mongorescuebackupcopyqueuegrowing) |
     | Notifications, events, audit, keys | [MongoRescueNotificationFailures](#mongorescuenotificationfailures), [MongoRescueNotificationsLost](#mongorescuenotificationslost), [MongoRescueEventsDropped](#mongorescueeventsdropped), [MongoRescueHeartbeatsDropped](#mongorescueheartbeatsdropped), [MongoRescueAuditWriteFailed](#mongorescueauditwritefailed), [MongoRescueAuditForwardFailed](#mongorescueauditforwardfailed), [MongoRescueKeyWrapErrors](#mongorescuekeywraperrors), [MongoRescueAPIKeysExpired](#mongorescueapikeysexpired), [MongoRescueAPIKeysExpiring](#mongorescueapikeysexpiring) |
 
@@ -506,6 +506,30 @@ rs.printReplicationInfo()          // oplog size and the time it spans (log leng
 **Action.** Grow the oplog (`db.adminCommand({replSetResizeOplog: 1, size: <MB>})` on every member) so that it spans well over a day of peak writes; fix the lag or the collector ([CollectorDown](#mongorescuepitrcollectordown), [LagHigh](#mongorescuepitrlaghigh)). The alert clears when the headroom exceeds the bound again.
 
 **Escalation.** Headroom under one hour with the collector down: act now. Resize the oplog first, restore the collector second.
+
+### MongoRescuePITRBaseWindowRisk { #mongorescuepitrbasewindowrisk }
+
+**Symptom.** The last successful base backup of a stream took more than half of the current oplog window, for 10 minutes. A base is `mongodump --oplog`: if the oplog rolls past the dump's start before it ends, the base fails, no new base becomes eligible and the recovery window silently stops moving. The event `pitr.base_window_risk` and the readiness reason `pitr_base_window_risk` say the same.
+
+**Likely causes.** An oplog that is small for the write rate, a database that grew so the dump takes longer, a slow source member or network, a burst of writes that shrank the window.
+
+**Diagnosis.**
+
+```promql
+mongorescue_pitr_base_window_ratio
+mongorescue_pitr_oplog_headroom_seconds
+```
+
+```js
+// mongosh, on the replica set
+rs.printReplicationInfo()          // oplog size and the time it spans (log length start to end)
+```
+
+The backups list shows the duration of the stream's recent `instance`-scope backups; failed bases with an oplog error confirm that the window was overrun.
+
+**Action.** Grow the oplog on every member so the window is at least four times the base duration (`db.adminCommand({replSetResizeOplog: 1, size: <MB>, minRetentionHours: 48})`), see [sizing the oplog](pitr.md#sizing-the-oplog). Or shorten the base: read from a less busy secondary, and give it more bandwidth. The ratio improves as the window grows. The alert clears when it falls below the bound; the threshold is the setting `pitr.base_window_risk_ratio` (the rule uses the default 0.5).
+
+**Escalation.** A ratio above 1 means bases cannot complete: take a base backup by hand after resizing, and treat the missing window like [MongoRescuePITRChainBroken](#mongorescuepitrchainbroken).
 
 ### MongoRescuePITRChainBroken { #mongorescuepitrchainbroken }
 
