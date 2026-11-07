@@ -254,4 +254,4 @@ MongoRescue does not collect telemetry or send data about you or your databases 
 
 ## License
 
-GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE) for details. Security issues: please report them privately, as described in [SECURITY.md](SECURITY.md).
+GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE) for details. Need help? See [SUPPORT.md](SUPPORT.md). Security issues: please report them privately, as described in [SECURITY.md](SECURITY.md).

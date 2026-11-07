@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Triage tooling (#250): area labels for every major package in `.github/labeler.yml`, YAML issue forms for bugs, feature requests and documentation, and a `SUPPORT.md` that routes questions, bugs and vulnerabilities.
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
