@@ -41,16 +41,9 @@ Restores go into a separate copy of the database (`<db>_rescue_<timestamp>_<id>`
 
 ## Key Features
 
-* **Multi-Database & Multi-Server Management:** Manage multiple MongoDB servers from one instance. Test connections, preview databases, filter collections, and restore into separate clusters.
-* **Point-in-Time Recovery (PITR):** Continuously capture MongoDB oplog slices and restore your replica sets to any exact millisecond in the past.
-* **True Streaming Architecture:** Backups and restores stream directly via Unix pipes — no huge local temporary files or RAM spikes.
-* **Automated Verification & Restore Testing:** Every backup is checksummed on upload, periodically swept at rest, and test-restored to temporary databases to ensure provable recovery.
-* **Built-in S3 Object Lock & Compliance:** S3 immutability prevents any archive deletion or modification before retention expires, even by compromised admin credentials.
-* **Client-Side Age Encryption:** Encrypt backups with modern `age` encryption before transmission so your cloud storage provider only holds ciphertext.
-* **Safe-Clone Restores by Default:** Restores never overwrite production data unless explicitly confirmed with forced override.
-* **Modern Web Dashboard & Native Desktop App:** Real-time progress, dark/light themes, keyboard navigation (`Ctrl+K`), and native Windows/macOS/Linux desktop bundles.
-* **Enterprise SSO & Audit Logging:** OpenID Connect (OIDC) integration, role-based access control (RBAC), and tamper-evident hash-chained audit trails.
-* **AI Ready (Model Context Protocol):** Built-in MCP server allows AI coding and DevOps assistants to query backup health and safely trigger operations.
+MongoRescue streams verified, optionally age-encrypted logical backups of standalone servers and replica sets (MongoDB 5.0 to 8.0) to local disk or S3, restores into a safe clone by default and adds point-in-time recovery, S3 Object Lock, SSO, an audit log and an MCP server.
+
+See the [full feature catalogue](features.md), and [how MongoRescue compares](comparison.md) with mongodump + cron, Percona Backup for MongoDB, Atlas Backup, Ops Manager and restic/Velero, including who it is not for (sharded clusters are not supported yet).
 
 ---
 
