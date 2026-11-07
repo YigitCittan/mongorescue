@@ -57,6 +57,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/mcp` | MCP adapter: tools, resources, prompts, Streamable HTTP handler, stdio bridge |
 | `internal/cli` | CLI commands (`backup`, `restore`, `list`, `verify`, `status`) over the REST API: flags, API key sources, `--wait`, output, exit codes |
 | `internal/apiclient` | REST API client: origin-bound bearer transport (shared with the MCP bridge), envelope and error decoding, typed methods; never imports `server` |
+| `internal/logging` | slog logger construction (text/JSON), handler-level redaction, `request_id` / `run_id` / `job_id` from the context |
 | `internal/redact`, `internal/mongouri`, `internal/mongotools` | Credential scrubbing, URI validation, tool helpers |
 | `internal/oplog` | PITR oplog codec: chunk scanner, namespace filter, synthetic oplog-only archive |
 | `internal/integration` | Integration tests (`integration` build tag) |

@@ -11,7 +11,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | Metric | Type | Labels | Description |
 | :--- | :--- | :--- | :--- |
 | `mongorescue_backups_total` | counter | `job`, `status` | Finished backups (`status`: `succeeded`, `failed`) |
-| `mongorescue_backup_duration_seconds` | histogram | `job` | Backup duration |
+| `mongorescue_backup_duration_seconds` | histogram | `job` | Backup duration; buckets from 1 s to 24 h (86400 s) |
 | `mongorescue_backup_size_bytes` | gauge | `job` | Size of the last successful backup artifact |
 | `mongorescue_last_successful_backup_timestamp_seconds` | gauge | `job` | Unix time of the last successful backup |
 | `mongorescue_database_backups_total` | counter | `job`, `database`, `status` | Finished backups per database (`status`: `succeeded`, `failed`, `cancelled`; `job="manual"` for manual backups) |
@@ -20,6 +20,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_job_runs_total` | counter | `job`, `status` | Finished job runs over all their databases (`status`: `ok`, `partial`, `failed`, `cancelled`, or `skipped` for a scheduled run outside its backup window, which backs nothing up) |
 | `mongorescue_job_run_duration_seconds` | histogram | `job` | Duration of job runs (all databases) |
 | `mongorescue_restores_total` | counter | `status` | Finished restores (`succeeded`, `failed`) |
+| `mongorescue_restore_duration_seconds` | histogram | | Restore duration; buckets from 1 s to 24 h (86400 s) |
 | `mongorescue_notifications_total` | counter | `channel_type`, `status` | Notification deliveries (`status`: `success`, `failure` (given up), `dropped` (the queue was full), `expired` (waited longer than `MONGORESCUE_NOTIFICATION_MAX_AGE`)) |
 | `mongorescue_events_dropped_total` | counter | | Events dropped because the event queue was full or stopped |
 | `mongorescue_audit_write_failures_total` | counter | | Audit log entries that could not be stored (see [audit.md](audit.md)) |
@@ -28,6 +29,8 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_audit_forward_total` | counter | `outcome` | Audit log entries forwarded to the audit webhook: `sent`, `failed` (refused or unreachable) or `dropped` (queue full or stopped); see [audit.md](audit.md#forwarding) |
 | `mongorescue_scheduled_jobs` | gauge | | Jobs registered with the scheduler |
 | `mongorescue_api_rate_limited_total` | counter | `caller`, `budget` | REST API requests refused with `429` by the [rate limit](security.md#rest-api-rate-limits) (`caller`: `api_key`, `session`, `anonymous`; `budget`: `general`, `work`, or `auth` for the sign-in routes of unauthenticated callers) |
+| `mongorescue_http_requests_total` | counter | `route`, `method`, `code` | HTTP requests served, by registered route pattern without its method (`/api/v1/jobs/{id}`; `unmatched` for unknown paths and wrong methods), method (`OTHER` for non-standard ones) and status code. Scrapes of `/metrics` are not counted. See [Request metrics](monitoring.md#request-metrics-and-correlation-ids) |
+| `mongorescue_http_request_duration_seconds` | histogram | `route`, `method` | HTTP request duration, buckets 5 ms to 5 min; same labels and exclusions |
 | `mongorescue_mcp_calls_total` | counter | `tool`, `result` | [MCP](mcp.md) tool calls (`result`: `ok`, `error`, `denied`, `rate_limited`; unknown tools as `tool="unknown"`) |
 | `mongorescue_bulk_operations_total` | counter | `resource`, `action` | [Bulk operations](api.md#bulk-actions) run (not dry runs; `resource`: `backups`, `restores`, `jobs`) |
 | `mongorescue_bulk_items_total` | counter | `resource`, `action`, `outcome` | Items of bulk operations (`outcome`: `succeeded`, `skipped`, `failed`) |

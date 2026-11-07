@@ -984,6 +984,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithNotifications(notifySvc),
 		server.WithMetricsHandler(metricSet.Handler()),
 		server.WithRateLimitObserver(metricSet.ObserveAPIRateLimited),
+		server.WithRequestObserver(metricSet.ObserveHTTPRequest),
+		server.WithAccessLog(cfg.AccessLog),
 		server.WithRunManager(runManager),
 		server.WithRunRegistry(registry),
 		server.WithAuth(authSvc),

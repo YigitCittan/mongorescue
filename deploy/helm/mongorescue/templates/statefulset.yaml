@@ -69,6 +69,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - -log-level={{ .Values.config.logLevel }}
+            - -log-format={{ .Values.config.logFormat }}
+            - -access-log={{ .Values.config.accessLog }}
           env:
             - name: MONGORESCUE_DATA_DIR
               value: /data

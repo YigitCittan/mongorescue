@@ -62,7 +62,7 @@ func (s *Server) handleVaultTest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		s.logger.Error("vault test failed", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "vault test failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

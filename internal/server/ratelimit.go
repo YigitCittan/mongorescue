@@ -172,13 +172,13 @@ func (s *Server) warnUntrustedProxy(r *http.Request) {
 	switch {
 	case !trust.Enabled():
 		s.proxyWarning.Do(func() {
-			s.logger.Warn("requests carry X-Forwarded-For or X-Real-IP but no proxy is trusted: " +
-				"behind a reverse proxy every client has the proxy's address and they share one rate limit and login throttle; " +
+			s.logger.WarnContext(r.Context(), "requests carry X-Forwarded-For or X-Real-IP but no proxy is trusted: "+
+				"behind a reverse proxy every client has the proxy's address and they share one rate limit and login throttle; "+
 				"set security.trusted_proxies to the proxy's address or network (see docs/production.md)")
 		})
 	case !trust.PeerTrusted(r):
 		s.untrustedPeerWarning.Do(func() {
-			s.logger.Warn("a peer outside security.trusted_proxies sent X-Forwarded-For or X-Real-IP; the headers are ignored. "+
+			s.logger.WarnContext(r.Context(), "a peer outside security.trusted_proxies sent X-Forwarded-For or X-Real-IP; the headers are ignored. "+
 				"Add the proxy to security.trusted_proxies if it is yours; otherwise a client is spoofing them",
 				logsafe.Attr("peer", peerHost(r)))
 		})
@@ -211,7 +211,7 @@ func (s *Server) refuseRate(w http.ResponseWriter, r *http.Request, p *auth.Prin
 		if uid := p.UserID(); uid != "" {
 			attrs = append(attrs, logsafe.Attr("user_id", uid))
 		}
-		s.logger.Warn("API rate limit exceeded; further refusals of this caller are not logged for a minute", attrs...)
+		s.logger.WarnContext(r.Context(), "API rate limit exceeded; further refusals of this caller are not logged for a minute", attrs...)
 		if s.auditLog != nil && !recorded {
 			e := auditlog.Event{
 				Action: routeLabel(r.Method, pattern), Targets: map[string]string{targetReason: reasonRateLimited, "budget": budget},

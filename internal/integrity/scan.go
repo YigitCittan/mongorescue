@@ -198,7 +198,7 @@ func (s *Service) ScanTarget(ctx context.Context, targetID, source string) (*Dri
 		Orphans: []Orphan{}, Missing: []MissingArchive{}, Recovered: []string{}}
 	if err := s.scan(ctx, target, start, report); err != nil {
 		report.Error = redact.Text(err.Error())
-		s.logger.Warn("storage scan failed", slog.String("storage_target_id", target.ID), slog.String("error", report.Error))
+		s.logger.WarnContext(ctx, "storage scan failed", slog.String("storage_target_id", target.ID), slog.String("error", report.Error))
 	}
 	report.ScannedAt = s.now()
 	report.DurationSeconds = report.ScannedAt.Sub(start).Seconds()
@@ -206,7 +206,7 @@ func (s *Service) ScanTarget(ctx context.Context, targetID, source string) (*Dri
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	if err := s.cfg.Store.SaveIntegrityState(writeCtx, stateScanPrefix+target.ID, report); err != nil {
-		s.logger.Warn("failed to save the storage scan", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to save the storage scan", slog.Any("error", err))
 	}
 	if report.Error == "" {
 		if s.cfg.ObserveScan != nil {
@@ -216,7 +216,7 @@ func (s *Service) ScanTarget(ctx context.Context, targetID, source string) (*Dri
 			s.publish(writeCtx, events.DriftEvent(target.ID, target.Name, report.OrphanCount, report.MissingCount, source, report.ScannedAt))
 		}
 	}
-	s.logger.Info("storage scan finished", slog.String("storage_target_id", target.ID), slog.Int("archives", report.Objects),
+	s.logger.InfoContext(ctx, "storage scan finished", slog.String("storage_target_id", target.ID), slog.Int("archives", report.Objects),
 		slog.Int("orphans", report.OrphanCount), slog.Int("missing", report.MissingCount), slog.Int("recovered", len(report.Recovered)))
 	return report, nil
 }
@@ -349,11 +349,11 @@ func (s *Service) markMissing(ctx context.Context, id, key string) bool {
 	})
 	if err != nil {
 		if !errors.Is(err, errRecordChanged) && !errors.Is(err, store.ErrNotFound) {
-			s.logger.Warn("failed to mark a backup missing", slog.String("backup_id", id), slog.Any("error", err))
+			s.logger.WarnContext(ctx, "failed to mark a backup missing", slog.String("backup_id", id), slog.Any("error", err))
 		}
 		return false
 	}
-	s.logger.Warn("backup archive is missing from its storage target", slog.String("backup_id", id), slog.String("storage_key", key))
+	s.logger.WarnContext(ctx, "backup archive is missing from its storage target", slog.String("backup_id", id), slog.String("storage_key", key))
 	return true
 }
 
@@ -648,10 +648,10 @@ func (s *Service) finishImport(ctx context.Context, driver storage.Storage, rec 
 		return nil
 	})
 	if err != nil {
-		s.logger.Warn("failed to complete an imported backup", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to complete an imported backup", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
 		return
 	}
-	s.logger.Info("orphan archive imported", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_key", rec.StorageKey), slog.Int64("size_bytes", size))
+	s.logger.InfoContext(ctx, "orphan archive imported", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_key", rec.StorageKey), slog.Int64("size_bytes", size))
 }
 
 // failImport marks an imported record failed and detaches it from its archive.
@@ -663,9 +663,9 @@ func (s *Service) failImport(ctx context.Context, rec *models.BackupRecord, caus
 		r.Status, r.ErrorMessage, r.StorageKey = models.StatusFailed, msg, ""
 		return nil
 	}); err != nil {
-		s.logger.Warn("failed to record a failed import", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to record a failed import", logsafe.Attr("backup_id", rec.ID), slog.Any("error", err))
 	}
-	s.logger.Warn("orphan archive import failed", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("error", msg))
+	s.logger.WarnContext(ctx, "orphan archive import failed", logsafe.Attr("backup_id", rec.ID), logsafe.Attr("error", msg))
 }
 
 // hashObject streams object key through SHA-256 and returns the hex digest and the

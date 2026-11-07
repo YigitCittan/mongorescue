@@ -68,7 +68,7 @@ func (s *Scheduler) skipRun(ctx context.Context, job *models.Job, reason string,
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	s.recordNextRun(persistCtx, job, at)
-	s.logger.Info("skipping scheduled backup: outside the job's backup window",
+	s.logger.InfoContext(ctx, "skipping scheduled backup: outside the job's backup window",
 		logsafe.Attr("job_id", job.ID), slog.String("window", job.BackupWindow.String()))
 	latest, err := s.metadataStore.ListJobRuns(persistCtx, job.ID, 1)
 	if err == nil && len(latest) == 1 && latest[0].Status == models.JobRunSkipped && latest[0].SkipReason == reason {
@@ -112,7 +112,7 @@ func (s *Scheduler) recordNextRun(ctx context.Context, job *models.Job, at time.
 	}
 	next := sched.Next(at).UTC()
 	if err := s.metadataStore.UpdateJobRunTimes(ctx, job.ID, nil, &next); err != nil {
-		s.logger.Warn("failed to persist the next run of a skipped job", logsafe.Attr("job_id", job.ID), slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to persist the next run of a skipped job", logsafe.Attr("job_id", job.ID), slog.Any("error", err))
 	}
 	job.NextRun = &next
 }

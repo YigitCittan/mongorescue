@@ -321,7 +321,7 @@ func (s *Server) handleExportAuditLog(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil && r.Context().Err() == nil {
 		// The status is sent; the client sees a truncated file.
-		s.logger.Error("audit log export failed", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "audit log export failed", logsafe.Error(err))
 	}
 }
 
@@ -348,7 +348,7 @@ func (s *Server) writeAuditLogError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auditlog.ErrNoRepository):
 		writeError(w, http.StatusServiceUnavailable, "the audit log is not configured")
 	default:
-		s.logger.Error("audit log request failed", logsafe.Error(err))
+		s.logger.Error("audit log request failed", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

@@ -22,6 +22,10 @@ import (
 // namespace prefixes every MongoRescue metric.
 const namespace = "mongorescue"
 
+// runDurationBuckets are the buckets, in seconds, of the backup and restore duration
+// histograms: one second to 24 hours (multi-terabyte runs take many hours).
+var runDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 43200, 86400}
+
 // ManualJobLabel is the job label value used for backups not tied to a scheduled job.
 const ManualJobLabel = "manual"
 
@@ -102,6 +106,9 @@ type Metrics struct {
 	apiKeys apiKeySeries
 	// REST API requests refused by the rate limit (see ratelimit.go).
 	apiRateLimited *prometheus.CounterVec
+	// REST API request counter and duration (see http.go).
+	httpRequests *prometheus.CounterVec
+	httpDuration *prometheus.HistogramVec
 }
 
 // New creates a Metrics instance with its own registry.
@@ -117,7 +124,7 @@ func New(info BuildInfo) *Metrics {
 			Namespace: namespace,
 			Name:      "backup_duration_seconds",
 			Help:      "Duration of finished backups in seconds.",
-			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400},
+			Buckets:   runDurationBuckets,
 		}, []string{"job"}),
 		backupSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -164,7 +171,7 @@ func New(info BuildInfo) *Metrics {
 			Namespace: namespace,
 			Name:      "restore_duration_seconds",
 			Help:      "Duration of finished restores in seconds.",
-			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400},
+			Buckets:   runDurationBuckets,
 		}),
 		notificationsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
@@ -258,6 +265,7 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newKeyWrapSeries()...)
 	m.registry.MustRegister(m.newAPIKeySeries()...)
 	m.registry.MustRegister(m.newAPIRateLimitSeries())
+	m.registry.MustRegister(m.newHTTPSeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
 	m.ha = newHACollector()

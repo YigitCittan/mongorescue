@@ -164,7 +164,7 @@ func (s *Service) cancel(ctx context.Context, id, via string) error {
 	if err != nil {
 		return fmt.Errorf("cancel run: %w", err)
 	}
-	s.logger.Warn("run cancellation requested", append([]any{logsafe.Attr("run_id", id)}, c.LogAttrs()...)...)
+	s.logger.WarnContext(ctx, "run cancellation requested", append([]any{logsafe.Attr("run_id", id)}, c.LogAttrs()...)...)
 	return nil
 }
 

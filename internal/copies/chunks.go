@@ -172,10 +172,10 @@ func (s *Service) attemptChunk(ctx context.Context, cs ChunkStore, c *pitr.Chunk
 	case err != nil:
 		return fmt.Errorf("record the copy of chunk %s to %s: %w", c.ID, targetID, err)
 	case copyErr != nil:
-		s.logger.Warn("oplog chunk copy failed", append(attrs, slog.Int("attempts", updated.Attempts), slog.String("error", updated.Error))...)
+		s.logger.WarnContext(ctx, "oplog chunk copy failed", append(attrs, slog.Int("attempts", updated.Attempts), slog.String("error", updated.Error))...)
 		return fmt.Errorf("copy chunk %s to %s: %w", c.ID, targetID, copyErr)
 	}
-	s.logger.Debug("oplog chunk copied", attrs...)
+	s.logger.DebugContext(ctx, "oplog chunk copied", attrs...)
 	return nil
 }
 
@@ -205,7 +205,7 @@ func (s *Service) purgeChunkCopies(ctx context.Context, cs ChunkStore) error {
 		}
 	}
 	if skipped > 0 {
-		s.logger.Info("skipped the purge of oplog chunk copies pinned by a point-in-time restore in flight; a later run purges them once it ends",
+		s.logger.InfoContext(ctx, "skipped the purge of oplog chunk copies pinned by a point-in-time restore in flight; a later run purges them once it ends",
 			slog.Int("pinned_copies", skipped))
 	}
 	return errors.Join(errs...)

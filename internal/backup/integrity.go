@@ -63,7 +63,7 @@ func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *model
 	defer cancel()
 	names, err := e.listDatabases(ctx, uri)
 	if err != nil {
-		e.logger.Warn("could not list the databases for the manifest of a PITR base; chain tests of it will not compare counts and indexes",
+		e.logger.WarnContext(ctx, "could not list the databases for the manifest of a PITR base; chain tests of it will not compare counts and indexes",
 			slog.String("error", redact.Text(err.Error())))
 		return nil
 	}
@@ -75,7 +75,7 @@ func (e *Engine) captureInstanceManifest(ctx context.Context, uri string) *model
 		m, err := e.manifest(ctx, uri, db)
 		if err != nil || m == nil {
 			if err != nil {
-				e.logger.Warn("could not capture the manifest of a PITR base; chain tests of it will not compare counts and indexes",
+				e.logger.WarnContext(ctx, "could not capture the manifest of a PITR base; chain tests of it will not compare counts and indexes",
 					logsafe.Attr("database", db), slog.String("error", redact.Text(err.Error())))
 			}
 			return nil
@@ -128,7 +128,7 @@ func (e *Engine) recordExactCounts(ctx context.Context, uri string, m *models.Ma
 	tracker := runs.FromContext(ctx)
 	counts, err := e.exactCounts(ctx, uri, names, record.TAfter.TS)
 	if err != nil {
-		e.logger.Warn("could not count the documents at the consistent point of a PITR base; chain tests of it will not verify counts",
+		e.logger.WarnContext(ctx, "could not count the documents at the consistent point of a PITR base; chain tests of it will not verify counts",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(err.Error())))
 		tracker.Printf("no exact counts at T_after: %s", redact.Text(err.Error()))
 		return
@@ -148,7 +148,7 @@ func (e *Engine) instanceDatabases(ctx context.Context, uri string) []string {
 	defer cancel()
 	names, err := e.listDatabases(ctx, uri)
 	if err != nil {
-		e.logger.Warn("could not list the databases of a PITR base; point-in-time restores of it cannot plan their clone names",
+		e.logger.WarnContext(ctx, "could not list the databases of a PITR base; point-in-time restores of it cannot plan their clone names",
 			slog.String("error", redact.Text(err.Error())))
 		return nil
 	}
@@ -185,7 +185,7 @@ func (e *Engine) captureManifest(ctx context.Context, uri string, opts models.Ba
 	m, err := e.manifest(ctx, uri, opts.Database)
 	if err != nil || m == nil {
 		if err != nil {
-			e.logger.Warn("could not capture the backup manifest; restore tests of this backup will not compare counts and indexes",
+			e.logger.WarnContext(ctx, "could not capture the backup manifest; restore tests of this backup will not compare counts and indexes",
 				logsafe.Attr("database", opts.Database), slog.String("error", redact.Text(err.Error())))
 		}
 		return nil
@@ -251,11 +251,11 @@ func (e *Engine) verifyAfterUpload(ctx context.Context, opts models.BackupOption
 	res.Apply(record)
 	switch res.Status {
 	case models.VerificationOK:
-		e.logger.Info("backup archive verified after upload",
+		e.logger.InfoContext(ctx, "backup archive verified after upload",
 			logsafe.Attr("backup_id", record.ID), slog.Int64("bytes", res.Bytes), slog.Bool("decrypted", res.Decrypted))
 		return nil
 	case models.VerificationMismatch:
-		e.logger.Error("backup archive does not match its checksum after upload; deleting it",
+		e.logger.ErrorContext(ctx, "backup archive does not match its checksum after upload; deleting it",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
 		e.deleteArtifact(ctx, record, record.StorageKey)
 		if errors.Is(res.Err, ErrChecksumMismatch) {
@@ -263,7 +263,7 @@ func (e *Engine) verifyAfterUpload(ctx context.Context, opts models.BackupOption
 		}
 		return fmt.Errorf("verify after upload: %w: %w", ErrChecksumMismatch, res.Err)
 	default:
-		e.logger.Warn("backup archive could not be verified after upload",
+		e.logger.WarnContext(ctx, "backup archive could not be verified after upload",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", redact.Text(res.Err.Error())))
 		return nil
 	}

@@ -28,7 +28,7 @@ func (s *Scheduler) resumeDueJobs() {
 
 	jobs, err := s.metadataStore.ListJobs(ctx)
 	if err != nil {
-		s.logger.Warn("cannot check paused jobs", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "cannot check paused jobs", slog.Any("error", err))
 		return
 	}
 	now := time.Now()
@@ -52,9 +52,9 @@ func (s *Scheduler) resumeDueJobs() {
 		})
 		switch {
 		case err == nil:
-			s.logger.Info("paused job resumed", slog.String("job_id", id))
+			s.logger.InfoContext(ctx, "paused job resumed", slog.String("job_id", id))
 		case !errors.Is(err, errNotDue):
-			s.logger.Warn("failed to resume a paused job", slog.String("job_id", id), slog.Any("error", err))
+			s.logger.WarnContext(ctx, "failed to resume a paused job", slog.String("job_id", id), slog.Any("error", err))
 		}
 	}
 }

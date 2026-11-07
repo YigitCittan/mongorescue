@@ -25,6 +25,8 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | `-pre-migration-copies` | `MONGORESCUE_PRE_MIGRATION_COPIES` | `3` | How many copies of `mongorescue.db`, taken before a start applies schema migrations (`mongorescue.db.pre-v<from>-to-v<to>` in the data directory), are kept; `0` turns them off, at most `50`. A copy that cannot be written stops the start before anything is migrated. `secret.key` is not copied. See [upgrading.md](upgrading.md#what-a-start-does-to-the-database) |
 | `-shutdown-grace` | `MONGORESCUE_SHUTDOWN_GRACE` | `0s` | How long a shutdown (SIGTERM) waits for running backups and restores before it cancels them: a duration such as `9m` or a number of seconds, up to `24h`. New runs are refused meanwhile. Keep it about a minute below the stop timeout of your process manager; see [kubernetes.md](kubernetes.md#graceful-shutdown) |
 | `-log-level` | | `info` | `debug`, `info`, `warn` or `error` |
+| `-log-format` | `MONGORESCUE_LOG_FORMAT` | `text` | `text` (key=value) or `json` (one object per line, see [Logging](#logging)). Also read by `mongorescue mcp` for its stderr logs |
+| `-access-log` | `MONGORESCUE_ACCESS_LOG` | `false` | Log one line per HTTP request, see [Logging](#logging) |
 | | `MONGORESCUE_SECRET_KEY` | generated | Base64 32-byte key encrypting stored credentials (`openssl rand -base64 32`), instead of the generated `<data_dir>/secret.key` |
 | `-key-wrap` | `MONGORESCUE_KEY_WRAP` | off | Wrap `secret.key` with an external KMS: `<provider>:<key URI>` with provider `aws-kms`, `gcp-kms`, `azure-keyvault` or `vault-transit`. The data directory then holds `secret.key.wrapped` only, unwrapped at every start with the instance's identity. Cannot be combined with `MONGORESCUE_SECRET_KEY`. See [Key wrapping](#key-wrapping) |
 | | `MONGORESCUE_KEY_WRAP_ALLOW_INSECURE` | `false` | `true` accepts a `vault-transit` key URI with plain `http://`, which sends the Vault token and the key unencrypted: **development only**, logged as a warning at every start |
@@ -32,6 +34,14 @@ Only what MongoRescue needs to find its database and serve the dashboard is read
 | | `MONGORESCUE_VAULT_ALLOW_INSECURE` | `false` | `true` accepts a plain `http://` Vault address, which sends the Vault token and the credentials unencrypted: **development only**, logged as a warning at every start |
 | `-vault-cache-ttl` | `MONGORESCUE_VAULT_CACHE_TTL` | `5m` | How long static `kv-v2` credentials read from Vault are reused (in memory only) before Vault is read again: `1s` to `24h` |
 | `-version` | | | Print the version and exit |
+
+### Logging
+
+Logs go to stdout (the `mongorescue mcp` bridge: stderr). `-log-format json` (or `MONGORESCUE_LOG_FORMAT=json`, Helm `config.logFormat`) writes one JSON object per line with `time`, `level`, `msg` and the attributes, which Loki, ELK and CloudWatch parse without a regular expression; `text` is the default. Both formats redact the same way: besides each call site masking credentials, every string, error and message passes through `internal/redact` on its way out, so a connection string's password never appears in either.
+
+Log lines of a request carry `request_id`, and those of a backup, restore, PITR, verification or copy run carry `run_id`, `job_id` and `backup_id` or `restore_id` ([monitoring](monitoring.md#request-metrics-and-correlation-ids)).
+
+`-access-log` (or `MONGORESCUE_ACCESS_LOG=true`, Helm `config.accessLog`) adds one `http request` line per request, off by default: `method`, `route` (the route pattern, `unmatched` for unknown paths; never the raw path), `status`, `duration_ms`, `bytes`, `client_ip` (the client behind a [trusted proxy](production.md), else the peer) and `request_id`. The query string, headers and bodies are never logged. `GET /metrics` scrapes are left out.
 
 ### High availability
 

@@ -125,7 +125,7 @@ func (s *Service) PinBackup(ctx context.Context, id, note string) (*models.Backu
 		// The pin was not recorded: lift the hold set for it, so it does not keep
 		// the archive without a pin that says so.
 		if liftErr := s.setLegalHold(context.WithoutCancel(ctx), rec, false); liftErr != nil {
-			s.logger.Error("could not lift the legal hold of a pin that failed; the archive stays held without a pin",
+			s.logger.ErrorContext(ctx, "could not lift the legal hold of a pin that failed; the archive stays held without a pin",
 				logsafe.Attr("backup_id", rec.ID), logsafe.Error(liftErr))
 		}
 	}
@@ -212,7 +212,7 @@ func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRec
 				r.Pinned, r.PinNote, r.PinnedAt, r.PinnedBy, r.LegalHold = prev.Pinned, prev.PinNote, prev.PinnedAt, prev.PinnedBy, true
 				return nil
 			}); restoreErr != nil {
-				s.logger.Error("could not restore the pin of a backup whose legal hold could not be lifted",
+				s.logger.ErrorContext(ctx, "could not restore the pin of a backup whose legal hold could not be lifted",
 					logsafe.Attr("backup_id", id), logsafe.Error(restoreErr))
 			}
 			return nil, holdErr

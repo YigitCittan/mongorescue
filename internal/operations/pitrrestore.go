@@ -340,7 +340,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		defer cancel()
 		if saveErr := s.cfg.Store.SaveRestoreRecord(saveCtx, r); saveErr != nil {
 			s.cfg.DiskGuard.Observe(saveCtx, saveErr)
-			s.logger.Error("failed to record the clones of a point-in-time restore",
+			s.logger.ErrorContext(ctx, "failed to record the clones of a point-in-time restore",
 				logsafe.Attr("restore_id", r.ID), logsafe.Error(saveErr))
 		}
 	}
@@ -366,7 +366,7 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 		snapshot.Status = models.RestoreStatusFailed
 		snapshot.ErrorMessage = "restore not started: " + err.Error()
 		if saveErr := s.cfg.Store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
-			s.logger.Error("failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
+			s.logger.ErrorContext(ctx, "failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
 		}
 		return nil, runError(err, "")
 	}

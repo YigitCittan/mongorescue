@@ -3,6 +3,8 @@ image:
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 config:
   logLevel: debug
+  logFormat: json
+  accessLog: true
   shutdownGrace: 9m
   toolsDir: /opt/mongotools/bin
   goMemLimitRatio: 0.7

@@ -47,13 +47,13 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := s.readiness.Report(r.Context())
 	if err != nil {
-		s.logger.Warn("could not compute the readiness report", logsafe.Error(err))
+		s.logger.WarnContext(r.Context(), "could not compute the readiness report", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	body, err := s.readinessBodies.encode(report)
 	if err != nil {
-		s.logger.Warn("could not encode the readiness report", logsafe.Error(err))
+		s.logger.WarnContext(r.Context(), "could not encode the readiness report", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

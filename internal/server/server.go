@@ -176,6 +176,9 @@ type Server struct {
 	rateObserve func(caller, budget string)
 	// proxyWarning logs the untrusted forwarding headers once (warnUntrustedProxy).
 	proxyWarning sync.Once
+	// accessLog logs one line per request; requestObserver counts them (observe.go).
+	accessLog       bool
+	requestObserver func(route, method string, code int, d time.Duration)
 	// untrustedPeerWarning logs a header-sending peer outside trusted_proxies once.
 	untrustedPeerWarning sync.Once
 }
@@ -301,7 +304,7 @@ func NewServer(
 	if s.desktopCSP {
 		csp = desktopContentSecurityPolicy
 	}
-	handler := s.loggingMiddleware(s.securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.fenceGate(s.authMiddleware(mux))))))
+	handler := s.observeMiddleware(s.loggingMiddleware(s.securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.fenceGate(s.authMiddleware(mux)))))))
 	s.httpServer = NewHTTPServer(addr, handler)
 
 	return s
@@ -545,7 +548,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 				reason = st.DegradedReason + "; " + reason
 			}
 			st.Degraded, st.DegradedReason = true, reason
-			s.logger.Warn("could not check stored records for damage", slog.String("error", redact.Text(err.Error())))
+			s.logger.WarnContext(r.Context(), "could not check stored records for damage", slog.String("error", redact.Text(err.Error())))
 		}
 		st.CorruptRecords = bad
 	}
@@ -924,7 +927,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrForbidden):
 		writeErrorCode(w, http.StatusForbidden, apierr.Forbidden, "forbidden: "+err.Error())
 	default:
-		s.logger.Error("operation failed", logsafe.Error(err))
+		s.logger.Error("operation failed", logsafe.Error(err), requestIDAttr(w))
 		writeErrorCode(w, http.StatusInternalServerError, apierr.InternalError, "internal error")
 	}
 }
@@ -1049,7 +1052,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		s.logger.Debug("http request completed",
+		s.logger.DebugContext(r.Context(), "http request completed",
 			slog.String("method", r.Method),
 			logsafe.Attr("path", r.URL.Path),
 			slog.Duration("duration", time.Since(start)),

@@ -197,7 +197,7 @@ func (s *Service) finishChainTest(ctx context.Context, rec *models.RestoreRecord
 	}
 	v.Status = models.RestoreVerificationFailed
 	addRecordWarning(rec, fmt.Sprintf("chain test failed: %d mismatch(es) with the manifest of base %s: %s", len(v.Mismatches), b2, v.Mismatches[0]))
-	s.logger.Warn("PITR chain test does not match the manifest of the newer base",
+	s.logger.WarnContext(ctx, "PITR chain test does not match the manifest of the newer base",
 		logsafe.Attr("restore_id", rec.ID), logsafe.Attr("base_id", b2), slog.Int("mismatches", len(v.Mismatches)))
 }
 

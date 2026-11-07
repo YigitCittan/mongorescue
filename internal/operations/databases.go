@@ -203,7 +203,7 @@ func (s *Service) CancelJobRun(ctx context.Context, jobID, via string) (*JobRunC
 	}
 	s.withBackupProgress(out.Backups)
 	slices.Sort(out.RunIDs)
-	s.logger.Warn("job run cancellation requested",
+	s.logger.WarnContext(ctx, "job run cancellation requested",
 		append([]any{logsafe.Attr("job_id", jobID), slog.Int("cancelled", len(ids))}, c.LogAttrs()...)...)
 	return out, nil
 }

@@ -56,6 +56,18 @@ Scheduled jobs follow the wall clock, since cron expressions name wall-clock tim
 - **Forward step.** Every job whose next run the clock jumped over runs once, late, when the scheduler next wakes up (within about a minute: its own checks run every minute), and then on its schedule from the new time. Missed runs are not caught up one by one.
 - **Backward step.** Jobs wait until the clock reaches their next run again, so their runs are delayed by the size of the step. A step never repeats a run by itself. A job whose schedule is rebuilt after the step (it is edited or re-enabled, or MongoRescue restarts) could be due again at a time that already ran; MongoRescue skips such a trigger when the job's previous scheduled run started less than half its interval earlier (measured on the monotonic clock, or after a restart on the start time of the newest scheduled run on record), and logs `skipping a repeated scheduled run`. After a restart at most one trigger is skipped this way.
 
+## Request metrics and correlation IDs
+
+Every HTTP response carries an `X-Request-Id` header. A well-formed incoming value (8 to 128 characters of letters, digits and `._:~-`) is kept only when the request comes from a [trusted proxy](production.md); from anyone else it is ignored and a random ID is generated, so a client cannot choose the ID in your logs. The ID is in every log line written for that request (the `request_id` attribute, text and JSON) and so a user can quote it (the response header) and you can find the line.
+
+`mongorescue_http_requests_total{route,method,code}` and `mongorescue_http_request_duration_seconds{route,method}` ([metrics](metrics.md)) count every request. `route` is the registered route pattern without its method (`/api/v1/jobs/{id}`), never the raw path; paths no route matches, such as scanners probing the server, share `unmatched`, and a non-standard method is `OTHER`, so the series count is bounded by the number of routes. Scrapes of `/metrics` itself are not counted (they would dominate a quiet instance). Example error ratio:
+
+```promql
+sum(rate(mongorescue_http_requests_total{code=~"5.."}[5m])) / sum(rate(mongorescue_http_requests_total[5m]))
+```
+
+With [`-access-log`](configuration.md#logging) every request also writes one line. Backup, restore, PITR, verification and copy log lines carry `run_id` (the job run, or the record ID of a run that belongs to no job run), `job_id` and `backup_id` or `restore_id`, the ID of the run's log file.
+
 ## Prometheus alert rules
 
 [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) holds alerting rules over the [metrics](metrics.md), unit-tested with `promtool test rules` in CI ([`alerts_test.yml`](../deploy/prometheus/alerts_test.yml); run them with `make test-prometheus-rules`):

@@ -67,7 +67,7 @@ func (e *Engine) waitForSlot(ctx context.Context, opts models.BackupOptions, rec
 		tracker.Phase(models.PhaseWaiting, record.Phases)
 		tracker.Printf("waiting: connection %s already runs %d backup(s), its max_concurrent_backups",
 			opts.ConnectionName, opts.MaxConcurrentBackups)
-		e.logger.Info("backup waits for a slot of its connection",
+		e.logger.InfoContext(ctx, "backup waits for a slot of its connection",
 			logsafe.Attr("backup_id", record.ID), logsafe.Attr("connection_id", opts.ConnectionID),
 			slog.Int("max_concurrent_backups", opts.MaxConcurrentBackups))
 	}
@@ -93,7 +93,7 @@ func (e *Engine) interrupt(ctx context.Context, record *models.BackupRecord, err
 	record.CancelledBy, record.CancelledAt = runs.SystemActor, models.Stamp(time.Now())
 	record.ErrorMessage = interruptedReason
 	runs.FromContext(ctx).Printf("backup cancelled: %s", interruptedReason)
-	e.logger.Info("backup interrupted while waiting for a slot of its connection", logsafe.Attr("backup_id", record.ID))
+	e.logger.InfoContext(ctx, "backup interrupted while waiting for a slot of its connection", logsafe.Attr("backup_id", record.ID))
 	return record, err
 }
 
@@ -128,7 +128,7 @@ func (e *Engine) probeMember(ctx context.Context, uri string, opts models.Backup
 				return fmt.Errorf("%w: cannot verify that the connection does not reach a mongos: %s", models.ErrShardedUnsupported, msg)
 			}
 		}
-		e.logger.Warn("could not determine the member the backup reads from",
+		e.logger.WarnContext(ctx, "could not determine the member the backup reads from",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", msg))
 		return nil
 	}
@@ -139,7 +139,7 @@ func (e *Engine) probeMember(ctx context.Context, uri string, opts models.Backup
 		}
 		record.Warnings = append(record.Warnings, models.ShardedWarning)
 		tracker.Printf("warning: %s", models.ShardedWarning)
-		e.logger.Warn("backup through a mongos (allow_mongos)", logsafe.Attr("backup_id", record.ID))
+		e.logger.WarnContext(ctx, "backup through a mongos (allow_mongos)", logsafe.Attr("backup_id", record.ID))
 	}
 	if strict && member.State != models.MemberSecondary && member.State != models.MemberMongos {
 		return fmt.Errorf("%w: read preference %s needs a replica set secondary, but the connection reaches only %s"+

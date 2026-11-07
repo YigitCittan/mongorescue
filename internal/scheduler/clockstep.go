@@ -80,7 +80,7 @@ func (s *Scheduler) repeatedTrigger(jobID string) bool {
 	}
 	s.mu.Unlock()
 	if repeated {
-		s.logger.Warn("skipping a repeated scheduled run: the previous one started less than half the job's interval ago, so the wall clock was set back",
+		s.logger.WarnContext(ctx, "skipping a repeated scheduled run: the previous one started less than half the job's interval ago, so the wall clock was set back",
 			logsafe.Attr("job_id", jobID), slog.Duration("since_previous", since))
 		s.recordNextRun(ctx, &models.Job{ID: jobID}, s.clock())
 	}

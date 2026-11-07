@@ -249,13 +249,13 @@ func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := oidc.NewAuthRequest()
 	if err != nil {
-		s.logger.Error("single sign-on: could not start", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "single sign-on: could not start", logsafe.Error(err))
 		oidcFailure(w, r, auth.OIDCIdPError)
 		return
 	}
 	authURL, err := s.oidc.AuthCodeURL(r.Context(), clientConfig(o), req)
 	if err != nil {
-		s.logger.Warn("single sign-on: the provider is not reachable", logsafe.Error(err))
+		s.logger.WarnContext(r.Context(), "single sign-on: the provider is not reachable", logsafe.Error(err))
 		oidcFailure(w, r, auth.OIDCIdPError)
 		return
 	}
@@ -264,7 +264,7 @@ func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		IssuedAt: s.auth.Now().Unix(), Issuer: o.Issuer,
 	})
 	if err != nil {
-		s.logger.Error("single sign-on: could not seal the flow", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "single sign-on: could not seal the flow", logsafe.Error(err))
 		oidcFailure(w, r, auth.OIDCIdPError)
 		return
 	}
@@ -340,7 +340,7 @@ func (s *Server) completeOIDC(r *http.Request, o settings.OIDC, a *oidcAttempt) 
 		return refuse(auth.OIDCStateMismatch)
 	}
 	if idpErr := q.Get("error"); idpErr != "" {
-		s.logger.Warn("single sign-on: the provider reported an error",
+		s.logger.WarnContext(r.Context(), "single sign-on: the provider reported an error",
 			logsafe.Attr("idp_error", truncateUTF8(idpErr, 64)),
 			logsafe.Attr("idp_error_description", truncateUTF8(q.Get("error_description"), 200)))
 		return refuse(auth.OIDCIdPError)
@@ -351,7 +351,7 @@ func (s *Server) completeOIDC(r *http.Request, o settings.OIDC, a *oidcAttempt) 
 	}
 	id, err := s.oidc.Exchange(r.Context(), clientConfig(o), code, oidc.AuthRequest{State: flow.State, Nonce: flow.Nonce, Verifier: flow.Verifier})
 	if err != nil {
-		s.logger.Warn("single sign-on: sign-in refused", logsafe.Error(err))
+		s.logger.WarnContext(r.Context(), "single sign-on: sign-in refused", logsafe.Error(err))
 		if errors.Is(err, oidc.ErrTokenInvalid) {
 			return refuse(auth.OIDCTokenInvalid)
 		}
@@ -363,17 +363,17 @@ func (s *Server) completeOIDC(r *http.Request, o settings.OIDC, a *oidcAttempt) 
 	if err != nil {
 		code := auth.OIDCErrorCode(err)
 		if code == "" {
-			s.logger.Error("single sign-on failed", logsafe.Error(err))
+			s.logger.ErrorContext(r.Context(), "single sign-on failed", logsafe.Error(err))
 			code = auth.OIDCIdPError
 		} else {
-			s.logger.Info("single sign-on refused", slog.String("reason", code), logsafe.Attr("username", id.Username))
+			s.logger.InfoContext(r.Context(), "single sign-on refused", slog.String("reason", code), logsafe.Attr("username", id.Username))
 		}
 		return refuse(code)
 	}
 	a.login = login
 	if login.RoleKept && s.settings != nil {
 		if err = s.settings.RaiseOIDCRoleKeptWarning(r.Context()); err != nil {
-			s.logger.Warn("could not raise the single sign-on warning", logsafe.Error(err))
+			s.logger.WarnContext(r.Context(), "could not raise the single sign-on warning", logsafe.Error(err))
 		}
 	}
 	return flow.ReturnTo, nil
@@ -471,7 +471,7 @@ func (s *Server) handleTestOIDC(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		s.logger.Error("single sign-on test failed", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "single sign-on test failed", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

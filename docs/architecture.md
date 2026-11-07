@@ -67,7 +67,7 @@ flowchart TB
 
 | Package | Responsibility |
 | :--- | :--- |
-| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-dashboard`, `-log-level`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge and `backup`, `restore`, `list`, `verify`, `status` and `help` run the CLI instead |
+| `cmd/mongorescue` | Entry point: bootstrap flags (`-data-dir`, `-host`, `-port`, `-dashboard`, `-log-level`, `-log-format`, `-access-log`, `-version`), logger setup, then hands off to `app`; `mongorescue mcp` runs the stdio MCP bridge and `backup`, `restore`, `list`, `verify`, `status` and `help` run the CLI instead |
 | `cmd/mongorescue-desktop` | Desktop entry point (`desktop` build tag, Wails v2): runs `app` without a listener (`App.Start`/`Stop`) and serves `App.Handler` to the webview |
 | `internal/app` | Wires dependencies, starts the HTTP server and scheduler (or, embedded, only the scheduler and background workers), coordinates graceful shutdown |
 | `internal/desktop` | Desktop adapters without Wails: bootstrap config and log file, the session cookie jar and the same-origin fix for the webview's custom scheme |
@@ -118,6 +118,7 @@ flowchart TB
 | `internal/server` | REST API, authentication, scope (route &rarr; scope table) and CORS middleware, the `/mcp` mount with its Origin and Host checks, embedded dashboard serving |
 | `internal/redact` | Dependency-free helpers that scrub credentials from URIs and free text |
 | `internal/logsafe` | Structured log sanitization: strips control codes and terminal escape sequences to prevent log injection |
+| `internal/logging` | slog logger construction: text or JSON output, a redaction pass over every string and error that is logged, and the request and run IDs a context carries into log lines |
 | `internal/ratelimit` | In-memory token buckets per key (API key, session, client address) with bounded memory, shared by the REST API rate limit and the MCP limiter, and a once-per-interval gate for log lines |
 | `internal/sharedcache` | A single-flight cache with a TTL, a change stamp and invalidation, keyed by what a value depends on (such as the caller's connection access): the operations service shares the overview history and statistics through it, the readiness service its report; the store's change stamp (migration 0029) counts every write to the tables they read |
 | `internal/diskspace` | Free space of a local filesystem (`statfs`, `GetDiskFreeSpaceExW` on Windows) for restore preflights of a server on the same host |
