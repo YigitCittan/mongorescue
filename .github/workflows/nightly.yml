@@ -169,6 +169,62 @@ jobs:
           IT_PROVIDERS: minio
         run: ./scripts/test-integration-docker.sh
 
+  # Cross-version restore: the fidelity database (collection options, every index
+  # and BSON type, a time-series collection, views) is backed up from MongoDB 5.0
+  # and 6.0 and restored into the safe clone of 8.0, then compared with the source
+  # (TestCrossVersionRestore). Every other job restores into the server version it
+  # backed up from.
+  cross-version:
+    name: Cross-version restore (MongoDB ${{ matrix.source }} into 8.0)
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ['5.0', '6.0']
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Back up from ${{ matrix.source }}, restore into 8.0
+        env:
+          MONGO_IMAGE: mongo:8.0
+          MONGO_CROSS_SOURCE_IMAGE: mongo:${{ matrix.source }}
+          IT_PROVIDERS: none
+          IT_TLS: '0'
+          GOTESTFLAGS: -run TestCrossVersionRestore -v
+        run: ./scripts/test-integration-docker.sh
+
   fuzz:
     name: Fuzz
     if: >-

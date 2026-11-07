@@ -34,6 +34,11 @@
 #                  single sign-on test (MONGORESCUE_TEST_KEYCLOAK_URL); "vault"
 #                  starts Vault (VAULT_IMAGE) in dev mode with the Transit
 #                  engine and the key "mongorescue", for the key wrapping test
+#   MONGO_CROSS_SOURCE_IMAGE  an older MongoDB image (e.g. mongo:5.0) started as a second
+#                  server of the same topology and exported as
+#                  MONGORESCUE_TEST_CROSS_SOURCE_URI, the backup source of
+#                  TestCrossVersionRestore (its restore goes into MONGO_IMAGE);
+#                  combine with GOTESTFLAGS="-run TestCrossVersionRestore"
 #   IT_TLS         1 (default) starts the TLS MongoDB (MONGORESCUE_TEST_TLS_*); 0 skips it
 #   IT_RACE        1 (default) runs go test with -race; 0 without (memory limits of
 #                  the large-data run only apply without the race detector)
@@ -142,15 +147,16 @@ go test $RACE_FLAG -tags=integration -count=1 ${GOTESTFLAGS:-} -run '^$' $IT_PAC
 PRECOMPILE_PID=$!
 
 # --- MongoDB -------------------------------------------------------------------
-# start_mongo NAME starts MONGO_IMAGE in MONGO_TOPOLOGY as the container NAME.
+# start_mongo NAME [IMAGE] starts IMAGE (default MONGO_IMAGE) in MONGO_TOPOLOGY as the
+# container NAME.
 start_mongo() {
-  local name=$1
-  log "starting $MONGO_IMAGE ($MONGO_TOPOLOGY) as $name"
+  local name=$1 image=${2:-$MONGO_IMAGE}
+  log "starting $image ($MONGO_TOPOLOGY) as $name"
   case "$MONGO_TOPOLOGY" in
     standalone)
       docker run -d --name "$name" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
         -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-        "$MONGO_IMAGE" >/dev/null
+        "$image" >/dev/null
       ;;
     replset)
       # A replica set with authentication needs a keyfile owned by the mongodb user.
@@ -158,7 +164,7 @@ start_mongo() {
       # shellcheck disable=SC2016 # expanded inside the container
       docker run -d --name "$name" -p 127.0.0.1::27017 "${MONGO_LOG_OPTS[@]}" \
         -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_PW" \
-        --entrypoint bash "$MONGO_IMAGE" -c '
+        --entrypoint bash "$image" -c '
           set -e
           head -c 756 /dev/urandom | base64 -w0 > /tmp/rs.key
           chmod 400 /tmp/rs.key
@@ -256,8 +262,10 @@ if [ "$MONGO_TOPOLOGY" = replset ] && [ "$IT_WHOLE_INSTANCE" = 1 ]; then WHOLE_I
 SECONDS=0
 start_mongo "$PREFIX-mongo"
 if $WHOLE_INSTANCE; then start_mongo "$PREFIX-mongo-instance"; fi
+if [ -n "${MONGO_CROSS_SOURCE_IMAGE:-}" ]; then start_mongo "$PREFIX-mongo-source" "$MONGO_CROSS_SOURCE_IMAGE"; fi
 init_mongo "$PREFIX-mongo" MONGORESCUE_TEST_MONGO_URI
 if $WHOLE_INSTANCE; then init_mongo "$PREFIX-mongo-instance" MONGORESCUE_TEST_WHOLE_INSTANCE_URI; fi
+if [ -n "${MONGO_CROSS_SOURCE_IMAGE:-}" ]; then init_mongo "$PREFIX-mongo-source" MONGORESCUE_TEST_CROSS_SOURCE_URI; fi
 
 # --- MongoDB over TLS (custom CA, x509 client certificates) ---------------------
 if [ "$IT_TLS" = 1 ]; then
