@@ -36,6 +36,18 @@ Rules that follow from the table:
 - the API has had one minor release without breaking changes;
 - phases 1 and 2 of the [roadmap](roadmap.md) are done: recovery you can prove (self-backup, recovery kit, users and roles, restore preflight and verification, RPO/RTO, a full audit log) and roles with single sign-on.
 
+## Helm chart versions
+
+The Helm chart (`deploy/helm/mongorescue`) is published as a signed OCI artifact, `oci://ghcr.io/yigitcittan/charts/mongorescue`, and has its own semantic version, independent of the application's: `version` in `Chart.yaml`. `appVersion` is not edited by hand; the release workflow sets it to the tag at package time (`helm package --app-version`), and the default `image.tag` follows it.
+
+| Change to the chart | Bump |
+| :--- | :--- |
+| A value is removed or renamed, its default or meaning changes, or the new rendering needs action on upgrade (for example a changed selector or a new required value) | **major** (before 1.0 of the chart: minor) |
+| A new value, template or resource, behind a default that keeps the old rendering | **minor** |
+| A fix, a label or documentation fix inside the chart, a dependency of the render | **patch** |
+
+CI (`scripts/check-chart-version.sh`, the *Helm chart version* job of `helm.yml`) fails a pull request that changes any file of the chart without raising `version` relative to the base branch. Changes under `deploy/helm/mongorescue/ci/` (test values) and Markdown files are exempt. A published chart version is immutable: if a release finds its chart version already in the registry (a release without chart changes), the workflow keeps the existing chart and does not push again, so the chart version tells what the templates and values are, while `image.tag` selects the application.
+
 ## How to cut a release
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md#versioning-and-releases). Its first step reviews the README's [known limitations](../README.md#known-limitations) and the [production checklist](production.md#production-checklist), so they match what the release ships.
