@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Documentation: refreshed stale version references and limitations (SECURITY.md supported version, roadmap "Where we are", shipped versions and phase headings, PITR collector HA, browser and desktop E2E test layers, desktop update check interval in docs/privacy.md), and the release checklist now covers SECURITY.md and the roadmap (#223).
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
 ## [0.28.0] - 2026-10-14
