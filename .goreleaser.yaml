@@ -25,11 +25,16 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Reproducible: no build paths (-trimpath), the commit time instead of the
+    # current time, and that time as the file mtime.
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
       - -X main.Version={{ .Version }}
       - -X main.Commit={{ .Commit }}
-      - -X main.Date={{ .Date }}
+      - -X main.Date={{ .CommitDate }}
 
 archives:
   - id: default
