@@ -62,12 +62,23 @@ test("stores TLS material masked and warns about loosened checks", async ({ page
   await expect(key).toHaveAttribute("placeholder", "Stored. Leave empty to keep it.");
 
   const insecure = edit.getByRole("checkbox", { name: "Do not verify the server certificate" });
-  page.once("dialog", d => d.dismiss());
+  // The app's own confirmation (danger variant, focus on Cancel), not a native dialog.
+  const nativeDialogs: string[] = [];
+  page.on("dialog", d => { nativeDialogs.push(d.message()); void d.dismiss(); });
+  const confirm = page.getByRole("alertdialog", { name: "Please confirm" });
   await insecure.click();
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText(/Turn off certificate verification\?/);
+  await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
   await expect(insecure).not.toBeChecked();
-  page.once("dialog", d => d.accept());
   await insecure.click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Confirm" }).click();
+  await expect(confirm).toBeHidden();
   await expect(insecure).toBeChecked();
+  expect(nativeDialogs).toEqual([]);
   await expect(edit.getByText(/Certificate verification is off/)).toBeVisible();
 
   await edit.getByRole("button", { name: "Save" }).click();

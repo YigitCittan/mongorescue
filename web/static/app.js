@@ -4521,7 +4521,7 @@ async function testConnectionForm() {
     return false;
   }
   const existing = id ? state.connections.find(c => c.id === id) : null;
-  if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return false;
+  if (typeof tlsConfirmURI === "function" && !await tlsConfirmURI(uri)) return false;
   const tlsChanged = typeof tlsFormChanged === "function" && tlsFormChanged();
   const useStored = existing && existing.uri === uri && !tlsChanged;
   const btn = document.getElementById("connection-test-btn");
@@ -4561,7 +4561,7 @@ async function saveConnection(e) {
   // Post-restore commands (postrestore.js); null means the editor holds an error.
   const postRestore = typeof postRestoreConnectionPayload === "function" ? postRestoreConnectionPayload() : {};
   if (postRestore === null) return;
-  if (typeof tlsConfirmURI === "function" && !tlsConfirmURI(uri)) return;
+  if (typeof tlsConfirmURI === "function" && !await tlsConfirmURI(uri)) return;
   const payload = {
     name: getValue("connection-name"),
     uri,
