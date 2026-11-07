@@ -60,7 +60,20 @@ docker run -d --name mongorescue -p 8080:8080 \
 
 The image includes the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/). MongoRescue serves plain HTTP: put a TLS-terminating reverse proxy in front of it before you expose the port ([production guide](docs/production.md)).
 
-Other ways to run it: the **desktop app** from [Releases](https://github.com/YigitCittan/mongorescue/releases) ([docs/desktop.md](docs/desktop.md)), a **Helm chart** in [deploy/helm/mongorescue](deploy/helm/mongorescue) ([docs/kubernetes.md](docs/kubernetes.md)), or the headless **server binary** (REST API, MCP, metrics; pass `-dashboard` to serve the dashboard).
+### Install options
+
+| Platform | Install | Notes |
+| :--- | :--- | :--- |
+| Docker (recommended) | `docker run` above, or [Docker Compose](docs/production.md#docker-compose) | Includes the Database Tools; the container image is signed and attested |
+| Debian, Ubuntu | `sudo apt install ./mongorescue_<version>_linux_<amd64\|arm64>.deb` | From [Releases](https://github.com/YigitCittan/mongorescue/releases). Installs the binary, a hardened systemd unit and the `mongorescue` user; start it with `sudo systemctl enable --now mongorescue` ([details](docs/production.md#systemd)) |
+| Fedora, RHEL, openSUSE | `sudo dnf install ./mongorescue_<version>_linux_<amd64\|arm64>.rpm` | Same package contents as the deb |
+| Windows | `.zip` from [Releases](https://github.com/YigitCittan/mongorescue/releases), or Scoop: `scoop bucket add mongorescue https://github.com/YigitCittan/scoop-bucket` then `scoop install mongorescue`, or winget: `winget install YigitCittan.MongoRescue` | The server and CLI binary (`mongorescue.exe`). Scoop and winget need the maintainer set-up in [CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-releases) and the first winget review; every release carries the manifests as assets until then |
+| macOS, Linux (Homebrew) | `brew install --cask YigitCittan/tap/mongorescue` | The server and CLI binary; the tap needs the same set-up. The macOS desktop cask waits for signing ([#235](https://github.com/YigitCittan/mongorescue/issues/235)) |
+| Desktop app | Installer, portable zip or app bundle from [Releases](https://github.com/YigitCittan/mongorescue/releases) | [docs/desktop.md](docs/desktop.md) |
+| Kubernetes | Helm chart in [deploy/helm/mongorescue](deploy/helm/mongorescue) | [docs/kubernetes.md](docs/kubernetes.md) |
+| Any system | The archive of [Releases](https://github.com/YigitCittan/mongorescue/releases) | Headless server binary (REST API, MCP, metrics; pass `-dashboard` to serve the dashboard) |
+
+The packages and archives need the [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) on `PATH` (the deb and rpm only recommend them). Releases are signed, with SBOMs and provenance: [verifying releases](docs/security.md#verifying-releases).
 
 Everything is configured in the dashboard and stored in the data volume (`/data`), together with the key that encrypts stored credentials: back that volume up. See [docs/configuration.md](docs/configuration.md).
 

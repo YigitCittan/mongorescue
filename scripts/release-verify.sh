@@ -31,6 +31,22 @@
 #                                 backup works.
 #   install-tools                 Installs the MongoDB Database Tools (Linux x86_64,
 #                                 apt) for the binary modes.
+#   deb PACKAGE VERSION           Installs a release .deb on Debian/Ubuntu (root or sudo):
+#                                 --version, the mongorescue user, /var/lib/mongorescue,
+#                                 the 0600 /etc/default/mongorescue, systemd-analyze
+#                                 verify and systemctl cat of the unit, the Recommends
+#                                 of the Database Tools, a reinstall, a start of the
+#                                 service (when systemd runs) as the mongorescue user
+#                                 with health 200 and the dashboard, and a remove that
+#                                 keeps the data.
+#   rpm PACKAGE VERSION           The same for a release .rpm, inside a fedora
+#                                 container (docker; RPM_IMAGE overrides the image),
+#                                 without starting the service.
+#   manifests DIR VERSION         Checks the generated package manifests next to the
+#                                 release archives in DIR: the Scoop JSON (version, URL
+#                                 and hash of both architectures), the winget installer
+#                                 manifest and the Homebrew cask (hashes of the
+#                                 archives; the cask is also parsed with ruby -c).
 #
 # Prerequisites of roundtrip and upgrade: docker, curl (7.75+ for --aws-sigv4), jq,
 # and mongodump/mongorestore (100.12+) on PATH for the binary modes; upgrade also
@@ -705,6 +721,153 @@ cmd_install_tools() {
   mongodump --version
 }
 
+# ------------------------------------------------------------------------------
+# deb, rpm: the native packages
+# ------------------------------------------------------------------------------
+
+# check_installed_package VERSION: what the deb and the rpm must both have put in
+# place; runs as root on the system the package was installed on.
+check_installed_package() {
+  local version=${1#v} out unit=/usr/lib/systemd/system/mongorescue.service
+  out=$(/usr/bin/mongorescue --version)
+  log "$out"
+  [[ $out == "MongoRescue v${version} (commit: "* ]] || fail "--version reports '$out', want version $version"
+  [[ $out != *"commit: unknown"* ]] || fail "--version has no commit: a broken ldflag"
+  id mongorescue >/dev/null || fail "the mongorescue user was not created"
+  [ "$(stat -c '%U:%G %a' /var/lib/mongorescue)" = "mongorescue:mongorescue 750" ] ||
+    fail "/var/lib/mongorescue is $(stat -c '%U:%G %a' /var/lib/mongorescue), want mongorescue:mongorescue 750"
+  [ "$(stat -c '%U %a' /etc/default/mongorescue)" = "root 600" ] || fail "/etc/default/mongorescue is not root 0600"
+  [ -f "$unit" ] || fail "the systemd unit is missing"
+  grep -q '^User=mongorescue$' "$unit" || fail "the unit does not run as mongorescue"
+  # Only deprecation-free, loadable units pass; the binary must exist and be executable.
+  systemd-analyze verify "$unit" || fail "systemd-analyze verify rejected the unit"
+  log "systemd-analyze verify: the unit is valid"
+}
+
+cmd_deb() {
+  [ $# -eq 2 ] || fail "usage: deb PACKAGE.deb VERSION   (Debian or Ubuntu, root or sudo, systemd)"
+  need curl dpkg
+  local pkg version=${2#v} sudo="sudo" rec
+  pkg=$(readlink -f "$1")
+  [ "$(id -u)" -ne 0 ] || sudo=""
+  rec=$(dpkg-deb -f "$pkg" Recommends)
+  [[ $rec == *mongodb-database-tools* ]] || fail "the package does not recommend mongodb-database-tools (Recommends: '$rec')"
+  [ -z "$(dpkg-deb -f "$pkg" Depends)" ] || log "Depends: $(dpkg-deb -f "$pkg" Depends)"
+  $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"
+  $sudo bash -c "$(declare -f log fail check_installed_package); check_installed_package '$version'"
+  $sudo systemctl cat mongorescue.service | grep -q '^ExecStart=/usr/bin/mongorescue ' || fail "systemctl cat: ExecStart is not /usr/bin/mongorescue"
+  # A second install over the first (the same scripts as an upgrade) is idempotent.
+  $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall "$pkg"
+
+  BASE="http://127.0.0.1:8080"
+  if [ -d /run/systemd/system ]; then
+    $sudo systemctl start mongorescue.service
+    wait_for "the packaged service" 60 health_ok
+    curl -fsS "$BASE/" | grep -q 'app.js' || fail "/ does not serve the dashboard (MONGORESCUE_DASHBOARD in /etc/default/mongorescue)"
+    local pid
+    pid=$($sudo systemctl show -p MainPID --value mongorescue.service)
+    [ "$(ps -o user= -p "$pid")" = mongorescue ] || fail "the service runs as $(ps -o user= -p "$pid"), want mongorescue"
+    [ -s /var/lib/mongorescue/data/mongorescue.db ] || fail "no database in /var/lib/mongorescue/data"
+    log "the service runs as mongorescue under the hardened unit: health 200, dashboard served"
+    $sudo systemctl stop mongorescue.service
+  else
+    log "systemd is not running here: the service start check is skipped"
+  fi
+
+  $sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y mongorescue
+  [ ! -e /usr/bin/mongorescue ] || fail "remove left the binary"
+  [ ! -e /usr/lib/systemd/system/mongorescue.service ] || fail "remove left the unit"
+  [ -d /var/lib/mongorescue ] || fail "remove deleted the data directory"
+  log "deb verification passed (version $version)"
+}
+
+cmd_rpm() {
+  [ $# -eq 2 ] || fail "usage: rpm PACKAGE.rpm VERSION   (needs docker; installs it in a fedora container)"
+  need docker
+  local pkg version=${2#v} image="${RPM_IMAGE:-fedora:latest}"
+  pkg=$(readlink -f "$1")
+  log "installing $(basename "$pkg") in $image"
+  docker run --rm -i -e VERSION="$version" -v "$(native_path "$pkg"):/pkg/mongorescue.rpm:ro" "$image" bash -s <<'EOS'
+set -euo pipefail
+fail() { echo "FAIL: $*" >&2; exit 1; }
+log() { printf '==> %s\n' "$*"; }
+dnf install -y systemd >/dev/null
+rec=$(rpm -qp --recommends /pkg/mongorescue.rpm)
+case "$rec" in *mongodb-database-tools*) ;; *) fail "the package does not recommend mongodb-database-tools ($rec)" ;; esac
+dnf install -y --setopt=install_weak_deps=False /pkg/mongorescue.rpm
+out=$(/usr/bin/mongorescue --version)
+log "$out"
+case "$out" in "MongoRescue v${VERSION} (commit: "*) ;; *) fail "--version reports '$out', want $VERSION" ;; esac
+case "$out" in *"commit: unknown"*) fail "--version has no commit" ;; esac
+id mongorescue >/dev/null || fail "the mongorescue user was not created"
+[ "$(stat -c '%U:%G %a' /var/lib/mongorescue)" = "mongorescue:mongorescue 750" ] || fail "/var/lib/mongorescue has the wrong owner or mode"
+[ "$(stat -c '%U %a' /etc/default/mongorescue)" = "root 600" ] || fail "/etc/default/mongorescue is not root 0600"
+rpm -qc mongorescue | grep -qx /etc/default/mongorescue || fail "/etc/default/mongorescue is not a config file"
+rpm -qp --queryformat '[%{FILEFLAGS:fflags} %{FILENAMES}\n]' /pkg/mongorescue.rpm | grep ' /etc/default/mongorescue$' | grep -q n || fail "/etc/default/mongorescue is not noreplace"
+unit=/usr/lib/systemd/system/mongorescue.service
+grep -q '^User=mongorescue$' "$unit" || fail "the unit does not run as mongorescue"
+systemd-analyze verify "$unit" || fail "systemd-analyze verify rejected the unit"
+log "systemd-analyze verify: the unit is valid"
+# Reinstall: the scripts are idempotent.
+dnf reinstall -y /pkg/mongorescue.rpm >/dev/null
+dnf remove -y mongorescue >/dev/null
+[ ! -e /usr/bin/mongorescue ] || fail "erase left the binary"
+[ -d /var/lib/mongorescue ] || fail "erase deleted the data directory"
+log "rpm verification passed (version ${VERSION})"
+EOS
+}
+
+# ------------------------------------------------------------------------------
+# manifests: Scoop, winget and Homebrew
+# ------------------------------------------------------------------------------
+
+# sha_of FILE prints the SHA-256 of FILE.
+sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+
+cmd_manifests() {
+  [ $# -eq 2 ] || fail "usage: manifests DIR VERSION   (DIR holds the archives and the generated manifests)"
+  need jq
+  local dir=$1 version=${2#v} key url file want got n=0
+  # Scoop: valid JSON, the version, and the hash of every architecture's archive.
+  [ -s "$dir/mongorescue.scoop.json" ] || fail "mongorescue.scoop.json is missing"
+  jq -e . "$dir/mongorescue.scoop.json" >/dev/null || fail "the Scoop manifest is not valid JSON"
+  [ "$(jq -r .version "$dir/mongorescue.scoop.json")" = "$version" ] || fail "the Scoop manifest has another version"
+  for key in 64bit arm64; do
+    url=$(jq -r ".architecture[\"$key\"].url" "$dir/mongorescue.scoop.json")
+    want=$(jq -r ".architecture[\"$key\"].hash" "$dir/mongorescue.scoop.json")
+    jq -e ".architecture[\"$key\"].bin | index(\"mongorescue.exe\")" "$dir/mongorescue.scoop.json" >/dev/null || fail "the Scoop $key entry does not expose mongorescue.exe"
+    file="$dir/$(basename "$url")"
+    [[ $url == https://github.com/*/releases/download/v${version}/mongorescue_${version}_windows_* ]] || fail "unexpected Scoop URL $url"
+    [ -f "$file" ] || fail "no downloaded archive for $url"
+    got=$(sha_of "$file")
+    [ "$got" = "$want" ] || fail "Scoop $key hash $want does not match $(basename "$file") ($got)"
+    log "scoop $key: $(basename "$file") hash matches"
+    n=$((n + 1))
+  done
+  # winget: the installer manifest names the version and the same archives.
+  local inst="$dir/YigitCittan.MongoRescue.installer.yaml"
+  [ -s "$inst" ] || fail "the winget installer manifest is missing"
+  grep -q "^PackageVersion: ${version}\$" "$inst" || fail "the winget installer manifest has another version"
+  grep -q '^PackageIdentifier: YigitCittan.MongoRescue$' "$inst" || fail "unexpected winget PackageIdentifier"
+  for file in "$dir"/mongorescue_"${version}"_windows_*.zip; do
+    got=$(sha_of "$file")
+    grep -qi "InstallerSha256: ${got}\$" "$inst" || fail "winget manifest lacks the hash of $(basename "$file")"
+    log "winget: $(basename "$file") hash matches"
+  done
+  [ -s "$dir/YigitCittan.MongoRescue.yaml" ] && [ -s "$dir/YigitCittan.MongoRescue.locale.en-US.yaml" ] || fail "a winget manifest file is missing"
+  # Homebrew cask: the version and the hash of every macOS and Linux archive.
+  local cask="$dir/mongorescue.cask.rb"
+  [ -s "$cask" ] || fail "the Homebrew cask is missing"
+  grep -q "version \"${version}\"" "$cask" || fail "the cask has another version"
+  for file in "$dir"/mongorescue_"${version}"_darwin_*.tar.gz "$dir"/mongorescue_"${version}"_linux_*.tar.gz; do
+    got=$(sha_of "$file")
+    grep -q "$got" "$cask" || fail "the cask lacks the hash of $(basename "$file")"
+    log "cask: $(basename "$file") hash matches"
+  done
+  if command -v ruby >/dev/null 2>&1; then ruby -c "$cask" >/dev/null || fail "the cask is not valid Ruby"; fi
+  log "manifests verification passed (version $version)"
+}
+
 main() {
   local cmd=${1:-}
   [ $# -gt 0 ] && shift
@@ -713,7 +876,10 @@ main() {
     roundtrip) cmd_roundtrip "$@" ;;
     upgrade) cmd_upgrade "$@" ;;
     install-tools) cmd_install_tools ;;
-    *) sed -n '3,/^# ====/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' | head -n 60; exit 2 ;;
+    deb) cmd_deb "$@" ;;
+    rpm) cmd_rpm "$@" ;;
+    manifests) cmd_manifests "$@" ;;
+    *) sed -n '3,/^# ====/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' | head -n 80; exit 2 ;;
   esac
 }
 main "$@"

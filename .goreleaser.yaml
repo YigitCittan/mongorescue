@@ -48,6 +48,142 @@ archives:
       - CHANGELOG.md
       - scripts/mongorescue.service
 
+# deb and rpm packages (nfpm), linux amd64 and arm64: the binary in /usr/bin, the
+# systemd unit, /etc/default/mongorescue (a conffile: edits survive upgrades), the
+# mongorescue service user and /var/lib/mongorescue (packaging/postinstall.sh). The
+# service is installed but not started. The MongoDB Database Tools are recommended,
+# not required: the distributions do not package them, and the apt and dnf
+# repositories of MongoDB provide mongodb-database-tools. Checksums, SBOMs and cosign
+# signatures below cover the packages like the archives; docs/production.md#systemd.
+nfpms:
+  - id: packages
+    package_name: mongorescue
+    ids: [mongorescue]
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [deb, rpm]
+    vendor: MongoRescue
+    homepage: https://github.com/YigitCittan/mongorescue
+    maintainer: Yigit Cittan <noreply@github.com>
+    description: |-
+      MongoDB backup and restore with a web dashboard.
+      Streams mongodump archives to local disk or S3-compatible storage, with
+      scheduling, retention, age encryption, point-in-time recovery, notifications
+      and Prometheus metrics. Restores go into a safe clone by default.
+    license: AGPL-3.0-only
+    section: database
+    priority: optional
+    bindir: /usr/bin
+    mtime: "{{ .CommitDate }}"
+    recommends:
+      - mongodb-database-tools
+    contents:
+      - src: scripts/mongorescue.service
+        dst: /usr/lib/systemd/system/mongorescue.service
+        file_info:
+          mode: 0644
+      - src: packaging/mongorescue.default
+        dst: /etc/default/mongorescue
+        type: config|noreplace
+        file_info:
+          mode: 0600
+      - src: README.md
+        dst: /usr/share/doc/mongorescue/README.md
+      - src: CHANGELOG.md
+        dst: /usr/share/doc/mongorescue/CHANGELOG.md
+      - src: LICENSE
+        dst: /usr/share/doc/mongorescue/copyright
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+
+# Package managers. The manifests (Scoop, winget, Homebrew cask) are generated on
+# every release and attached to the GitHub release as assets (release.extra_files),
+# so they can be checked and installed from a URL. Pushing them to the tap, bucket and
+# winget fork is the "packages" job of the release workflow, after the release is
+# published: a manifest must never point at a draft. skip_upload is true unless
+# PACKAGES_TOKEN is set, and for pre-releases, so a repository without the secret
+# keeps releasing (the release workflow does not pass the token to GoReleaser; a
+# local run with it would push). The repositories and the token are one-time
+# maintainer steps (CONTRIBUTING.md, "To cut a release").
+scoops:
+  - name: mongorescue
+    ids: [default]
+    repository:
+      owner: YigitCittan
+      name: scoop-bucket
+      branch: main
+      token: '{{ .Env.PACKAGES_TOKEN }}'
+    directory: bucket
+    homepage: https://github.com/YigitCittan/mongorescue
+    description: MongoDB backup and restore server and CLI (the web dashboard is served with -dashboard).
+    license: AGPL-3.0-only
+    skip_upload: '{{ if or (not (index .Env "PACKAGES_TOKEN")) .Prerelease }}true{{ end }}'
+    commit_author:
+      name: mongorescue-release
+      email: noreply@github.com
+
+winget:
+  - name: mongorescue
+    ids: [default]
+    publisher: YigitCittan
+    publisher_url: https://github.com/YigitCittan
+    publisher_support_url: https://github.com/YigitCittan/mongorescue/issues
+    package_identifier: YigitCittan.MongoRescue
+    package_name: MongoRescue
+    short_description: MongoDB backup and restore server and CLI.
+    description: |-
+      MongoRescue streams mongodump archives to local disk or S3-compatible storage,
+      with scheduling, retention, age encryption, point-in-time recovery and a web
+      dashboard (start the server with -dashboard). This package is the command-line
+      and server binary; the desktop app is a separate download.
+    license: AGPL-3.0-only
+    license_url: https://github.com/YigitCittan/mongorescue/blob/main/LICENSE
+    homepage: https://github.com/YigitCittan/mongorescue
+    release_notes_url: https://github.com/YigitCittan/mongorescue/releases/tag/{{ .Tag }}
+    tags: [mongodb, backup, restore, cli]
+    skip_upload: '{{ if or (not (index .Env "PACKAGES_TOKEN")) .Prerelease }}true{{ end }}'
+    repository:
+      owner: YigitCittan
+      name: winget-pkgs
+      branch: "mongorescue-{{ .Version }}"
+      token: '{{ .Env.PACKAGES_TOKEN }}'
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+
+# The CLI/server binary through a Homebrew cask (GoReleaser deprecated formulae,
+# "brews"). The binaries are not Apple-signed yet; the macOS desktop app as a cask
+# waits for its signing (#235).
+homebrew_casks:
+  - name: mongorescue
+    ids: [default]
+    repository:
+      owner: YigitCittan
+      name: homebrew-tap
+      branch: main
+      token: '{{ .Env.PACKAGES_TOKEN }}'
+    directory: Casks
+    homepage: https://github.com/YigitCittan/mongorescue
+    description: MongoDB backup and restore server and CLI with an optional web dashboard
+    license: AGPL-3.0-only
+    binaries: [mongorescue]
+    skip_upload: '{{ if or (not (index .Env "PACKAGES_TOKEN")) .Prerelease }}true{{ end }}'
+    commit_author:
+      name: mongorescue-release
+      email: noreply@github.com
+    caveats: |
+      The macOS binaries are not Apple-signed yet (#235). If Gatekeeper blocks the
+      first run: xattr -d com.apple.quarantine "$(brew --prefix)/bin/mongorescue"
+
+      MongoRescue needs the MongoDB Database Tools (mongodump, mongorestore) on PATH:
+        brew install mongodb/brew/mongodb-database-tools
+      Start the server with the dashboard on http://localhost:8080:
+        mongorescue -dashboard -data-dir ~/mongorescue-data
+
 # The release is created as a draft: the desktop jobs of the release workflow
 # attach their builds and the desktop checksums, then publish it. Until then the
 # desktop updater (releases/latest) does not see it, so it never offers a version
@@ -56,20 +192,36 @@ archives:
 release:
   draft: true
   prerelease: auto
+  # The generated package manifests (scoops, winget, homebrew_casks) under fixed names that
+  # the release workflow downloads and checks; the globs reach the winget version
+  # folder.
+  extra_files:
+    - glob: dist/scoop/bucket/mongorescue.json
+      name_template: mongorescue.scoop.json
+    - glob: dist/homebrew/Casks/mongorescue.rb
+      name_template: mongorescue.cask.rb
+    - glob: dist/winget/manifests/y/YigitCittan/MongoRescue/*/YigitCittan.MongoRescue.yaml
+      name_template: YigitCittan.MongoRescue.yaml
+    - glob: dist/winget/manifests/y/YigitCittan/MongoRescue/*/YigitCittan.MongoRescue.installer.yaml
+      name_template: YigitCittan.MongoRescue.installer.yaml
+    - glob: dist/winget/manifests/y/YigitCittan/MongoRescue/*/YigitCittan.MongoRescue.locale.en-US.yaml
+      name_template: YigitCittan.MongoRescue.locale.en-US.yaml
 
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# One SPDX JSON SBOM per archive (<archive>.sbom.json), generated with syft.
+# One SPDX JSON SBOM per archive and per deb/rpm package (<asset>.sbom.json), generated with syft.
 sboms:
   - id: archive-sboms
     artifacts: archive
+  - id: package-sboms
+    artifacts: package
 
 # Keyless Sigstore signatures (cosign, GitHub Actions OIDC; no key, no secret): one
 # <asset>.sigstore.json bundle (certificate, signature and Rekor entry) per archive,
-# SBOM and checksums.txt, uploaded with them. The release workflow installs cosign
-# and grants id-token: write. Verification: docs/security.md#verifying-releases.
+# package, SBOM and checksums.txt, uploaded with them. The release workflow installs
+# cosign and grants id-token: write. Verification: docs/security.md#verifying-releases.
 # Local runs without an OIDC identity skip signing: goreleaser release --skip=sign.
 signs:
   - id: cosign-checksum
@@ -81,6 +233,12 @@ signs:
   - id: cosign-archive
     cmd: cosign
     artifacts: archive
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    output: true
+  - id: cosign-package
+    cmd: cosign
+    artifacts: package
     signature: "${artifact}.sigstore.json"
     args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
     output: true

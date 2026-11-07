@@ -1,0 +1,22 @@
+# MongoRescue bootstrap options, read by mongorescue.service (systemd
+# EnvironmentFile: KEY=value lines, no quotes needed, no "export"). Everything
+# else (connections, storage targets, jobs, notifications) is configured in the
+# dashboard. After a change: systemctl restart mongorescue
+# Reference: https://github.com/YigitCittan/mongorescue/blob/main/docs/configuration.md
+
+# Serve the web dashboard (the headless binary serves only the API and metrics).
+MONGORESCUE_DASHBOARD=true
+
+# Listen on the loopback interface only. MongoRescue serves plain HTTP: put a
+# TLS-terminating reverse proxy in front of it (docs/production.md) before you
+# set 0.0.0.0 to expose it to the network.
+MONGORESCUE_SERVER_HOST=127.0.0.1
+MONGORESCUE_SERVER_PORT=8080
+
+# Let running backups finish on "systemctl stop" (also raise TimeoutStopSec with
+# a drop-in: systemctl edit mongorescue).
+#MONGORESCUE_SHUTDOWN_GRACE=9m
+
+# Supply the secret key from this file instead of generating secret.key in the
+# data directory (keep this file 0600, owned by root).
+#MONGORESCUE_SECRET_KEY=

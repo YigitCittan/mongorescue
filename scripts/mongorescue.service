@@ -1,21 +1,58 @@
+# MongoRescue systemd unit. The deb and rpm packages install it as
+# /usr/lib/systemd/system/mongorescue.service; for an archive install, copy it to
+# /etc/systemd/system, create the service user (docs/production.md#systemd) and
+# change ExecStart to the path of the binary.
 [Unit]
-Description=MongoRescue Disaster Recovery & Backup Dashboard
-After=network.target mongodb.service
+Description=MongoRescue backup and restore for MongoDB
+Documentation=https://github.com/YigitCittan/mongorescue/blob/main/docs/production.md#systemd
+Wants=network-online.target
+After=network-online.target mongod.service mongodb.service
 
 [Service]
 Type=simple
-User=root
+User=mongorescue
+Group=mongorescue
+# Bootstrap options from the packages' /etc/default/mongorescue (optional, so the
+# unit also works from an archive install); everything else is configured in the
+# dashboard. The default "Local disk" storage target is
+# /var/lib/mongorescue/backups.
+EnvironmentFile=-/etc/default/mongorescue
+ExecStart=/usr/bin/mongorescue -data-dir=/var/lib/mongorescue/data
 WorkingDirectory=/var/lib/mongorescue
-# Only bootstrap options: everything else is configured in the dashboard. The
-# default "Local disk" storage target is /var/lib/mongorescue/backups.
-ExecStart=/usr/local/bin/mongorescue -data-dir=/var/lib/mongorescue/data
-Restart=always
+Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
 
-# Security Hardening
+# /var/lib/mongorescue, created and owned by the service user (0750).
+StateDirectory=mongorescue
+StateDirectoryMode=0750
+UMask=0077
+
+# Security hardening. The service can write only /var/lib/mongorescue (and a
+# private /tmp); a Local disk target elsewhere needs ReadWritePaths= in a drop-in
+# (docs/production.md#systemd).
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
