@@ -4,3 +4,7 @@
 *.go text eol=lf
 # Golden test outputs are compared byte for byte.
 *.golden text eol=lf
+# The OpenAPI document is embedded as JSON and compared with its YAML source;
+# a CRLF checkout would put \r into the parsed strings.
+docs/openapi.yaml text eol=lf
+internal/server/openapi.json text eol=lf
