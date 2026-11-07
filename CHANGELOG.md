@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Migration.** `security.trust_proxy_headers` keeps working: alone (empty `trusted_proxies`) it still trusts every peer, with a startup warning; set `trusted_proxies` to restrict it. A non-empty list enables header trust for those peers by itself. Clients behind an `X-Real-IP`-only proxy must also have `X-Forwarded-For` overwritten by the proxy (see docs/production.md).
 ### Added
 - Helm: `secretKey.requireExternal` (#219), an opt-in GitOps-safe mode that makes the chart refuse to render unless `secretKey.existingSecret` or `keyWrap` is set. The generated key relies on `lookup`, which is empty under Argo CD, kustomize `helmCharts` and `helm template`, so it changed at every render. New "GitOps" section in [docs/kubernetes.md](docs/kubernetes.md#gitops-argo-cd-kustomize-helmcharts) and a CI check of the render.
+- The `mongorescue_last_successful_backup_timestamp_seconds`, `mongorescue_database_last_successful_backup_timestamp_seconds`, `mongorescue_backup_size_bytes` and `mongorescue_database_backup_size_bytes` gauges are seeded from the metadata store at start and after an HA takeover, instead of staying absent until the next successful backup (#220).
 
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
