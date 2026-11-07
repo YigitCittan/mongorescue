@@ -250,7 +250,7 @@ Keep the two pods apart: the `affinity` and `topologySpreadConstraints` values a
 
 ## Upgrades and backups of MongoRescue itself
 
-- `helm upgrade` replaces the pod (see [Graceful shutdown](#graceful-shutdown)). A new release migrates the database on its first start, within the startup probe's budget. A release older than the database refuses to start; roll back with the matching image.
+- `helm upgrade` replaces the pod (see [Graceful shutdown](#graceful-shutdown)). A new release migrates the database on its first start, within the startup probe's budget. A release older than the database refuses to start (`ErrSchemaTooNew`), so `helm rollback` or the previous image alone does not work after a migration: before it migrates, MongoRescue copies the database to `mongorescue.db.pre-v<from>-to-v<to>` on the data volume, and rolling back means restoring that copy with the StatefulSet scaled down. The exact commands, the order for [high availability](#high-availability) and what to back up first are in [upgrading.md](upgrading.md).
 - Turn on [metadata backups](production.md#metadata-backups) to a storage target outside the cluster and keep the [recovery kit](production.md#recovery-kit) offline. To restore into a new cluster, install the chart with the old key (`secretKey.existingSecret`) and follow [Restore MongoRescue from a snapshot](production.md#restore-mongorescue-from-a-snapshot), copying `mongorescue.db` into the data claim (for example with `kubectl cp` while the StatefulSet is scaled to 0).
 
 ## Testing the chart

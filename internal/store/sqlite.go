@@ -60,6 +60,9 @@ type SQLiteStore struct {
 	keyMu sync.RWMutex
 	// corrupt holds the rows that lists skipped because they cannot be read.
 	corrupt corruptLog
+	// keepCopies is how many pre-migration copies are kept (WithPreMigrationCopies);
+	// 0 takes none.
+	keepCopies int
 
 	closeOnce sync.Once
 	closeErr  error

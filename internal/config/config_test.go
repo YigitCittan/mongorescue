@@ -121,6 +121,27 @@ func TestNotificationMaxAge(t *testing.T) {
 	}
 }
 
+func TestPreMigrationCopies(t *testing.T) {
+	if c, err := FromEnv(env(nil)); err != nil || c.PreMigrationCopies != DefaultPreMigrationCopies {
+		t.Fatalf("default = %+v, %v", c, err)
+	}
+	for in, want := range map[string]int{"0": 0, "5": 5, " 50 ": 50} {
+		if c, err := FromEnv(env(map[string]string{EnvPreMigrationCopies: in})); err != nil || c.PreMigrationCopies != want || c.Validate() != nil {
+			t.Fatalf("%q = %+v, %v", in, c, err)
+		}
+	}
+	for _, in := range []string{"-1", "51", "many", "1.5"} {
+		if _, err := FromEnv(env(map[string]string{EnvPreMigrationCopies: in})); !errors.Is(err, ErrInvalidPreMigrationCopies) {
+			t.Errorf("%s=%q accepted: %v", EnvPreMigrationCopies, in, err)
+		}
+	}
+	c := Default()
+	c.PreMigrationCopies = -1
+	if err := c.Validate(); !errors.Is(err, ErrInvalidPreMigrationCopies) {
+		t.Fatalf("Validate(PreMigrationCopies=-1) = %v", err)
+	}
+}
+
 func settingValue(l *Legacy, key string) (any, string, bool) {
 	for _, it := range l.Settings {
 		if it.Key == key {

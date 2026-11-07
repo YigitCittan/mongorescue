@@ -12,7 +12,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] Backups encrypted with X25519 recipients; private key stored off the backup host.
 - [ ] [Metadata backups](#metadata-backups) on (Settings → Recovery), encrypted, to a target other than the one the instance runs on, with a `metadata_backup.failed` notification rule.
 - [ ] A [recovery kit](#recovery-kit) downloaded and stored offline, apart from the backups (it holds `secret.key`); a new one downloaded whenever the dashboard asks for it.
-- [ ] Container image pinned to a release tag.
+- [ ] Container image pinned to a release tag, and the [upgrade guide](upgrading.md) read before every feature release: back up first, upgrade standbys before the active instance, know how to [roll back](upgrading.md#rolling-back).
 - [ ] An alert on stale backups ([metrics.md](metrics.md#alerting)) and a `backup.failed` notification rule ([notifications.md](notifications.md)).
 - [ ] An [RPO](#rpo-and-rto) set on every job whose default does not match what you promised, a `job.rpo_missed` notification rule, and no `fail` row under Overview → *Recovery readiness*.
 - [ ] Busy replica sets backed up from a secondary, with an upload cap and a backup window where the dump competes with production traffic; databases past the [practical limits of mongodump](#large-databases) covered by snapshots or your cloud provider's backups instead.
@@ -94,6 +94,7 @@ The channel **test** endpoint and the connection test make outbound requests to 
 | File | Contents |
 | :--- | :--- |
 | `mongorescue.db` (+ `-wal`, `-shm`) | SQLite metadata database: jobs, backup and restore history, users, sessions, API key hashes, connections and notification settings. Mode `0600`. |
+| `mongorescue.db.pre-v<from>-to-v<to>` | The copy of the database taken before a start applied schema migrations (the newest 3 are kept, `-pre-migration-copies`), the way back after an upgrade; never contains `secret.key`. See [upgrading.md](upgrading.md#what-a-start-does-to-the-database). Mode `0600`. |
 | `secret.key` | The key encrypting connection strings and notification channel secrets inside the database (unless `MONGORESCUE_SECRET_KEY` is set). Mode `0600`. |
 | `secret.key.wrapped` | With [key wrapping](security.md#wrapping-secretkey-with-a-kms) (`MONGORESCUE_KEY_WRAP`), the key wrapped by the KMS instead of `secret.key`, which then does not exist. Mode `0600`. |
 | `mongorescue.lock` | Advisory lock that stops a second instance from using the same directory. The operating system holds the lock for the process, not the file: after a crash it is released with the process, so a leftover `mongorescue.lock` never has to be deleted. |
@@ -156,7 +157,7 @@ The kit holds every secret in plain form once opened: store it offline (a passwo
 
 Until a kit has been downloaded, and again after `secret.key`, the encryption keys or a storage target change, the dashboard shows a reminder. *Remind me later* hides it until the next such change.
 
-Since v0.14.0 the database records a checksum of every schema migration applied to it, and MongoRescue refuses to start (`ErrMigrationChanged`, naming the migration, nothing written) when a binary embeds an edited version of one; starting an older release on a database migrated by a newer one is refused as before (`ErrSchemaTooNew`).
+Since v0.14.0 the database records a checksum of every schema migration applied to it, and MongoRescue refuses to start (`ErrMigrationChanged`, naming the migration, nothing written) when a binary embeds an edited version of one; starting an older release on a database migrated by a newer one is refused as before (`ErrSchemaTooNew`); [upgrading.md](upgrading.md#rolling-back) explains how to go back with the pre-migration copy.
 
 A single damaged row (a record whose stored JSON no longer fits, or whose credentials cannot be decrypted) does not take a list down: it is skipped, logged with its table and ID, shown to administrators in a dashboard banner and left unchanged on disk. [troubleshooting.md](troubleshooting.md#unreadable-records) shows how to back up the database, inspect the row with `sqlite3`, and repair, export or remove it.
 
