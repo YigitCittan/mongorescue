@@ -1,23 +1,42 @@
 name: Docker Image Pipeline
 
+# Two entry points:
+#  - a push to main publishes the edge and sha-<commit> tags;
+#  - the release workflow calls this one on a version tag (workflow_call). That build
+#    pushes only sha-<commit>; the release workflow promotes the same digest to
+#    <version>, <major>.<minor> and latest once the release succeeded, right before
+#    it publishes the GitHub release. Signatures and attestations follow the digest,
+#    so promotion does not re-sign.
+# Keeping the build in this file keeps the signing identity the same everywhere:
+# .github/workflows/docker.yml@refs/heads/main or @refs/tags/v...
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
+  workflow_call:
+    outputs:
+      digest:
+        description: Digest of the pushed image index
+        value: ${{ jobs.docker-build-push.outputs.digest }}
+      image:
+        description: Image name without tag (lowercase GHCR path)
+        value: ${{ jobs.docker-build-push.outputs.image }}
 
 permissions:
   contents: read
 
-# Serialize pushes per ref so an older build never overwrites a newer tag.
+# Serialize pushes per ref so an older build never overwrites a newer tag. The group
+# differs from the release workflow's, which calls this one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: docker-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   docker-build-push:
     name: Build & Push Multi-Arch Container Image
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.name.outputs.image }}
     permissions:
       contents: read
       packages: write # push to GHCR
@@ -58,9 +77,21 @@ jobs:
         id: goversion
         run: echo "version=$(tr -d '[:space:]' < .go-version)" >> "$GITHUB_OUTPUT"
 
+      - name: Read the release version
+        id: release
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The commit time makes the binary's build date, and so the binary, reproducible.
+      - name: Read the commit time
+        id: commit
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+
       - name: Normalize Image Name
+        id: name
         # GHCR requires lowercase repository names.
-        run: echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Extract Docker Metadata
         id: meta
@@ -68,9 +99,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-
 
       - name: Build and Push Multi-Arch Image
@@ -85,9 +114,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # The binary reports the release version on tag builds and "dev" otherwise.
           build-args: |
-            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'dev' }}
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.release.outputs.version || 'dev' }}
             COMMIT=${{ github.sha }}
             GO_VERSION=${{ steps.goversion.outputs.version }}
+            SOURCE_DATE_EPOCH=${{ steps.commit.outputs.epoch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # BuildKit SLSA provenance and SPDX SBOM, attached to the image index.

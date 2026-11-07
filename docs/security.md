@@ -247,7 +247,15 @@ gh attestation verify oci://ghcr.io/yigitcittan/mongorescue:0.28.0 --repo YigitC
 
 ### Container images (cosign)
 
-Images are signed by digest. Tag builds are signed by the `refs/tags/v…` ref, builds of `main` (the `latest` and `sha-…` tags) by `refs/heads/main`:
+Images are signed by digest, and signatures follow the digest, so every tag of the same image verifies alike. The workflow identity depends on what built the image:
+
+| Tag | Built by (certificate identity) |
+| :--- | :--- |
+| `<version>`, `<major>.<minor>`, `latest` | the image build of the release workflow, `docker.yml@refs/tags/v<version>`; the tags are promoted copies of that digest, created after the release succeeded |
+| `edge` | a push to `main`, `docker.yml@refs/heads/main` |
+| `sha-<commit>` | either, depending on whether the commit was a release tag build or a `main` build |
+
+The pattern below accepts both:
 
 ```sh
 cosign verify ghcr.io/yigitcittan/mongorescue:0.28.0 \

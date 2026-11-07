@@ -419,9 +419,12 @@ Images are published to `ghcr.io/yigitcittan/mongorescue` for `linux/amd64` and 
 | Tag | Meaning |
 | :--- | :--- |
 | `0.1.0` | Exact release (recommended) |
-| `0.1` | Latest patch of a minor release |
-| `latest` | Current `main` branch; changes without notice |
-| `sha-<commit>` | A specific commit |
+| `0.1` | Latest patch of a minor release (not moved by pre-releases) |
+| `latest` | Newest stable release (never a pre-release) |
+| `edge` | Current `main` branch, unreleased; changes without notice, for testing only |
+| `sha-<commit>` | A specific commit; on a release commit it is the build that was promoted to the version tags |
+
+Version tags appear only after a release succeeded: the release workflow builds the image from the tag, runs the rest of the release, and only then gives that image its `<version>`, `<major>.<minor>` and `latest` tags, right before it publishes the GitHub release. Pulling `latest` therefore never returns unreleased code. `edge` can carry a database schema that no release can open (a later downgrade fails with `ErrSchemaTooNew`), so do not point production data at it.
 
 Mount `/data` and `/backups` as volumes; the image already uses them as the data directory and the local backup directory, so no environment variable is needed.
 
@@ -440,7 +443,7 @@ The repository's `docker-compose.yml` is hardened by default. Keep these propert
 
 - **No required configuration.** The file needs no `.env`; every variable in `.env.example` is optional. Keep an `.env` you do create (for example with `MONGORESCUE_SECRET_KEY`) out of version control with mode `600`.
 - **Port.** The dashboard is published as `${MONGORESCUE_PORT:-8080}:8080` on all interfaces so it works out of the box. Before exposing the host, either change the mapping to `127.0.0.1:8080:8080` and put a TLS-terminating proxy on the host (the Caddy example above works unchanged), or put the proxy in the same Compose project, let it reach `mongorescue:8080` over the project network and remove the `ports` entry entirely.
-- **Pinned image.** `MONGORESCUE_VERSION` selects the image tag. Set it to an exact release such as `0.1.0` so a `docker compose pull` does not change the version unexpectedly.
+- **Pinned image.** `MONGORESCUE_VERSION` selects the image tag. The default is `latest`, the newest release; set it to an exact release such as `0.1.0` so a `docker compose pull` does not change the version unexpectedly.
 - **Bind mounts.** The file uses named volumes, which get the right ownership automatically. If you replace them with host directories, create them owned by UID/GID `10001` first (see [Container images](#container-images)).
 - **Locked-down container.** The service runs with `read_only: true`, a `tmpfs` on `/tmp` (where `mongodump` and `mongorestore` receive their temporary `--config` file), `cap_drop: [ALL]` and `no-new-privileges`. The only writable paths are `/data`, `/backups` and `/tmp`.
 - **Back up the data volume.** The data volume (`/data`) holds the metadata database and `secret.key`. Back it up as described in [Data directory](#data-directory), for example with `docker compose stop mongorescue` before copying the volume.

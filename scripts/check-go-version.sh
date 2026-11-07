@@ -24,8 +24,8 @@ fi
 # Dockerfile default build arg and its use in the builder stage.
 df=$(sed -n 's/^ARG GO_VERSION=\(.*\)$/\1/p' Dockerfile | tr -d '\r')
 [[ "$df" == "$want" ]] || err "Dockerfile ARG GO_VERSION is '$df', .go-version is '$want'"
-grep -Eq '^FROM golang:\$\{GO_VERSION\}-alpine@sha256:' Dockerfile \
-  || err "Dockerfile builder stage must be 'FROM golang:\${GO_VERSION}-alpine@sha256:...'"
+grep -Eq '^FROM (--platform=\$BUILDPLATFORM )?golang:\$\{GO_VERSION\}-alpine@sha256:' Dockerfile \
+  || err "Dockerfile builder stage must be 'FROM [--platform=\$BUILDPLATFORM ]golang:\${GO_VERSION}-alpine@sha256:...'"
 
 # The image workflow must pass the version as a build arg.
 # shellcheck disable=SC2016 # ${{ }} is GitHub Actions syntax, matched literally
