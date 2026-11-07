@@ -79,8 +79,14 @@ jobs:
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
@@ -160,8 +166,14 @@ jobs:
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
@@ -225,8 +237,14 @@ jobs:
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
