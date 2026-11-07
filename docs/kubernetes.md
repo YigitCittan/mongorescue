@@ -44,6 +44,27 @@ The key encrypts every stored credential: connection strings, S3 keys, notificat
 - **`secretKey.generate: false`** (without `existingSecret`) leaves the key in `/data/secret.key` on the data volume, as with Docker.
 - **`keyWrap`** keeps the key on the data volume, but only as `secret.key.wrapped`, wrapped by a KMS; the pod unwraps it at every start with its own identity ([key wrapping](security.md#wrapping-secretkey-with-a-kms)). No Secret is generated and `existingSecret` must stay empty. See [below](#key-wrapping-with-workload-identity).
 
+### GitOps (Argo CD, kustomize helmCharts)
+
+The generated key is kept across upgrades with Helm's `lookup`, which reads the live Secret. `lookup` returns nothing when the chart is rendered without cluster access: `helm template`, Argo CD and kustomize `helmCharts` all render that way. Every render then produces a *new* random key and the GitOps tool overwrites the Secret (Argo CD also ignores `helm.sh/resource-policy: keep` when syncing). After the next pod restart MongoRescue refuses to start, because the key no longer opens the stored credentials. (Flux's helm-controller runs a real install and upgrade with cluster access, so it is not affected.)
+
+For these tools, create the key once, outside the chart:
+
+```bash
+kubectl -n mongorescue create secret generic mongorescue-key \
+  --from-literal=secret-key="$(openssl rand -base64 32)"
+```
+
+Then point the chart at it (or use [`keyWrap`](#key-wrapping-with-workload-identity)) and turn on the guard:
+
+```yaml
+secretKey:
+  existingSecret: mongorescue-key
+  requireExternal: true
+```
+
+With `secretKey.requireExternal: true` the chart fails to render, with an actionable message, unless `secretKey.existingSecret` or `keyWrap` is set, so a GitOps render can never produce a key of its own. The guard is off by default because `lookup` is also empty on a genuine first `helm install`, `--dry-run` and `helm lint`, where generating a key is correct. Keep the Secret out of version control, or commit it only encrypted (External Secrets, Sealed Secrets, SOPS), and keep a copy outside the cluster.
+
 ### Key wrapping with workload identity
 
 Give the pod an identity that may encrypt and decrypt with the KMS key, and nothing else, then set `keyWrap`:

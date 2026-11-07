@@ -47,6 +47,13 @@ secretKey:
   # upgrades; back it up (or download the recovery kit) right after the install.
   # false stores the key as secret.key on the data volume instead.
   generate: true
+  # GitOps-safe mode (Argo CD, kustomize helmCharts, helm template): the chart
+  # refuses to render unless existingSecret or keyWrap is set. The generated key
+  # relies on `lookup`, which is empty without cluster access, so it would change
+  # at every render and the GitOps tool would overwrite the Secret. Off by default
+  # (a first install, --dry-run and helm lint also have no lookup). See
+  # docs/kubernetes.md#gitops-argo-cd-kustomize-helmcharts.
+  requireExternal: false
 
 # Wrap secret.key with an external KMS instead of keeping it in a Secret
 # (MONGORESCUE_KEY_WRAP, docs/security.md#wrapping-secretkey-with-a-kms):

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Helm: `secretKey.requireExternal` (#219), an opt-in GitOps-safe mode that makes the chart refuse to render unless `secretKey.existingSecret` or `keyWrap` is set. The generated key relies on `lookup`, which is empty under Argo CD, kustomize `helmCharts` and `helm template`, so it changed at every render. New "GitOps" section in [docs/kubernetes.md](docs/kubernetes.md#gitops-argo-cd-kustomize-helmcharts) and a CI check of the render.
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 

@@ -38,6 +38,11 @@ MongoRescue {{ .Chart.AppVersion }} is starting as {{ include "mongorescue.fulln
    and download the recovery kit (Settings → Recovery) once the setup is done.
    Better: create the Secret from your secret manager and set
    secretKey.existingSecret.
+
+   Argo CD, kustomize helmCharts and `helm template` render without cluster
+   access, so this key would change at every render: set
+   secretKey.requireExternal=true there to make the chart refuse to render
+   without secretKey.existingSecret or keyWrap (docs/kubernetes.md#gitops-argo-cd-kustomize-helmcharts).
    ##########################################################################
 {{- else }}
 
