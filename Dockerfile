@@ -1,12 +1,15 @@
 # Multi-stage lightweight Dockerfile for MongoRescue
-# Produces a self-contained image (<30MB) with pre-installed MongoDB database tools.
+# Produces a self-contained image (about 230 MB unpacked, 65 MB compressed;
+# mostly the MongoDB database tools) with mongodump and mongorestore installed.
 
 # Stage 1: Build static Go binary
 # The Go toolchain: the default must equal .go-version (scripts/check-go-version.sh);
 # the Docker workflow passes it explicitly. The digest pins golang:<GO_VERSION>-alpine;
 # refresh it together with GO_VERSION (docker buildx imagetools inspect).
 ARG GO_VERSION=1.27.3
-FROM golang:${GO_VERSION}-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS builder
+# The builder always runs on the build host's architecture and cross-compiles for
+# the target, so the Go build never runs under QEMU.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS builder
 
 WORKDIR /src
 
@@ -21,10 +24,18 @@ COPY . .
 # workflow passes the tag's version, other builds report "dev".
 ARG VERSION=dev
 ARG COMMIT=unknown
+# Commit time in Unix seconds (git log -1 --format=%ct): the build date derives from
+# it, so rebuilding a commit yields the same binary. 0 means unknown.
+ARG SOURCE_DATE_EPOCH=0
+# Set by BuildKit from --platform.
+ARG TARGETOS=linux
+ARG TARGETARCH
 
-# Build stripped static binary
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=$(date -u +%Y-%m-%d)" \
+# Build stripped, reproducible static binary (-trimpath drops the build paths).
+RUN if [ "${SOURCE_DATE_EPOCH}" = "0" ]; then BUILD_DATE=unknown; \
+    else BUILD_DATE="$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%d)"; fi \
+    && CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -trimpath \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
     -o /bin/mongorescue ./cmd/mongorescue
 
 # Stage 2: Minimal runtime image

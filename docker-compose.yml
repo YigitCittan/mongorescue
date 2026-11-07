@@ -21,6 +21,7 @@
 
 services:
   mongorescue:
+    # latest is the newest release; pin MONGORESCUE_VERSION (e.g. 0.28.0) in production.
     image: ghcr.io/yigitcittan/mongorescue:${MONGORESCUE_VERSION:-latest}
     build: .
     restart: unless-stopped

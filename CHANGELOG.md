@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Container image tags changed (#225).** `latest` now means the newest stable release; it was the tip of `main`, so the quick start could run unreleased code and a schema no release could open. Pushes to `main` publish `edge` (and `sha-<commit>`) instead. Version tags (`<version>`, `<major>.<minor>`, `latest`) are created only after the release workflow succeeded, by promoting the image built for the tag (same digest, so signatures and attestations stay valid) just before the GitHub release is published; a failed release leaves no version tag. Anyone who deliberately followed unreleased `main` through `latest` must switch to `edge`. cosign identities: release images `docker.yml@refs/tags/v<version>`, `edge` `docker.yml@refs/heads/main` (see [docs/security.md](docs/security.md#container-images-cosign)).
+- Reproducible, faster builds (#225). The image builder cross-compiles (`--platform=$BUILDPLATFORM`, `GOOS/GOARCH` from the target) instead of compiling arm64 under QEMU, uses `-trimpath`, and takes the binary's build date from the commit time (`SOURCE_DATE_EPOCH`), so two builds of a commit produce identical Go binaries. GoReleaser builds use `-trimpath`, `{{ .CommitDate }}` and the commit time as file mtime. The Dockerfile no longer claims "<30MB" (the image is about 230 MB unpacked).
+- Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
+
 ### Fixed
 - One source of truth for the release Go toolchain (#221). `.go-version` (1.27.3) is read by every workflow through `actions/setup-go`, so release binaries, desktop builds, CodeQL, govulncheck and the container image (new `GO_VERSION` build arg) use the same Go; they had drifted (image 1.27, binaries and govulncheck 1.26). The CI test matrix still tests the `go.mod` minimum (1.26.x) next to the release toolchain. `scripts/check-go-version.sh` (CI `security` job) fails when the Dockerfile default, a workflow or the govulncheck pin disagree. govulncheck is pinned to v1.9.0 in `ci.yml` and the Makefile instead of `@latest`.
-
-### Changed
-- Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
 ## [0.28.0] - 2026-10-14
 
