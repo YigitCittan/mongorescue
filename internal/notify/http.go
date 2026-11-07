@@ -37,19 +37,8 @@ func newGuardedHTTPClient(lookup lookupFunc, proxy func(*http.Request) (*url.URL
 	if proxy == nil {
 		proxy = http.ProxyFromEnvironment
 	}
-	dialer := newGuardedDialer(lookup)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = dialer.DialContext
-	transport.Proxy = func(req *http.Request) (*url.URL, error) {
-		u, err := proxy(req)
-		if err != nil || u == nil {
-			return u, err
-		}
-		if err := dialer.checkProxiedTarget(req.Context(), req.URL.Hostname()); err != nil {
-			return nil, err
-		}
-		return u, nil
-	}
+	newGuardedDialer(lookup).Guard(transport, proxy)
 	return &http.Client{
 		Timeout:   SendTimeout,
 		Transport: transport,

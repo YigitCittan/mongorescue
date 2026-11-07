@@ -5127,6 +5127,8 @@ function fillSecurity(sec) {
   setValue("set-hsts-max-age", String(Number.isInteger(sec.hsts_max_age) && sec.hsts_max_age >= 0 ? sec.hsts_max_age : 0));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
+  // Outbound policy: https-only endpoints and private destinations (outbound.js).
+  if (typeof outboundFillSecurity === "function") outboundFillSecurity(sec);
   // Delete grace period, two-person rule and pending changes (protection.js).
   if (typeof protectionFillSecurity === "function") protectionFillSecurity(sec);
   // API key lifetime and expiry warning (apikeys.js).
@@ -5333,6 +5335,7 @@ function collectSecurity() {
     hsts_max_age: Number(hstsRaw),
     metrics_public: document.getElementById("set-metrics-public").checked,
     mcp_enabled: document.getElementById("set-mcp-enabled").checked,
+    ...(typeof outboundCollectSecurity === "function" ? outboundCollectSecurity() : {}),
     ...(typeof apiKeyExpiryCollectSecurity === "function" ? apiKeyExpiryCollectSecurity() : {}),
     ...(typeof rateLimitCollectSecurity === "function" ? rateLimitCollectSecurity() : {}),
     ...(typeof protectionCollectSecurity === "function" ? protectionCollectSecurity() : {})
@@ -5870,6 +5873,8 @@ function openStorageModal(id) {
   setValue("storage-part-size", String(s3.part_size_mb || S3_PART_SIZE_DEFAULT));
   updatePartSizeHint();
   if (typeof objectLockFillForm === "function") objectLockFillForm(s3);
+  // The CA certificate of the endpoint (outbound.js).
+  if (typeof outboundFillTargetForm === "function") outboundFillTargetForm(s3);
   // Access keys from Vault (vault.js).
   if (typeof vaultFillTargetForm === "function") vaultFillTargetForm(target ? s3 : null);
   // The region label (dr.js).
@@ -5939,6 +5944,8 @@ function storagePayload() {
       access_key_id: accessKey,
       secret_access_key: secretKey,
       ...vault,
+      // ca_pem (outbound.js)
+      ...(typeof outboundTargetPayload === "function" ? outboundTargetPayload() : {}),
       use_path_style: document.getElementById("storage-path-style").checked,
       part_size_mb: partSize,
       // object_lock, retention_days, legal_hold_on_pin (objectlock.js)
@@ -5954,7 +5961,7 @@ function storageUnchanged(target, payload) {
   if (payload.type === "local") return ((target.local && target.local.path) || "") === payload.local.path;
   const a = target.s3 || {};
   const b = payload.s3;
-  return ["endpoint", "region", "bucket", "prefix", "access_key_id", "secret_access_key", "retention_days"].every(k => String(a[k] || "") === String(b[k] || "")) &&
+  return ["endpoint", "region", "bucket", "prefix", "access_key_id", "secret_access_key", "retention_days", "ca_pem"].every(k => String(a[k] || "") === String(b[k] || "")) &&
     String(a.object_lock || "none") === String(b.object_lock || "none") &&
     !!a.use_path_style === !!b.use_path_style && !!a.legal_hold_on_pin === !!b.legal_hold_on_pin &&
     (typeof vaultTargetUnchanged !== "function" || vaultTargetUnchanged(a, b));

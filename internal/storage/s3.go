@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/netguard"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -69,6 +71,13 @@ type S3Config struct {
 
 	// Stall configures the upload watchdog (see StallWatch).
 	Stall StallWatch
+
+	// CAPEM is an optional PEM bundle of certificate authorities trusted for the
+	// endpoint in addition to the system roots (see ParseCAPEM).
+	CAPEM string
+
+	// Policy is the outbound destination policy; nil means netguard.Default.
+	Policy *netguard.Policy
 }
 
 // Bounds of the S3 HTTP client. The SDK's defaults leave the wait for response
@@ -177,6 +186,14 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	// The credential providers keep the client they were built with (they must
+	// reach instance and container credentials on link-local addresses); every S3
+	// request goes through the guarded one.
+	s3HTTP, err := newGuardedS3Client(awsCfg.HTTPClient, cfg.CAPEM, cfg.Policy)
+	if err != nil {
+		return nil, err
+	}
+	awsCfg.HTTPClient = s3HTTP
 
 	// 2. Build S3 Client options
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
@@ -186,6 +203,10 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		o.UsePathStyle = cfg.UsePathStyle
 		// Request and response bytes of an upload count as its progress.
 		o.HTTPClient = progressClient{next: o.HTTPClient}
+		if o.Retryer == nil {
+			o.Retryer = retry.NewStandard()
+		}
+		o.Retryer = policyRetryer{o.Retryer}
 
 		// aws-sdk-go-v2 (since early 2025) adds CRC32 integrity checksums to every request
 		// and validates them on responses by default. Several S3-compatible providers

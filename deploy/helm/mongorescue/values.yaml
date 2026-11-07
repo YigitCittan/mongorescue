@@ -298,16 +298,31 @@ networkPolicy:
   # Where MongoRescue may connect, as NetworkPolicy egress rules: DNS is always
   # allowed. Empty allows every destination (MongoDB servers, S3, notification
   # webhooks, SSO); narrow it to your MongoDB pods, S3 endpoint and webhook hosts.
+  # The full list of destinations (ports, protocols, proxy support) is the
+  # "Outbound connections" table of docs/production.md. Example:
   egressTo: []
-  #  - to:
+  #  - to:                       # MongoDB servers
   #      - podSelector:
   #          matchLabels:
   #            app.kubernetes.io/name: mongodb
   #    ports:
   #      - port: 27017
-  #  - to:
+  #  - to:                       # an in-cluster S3 service such as MinIO
+  #      - namespaceSelector:
+  #          matchLabels:
+  #            kubernetes.io/metadata.name: minio
+  #    ports:
+  #      - port: 9000
+  #  - to:                       # SMTP relay, on-premises
+  #      - ipBlock:
+  #          cidr: 10.20.0.25/32
+  #    ports:
+  #      - port: 587
+  #  - to:                       # public HTTPS: S3, webhooks, heartbeat, SSO, KMS
   #      - ipBlock:
   #          cidr: 0.0.0.0/0
+  #          except:             # the metadata service (drop it if S3 uses instance-profile keys)
+  #            - 169.254.0.0/16
   #    ports:
   #      - port: 443
 

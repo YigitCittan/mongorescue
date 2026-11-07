@@ -29,6 +29,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/netguard"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/vaultcreds"
@@ -181,6 +182,8 @@ type Service struct {
 	// vault reports that Vault is configured, so S3 targets may read their access
 	// keys from it (the Factory resolves them).
 	vault bool
+	// requireHTTPS reports whether security.require_https_endpoints is on (nil: off).
+	requireHTTPS func() bool
 }
 
 // Option customises a Service.
@@ -199,6 +202,10 @@ func WithTestTimeout(d time.Duration) Option { return func(s *Service) { s.testT
 // (s3.credential_source vault); the Factory must resolve them. Without it such
 // targets are refused when saved.
 func WithVault(configured bool) Option { return func(s *Service) { s.vault = configured } }
+
+// WithRequireHTTPS refuses, when saving, an S3 target whose endpoint is http://
+// while fn reports true (security.require_https_endpoints, read for every save).
+func WithRequireHTTPS(fn func() bool) Option { return func(s *Service) { s.requireHTTPS = fn } }
 
 // NewService returns a Service. dataDir is MongoRescue's data directory: local
 // targets must not be it or lie inside it.
@@ -926,6 +933,9 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		if err != nil {
 			return nil, err
 		}
+		if s.requireHTTPS != nil && s.requireHTTPS() && strings.HasPrefix(strings.ToLower(s3.Endpoint), "http://") {
+			return nil, fmt.Errorf("%w: s3.endpoint must use https (security.require_https_endpoints is on)", ErrInvalid)
+		}
 		if s3.FromVault() && !s.vault {
 			return nil, fmt.Errorf("%w: %w", ErrInvalid, vaultcreds.ErrNotConfigured)
 		}
@@ -1069,6 +1079,7 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 		ObjectLock:      models.ObjectLockMode(strings.ToLower(strings.TrimSpace(string(in.ObjectLock)))),
 		RetentionDays:   in.RetentionDays,
 		LegalHoldOnPin:  in.LegalHoldOnPin,
+		CAPEM:           strings.TrimSpace(in.CAPEM),
 	}
 	src, err := models.NormalizeCredentialSource(in.CredentialSource)
 	if err != nil {
@@ -1117,6 +1128,14 @@ func cleanS3(in models.S3Target) (models.S3Target, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || strings.ContainsAny(out.Endpoint, "<>{}") {
 			return out, fmt.Errorf("%w: s3.endpoint must be an http(s) URL such as https://s3.example.com", ErrInvalid)
 		}
+		// The destination policy also runs on every connection; this reports an IP
+		// literal (the metadata service) when the target is saved.
+		if err := netguard.Default.CheckHost(u.Hostname()); err != nil {
+			return out, fmt.Errorf("%w: s3.endpoint: %w", ErrInvalid, err)
+		}
+	}
+	if err := storage.ValidateCAPEM(out.CAPEM); err != nil {
+		return out, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if len(out.Bucket) < minBucketLength || len(out.Bucket) > maxBucketLength || strings.ContainsAny(out.Bucket, " /\\") {
 		return out, fmt.Errorf("%w: s3.bucket must be a bucket name (%d-%d characters, no slashes)", ErrInvalid, minBucketLength, maxBucketLength)

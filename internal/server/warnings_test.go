@@ -8,6 +8,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/settings"
+	"github.com/yigitcittan/mongorescue/internal/targets"
 )
 
 // TestSettingsWarningsEndpoints checks the persistent warnings in GET
@@ -48,6 +49,45 @@ func TestSettingsWarningsEndpoints(t *testing.T) {
 	}
 	if w := warnings(); len(w) != 0 {
 		t.Fatalf("warnings after dismiss = %+v", w)
+	}
+}
+
+// TestInsecureStorageEndpointWarning checks that existing http:// S3 targets are
+// reported, not silently broken, once security.require_https_endpoints is on.
+func TestInsecureStorageEndpointWarning(t *testing.T) {
+	f := newTargetsFixture(t)
+	ctx := context.Background()
+	warning := func() *settings.Warning {
+		t.Helper()
+		rec := f.do("GET", "/api/v1/settings", nil)
+		var got struct {
+			Warnings []settings.Warning `json:"warnings"`
+		}
+		decodeData(t, rec, &got)
+		for i := range got.Warnings {
+			if got.Warnings[i].ID == settings.WarningInsecureStorageEndpoints {
+				return &got.Warnings[i]
+			}
+		}
+		return nil
+	}
+	for _, in := range []targets.Input{
+		{Name: "minio-lab", Type: models.StorageS3, S3: &models.S3Target{Endpoint: "http://minio.lab:9000", Bucket: "lab-bucket"}},
+		{Name: "minio-tls", Type: models.StorageS3, S3: &models.S3Target{Endpoint: "https://minio.prod:9000", Bucket: "prod-bucket"}},
+	} {
+		if _, err := f.targets.Create(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := warning(); w != nil {
+		t.Fatalf("warning while https is not required: %+v", w)
+	}
+	if _, err := f.settings.Update(ctx, settings.Patch{Security: &settings.SecurityPatch{RequireHTTPSEndpoints: new(true)}}); err != nil {
+		t.Fatal(err)
+	}
+	w := warning()
+	if w == nil || len(w.Targets) != 1 || w.Targets[0] != "minio-lab" || w.Setting != "storage" {
+		t.Fatalf("warning = %+v; want one for minio-lab", w)
 	}
 }
 

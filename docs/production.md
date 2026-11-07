@@ -9,6 +9,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 - [ ] The HTTP port reachable only from the proxy and your monitoring, not from the internet.
 - [ ] One user per person; API keys (not user passwords) for automation, one per consumer, with the smallest scope that works (`read` for dashboards and assistants that only report, `operator` for backup automation).
 - [ ] The [MCP endpoint](mcp.md) switched off under Settings → Security if no AI assistant uses it.
+- [ ] The [outbound connections](#outbound-connections) limited to the destinations in the table (network policy or firewall), with **Deny private network destinations** and **Require https for S3 endpoints** on when your S3, webhooks and SSO are public and use TLS, and the CA certificate of a private CA set on the target instead of `http://`.
 - [ ] Backups encrypted with X25519 recipients; private key stored off the backup host.
 - [ ] [Metadata backups](#metadata-backups) on (Settings → Recovery), encrypted, to a target other than the one the instance runs on, with a `metadata_backup.failed` notification rule.
 - [ ] A [recovery kit](#recovery-kit) downloaded and stored offline, apart from the backups (it holds `secret.key`); a new one downloaded whenever the dashboard asks for it.
@@ -74,6 +75,47 @@ Restores run in the background (`POST /api/v1/restore` answers `202`; poll `GET 
 **HSTS.** Over TLS, directly or behind a trusted proxy that sends `X-Forwarded-Proto: https`, MongoRescue can add `Strict-Transport-Security`: it is off by default; set `security.hsts_max_age` (for example `31536000`, one year) once HTTPS works for every client. Add the proxy to **Trusted proxies** for it to apply, since the server itself speaks plain HTTP.
 
 **Request bodies.** The JSON bodies of the job, backup and restore endpoints are limited to 1 MiB, others to 64 KiB or less, and `/mcp` to 4 MiB; larger requests get `413`.
+
+## Outbound connections
+
+MongoRescue connects out to the systems you configure. This table is the whole list, for firewall and egress rules.
+
+| Destination | Port | Protocol | Proxy (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`) | Destination policy |
+| :--- | :--- | :--- | :--- | :--- |
+| MongoDB servers of your connections (`mongodump`, `mongorestore`, the driver; `mongodb+srv` also looks up DNS SRV and TXT records) | 27017 or as in the URI | MongoDB wire protocol, TLS as configured | Not supported: direct TCP | None: the address is yours to choose; limit it with the network policy below |
+| S3-compatible storage of targets (backups, probes, downloads, PITR chunks, metadata backups) | 443, or the endpoint's port | HTTPS (HTTP only if you allow it) | Honoured | Yes: [outbound policy](#outbound-policy) |
+| HA lease and metadata snapshots (`MONGORESCUE_HA_TARGET`): an `s3://` location, or a storage target | as the S3 row | HTTPS | Honoured | Yes, as the S3 row (the settings apply once the instance is up) |
+| Webhook notification channels (any receiver, such as chat servers or ntfy); Telegram (`api.telegram.org`) and Twilio (`api.twilio.com`) | 443, or the URL's port | HTTPS (HTTP if the URL says so) | Honoured | Yes |
+| SMTP server of an email channel | 25, 465 or 587 | SMTP, STARTTLS or TLS as configured | Not supported: direct TCP | Yes |
+| Heartbeat URL (Settings → Monitoring) | 443, or the URL's port | HTTPS | Honoured | Yes |
+| Audit forwarder URL (Settings → Audit) | 443, or the URL's port | HTTPS | Honoured | Yes |
+| OIDC issuer (SSO): discovery, token, JWKS and userinfo endpoints | 443, or the issuer's port | HTTPS | Honoured | Yes |
+| Key management service of `MONGORESCUE_KEY_WRAP`: AWS KMS (`kms.<region>.amazonaws.com`), Azure Key Vault (`<vault>.vault.azure.net`), Google Cloud KMS (`cloudkms.googleapis.com`), or Vault Transit | 443, or Vault's port | HTTPS | Honoured | No: the endpoints are those of your provider |
+| HashiCorp Vault (`MONGORESCUE_VAULT_ADDR`): connection and S3 credentials | 8200, or the address's port | HTTPS (`VAULT_CACERT` for a private CA) | Honoured | No |
+| AWS credential sources of the default chain: instance metadata (`169.254.169.254`), container credentials (`169.254.170.2`), STS | 80 and 443 | HTTP, HTTPS | Honoured for STS | No, on purpose: the S3 requests are guarded, the credential lookups are not |
+| Update checker of the desktop app only (`api.github.com`, `github.com`, `*.githubusercontent.com`) | 443 | HTTPS | Honoured | Redirects only to those hosts |
+
+Prometheus scrapes MongoRescue, not the other way round, and outbound alerts go through the notification channels above.
+
+### Outbound policy
+
+Every destination an administrator can configure goes through one policy (`internal/netguard`), checked when the setting is saved for IP literals and again on every connection, after DNS resolution, on the address that is dialled (so DNS rebinding and redirects do not get around it, and the target of a proxied request is checked too):
+
+- **Always refused:** link-local addresses (this includes the cloud metadata services at `169.254.169.254` and `fd00:ec2::254`), unspecified, multicast and broadcast addresses, the NAT64 forms of those (`64:ff9b::a9fe:a9fe`), and numeric host spellings such as `2130706433` or `0x7f.1`. S3 endpoints are guarded like webhooks: a target (or the HA location) pointing at the metadata service fails at save time and at use time.
+- **`security.outbound_deny_private`** (Settings → Security → *Deny private network destinations*, off by default): also refuses loopback, private (RFC 1918), CGNAT (`100.64.0.0/10`) and unique-local (`fc00::/7`) addresses for notifications, heartbeats, the audit forwarder, OIDC and S3. It is off because on-premises MinIO, self-hosted chat servers and an internal IdP are common. Turn it on when every destination is public. It applies to new connections at once; a pooled keep-alive connection to S3 ends within 90 seconds. MongoDB servers are not covered (they usually are on a private network).
+- **`security.require_https_endpoints`** (*Require https for S3 endpoints*, off by default): refuses to save an S3 target whose endpoint is `http://`, and refuses every S3 request over plain http at use time, redirects included. Targets that already use http are not changed silently: the dashboard shows the `storage_endpoint_insecure` warning that names them, and their backups fail with an error naming the setting until the endpoint is changed. The HA `s3://` location is covered by the use-time check once the instance is up.
+
+Both settings are plain `PUT /api/v1/settings` fields (`security.outbound_deny_private`, `security.require_https_endpoints`); see [configuration.md](configuration.md#security).
+
+### A private certificate authority for S3
+
+An S3 service behind a private CA (typically MinIO) needs its CA certificate. Paste it in the target's **CA certificate (PEM)** field, or send `s3.ca_pem` through the API. It is validated when saved, added to the system roots for that target only (not process-wide, unlike `AWS_CA_BUNDLE` or `SSL_CERT_FILE`, which still work and affect every target), and used by the connection test and every request of the driver, downloads included. Certificates are public, so `ca_pem` is stored and returned as it is.
+
+For the HA lease and snapshot location of `MONGORESCUE_HA_TARGET=s3://…`, set `MONGORESCUE_HA_CA_FILE` to the path of a PEM file (a mounted Secret or ConfigMap). It applies to that location only.
+
+### Restricting egress
+
+Kubernetes: set `networkPolicy.enabled` and list exactly these rules in `networkPolicy.egressTo` (DNS is always allowed); the chart ships the example in [kubernetes.md](kubernetes.md#network-policy). On a host or in Docker, allow the same destinations in the firewall. Pair it with `security.outbound_deny_private` and `security.require_https_endpoints` when your destinations are public and use TLS: the policy refuses at the application, the network policy at the network.
 
 ## Authentication
 

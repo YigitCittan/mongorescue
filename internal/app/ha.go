@@ -564,8 +564,19 @@ func (s *haSupervisor) haStorage(ctx context.Context, app *App) (storage.Storage
 	t := s.rt.target
 	switch t.Scheme {
 	case "s3":
+		caPEM := ""
+		if f := s.cfg.HA.CAFile; f != "" {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", config.EnvHACAFile, err)
+			}
+			if err = storage.ValidateCAPEM(string(b)); err != nil {
+				return nil, fmt.Errorf("%s: %w", config.EnvHACAFile, err)
+			}
+			caPEM = string(b)
+		}
 		return storage.NewS3Storage(ctx, storage.S3Config{Endpoint: t.Endpoint, Bucket: t.Bucket, Region: t.Region,
-			Prefix: t.Prefix, UsePathStyle: t.PathStyle, Logger: s.logger})
+			Prefix: t.Prefix, UsePathStyle: t.PathStyle, Logger: s.logger, CAPEM: caPEM})
 	case "file":
 		return storage.NewLocalStorage(t.Path)
 	}
