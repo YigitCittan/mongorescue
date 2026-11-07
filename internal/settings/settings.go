@@ -228,6 +228,16 @@ type Security struct {
 	// jobs: every copy target of the job must have S3 Object Lock. Turning it off is
 	// a lowered protection, delayed like the grace period (see protection.go).
 	RequireLockedCopies bool `json:"require_locked_copies"`
+	// RequireHTTPSEndpoints refuses storage targets with an http:// S3 endpoint
+	// when they are saved and every request over plain http at use time; existing
+	// http targets are reported as a warning (WarningInsecureStorageEndpoints).
+	RequireHTTPSEndpoints bool `json:"require_https_endpoints"`
+	// OutboundDenyPrivate refuses loopback, private (RFC 1918), CGNAT and unique
+	// local destinations of notifications, the heartbeat and audit forwarders,
+	// OIDC and S3 storage, on top of the always-refused link-local and metadata
+	// addresses. Off by default: on-premises S3 and self-hosted receivers are
+	// common.
+	OutboundDenyPrivate bool `json:"outbound_deny_private"`
 	// APIKeyMaxLifetimeDays caps the lifetime of API keys in days (0, the default,
 	// is unlimited; at most MaxAPIKeyLifetimeDays). While it is set, a new key needs
 	// an expiry within it, and every existing key except the imported one that has
@@ -473,6 +483,8 @@ type SecurityPatch struct {
 	DeleteGraceDays           *int          `json:"delete_grace_days,omitempty"`
 	RequireSecondApprover     *bool         `json:"require_second_approver,omitempty"`
 	RequireLockedCopies       *bool         `json:"require_locked_copies,omitempty"`
+	RequireHTTPSEndpoints     *bool         `json:"require_https_endpoints,omitempty"`
+	OutboundDenyPrivate       *bool         `json:"outbound_deny_private,omitempty"`
 	APIKeyMaxLifetimeDays     *int          `json:"api_key_max_lifetime_days,omitempty"`
 	APIKeyExpiryWarningDays   *int          `json:"api_key_expiry_warning_days,omitempty"`
 	APIRateLimitPerMinute     *int          `json:"api_rate_limit_per_minute,omitempty"`
@@ -528,6 +540,8 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.DeleteGraceDays, sec.DeleteGraceDays)
 		setIf(&next.Security.RequireSecondApprover, sec.RequireSecondApprover)
 		setIf(&next.Security.RequireLockedCopies, sec.RequireLockedCopies)
+		setIf(&next.Security.RequireHTTPSEndpoints, sec.RequireHTTPSEndpoints)
+		setIf(&next.Security.OutboundDenyPrivate, sec.OutboundDenyPrivate)
 		setIf(&next.Security.APIKeyMaxLifetimeDays, sec.APIKeyMaxLifetimeDays)
 		setIf(&next.Security.APIKeyExpiryWarningDays, sec.APIKeyExpiryWarningDays)
 		setIf(&next.Security.APIRateLimitPerMinute, sec.APIRateLimitPerMinute)

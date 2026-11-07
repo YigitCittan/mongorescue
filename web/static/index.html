@@ -1331,6 +1331,20 @@
                 <span class="form-hint" data-i18n="settings.mcp_enabled_hint">Serve the Model Context Protocol at /mcp so assistants such as Claude, Copilot or Cursor can use MongoRescue with an API key. Browser sessions are never accepted there.</span>
               </span>
             </label>
+            <label class="check" for="set-require-https-endpoints">
+              <input type="checkbox" id="set-require-https-endpoints">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.require_https_endpoints">Require https for S3 endpoints</span>
+                <span class="form-hint" data-i18n="settings.require_https_endpoints_hint">Refuse storage targets with an http:// endpoint when they are saved, and every request over plain http at use time. Targets that already use http are listed in a warning and fail until their endpoint is changed.</span>
+              </span>
+            </label>
+            <label class="check" for="set-outbound-deny-private">
+              <input type="checkbox" id="set-outbound-deny-private">
+              <span class="check-text">
+                <span class="check-title" data-i18n="settings.outbound_deny_private">Deny private network destinations</span>
+                <span class="form-hint" data-i18n="settings.outbound_deny_private_hint">Refuse loopback, private (RFC 1918), CGNAT and unique-local addresses for notifications, heartbeats, the audit forwarder, SSO and S3. Link-local and cloud metadata addresses are always refused. Leave off if your S3, webhooks or SSO live on a private network.</span>
+              </span>
+            </label>
             <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="set-api-key-max-lifetime" data-i18n="apikeys.max_lifetime">Maximum API key lifetime (days)</label>
@@ -2484,6 +2498,12 @@
               <span class="form-hint" id="storage-part-size-hint" role="status" aria-live="polite"></span>
             </div>
             <div class="form-group">
+              <label class="form-label" for="storage-ca-pem" data-i18n="storage.ca_pem_label">CA certificate (PEM)</label>
+              <textarea id="storage-ca-pem" class="form-input mono" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" aria-describedby="storage-ca-pem-hint"></textarea>
+              <label class="form-hint tls-file"><span data-i18n="storage.ca_pem_load">Load from file</span> <input type="file" accept=".pem,.crt,.cer,.ca-bundle" id="storage-ca-pem-file"></label>
+              <span class="form-hint" id="storage-ca-pem-hint" data-i18n="storage.ca_pem_hint">Optional. The certificate authority that signed the endpoint's certificate, for an S3 service behind a private CA such as MinIO. It applies to this target only, in addition to the system roots.</span>
+            </div>
+            <div class="form-group">
               <label class="form-label" for="storage-object-lock" data-i18n="objectlock.label">Object Lock (immutable backups)</label>
               <select id="storage-object-lock" class="form-input" aria-describedby="storage-object-lock-hint">
                 <option value="none" data-i18n="objectlock.mode_none">None</option>
@@ -3450,6 +3470,7 @@
   <script src="/vault.js"></script>
   <script src="/apikeys.js"></script>
   <script src="/ratelimit.js"></script>
+  <script src="/outbound.js"></script>
   <script src="/runtimewarnings.js"></script>
   <script src="/ha.js"></script>
   <script src="/widgets.js"></script>

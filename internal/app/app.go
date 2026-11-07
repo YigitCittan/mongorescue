@@ -307,6 +307,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
+	applyOutboundPolicy(settingsSvc)
 	// Credentials of connections and S3 targets read from Vault (MONGORESCUE_VAULT_ADDR)
 	// are resolved when they are used; a start with such connections or targets but
 	// no Vault configured is refused.
@@ -329,7 +330,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	// Every driver reads the live upload stall timeout at the start of each upload.
 	storageFactory := storage.TargetFactoryWith(func() time.Duration { return settingsSvc.Current().General.StorageStallTimeout.Std() }, vaultS3)
 	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger),
-		targets.WithVault(vaultResolver.Configured()))
+		targets.WithVault(vaultResolver.Configured()),
+		targets.WithRequireHTTPS(func() bool { return settingsSvc.Current().Security.RequireHTTPSEndpoints }))
 	prober := mongoconn.New()
 	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger), connections.WithCredentials(vaultResolver))
 	importedKeySecret, err := secretbox.DeriveSubkey(key.Key, auth.ImportedKeySubkeyPurpose)

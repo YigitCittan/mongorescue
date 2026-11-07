@@ -71,6 +71,40 @@ func TestDefaultsAndMaskedJSON(t *testing.T) {
 	}
 }
 
+func TestOutboundPolicySettingsDefaultOffAndApplyLive(t *testing.T) {
+	repo := &memRepo{}
+	svc := newSvc(t, repo)
+	if sec := svc.Current().Security; sec.RequireHTTPSEndpoints || sec.OutboundDenyPrivate {
+		t.Fatalf("outbound policy defaults = %+v; both must be off (on-premises S3 is common)", sec)
+	}
+	var changed []string
+	svc.OnChange(func(keys []string) { changed = append(changed, keys...) })
+	got, err := svc.Update(context.Background(), Patch{Security: &SecurityPatch{RequireHTTPSEndpoints: ptr(true), OutboundDenyPrivate: ptr(true)}})
+	if err != nil || !got.Security.RequireHTTPSEndpoints || !got.Security.OutboundDenyPrivate {
+		t.Fatalf("Update = %+v, %v", got.Security, err)
+	}
+	if repo.values[KeyRequireHTTPSEndpoints] != "true" || repo.values[KeyOutboundDenyPrivate] != "true" {
+		t.Fatalf("stored = %v", repo.values)
+	}
+	if !slices.Contains(changed, KeyOutboundDenyPrivate) || !slices.Contains(changed, KeyRequireHTTPSEndpoints) {
+		t.Fatalf("change hooks saw %v", changed)
+	}
+	if IsSecret(KeyRequireHTTPSEndpoints) || IsSecret(KeyOutboundDenyPrivate) {
+		t.Fatal("outbound policy settings are not secret")
+	}
+	if !newSvc(t, repo).Current().Security.OutboundDenyPrivate {
+		t.Fatal("stored setting not loaded")
+	}
+}
+
+func TestInsecureStorageEndpointsWarning(t *testing.T) {
+	w := InsecureStorageEndpoints([]string{"minio", "lab"})
+	if w.ID != WarningInsecureStorageEndpoints || w.Setting != "storage" || len(w.Targets) != 2 ||
+		!strings.Contains(w.Message, "minio, lab") || !strings.Contains(w.Message, "security.require_https_endpoints") {
+		t.Fatalf("warning = %+v", w)
+	}
+}
+
 func TestUpdateValidatesPersistsAndAppliesLive(t *testing.T) {
 	repo := &memRepo{}
 	svc := newSvc(t, repo)
@@ -347,7 +381,7 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyHeartbeatURL) || IsSecret(KeyHeartbeatInterval) {
 		t.Fatal("monitoring secret classification is wrong")
 	}
-	if len(Keys()) != 67 || IsSecret(KeyRestoreNumParallelCollections) || IsSecret(KeyRestoreInsertionWorkers) || IsSecret(KeyAPIRateLimitPerMinute) || IsSecret(KeyAPIWorkRateLimitBurst) || IsSecret(KeyAPIKeyMaxLifetimeDays) || IsSecret(KeyAPIKeyExpiryWarningDays) || IsSecret(KeyRequireLockedCopies) || IsSecret(KeyStorageStallTimeout) || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if len(Keys()) != 69 || IsSecret(KeyRestoreNumParallelCollections) || IsSecret(KeyRestoreInsertionWorkers) || IsSecret(KeyAPIRateLimitPerMinute) || IsSecret(KeyAPIWorkRateLimitBurst) || IsSecret(KeyAPIKeyMaxLifetimeDays) || IsSecret(KeyAPIKeyExpiryWarningDays) || IsSecret(KeyRequireLockedCopies) || IsSecret(KeyStorageStallTimeout) || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
 	}
 }

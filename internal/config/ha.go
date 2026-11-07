@@ -25,6 +25,11 @@ const (
 	EnvHATarget = "MONGORESCUE_HA_TARGET"
 	// EnvHACluster is the cluster name (default "default").
 	EnvHACluster = "MONGORESCUE_HA_CLUSTER"
+	// EnvHACAFile is the path of a PEM file of certificate authorities trusted for
+	// the endpoint of an s3:// EnvHATarget, in addition to the system roots (a
+	// MinIO behind a private CA). It is the bootstrap counterpart of a storage
+	// target's ca_pem and has no effect on other kinds of targets.
+	EnvHACAFile = "MONGORESCUE_HA_CA_FILE"
 	// EnvHALeaseTTL is how long the lease lives without renewal (default 30s).
 	EnvHALeaseTTL = "MONGORESCUE_HA_LEASE_TTL"
 	// EnvHARenewInterval is how often the lease is renewed or read (default 10s).
@@ -64,6 +69,8 @@ type HAConfig struct {
 	Target string
 	// Cluster is the cluster name (see ha.ValidateCluster).
 	Cluster string
+	// CAFile is the PEM file of EnvHACAFile ("" for the system roots only).
+	CAFile string
 	// LeaseTTL and RenewInterval time the lease (see ha.ValidateTiming).
 	LeaseTTL      time.Duration
 	RenewInterval time.Duration
@@ -87,6 +94,9 @@ func haFromEnv(h *HAConfig, getenv func(string) string) error {
 	}
 	if v := strings.TrimSpace(getenv(EnvHATarget)); v != "" {
 		h.Target = v
+	}
+	if v := strings.TrimSpace(getenv(EnvHACAFile)); v != "" {
+		h.CAFile = v
 	}
 	if v := strings.TrimSpace(getenv(EnvHACluster)); v != "" {
 		h.Cluster = v
