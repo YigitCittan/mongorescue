@@ -98,7 +98,7 @@ The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only 
 On every push and pull request (`.github/workflows/ci.yml`):
 
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
-- **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum) and the release toolchain from `.go-version`; coverage gate and report upload on Ubuntu.
+- **Test**: unit tests with `-race` on `ubuntu-latest`, `macos-latest` and `windows-latest` with Go 1.26.x (the `go.mod` minimum) and the release toolchain from `.go-version`; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
 - **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets and the fault-injection suite, and weekly the load test; see [docs/testing.md](docs/testing.md).
 - **E2E (Playwright)**: the browser suite in `e2e/` against MongoDB 7 and MinIO; the report and traces are uploaded when it fails.
