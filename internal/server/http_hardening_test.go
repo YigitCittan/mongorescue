@@ -98,10 +98,11 @@ func TestNewHTTPServerIdleTimeout(t *testing.T) {
 
 // TestHSTS checks Strict-Transport-Security: only over TLS (directly or through a
 // trusted proxy reporting https), never on plain HTTP even with secure_cookies=always,
-// and not at all with security.hsts_max_age 0.
+// and not at all with security.hsts_max_age 0, the default.
 func TestHSTS(t *testing.T) {
 	const day = "max-age=31536000"
-	proxy := func(c *testConfig) { c.Security.TrustedProxies = []string{"192.0.2.0/24"} }
+	on := func(c *testConfig) { c.Security.HSTSMaxAge = settings.RecommendedHSTSMaxAge }
+	proxy := func(c *testConfig) { on(c); c.Security.TrustedProxies = []string{"192.0.2.0/24"} }
 	for _, tc := range []struct {
 		name    string
 		mutate  func(*testConfig)
@@ -109,12 +110,13 @@ func TestHSTS(t *testing.T) {
 		headers map[string]string
 		want    string
 	}{
-		{"plain http", nil, false, nil, ""},
-		{"direct tls", nil, true, nil, day},
+		{"default off", nil, true, nil, ""},
+		{"plain http", on, false, nil, ""},
+		{"direct tls", on, true, nil, day},
 		{"trusted proxy https", proxy, false, map[string]string{"X-Forwarded-Proto": "https"}, day},
 		{"trusted proxy http", proxy, false, map[string]string{"X-Forwarded-Proto": "http"}, ""},
-		{"untrusted https header", nil, false, map[string]string{"X-Forwarded-Proto": "https"}, ""},
-		{"secure cookies always on http", func(c *testConfig) { c.Security.SecureCookies = settings.CookiesAlways }, false, nil, ""},
+		{"untrusted https header", on, false, map[string]string{"X-Forwarded-Proto": "https"}, ""},
+		{"secure cookies always on http", func(c *testConfig) { on(c); c.Security.SecureCookies = settings.CookiesAlways }, false, nil, ""},
 		{"disabled", func(c *testConfig) { c.Security.HSTSMaxAge = 0 }, true, nil, ""},
 		{"custom age", func(c *testConfig) { c.Security.HSTSMaxAge = 600 }, true, nil, "max-age=600"},
 	} {

@@ -5098,7 +5098,7 @@ function fillSecurity(sec) {
   document.getElementById("set-trust-proxy").checked = !!sec.trust_proxy_headers;
   setValue("set-cors-origins", (sec.cors_origins || []).join("\n"));
   setValue("set-trusted-proxies", (sec.trusted_proxies || []).join("\n"));
-  setValue("set-hsts-max-age", String(Number.isInteger(sec.hsts_max_age) && sec.hsts_max_age >= 0 ? sec.hsts_max_age : 31536000));
+  setValue("set-hsts-max-age", String(Number.isInteger(sec.hsts_max_age) && sec.hsts_max_age >= 0 ? sec.hsts_max_age : 0));
   document.getElementById("set-metrics-public").checked = !!sec.metrics_public;
   document.getElementById("set-mcp-enabled").checked = sec.mcp_enabled !== false;
   // Delete grace period, two-person rule and pending changes (protection.js).
