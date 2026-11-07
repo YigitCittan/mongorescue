@@ -35,6 +35,7 @@ tests:
             exp_annotations:
               summary: "MongoRescue on mr:8080 is down"
               description: "Prometheus has not been able to scrape MongoRescue on mr:8080 for 5 minutes. No backups run while it is down."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuedown"
 
   - name: scheduler stale
     interval: 1m
@@ -59,6 +60,7 @@ tests:
             exp_annotations:
               summary: "The MongoRescue scheduler on mr:8080 is stale"
               description: "The scheduler has not ticked for 5m 0s. Scheduled backups do not start; restart MongoRescue."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueschedulerstale"
 
   - name: backup failures
     interval: 1m
@@ -89,6 +91,7 @@ tests:
             exp_annotations:
               summary: "A backup of MongoRescue job nightly failed"
               description: "Job nightly on mr:8080 had a failed backup or run in the last hour. See its run log in the dashboard."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupfailed"
           - exp_labels:
               severity: warning
               job: multi
@@ -96,6 +99,7 @@ tests:
             exp_annotations:
               summary: "A backup of MongoRescue job multi failed"
               description: "Job multi on honor:8080 had a failed backup or run in the last hour. See its run log in the dashboard."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupfailed"
 
   - name: rpo missed
     interval: 1m
@@ -120,6 +124,7 @@ tests:
             exp_annotations:
               summary: "Job nightly: shop is past its recovery point objective"
               description: "The newest successful backup of shop (job nightly on mr:8080) is older than the job's recovery point objective."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuerpomissed"
 
   - name: integrity sweep failures
     interval: 1m
@@ -143,6 +148,7 @@ tests:
             exp_annotations:
               summary: "A MongoRescue archive verification failed (sweep: mismatch)"
               description: "A sweep verification on mr:8080 found an archive that does not match its checksum or cannot be read. Check the integrity page of the dashboard."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueverificationfailed"
 
   - name: missing archives
     interval: 1m
@@ -166,6 +172,7 @@ tests:
             exp_annotations:
               summary: "2 backup archives are missing from storage target s3-prod"
               description: "The last storage scan of target s3-prod on mr:8080 did not find the archives of 2 backup records."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuearchivesmissing"
 
   - name: restore test failures
     interval: 1m
@@ -194,6 +201,7 @@ tests:
             exp_annotations:
               summary: "A restore test of MongoRescue job nightly failed (error)"
               description: "An automated restore test of job nightly on mr:8080 ended with error in the last 24 hours."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuerestoretestfailed"
           - exp_labels:
               severity: warning
               job: backup
@@ -203,6 +211,7 @@ tests:
             exp_annotations:
               summary: "A restore test of MongoRescue job weekly failed (mismatch)"
               description: "An automated restore test of job weekly on mr:8080 ended with mismatch in the last 24 hours."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuerestoretestfailed"
 
   - name: metadata backup failures
     interval: 1m
@@ -226,6 +235,7 @@ tests:
             exp_annotations:
               summary: "A MongoRescue metadata backup failed on mr:8080"
               description: "A scheduled snapshot of the metadata database (jobs, backup records, users, settings) could not be written to its storage target in the last 24 hours."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuemetadatabackupfailed"
 
   - name: settings warnings
     interval: 1m
@@ -246,6 +256,7 @@ tests:
             exp_annotations:
               summary: "MongoRescue on mr:8080 has 1 active settings warnings"
               description: "Open the dashboard: the warning banner names the setting that resolves each warning."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuesettingswarning"
 
   - name: HA cluster without an active instance
     interval: 1m
@@ -273,6 +284,7 @@ tests:
             exp_annotations:
               summary: "No active instance in MongoRescue HA cluster prod"
               description: "No member of HA cluster prod holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehanoactiveinstance"
       - eval_time: 11m
         alertname: MongoRescueHANoActiveInstance
         exp_alerts: []
@@ -297,6 +309,7 @@ tests:
             exp_annotations:
               summary: "A takeover failed in MongoRescue HA cluster prod on b:8080"
               description: "The standby b:8080 acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/prod/ on the HA target and the standby's logs."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehatakeoverfailed"
       - eval_time: 25m
         alertname: MongoRescueHATakeoverFailed
         exp_alerts: []
@@ -321,6 +334,7 @@ tests:
             exp_annotations:
               summary: "MongoRescue HA cluster prod started from empty state on b:8080"
               description: "b:8080 found no lease and no metadata snapshot for HA cluster prod and became active with its own database. If this was not a new cluster, check the HA target (were its objects deleted?) and run a storage scan of every storage target to re-import the archives."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehastartedfromemptystate"
       - eval_time: 25m
         alertname: MongoRescueHAStartedFromEmptyState
         exp_alerts: []
@@ -346,6 +360,7 @@ tests:
             exp_annotations:
               summary: "A takeover was refused as a suspected rollback in MongoRescue HA cluster prod on b:8080"
               description: "b:8080 refused to take over HA cluster prod (snapshot_behind_lease): restoring the snapshots left on the HA target could roll the metadata back. Check who can write to the HA target and what the log says, then run mongorescue ha force-takeover on the instance that should become active."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueharollbacksuspected"
       - eval_time: 25m
         alertname: MongoRescueHARollbackSuspected
         exp_alerts: []
@@ -373,6 +388,7 @@ tests:
             exp_annotations:
               summary: "A metadata snapshot was refused in MongoRescue HA cluster prod on b:8080"
               description: "b:8080 refused a metadata snapshot under _mongorescue/metadata/ha/prod/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehasnapshotrejected"
       - eval_time: 25m
         alertname: MongoRescueHASnapshotRejected
         exp_alerts:
@@ -384,6 +400,7 @@ tests:
             exp_annotations:
               summary: "A metadata snapshot was refused in MongoRescue HA cluster prod on b:8080"
               description: "b:8080 refused a metadata snapshot under _mongorescue/metadata/ha/prod/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehasnapshotrejected"
       - eval_time: 50m
         alertname: MongoRescueHASnapshotRejected
         exp_alerts: []
@@ -410,6 +427,7 @@ tests:
             exp_annotations:
               summary: "The PITR collector of stream s1 is down"
               description: "The oplog collector of PITR stream s1 on mr:8080 has stored no chunk for 10 minutes. Check the stream's collector error in the dashboard (connection, storage target, permissions)."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrcollectordown"
 
   - name: PITR lag high
     interval: 1m
@@ -433,6 +451,7 @@ tests:
             exp_annotations:
               summary: "PITR stream s1 is 16m 40s behind"
               description: "The collector of PITR stream s1 on mr:8080 has been more than 15 minutes behind the replica set for 10 minutes. Point-in-time restores cannot reach the newest writes; check the storage target's speed and the write load."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrlaghigh"
 
   - name: PITR oplog headroom low
     interval: 1m
@@ -467,6 +486,7 @@ tests:
             exp_annotations:
               summary: "PITR stream floor has 2h 46m 40s of oplog headroom left"
               description: "The oplog of the replica set behind PITR stream floor (mr:8080) holds only 2h 46m 40s of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitroplogheadroomlow"
           - exp_labels:
               severity: critical
               job: backup
@@ -475,6 +495,7 @@ tests:
             exp_annotations:
               summary: "PITR stream lagging has 8h 20m 0s of oplog headroom left"
               description: "The oplog of the replica set behind PITR stream lagging (mr:8080) holds only 8h 20m 0s of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitroplogheadroomlow"
 
   - name: PITR chain broken
     interval: 1m
@@ -501,6 +522,7 @@ tests:
             exp_annotations:
               summary: "The PITR chain of stream s1 broke (gap)"
               description: "The oplog chain of PITR stream s1 on mr:8080 ended (gap) in the last hour. Restores cannot cross the gap; a new base backup starts the next window."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrchainbroken"
           - exp_labels:
               severity: critical
               job: backup
@@ -510,6 +532,7 @@ tests:
             exp_annotations:
               summary: "The PITR chain of stream s2 broke (diverged)"
               description: "The oplog chain of PITR stream s2 on mr:8080 ended (diverged) in the last hour. Restores cannot cross the gap; a new base backup starts the next window."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrchainbroken"
       - eval_time: 95m
         alertname: MongoRescuePITRChainBroken
         exp_alerts: []
@@ -536,6 +559,7 @@ tests:
             exp_annotations:
               summary: "PITR stream s1 failed 10 chunks in the last hour"
               description: "The collector of PITR stream s1 on mr:8080 could not store several oplog chunks in the last hour (storage target or encryption errors). Nothing was kept for them; they are read again."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrchunkerrors"
 
   - name: PITR stale
     interval: 1m
@@ -565,6 +589,7 @@ tests:
             exp_annotations:
               summary: "PITR stream s1 stored no chunk for 1h 23m 20s"
               description: "The newest chunk of PITR stream s1 on mr:8080 ends 1h 23m 20s ago while the replica set keeps writing."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrstale"
 
   - name: backup copy failures
     interval: 1m
@@ -589,6 +614,7 @@ tests:
             exp_annotations:
               summary: "A backup copy failed on mr:8080"
               description: "1 attempts to copy a backup to its copy target failed in the last hour. Failed copies are retried; check the copy target and the backup's copy status."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopyfailed"
       - eval_time: 10m
         alertname: MongoRescueBackupCopyMismatch
         exp_alerts:
@@ -600,6 +626,7 @@ tests:
             exp_annotations:
               summary: "A backup copy does not match its primary on mr:8080"
               description: "A copy stored on a copy target did not match the checksum of the primary archive in the last hour. The 3-2-1 guarantee does not hold for that backup; check the copy target."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopymismatch"
 
   - name: backup copy queue growing
     interval: 1m
@@ -624,6 +651,7 @@ tests:
             exp_annotations:
               summary: "The backup copy queue on mr:8080 has not been empty for 4 hours"
               description: "At least 3 backup copies waited in the queue at every moment of the last 4 hours. The copy target may be slow or unreachable, or backups outpace the copy bandwidth."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopyqueuegrowing"
 
   - name: notification failures and losses
     interval: 1m
@@ -655,6 +683,7 @@ tests:
             exp_annotations:
               summary: "100% of slack notifications failed"
               description: "Notification deliveries through slack on mr:8080 are failing (given up after retries) in the last hour. Alerts may not reach you; test the channel in the dashboard."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuenotificationfailures"
       - eval_time: 10m
         alertname: MongoRescueNotificationsLost
         exp_alerts:
@@ -667,6 +696,7 @@ tests:
             exp_annotations:
               summary: "webhook notifications were dropped"
               description: "4 webhook notifications on mr:8080 were dropped in the last 15 minutes and never delivered. The channel is slower than the event rate or unreachable."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuenotificationslost"
 
   - name: dropped events and heartbeats
     interval: 1m
@@ -690,6 +720,7 @@ tests:
             exp_annotations:
               summary: "MongoRescue on mr:8080 dropped events"
               description: "5 events were dropped in the last 15 minutes because the event queue was full or stopped. Their notifications and metrics are missing."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueeventsdropped"
       - eval_time: 10m
         alertname: MongoRescueHeartbeatsDropped
         exp_alerts:
@@ -700,6 +731,7 @@ tests:
             exp_annotations:
               summary: "MongoRescue on mr:8080 dropped heartbeat pings"
               description: "2 job heartbeat pings were dropped in the last 15 minutes. The dead-man's-switch service may report a healthy job as missing; check its URL and latency."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueheartbeatsdropped"
       - eval_time: 40m
         alertname: MongoRescueEventsDropped
         exp_alerts: []
@@ -724,6 +756,7 @@ tests:
             exp_annotations:
               summary: "The audit log on mr:8080 could not store entries"
               description: "3 audit log entries could not be stored in the last 15 minutes (metadata database full, read-only or locked). Check free disk space and the log."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueauditwritefailed"
       - eval_time: 3m
         alertname: MongoRescueAuditForwardFailed
         exp_alerts: []
@@ -738,6 +771,7 @@ tests:
             exp_annotations:
               summary: "Audit log forwarding failed on mr:8080"
               description: "4 audit entries could not be forwarded to the audit webhook (failed) in the last 15 minutes. The local log is intact; check the webhook."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueauditforwardfailed"
 
   - name: key wrap errors
     interval: 1m
@@ -759,6 +793,7 @@ tests:
             exp_annotations:
               summary: "KMS unwrap calls to aws-kms fail"
               description: "2 unwrap calls to aws-kms failed in the last 15 minutes on mr:8080. MongoRescue cannot restart without unwrapping secret.key; check the KMS permissions and reachability."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuekeywraperrors"
 
   - name: API keys expired and expiring
     interval: 1m
@@ -785,6 +820,7 @@ tests:
             exp_annotations:
               summary: "2 MongoRescue API keys on mr:8080 have expired"
               description: "Expired API keys are refused. Rotate the keys of the scripts that use them and revoke the expired ones."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpired"
       - eval_time: 30m
         alertname: MongoRescueAPIKeysExpiring
         exp_alerts: []
@@ -798,6 +834,7 @@ tests:
             exp_annotations:
               summary: "1 MongoRescue API keys on mr:8080 expire soon"
               description: "Create replacements and update the scripts, CI jobs and MCP clients that use these keys before they are refused."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpiring"
 
   - name: disk filling up
     interval: 1m
@@ -824,6 +861,7 @@ tests:
             exp_annotations:
               summary: "The data directory on mr:8080 fills up within 24 hours"
               description: "At the rate of the last 6 hours, the filesystem will have no free space in 24 hours (data directory). Free space, shorten retention or add capacity."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuediskfillingup"
           - exp_labels:
               severity: warning
               job: backup
@@ -832,6 +870,7 @@ tests:
             exp_annotations:
               summary: "Storage target stg_fill on mr:8080 fills up within 24 hours"
               description: "At the rate of the last 6 hours, the filesystem will have no free space in 24 hours (local storage target stg_fill). Free space, shorten retention or add capacity."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuediskfillingup"
 
   - name: standby instances fire no subsystem alert
     interval: 1m

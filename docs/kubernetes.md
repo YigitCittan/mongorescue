@@ -136,7 +136,35 @@ prometheusRule:
     release: kube-prometheus-stack
 ```
 
-The PrometheusRule holds the rules of [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) unchanged (the chart carries a copy in `files/alerts.yml`, and CI checks the two are equal); see [monitoring.md](monitoring.md#prometheus-alert-rules). Pair them with an external [heartbeat](monitoring.md#global-heartbeat): Prometheus in the same cluster fails with it.
+The PrometheusRule holds the rules of [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) unchanged (the chart carries a copy in `files/alerts.yml`, and CI checks the two are equal); see [monitoring.md](monitoring.md#prometheus-alert-rules); every rule links to its [incident runbook](runbooks.md). Pair them with an external [heartbeat](monitoring.md#global-heartbeat): Prometheus in the same cluster fails with it.
+
+The [Grafana dashboard](monitoring.md#grafana-dashboard) can ship as a ConfigMap for the Grafana sidecar (kube-prometheus-stack or the Grafana chart), which imports every ConfigMap that carries its label:
+
+```yaml
+grafana:
+  dashboard:
+    enabled: true
+    labels:
+      grafana_dashboard: "1"           # the sidecar's sidecar.dashboards.label
+    annotations:
+      grafana_folder: MongoRescue      # optional: the folder (sidecar.dashboards.folderAnnotation)
+```
+
+The ConfigMap is `<release>-mongorescue-grafana-dashboard` in the release namespace; the sidecar must watch that namespace (`sidecar.dashboards.searchNamespace`). The chart carries a copy of `deploy/grafana/mongorescue.json` in `files/grafana-dashboard.json`, and CI checks the two are equal.
+
+### Memory limit and GOMEMLIMIT
+
+`resources.limits.memory` bounds `mongodump` and `mongorestore` as well as MongoRescue itself, and an OOMKill shows up as a failed backup: size it with the [sizing guide](production.md#sizing). `config.goMemLimitRatio` (default `0`, off) makes the chart set the Go runtime's soft memory limit `GOMEMLIMIT` to that share of the memory limit, computed in the template (Kubernetes cannot derive a fraction of a limit through the downward API):
+
+```yaml
+resources:
+  limits:
+    memory: 2Gi
+config:
+  goMemLimitRatio: 0.7     # GOMEMLIMIT=1503238553
+```
+
+A ratio needs `resources.limits.memory` (the render fails without it) and stays between 0 and 1; a `GOMEMLIMIT` in `extraEnv` wins.
 
 ## Network policy
 
@@ -191,6 +219,8 @@ ingress:
 | `config.logLevel` | `-log-level` | `info` |
 | `config.shutdownGrace` | `MONGORESCUE_SHUTDOWN_GRACE` | `terminationGracePeriodSeconds` − 60 s |
 | `config.toolsDir` | `MONGORESCUE_TOOLS_DIR` | the tools in the image |
+| `config.goMemLimitRatio` | `GOMEMLIMIT`, a share of `resources.limits.memory` ([memory limit](#memory-limit-and-gomemlimit)) | `0` (off) |
+| `grafana.dashboard.*` | A ConfigMap with the [Grafana dashboard](monitoring.md#grafana-dashboard) for the Grafana sidecar | off |
 | `secretKey.*` | `MONGORESCUE_SECRET_KEY` | a generated Secret |
 | `keyWrap` | `MONGORESCUE_KEY_WRAP` ([key wrapping](#key-wrapping-with-workload-identity)) | off |
 | `ha.*` | `MONGORESCUE_HA_*` ([high availability](#high-availability)) | off |

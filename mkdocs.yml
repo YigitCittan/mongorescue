@@ -106,6 +106,7 @@ nav:
       - Prometheus Metrics: metrics.md
       - Audit Logging: audit.md
       - Single Sign-On (SSO): sso.md
+      - Incident Runbooks: runbooks.md
       - Troubleshooting: troubleshooting.md
   - Architecture & Design:
       - Architecture Overview: architecture.md

@@ -5,6 +5,7 @@ config:
   logLevel: debug
   shutdownGrace: 9m
   toolsDir: /opt/mongotools/bin
+  goMemLimitRatio: 0.7
 secretKey:
   existingSecret: mongorescue-key
 ha:
@@ -81,6 +82,11 @@ prometheusRule:
   enabled: true
   labels:
     release: kube-prometheus-stack
+grafana:
+  dashboard:
+    enabled: true
+    annotations:
+      grafana_folder: MongoRescue
 extraVolumes:
   - name: mongo-ca
     configMap:

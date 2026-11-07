@@ -105,6 +105,28 @@ rule_files:
 
 `MongoRescueDown` recognises MongoRescue targets by `mongorescue_build_info` instead of a job name, so it needs nothing to edit; an instance that has been down for more than 7 days drops out of it (the external heartbeat keeps alerting), and a target that was never scraped successfully is not covered. Prometheus only notices that MongoRescue is down while Prometheus itself runs; the external heartbeat covers the case where both are on the same failed host.
 
+Every rule carries a `runbook_url` annotation that points at its section of the [incident runbooks](runbooks.md) (`https://yigitcittan.github.io/mongorescue/runbooks/#<alertname in lower case>`): what the alert means, likely causes, the exact commands, API calls and PromQL to diagnose it, the action and when to escalate. Alertmanager passes the annotation to its receivers, so put `{{ .CommonAnnotations.runbook_url }}` (or `{{ range .Alerts }}{{ .Annotations.runbook_url }}{{ end }}`) in your notification templates. If you host the docs yourself, rewrite the base URL when you load the rules (for example with `sed`); a test keeps the shipped URLs and the runbook anchors in step. Suggested SLOs built on the same metrics are in [production.md](production.md#service-level-objectives), and a hand-sized container limit in [production.md](production.md#sizing).
+
+## Grafana dashboard
+
+[`deploy/grafana/mongorescue.json`](../deploy/grafana/mongorescue.json) is a dashboard for Grafana 10 and later over the same metrics. Import it under **Dashboards → New → Import → Upload JSON file** and pick the Prometheus data source that scrapes MongoRescue; it needs nothing else. Variables: **Data source**, **Instance**, **Job** (the MongoRescue job ID), **Database** and **PITR stream**. Its rows:
+
+| Row | Shows |
+| :--- | :--- |
+| Overview | Instances scraped, active HA instances, scheduler tick age, RPO breaches, failed backups, firing MongoRescue alerts, and the RPO compliance, backup success and restore-test success of the selected range (the [SLIs](production.md#service-level-objectives)) |
+| Backups | Backups and job runs by outcome, duration p95, last backup size, throughput, retention deletions, time since the last successful backup per database |
+| Recovery point objectives | Age of the newest backup against each job's objective, and whether it is met |
+| Restores, verification and restore tests | Restores, verifications, restore tests by outcome, time since the last passed restore test |
+| Point-in-time recovery | Lag, oplog headroom, collector state, chunks, chain breaks, recovery window length |
+| Copies (3-2-1) | Copies by result, copy queue depth |
+| Storage and disk | Free space of the data directory and local targets, days of space left, missing and orphan archives, scan and metadata backup age, process memory |
+| High availability | Role, lease epoch and health, lease errors, takeovers, step-downs, refusals and refused snapshots |
+| API rate limits, notifications and keys | `429` responses by caller and budget, MCP calls, bulk items, notifications, dropped events and heartbeats, audit log, API key expiry, KMS errors, settings warnings |
+
+The job and database variables read the `exported_job` label, which Prometheus sets when `honor_labels` is `false` (the default); with `honor_labels: true` replace `exported_job` by `job` in the dashboard's queries. The *Firing MongoRescue alerts* tile needs the shipped rules loaded in the same Prometheus, which exposes them as `ALERTS`.
+
+On Kubernetes the chart can ship it as a ConfigMap for the Grafana sidecar (`grafana.dashboard.enabled`, [kubernetes.md](kubernetes.md#monitoring)). A test checks that every metric the dashboard queries exists in `internal/metrics`, and the chart's copy is checked against the original in CI.
+
 ## Recommended external services
 
 Any service that alerts when an HTTP `GET` ping stops arriving works for the global heartbeat. The job heartbeats need one that understands the `/start` and `/fail` paths:
