@@ -251,6 +251,9 @@ func (s *Server) routePattern(r *http.Request) string {
 		return ""
 	}
 	_, pattern := s.mux.Handler(r)
+	if isAPIFallback(pattern) {
+		return "" // no route: the fallback answers 404 or 405
+	}
 	return pattern
 }
 
