@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/clientip"
@@ -240,7 +241,7 @@ func (s *Server) refuseExpiredKey(w http.ResponseWriter, r *http.Request, patter
 	if isMCP {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="mongorescue", error="invalid_token", error_description="the API key has expired"`)
 	}
-	writeErrorCode(w, http.StatusUnauthorized, codeAPIKeyExpired,
+	writeErrorCode(w, http.StatusUnauthorized, apierr.APIKeyExpired,
 		"unauthorized: the API key expired at "+e.ExpiresAt.UTC().Format(time.RFC3339)+"; create a new key in Settings → API keys")
 }
 

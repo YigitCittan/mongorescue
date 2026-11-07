@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 )
 
@@ -92,16 +93,48 @@ type APIError struct {
 	Code string
 }
 
-// Error codes of the response envelope (APIError.Code).
-const (
-	// CodeAPIKeyExpired is the code of the 401 of an expired API key.
-	CodeAPIKeyExpired = "api_key_expired"
+// Sentinels of codes that name a more precise reason than the status. An *APIError
+// with such a code matches them besides the sentinel of its code's class.
+var (
+	// ErrBusy matches the 409 of an action that is already running (code busy).
+	ErrBusy = errors.New("apiclient: already running")
+	// ErrJobChanged matches the 409 of a job changed or recreated since the caller
+	// looked (code job_changed); reload it and try again.
+	ErrJobChanged = errors.New("apiclient: the job changed")
+	// ErrProtected matches the 409 of a pinned record (code protected).
+	ErrProtected = errors.New("apiclient: protected")
+	// ErrShardedUnsupported matches the 409 of a sharded cluster (code sharded_unsupported).
+	ErrShardedUnsupported = errors.New("apiclient: sharded clusters are not supported")
+	// ErrUnavailable matches the 503 of a service that cannot take the request now
+	// (code unavailable); retry later.
+	ErrUnavailable = errors.New("apiclient: service unavailable")
 )
 
-// Is reports whether the error matches target beyond its status: ErrAPIKeyExpired
-// for the 401 of an expired key.
+// Error codes of the response envelope (APIError.Code); see package apierr for the
+// whole set.
+const (
+	// CodeAPIKeyExpired is the code of the 401 of an expired API key.
+	CodeAPIKeyExpired = apierr.APIKeyExpired
+)
+
+// Is reports whether the error matches target beyond its class: ErrAPIKeyExpired
+// for the 401 of an expired key and the sentinels of the precise codes.
 func (e *APIError) Is(target error) bool {
-	return target == ErrAPIKeyExpired && e.StatusCode == http.StatusUnauthorized && e.Code == CodeAPIKeyExpired
+	switch e.Code {
+	case apierr.APIKeyExpired:
+		return target == ErrAPIKeyExpired && e.StatusCode == http.StatusUnauthorized
+	case apierr.Busy:
+		return target == ErrBusy
+	case apierr.JobChanged:
+		return target == ErrJobChanged
+	case apierr.Protected:
+		return target == ErrProtected
+	case apierr.ShardedUnsupported:
+		return target == ErrShardedUnsupported
+	case apierr.Unavailable:
+		return target == ErrUnavailable
+	}
+	return false
 }
 
 // Error implements error.
@@ -116,8 +149,27 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s: %d %s", e.Method, e.Path, e.StatusCode, msg)
 }
 
-// Unwrap returns the sentinel error of the status.
+// Unwrap returns the sentinel error of the error's class: the one of its code when
+// the code is known (the stable contract), otherwise the one of its HTTP status.
 func (e *APIError) Unwrap() error {
+	if e.StatusCode >= 400 {
+		switch e.Code {
+		case apierr.Unauthorized, apierr.APIKeyExpired:
+			return ErrUnauthorized
+		case apierr.Forbidden, apierr.ApprovalRefused:
+			return ErrForbidden
+		case apierr.NotFound:
+			return ErrNotFound
+		case apierr.Conflict, apierr.Busy, apierr.JobChanged, apierr.Protected, apierr.PreflightFailed, apierr.ShardedUnsupported:
+			return ErrConflict
+		case apierr.RateLimited:
+			return ErrRateLimited
+		case apierr.InternalError, apierr.BadGateway, apierr.Unavailable:
+			return ErrServer
+		case apierr.InvalidRequest, apierr.ValidationFailed, apierr.BodyTooLarge:
+			return ErrBadRequest
+		}
+	}
 	switch {
 	case e.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized

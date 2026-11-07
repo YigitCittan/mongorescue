@@ -16,6 +16,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
@@ -168,28 +169,62 @@ func addTool[In, Out any](s *Server, t *sdk.Tool, h func(ctx context.Context, in
 
 // toolError maps a service error to a message that is safe to show to the model:
 // expected failures keep their (credential-free) message, anything else is logged
-// and reported as an internal error.
+// and reported as an internal error. The message ends with the stable error code of
+// the REST API (apierr), so a model or a client matches the code, not the text.
 func (s *Server) toolError(tool string, err error) error {
-	switch {
-	case errors.Is(err, errInvalidInput),
-		errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrNotFound),
-		errors.Is(err, operations.ErrConnectionRequired), errors.Is(err, operations.ErrUnknownConnection),
-		errors.Is(err, operations.ErrUnknownStorageTarget), errors.Is(err, operations.ErrBusy),
-		errors.Is(err, operations.ErrNotRunning),
-		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
-		errors.Is(err, operations.ErrNotActive), errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
-		errors.Is(err, operations.ErrPreflightFailed), errors.Is(err, operations.ErrPITRNotRestorable),
-		errors.Is(err, operations.ErrPITRUnavailable), errors.Is(err, models.ErrShardedUnsupported),
-		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),
-		errors.Is(err, operations.ErrUnavailable), errors.Is(err, integrity.ErrNotFound),
-		errors.Is(err, integrity.ErrNotVerifiable):
-		return errors.New(err.Error())
-	case errors.Is(err, connections.ErrNotFound):
-		return errors.New("connection not found")
-	default:
-		s.logger.Error("mcp tool failed", slog.String("tool", tool), slog.Any("error", err))
-		return errors.New("internal error")
+	if code, msg, ok := expectedToolError(err); ok {
+		return &ToolError{Code: code, Message: msg}
 	}
+	s.logger.Error("mcp tool failed", slog.String("tool", tool), slog.Any("error", err))
+	return &ToolError{Code: apierr.InternalError, Message: "internal error"}
+}
+
+// ToolError is the error of a failed tool call: a client-safe message and the stable
+// code of the REST API (apierr).
+type ToolError struct {
+	// Code is one of the apierr codes.
+	Code string
+	// Message is the credential-free description.
+	Message string
+}
+
+// Error implements error: the message and its code.
+func (e *ToolError) Error() string { return e.Message + " (code: " + e.Code + ")" }
+
+// expectedToolError classifies the failures a tool reports as they are: their code and
+// message. It reports false for anything else.
+func expectedToolError(err error) (code, msg string, ok bool) {
+	msg = err.Error()
+	switch {
+	case errors.Is(err, models.ErrShardedUnsupported):
+		code = apierr.ShardedUnsupported
+	case errors.Is(err, operations.ErrPreflightFailed):
+		code = apierr.PreflightFailed
+	case errors.Is(err, operations.ErrBusy):
+		code = apierr.Busy
+	case errors.Is(err, operations.ErrNotRunning):
+		code = apierr.Conflict
+	case errors.Is(err, operations.ErrNotFound), errors.Is(err, integrity.ErrNotFound):
+		code = apierr.NotFound
+	case errors.Is(err, connections.ErrNotFound):
+		code, msg = apierr.NotFound, "connection not found"
+	case errors.Is(err, errInvalidInput), errors.Is(err, operations.ErrInvalid),
+		errors.Is(err, operations.ErrConnectionRequired), errors.Is(err, operations.ErrUnknownConnection),
+		errors.Is(err, operations.ErrUnknownStorageTarget), errors.Is(err, connections.ErrInvalid):
+		code = apierr.InvalidRequest
+	case errors.Is(err, operations.ErrKeyRequired), errors.Is(err, operations.ErrPITRNotRestorable),
+		errors.Is(err, integrity.ErrNotVerifiable):
+		code = apierr.ValidationFailed
+	case errors.Is(err, auth.ErrForbidden):
+		code = apierr.Forbidden
+	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
+		errors.Is(err, operations.ErrNotActive), errors.Is(err, operations.ErrPITRUnavailable),
+		errors.Is(err, connections.ErrUnavailable), errors.Is(err, operations.ErrUnavailable):
+		code = apierr.Unavailable
+	default:
+		return "", "", false
+	}
+	return code, msg, true
 }
 
 // Inputs.

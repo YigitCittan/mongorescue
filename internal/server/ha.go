@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
 )
@@ -177,7 +178,7 @@ func (s *Server) writeFenced(w http.ResponseWriter) {
 		}
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(retry))
-	writeError(w, http.StatusServiceUnavailable, operations.ErrNotActive.Error())
+	writeErrorCode(w, http.StatusServiceUnavailable, apierr.Unavailable, operations.ErrNotActive.Error())
 }
 
 // SwitchingHandler answers the requests an active-passive HA member receives while

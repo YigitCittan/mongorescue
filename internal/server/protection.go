@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -70,6 +71,7 @@ func writeApprovalPendingWith(w http.ResponseWriter, err error, body approvalReq
 		Success: true,
 		Data:    body,
 		Message: approvalRequiredMsg + ": " + pending.Approval.Summary,
+		Code:    apierr.ApprovalRequired,
 	})
 	return true
 }

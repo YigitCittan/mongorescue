@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -447,15 +448,9 @@ type apiResponse struct {
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 	// Code is a stable, machine-readable reason of some refusals (such as
-	// codeAPIKeyExpired or codeRateLimited); clients match it instead of the English error text.
+	// apierr.APIKeyExpired or apierr.RateLimited); clients match it instead of the English error text.
 	Code string `json:"code,omitempty"`
 }
-
-// Error codes of refusals (apiResponse.Code).
-const (
-	// codeAPIKeyExpired is the 401 of an API key past its expiry.
-	codeAPIKeyExpired = "api_key_expired"
-)
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -466,27 +461,31 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	})
 }
 
+// writeError writes an error response with the default code of its status.
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeErrorData(w, status, message, nil)
+	writeEnvelopeError(w, status, "", message, nil)
 }
 
-// writeErrorCode writes an error response with a machine-readable code.
+// writeErrorCode writes an error response with a machine-readable code (apierr).
 func writeErrorCode(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(apiResponse{Success: false, Error: message, Code: code})
+	writeEnvelopeError(w, status, code, message, nil)
 }
 
 // writeErrorData writes an error response that also carries data (e.g. the checks of
-// a preflight that refused a restore).
+// a preflight that refused a restore), with the default code of its status.
 func writeErrorData(w http.ResponseWriter, status int, message string, data any) {
+	writeEnvelopeError(w, status, "", message, data)
+}
+
+// writeEnvelopeError is the one writer of error responses: an empty code becomes the
+// default of the status (apierr.ForStatus), so every error carries a code.
+func writeEnvelopeError(w http.ResponseWriter, status int, code, message string, data any) {
+	if code == "" {
+		code = apierr.ForStatus(status)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(apiResponse{
-		Success: false,
-		Data:    data,
-		Error:   message,
-	})
+	_ = json.NewEncoder(w).Encode(apiResponse{Success: false, Data: data, Error: message, Code: code})
 }
 
 // Handlers
@@ -734,7 +733,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, operations.ErrJobChanged):
-		writeError(w, http.StatusConflict, err.Error())
+		writeErrorCode(w, http.StatusConflict, apierr.JobChanged, err.Error())
 	case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrNoDefault), errors.Is(err, targets.ErrInvalid):
 		s.writeTargetError(w, err)
 	case errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrMaskedURI),
@@ -830,7 +829,7 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	// A refusing preflight answers 409 with its checks, so clients can show them.
 	var preflight *operations.PreflightError
 	if errors.As(err, &preflight) {
-		writeErrorData(w, http.StatusConflict, err.Error(), preflight.Result)
+		writeEnvelopeError(w, http.StatusConflict, apierr.PreflightFailed, err.Error(), preflight.Result)
 		return
 	}
 	// A run refused for space (503) may be retried once the guard looks again.
@@ -843,46 +842,47 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	}
 	switch {
 	// Retry errors come first: they also wrap the connection and target sentinels.
-	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm), errors.Is(err, operations.ErrPinned),
+	case errors.Is(err, models.ErrShardedUnsupported):
+		writeErrorCode(w, http.StatusConflict, apierr.ShardedUnsupported, err.Error())
+	case errors.Is(err, operations.ErrPinned):
+		writeErrorCode(w, http.StatusConflict, apierr.Protected, err.Error())
+	case errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrBusy):
+		writeErrorCode(w, http.StatusConflict, apierr.Busy, err.Error())
+	case errors.Is(err, operations.ErrNotRetryable), errors.Is(err, operations.ErrBulkConfirm),
 		errors.Is(err, operations.ErrAlreadyDeleted), errors.Is(err, operations.ErrNotDeleted), errors.Is(err, operations.ErrBackupDeleted),
-		errors.Is(err, operations.ErrBackupRunning), errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins),
-		errors.Is(err, operations.ErrInPlaceHAMode), errors.Is(err, models.ErrShardedUnsupported):
-		writeError(w, http.StatusConflict, err.Error())
+		errors.Is(err, operations.ErrApprovalClosed), errors.Is(err, operations.ErrTooFewAdmins),
+		errors.Is(err, operations.ErrInPlaceHAMode), errors.Is(err, operations.ErrNotRunning):
+		writeErrorCode(w, http.StatusConflict, apierr.Conflict, err.Error())
 	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval),
 		errors.Is(err, auth.ErrApproverTooRecent), errors.Is(err, operations.ErrRequesterUnknown):
-		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, operations.ErrJobRecreated):
-		writeError(w, http.StatusConflict, err.Error())
+		writeErrorCode(w, http.StatusForbidden, apierr.ApprovalRefused, err.Error())
+	case errors.Is(err, operations.ErrJobRecreated), errors.Is(err, operations.ErrJobChanged):
+		writeErrorCode(w, http.StatusConflict, apierr.JobChanged, err.Error())
 	case errors.Is(err, operations.ErrUnavailable), errors.Is(err, operations.ErrPITRUnavailable):
-		writeError(w, http.StatusServiceUnavailable, err.Error())
+		writeErrorCode(w, http.StatusServiceUnavailable, apierr.Unavailable, err.Error())
 	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorCode(w, http.StatusBadRequest, apierr.InvalidRequest, err.Error())
 	case errors.Is(err, targets.ErrNotFound), errors.Is(err, targets.ErrInUse), errors.Is(err, targets.ErrIsDefault):
 		s.writeTargetError(w, err)
-	case errors.Is(err, operations.ErrBulkTooLarge):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
-	case errors.Is(err, operations.ErrRetryUnavailable), errors.Is(err, operations.ErrPITRNotRestorable):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, operations.ErrBulkTooLarge), errors.Is(err, operations.ErrRetryUnavailable),
+		errors.Is(err, operations.ErrPITRNotRestorable), errors.Is(err, operations.ErrKeyRequired):
+		writeErrorCode(w, http.StatusUnprocessableEntity, apierr.ValidationFailed, err.Error())
 	case errors.Is(err, operations.ErrInvalid), errors.Is(err, operations.ErrConnectionRequired),
 		errors.Is(err, operations.ErrUnknownConnection), errors.Is(err, operations.ErrUnknownStorageTarget):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorCode(w, http.StatusBadRequest, apierr.InvalidRequest, err.Error())
 	case errors.Is(err, operations.ErrNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, operations.ErrBusy), errors.Is(err, operations.ErrNotRunning):
-		writeError(w, http.StatusConflict, err.Error())
+		writeErrorCode(w, http.StatusNotFound, apierr.NotFound, err.Error())
 	case errors.Is(err, operations.ErrNotActive):
 		s.writeFenced(w)
 	case errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable):
-		writeError(w, http.StatusServiceUnavailable, err.Error())
+		writeErrorCode(w, http.StatusServiceUnavailable, apierr.Unavailable, err.Error())
 	case errors.Is(err, operations.ErrDatabaseListing), errors.Is(err, operations.ErrLegalHold):
-		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
-	case errors.Is(err, operations.ErrKeyRequired):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		writeErrorCode(w, http.StatusBadGateway, apierr.BadGateway, redact.Text(err.Error()))
 	case errors.Is(err, auth.ErrForbidden):
-		writeError(w, http.StatusForbidden, "forbidden: "+err.Error())
+		writeErrorCode(w, http.StatusForbidden, apierr.Forbidden, "forbidden: "+err.Error())
 	default:
 		s.logger.Error("operation failed", logsafe.Error(err))
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeErrorCode(w, http.StatusInternalServerError, apierr.InternalError, "internal error")
 	}
 }
 
