@@ -87,15 +87,15 @@ type VaultRef struct {
 	Path string `json:"path,omitempty"`
 	// Role is the role of a dynamic engine (database, aws).
 	Role string `json:"role,omitempty"`
-	// UsernameField and PasswordField name the fields of a kv-v2 secret holding
+	// UsernameField and PassField name the fields of a kv-v2 secret holding
 	// a connection's user name and password (default username and password).
 	UsernameField string `json:"username_field,omitempty"`
-	PasswordField string `json:"password_field,omitempty"`
-	// AccessKeyField and SecretKeyField name the fields of a kv-v2 secret
+	PassField     string `json:"password_field,omitempty"`
+	// AccessKeyField and SecField name the fields of a kv-v2 secret
 	// holding an S3 target's key pair (default access_key and secret_key);
 	// SessionTokenField optionally names a session token.
 	AccessKeyField    string `json:"access_key_field,omitempty"`
-	SecretKeyField    string `json:"secret_key_field,omitempty"`
+	SecField          string `json:"secret_key_field,omitempty"`
 	SessionTokenField string `json:"session_token_field,omitempty"`
 }
 
@@ -113,8 +113,8 @@ func (r *VaultRef) Key() string {
 	if r == nil {
 		return ""
 	}
-	return strings.Join([]string{string(r.Engine), r.Mount, r.Path, r.Role, r.UsernameField, r.PasswordField,
-		r.AccessKeyField, r.SecretKeyField, r.SessionTokenField}, "\x00")
+	return strings.Join([]string{string(r.Engine), r.Mount, r.Path, r.Role, r.UsernameField, r.PassField,
+		r.AccessKeyField, r.SecField, r.SessionTokenField}, "\x00")
 }
 
 // String describes r for messages ("kv-v2 secret/data/mongo", "database role
@@ -153,7 +153,7 @@ func (r *VaultRef) Normalize(use VaultUse) error {
 	if r == nil {
 		return fmt.Errorf("%w: vault is required with credential_source vault", ErrInvalidVaultRef)
 	}
-	for _, p := range []*string{&r.Mount, &r.Path, &r.Role, &r.UsernameField, &r.PasswordField, &r.AccessKeyField, &r.SecretKeyField, &r.SessionTokenField} {
+	for _, p := range []*string{&r.Mount, &r.Path, &r.Role, &r.UsernameField, &r.PassField, &r.AccessKeyField, &r.SecField, &r.SessionTokenField} {
 		*p = strings.TrimSpace(*p)
 	}
 	r.Engine = VaultEngine(strings.ToLower(strings.TrimSpace(string(r.Engine))))
@@ -188,7 +188,7 @@ func (r *VaultRef) Normalize(use VaultUse) error {
 	if err := checkVaultPath("role", r.Role, false); err != nil {
 		return err
 	}
-	if r.UsernameField != "" || r.PasswordField != "" || r.AccessKeyField != "" || r.SecretKeyField != "" || r.SessionTokenField != "" {
+	if r.UsernameField != "" || r.PassField != "" || r.AccessKeyField != "" || r.SecField != "" || r.SessionTokenField != "" {
 		return fmt.Errorf("%w: field names apply to the %s engine only", ErrInvalidVaultRef, VaultKV2)
 	}
 	return nil
@@ -198,19 +198,19 @@ func (r *VaultRef) Normalize(use VaultUse) error {
 func (r *VaultRef) normalizeFields(use VaultUse) error {
 	var fields []*string
 	if use == VaultForConnection {
-		if r.AccessKeyField != "" || r.SecretKeyField != "" || r.SessionTokenField != "" {
+		if r.AccessKeyField != "" || r.SecField != "" || r.SessionTokenField != "" {
 			return fmt.Errorf("%w: a connection names username_field and password_field", ErrInvalidVaultRef)
 		}
 		r.UsernameField = orDefaultString(r.UsernameField, DefaultVaultUsernameField)
-		r.PasswordField = orDefaultString(r.PasswordField, DefaultVaultPasswordField)
-		fields = []*string{&r.UsernameField, &r.PasswordField}
+		r.PassField = orDefaultString(r.PassField, DefaultVaultPasswordField)
+		fields = []*string{&r.UsernameField, &r.PassField}
 	} else {
-		if r.UsernameField != "" || r.PasswordField != "" {
+		if r.UsernameField != "" || r.PassField != "" {
 			return fmt.Errorf("%w: an S3 storage target names access_key_field and secret_key_field", ErrInvalidVaultRef)
 		}
 		r.AccessKeyField = orDefaultString(r.AccessKeyField, DefaultVaultAccessKeyField)
-		r.SecretKeyField = orDefaultString(r.SecretKeyField, DefaultVaultSecretKeyField)
-		fields = []*string{&r.AccessKeyField, &r.SecretKeyField}
+		r.SecField = orDefaultString(r.SecField, DefaultVaultSecretKeyField)
+		fields = []*string{&r.AccessKeyField, &r.SecField}
 		if r.SessionTokenField != "" {
 			fields = append(fields, &r.SessionTokenField)
 		}
