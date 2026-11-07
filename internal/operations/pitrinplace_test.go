@@ -574,8 +574,8 @@ func TestPITRInPlaceSwapSurvivesAShutdown(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- env.manager.Shutdown(context.Background()) }()
 	select {
-	case <-stopped:
-		t.Fatal("the shutdown did not wait for the swap")
+	case early := <-stopped:
+		t.Fatalf("the shutdown did not wait for the swap (returned %v)", early)
 	case <-time.After(200 * time.Millisecond):
 	}
 	close(env.fakes.swapGate)

@@ -202,7 +202,8 @@ func (b *Box) Seal(at Binding, plaintext string) (string, error) {
 	if _, err := rand.Read(buf[1:]); err != nil {
 		return "", fmt.Errorf("secretbox: nonce: %w", err)
 	}
-	out := b.aead.Seal(buf, buf[1:1+nonceSize], []byte(plaintext), aad)
+	// The nonce is the crypto/rand bytes read into buf[1:] just above, not a constant.
+	out := b.aead.Seal(buf, buf[1:1+nonceSize], []byte(plaintext), aad) //nolint:gosec // G407 false positive: random nonce
 	return Prefix + base64.StdEncoding.EncodeToString(out), nil
 }
 

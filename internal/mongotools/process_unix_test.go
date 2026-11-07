@@ -108,7 +108,9 @@ func TestKillAllKillsRunningTools(t *testing.T) {
 		t.Fatalf("KillAll killed %d processes", n)
 	}
 	select {
-	case <-done:
+	case err := <-done:
+		// A killed tool returns an error; only termination matters.
+		t.Logf("tool returned: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("KillAll did not terminate the tool")
 	}

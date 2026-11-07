@@ -126,7 +126,8 @@ func bridge(t *testing.T, ts *httptest.Server, key string) (*sdk.ClientSession, 
 		cancel()
 		_ = inW.Close()
 		select {
-		case <-done:
+		case err := <-done:
+			t.Logf("bridge stopped: %v", err)
 		case <-time.After(5 * time.Second):
 			t.Error("bridge did not stop")
 		}

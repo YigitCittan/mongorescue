@@ -50,7 +50,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.13.2
+          version: v2.15.0
           # Build it with the job's Go (.go-version): a release binary built with an
           # older Go cannot load the export data of a newer standard library.
           install-mode: goinstall
@@ -194,9 +194,7 @@ jobs:
   #    jobs run in parallel, so the wall time stays that of one job.
   integration:
     name: Integration (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }}, ${{ matrix.emulator }}${{ matrix.tools && format(', tools {0}', matrix.tools) || '' }})
-    # MongoDB 8.0 refuses to start on Linux 6.19+ (SERVER-121912), the kernel of
-    # the Ubuntu 26.04 ubuntu-latest image; stay on 24.04 until that is fixed.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     needs: [test]
     timeout-minutes: 30
     strategy:
@@ -271,9 +269,7 @@ jobs:
   #    whose secrets are unset are skipped by the test suite.
   integration-cloud:
     name: Integration (cloud S3 providers)
-    # MongoDB 8.0 refuses to start on Linux 6.19+ (SERVER-121912), the kernel of
-    # the Ubuntu 26.04 ubuntu-latest image; stay on 24.04 until that is fixed.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     needs: [test]
     if: github.event_name == 'push' && github.repository == 'YigitCittan/mongorescue'
     env:
