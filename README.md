@@ -88,6 +88,7 @@ Restores go into a safe clone unless you pass both `--in-place` and `--confirm`.
 - [Privacy, retention and erasure requests](docs/privacy.md)
 - [Notifications](docs/notifications.md), [metrics and alerting](docs/metrics.md), [monitoring](docs/monitoring.md)
 - [Running in production](docs/production.md) and the [production checklist](docs/production.md#production-checklist)
+- [Upgrading and rolling back](docs/upgrading.md): backups first, the pre-migration database copy, HA order, rollback
 - [Troubleshooting](docs/troubleshooting.md), [architecture](docs/architecture.md), [testing](docs/testing.md), [roadmap](docs/roadmap.md)
 
 ## Development

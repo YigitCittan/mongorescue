@@ -66,6 +66,9 @@ const (
 	// EnvNotificationMaxAge sets how long a notification may wait in the delivery
 	// queue before it is dropped as stale: a Go duration such as "24h".
 	EnvNotificationMaxAge = "MONGORESCUE_NOTIFICATION_MAX_AGE"
+	// EnvPreMigrationCopies sets how many copies of the metadata database taken
+	// before schema migrations are kept next to it; 0 turns them off.
+	EnvPreMigrationCopies = "MONGORESCUE_PRE_MIGRATION_COPIES"
 	// EnvVaultAddr is the address of the HashiCorp Vault that connections and S3
 	// storage targets with credential_source vault read their credentials from
 	// (https://<host>:<port>). The authentication is the one key wrapping uses:
@@ -102,6 +105,10 @@ const (
 	MaxMinFreeSpaceMB = 1 << 20
 	// DefaultNotificationMaxAge is how long a notification may wait to be sent.
 	DefaultNotificationMaxAge = 24 * time.Hour
+	// DefaultPreMigrationCopies is how many pre-migration copies are kept.
+	DefaultPreMigrationCopies = 3
+	// MaxPreMigrationCopies is the largest number of pre-migration copies.
+	MaxPreMigrationCopies = 50
 	// MinNotificationMaxAge and MaxNotificationMaxAge bound it.
 	MinNotificationMaxAge = 10 * time.Minute
 	MaxNotificationMaxAge = 30 * 24 * time.Hour
@@ -145,6 +152,9 @@ var (
 	// ErrInvalidNotificationMaxAge is returned for a notification maximum age that
 	// is not a duration from 10m to 720h.
 	ErrInvalidNotificationMaxAge = errors.New("config: notification max age must be a duration from 10m to 720h (such as 24h)")
+	// ErrInvalidPreMigrationCopies is returned for a number of pre-migration copies
+	// that is not a whole number from 0 to MaxPreMigrationCopies.
+	ErrInvalidPreMigrationCopies = errors.New("config: pre-migration copies must be a whole number from 0 to 50")
 	// ErrInvalidVaultCacheTTL is returned for a Vault cache TTL that is not a
 	// duration from 1s to 24h.
 	ErrInvalidVaultCacheTTL = errors.New("config: vault cache TTL must be a duration from 1s to 24h (such as 5m)")
@@ -238,6 +248,10 @@ type Config struct {
 	// queue (behind older ones of its channel, or across a downtime) before it is
 	// dropped as stale.
 	NotificationMaxAge time.Duration
+	// PreMigrationCopies is how many copies of the metadata database, taken before
+	// schema migrations run, are kept next to it (mongorescue.db.pre-v<from>-to-v<to>);
+	// 0 takes none.
+	PreMigrationCopies int
 	// HA holds the active-passive high availability settings (off by default).
 	HA HAConfig
 	// Vault configures the credentials read from HashiCorp Vault (off by
@@ -248,7 +262,7 @@ type Config struct {
 // Default returns the defaults of the binary.
 func Default() *Config {
 	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo,
-		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge, HA: defaultHA()}
+		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge, PreMigrationCopies: DefaultPreMigrationCopies, HA: defaultHA()}
 }
 
 // FromEnv returns the defaults overridden by the bootstrap environment variables.
@@ -319,6 +333,13 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 		}
 		cfg.NotificationMaxAge = d
 	}
+	if v := strings.TrimSpace(getenv(EnvPreMigrationCopies)); v != "" {
+		n, err := ParsePreMigrationCopies(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvPreMigrationCopies, err)
+		}
+		cfg.PreMigrationCopies = n
+	}
 	if err := haFromEnv(&cfg.HA, getenv); err != nil {
 		return nil, err
 	}
@@ -348,6 +369,16 @@ func ParseNotificationMaxAge(v string) (time.Duration, error) {
 		return 0, ErrInvalidNotificationMaxAge
 	}
 	return d, nil
+}
+
+// ParsePreMigrationCopies parses a number of pre-migration copies: a whole number
+// from 0 (no copies) to MaxPreMigrationCopies.
+func ParsePreMigrationCopies(v string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 || n > MaxPreMigrationCopies {
+		return 0, ErrInvalidPreMigrationCopies
+	}
+	return n, nil
 }
 
 // ParseMinFreeSpace parses a minimum free space: a whole number of MiB from 0 to
@@ -397,6 +428,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%s: %w", EnvMinFreeSpace, ErrInvalidMinFreeSpace)
 	case c.NotificationMaxAge != 0 && (c.NotificationMaxAge < MinNotificationMaxAge || c.NotificationMaxAge > MaxNotificationMaxAge):
 		return fmt.Errorf("%s: %w", EnvNotificationMaxAge, ErrInvalidNotificationMaxAge)
+	case c.PreMigrationCopies < 0 || c.PreMigrationCopies > MaxPreMigrationCopies:
+		return fmt.Errorf("%s: %w", EnvPreMigrationCopies, ErrInvalidPreMigrationCopies)
 	}
 	if err := c.HA.Validate(); err != nil {
 		return err

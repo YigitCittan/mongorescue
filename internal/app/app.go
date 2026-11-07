@@ -279,7 +279,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	keyFiles := key.files
 	opened, err := keyrotation.Open(ctx, keyFiles, key.Key, key.FromEnv,
 		func(ctx context.Context, box *secretbox.Box) (*store.SQLiteStore, error) {
-			return openMetadataStore(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box))
+			return openMetadataStore(ctx, cfg.MetadataDBPath(), logger, store.WithSecretBox(box),
+				store.WithPreMigrationCopies(cfg.PreMigrationCopies))
 		}, logger)
 	var metaStore *store.SQLiteStore
 	if opened != nil {

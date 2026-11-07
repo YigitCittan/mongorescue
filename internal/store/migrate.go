@@ -100,6 +100,14 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		return err
 	}
 
+	// An existing database about to change schema is copied first, so a rollback to
+	// the previous release has a database it can read. A fresh one has nothing to lose.
+	if latest := migrations[len(migrations)-1].version; current > 0 && current < latest && s.keepCopies > 0 {
+		if err := s.preMigrationCopy(ctx, current, latest); err != nil {
+			return err
+		}
+	}
+
 	for _, m := range migrations {
 		if m.version <= current {
 			continue
