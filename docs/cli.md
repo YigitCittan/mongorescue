@@ -40,6 +40,7 @@ Every command takes `--url`, `--api-key-file`, `--api-key` and:
 | :--- | :--- |
 | `--json` | Print the server's JSON (the response's `data`, indented) instead of text |
 | `--quiet` | Print only IDs (one per line), no progress and no notes; warnings and errors still go to stderr |
+| `--no-color` | Never colour the output (see [Colour](#colour)) |
 
 `backup`, `restore` and `verify` also take:
 
@@ -177,6 +178,64 @@ mongorescue status [--readiness]
 ```
 
 Shows the server's health and version, the user the key belongs to, the key's effective scope, backup, restore and job counts, the last backup and the runs in progress (`GET /api/v1/health`, `/auth/me`, `/stats`, `/runs/active`). Servers before v0.17 do not report the scope; the line then says so. `--readiness` adds the [recovery readiness](api.md#recovery-readiness) of every database a job backs up and exits `1` when one of them fails it, which makes `mongorescue status --readiness --quiet` a one-line health check. `--json` prints `{url, health, me, stats, active_runs, readiness}` with the server's answers as they are.
+
+## Colour
+
+On a terminal the CLI colours the status words of its text output: green for `completed`, `ok` and `pass`, yellow for `in_progress`, `running`, `partial`, `warn` and `cancelled`, red for `failed`, `fail`, `mismatch` and `missing`. Columns stay aligned. Colour is off, with no escape codes at all, when any of these holds:
+
+- stdout is not a terminal (a pipe, a file, a CI log);
+- `--no-color` is given;
+- `NO_COLOR` is set to any non-empty value (see [no-color.org](https://no-color.org));
+- `TERM=dumb`;
+- `--json` or `--quiet` is given: JSON and ID output are never coloured.
+
+Progress, warnings and errors on stderr are never coloured. On Windows the CLI detects the console with `GetConsoleMode` and switches on virtual terminal processing for it (Windows 10 and later: `cmd.exe`, Windows PowerShell, PowerShell 7, Windows Terminal); a console that does not support it gets no colour.
+
+## Shell completion
+
+`mongorescue completion bash|zsh|fish|powershell` prints a completion script for the commands, their flags and the resources `list` takes. The script is static (it needs no running instance and no API key) and is generated from the CLI's own command and flag definitions, so it follows each release. Flags that name a file (`--api-key-file`, `--databases-file`) complete file names. `mongorescue.exe` completes like `mongorescue`.
+
+**bash** (`source <(...)` needs bash 4 or later; the stock bash 3.2 of macOS can `mongorescue completion bash > file` and `source file`):
+
+```bash
+# this session
+source <(mongorescue completion bash)
+# every session
+mongorescue completion bash > ~/.local/share/bash-completion/completions/mongorescue
+# or system-wide
+mongorescue completion bash | sudo tee /etc/bash_completion.d/mongorescue > /dev/null
+```
+
+**zsh** (after `autoload -U compinit && compinit` in `~/.zshrc`):
+
+```zsh
+# this session
+source <(mongorescue completion zsh)
+# every session: a directory on $fpath, then restart the shell
+mkdir -p ~/.zfunc && mongorescue completion zsh > ~/.zfunc/_mongorescue
+# and, before compinit in ~/.zshrc:  fpath=(~/.zfunc $fpath)
+```
+
+**fish**:
+
+```fish
+# this session
+mongorescue completion fish | source
+# every session
+mongorescue completion fish > ~/.config/fish/completions/mongorescue.fish
+```
+
+**PowerShell** (Windows PowerShell 5.1 and PowerShell 7, on Windows, Linux and macOS):
+
+```powershell
+# this session
+mongorescue completion powershell | Out-String | Invoke-Expression
+# every session: add the line to your profile
+if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
+Add-Content $PROFILE 'mongorescue completion powershell | Out-String | Invoke-Expression'
+```
+
+The `deb` and `rpm` packages install the bash, zsh and fish scripts (`/usr/share/bash-completion/completions/mongorescue`, `/usr/share/zsh/site-functions/_mongorescue`, `/usr/share/fish/vendor_completions.d/mongorescue.fish`), so completion works in a new shell after `apt install` or `dnf install`. The Homebrew cask, the Scoop and winget packages and the archives do not install completions: use the commands above.
 
 ## Exit codes
 

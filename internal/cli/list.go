@@ -122,13 +122,13 @@ func runList(ctx context.Context, s *session, args []string) error {
 		if err != nil {
 			return err
 		}
-		return printList(s, res, "backups", backupsTable)
+		return printList(s, res, "backups", func(t *table, b models.BackupRecord) { backupsTable(t, b, s) })
 	case "restores":
 		res, err := client.ListRestores(ctx, q)
 		if err != nil {
 			return err
 		}
-		return printList(s, res, "restores", restoresTable)
+		return printList(s, res, "restores", func(t *table, r models.RestoreRecord) { restoresTable(t, r, s) })
 	case "jobs":
 		res, err := client.ListAllJobs(ctx, q)
 		if err != nil {
@@ -211,13 +211,13 @@ func newTableFor(s *session, what string) *table {
 }
 
 // backupsTable renders one backup.
-func backupsTable(t *table, b models.BackupRecord) {
-	t.row(b.ID, b.Database, string(b.Status), string(b.EffectiveTrigger()), fmtTime(b.StartedAt), fmtSeconds(b.DurationSeconds), fmtBytes(b.SizeBytes))
+func backupsTable(t *table, b models.BackupRecord, s *session) {
+	t.row(b.ID, b.Database, s.paint(string(b.Status)), string(b.EffectiveTrigger()), fmtTime(b.StartedAt), fmtSeconds(b.DurationSeconds), fmtBytes(b.SizeBytes))
 }
 
 // restoresTable renders one restore.
-func restoresTable(t *table, r models.RestoreRecord) {
-	t.row(r.ID, r.BackupID, r.SourceDatabase, r.TargetDatabase, string(r.Status), fmtTime(r.StartedAt), fmtSeconds(r.DurationSeconds))
+func restoresTable(t *table, r models.RestoreRecord, s *session) {
+	t.row(r.ID, r.BackupID, r.SourceDatabase, r.TargetDatabase, s.paint(string(r.Status)), fmtTime(r.StartedAt), fmtSeconds(r.DurationSeconds))
 }
 
 // jobsTable renders one job.

@@ -1,5 +1,5 @@
 // Package cli implements the "mongorescue backup|restore|list|verify|status"
-// commands: a client of a running MongoRescue instance that talks to its REST API
+// commands (and "completion", which prints shell completions): a client of a running MongoRescue instance that talks to its REST API
 // with an API key (see docs/cli.md). It never opens the data directory and never
 // reads MONGORESCUE_API_KEY or MONGORESCUE_API_KEY_FILE, which the server imports as
 // an admin key. Exit codes are a stable contract (the Exit constants).
@@ -70,12 +70,31 @@ var (
 	errHelp = errors.New("help requested")
 )
 
-// commandNames lists the commands Run dispatches, in the order of the usage text.
-var commandNames = []string{"backup", "restore", "list", "verify", "status", "help"}
+// commandDocs lists the commands Run dispatches with their one-line summaries, in
+// the order of the usage text and of the shell completions.
+var commandDocs = []struct{ name, summary string }{
+	{"backup", "Start a backup of a job (--job) or of one database (--connection, --database)"},
+	{"restore", "Restore a backup into a safe clone (in place only with --in-place --confirm)"},
+	{"list", "List backups, restores, jobs, connections or targets"},
+	{"verify", "Re-read a backup's archive and compare it with its checksum"},
+	{"status", "Show the server's health, the API key's scope, counts and active runs"},
+	{"completion", "Print a shell completion script: mongorescue completion bash|zsh|fish|powershell"},
+	{"help", "Show the flags of a command: mongorescue help <command>"},
+}
 
-// IsCommand reports whether name is a CLI command ("help" included).
+// IsCommand reports whether name is a CLI command ("help" and "completion"
+// included).
 func IsCommand(name string) bool {
-	return slices.Contains(commandNames, name)
+	return slices.ContainsFunc(commandDocs, func(d struct{ name, summary string }) bool { return d.name == name })
+}
+
+// ExtraCommand is a command of the binary that the CLI does not run itself, such as
+// "mcp": completion scripts offer it next to the CLI's commands.
+type ExtraCommand struct {
+	// Name is the command word.
+	Name string
+	// Summary is a one-line description.
+	Summary string
 }
 
 // App runs CLI commands. The zero value is ready to use.
@@ -86,11 +105,24 @@ type App struct {
 	PollInterval time.Duration
 	// HTTPClient overrides the HTTP client (tests); nil uses the apiclient default.
 	HTTPClient *http.Client
+	// IsTerminal overrides the terminal detection of stdout (tests); nil checks for
+	// a console or tty.
+	IsTerminal func(io.Writer) bool
+	// ExtraCommands are further commands of the binary, offered by the completion
+	// scripts.
+	ExtraCommands []ExtraCommand
 }
 
 // Run runs the CLI command in args[0] with an App of no version; see App.Run.
 func Run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	return (&App{}).Run(ctx, args, getenv, stdout, stderr)
+}
+
+// commandFuncs returns the commands that call the REST API, by name.
+func commandFuncs() map[string]command {
+	return map[string]command{
+		"backup": runBackup, "restore": runRestore, "list": runList, "verify": runVerify, "status": runStatus,
+	}
 }
 
 // command runs one command with its arguments (without the command name).
@@ -104,9 +136,8 @@ func (a *App) Run(ctx context.Context, args []string, getenv func(string) string
 		writeUsage(stderr)
 		return ExitUsage
 	}
-	commands := map[string]command{
-		"backup": runBackup, "restore": runRestore, "list": runList, "verify": runVerify, "status": runStatus,
-	}
+	commands := commandFuncs()
+	commands["completion"] = runCompletion
 	s := &session{app: a, stdout: stdout, stderr: stderr, getenv: getenv}
 	name, rest := args[0], args[1:]
 	if name == "help" {
@@ -220,21 +251,18 @@ func failedErrorf(format string, args ...any) error {
 
 // writeUsage writes the overview of the commands.
 func writeUsage(w io.Writer) {
-	fmt.Fprintf(w, `Usage: mongorescue <command> [arguments] [flags]
-
-Commands for a running MongoRescue instance, through its REST API and an API key:
-  backup    Start a backup of a job (--job) or of one database (--connection, --database)
-  restore   Restore a backup into a safe clone (in place only with --in-place --confirm)
-  list      List backups, restores, jobs, connections or targets
-  verify    Re-read a backup's archive and compare it with its checksum
-  status    Show the server's health, the API key's scope, counts and active runs
-  help      Show the flags of a command: mongorescue help <command>
-
-Every command takes:
+	fmt.Fprint(w, "Usage: mongorescue <command> [arguments] [flags]\n\nCommands for a running MongoRescue instance, through its REST API and an API key:\n")
+	for _, d := range commandDocs {
+		fmt.Fprintf(w, "  %-10s%s\n", d.name, d.summary)
+	}
+	fmt.Fprintf(w, `
+Every command that calls the API takes:
   --url URL            Base URL of the instance (env %s, default %s)
   --api-key-file PATH  File holding the API key (env %s, or the key in %s)
   --json               Print the server's JSON instead of text
   --quiet              Print only IDs; no progress
+  --no-color           Never colour the output (statuses are coloured on a terminal only;
+                       NO_COLOR and TERM=dumb turn colour off too)
 
 backup, restore and verify also take --wait (poll until the run finishes, progress
 on stderr) and --timeout DURATION (stop waiting after it, exit 6).
@@ -261,6 +289,7 @@ func (s *session) newFlagSet(name, usage string, withWait bool) *flag.FlagSet {
 	fs.StringVar(&s.opts.apiKey, "api-key", "", "API key (discouraged: visible in the process list; used only when no other source is set)")
 	fs.BoolVar(&s.opts.json, "json", false, "Print the server's JSON")
 	fs.BoolVar(&s.opts.quiet, "quiet", false, "Print only IDs; no progress")
+	fs.BoolVar(&s.opts.noColor, "no-color", false, "Never colour the output (also off with NO_COLOR, TERM=dumb, a pipe, --json and --quiet)")
 	if withWait {
 		fs.BoolVar(&s.opts.wait, "wait", false, "Wait until the run finishes, with progress on stderr")
 		fs.DurationVar(&s.opts.timeout, "timeout", 0, "With --wait: stop waiting after this long (exit 6); 0 waits until the run finishes")
@@ -271,6 +300,10 @@ func (s *session) newFlagSet(name, usage string, withWait bool) *flag.FlagSet {
 // parse parses args with fs, allowing flags after positional arguments, and checks
 // the shared flags. It returns the positional arguments.
 func (s *session) parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	if s.inspect != nil {
+		s.inspect(fs)
+		return nil, errHelp
+	}
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -289,5 +322,6 @@ func (s *session) parse(fs *flag.FlagSet, args []string) ([]string, error) {
 	if s.opts.timeout < 0 {
 		return nil, usageErrorf("--timeout must not be negative")
 	}
+	s.color = s.colorEnabled()
 	return pos, nil
 }
