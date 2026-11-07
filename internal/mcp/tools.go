@@ -179,7 +179,7 @@ func (s *Server) toolError(tool string, err error) error {
 		errors.Is(err, operations.ErrShuttingDown), errors.Is(err, operations.ErrSchedulerUnavailable),
 		errors.Is(err, operations.ErrNotActive), errors.Is(err, operations.ErrKeyRequired), errors.Is(err, auth.ErrForbidden),
 		errors.Is(err, operations.ErrPreflightFailed), errors.Is(err, operations.ErrPITRNotRestorable),
-		errors.Is(err, operations.ErrPITRUnavailable),
+		errors.Is(err, operations.ErrPITRUnavailable), errors.Is(err, models.ErrShardedUnsupported),
 		errors.Is(err, connections.ErrInvalid), errors.Is(err, connections.ErrUnavailable),
 		errors.Is(err, operations.ErrUnavailable), errors.Is(err, integrity.ErrNotFound),
 		errors.Is(err, integrity.ErrNotVerifiable):
@@ -285,6 +285,7 @@ type ConnectionView struct {
 	ServerVersion string     `json:"server_version,omitempty"`
 	LastTestOK    bool       `json:"last_test_ok"`
 	LastTestAt    *time.Time `json:"last_test_at,omitempty"`
+	AllowMongos   bool       `json:"allow_mongos,omitempty"`
 }
 
 type connectionList struct {
@@ -700,6 +701,7 @@ func (s *Server) listConnections(ctx context.Context, _ noInput) (connectionList
 		out.Connections = append(out.Connections, ConnectionView{
 			ID: c.ID, Name: c.Name, Hosts: connections.HostList(c.URI), Description: c.Description,
 			ServerVersion: c.ServerVersion, LastTestOK: c.LastTestOK, LastTestAt: c.LastTestAt,
+			AllowMongos: c.AllowMongos,
 		})
 		ids = append(ids, idText(c.ID))
 	}

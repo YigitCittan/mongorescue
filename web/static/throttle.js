@@ -559,6 +559,8 @@ function throttleFillConnectionForm(c) {
   setValue("connection-read-pref", (c && c.read_preference) || "");
   setValue("connection-read-pref-tags", throttleFormatTags(c && c.read_preference_tags));
   setValue("connection-max-concurrent", c && c.max_concurrent_backups > 0 ? String(c.max_concurrent_backups) : "");
+  const mongos = document.getElementById("connection-allow-mongos");
+  if (mongos) mongos.checked = !!(c && c.allow_mongos);
 }
 
 // throttleConnectionReadPref returns the form's read preference (for the test).
@@ -571,7 +573,8 @@ function throttleConnectionPayload() {
   if (!document.getElementById("connection-read-pref")) return {};
   return {
     ...throttleConnectionReadPref(),
-    max_concurrent_backups: Math.min(throttleNumber("connection-max-concurrent", s => parseInt(s, 10)), 64)
+    max_concurrent_backups: Math.min(throttleNumber("connection-max-concurrent", s => parseInt(s, 10)), 64),
+    allow_mongos: !!document.getElementById("connection-allow-mongos")?.checked
   };
 }
 

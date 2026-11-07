@@ -318,6 +318,17 @@ Each connection may set a **read preference** (`primary`, `primaryPreferred`, `s
 
 Before `mongodump` starts, MongoRescue asks the member the preference selects (`hello`) and records it on the backup (`source_member`: host, `primary` or `secondary`, and the replica set); the run log names it too, and *Test connection* reports which member a backup would read from. With several eligible secondaries `mongodump` may choose another one of them; it still satisfies the same preference. Remember that a secondary may lag: a backup from it is as old as its replication lag.
 
+### Sharded clusters (mongos)
+
+Sharded clusters are not supported ([#58](https://github.com/YigitCittan/mongorescue/issues/58)): `mongodump` through a `mongos` is not consistent across shards (the balancer and chunk migrations can leave documents missing or duplicated in an archive that still verifies), and the restore test only compares estimated counts. MongoRescue therefore checks what a connection reaches (`hello`, `msg: isdbgrid`) before it acts:
+
+- A **backup** through a `mongos` fails before `mongodump` starts with `sharded clusters are not supported`, and so does a backup whose topology cannot be determined (the check fails closed).
+- A **restore** into a `mongos` is refused by its preflight (check `topology`) with the same error; `"force": true` and dry runs do not override it.
+- **Point-in-time streams** are refused on a `mongos` as on any server that is not a replica set, and `allow_mongos` does not change that.
+- The connection setting **`allow_mongos`** (dashboard: *Allow backups through mongos*, API: `allow_mongos` on a connection; default off) accepts the risk. Backups through it carry the warning `sharded_unsupported`, which Recovery readiness reports as the reason `sharded_unsupported` (the row warns) for as long as the newest good backup has it, and restore preflights warn. Take such backups only when writes to the sharded collections are stopped and the balancer is off.
+
+A connection test reports the server as `mongos` (`read_member.state`).
+
 ### Throttling
 
 - **Upload cap.** `max_upload_mbps` (megabits per second) caps the stream to storage with a token bucket: per job, or for every job without one under Settings → General (`general.max_upload_mbps`). The dump slows down with it, since `mongodump` writes into the same pipe, so it also lowers the read rate on the member.

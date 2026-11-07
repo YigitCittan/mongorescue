@@ -51,6 +51,10 @@ const (
 	// copies were done Config.CopyMissingAfter after it finished; or any completed
 	// backup of the database has a copy the copy queue gave up on.
 	ReasonCopyMissing = "copy_missing"
+	// ReasonShardedUnsupported: the newest good backup was taken through a mongos
+	// (the connection sets allow_mongos): a dump through mongos is not consistent
+	// across shards.
+	ReasonShardedUnsupported = models.WarningShardedUnsupported
 )
 
 // RTO sources.
@@ -264,6 +268,8 @@ type rowAcc struct {
 	verifyKO bool
 	// copyMissing: the newest good backup's copies are overdue.
 	copyMissing bool
+	// sharded: the newest good backup carries the sharded_unsupported warning.
+	sharded bool
 	// dr collects the disaster recovery posture (nil: no job with copy targets).
 	dr *drAcc
 }
@@ -460,6 +466,7 @@ func (s *Service) addJob(acc *rowAcc, p point, now time.Time, since map[key]time
 		acc.verifyKO = p.last.Verification == models.VerificationMismatch || p.last.Verification == models.VerificationError
 		acc.row.Copies, acc.row.CopyTargets = p.last.DoneCopies(), len(p.last.Copies)
 		acc.copyMissing = !p.last.CopiesComplete() && now.Sub(at) >= s.cfg.CopyMissingAfter
+		acc.sharded = slices.ContainsFunc(p.last.Warnings, models.IsShardedWarning)
 	}
 }
 
@@ -561,6 +568,9 @@ func finishRow(acc *rowAcc, restore *models.RestoreRecord, now time.Time, stream
 	}
 	if acc.copyMissing {
 		warn = append(warn, ReasonCopyMissing)
+	}
+	if acc.sharded {
+		warn = append(warn, ReasonShardedUnsupported)
 	}
 	warn = append(warn, finishDR(acc, now)...)
 	if stream != nil {

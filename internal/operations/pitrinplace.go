@@ -402,6 +402,7 @@ func (s *Service) safetyBackup(ctx context.Context, pp *pitrPlan, rec *models.Re
 		MongoURI: req.MongoURI, MongoTLS: req.MongoTLS,
 		StorageTargetID: target.ID, StorageTargetName: target.Name, StorageType: target.Type,
 		Gzip: true, Trigger: models.TriggerManual, ReadPreference: models.ReadPreference{Mode: "primary"},
+		AllowMongos: req.AllowMongos,
 	}
 	record, err := s.cfg.Backup.Prepare(opts)
 	if err != nil {

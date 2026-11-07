@@ -593,6 +593,10 @@ type BackupOptions struct {
 	// unlimited); the engine waits for a slot before mongodump starts.
 	MaxConcurrentBackups int `json:"-"`
 
+	// AllowMongos is the connection's allow_mongos: without it the engine refuses
+	// a backup through a mongos (ErrShardedUnsupported).
+	AllowMongos bool `json:"-"`
+
 	// Scope is ScopeInstance for a PITR base backup: Database must be empty,
 	// mongodump runs with --oplog instead of --db, the archive is always gzipped and
 	// encryption is required. It is set by the application, never read from

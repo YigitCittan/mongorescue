@@ -111,7 +111,7 @@ func TestBackupSecondaryNeedsASecondary(t *testing.T) {
 			engine := NewEngine(storage.NewMockStorage(), "", WithRunner(r.run),
 				WithMemberProbe(func(context.Context, string) (models.SourceMember, error) { return tc.member, tc.err }))
 			rec, err := engine.Run(context.Background(), models.BackupOptions{Database: "shop", MongoURI: "mongodb://db1",
-				ReadPreference: models.ReadPreference{Mode: tc.mode}})
+				ReadPreference: models.ReadPreference{Mode: tc.mode}, AllowMongos: true})
 			if !tc.fail {
 				if err != nil {
 					t.Fatal(err)
