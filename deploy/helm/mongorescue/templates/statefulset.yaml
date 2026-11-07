@@ -113,6 +113,18 @@ spec:
               value: /tmp
             - name: MONGORESCUE_TMP_DIR
               value: /run/mongorescue-tmp
+            {{- /* GOMEMLIMIT from config.goMemLimitRatio; an extraEnv entry of the same name wins. */}}
+            {{- $goMemLimit := include "mongorescue.goMemLimit" . }}
+            {{- $ownGoMemLimit := false }}
+            {{- range .Values.extraEnv }}
+            {{- if eq .name "GOMEMLIMIT" }}
+            {{- $ownGoMemLimit = true }}
+            {{- end }}
+            {{- end }}
+            {{- if and $goMemLimit (not $ownGoMemLimit) }}
+            - name: GOMEMLIMIT
+              value: {{ $goMemLimit | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
