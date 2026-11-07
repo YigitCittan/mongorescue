@@ -726,7 +726,7 @@ func (s *Service) abandonBackup(ctx context.Context, record *models.BackupRecord
 	record.Status = models.StatusFailed
 	record.ErrorMessage = "backup not started: " + cause.Error()
 	if err := s.store.SaveBackupRecord(context.WithoutCancel(ctx), record); err != nil {
-		s.logger.Error("failed to persist abandoned backup record", logsafe.Attr("backup_id", record.ID), logsafe.Error(err))
+		s.logger.ErrorContext(ctx, "failed to persist abandoned backup record", logsafe.Attr("backup_id", record.ID), logsafe.Error(err))
 	}
 }
 
@@ -812,7 +812,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	}
 	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = source.StorageTargetID, source.StorageTargetName, req.SourceFallback
 	if req.SourceFallback != "" {
-		s.logger.Warn("restore falls back to a copy of the backup", logsafe.Attr("backup_id", source.ID),
+		s.logger.WarnContext(ctx, "restore falls back to a copy of the backup", logsafe.Attr("backup_id", source.ID),
 			logsafe.Attr("storage_target_id", source.StorageTargetID), logsafe.Attr("reason", req.SourceFallback))
 	}
 	record.SourceConnectionID, record.SourceConnectionName = source.ConnectionID, source.ConnectionName
@@ -881,7 +881,7 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 		snapshot.Status = models.RestoreStatusFailed
 		snapshot.ErrorMessage = "restore not started: " + err.Error()
 		if saveErr := s.store.SaveRestoreRecord(context.WithoutCancel(ctx), &snapshot); saveErr != nil {
-			s.logger.Error("failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
+			s.logger.ErrorContext(ctx, "failed to persist abandoned restore record", logsafe.Attr("restore_id", snapshot.ID), logsafe.Error(saveErr))
 		}
 		return nil, runError(err, "")
 	}

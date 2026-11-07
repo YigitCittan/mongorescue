@@ -72,7 +72,7 @@ func (s *Service) verifyRestore(ctx context.Context, req models.RestoreRequest, 
 	}
 	addRecordWarning(rec, "verification failed: "+summary)
 	tracker.Printf("verification failed: %s", strings.Join(v.Mismatches, "; "))
-	s.logger.Warn("restored database does not match the backup's manifest",
+	s.logger.WarnContext(ctx, "restored database does not match the backup's manifest",
 		logsafe.Attr("restore_id", rec.ID),
 		logsafe.Attr("target_db", rec.TargetDatabase),
 		slog.Int("mismatches", len(v.Mismatches)),

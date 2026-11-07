@@ -392,7 +392,7 @@ func (s *Service) Approve(ctx context.Context, id string) (*models.Approval, err
 		return nil, fmt.Errorf("record approval outcome: %w", err)
 	}
 	if execErr != nil {
-		s.logger.Warn("approved action failed", logsafe.Attr("approval_id", a.ID), slog.String("action", string(a.Action)), logsafe.Error(execErr))
+		s.logger.WarnContext(ctx, "approved action failed", logsafe.Attr("approval_id", a.ID), slog.String("action", string(a.Action)), logsafe.Error(execErr))
 	}
 	return final, nil
 }
@@ -770,7 +770,7 @@ func (s *Service) forgetAdmin(ctx context.Context, id string) {
 	}
 	list, err := st.ListPendingChanges(ctx)
 	if err != nil {
-		s.logger.Warn("cannot list pending protection changes", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "cannot list pending protection changes", logsafe.Error(err))
 		return
 	}
 	for _, c := range list {
@@ -779,7 +779,7 @@ func (s *Service) forgetAdmin(ctx context.Context, id string) {
 		}
 		c.Admins = slices.DeleteFunc(c.Admins, func(v string) bool { return v == id })
 		if _, err = st.ReplacePendingChange(ctx, c); err != nil {
-			s.logger.Warn("cannot update the pending change that turns the two-person rule off", logsafe.Attr("change_id", c.ID), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "cannot update the pending change that turns the two-person rule off", logsafe.Attr("change_id", c.ID), logsafe.Error(err))
 		}
 	}
 }
@@ -828,7 +828,7 @@ func (s *Service) ExpireApprovals(ctx context.Context) {
 	}
 	list, err := st.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
 	if err != nil {
-		s.logger.Warn("cannot list approval requests", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "cannot list approval requests", logsafe.Error(err))
 		return
 	}
 	now := s.now()
@@ -843,7 +843,7 @@ func (s *Service) ExpireApprovals(ctx context.Context) {
 			r.Status = models.ApprovalExpired
 			return nil
 		}); err != nil && !errors.Is(err, errNotDueYet) {
-			s.logger.Warn("cannot expire an approval request", logsafe.Attr("approval_id", a.ID), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "cannot expire an approval request", logsafe.Attr("approval_id", a.ID), logsafe.Error(err))
 		}
 	}
 }
@@ -995,7 +995,7 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 	}
 	list, err := st.ListPendingChanges(ctx)
 	if err != nil {
-		s.logger.Warn("cannot list pending protection changes", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "cannot list pending protection changes", logsafe.Error(err))
 		return
 	}
 	now := s.now()
@@ -1026,14 +1026,14 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			// Only while the lockout lasts: with two administrators again, turning the
 			// rule off needs an approval like before.
 			if s.cfg.SecondApproverCheck != nil && s.cfg.SecondApproverCheck(ctx) == nil {
-				s.logger.Warn("dropping the pending change that turns the two-person rule off: two administrators can approve again",
+				s.logger.WarnContext(ctx, "dropping the pending change that turns the two-person rule off: two administrators can approve again",
 					logsafe.Attr("change_id", c.ID))
 				continue
 			}
 			// An administrator demoted or deleted without an approval while the change
 			// waited is how one credential would make itself the last administrator.
 			if lost, lostErr := s.adminLost(ctx, c); lostErr != nil || lost != "" {
-				s.logger.Warn("dropping the pending change that turns the two-person rule off: an administrator lost the admin role without an approval while it waited",
+				s.logger.WarnContext(ctx, "dropping the pending change that turns the two-person rule off: an administrator lost the admin role without an approval while it waited",
 					logsafe.Attr("change_id", c.ID), logsafe.Attr("user_id", lost), logsafe.Error(lostErr))
 				s.destructive(ctx, "disable_second_approver_dropped", "the pending change that turns the two-person rule off was dropped: "+
 					"an administrator lost the admin role without an approval while it waited", nil)
@@ -1042,11 +1042,11 @@ func (s *Service) ApplyDueChanges(ctx context.Context) {
 			applyErr = s.disableSecondApprover(withApproval(ctx, &models.Approval{RequestedBy: c.RequestedBy}, "the grace period (no second administrator could approve)"))
 		}
 		if applyErr != nil {
-			s.logger.Error("could not apply a pending protection change; the current protection stays",
+			s.logger.ErrorContext(ctx, "could not apply a pending protection change; the current protection stays",
 				logsafe.Attr("change_id", c.ID), slog.String("kind", string(c.Kind)), logsafe.Error(applyErr))
 			continue
 		}
-		s.logger.Info("pending protection change applied", logsafe.Attr("change_id", c.ID), slog.String("kind", string(c.Kind)))
+		s.logger.InfoContext(ctx, "pending protection change applied", logsafe.Attr("change_id", c.ID), slog.String("kind", string(c.Kind)))
 		if s.cfg.Audit != nil {
 			s.cfg.Audit.Record(ctx, systemAudit(now, "protection.apply_pending", map[string]any{
 				"change_id": c.ID, "kind": c.Kind, "job_id": c.JobID, "requested_by": c.RequestedBy,

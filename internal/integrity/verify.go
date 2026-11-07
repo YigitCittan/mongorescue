@@ -64,7 +64,7 @@ func (s *Service) StartVerify(ctx context.Context, id string) (*models.BackupRec
 	}
 	if err := s.cfg.Runs.Go(keyPrefixVerify+id, func(runCtx context.Context) {
 		if _, err := s.Verify(runCtx, id, events.VerificationOnDemand, 0); err != nil {
-			s.logger.Warn("on-demand verification did not run", slog.String("backup_id", id), slog.Any("error", err))
+			s.logger.WarnContext(ctx, "on-demand verification did not run", slog.String("backup_id", id), slog.Any("error", err))
 		}
 	}); err != nil {
 		return nil, err
@@ -127,9 +127,9 @@ func (s *Service) verifyWithCopies(ctx context.Context, id, source string, bytes
 		attrs = append(attrs, slog.String("error", redact.Text(res.Err.Error())))
 	}
 	if res.Status == models.VerificationOK {
-		s.logger.Info("backup archive verified", attrs...)
+		s.logger.InfoContext(ctx, "backup archive verified", attrs...)
 	} else {
-		s.logger.Warn("backup archive verification failed", attrs...)
+		s.logger.WarnContext(ctx, "backup archive verification failed", attrs...)
 	}
 	withCopies, tally := s.verifyCopies(ctx, updated, bytesPerSecond)
 	// The primary's outcome is the record's; the copies keep theirs.
@@ -224,7 +224,7 @@ func (s *Service) StartSweep(ctx context.Context) (SweepStatus, error) {
 	s.sweepMu.Unlock()
 	err := s.cfg.Runs.Go(keySweep, func(runCtx context.Context) {
 		if _, err := s.Sweep(runCtx, TriggerManual); err != nil && !errors.Is(err, ErrBusy) && runCtx.Err() == nil {
-			s.logger.Warn("integrity sweep failed", slog.Any("error", err))
+			s.logger.WarnContext(ctx, "integrity sweep failed", slog.Any("error", err))
 		}
 	})
 	return s.SweepStatus(ctx), err
@@ -248,7 +248,7 @@ func (s *Service) Sweep(ctx context.Context, trigger string) (SweepStatus, error
 	started := s.now()
 	st := &SweepStatus{Running: true, Trigger: trigger, StartedAt: &started, Total: len(order)}
 	s.setSweep(ctx, st)
-	s.logger.Info("integrity sweep started", slog.String("trigger", trigger), slog.Int("backups", len(order)))
+	s.logger.InfoContext(ctx, "integrity sweep started", slog.String("trigger", trigger), slog.Int("backups", len(order)))
 
 	rate := s.settings().Integrity.SweepBytesPerSecond()
 	for _, rec := range order {
@@ -286,7 +286,7 @@ func (s *Service) Sweep(ctx context.Context, trigger string) (SweepStatus, error
 		chunks, err := s.cfg.VerifyChunks(ctx)
 		if err != nil && ctx.Err() == nil {
 			chunks.Error = redact.Text(err.Error())
-			s.logger.Warn("the oplog chunk item of the integrity sweep failed", slog.String("error", chunks.Error))
+			s.logger.WarnContext(ctx, "the oplog chunk item of the integrity sweep failed", slog.String("error", chunks.Error))
 		}
 		if ctx.Err() == nil {
 			s.mu.Lock()
@@ -305,7 +305,7 @@ func (s *Service) Sweep(ctx context.Context, trigger string) (SweepStatus, error
 	s.sweep = nil
 	s.mu.Unlock()
 	s.saveSweep(ctx, &final)
-	s.logger.Info("integrity sweep finished", slog.Int("verified", final.Done), slog.Int("ok", final.OK),
+	s.logger.InfoContext(ctx, "integrity sweep finished", slog.Int("verified", final.Done), slog.Int("ok", final.OK),
 		slog.Int("mismatch", final.Mismatch), slog.Int("errors", final.Errors), slog.String("interrupted", final.Interrupted))
 	final.Schedule, final.NextRunAt = s.sweepSchedule(&final)
 	return final, ctx.Err()
@@ -328,7 +328,7 @@ func (s *Service) saveSweep(ctx context.Context, st *SweepStatus) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.cfg.Store.SaveIntegrityState(writeCtx, stateSweep, snapshot); err != nil {
-		s.logger.Warn("failed to save the integrity sweep status", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to save the integrity sweep status", slog.Any("error", err))
 	}
 }
 
@@ -344,7 +344,7 @@ func (s *Service) SweepStatus(ctx context.Context) SweepStatus {
 	s.mu.Unlock()
 	if live == nil {
 		if _, err := s.cfg.Store.LoadIntegrityState(ctx, stateSweep, &st); err != nil {
-			s.logger.Warn("failed to load the integrity sweep status", slog.Any("error", err))
+			s.logger.WarnContext(ctx, "failed to load the integrity sweep status", slog.Any("error", err))
 		}
 		st.Running = false
 	}

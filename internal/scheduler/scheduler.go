@@ -16,6 +16,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
+	"github.com/yigitcittan/mongorescue/internal/logging"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/pitr"
@@ -158,14 +159,14 @@ func (s *Scheduler) fenceAllows(ctx context.Context, what string) bool {
 	if !ref.mono.IsZero() {
 		drift := wall.Sub(ref.wall) - mono.Sub(ref.mono)
 		if drift > clockJumpThreshold || drift < -clockJumpThreshold {
-			s.logger.Warn("the wall clock jumped; renewing the HA lease before anything runs", slog.Duration("jump", drift))
+			s.logger.WarnContext(ctx, "the wall clock jumped; renewing the HA lease before anything runs", slog.Duration("jump", drift))
 			if r, ok := s.fence.(models.FenceRenewer); ok {
 				_ = r.Renew(ctx)
 			}
 		}
 	}
 	if err := s.fence.Check(); err != nil {
-		s.logger.Warn(what+" skipped: this instance does not hold the HA lease", logsafe.Error(err))
+		s.logger.WarnContext(ctx, what+" skipped: this instance does not hold the HA lease", logsafe.Error(err))
 		return false
 	}
 	return true
@@ -421,7 +422,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.clockRef.mono, s.clockRef.wall = time.Now(), s.clock().Round(0)
 
 	if err := s.loadJobsLocked(); err != nil {
-		s.logger.Error("failed to load scheduled jobs; scheduled backups do not run until they load, retrying",
+		s.logger.ErrorContext(ctx, "failed to load scheduled jobs; scheduled backups do not run until they load, retrying",
 			slog.Duration("retry_in", s.retryFirst),
 			slog.Any("error", err),
 		)
@@ -432,7 +433,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// Jobs paused until a given time resume on their own (checked every minute). The
 	// check lists the jobs itself, so it also covers jobs a late retry loads.
 	if _, err := s.cron.AddFunc(resumeCheckSchedule, s.resumeDueJobs); err != nil {
-		s.logger.Error("failed to schedule the resumption of paused jobs", slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to schedule the resumption of paused jobs", slog.Any("error", err))
 	}
 	// The liveness tick read by the health check and the heartbeat.
 	s.recordTick()
@@ -441,11 +442,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// Deleted backups are purged once their grace period ends, and pending changes
 	// that lower a protection are applied once they are due.
 	if _, err := s.cron.AddFunc(maintenanceSchedule, s.runMaintenance); err != nil {
-		s.logger.Error("failed to schedule the purge of deleted backups", slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to schedule the purge of deleted backups", slog.Any("error", err))
 	}
 
 	s.cron.Start()
-	s.logger.Info("backup scheduler started successfully",
+	s.logger.InfoContext(ctx, "backup scheduler started successfully",
 		slog.Int("active_jobs", len(s.entries)),
 	)
 
@@ -507,7 +508,7 @@ func (s *Scheduler) retryLoad(ctx context.Context) {
 		if err != nil {
 			delay = min(2*delay, s.retryLimit)
 			wait = delay
-			s.logger.Error("failed to load scheduled jobs; retrying",
+			s.logger.ErrorContext(ctx, "failed to load scheduled jobs; retrying",
 				slog.Int("attempt", attempt),
 				slog.Duration("retry_in", delay),
 				slog.Any("error", err),
@@ -528,7 +529,7 @@ func (s *Scheduler) retryLoad(ctx context.Context) {
 		s.registerJobsLocked(jobs)
 		active := len(s.entries)
 		s.mu.Unlock()
-		s.logger.Info("scheduled jobs loaded after a failed attempt",
+		s.logger.InfoContext(ctx, "scheduled jobs loaded after a failed attempt",
 			slog.Int("attempt", attempt), slog.Int("active_jobs", active))
 		return
 	}
@@ -550,7 +551,7 @@ func (s *Scheduler) Stop() {
 	s.liveness.Wait()
 	s.loader.Wait()
 	s.inflight.Wait()
-	s.logger.Info("backup scheduler stopped")
+	s.logger.InfoContext(ctx, "backup scheduler stopped")
 }
 
 // Pause keeps cron triggers from starting new runs until Resume; runs in progress
@@ -748,7 +749,7 @@ func (s *Scheduler) ExecuteJobRun(ctx context.Context, plan *JobRunPlan) (*model
 		return s.runMulti(ctx, plan, false)
 	}
 	job, record := plan.Job, plan.First()
-	s.logger.Info("running backup job",
+	s.logger.InfoContext(ctx, "running backup job",
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
@@ -773,7 +774,7 @@ func (s *Scheduler) saveRun(ctx context.Context, run *models.JobRun) {
 	}
 	s.stampEpoch(run)
 	if err := s.metadataStore.SaveJobRun(ctx, run); err != nil {
-		s.logger.Warn("failed to record the job run", slog.String("job_id", run.JobID), slog.String("run_id", run.ID), slog.Any("error", err))
+		s.logger.WarnContext(ctx, "failed to record the job run", slog.String("job_id", run.JobID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
 }
 
@@ -803,11 +804,12 @@ func (s *Scheduler) runScheduled(jobID string) {
 func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 	job, err := s.metadataStore.GetJob(ctx, jobID)
 	if err != nil {
-		s.logger.Error("cron triggered for missing job", logsafe.Attr("job_id", jobID), logsafe.Error(err))
+		s.logger.ErrorContext(ctx, "cron triggered for missing job", logsafe.Attr("job_id", jobID), logsafe.Error(err))
 		return
 	}
 	// Only scheduled runs honour the backup window: outside it the run is recorded
 	// as skipped; inside it, cancel_at_window_end stops the run when it closes.
+	ctx = logging.WithRun(ctx, "", job.ID) // job_id on every line of this run, before its run ID exists
 	cancelAt, start := s.checkWindow(ctx, job)
 	if !start {
 		return
@@ -818,12 +820,12 @@ func (s *Scheduler) executeJob(ctx context.Context, jobID string) {
 		release, err := s.guard(job.ConnectionID, job.Database)
 		if errors.Is(err, diskguard.ErrLowSpace) {
 			// Not enough space for the metadata: the run fails, so its alerts fire.
-			s.logger.Error("scheduled backup not started", slog.String("job_id", job.ID), logsafe.Error(err))
+			s.logger.ErrorContext(ctx, "scheduled backup not started", slog.String("job_id", job.ID), logsafe.Error(err))
 			_, _ = s.finishJobRun(ctx, job, s.newScheduledRun(job), nil, err, true)
 			return
 		}
 		if err != nil {
-			s.logger.Warn("skipping scheduled backup: another backup of this database is running",
+			s.logger.WarnContext(ctx, "skipping scheduled backup: another backup of this database is running",
 				slog.String("job_id", job.ID),
 				slog.String("database", job.Database),
 				slog.Any("error", err),
@@ -904,7 +906,7 @@ func (s *Scheduler) runBackupForJob(ctx context.Context, job *models.Job) (*mode
 // runScheduledBackup is runBackupForJob; a non-zero cancelAt cancels the run (and
 // only it, by its run ID) when the job's backup window closes.
 func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, cancelAt time.Time) (*models.BackupRecord, error) {
-	s.logger.Info("running backup job",
+	s.logger.InfoContext(ctx, "running backup job",
 		slog.String("job_id", job.ID),
 		slog.String("database", job.Database),
 	)
@@ -912,7 +914,7 @@ func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, can
 	defer s.cancelRunAt(job, run.ID, cancelAt)()
 	if job.MultiDatabase() {
 		if current := s.ActiveJobRun(job.ID); current != "" {
-			s.logger.Warn("skipping scheduled backup: the previous run of this job is still running",
+			s.logger.WarnContext(ctx, "skipping scheduled backup: the previous run of this job is still running",
 				slog.String("job_id", job.ID), slog.String("run_id", current))
 			return nil, fmt.Errorf("%w (run %s): %w", ErrJobRunning, current, runs.ErrBusy)
 		}
@@ -932,14 +934,14 @@ func (s *Scheduler) runScheduledBackup(ctx context.Context, job *models.Job, can
 	opts := plan.options[0]
 	if saveErr := s.metadataStore.SaveBackupRecord(ctx, record); saveErr != nil {
 		s.diskGuard.Observe(ctx, saveErr)
-		s.logger.Warn("failed to record the scheduled backup as in progress",
+		s.logger.WarnContext(ctx, "failed to record the scheduled backup as in progress",
 			slog.String("job_id", job.ID), slog.String("backup_id", record.ID), slog.Any("error", saveErr))
 	}
 	s.saveRun(ctx, run)
 	s.runStarted(job, run)
 	tracked, regErr := s.registry.Register(runs.Meta{Kind: models.RunBackup, ID: record.ID, JobID: job.ID, Database: job.Database, Group: run.ID})
 	if regErr != nil {
-		s.logger.Warn("scheduled backup is not tracked", slog.String("backup_id", record.ID), slog.Any("error", regErr))
+		s.logger.WarnContext(ctx, "scheduled backup is not tracked", slog.String("backup_id", record.ID), slog.Any("error", regErr))
 	}
 	defer tracked.End()
 	record, err = s.backupEngine.Execute(tracked.Bind(ctx), opts, record)
@@ -1011,7 +1013,7 @@ func (s *Scheduler) finishJobRun(ctx context.Context, job *models.Job, run *mode
 		err = saveErr
 	}
 	if err != nil {
-		s.logger.Error("backup job execution failed",
+		s.logger.ErrorContext(ctx, "backup job execution failed",
 			logsafe.Attr("job_id", job.ID),
 			logsafe.Error(err),
 		)

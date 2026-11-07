@@ -114,11 +114,11 @@ func (s *Service) recordArchiveMismatch(ctx context.Context, view *models.Backup
 	})
 	if err != nil {
 		if !errors.Is(err, errArchiveChanged) {
-			s.logger.Warn("cannot record the checksum mismatch a restore found", logsafe.Attr("backup_id", view.ID), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "cannot record the checksum mismatch a restore found", logsafe.Attr("backup_id", view.ID), logsafe.Error(err))
 		}
 		return
 	}
-	s.logger.Warn("a restore found the archive damaged; later restores read a healthy copy", logsafe.Attr("backup_id", view.ID),
+	s.logger.WarnContext(ctx, "a restore found the archive damaged; later restores read a healthy copy", logsafe.Attr("backup_id", view.ID),
 		logsafe.Attr("storage_target_id", view.StorageTargetID), slog.String("error", msg))
 	if requeued && s.cfg.WakeCopies != nil {
 		s.cfg.WakeCopies()

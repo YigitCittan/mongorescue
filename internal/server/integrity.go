@@ -67,7 +67,7 @@ func (s *Server) writeIntegrityError(w http.ResponseWriter, err error) {
 		errors.Is(err, operations.ErrApprovalRequired), errors.Is(err, operations.ErrBackupDeleted):
 		s.writeOperationError(w, err)
 	default:
-		s.logger.Error("integrity operation failed", logsafe.Error(err))
+		s.logger.Error("integrity operation failed", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

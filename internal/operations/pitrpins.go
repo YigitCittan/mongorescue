@@ -43,7 +43,7 @@ func (s *Service) pinPITRPlan(ctx context.Context, pp *pitrPlan, replan func() (
 			return nil, public("retention deleted part of the point-in-time restore plan while it was being planned ("+
 				strings.TrimPrefix(err.Error(), "pitr: ")+"); try again", ErrPITRNotRestorable, err)
 		}
-		s.logger.Info("PITR retention deleted part of a restore plan before it was pinned; planning again",
+		s.logger.InfoContext(ctx, "PITR retention deleted part of a restore plan before it was pinned; planning again",
 			logsafe.Attr("stream_id", pp.stream.ID), logsafe.Error(err))
 		if pp, err = replan(); err != nil {
 			return nil, err

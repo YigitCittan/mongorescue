@@ -42,7 +42,7 @@ func (s *Service) APIKeyExpiryChecked(ctx context.Context, c *auth.ExpiryCheck) 
 			entry.APIKeyName = "api_key_expiry"
 			s.cfg.Audit.Record(ctx, entry)
 		}
-		s.logger.Warn("API keys got an expiry from the maximum lifetime",
+		s.logger.WarnContext(ctx, "API keys got an expiry from the maximum lifetime",
 			slog.Int("keys", len(c.Capped)), slog.Time("expires_at", c.Deadline.UTC()))
 	}
 	for _, k := range c.Announce {

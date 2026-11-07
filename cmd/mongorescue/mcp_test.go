@@ -19,6 +19,8 @@ func TestMCPSubcommandErrors(t *testing.T) {
 		{[]string{"--bogus"}, nil, 2, "flag provided but not defined"},
 		{[]string{"extra"}, nil, 2, "unexpected arguments"},
 		{[]string{"--log-level", "loud"}, nil, 2, "log level"},
+		{[]string{"--log-format", "xml"}, nil, 2, "log format"},
+		{nil, map[string]string{"MONGORESCUE_LOG_FORMAT": "xml"}, 2, "log format"},
 	} {
 		var stdout, stderr bytes.Buffer
 		code := runMCP(tc.args, env(tc.env), strings.NewReader(""), &stdout, &stderr)

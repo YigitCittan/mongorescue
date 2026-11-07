@@ -64,7 +64,7 @@ func notifyStatus(err error) int {
 func (s *Server) writeNotifyError(w http.ResponseWriter, err error) {
 	status := notifyStatus(err)
 	if status == http.StatusInternalServerError {
-		s.logger.Error("notification api error", logsafe.Error(err))
+		s.logger.Error("notification api error", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, status, "internal error")
 		return
 	}

@@ -217,6 +217,8 @@ ingress:
 | :--- | :--- | :--- |
 | `config.dashboard` | `MONGORESCUE_DASHBOARD` | `true` |
 | `config.logLevel` | `-log-level` | `info` |
+| `config.logFormat` | `-log-format` | `text` (`text` or `json`) |
+| `config.accessLog` | `-access-log` | `false` |
 | `config.shutdownGrace` | `MONGORESCUE_SHUTDOWN_GRACE` | `terminationGracePeriodSeconds` − 60 s |
 | `config.toolsDir` | `MONGORESCUE_TOOLS_DIR` | the tools in the image |
 | `config.goMemLimitRatio` | `GOMEMLIMIT`, a share of `resources.limits.memory` ([memory limit](#memory-limit-and-gomemlimit)) | `0` (off) |

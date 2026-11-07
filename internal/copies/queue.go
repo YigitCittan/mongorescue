@@ -212,7 +212,7 @@ func (s *Service) loop(ctx context.Context) {
 		case <-s.wake:
 		}
 		if err := s.RunDue(ctx); err != nil && ctx.Err() == nil {
-			s.logger.Warn("copy queue run incomplete", logsafe.Error(err))
+			s.logger.WarnContext(ctx, "copy queue run incomplete", logsafe.Error(err))
 		}
 		if !timer.Stop() {
 			select {
@@ -467,12 +467,12 @@ func (s *Service) removeUntracked(ctx context.Context, backupID, targetID, key s
 	}
 	switch {
 	case err != nil && !errors.Is(err, storage.ErrNotFound):
-		s.logger.Error("cannot delete the copy of a backup that was removed while it uploaded", append(attrs, logsafe.Error(err))...)
+		s.logger.ErrorContext(ctx, "cannot delete the copy of a backup that was removed while it uploaded", append(attrs, logsafe.Error(err))...)
 	case until != nil:
-		s.logger.Error("the copy of a backup that was removed while it uploaded is locked; delete it once its lock ends",
+		s.logger.ErrorContext(ctx, "the copy of a backup that was removed while it uploaded is locked; delete it once its lock ends",
 			append(attrs, slog.Time("retain_until", *until))...)
 	default:
-		s.logger.Info("deleted the copy of a backup that was removed while it uploaded", attrs...)
+		s.logger.InfoContext(ctx, "deleted the copy of a backup that was removed while it uploaded", attrs...)
 	}
 }
 
@@ -485,12 +485,12 @@ func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *mode
 	attrs := []any{logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_target_id", cp.TargetID), slog.Int("attempts", cp.Attempts)}
 	var typ events.EventType
 	if copyErr == nil {
-		s.logger.Info("backup copied", attrs...)
+		s.logger.InfoContext(ctx, "backup copied", attrs...)
 		if failing {
 			typ = events.BackupCopyRecovered
 		}
 	} else {
-		s.logger.Warn("backup copy failed", append(attrs, slog.String("error", cp.Error))...)
+		s.logger.WarnContext(ctx, "backup copy failed", append(attrs, slog.String("error", cp.Error))...)
 		if !failing {
 			typ = events.BackupCopyFailed
 		}
@@ -503,7 +503,7 @@ func (s *Service) report(ctx context.Context, rec *models.BackupRecord, cp *mode
 	}
 	if copyErr != nil && cp.NextAttemptAt == nil {
 		// The last automatic attempt failed.
-		s.logger.Error("backup copy given up after its last attempt; retry it with POST /api/v1/backups/{id}/copies/retry", attrs...)
+		s.logger.ErrorContext(ctx, "backup copy given up after its last attempt; retry it with POST /api/v1/backups/{id}/copies/retry", attrs...)
 		s.cfg.Publisher.Publish(ctx, CopyEvent(events.BackupCopyExhausted, rec, cp, s.now()))
 	}
 }

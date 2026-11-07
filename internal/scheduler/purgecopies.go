@@ -29,7 +29,7 @@ func (p purgeRun) purgeCopies(ctx context.Context, rec *models.BackupRecord) (*t
 		until, err := p.purgeCopy(ctx, c)
 		switch {
 		case err != nil:
-			p.logger.Warn("purge could not delete a backup copy; the backup is retried by the next purge",
+			p.logger.WarnContext(ctx, "purge could not delete a backup copy; the backup is retried by the next purge",
 				logsafe.Attr("backup_id", rec.ID), logsafe.Attr("storage_target_id", c.TargetID), logsafe.Error(err))
 			return nil, fmt.Errorf("delete the copy of %s on %s: %w", rec.ID, c.TargetID, err)
 		case until != nil:
@@ -81,6 +81,6 @@ func (p purgeRun) recordCopy(ctx context.Context, id, targetID string, fn func(*
 		}
 		return nil
 	}); err != nil {
-		p.logger.Warn("cannot record the purge of a backup copy", logsafe.Attr("backup_id", id), logsafe.Error(err))
+		p.logger.WarnContext(ctx, "cannot record the purge of a backup copy", logsafe.Attr("backup_id", id), logsafe.Error(err))
 	}
 }

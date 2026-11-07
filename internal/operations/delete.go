@@ -227,7 +227,7 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	// later under the same ID.
 	if st, ok := s.cfg.Store.(pendingStore); ok {
 		if _, err := st.DeletePendingChangesOf(ctx, models.PendingRetention, id); err != nil {
-			s.logger.Warn("could not drop the pending retention change of a deleted job", logsafe.Attr("job_id", id), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "could not drop the pending retention change of a deleted job", logsafe.Attr("job_id", id), logsafe.Error(err))
 		}
 	}
 	if s.cfg.OnJobDeleted != nil {

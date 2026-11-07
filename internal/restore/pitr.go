@@ -239,7 +239,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 		defer cancel()
 	}
 	tracker := runs.FromContext(ctx)
-	e.logger.Info("initiating point-in-time restore",
+	e.logger.InfoContext(ctx, "initiating point-in-time restore",
 		slog.String("restore_id", record.ID),
 		logsafe.Attr("stream_id", info.StreamID),
 		logsafe.Attr("base_id", base.ID),
@@ -364,7 +364,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	record.Status = models.RestoreStatusCompleted
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("point-in-time restore completed into %s in %.1fs (%d oplog operations replayed)", record.TargetDatabase, record.DurationSeconds, ops)
-	e.logger.Info("point-in-time restore finished successfully",
+	e.logger.InfoContext(ctx, "point-in-time restore finished successfully",
 		slog.String("restore_id", record.ID),
 		logsafe.Attr("target_db", record.TargetDatabase),
 		slog.Int64("ops", ops),
@@ -523,7 +523,7 @@ func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PI
 	var failed []string
 	for _, clone := range clones {
 		if err := e.admin.DropDatabase(dropCtx, uri, clone); err != nil {
-			e.logger.Warn("failed to drop a clone of a failed point-in-time restore",
+			e.logger.WarnContext(ctx, "failed to drop a clone of a failed point-in-time restore",
 				logsafe.Attr("target_db", clone), slog.String("error", redact.Text(err.Error())))
 			failed = append(failed, clone)
 		}

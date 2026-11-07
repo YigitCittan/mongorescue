@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/yigitcittan/mongorescue/internal/config"
+	"github.com/yigitcittan/mongorescue/internal/logging"
 	"github.com/yigitcittan/mongorescue/internal/mcp"
 )
 
@@ -46,6 +47,7 @@ func runMCP(args []string, getenv func(string) string, stdin io.Reader, stdout, 
 	url := fs.String("url", defaultURL, "Base URL of the MongoRescue instance (env "+EnvMCPURL+")")
 	apiKey := fs.String("api-key", "", "API key (discouraged: visible in the process list; use "+EnvMCPAPIKey+")")
 	logLevel := fs.String("log-level", "warn", "Log level on stderr: debug, info, warn or error")
+	logFormat := fs.String("log-format", getenv(logging.EnvLogFormat), "Log format on stderr: text or json (env "+logging.EnvLogFormat+")")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -61,7 +63,12 @@ func runMCP(args []string, getenv func(string) string, stdin io.Reader, stdout, 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+	format, err := logging.ParseFormat(*logFormat)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	logger := logging.New(stderr, format, level)
 
 	key := getenv(EnvMCPAPIKey)
 	if *apiKey != "" {

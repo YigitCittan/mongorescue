@@ -64,6 +64,8 @@
       "properties": {
         "dashboard": { "type": "boolean" },
         "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+        "logFormat": { "type": "string", "enum": ["text", "json"] },
+        "accessLog": { "type": "boolean" },
         "shutdownGrace": {
           "type": "string",
           "description": "A Go duration (9m, 540s) or a number of seconds; empty derives it from terminationGracePeriodSeconds minus 60 seconds.",

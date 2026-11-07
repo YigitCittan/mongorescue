@@ -343,7 +343,7 @@ func (s *Service) snapshotKnownDatabases(ctx context.Context, job *models.Job) {
 	probe.KnownDatabases = nil
 	res, err := s.cfg.Jobs.ResolveJobDatabases(ctx, probe)
 	if err != nil {
-		s.logger.Info("the job's databases could not be listed now; its first run records them",
+		s.logger.InfoContext(ctx, "the job's databases could not be listed now; its first run records them",
 			logsafe.Attr("job_id", job.ID), logsafe.Error(err))
 		return
 	}

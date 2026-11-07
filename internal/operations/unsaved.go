@@ -69,7 +69,7 @@ func (s *Service) failUnsavedRestore(ctx context.Context, rec *models.RestoreRec
 	}
 	cause := redact.Text(saveErr.Error())
 	rec.FailUnsaved(cause, note, time.Now())
-	s.logger.Error("the final record of a restore could not be saved; the restore is reported as failed",
+	s.logger.ErrorContext(ctx, "the final record of a restore could not be saved; the restore is reported as failed",
 		logsafe.Attr("restore_id", rec.ID), slog.String("outcome", string(outcome)), logsafe.Error(saveErr))
 	run.Printf("ERROR: the restore record could not be saved (%s); the restore is reported as failed%s", cause, note)
 	failed := *rec
@@ -88,7 +88,7 @@ func (s *Service) dropUnsavedClone(ctx context.Context, rec *models.RestoreRecor
 		err = s.cfg.Dropper.DropDatabase(mongotls.NewContext(ctx, conn.TLS()), conn.URI, name)
 	}
 	if err != nil {
-		s.logger.Warn("failed to drop the safe clone of a restore whose record could not be saved",
+		s.logger.WarnContext(ctx, "failed to drop the safe clone of a restore whose record could not be saved",
 			logsafe.Attr("restore_id", rec.ID), logsafe.Attr("database", name), logsafe.Error(err))
 		return "; dropping the clone " + name + " failed (" + redact.Text(err.Error()) + "), drop it manually"
 	}

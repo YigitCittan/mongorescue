@@ -138,7 +138,7 @@ func (e *Engine) SwapPITRClones(ctx context.Context, req models.RestoreRequest, 
 		start := time.Now()
 		tracker.Printf("replacing database %s with %s", db, clone)
 		if err := e.swapDatabase(ctx, uri, configArgs, snap); err != nil {
-			e.logger.Error("in-place point-in-time restore: replacing a database failed",
+			e.logger.ErrorContext(ctx, "in-place point-in-time restore: replacing a database failed",
 				slog.String("restore_id", record.ID), logsafe.Attr("target_db", db), slog.String("error", redact.Text(err.Error())))
 			return fmt.Errorf("%w: %s: %w", ErrSwapFailed, db, err)
 		}
