@@ -33,9 +33,8 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		{"setup status", "GET", "/api/v1/setup/status", nil, true},
 		{"authenticated api", "GET", "/api/v1/jobs", key, true},
 		{"unauthenticated api", "GET", "/api/v1/jobs", nil, true},
-		// Unknown API paths fall through to the dashboard's file server, whose 404
-		// drops Cache-Control; its plain-text body carries no data.
-		{"unknown api route", "GET", "/api/v1/nope", key, false},
+		// Unknown API paths answer the JSON 404 of the API fallback, never cached.
+		{"unknown api route", "GET", "/api/v1/nope", key, true},
 		{"refused public write", "POST", "/api/v1/auth/login", nil, true},
 		{"cors preflight", "OPTIONS", "/api/v1/jobs", map[string]string{"Origin": "https://tools.example.com"}, true},
 		{"mcp without key", "POST", MCPPath, nil, true},

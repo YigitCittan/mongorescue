@@ -432,6 +432,12 @@ func (s *Server) buildRoutes() *http.ServeMux {
 		mux.Handle("GET /metrics", s.unlimitedOnly(s.metricsHandler))
 	}
 
+	// Unknown API paths and methods answer the JSON error envelope (with its code),
+	// not the plain text of the mux. They are not recorded in s.patterns.
+	for _, m := range apiFallbackMethods {
+		mux.mux.Handle(m+" "+apiFallbackPath, http.HandlerFunc(s.handleAPIFallback))
+	}
+
 	// Embedded Static Frontend
 	if s.staticFS != nil {
 		fileServer := http.FileServer(http.FS(s.staticFS))
@@ -486,6 +492,35 @@ func writeEnvelopeError(w http.ResponseWriter, status int, code, message string,
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(apiResponse{Success: false, Data: data, Error: message, Code: code})
+}
+
+// The catch-all of the API: apiFallbackPath for each of apiFallbackMethods.
+const apiFallbackPath = "/api/"
+
+var apiFallbackMethods = []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions}
+
+// isAPIFallback reports whether a ServeMux pattern is one of the catch-alls.
+func isAPIFallback(pattern string) bool {
+	return strings.HasSuffix(pattern, " "+apiFallbackPath)
+}
+
+// handleAPIFallback answers a request that matches no API route: 405 with Allow when
+// another method serves the path, otherwise 404.
+func (s *Server) handleAPIFallback(w http.ResponseWriter, r *http.Request) {
+	var allowed []string
+	for _, m := range apiFallbackMethods {
+		probe := r.Clone(r.Context())
+		probe.Method = m
+		if _, pattern := s.mux.Handler(probe); pattern != "" && !isAPIFallback(pattern) {
+			allowed = append(allowed, m)
+		}
+	}
+	if len(allowed) > 0 {
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotFound, "not found")
 }
 
 // Handlers
