@@ -24,6 +24,7 @@ fi
 # Dockerfile default build arg and its use in the builder stage.
 df=$(sed -n 's/^ARG GO_VERSION=\(.*\)$/\1/p' Dockerfile | tr -d '\r')
 [[ "$df" == "$want" ]] || err "Dockerfile ARG GO_VERSION is '$df', .go-version is '$want'"
+# shellcheck disable=SC2016 # $BUILDPLATFORM and ${GO_VERSION} are matched literally
 grep -Eq '^FROM (--platform=\$BUILDPLATFORM )?golang:\$\{GO_VERSION\}-alpine@sha256:' Dockerfile \
   || err "Dockerfile builder stage must be 'FROM [--platform=\$BUILDPLATFORM ]golang:\${GO_VERSION}-alpine@sha256:...'"
 
