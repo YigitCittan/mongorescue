@@ -100,18 +100,19 @@ func TestSpecificErrorCodes(t *testing.T) {
 	admin := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + f.keys[auth.ScopeAdmin]}
 	read := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + f.keys[auth.ScopeRead]}
 	for _, c := range []struct {
-		name         string
-		rec          *httptest.ResponseRecorder
-		status       int
-		wantCode     string
-		wantNotEmpty bool
+		name     string
+		rec      *httptest.ResponseRecorder
+		status   int
+		wantCode string
 	}{
-		{"no credentials", serve(f.h, "GET", "/api/v1/jobs", nil, nil), 401, apierr.Unauthorized, true},
-		{"scope", serve(f.h, "POST", "/api/v1/jobs", []byte(`{}`), read), 403, apierr.Forbidden, true},
-		{"unknown backup", serve(f.h, "GET", "/api/v1/backups/does_not_exist", nil, admin), 404, apierr.NotFound, true},
-		{"malformed json", serve(f.h, "POST", "/api/v1/jobs", []byte(`{"bad`), admin), 400, apierr.InvalidRequest, true},
+		{"no credentials", serve(f.h, "GET", "/api/v1/jobs", nil, nil), 401, apierr.Unauthorized},
+		{"scope", serve(f.h, "POST", "/api/v1/jobs", []byte(`{}`), read), 403, apierr.Forbidden},
+		{"unknown job", serve(f.h, "GET", "/api/v1/jobs/does_not_exist", nil, admin), 404, apierr.NotFound},
+		{"unknown route", serve(f.h, "GET", "/api/v1/nope", nil, admin), 404, apierr.NotFound},
+		{"wrong method", serve(f.h, "PATCH", "/api/v1/jobs/does_not_exist", []byte(`{}`), admin), 405, apierr.InvalidRequest},
+		{"malformed json", serve(f.h, "POST", "/api/v1/jobs", []byte(`{"bad`), admin), 400, apierr.InvalidRequest},
 		{"body too large", serve(f.h, "POST", "/api/v1/jobs", []byte(`{"name":"`+strings.Repeat("a", maxAPIBody+10)+`"}`), admin),
-			413, apierr.BodyTooLarge, true},
+			413, apierr.BodyTooLarge},
 	} {
 		if c.rec.Code != c.status || code(c.rec) != c.wantCode {
 			t.Errorf("%s: %d code %q (%s); want %d %q", c.name, c.rec.Code, code(c.rec), c.rec.Body, c.status, c.wantCode)
