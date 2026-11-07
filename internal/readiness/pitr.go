@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/pitr"
 )
 
 // PITR reasons. A stream's reasons also apply to every row of its connection.
@@ -21,6 +22,10 @@ const (
 	ReasonPITRLagHigh = "pitr_lag_high"
 	// ReasonPITRWindowLow: the oplog headroom is below max(6h, 3 x lag).
 	ReasonPITRWindowLow = "pitr_window_low"
+	// ReasonPITRBaseWindowRisk: the last successful base backup took more than
+	// pitr.base_window_risk_ratio of the oplog window; a base that outlasts the
+	// window fails and the recovery window stops moving.
+	ReasonPITRBaseWindowRisk = "pitr_base_window_risk"
 	// ReasonPITRNoWindow: the enabled stream has no eligible base for its current
 	// chain yet (a new stream, failing base backups, or oplog_max_days removed the
 	// chunks a base needs), so nothing can be restored from it.
@@ -79,6 +84,11 @@ type StreamInfo struct {
 	// LagHigh and WindowLow report the raised lag and headroom alerts.
 	LagHigh   bool `json:"lag_high"`
 	WindowLow bool `json:"window_low"`
+	// BaseWindowRisk reports that the last base backup took more than the risk ratio
+	// of the oplog window; BaseWindow has the numbers (nil without a base or a
+	// window).
+	BaseWindowRisk bool             `json:"base_window_risk"`
+	BaseWindow     *pitr.BaseWindow `json:"base_window,omitempty"`
 	// WindowOpen reports that the current chain has an eligible base: every point
 	// from its window's start up to the durable RPO can be restored.
 	WindowOpen bool `json:"window_open"`
@@ -137,6 +147,9 @@ func streamReasons(st StreamInfo) (fail, warn []string) {
 	}
 	if st.WindowLow {
 		warn = append(warn, ReasonPITRWindowLow)
+	}
+	if st.BaseWindowRisk {
+		warn = append(warn, ReasonPITRBaseWindowRisk)
 	}
 	return fail, warn
 }

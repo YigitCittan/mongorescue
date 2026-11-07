@@ -26,6 +26,7 @@ type pitrSeries struct {
 	windowEnd   *prometheus.GaugeVec
 	breaks      *prometheus.CounterVec
 	unverified  *prometheus.GaugeVec
+	baseRatio   *prometheus.GaugeVec
 }
 
 // newPITRSeries creates the PITR series and returns their collectors.
@@ -47,9 +48,10 @@ func (m *Metrics) newPITRSeries() []prometheus.Collector {
 		breaks: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Subsystem: "pitr", Name: "chain_breaks_total",
 			Help: "Oplog chains ended by a gap, a replica set change or a divergence, by reason."}, []string{"stream", "reason"}),
 		unverified: gauge("chain_test_unverified_collections", "Collections whose document count the newest chain test of the stream could not verify (the newer base recorded no exact count at its consistent point); 0 when every count was checked."),
+		baseRatio:  gauge("base_window_ratio", "Duration of the last successful base backup of the stream over the current oplog window; above pitr.base_window_risk_ratio (default 0.5) a base may outlast the window and fail. Absent without a base or a window."),
 	}
 	p := m.pitr
-	return []prometheus.Collector{p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified}
+	return []prometheus.Collector{p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified, p.baseRatio}
 }
 
 // unix returns t as fractional Unix seconds.
@@ -106,12 +108,23 @@ func (m *Metrics) SetPITRChainTestUnverified(stream string, n int) {
 	m.pitr.unverified.WithLabelValues(stream).Set(float64(n))
 }
 
+// SetPITRBaseWindowRatio records the duration of the last successful base backup
+// of stream over its oplog window (mongorescue_pitr_base_window_ratio); ok false
+// removes the series, since no ratio is known.
+func (m *Metrics) SetPITRBaseWindowRatio(stream string, ratio float64, ok bool) {
+	if !ok {
+		m.pitr.baseRatio.DeleteLabelValues(stream)
+		return
+	}
+	m.pitr.baseRatio.WithLabelValues(stream).Set(ratio)
+}
+
 // ForgetPITRStream drops every series of a deleted stream.
 func (m *Metrics) ForgetPITRStream(stream string) {
 	by := prometheus.Labels{"stream": stream}
 	p := m.pitr
 	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
-		p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified,
+		p.up, p.lag, p.lastChunk, p.chunks, p.chunkBytes, p.headroom, p.windowStart, p.windowEnd, p.breaks, p.unverified, p.baseRatio,
 	} {
 		v.DeletePartialMatch(by)
 	}

@@ -116,6 +116,9 @@ func streamInfo(st *collector.StreamStatus) readiness.StreamInfo {
 	}
 	if st.Live != nil {
 		info.WindowLow = st.Live.WindowLow
+		if bw := st.Live.BaseWindow; bw != nil {
+			info.BaseWindow, info.BaseWindowRisk = bw, bw.AtRisk
+		}
 	}
 	// Any break counts while the current chain has no window: no point after it
 	// can be restored yet.

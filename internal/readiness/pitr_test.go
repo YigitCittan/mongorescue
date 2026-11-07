@@ -47,12 +47,13 @@ func TestReportUsesThePITRStream(t *testing.T) {
 	// A broken chain without a base and a failing collector fail the row; the job
 	// RPO counts again.
 	stream.Failing, stream.Broken, stream.WindowOpen, stream.LagHigh, stream.WindowLow = true, true, false, true, true
+	stream.BaseWindowRisk = true
 	if report, err = svc.Report(ctx); err != nil {
 		t.Fatal(err)
 	}
 	row = report.Rows[0]
 	for _, r := range []string{readiness.ReasonRPOMissed, readiness.ReasonPITRCollectorDown, readiness.ReasonPITRChainBroken,
-		readiness.ReasonPITRLagHigh, readiness.ReasonPITRWindowLow} {
+		readiness.ReasonPITRLagHigh, readiness.ReasonPITRWindowLow, readiness.ReasonPITRBaseWindowRisk} {
 		if !slices.Contains(row.Reasons, r) {
 			t.Errorf("reasons %v lack %s", row.Reasons, r)
 		}

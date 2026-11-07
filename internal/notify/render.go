@@ -48,6 +48,7 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.PITRLagHigh:               {"⏰", "PITR collector lagging"},
 	events.PITRLagRecovered:          {"✅", "PITR collector caught up"},
 	events.PITRWindowLow:             {"⚠️", "PITR oplog headroom low"},
+	events.PITRBaseWindowRisk:        {"⚠️", "PITR base backup near the oplog window"},
 	events.PITRCollectorFailed:       {"❌", "PITR collector failing"},
 	events.PITRCollectorRecovered:    {"✅", "PITR collector recovered"},
 	events.BackupCopyFailed:          {"❌", "Backup copy failing"},
@@ -126,7 +127,7 @@ func Render(e events.Event) Message {
 	case events.SecurityApprovalRequested:
 		target = fmt.Sprintf("%s requested by %s; another administrator must approve it (request %s)", e.Detail, e.Actor, e.ApprovalID)
 	case events.PITRChainBroken, events.PITRDiverged, events.PITRLagHigh, events.PITRLagRecovered,
-		events.PITRWindowLow, events.PITRCollectorFailed, events.PITRCollectorRecovered:
+		events.PITRWindowLow, events.PITRBaseWindowRisk, events.PITRCollectorFailed, events.PITRCollectorRecovered:
 		target = fmt.Sprintf("stream %s (connection %s)", e.Stream, e.ConnectionID)
 	case events.BackupCopyFailed, events.BackupCopyRecovered, events.BackupCopyExhausted:
 		name := e.TargetName

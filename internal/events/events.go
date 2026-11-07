@@ -145,6 +145,12 @@ const (
 	// PITRWindowLow is emitted when the oplog headroom of a stream (how long the
 	// collector may stop before entries are lost) drops below max(6h, 3 x lag).
 	PITRWindowLow EventType = "pitr.window_low"
+	// PITRBaseWindowRisk is emitted once per episode when the last successful base
+	// backup of a stream took more than pitr.base_window_risk_ratio (default 50%)
+	// of the current oplog window: a base that outlasts the window fails and the
+	// recovery window stops moving (Event.Detail). The episode ends when the ratio
+	// falls back below the threshold; a restart raises it again while it lasts.
+	PITRBaseWindowRisk EventType = "pitr.base_window_risk"
 	// PITRCollectorFailed is emitted when the collector of a stream starts failing
 	// (Event.Error).
 	PITRCollectorFailed EventType = "pitr.collector_failed"
@@ -248,7 +254,7 @@ var ruleTypes = []EventType{
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated, SecurityKeyWrapping,
 	APIKeyExpiring, APIKeyDeadlineSet,
-	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRCollectorFailed, PITRCollectorRecovered,
+	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRBaseWindowRisk, PITRCollectorFailed, PITRCollectorRecovered,
 	BackupCopyFailed, BackupCopyRecovered, BackupCopyExhausted,
 }
 
@@ -272,7 +278,7 @@ func (t EventType) Failed() bool {
 	switch t {
 	case BackupFailed, RestoreFailed, VerificationFailed, RestoreTestFailed, DriftDetected, MetadataBackupFailed,
 		RestoreVerificationFailed, JobRPOMissed,
-		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull,
+		PITRChainBroken, PITRDiverged, PITRLagHigh, PITRWindowLow, PITRBaseWindowRisk, PITRCollectorFailed, BackupCopyFailed, BackupCopyExhausted, SystemDiskFull,
 		HASteppedDown, HACatchUpSkipped, HAEmptyStart, VaultUnavailable:
 		return true
 	default:

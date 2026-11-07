@@ -66,6 +66,9 @@ type Live struct {
 	CatchingUp bool `json:"catching_up"`
 	// WindowLow reports that the headroom is below its threshold.
 	WindowLow bool `json:"window_low"`
+	// BaseWindow compares the base backup duration with the oplog window; nil
+	// without a successful base or an oplog window.
+	BaseWindow *pitr.BaseWindow `json:"base_window,omitempty"`
 	// LastTick is when the collector last looked at the oplog.
 	LastTick time.Time `json:"last_tick"`
 }
@@ -91,6 +94,12 @@ type worker struct {
 	failing   bool
 	lagSince  *time.Time
 	windowLow bool
+	// baseRisk tracks the pitr.base_window_risk episode already raised (in memory:
+	// a restart raises it again while the risk lasts), and baseSeen when the base
+	// durations were last read (baseLast and baseExpected are what it found).
+	baseRisk               bool
+	baseSeen               time.Time
+	baseLast, baseExpected time.Duration
 	// behind counts range reads in a row that ended before their bound.
 	behind int
 	// emptyAt is the position an empty chunk was last written at.
@@ -751,6 +760,54 @@ func (w *worker) observeLag(ctx context.Context, st *pitr.State, win pitr.OplogW
 	case !low && w.windowLow:
 		w.windowLow = false
 		w.setWindowLow(ctx, nil)
+	}
+	w.observeBaseWindow(ctx, win, now)
+}
+
+// baseReadEvery is the least time between two reads of a stream's base backups
+// by observeBaseWindow.
+const baseReadEvery = time.Minute
+
+// observeBaseWindow compares the duration of the last successful base backup
+// with the oplog window: it exports the ratio, keeps it in the live state and
+// raises pitr.base_window_risk once when it exceeds the threshold. The episode
+// ends, and the event is armed again, when the ratio is back at or below it.
+func (w *worker) observeBaseWindow(ctx context.Context, win pitr.OplogWindow, now time.Time) {
+	if w.svc.cfg.Bases == nil {
+		return
+	}
+	if w.baseSeen.IsZero() || now.Sub(w.baseSeen) >= baseReadEvery || now.Before(w.baseSeen) {
+		bases, err := w.svc.cfg.Bases(ctx, w.stream.ID)
+		if err != nil {
+			w.svc.logger.Warn("cannot read the base backups of the PITR stream", logsafe.Attr("stream_id", w.stream.ID), logsafe.Error(err))
+			return
+		}
+		w.baseSeen = now
+		w.baseLast, w.baseExpected = baseDurations(bases)
+	}
+	var window time.Duration
+	if win.Newest.T > win.Oldest.T {
+		window = time.Duration(win.Newest.T-win.Oldest.T) * time.Second
+	}
+	bw := pitr.NewBaseWindow(w.baseLast, w.baseExpected, window, w.svc.baseWindowRiskRatio())
+	w.mu.Lock()
+	w.live.BaseWindow = bw
+	w.mu.Unlock()
+	w.svc.observe(func(o Observer) {
+		if bw == nil {
+			o.SetPITRBaseWindowRatio(w.stream.ID, 0, false)
+			return
+		}
+		o.SetPITRBaseWindowRatio(w.stream.ID, bw.Ratio, true)
+	})
+	switch {
+	case bw != nil && bw.AtRisk && !w.baseRisk:
+		w.baseRisk = true
+		w.svc.publish(ctx, w.event(events.PITRBaseWindowRisk, "base_window_risk", "",
+			fmt.Sprintf("the last base backup took %s, %.0f%% of the %s oplog window (threshold %.0f%%): a base that outlasts the window fails and the recovery window stops moving; grow the oplog",
+				w.baseLast.Round(time.Second), bw.Ratio*100, window, bw.Threshold*100)))
+	case bw != nil && !bw.AtRisk && w.baseRisk:
+		w.baseRisk = false
 	}
 }
 
