@@ -294,6 +294,36 @@ func (p *preflightRun) connection() {
 	p.reachable, p.version = true, info.Version
 	p.res.Add(models.PreflightCheckConnection, models.PreflightPass,
 		fmt.Sprintf("connected to %s (MongoDB %s)", p.connectionName(), orUnknown(info.Version)))
+	p.topology(info)
+}
+
+// topology refuses a target that is a mongos unless its connection sets
+// allow_mongos (then it warns): a restore through mongos is not supported on
+// sharded clusters. The failed check is not overridden by Force (see
+// refuseMongos).
+func (p *preflightRun) topology(info connections.ServerInfo) {
+	if !info.Mongos {
+		return
+	}
+	if p.req.AllowMongos {
+		p.res.Add(models.PreflightCheckTopology, models.PreflightWarn, fmt.Sprintf(
+			"%s: connection %s reaches a mongos; restoring through mongos is not supported on sharded clusters (allow_mongos is set)",
+			models.WarningShardedUnsupported, p.connectionName()))
+		return
+	}
+	p.res.Add(models.PreflightCheckTopology, models.PreflightFail, fmt.Sprintf(
+		"connection %s reaches a mongos and sharded clusters are not supported; set allow_mongos on the connection to accept that",
+		p.connectionName()))
+}
+
+// refuseMongos returns the error that refuses a restore whose preflight found a
+// mongos target without allow_mongos. Unlike other failed checks, "force": true
+// and dry runs do not override it.
+func refuseMongos(pre *models.PreflightResult) error {
+	if c := pre.Check(models.PreflightCheckTopology); c != nil && c.Status == models.PreflightFail {
+		return public(c.Message, models.ErrShardedUnsupported)
+	}
+	return nil
 }
 
 func (p *preflightRun) encryption() {

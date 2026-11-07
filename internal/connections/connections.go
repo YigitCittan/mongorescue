@@ -74,6 +74,9 @@ type Repository interface {
 type ServerInfo struct {
 	// Version is the MongoDB server version.
 	Version string
+	// Mongos reports that the server is a mongos router (hello answers
+	// msg: isdbgrid).
+	Mongos bool
 }
 
 // Database describes one database of a server.
@@ -147,6 +150,9 @@ type Input struct {
 	// MaxConcurrentBackups, when set, replaces how many backups may read from the
 	// connection at once (0 = unlimited).
 	MaxConcurrentBackups *int `json:"max_concurrent_backups,omitempty"`
+	// AllowMongos, when set, accepts (true) or refuses (false) backups and
+	// restores through a mongos; omitted keeps the stored value (default false).
+	AllowMongos *bool `json:"allow_mongos,omitempty"`
 	// PostRestoreCommands, when set, replaces the commands every safe-clone restore
 	// into the connection runs against its clones before it completes (an empty
 	// list removes them); omitted keeps them. See internal/postrestore.
@@ -176,6 +182,9 @@ func (in Input) apply(c *models.Connection) {
 	}
 	if in.MaxConcurrentBackups != nil {
 		c.MaxConcurrentBackups = *in.MaxConcurrentBackups
+	}
+	if in.AllowMongos != nil {
+		c.AllowMongos = *in.AllowMongos
 	}
 }
 

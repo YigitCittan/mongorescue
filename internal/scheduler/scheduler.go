@@ -888,6 +888,7 @@ func (s *Scheduler) jobOptions(ctx context.Context, job *models.Job, trigger mod
 	// limit of concurrent backups applies to every job that reads from it.
 	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())
 	opts.MaxConcurrentBackups = conn.MaxConcurrentBackups
+	opts.AllowMongos = conn.AllowMongos
 	return opts, nil
 }
 
