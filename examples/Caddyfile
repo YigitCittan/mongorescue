@@ -1,0 +1,16 @@
+# Caddyfile for examples/compose-caddy.yml.
+#
+# {$MONGORESCUE_DOMAIN} is the public host name (default "localhost", for which Caddy
+# issues a certificate from its own local CA). For a real name Caddy obtains and renews
+# a Let's Encrypt certificate itself: its DNS must point at this host, and ports 80 and
+# 443 must be reachable.
+#
+# reverse_proxy sets X-Forwarded-For, X-Forwarded-Proto and X-Forwarded-Host, replacing
+# whatever the client sent (Caddy does not trust client-supplied values unless you list
+# trusted_proxies in the global options, which you should not do for an edge proxy).
+# MongoRescue reads them only from the address in Settings > Security > Trusted proxies.
+
+{$MONGORESCUE_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy mongorescue:8080
+}

@@ -1,0 +1,98 @@
+# Run a MongoRescue job from a Kubernetes CronJob with the CLI.
+#
+# MongoRescue schedules its own jobs, so you do not need this for ordinary nightly
+# backups. Use it when something outside MongoRescue must decide when a backup runs and
+# whether it worked: a different cadence per cluster managed with GitOps, a backup right
+# before a deployment window, or a job result that your cluster's alerting already
+# watches (a failed Kubernetes Job).
+#
+# The CLI is a client of a running MongoRescue (the Helm chart's Service, here
+# mongorescue.mongorescue.svc). It needs only an API key, no data directory, no
+# MongoDB Database Tools and no MongoDB credentials. The image is the MongoRescue
+# image; its entrypoint is the mongorescue binary, so `args` are CLI arguments.
+#
+# 1. In the dashboard (Settings > API keys), create a key with scope "operator", and
+#    note the ID of the job to run (mongorescue list jobs).
+# 2. Store the key; it is shown once:
+#
+#      kubectl -n backups create secret generic mongorescue-cli-key \
+#        --from-literal=key='mr_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+#
+# 3. Edit the job ID (and the namespace and URL if yours differ), then:
+#
+#      kubectl apply -f examples/kubernetes/backup-cronjob.yaml
+#      kubectl -n backups create job --from=cronjob/mongorescue-backup-shop test-run
+#      kubectl -n backups logs job/test-run
+#
+# `--wait` makes the Job's exit code the backup's: 0 completed, 1 failed or cancelled,
+# 3 the key was refused, 5 another backup of the database is running, 7 MongoRescue is
+# unreachable (docs/cli.md#exit-codes). `--timeout` only stops the waiting; the backup
+# continues on the server and the Job fails with exit 6.
+#
+# If the NetworkPolicy of the chart is on, allow this namespace and pod in
+# networkPolicy.ingress.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mongorescue-backup-shop
+  namespace: backups
+spec:
+  schedule: "30 2 * * *"
+  timeZone: Etc/UTC
+  # A run still waiting at the next tick is skipped, not stacked: the server would
+  # refuse the second backup of the same database with exit 5 anyway.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # Do not retry: a failed backup is reported, and the next tick tries again. A retry
+      # right after a failure usually fails for the same reason.
+      backoffLimit: 0
+      activeDeadlineSeconds: 2100
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: mongorescue-cli
+              # Pin an exact release (or a digest) in production.
+              image: ghcr.io/yigitcittan/mongorescue:0.28.0
+              args:
+                - backup
+                - --job
+                - job_REPLACE_ME
+                - --wait
+                - --timeout
+                - 30m
+              env:
+                - name: MONGORESCUE_URL
+                  value: http://mongorescue.mongorescue.svc:8080
+                # From the Secret, not written into the manifest. (A mounted file would
+                # work too, but with a non-root user the kubelet makes it group-readable
+                # for fsGroup, and the CLI warns about keys other users may read.)
+                - name: MONGORESCUE_CLI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongorescue-cli-key
+                      key: key
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL

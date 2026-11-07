@@ -101,7 +101,7 @@ scrape_configs:
 
 ## Alerting
 
-Ready-made rules, unit-tested with `promtool test rules`, ship in [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml): instance down, scheduler stale, backup failures, RPO missed, archive verification failures, missing archives, restore test failures, metadata backup failures and active settings warnings. See [monitoring.md](monitoring.md#prometheus-alert-rules); every rule links to its [incident runbook](runbooks.md), and a [Grafana dashboard](monitoring.md#grafana-dashboard) and [suggested SLOs](production.md#service-level-objectives) use the same series. The examples below show the pattern.
+Ready-made rules, unit-tested with `promtool test rules`, ship in [`deploy/prometheus/alerts.yml`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/prometheus/alerts.yml): instance down, scheduler stale, backup failures, RPO missed, archive verification failures, missing archives, restore test failures, metadata backup failures and active settings warnings. See [monitoring.md](monitoring.md#prometheus-alert-rules); every rule links to its [incident runbook](runbooks.md), and a [Grafana dashboard](monitoring.md#grafana-dashboard) and [suggested SLOs](production.md#service-level-objectives) use the same series. The examples below show the pattern.
 
 Alert when a job has had no successful backup for 26 hours (a daily schedule plus two hours of slack):
 
