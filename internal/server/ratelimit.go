@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/clientip"
@@ -62,9 +63,6 @@ const rateLimitLogInterval = time.Minute
 
 // healthPath is the health check, which is never rate limited.
 const healthPath = "/api/v1/health"
-
-// codeRateLimited is the code of the 429 of a request over its rate limit.
-const codeRateLimited = "rate_limited"
 
 // reasonRateLimited is the audit reason of a rate-limited request.
 const reasonRateLimited = "rate_limited"
@@ -224,6 +222,6 @@ func (s *Server) refuseRate(w http.ResponseWriter, r *http.Request, p *auth.Prin
 		}
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeErrorCode(w, http.StatusTooManyRequests, codeRateLimited,
+	writeErrorCode(w, http.StatusTooManyRequests, apierr.RateLimited,
 		"too many requests: over the "+budget+" rate limit of "+strconv.Itoa(limit.PerMinute)+" per minute; retry in "+strconv.Itoa(secs)+"s")
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/apierr"
 	"github.com/yigitcittan/mongorescue/internal/audit"
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
@@ -79,8 +80,8 @@ func TestExpiredAPIKeysAreRefusedWithACode(t *testing.T) {
 		rec = key.do("GET", path, nil, bearer)
 		var env apiResponse
 		_ = json.Unmarshal(rec.Body.Bytes(), &env)
-		if rec.Code != http.StatusUnauthorized || env.Code != codeAPIKeyExpired {
-			t.Fatalf("GET %s with an expired key = %d %s; want 401 %s", path, rec.Code, rec.Body.String(), codeAPIKeyExpired)
+		if rec.Code != http.StatusUnauthorized || env.Code != apierr.APIKeyExpired {
+			t.Fatalf("GET %s with an expired key = %d %s; want 401 %s", path, rec.Code, rec.Body.String(), apierr.APIKeyExpired)
 		}
 	}
 	rec = key.do("POST", "/api/v1/backups", map[string]string{}, bearer)
