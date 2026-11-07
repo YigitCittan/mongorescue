@@ -60,6 +60,9 @@ jobs:
       - name: The chart's alert rules match deploy/prometheus/alerts.yml
         run: diff -u deploy/prometheus/alerts.yml deploy/helm/mongorescue/files/alerts.yml
 
+      - name: The chart's Grafana dashboard matches deploy/grafana/mongorescue.json
+        run: diff -u deploy/grafana/mongorescue.json deploy/helm/mongorescue/files/grafana-dashboard.json
+
       - name: helm lint
         run: |
           helm lint --strict deploy/helm/mongorescue
@@ -87,6 +90,35 @@ jobs:
           if helm template smoke deploy/helm/mongorescue --set unknownKey=1 >/dev/null 2>&1; then
             echo "an unknown top-level value was accepted"; exit 1
           fi
+
+      - name: GOMEMLIMIT is derived from the memory limit and the dashboard ConfigMap is opt-in
+        run: |
+          set -euo pipefail
+          limit() { helm template smoke deploy/helm/mongorescue "$@" | grep -A1 'name: GOMEMLIMIT' | tail -1; }
+          # Off by default.
+          if helm template smoke deploy/helm/mongorescue | grep -q GOMEMLIMIT; then
+            echo "GOMEMLIMIT is set without config.goMemLimitRatio"; exit 1
+          fi
+          # 50% of 1.5Gi, of a plain byte count and of a decimal quantity.
+          [ "$(limit --set config.goMemLimitRatio=0.5 --set resources.limits.memory=1.5Gi)" = '              value: "805306368"' ]
+          [ "$(limit --set config.goMemLimitRatio=0.5 --set resources.limits.memory=2000000000)" = '              value: "1000000000"' ]
+          [ "$(limit --set config.goMemLimitRatio=0.5 --set resources.limits.memory=512M)" = '              value: "256000000"' ]
+          # A GOMEMLIMIT of the operator's own wins and is not duplicated.
+          n=$(helm template smoke deploy/helm/mongorescue --set config.goMemLimitRatio=0.5 \
+            --set 'extraEnv[0].name=GOMEMLIMIT' --set 'extraEnv[0].value=1GiB' | grep -c 'name: GOMEMLIMIT')
+          [ "$n" = 1 ]
+          # A ratio needs a readable memory limit, and stays within 0..1.
+          if helm template smoke deploy/helm/mongorescue --set config.goMemLimitRatio=0.5 --set resources.limits=null >/dev/null 2>&1; then
+            echo "a ratio without a memory limit was accepted"; exit 1
+          fi
+          if helm template smoke deploy/helm/mongorescue --set config.goMemLimitRatio=1.5 >/dev/null 2>&1; then
+            echo "a ratio above 1 was accepted"; exit 1
+          fi
+          # The dashboard ConfigMap carries the sidecar label and only renders when enabled.
+          if helm template smoke deploy/helm/mongorescue | grep -q 'grafana_dashboard'; then
+            echo "the Grafana dashboard was rendered without grafana.dashboard.enabled"; exit 1
+          fi
+          helm template smoke deploy/helm/mongorescue --set grafana.dashboard.enabled=true | grep -q 'grafana_dashboard: "1"'
 
       - name: HA probes, shared Service and spread render as documented
         run: |

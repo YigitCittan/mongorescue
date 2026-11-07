@@ -1,5 +1,7 @@
 # Troubleshooting
 
+When a Prometheus alert fires, go to the [incident runbooks](runbooks.md): one section per alert, with the symptom, likely causes, diagnosis commands, action and escalation. This page covers a problem that has no alert.
+
 ## Unreadable records
 
 MongoRescue keeps jobs, connections, storage targets, notification channels and rules, users, API keys and the backup and restore history in `mongorescue.db` (see [production.md](production.md#data-directory)). Most rows store their record as JSON in a `data` column. A row can become unreadable when its JSON no longer fits the record format (a hand edit, a damaged disk, or a value written in another shape by a different release) or when one of its encrypted fields cannot be decrypted.

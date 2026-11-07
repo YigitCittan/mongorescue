@@ -30,6 +30,7 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} is down"
           description: "Prometheus has not been able to scrape MongoRescue on {{ $labels.instance }} for 5 minutes. No backups run while it is down."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuedown"
 
       # The scheduler ticks every 30s; three missed ticks mean it is hung,
       # deadlocked or stopped (GET /api/v1/health answers 503 then). 0 means it has
@@ -44,6 +45,7 @@ groups:
         annotations:
           summary: "The MongoRescue scheduler on {{ $labels.instance }} is stale"
           description: "The scheduler has not ticked for {{ $value | humanizeDuration }}. Scheduled backups do not start; restart MongoRescue."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueschedulerstale"
 
       # A backup of the job failed in the last hour, or a run failed before any
       # backup started (its databases could not be listed, its connection is gone).
@@ -58,6 +60,7 @@ groups:
         annotations:
           summary: "A backup of MongoRescue job {{ or $labels.exported_job $labels.job }} failed"
           description: "Job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }} had a failed backup or run in the last hour. See its run log in the dashboard."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupfailed"
 
       # The newest successful backup of a database is older than the job's
       # recovery point objective (rpo_minutes, or the default from its schedule).
@@ -69,6 +72,7 @@ groups:
         annotations:
           summary: "Job {{ or $labels.exported_job $labels.job }}: {{ $labels.database }} is past its recovery point objective"
           description: "The newest successful backup of {{ $labels.database }} (job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }}) is older than the job's recovery point objective."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuerpomissed"
 
       # A stored archive no longer matches its checksum or could not be read
       # (after upload, in the integrity sweep or on demand).
@@ -79,6 +83,7 @@ groups:
         annotations:
           summary: "A MongoRescue archive verification failed ({{ $labels.source }}: {{ $labels.result }})"
           description: "A {{ $labels.source }} verification on {{ $labels.instance }} found an archive that does not match its checksum or cannot be read. Check the integrity page of the dashboard."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueverificationfailed"
 
       # A storage scan found backup records whose archive is gone.
       - alert: MongoRescueArchivesMissing
@@ -88,6 +93,7 @@ groups:
         annotations:
           summary: "{{ $value }} backup archives are missing from storage target {{ $labels.target }}"
           description: "The last storage scan of target {{ $labels.target }} on {{ $labels.instance }} did not find the archives of {{ $value }} backup records."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuearchivesmissing"
 
       # An automated restore test failed or found differences. The second branch
       # catches the first result of a job, whose series starts at 1.
@@ -104,6 +110,7 @@ groups:
         annotations:
           summary: "A restore test of MongoRescue job {{ or $labels.exported_job $labels.job }} failed ({{ $labels.result }})"
           description: "An automated restore test of job {{ or $labels.exported_job $labels.job }} on {{ $labels.instance }} ended with {{ $labels.result }} in the last 24 hours."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuerestoretestfailed"
 
       # A snapshot of MongoRescue's own metadata database could not be stored.
       - alert: MongoRescueMetadataBackupFailed
@@ -113,6 +120,7 @@ groups:
         annotations:
           summary: "A MongoRescue metadata backup failed on {{ $labels.instance }}"
           description: "A scheduled snapshot of the metadata database (jobs, backup records, users, settings) could not be written to its storage target in the last 24 hours."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuemetadatabackupfailed"
 
       # The dashboard shows a settings warning (encryption off, recovery kit
       # missing or outdated, ...) that nobody has resolved for an hour.
@@ -124,6 +132,7 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} has {{ $value }} active settings warnings"
           description: "Open the dashboard: the warning banner names the setting that resolves each warning."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuesettingswarning"
 
       # Active-passive HA: no member of a cluster reports the active role, so no
       # scheduled backup and no PITR collection runs. Members export
@@ -142,6 +151,7 @@ groups:
         annotations:
           summary: "No active instance in MongoRescue HA cluster {{ $labels.cluster }}"
           description: "No member of HA cluster {{ $labels.cluster }} holds the lease: scheduled backups and PITR collection do not run. Check mongorescue_ha_lease_healthy and the members' logs (lease storage reachable, same secret key, a usable metadata snapshot)."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehanoactiveinstance"
 
       # A standby acquired the lease but gave the takeover up, because the HA
       # target holds no usable metadata snapshot of the previous active instance
@@ -154,6 +164,7 @@ groups:
         annotations:
           summary: "A takeover failed in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "The standby {{ $labels.instance }} acquired the HA lease but found no usable metadata snapshot to take over from, so it stayed standby. Check the snapshots under _mongorescue/metadata/ha/{{ $labels.cluster }}/ on the HA target and the standby's logs."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehatakeoverfailed"
 
       # An instance became active from empty state: no lease and no metadata
       # snapshot on the HA target, so it kept its own database. Expected once for
@@ -166,6 +177,7 @@ groups:
         annotations:
           summary: "MongoRescue HA cluster {{ $labels.cluster }} started from empty state on {{ $labels.instance }}"
           description: "{{ $labels.instance }} found no lease and no metadata snapshot for HA cluster {{ $labels.cluster }} and became active with its own database. If this was not a new cluster, check the HA target (were its objects deleted?) and run a storage scan of every storage target to re-import the archives."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehastartedfromemptystate"
 
       # A standby refused a takeover because it could roll the cluster's metadata
       # back: the lease is not authentic or missing, or the newest snapshot is
@@ -179,6 +191,7 @@ groups:
         annotations:
           summary: "A takeover was refused as a suspected rollback in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "{{ $labels.instance }} refused to take over HA cluster {{ $labels.cluster }} ({{ $labels.reason }}): restoring the snapshots left on the HA target could roll the metadata back. Check who can write to the HA target and what the log says, then run mongorescue ha force-takeover on the instance that should become active."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueharollbacksuspected"
 
       # A metadata snapshot on the HA target failed authentication: its encrypted
       # header names another cluster, epoch or time than its object key (an old
@@ -193,6 +206,7 @@ groups:
         annotations:
           summary: "A metadata snapshot was refused in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "{{ $labels.instance }} refused a metadata snapshot under _mongorescue/metadata/ha/{{ $labels.cluster }}/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehasnapshotrejected"
 
   # Newer subsystems: point-in-time recovery, backup copies, notifications, queues,
   # audit log, KMS key wrapping, API keys and free disk space. All of them read
@@ -210,6 +224,7 @@ groups:
         annotations:
           summary: "The PITR collector of stream {{ $labels.stream }} is down"
           description: "The oplog collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} has stored no chunk for 10 minutes. Check the stream's collector error in the dashboard (connection, storage target, permissions)."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrcollectordown"
 
       # The newest stored chunk trails the replica set's newest write by more than
       # 15 minutes (the product raises pitr.lag_high at max(5 minutes, 5 x the
@@ -222,6 +237,7 @@ groups:
         annotations:
           summary: "PITR stream {{ $labels.stream }} is {{ $value | humanizeDuration }} behind"
           description: "The collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} has been more than 15 minutes behind the replica set for 10 minutes. Point-in-time restores cannot reach the newest writes; check the storage target's speed and the write load."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrlaghigh"
 
       # How long the collector may stop before oplog entries are lost: below 6
       # hours or below 3 x the current lag (the product raises pitr.window_low at
@@ -234,6 +250,7 @@ groups:
         annotations:
           summary: "PITR stream {{ $labels.stream }} has {{ $value | humanizeDuration }} of oplog headroom left"
           description: "The oplog of the replica set behind PITR stream {{ $labels.stream }} ({{ $labels.instance }}) holds only {{ $value | humanizeDuration }} of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitroplogheadroomlow"
 
       # A chain ended by a gap, a replica set change or a divergence: a point-in-time
       # restore cannot cross it. The second branch catches the first break of a
@@ -251,6 +268,7 @@ groups:
         annotations:
           summary: "The PITR chain of stream {{ $labels.stream }} broke ({{ $labels.reason }})"
           description: "The oplog chain of PITR stream {{ $labels.stream }} on {{ $labels.instance }} ended ({{ $labels.reason }}) in the last hour. Restores cannot cross the gap; a new base backup starts the next window."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrchainbroken"
 
       # Several chunks failed in an hour: a single failure is retried and is not
       # worth a page (MongoRescuePITRCollectorDown covers a collector that keeps failing).
@@ -261,6 +279,7 @@ groups:
         annotations:
           summary: "PITR stream {{ $labels.stream }} failed {{ $value }} chunks in the last hour"
           description: "The collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} could not store several oplog chunks in the last hour (storage target or encryption errors). Nothing was kept for them; they are read again."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrchunkerrors"
 
       # No chunk was stored for an hour although the replica set kept writing
       # (the lag is above a minute). Normal on an idle replica set, whose lag is 0.
@@ -275,6 +294,7 @@ groups:
         annotations:
           summary: "PITR stream {{ $labels.stream }} stored no chunk for {{ $value | humanizeDuration }}"
           description: "The newest chunk of PITR stream {{ $labels.stream }} on {{ $labels.instance }} ends {{ $value | humanizeDuration }} ago while the replica set keeps writing."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrstale"
 
       # A backup copy to a copy target failed (errors) in the last hour.
       - alert: MongoRescueBackupCopyFailed
@@ -284,6 +304,7 @@ groups:
         annotations:
           summary: "A backup copy failed on {{ $labels.instance }}"
           description: "{{ $value }} attempts to copy a backup to its copy target failed in the last hour. Failed copies are retried; check the copy target and the backup's copy status."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopyfailed"
 
       # A copy does not match the primary's checksum: the second location holds a
       # damaged archive.
@@ -294,6 +315,7 @@ groups:
         annotations:
           summary: "A backup copy does not match its primary on {{ $labels.instance }}"
           description: "A copy stored on a copy target did not match the checksum of the primary archive in the last hour. The 3-2-1 guarantee does not hold for that backup; check the copy target."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopymismatch"
 
       # The copy queue was never empty for 4 hours (the gauge existed 4 hours ago): copies are not keeping up
       # with the backups (or a target is unreachable).
@@ -308,6 +330,7 @@ groups:
         annotations:
           summary: "The backup copy queue on {{ $labels.instance }} has not been empty for 4 hours"
           description: "At least {{ $value }} backup copies waited in the queue at every moment of the last 4 hours. The copy target may be slow or unreachable, or backups outpace the copy bandwidth."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuebackupcopyqueuegrowing"
 
       # More than half of a channel's notifications were given up in the last hour
       # (at least 2): a broken channel cannot report itself.
@@ -325,6 +348,7 @@ groups:
         annotations:
           summary: "{{ $value | humanizePercentage }} of {{ $labels.channel_type }} notifications failed"
           description: "Notification deliveries through {{ $labels.channel_type }} on {{ $labels.instance }} are failing (given up after retries) in the last hour. Alerts may not reach you; test the channel in the dashboard."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuenotificationfailures"
 
       # Notifications were dropped (the queue was full) or expired (waited longer
       # than the maximum age): they were never delivered.
@@ -335,6 +359,7 @@ groups:
         annotations:
           summary: "{{ $labels.channel_type }} notifications were {{ $labels.status }}"
           description: "{{ $value }} {{ $labels.channel_type }} notifications on {{ $labels.instance }} were {{ $labels.status }} in the last 15 minutes and never delivered. The channel is slower than the event rate or unreachable."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuenotificationslost"
 
       # Events were dropped because the event queue was full: metrics, notifications
       # and the audit mirror missed them.
@@ -345,6 +370,7 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} dropped events"
           description: "{{ $value }} events were dropped in the last 15 minutes because the event queue was full or stopped. Their notifications and metrics are missing."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueeventsdropped"
 
       # Job heartbeat pings were dropped because 32 were already queued or in flight:
       # the heartbeat endpoint is slow or unreachable.
@@ -355,6 +381,7 @@ groups:
         annotations:
           summary: "MongoRescue on {{ $labels.instance }} dropped heartbeat pings"
           description: "{{ $value }} job heartbeat pings were dropped in the last 15 minutes. The dead-man's-switch service may report a healthy job as missing; check its URL and latency."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueheartbeatsdropped"
 
       # An audit log entry could not be stored: the hash chain misses an action.
       - alert: MongoRescueAuditWriteFailed
@@ -364,6 +391,7 @@ groups:
         annotations:
           summary: "The audit log on {{ $labels.instance }} could not store entries"
           description: "{{ $value }} audit log entries could not be stored in the last 15 minutes (metadata database full, read-only or locked). Check free disk space and the log."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueauditwritefailed"
 
       # The audit webhook refuses or cannot be reached (failed) or its queue
       # overflowed (dropped).
@@ -375,6 +403,7 @@ groups:
         annotations:
           summary: "Audit log forwarding {{ $labels.outcome }} on {{ $labels.instance }}"
           description: "{{ $value }} audit entries could not be forwarded to the audit webhook ({{ $labels.outcome }}) in the last 15 minutes. The local log is intact; check the webhook."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueauditforwardfailed"
 
       # Calls to the KMS that wraps secret.key fail (each retry counts). A restart
       # needs the unwrap to succeed.
@@ -385,6 +414,7 @@ groups:
         annotations:
           summary: "KMS {{ $labels.operation }} calls to {{ $labels.provider }} fail"
           description: "{{ $value }} {{ $labels.operation }} calls to {{ $labels.provider }} failed in the last 15 minutes on {{ $labels.instance }}. MongoRescue cannot restart without unwrapping secret.key; check the KMS permissions and reachability."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuekeywraperrors"
 
       # Stored API keys are past their expiry: the automation using them is refused.
       - alert: MongoRescueAPIKeysExpired
@@ -395,6 +425,7 @@ groups:
         annotations:
           summary: "{{ $value }} MongoRescue API keys on {{ $labels.instance }} have expired"
           description: "Expired API keys are refused. Rotate the keys of the scripts that use them and revoke the expired ones."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpired"
 
       # API keys expire within security.api_key_expiry_warning_days.
       - alert: MongoRescueAPIKeysExpiring
@@ -405,6 +436,7 @@ groups:
         annotations:
           summary: "{{ $value }} MongoRescue API keys on {{ $labels.instance }} expire soon"
           description: "Create replacements and update the scripts, CI jobs and MCP clients that use these keys before they are refused."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpiring"
 
       # The free space of the data directory or a local storage target runs out
       # within 24 hours at the rate of the last 6 hours. Backups are refused
@@ -420,3 +452,4 @@ groups:
         annotations:
           summary: "{{ if $labels.target }}Storage target {{ $labels.target }}{{ else }}The data directory{{ end }} on {{ $labels.instance }} fills up within 24 hours"
           description: "At the rate of the last 6 hours, the filesystem will have no free space in 24 hours ({{ if $labels.target }}local storage target {{ $labels.target }}{{ else }}data directory{{ end }}). Free space, shorten retention or add capacity."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuediskfillingup"

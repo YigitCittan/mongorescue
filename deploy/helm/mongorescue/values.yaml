@@ -33,6 +33,12 @@ config:
   # Directory searched first for mongodump and mongorestore (MONGORESCUE_TOOLS_DIR);
   # empty uses the tools bundled in the image.
   toolsDir: ""
+  # Derive GOMEMLIMIT, the Go runtime's soft memory limit, from resources.limits.memory:
+  # a number between 0 and 1 (0.7 sets 70% of the limit, in bytes, at render time; 0
+  # leaves it off). Leave room below the limit: mongodump and mongorestore inherit
+  # the variable and run in the same container. Needs resources.limits.memory; an
+  # extraEnv entry named GOMEMLIMIT takes precedence. See docs/production.md#sizing.
+  goMemLimitRatio: 0
 
 # The key encrypting stored credentials (connection strings, S3 keys, notification
 # secrets, the age identity) in the database. LOSING IT MAKES THEM UNRECOVERABLE.
@@ -190,7 +196,9 @@ resources:
     memory: 256Mi
   limits:
     # mongodump and mongorestore run inside this container. Each S3 upload buffers
-    # its part size × 2 (32 MiB by default); add that per concurrent backup.
+    # its part size × 2 (32 MiB by default); add that per concurrent backup. Size
+    # it for the busiest moment (docs/production.md#sizing): an OOMKill shows up as
+    # a failed backup. config.goMemLimitRatio derives GOMEMLIMIT from this limit.
     memory: 1Gi
 
 podSecurityContext:
@@ -316,6 +324,20 @@ serviceMonitor:
 prometheusRule:
   enabled: false
   labels: {}
+
+# The Grafana dashboard of deploy/grafana/mongorescue.json (Grafana 10+) as a
+# ConfigMap that the Grafana sidecar of kube-prometheus-stack or the Grafana chart
+# imports: it looks for ConfigMaps with the label below in every namespace it
+# watches (sidecar.dashboards.searchNamespace). Off by default.
+grafana:
+  dashboard:
+    enabled: false
+    # The label the sidecar selects on (sidecar.dashboards.label, default
+    # grafana_dashboard with the value "1").
+    labels:
+      grafana_dashboard: "1"
+    # For example grafana_folder: MongoRescue (sidecar.dashboards.folderAnnotation).
+    annotations: {}
 
 # Extra volumes and mounts, e.g. a CA bundle for MongoDB TLS.
 extraVolumes: []

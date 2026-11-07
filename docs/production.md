@@ -28,6 +28,7 @@ The checklist above secures the instance. This one makes sure you can still rest
 - [ ] **A DR drill from the cross-region copy** on every important job, passing at least monthly, and the [region failure runbook](#region-failure) walked through once with the recovery kit stored outside the primary's region ([DR drills](#dr-drills)). Why: a copy you never restored from is a hope, not a plan; the drill proves it restores without region A.
 - [ ] **No `dr_same_region` or `dr_same_credentials` warning** under Overview → *Recovery readiness*, and a region set on every storage target ([region awareness](#region-awareness)). Why: a copy in the primary's region, or reachable with the primary's key, fails together with it.
 - [ ] **A heartbeat and the alert rules** ([heartbeats](monitoring.md#global-heartbeat), [Prometheus alert rules](monitoring.md#prometheus-alert-rules)). Why: a crashed instance or a hung scheduler cannot report its own failure.
+- [ ] **`runbook_url` in your alert notifications, a memory limit sized for the busiest run, and the SLOs agreed** ([incident runbooks](runbooks.md), [sizing](#sizing), [service level objectives](#service-level-objectives), [Grafana dashboard](monitoring.md#grafana-dashboard)). Why: an OOMKill shows up as a failed backup, and the person paged at night needs the diagnosis steps on the alert itself.
 - [ ] **The recovery kit downloaded and stored offline**, apart from the backups, with metadata backups on ([recovery kit](#recovery-kit), [metadata backups](#metadata-backups)). Why: without `secret.key` the stored credentials and encryption keys are unrecoverable.
 - [ ] **`secret.key` wrapped by a KMS** where your platform has one (`MONGORESCUE_KEY_WRAP`, [key wrapping](security.md#wrapping-secretkey-with-a-kms)), with deletion protection on the KMS key, an instance identity that may only encrypt and decrypt with it, and the KMS decrypt calls audited. Why: a copied volume or snapshot then holds no root key, and losing the data directory no longer loses it; deleting the KMS key, though, loses every stored credential.
 - [ ] **Credentials from Vault** where you run HashiCorp Vault (`MONGORESCUE_VAULT_ADDR`, [credentials from Vault](security.md#credentials-from-hashicorp-vault)): connections with a dynamic user of the database secrets engine (`max_ttl` above your longest run) or a KV v2 secret, S3 targets with keys of the AWS engine (`assumed_role`) or a KV v2 secret, a Vault policy limited to MongoRescue's paths, and the `vault.unavailable` notification reaching someone. Why: `mongorescue.db` then holds no database or bucket credential at all, dynamic users exist only while runs use them, and rotation happens in Vault; but every run that needs them fails while Vault is down.
@@ -173,6 +174,45 @@ The recovery time objective (RTO) is how long a restore may take. MongoRescue es
 Overview → *Recovery readiness* (and `GET /api/v1/readiness`, [api.md](api.md#recovery-readiness)) brings this together per database: the last good, verified and restore-tested backups, the RPO with its current age, the estimated RTO, and whether the keys are in a recovery kit. A row is *Not ready* when an RPO is missed or the newest restore test or verification failed, and shows a *Warning* when it was never verified or restore-tested, its jobs are paused, or its encrypted backups have no escrowed key.
 
 **Filtered backups and the RPO.** A backup with a [collection filter](api.md#collection-filters-per-database) (only some collections, or all but some) counts towards its database's RPO like any successful backup: the database is "fresh" as soon as the filtered backup completes. It does not cover the collections it left out: their newest backup may be much older, or there may be none, and neither the RPO check nor the restore tests notice. Such backups carry `filtered: true` with the collections they kept (`collections`) or skipped (`exclude_collections`), show a *Filtered* badge in the Backups list and details, and the readiness row says *Covered partially: N collections excluded* (or *only N collections*). If the excluded collections matter, back them up with a job of their own and give it its own RPO.
+
+## Service level objectives
+
+An alert tells you something broke; a service level objective (SLO) says how much breakage you accept. These are suggested starting points for the backup service itself, each with the indicator (SLI) as PromQL over the [metrics](metrics.md). Adjust the targets to what you promised the data owners, and write them into the job RPOs first: the SLO measures how well you keep them.
+
+| SLO | SLI | Suggested target (30 days) |
+| :--- | :--- | :--- |
+| **RPO compliance**: every database is backed up within its job's recovery point objective | Share of time `mongorescue_job_rpo_met` is 1 | 99.5% (about 3.6 hours of breach) |
+| **Backup success**: scheduled runs end `ok` | Runs that ended `ok` over runs that ended `ok`, `partial` or `failed` | 99% |
+| **Restore-test success**: restores that were proven to work | Restore tests that ended `ok` over all of them, and the newest passed test no older than 8 days | 95% of tests, freshness always |
+| **PITR lag**: the recovery window reaches almost to now | Share of time a stream's `mongorescue_pitr_lag_seconds` is under 5 minutes | 99% |
+
+```promql
+# RPO compliance, per job and database, and overall (30 days).
+avg_over_time(mongorescue_job_rpo_met[30d])
+avg(avg_over_time(mongorescue_job_rpo_met[30d]))
+
+# Backup success.
+sum(increase(mongorescue_job_runs_total{status="ok"}[30d]))
+  / sum(increase(mongorescue_job_runs_total{status=~"ok|partial|failed"}[30d]))
+
+# Restore-test success, and tests that are too old (should return nothing).
+sum(increase(mongorescue_restore_tests_total{result="ok"}[30d]))
+  / sum(increase(mongorescue_restore_tests_total[30d]))
+time() - mongorescue_last_successful_restore_test_timestamp_seconds > 8 * 24 * 3600
+
+# PITR lag: the share of the last 30 days a stream was less than 5 minutes behind.
+avg_over_time((mongorescue_pitr_lag_seconds < bool 300)[30d:1m])
+```
+
+Notes:
+
+- The gauges only have samples while Prometheus can scrape MongoRescue, so `avg_over_time` ignores the time the instance was down. Count that time against the objective too: multiply by `avg_over_time(up{job="mongorescue"}[30d])`, or use `MongoRescueDown` and the external heartbeat as the signal that the SLI is blind.
+- `skipped` runs (outside a backup window) and `cancelled` ones are neither success nor failure and are left out of the backup success ratio.
+- A job that never succeeded has no restore-test series; the staleness rule only sees jobs that have passed one. Pair it with `MongoRescueRestoreTestFailed` and the *Recovery readiness* report (`no_restore_test`).
+- The `increase` and subquery forms are heavy over 30 days. Record them, for example `mongorescue:rpo_compliance:ratio_30d`, with a recording rule evaluated every few minutes, and graph the recorded series (the [Grafana dashboard](monitoring.md#grafana-dashboard) shows the same indicators over the selected range).
+- The error budget is what is left of the target: at 99.5% over 30 days, 3.6 hours of RPO breach. Page when the budget burns fast ([MongoRescueRPOMissed](runbooks.md#mongorescuerpomissed) already pages on a single breach) and review it monthly; a budget that is always unused means the RPO is looser than it needs to be.
+
+The [incident runbooks](runbooks.md) say what to do when an alert fires.
 
 ## 3-2-1 backups
 
@@ -363,6 +403,53 @@ The memory is per running upload, so multiply it by the number of backups that c
 - An upload that still runs out of parts fails with an error that names the limit and the `part_size_mb` setting, not a raw SDK error.
 
 Single objects are limited to 5 TiB by S3 anyway, and some S3-compatible services have lower limits on parts or objects. Compress (`gzip`), back up large databases per collection with several jobs, or use a local or file-system target (for example a mounted volume) for archives near that size, and see [Large databases](#large-databases) for when a logical dump is no longer the right tool.
+
+## Sizing
+
+MongoRescue streams every dump, so its memory does not grow with the size of the database; it grows with **how many streams run at once** and **how many collections each reads in parallel**. A container that is too small does not report that: the kernel kills it (`OOMKilled`, exit code 137) and the run shows up as a failed backup ([MongoRescueBackupFailed](runbooks.md#mongorescuebackupfailed)). Size it for the busiest moment, not the average.
+
+What uses memory and CPU while a backup runs:
+
+- **The MongoRescue process** (a Go program): the API, the scheduler, the metadata database cache and the run bookkeeping. Small and independent of the data size.
+- **One `mongodump` per running backup**, a separate process in the same container: it reads `--numParallelCollections` collections at once (4 by default, 1 to 16 in the job; `0` keeps the default), each with buffers of its own, so more parallel collections mean more memory and more load on the member.
+- **The S3 upload buffer**: every running upload holds part size × 2 in memory ([S3 multipart limits](#s3-multipart-limits)), 32 MiB with the default 16 MiB part.
+- **Compression and encryption**: `gzip` and age each use about one core per stream while they run; CPU, not memory, limits how fast a compressed, encrypted backup goes.
+- **A restore** runs `mongorestore`, with `--numParallelCollections` and `--numInsertionWorkersPerCollection` ([restore parallelism](configuration.md#restore-parallelism)); its memory grows with those too.
+
+How many streams run at once is the sum of: the job `parallelism` (1 to 4 databases of a job run at once; every database of a job run is its own `mongodump`), the number of jobs whose schedules overlap, manual backups, restores and restore tests, the PITR collectors and base backups, and the copies (which read and write storage, not MongoDB). `max_concurrent_backups` on a connection caps the backups reading from one MongoDB deployment at once; the others wait in line.
+
+Starting points by database size (the largest database a single backup reads, uncompressed), for **one backup stream at a time**. They come from the buffers above and are meant to be measured against your data, not trusted: run a backup and a restore test, watch `container_memory_working_set_bytes` and CPU throttling, and keep 30 percent of headroom.
+
+| Largest database | Memory limit | CPU limit | Job `parallelism` | `num_parallel_collections` | S3 part size |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| up to 10 GB | 512 MiB to 1 GiB | 0.5 to 1 | 1 | default (4) | 16 MiB (default) |
+| 10 to 100 GB | 1 GiB | 1 to 2 | 1 or 2 | 4 | 16 to 32 MiB |
+| 100 to 500 GB | 2 GiB | 2 | 2 | 4 to 8 | 64 MiB |
+| above 500 GB | 4 GiB or more | 2 to 4 | 2 | 4 to 8 | 128 MiB or more, and see [large databases](#large-databases) |
+
+Scaling rules:
+
+- **Memory.** Add the memory of every stream that can overlap: limit ≈ base (the table's lowest row) + (concurrent streams − 1) × (2 × part size + roughly 100 to 200 MiB for the `mongodump` or `mongorestore` process and its parallel collections). Doubling `num_parallel_collections` or `parallelism` roughly doubles the part of that term that belongs to `mongodump`.
+- **CPU.** One core per concurrent compressed and encrypted stream, plus a core for the PITR collector. Below that, backups stretch and the lag of PITR streams grows ([MongoRescuePITRLagHigh](runbooks.md#mongorescuepitrlaghigh)); a CPU limit that throttles the process also delays the scheduler tick ([MongoRescueSchedulerStale](runbooks.md#mongorescueschedulerstale)). Prefer a CPU request that matches your steady use and a limit with room above it.
+- **Part size.** The part size caps the largest archive (10,000 parts). Raise it before the archive reaches 80 percent of the cap, and count its buffer in the memory limit.
+- **Throttles.** `max_upload_mbps`, a backup window and `read_preference: secondary` lower the load on MongoDB, not the memory of MongoRescue. A lower `num_parallel_collections` lowers both.
+- **Disk.** The data volume holds `mongorescue.db` and the run logs (metadata and text, far smaller than the archives; the [metadata snapshot](#metadata-backups) needs the free space of a copy of the database while it runs), and the local backup target holds archives for the whole retention. `MongoRescueDiskFillingUp` watches both.
+
+### Keeping the Go heap under the container limit
+
+The Go runtime does not know the container limit. Without a soft limit it lets the heap grow until the collector decides to run, which can pass the limit between two collections. Setting `GOMEMLIMIT` makes the collector work harder as the heap approaches it. Set it **below** the container limit: `mongodump` and `mongorestore` are Go programs too and inherit the variable, and each applies it to itself, so neither the sum of the processes nor the non-heap memory (stacks, buffers, the page cache charged to the cgroup) is capped by it.
+
+The Helm chart can compute it for you. Set `config.goMemLimitRatio` (default `0`, off) to a number between 0 and 1, and the chart sets `GOMEMLIMIT` to that share of `resources.limits.memory` in bytes at render time:
+
+```yaml
+resources:
+  limits:
+    memory: 2Gi
+config:
+  goMemLimitRatio: 0.7        # GOMEMLIMIT=1503238553 (70 percent of 2 GiB)
+```
+
+A ratio of 0.6 to 0.8 is a reasonable start. The chart refuses a ratio without a memory limit or with a limit it cannot read (use `Ki`, `Mi`, `Gi`, `Ti`, `k`, `M`, `G`, `T` or plain bytes), and does nothing when you set `GOMEMLIMIT` yourself in `extraEnv`. Outside Kubernetes set the variable by hand (`GOMEMLIMIT=1500MiB` for a 2 GiB limit; Docker: `-e GOMEMLIMIT=1500MiB --memory 2g`; systemd: `Environment=GOMEMLIMIT=1500MiB` with `MemoryMax=2G`). Kubernetes cannot derive a fraction of a limit through the downward API (`resourceFieldRef` returns the limit itself, not a share of it), which is why the chart does the arithmetic.
 
 ## Encryption
 
