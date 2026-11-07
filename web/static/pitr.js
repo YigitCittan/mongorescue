@@ -846,7 +846,80 @@ const PITR_CHAIN_TEST_TRANSLATIONS = {
   }
 };
 
+// The warning that base backups take a large share of the oplog window
+// (streams[].live.base_window, event pitr.base_window_risk, readiness reason
+// pitr_base_window_risk).
+const PITR_BASE_WINDOW_TRANSLATIONS = {
+  en: {
+    pitr: {
+      base_window_risk: "Base backup near the oplog window",
+      base_window_detail: "The last base backup took {base}, {pct}% of the {window} oplog window (warns above {threshold}%). A base that outlasts the window fails and the recovery window stops moving. Grow the oplog."
+    },
+    notify: { events: { pitr_base_window_risk: "PITR base backup near the oplog window" } },
+    readiness: { reason_pitr_base_window_risk: "PITR base backup near the oplog window" }
+  },
+  tr: {
+    pitr: {
+      base_window_risk: "Temel yedek oplog penceresine yakın",
+      base_window_detail: "Son temel yedek {base} sürdü; bu, {window} uzunluğundaki oplog penceresinin %{pct} kadarı (eşik %{threshold}). Pencereyi aşan bir temel yedek başarısız olur ve kurtarma penceresi ilerlemeyi bırakır. Oplog'u büyütün."
+    },
+    notify: { events: { pitr_base_window_risk: "PITR temel yedeği oplog penceresine yakın" } },
+    readiness: { reason_pitr_base_window_risk: "PITR temel yedeği oplog penceresine yakın" }
+  },
+  de: {
+    pitr: {
+      base_window_risk: "Basis-Backup nahe am Oplog-Fenster",
+      base_window_detail: "Das letzte Basis-Backup dauerte {base}, {pct} % des Oplog-Fensters von {window} (Warnung ab {threshold} %). Ein Basis-Backup, das länger als das Fenster dauert, schlägt fehl, und das Wiederherstellungsfenster rückt nicht mehr vor. Vergrößern Sie das Oplog."
+    },
+    notify: { events: { pitr_base_window_risk: "PITR-Basis-Backup nahe am Oplog-Fenster" } },
+    readiness: { reason_pitr_base_window_risk: "PITR-Basis-Backup nahe am Oplog-Fenster" }
+  },
+  es: {
+    pitr: {
+      base_window_risk: "Copia base cerca de la ventana del oplog",
+      base_window_detail: "La última copia base tardó {base}, el {pct} % de la ventana de oplog de {window} (avisa por encima del {threshold} %). Una copia base que supera la ventana falla y la ventana de recuperación deja de avanzar. Aumente el oplog."
+    },
+    notify: { events: { pitr_base_window_risk: "Copia base PITR cerca de la ventana del oplog" } },
+    readiness: { reason_pitr_base_window_risk: "Copia base PITR cerca de la ventana del oplog" }
+  },
+  fr: {
+    pitr: {
+      base_window_risk: "Sauvegarde de base proche de la fenêtre d'oplog",
+      base_window_detail: "La dernière sauvegarde de base a duré {base}, soit {pct} % de la fenêtre d'oplog de {window} (alerte au-delà de {threshold} %). Une sauvegarde de base plus longue que la fenêtre échoue et la fenêtre de récupération n'avance plus. Agrandissez l'oplog."
+    },
+    notify: { events: { pitr_base_window_risk: "Sauvegarde de base PITR proche de la fenêtre d'oplog" } },
+    readiness: { reason_pitr_base_window_risk: "Sauvegarde de base PITR proche de la fenêtre d'oplog" }
+  },
+  zh: {
+    pitr: {
+      base_window_risk: "基础备份接近 oplog 窗口",
+      base_window_detail: "最近一次基础备份用时 {base}，占 {window} oplog 窗口的 {pct}%（超过 {threshold}% 时告警）。超过窗口的基础备份会失败，恢复窗口将停止前移。请增大 oplog。"
+    },
+    notify: { events: { pitr_base_window_risk: "PITR 基础备份接近 oplog 窗口" } },
+    readiness: { reason_pitr_base_window_risk: "PITR 基础备份接近 oplog 窗口" }
+  },
+  ja: {
+    pitr: {
+      base_window_risk: "ベースバックアップが oplog ウィンドウに接近",
+      base_window_detail: "直近のベースバックアップは {base} かかり、{window} の oplog ウィンドウの {pct}% に相当します（{threshold}% 超で警告）。ウィンドウを超えるベースバックアップは失敗し、復旧ウィンドウが進まなくなります。oplog を拡大してください。"
+    },
+    notify: { events: { pitr_base_window_risk: "PITR ベースバックアップが oplog ウィンドウに接近" } },
+    readiness: { reason_pitr_base_window_risk: "PITR ベースバックアップが oplog ウィンドウに接近" }
+  },
+  ru: {
+    pitr: {
+      base_window_risk: "Базовая копия близка к окну oplog",
+      base_window_detail: "Последняя базовая копия заняла {base}, это {pct}% окна oplog в {window} (предупреждение выше {threshold}%). Базовая копия, которая длится дольше окна, завершится ошибкой, и окно восстановления перестанет сдвигаться. Увеличьте oplog."
+    },
+    notify: { events: { pitr_base_window_risk: "Базовая копия PITR близка к окну oplog" } },
+    readiness: { reason_pitr_base_window_risk: "Базовая копия PITR близка к окну oplog" }
+  }
+};
+
 if (typeof translations === "object" && typeof mergeTranslations === "function") {
+  Object.keys(PITR_BASE_WINDOW_TRANSLATIONS).forEach(lang => {
+    if (translations[lang]) mergeTranslations(translations[lang], PITR_BASE_WINDOW_TRANSLATIONS[lang]);
+  });
   Object.keys(PITR_TRANSLATIONS).forEach(lang => {
     if (translations[lang]) mergeTranslations(translations[lang], PITR_TRANSLATIONS[lang]);
   });
@@ -875,6 +948,21 @@ function pitrStatusBadge(s) {
   if (state.status === "failed") return statusBadge("danger", t("pitr.status_failed"), state.last_error || "");
   if (!s.running) return statusBadge("warn", t("pitr.status_stopped"));
   return statusBadge("success", t("pitr.status_running"));
+}
+
+// pitrBaseWindowWarning renders the warning that the last base backup took more
+// than the configured share of the oplog window (live.base_window); empty
+// otherwise.
+function pitrBaseWindowWarning(live) {
+  const bw = live && live.base_window;
+  if (!bw || !bw.at_risk) return "";
+  const detail = tf("pitr.base_window_detail", {
+    base: formatDuration(bw.last_base_seconds),
+    window: formatDuration(bw.oplog_window_seconds),
+    pct: Math.round(bw.ratio * 100),
+    threshold: Math.round(bw.threshold * 100)
+  });
+  return `<div class="cell-sub">${statusBadge("warn", t("pitr.base_window_risk"), detail)}</div><div class="cell-sub">${escapeHtml(detail)}</div>`;
 }
 
 // pitrWindow renders the newest point-in-time window of a stream.
@@ -912,7 +1000,7 @@ function pitrRender() {
            <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-action="pitr-delete" data-id="${id}">${escapeHtml(t("pitr.delete"))}</button>`;
       return `<tr>
         <td class="cell-primary">${ellipsis(pitrConnectionName(st.connection_id))}<div class="cell-sub mono">${escapeHtml(st.replica_set || "")}</div></td>
-        <td>${pitrStatusBadge(s)}${pitrStreamChainTest(st.id)}</td>
+        <td>${pitrStatusBadge(s)}${pitrBaseWindowWarning(live)}${pitrStreamChainTest(st.id)}</td>
         <td>${pitrWindow(s)}</td>
         <td>${pitrSeconds(s.lag_seconds, s.state && s.state.lag_since)}</td>
         <td>${pitrSeconds(s.headroom_seconds, live.window_low)}</td>

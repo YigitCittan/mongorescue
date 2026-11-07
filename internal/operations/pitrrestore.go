@@ -623,6 +623,7 @@ func (s *Service) preflightPITR(ctx context.Context, pp *pitrPlan, record *model
 	p := s.newPreflightRun(ctx, pp.req, pp.run.Base, targetDB)
 	defer p.close()
 	p.pitrChain(pp, record)
+	p.pitrBaseWindow(pp.stream.ID)
 	p.connection()
 	if p.source != nil {
 		p.serverVersion()
@@ -646,6 +647,30 @@ func (s *Service) preflightPITR(ctx context.Context, pp *pitrPlan, record *model
 	}
 	p.toolsVersion()
 	return p.res
+}
+
+// pitrBaseWindow adds the base window check: the longest of the stream's recent
+// base backups against the oplog window, so a restore does not rely on a window
+// that is about to stop moving. Without a collector reading the oplog, or a
+// successful base to learn from, it adds nothing.
+func (p *preflightRun) pitrBaseWindow(streamID string) {
+	if p.svc.cfg.PITRBaseWindow == nil {
+		return
+	}
+	bw := p.svc.cfg.PITRBaseWindow(streamID)
+	if bw == nil {
+		return
+	}
+	expected := time.Duration(bw.ExpectedBaseSeconds * float64(time.Second)).Round(time.Second)
+	window := time.Duration(bw.OplogWindowSeconds * float64(time.Second)).Round(time.Second)
+	msg := fmt.Sprintf("base backups take up to %s (the longest of the last %d), %.0f%% of the %s oplog window (warns above %.0f%%)",
+		expected, pitr.BaseHistory, bw.ExpectedRatio*100, window, bw.Threshold*100)
+	if bw.ExpectedRatio > bw.Threshold {
+		p.res.Add(models.PreflightCheckPITRBaseWindow, models.PreflightWarn,
+			msg+": a base that outlasts the oplog window fails and the recovery window stops moving; grow the oplog (see the PITR guide)")
+		return
+	}
+	p.res.Add(models.PreflightCheckPITRBaseWindow, models.PreflightPass, msg)
 }
 
 func (p *preflightRun) pitrChain(pp *pitrPlan, record *models.RestoreRecord) {

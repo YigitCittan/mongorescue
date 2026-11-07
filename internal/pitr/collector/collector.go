@@ -113,6 +113,9 @@ type Observer interface {
 	SetPITRLag(stream string, lag, headroom time.Duration)
 	SetPITRWindow(stream string, start, end time.Time)
 	IncPITRChainBreak(stream, reason string)
+	// SetPITRBaseWindowRatio records the last base duration over the oplog window;
+	// ok false removes the series (no ratio is known).
+	SetPITRBaseWindowRatio(stream string, ratio float64, ok bool)
 	ForgetPITRStream(stream string)
 }
 
@@ -173,6 +176,10 @@ type Config struct {
 	// DeleteGrace returns the delete grace period of retention; nil means
 	// models.DefaultDeleteGraceDays.
 	DeleteGrace func() time.Duration
+	// BaseWindowRiskRatio returns the setting pitr.base_window_risk_ratio, the
+	// base duration over oplog window ratio above which a stream is at risk; nil
+	// means pitr.DefaultBaseWindowRiskRatio.
+	BaseWindowRiskRatio func() float64
 	// UpdateBase updates a base backup record atomically; nil disables base
 	// retention (chunks are still retained).
 	UpdateBase BaseUpdater
@@ -427,6 +434,29 @@ func (s *Service) observe(fn func(Observer)) {
 	if s.cfg.Observer != nil {
 		fn(s.cfg.Observer)
 	}
+}
+
+// baseWindowRiskRatio returns the ratio above which a base is at risk.
+func (s *Service) baseWindowRiskRatio() float64 {
+	if s.cfg.BaseWindowRiskRatio != nil {
+		if r := s.cfg.BaseWindowRiskRatio(); r > 0 {
+			return r
+		}
+	}
+	return pitr.DefaultBaseWindowRiskRatio
+}
+
+// BaseWindow compares the base backup duration of stream id with the oplog
+// window its running collector last saw (see pitr.BaseWindow). It returns nil
+// while no collector runs, or without a successful base or an oplog window.
+func (s *Service) BaseWindow(id string) *pitr.BaseWindow {
+	s.mu.Lock()
+	rw, running := s.workers[id]
+	s.mu.Unlock()
+	if !running {
+		return nil
+	}
+	return rw.w.snapshot().BaseWindow
 }
 
 // newID returns prefix followed by 16 random hex characters.

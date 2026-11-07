@@ -75,6 +75,7 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_pitr_chunk_bytes_total` | counter | `stream` | Stored bytes of oplog chunks (compressed and encrypted) |
 | `mongorescue_pitr_oplog_headroom_seconds` | gauge | `stream` | Seconds between the oldest oplog entry and the collector's position: how long it may stop before entries are lost |
 | `mongorescue_pitr_window_start_timestamp_seconds`, `mongorescue_pitr_window_end_timestamp_seconds` | gauge | `stream` | Bounds of the newest point-in-time window (absent without an eligible base) |
+| `mongorescue_pitr_base_window_ratio` | gauge | `stream` | Duration of the last successful base backup over the current oplog window; above `pitr.base_window_risk_ratio` (default 0.5) a base may outlast the window and fail (absent without a base or an oplog window; not exported by a standby) |
 | `mongorescue_pitr_chain_breaks_total` | counter | `stream`, `reason` | Chains ended by `gap`, `replica_set_changed` or `diverged` |
 | `mongorescue_pitr_chain_test_unverified_collections` | gauge | `stream` | Collections whose document count the newest chain test could not verify (no exact count at the newer base's consistent point); 0 when every count was checked. Take a new base backup when it stays above 0 ([pitr.md](pitr.md#chain-tests)) |
 | `mongorescue_settings_warnings` | gauge | | Active settings warnings shown in the dashboard banner (encryption off, metadata backups unencrypted, recovery kit missing or outdated, a kept administrator role) |

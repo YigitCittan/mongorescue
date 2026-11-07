@@ -286,6 +286,10 @@ type Config struct {
 	// point-in-time restores (ErrPITRUnavailable).
 	PITRStreams PITRStreamControl
 	PITRSwap    PITRSwapper
+	// PITRBaseWindow returns a stream's expected base backup duration against its
+	// oplog window (collector.Service.BaseWindow); nil, or a nil result, skips the
+	// base window check of the point-in-time restore preflight.
+	PITRBaseWindow func(streamID string) *pitr.BaseWindow
 	// PITRPins holds the pins of the point-in-time restores and chain tests in
 	// flight (see pitr.PinSet), which PITR retention and the purges honour; nil
 	// means pitr.SharedPins.

@@ -78,6 +78,7 @@ Scheduled jobs follow the wall clock, since cron expressions name wall-clock tim
 | `MongoRescuePITRCollectorDown` | critical | `mongorescue_pitr_collector_up == 0` for 10 minutes: the oplog collector of a [PITR](pitr.md) stream fails or is stopped |
 | `MongoRescuePITRLagHigh` | warning | A PITR stream's lag is above 15 minutes (900 s) for 10 minutes |
 | `MongoRescuePITROplogHeadroomLow` | critical | The oplog headroom of a PITR stream is below max(6 hours, 3 x the lag) for 10 minutes (the bound of the `pitr.window_low` event): entries are lost, and the recovery window breaks, if the collector stops that long |
+| `MongoRescuePITRBaseWindowRisk` | warning | The last successful base backup of a PITR stream took more than half of the oplog window for 10 minutes (the default bound of the `pitr.base_window_risk` event): a base that outlasts the window fails and the recovery window stops moving. See [sizing the oplog](pitr.md#sizing-the-oplog) |
 | `MongoRescuePITRChainBroken` | critical | A PITR chain ended in the last hour (`gap`, `replica_set_changed` or `diverged`): restores cannot cross it |
 | `MongoRescuePITRChunkErrors` | warning | At least 3 oplog chunks of a stream failed in the last hour |
 | `MongoRescuePITRStale` | warning | The newest chunk of a stream ends more than an hour ago while the lag is above 60 s (an idle replica set, lag 0, is not stale), for 10 minutes |

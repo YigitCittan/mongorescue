@@ -497,6 +497,37 @@ tests:
               description: "The oplog of the replica set behind PITR stream lagging (mr:8080) holds only 8h 20m 0s of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
               runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitroplogheadroomlow"
 
+  - name: PITR base window risk
+    interval: 1m
+    input_series:
+      # A base that takes 75% of the oplog window, for the whole test.
+      - series: 'mongorescue_pitr_base_window_ratio{job="backup", instance="mr:8080", stream="slow"}'
+        values: "0.75x40"
+      # Exactly at the threshold is not above it.
+      - series: 'mongorescue_pitr_base_window_ratio{job="backup", instance="mr:8080", stream="edge"}'
+        values: "0.5x40"
+      # Comfortable.
+      - series: 'mongorescue_pitr_base_window_ratio{job="backup", instance="mr:8080", stream="fast"}'
+        values: "0.25x40"
+      # Above the threshold for less than the 10 minutes the alert waits.
+      - series: 'mongorescue_pitr_base_window_ratio{job="backup", instance="mr:8080", stream="blip"}'
+        values: "0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.25 0.9 0.9 0.9 0.25x20"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MongoRescuePITRBaseWindowRisk
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: MongoRescuePITRBaseWindowRisk
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: backup
+              instance: mr:8080
+              stream: slow
+            exp_annotations:
+              summary: "A base backup of PITR stream slow takes 75% of the oplog window"
+              description: "The last successful base backup of PITR stream slow on mr:8080 took 75% of the current oplog window. If a base takes longer than the window it fails and the recovery window stops moving. Grow the oplog (replSetResizeOplog) or shorten the base backup; see the oplog sizing guide in docs/pitr.md."
+
   - name: PITR chain broken
     interval: 1m
     input_series:
@@ -886,6 +917,9 @@ tests:
         exp_alerts: []
       - eval_time: 100m
         alertname: MongoRescuePITROplogHeadroomLow
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: MongoRescuePITRBaseWindowRisk
         exp_alerts: []
       - eval_time: 100m
         alertname: MongoRescuePITRStale

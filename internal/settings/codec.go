@@ -43,42 +43,45 @@ const (
 	// KeyAPIKeyMaxLifetimeDays caps the lifetime of API keys (0: unlimited).
 	KeyAPIKeyMaxLifetimeDays = "security.api_key_max_lifetime_days"
 	// KeyAPIKeyExpiryWarningDays is how many days before its expiry a key is reported.
-	KeyAPIKeyExpiryWarningDays   = "security.api_key_expiry_warning_days"
-	KeyEncryptionEnabled         = "encryption.enabled"
-	KeyEncryptionMode            = "encryption.mode"
-	KeyEncryptionRecipients      = "encryption.recipients"
-	KeyEncryptionIdentity        = "encryption.identity"
-	KeyEncryptionPassphrase      = "encryption.passphrase"
-	KeyEncryptionRetiredKeys     = "encryption.retired_keys"
-	KeyVerifyAfterBackup         = "integrity.verify_after_backup"
-	KeyVerifyDecrypt             = "integrity.verify_decrypt"
-	KeySweepSchedule             = "integrity.sweep_schedule"
-	KeySweepBandwidthLimit       = "integrity.sweep_bandwidth_limit"
-	KeyStorageScan               = "integrity.storage_scan"
-	KeyMetadataBackupEnabled     = "metadata_backup.enabled"
-	KeyMetadataBackupInterval    = "metadata_backup.interval"
-	KeyMetadataBackupTarget      = "metadata_backup.target_id"
-	KeyMetadataBackupKeep        = "metadata_backup.retention_count"
-	KeyAuditRetentionDays        = "audit.retention_days"
-	KeyAuditWebhookURL           = "audit.webhook_url"
-	KeyAuditWebhookSecret        = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCEnabled               = "oidc.enabled"
-	KeyOIDCDisplayName           = "oidc.display_name"
-	KeyOIDCIssuer                = "oidc.issuer"
-	KeyOIDCClientID              = "oidc.client_id"
-	KeyOIDCClientSecret          = "oidc.client_secret" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCScopes                = "oidc.scopes"
-	KeyOIDCRedirectURL           = "oidc.redirect_url" //nolint:gosec // G101: a setting key, not a credential.
-	KeyOIDCUsernameClaim         = "oidc.username_claim"
-	KeyOIDCGroupsClaim           = "oidc.groups_claim"
-	KeyOIDCRoleMappings          = "oidc.role_mappings"
-	KeyOIDCDefaultRole           = "oidc.default_role"
-	KeyOIDCAllowedDomains        = "oidc.allowed_email_domains"
-	KeyOIDCAutoCreateUsers       = "oidc.auto_create_users"
-	KeyOIDCLocalLogin            = "oidc.local_login"
-	KeyOIDCRPLogout              = "oidc.rp_logout"
-	KeyHeartbeatURL              = "monitoring.heartbeat_url"
-	KeyHeartbeatInterval         = "monitoring.heartbeat_interval"
+	KeyAPIKeyExpiryWarningDays = "security.api_key_expiry_warning_days"
+	KeyEncryptionEnabled       = "encryption.enabled"
+	KeyEncryptionMode          = "encryption.mode"
+	KeyEncryptionRecipients    = "encryption.recipients"
+	KeyEncryptionIdentity      = "encryption.identity"
+	KeyEncryptionPassphrase    = "encryption.passphrase"
+	KeyEncryptionRetiredKeys   = "encryption.retired_keys"
+	KeyVerifyAfterBackup       = "integrity.verify_after_backup"
+	KeyVerifyDecrypt           = "integrity.verify_decrypt"
+	KeySweepSchedule           = "integrity.sweep_schedule"
+	KeySweepBandwidthLimit     = "integrity.sweep_bandwidth_limit"
+	KeyStorageScan             = "integrity.storage_scan"
+	KeyMetadataBackupEnabled   = "metadata_backup.enabled"
+	KeyMetadataBackupInterval  = "metadata_backup.interval"
+	KeyMetadataBackupTarget    = "metadata_backup.target_id"
+	KeyMetadataBackupKeep      = "metadata_backup.retention_count"
+	KeyAuditRetentionDays      = "audit.retention_days"
+	KeyAuditWebhookURL         = "audit.webhook_url"
+	KeyAuditWebhookSecret      = "audit.webhook_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCEnabled             = "oidc.enabled"
+	KeyOIDCDisplayName         = "oidc.display_name"
+	KeyOIDCIssuer              = "oidc.issuer"
+	KeyOIDCClientID            = "oidc.client_id"
+	KeyOIDCClientSecret        = "oidc.client_secret" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCScopes              = "oidc.scopes"
+	KeyOIDCRedirectURL         = "oidc.redirect_url" //nolint:gosec // G101: a setting key, not a credential.
+	KeyOIDCUsernameClaim       = "oidc.username_claim"
+	KeyOIDCGroupsClaim         = "oidc.groups_claim"
+	KeyOIDCRoleMappings        = "oidc.role_mappings"
+	KeyOIDCDefaultRole         = "oidc.default_role"
+	KeyOIDCAllowedDomains      = "oidc.allowed_email_domains"
+	KeyOIDCAutoCreateUsers     = "oidc.auto_create_users"
+	KeyOIDCLocalLogin          = "oidc.local_login"
+	KeyOIDCRPLogout            = "oidc.rp_logout"
+	KeyHeartbeatURL            = "monitoring.heartbeat_url"
+	KeyHeartbeatInterval       = "monitoring.heartbeat_interval"
+	// KeyPITRBaseWindowRiskRatio is the base duration over oplog window ratio above
+	// which a PITR stream is reported at risk.
+	KeyPITRBaseWindowRiskRatio   = "pitr.base_window_risk_ratio"
 	KeyAPIRateLimitPerMinute     = "security.api_rate_limit_per_minute"
 	KeyAPIRateLimitBurst         = "security.api_rate_limit_burst"
 	KeyAPIWorkRateLimitPerMinute = "security.api_work_rate_limit_per_minute"
@@ -182,6 +185,7 @@ var keyDefs = []keyDef{
 	field(KeyOIDCRPLogout, false, func(s *Settings) *bool { return &s.OIDC.RPLogout }),
 	field(KeyHeartbeatURL, true, func(s *Settings) *string { return &s.Monitoring.HeartbeatURL }),
 	field(KeyHeartbeatInterval, false, func(s *Settings) *Duration { return &s.Monitoring.HeartbeatInterval }),
+	field(KeyPITRBaseWindowRiskRatio, false, func(s *Settings) *float64 { return &s.PITR.BaseWindowRiskRatio }),
 	{
 		name:   KeyEncryptionRetiredKeys,
 		secret: true,

@@ -179,6 +179,39 @@ Someone dropped a collection, ran an `updateMany` without a filter or deleted th
 8. **Put the data back.** Copy what was lost from the clone into production, for example one collection with `mongodump --db shop_rescue_… --collection orders --archive | mongorestore --archive --nsFrom 'shop_rescue_….orders' --nsTo 'shop.orders'` (add `--drop` only if you mean to replace the collection), or with an aggregation that `$merge`s the documents back. Or point the application at the clone for a while. To replace whole databases with their state at that time instead, an administrator can [restore them in place](#replacing-the-original-databases-in-place) (with downtime).
 9. **Clean up.** Drop the clones once you are done: they take room on the server and in the next base backups.
 
+## Sizing the oplog
+
+A base backup is `mongodump --oplog`: the dump records the oplog entries written while it runs and fails when the oplog rolls past the dump's start before it ends. A base that takes longer than the oplog window therefore never completes, no new base becomes eligible, and the point-in-time window stops moving forward without anything else breaking. `pitr.window_low` does not catch this: it measures the collector's headroom only.
+
+MongoRescue compares the duration of the last successful base backup of each stream with the current oplog window (newest minus oldest oplog entry) and reports the ratio:
+
+- **Metric** `mongorescue_pitr_base_window_ratio{stream}` (absent until a base has succeeded and the collector has read the oplog), and the alert `MongoRescuePITRBaseWindowRisk` (warning, above 0.5 for 10 minutes).
+- **Event** `pitr.base_window_risk`, once per episode: it is raised when the ratio rises above the threshold and again only after the ratio has fallen to the threshold or below. A restart of MongoRescue raises it again while the risk lasts.
+- **Readiness** reason `pitr_base_window_risk` (warn) on the stream and on its connection's rows, and a warning badge in **Connections → Point-in-time recovery** with the numbers. `GET /api/v1/pitr/streams` returns them in `live.base_window` (`last_base_seconds`, `expected_base_seconds`, `oplog_window_seconds`, `ratio`, `expected_ratio`, `threshold`, `at_risk`), and the readiness report in `streams[].base_window`.
+- **Preflight.** The [preflight](#restoring-to-a-point-in-time) of a point-in-time restore adds the check `pitr_base_window`: the longest of the stream's last five successful base backups against the oplog window. It warns above the threshold and never blocks the restore; it is absent while no collector reads the oplog or no base has succeeded.
+- **Threshold.** The setting `pitr.base_window_risk_ratio` (greater than 0, at most 1, default `0.5`; `PUT /api/v1/settings` with `{"pitr": {"base_window_risk_ratio": 0.4}}`) sets the share of the window a base may take. The alert rule uses the default; change it in your copy of the rules if you change the setting.
+
+**How big?** Size the oplog so that the window stays at least `k` times the duration of a base backup. With the default threshold the warning starts at `k = 2`; `k = 4` or more leaves room for a base that takes longer on a busy day, for a growing database (a base takes longer every month) and for a collector that lags. Include the busiest period of the day: the window shrinks when the write rate rises. The base duration is in the backups list (`duration_seconds` of the `instance`-scope backups).
+
+Check the window and the oplog size on the primary:
+
+```javascript
+rs.printReplicationInfo()
+// configured oplog size:   16384MB
+// log length start to end: 172800secs (48hrs)
+
+db.getSiblingDB("local").oplog.rs.stats().maxSize   // the configured size in bytes
+```
+
+Resize it on every data-bearing member, one at a time, secondaries first (it needs `clusterManager` or `clusterAdmin`; the size is in megabytes; it takes effect without a restart and a shrink compacts the oplog):
+
+```javascript
+// 64 GB, and keep at least 48 hours of entries even when the size limit is reached (MongoDB 4.4+)
+db.adminCommand({ replSetResizeOplog: 1, size: 65536, minRetentionHours: 48 })
+```
+
+A larger oplog takes disk space on every member (the oplog is a capped collection that fills to its configured size), so check the free space first. Afterwards the window grows only as new writes come in: the ratio improves over the next hours or days, and a stream whose base failed for this reason needs a new base (**Take base backup**) once the window is longer than the dump.
+
 ## How it works
 
 - **Collector.** One goroutine and one long-lived connection per enabled stream. Every interval it reads the majority-committed oplog entries after its last position, so writes that are rolled back after a failover are never kept, and streams them through gzip, age and SHA-256 to the stream's storage target as `_mongorescue/oplog/<connection>/<replica set>/<chain>/<from>-<to>.bson.gz.age`. The chunk and the new position are committed in one transaction; a restart resumes from it, and a chunk interrupted by a crash leaves no object and is read again. While it is behind, the collector stores one-interval chunks back to back until it has caught up.
@@ -191,9 +224,9 @@ Someone dropped a collection, ran an `updateMany` without a filter or deleted th
 
 ## Monitoring
 
-- **Events** (selectable by notification rules): `pitr.chain_broken` and `pitr.diverged` (critical), `pitr.collector_failed` / `pitr.collector_recovered`, `pitr.lag_high` / `pitr.lag_recovered` (the lag exceeds max(5 min, 5 × the interval); raised once per episode, also across restarts) and `pitr.window_low` (the oplog headroom, how long the collector may stop before entries are lost, is below max(6 h, 3 × lag); also raised once per episode, across restarts too). The replica set ID seen first is stored, so a set re-initiated under the same name while the collector was stopped is treated as a gap.
+- **Events** (selectable by notification rules): `pitr.chain_broken` and `pitr.diverged` (critical), `pitr.collector_failed` / `pitr.collector_recovered`, `pitr.lag_high` / `pitr.lag_recovered` (the lag exceeds max(5 min, 5 × the interval); raised once per episode, also across restarts) and `pitr.window_low` (the oplog headroom, how long the collector may stop before entries are lost, is below max(6 h, 3 × lag); also raised once per episode, across restarts too) and `pitr.base_window_risk` (the last successful base backup took more than half of the oplog window; see [sizing the oplog](#sizing-the-oplog)). The replica set ID seen first is stored, so a set re-initiated under the same name while the collector was stopped is treated as a gap.
 - **Metrics** `mongorescue_pitr_*` with the label `stream`: see [metrics.md](metrics.md).
-- **Readiness.** A PITR RPO means that the oplog up to that point is captured and can be restored to a point in time; the readiness row says so next to its RPO. The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` (a gap, a divergence or a chunk that failed verification and no newer base) and `pitr_collector_down` (fail), `pitr_lag_high`, `pitr_window_low`, `pitr_no_window` (no eligible base for the current chain yet) `pitr_chain_test_failed` (the newest chain test failed) and `pitr_chain_test_unverified` (the newest chain test passed, but could not verify the counts of some collections) (warn). Each stream carries its newest chain test (`chain_test`: `failed`, `verification`, `unverified`, `unverified_reason`, `old_base`). Each stream of the report carries its [RTO estimate](#restore-time-rto) (`rto`).
+- **Readiness.** A PITR RPO means that the oplog up to that point is captured and can be restored to a point in time; the readiness row says so next to its RPO. The [readiness report](api.md#recovery-readiness) lists the streams. A database row's effective RPO is the better of its job RPO and the stream's durable lag (now minus the end of the last stored chunk) while the stream's window is open and its collector healthy. New reasons: `pitr_chain_broken` (a gap, a divergence or a chunk that failed verification and no newer base) and `pitr_collector_down` (fail), `pitr_lag_high`, `pitr_window_low`, `pitr_base_window_risk` (the last base took more than the configured share of the oplog window), `pitr_no_window` (no eligible base for the current chain yet) `pitr_chain_test_failed` (the newest chain test failed) and `pitr_chain_test_unverified` (the newest chain test passed, but could not verify the counts of some collections) (warn). Each stream carries its newest chain test (`chain_test`: `failed`, `verification`, `unverified`, `unverified_reason`, `old_base`). Each stream of the report carries its [RTO estimate](#restore-time-rto) (`rto`).
 
 ## What is tested
 

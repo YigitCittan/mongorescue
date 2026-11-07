@@ -134,6 +134,8 @@ type Settings struct {
 	OIDC OIDC `json:"oidc"`
 	// Monitoring configures the outbound heartbeat (see monitoring.go).
 	Monitoring Monitoring `json:"monitoring"`
+	// PITR configures the point-in-time recovery warnings (see pitr.go).
+	PITR PITR `json:"pitr"`
 }
 
 // General holds backup and restore defaults and limits.
@@ -371,6 +373,7 @@ func Defaults() Settings {
 		Audit:          defaultAudit(),
 		OIDC:           defaultOIDC(),
 		Monitoring:     defaultMonitoring(),
+		PITR:           defaultPITR(),
 	}
 }
 
@@ -435,6 +438,8 @@ type Patch struct {
 	OIDC *OIDCPatch `json:"oidc,omitempty"`
 	// Monitoring updates the heartbeat settings.
 	Monitoring *MonitoringPatch `json:"monitoring,omitempty"`
+	// PITR updates the point-in-time recovery settings.
+	PITR *PITRPatch `json:"pitr,omitempty"`
 }
 
 // GeneralPatch updates General; see General for the fields.
@@ -560,6 +565,7 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 	if err := p.OIDC.apply(&next.OIDC); err != nil {
 		return cur, err
 	}
+	p.PITR.apply(&next.PITR)
 	if err := p.Monitoring.apply(&next.Monitoring); err != nil {
 		return cur, err
 	}
@@ -685,6 +691,9 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return err
 	}
 	if err := validateMonitoring(&s.Monitoring); err != nil {
+		return err
+	}
+	if err := validatePITR(&s.PITR); err != nil {
 		return err
 	}
 	return validateEncryption(&s.Encryption, strictPassphrase)

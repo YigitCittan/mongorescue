@@ -180,6 +180,12 @@ The outbound heartbeat to an external dead-man's switch (Settings → Monitoring
 
 Jobs have their own optional `heartbeat_url`, pinged at `<url>/start`, `<url>` and `<url>/fail` (see [monitoring.md](monitoring.md#job-heartbeats)).
 
+### Point-in-time recovery
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `base_window_risk_ratio` | `0.5` | The share of the oplog window the last successful base backup of a PITR stream may take (greater than 0, at most 1) before the event `pitr.base_window_risk`, the readiness reason `pitr_base_window_risk` and the dashboard warning appear. Set it through `PUT /api/v1/settings` (`{"pitr": {"base_window_risk_ratio": 0.4}}`); see [sizing the oplog](pitr.md#sizing-the-oplog) |
+
 ### Audit log
 
 Retention and forwarding of the hash-chained audit log of every action (Settings → Audit log); see [audit.md](audit.md).

@@ -830,7 +830,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		// In-place point-in-time restores pause the stream through the collector,
 		// which is built below.
 		PITRStreams: lazyStreamControl{svc: &pitrSvc},
-		PITRSwap:    restoreEngine,
+		// The preflight of a point-in-time restore compares the base duration with
+		// the oplog window through the running collector.
+		PITRBaseWindow: func(id string) *pitr.BaseWindow {
+			if pitrSvc == nil {
+				return nil
+			}
+			return pitrSvc.BaseWindow(id)
+		},
+		PITRSwap: restoreEngine,
 		// In-place point-in-time restores are refused in active-passive HA mode.
 		HAMode: o.ha != nil,
 		// Synchronous changes of the API and MCP are fenced like the runs.
@@ -930,11 +938,13 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return nil
 		},
 		DeleteGrace: func() time.Duration { return settingsSvc.Current().Security.DeleteGrace() },
-		UpdateBase:  metaStore.UpdateBackupRecord,
-		Decryptor:   settingsSvc.Decryptor,
-		Publisher:   bus,
-		Observer:    metricSet,
-		Logger:      logger,
+		// The share of the oplog window a base may take before the stream is at risk.
+		BaseWindowRiskRatio: func() float64 { return settingsSvc.Current().PITR.BaseWindowRiskRatio },
+		UpdateBase:          metaStore.UpdateBackupRecord,
+		Decryptor:           settingsSvc.Decryptor,
+		Publisher:           bus,
+		Observer:            metricSet,
+		Logger:              logger,
 	})
 
 	// With the two-person rule, admin users, promotions and admin API keys wait for a

@@ -49,6 +49,10 @@ const (
 	// unbroken, verified chain of oplog chunks up to it, with keys for their
 	// encryption.
 	PreflightCheckPITRChain = "pitr_chain"
+	// PreflightCheckPITRBaseWindow compares the longest of the stream's recent base
+	// backups with its oplog window: a base that outlasts the window fails, and the
+	// recovery window stops moving. It warns above pitr.base_window_risk_ratio.
+	PreflightCheckPITRBaseWindow = "pitr_base_window"
 	// PreflightCheckToolsVersion checks that mongorestore is recent enough for
 	// point-in-time restores (mongotools.MinPITRToolsVersion).
 	PreflightCheckToolsVersion = "tools_version"

@@ -252,6 +252,20 @@ groups:
           description: "The oplog of the replica set behind PITR stream {{ $labels.stream }} ({{ $labels.instance }}) holds only {{ $value | humanizeDuration }} of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
           runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitroplogheadroomlow"
 
+      # The last successful base backup took more than half of the oplog window (the
+      # product raises pitr.base_window_risk at the default of its setting
+      # pitr.base_window_risk_ratio, 0.5; change both if you change the setting). A
+      # base that outlasts the oplog window fails, so no new base becomes eligible and
+      # the point-in-time window stops moving forward.
+      - alert: MongoRescuePITRBaseWindowRisk
+        expr: mongorescue_pitr_base_window_ratio > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A base backup of PITR stream {{ $labels.stream }} takes {{ $value | humanizePercentage }} of the oplog window"
+          description: "The last successful base backup of PITR stream {{ $labels.stream }} on {{ $labels.instance }} took {{ $value | humanizePercentage }} of the current oplog window. If a base takes longer than the window it fails and the recovery window stops moving. Grow the oplog (replSetResizeOplog) or shorten the base backup; see the oplog sizing guide in docs/pitr.md."
+
       # A chain ended by a gap, a replica set change or a divergence: a point-in-time
       # restore cannot cross it. The second branch catches the first break of a
       # stream, whose series starts at 1 (a series first seen above 1 is not new).
