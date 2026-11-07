@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The `mongorescue_last_successful_backup_timestamp_seconds`, `mongorescue_database_last_successful_backup_timestamp_seconds`, `mongorescue_backup_size_bytes` and `mongorescue_database_backup_size_bytes` gauges are seeded from the metadata store at start and after an HA takeover, instead of staying absent until the next successful backup (#220).
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 

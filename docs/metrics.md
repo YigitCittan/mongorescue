@@ -99,6 +99,8 @@ Ready-made rules, unit-tested with `promtool test rules`, ship in [`deploy/prome
 
 Alert when a job has had no successful backup for 26 hours (a daily schedule plus two hours of slack):
 
+The last-success and size gauges are seeded from the metadata store at start and after an HA takeover, so they exist for every job that has a successful backup. A job that never had one has no series: add `or absent(...)` per job, or prefer the scrape-time RPO gauges (`mongorescue_job_rpo_met`), which cover every enabled job and are what the shipped rules use.
+
 ```yaml
 groups:
   - name: mongorescue
