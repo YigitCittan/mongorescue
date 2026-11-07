@@ -82,6 +82,8 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Why MongoRescue: comparison.md
+  - Feature Catalogue: features.md
   - Getting Started:
       - Configuration: configuration.md
       - MongoDB Connections: connections.md
