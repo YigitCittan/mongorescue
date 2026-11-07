@@ -247,7 +247,7 @@ func (r *Rule) Validate() error {
 		return err
 	}
 	if err := validateName(r.Name); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidRule, err)
+		return fmt.Errorf("%w: %w", ErrInvalidRule, err)
 	}
 	if len(r.Events) == 0 {
 		return fmt.Errorf("%w: at least one event is required", ErrInvalidRule)
