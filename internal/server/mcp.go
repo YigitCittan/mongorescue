@@ -52,6 +52,8 @@ func (s *Server) mcpGuard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden: the MCP endpoint is disabled (Settings → Security)")
 			return
 		}
+		// The SDK handler reads Streamable HTTP bodies without a limit.
+		r.Body = http.MaxBytesReader(w, r.Body, maxMCPBody)
 		if origin := r.Header.Get("Origin"); origin != "" && !s.sameOrAllowedOrigin(origin, r.Host) {
 			writeError(w, http.StatusForbidden, "forbidden: cross-origin request")
 			return

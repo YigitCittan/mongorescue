@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -93,8 +92,8 @@ type pinRequest struct {
 // handlePinBackup pins a backup (legal hold) with an optional note.
 func (s *Server) handlePinBackup(w http.ResponseWriter, r *http.Request) {
 	var req pinRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxIntegrityBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if err := readJSON(w, r, &req, maxIntegrityBody); err != nil && !errors.Is(err, io.EOF) {
+		writeDecodeError(w, err, "invalid request json")
 		return
 	}
 	rec, err := s.ops.PinBackup(r.Context(), r.PathValue("id"), req.Note)
@@ -285,8 +284,8 @@ func (s *Server) handleImportOrphan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req importRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxIntegrityBody)).Decode(&req); err != nil || req.Key == "" {
-		writeError(w, http.StatusBadRequest, "a JSON body with the orphan's key is required")
+	if err := readJSON(w, r, &req, maxIntegrityBody); err != nil || req.Key == "" {
+		writeDecodeError(w, err, "a JSON body with the orphan's key is required")
 		return
 	}
 	rec, err := svc.StartImport(r.Context(), r.PathValue("id"), req.Key)

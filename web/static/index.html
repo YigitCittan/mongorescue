@@ -1294,6 +1294,11 @@
               <textarea id="set-trusted-proxies" class="form-input mono" rows="2" spellcheck="false" placeholder="10.0.0.0/8" aria-describedby="set-trusted-proxies-hint"></textarea>
               <span class="form-hint" id="set-trusted-proxies-hint" data-i18n="settings.trusted_proxies_hint">One address or CIDR per line, such as 10.0.0.0/8. Forwarding headers are read only from these peers. Leave empty only if no proxy is used; "Trust proxy headers" without a list trusts every peer (deprecated).</span>
             </div>
+            <div class="form-group">
+              <label class="form-label" for="set-hsts-max-age" data-i18n="settings.hsts_max_age">HSTS max-age (seconds)</label>
+              <input type="number" id="set-hsts-max-age" class="form-input" min="0" max="63072000" step="1" inputmode="numeric" aria-describedby="set-hsts-max-age-hint">
+              <span class="form-hint" id="set-hsts-max-age-hint" data-i18n="settings.hsts_max_age_hint">Sent as Strict-Transport-Security only on responses served over TLS, directly or through a trusted proxy that reports https. 0 turns it off. Browsers then refuse plain HTTP for this host for that long, so enable HTTPS everywhere first.</span>
+            </div>
           </fieldset>
           <fieldset class="settings-group">
             <legend class="settings-group-title" data-i18n="settings.group_access">API access</legend>
