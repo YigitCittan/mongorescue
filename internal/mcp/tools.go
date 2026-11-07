@@ -272,6 +272,9 @@ type restoreInput struct {
 	VerifyRestore      bool     `json:"verify_restore,omitempty" jsonschema:"after the restore, compare the document counts and indexes of the restored collections with the backup's manifest (result in the restore's verification)"`
 	Force              bool     `json:"force,omitempty" jsonschema:"WARNING: starts the restore even though a preflight check failed, which may fail or harm the target; set it only after reading the failed checks"`
 	SourceTargetID     string   `json:"source_target_id,omitempty" jsonschema:"storage target to read the archive from: the backup's primary target or one of its completed copies (default: the primary, or a healthy copy when the primary is missing or damaged)"`
+
+	NumParallelCollections        int `json:"num_parallel_collections,omitempty" jsonschema:"mongorestore --numParallelCollections, 1 to 16 (default: the server's setting, else 4)"`
+	InsertionWorkersPerCollection int `json:"insertion_workers_per_collection,omitempty" jsonschema:"mongorestore --numInsertionWorkersPerCollection, 1 to 32 (default: the server's setting, else 1)"`
 }
 
 // Outputs.
@@ -1004,6 +1007,8 @@ func (s *Server) restoreSafeClone(ctx context.Context, in restoreInput) (restore
 		VerifyRestore:       in.VerifyRestore,
 		Force:               in.Force,
 		SourceTargetID:      in.SourceTargetID,
+
+		NumParallelCollections: in.NumParallelCollections, InsertionWorkersPerCollection: in.InsertionWorkersPerCollection,
 	})
 	if err != nil {
 		return restoreStarted{}, "", err

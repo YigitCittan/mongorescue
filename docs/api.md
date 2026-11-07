@@ -318,6 +318,10 @@ A preflight applies the scope rules of the restore it checks: an in-place or cro
 
 `POST /api/v1/restore` runs the same checks before it starts and stores them on the restore record (`preflight`). A failed check refuses the restore with `409 Conflict`, the checks in `data` and the failed ones in `error`; send `"force": true` to restore anyway (the record then has `"forced": true`). Warnings never block, and dry runs are never refused. The dashboard runs the preflight while the restore dialog's options change and shows *Restore anyway* when a check failed.
 
+### Restore parallelism
+
+`"num_parallel_collections"` (`1` to `16`) and `"insertion_workers_per_collection"` (`1` to `32`) set `mongorestore --numParallelCollections` and `--numInsertionWorkersPerCollection` for the restore (also on `"pitr"` requests, for the base restore). Omitted or `0` falls back to `general.restore_num_parallel_collections` / `general.restore_insertion_workers_per_collection`, then to mongorestore's defaults of 4 and 1; other values answer `400`. The restore record carries the effective values under the same names, and a PITR preflight plan (`pitr`) carries them with `parallelism_matched`, whether its RTO estimate is based on restores with these values ([details](configuration.md#restore-parallelism)).
+
 ### Restore verification
 
 `"verify_restore": true` compares the restored database with the manifest the backup captured (per collection: the document count range and the indexes) once the restore completed, like an [automated restore test](verification.md#automated-restore-tests) does with a temporary database. It is off when omitted, so API clients of earlier releases are unchanged; the dashboard turns it on by default. Only the restored collections are compared: the selection of a selective restore, and for an in-place restore only the collections in the backup (others in the target are ignored). An in-place restore without `drop_target` adds documents to the ones already there, so a larger count is a note, not a mismatch. The result is stored on the record:

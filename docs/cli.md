@@ -113,6 +113,7 @@ A restore goes into a new safe clone database (`<db>_rescue_<timestamp>_<id>`) u
 | `--dry-run` | `dry_run`: check without writing |
 | `--verify-archive`, `--no-verify-archive` | `verify`: check the archive's checksum first, or not (in-place restores are always verified); neither leaves it to the server's policy |
 | `--verify-restore` | `verify_restore`: compare the restored database with the backup's manifest afterwards ([details](api.md#restore-verification)) |
+| `--parallel-collections N`, `--insertion-workers N` | `num_parallel_collections` (`1` to `16`) and `insertion_workers_per_collection` (`1` to `32`): `mongorestore` parallelism; also with `--pitr` ([details](configuration.md#restore-parallelism)) |
 | `--force` | `force`: restore although a preflight check failed |
 
 The [restore preflight](api.md#restore-preflight) runs first (`POST /api/v1/restores/preflight`). Warnings are printed to stderr and do not stop the restore. A failed check prints the checks (a table on stderr, or the preflight's JSON on stdout with `--json`) and exits `1` without starting the restore, unless `--force` is given. `--skip-preflight` skips this first call; the server still runs the checks when the restore starts and refuses it in the same way (exit `1` with the checks), unless `--force`.

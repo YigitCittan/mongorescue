@@ -566,6 +566,11 @@ function renderRestoreDetails() {
   row(t("run.source"), `${r.source_database || ""}${source ? ` · ${source}` : ""}`);
   row(t("run.target"), `${r.target_database || ""}${target ? ` · ${target}` : ""}`);
   row(t("run.mode"), r.dry_run ? t("status.dry_run") : r.in_place ? t("run.mode_in_place") : t("run.mode_clone"));
+  if (r.num_parallel_collections > 0) {
+    row(t("restore_checks.parallelism_row"), tf("restore_checks.parallelism_value", {
+      collections: r.num_parallel_collections, workers: r.insertion_workers_per_collection || 1
+    }));
+  }
   // The storage target the archive was read from, and why a copy (copies.js).
   if (typeof copiesRestoreDetailRows === "function") copiesRestoreDetailRows(r, row);
   if (r.verified) row(t("status.verified"), t("run.yes"));

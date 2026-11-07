@@ -3041,6 +3041,8 @@ function openRestoreModal(backupID, sourceDB) {
   });
   document.getElementById("restore-verify-restore").checked = true;
   document.getElementById("restore-force").checked = false;
+  setValue("restore-parallel-collections", "");
+  setValue("restore-insertion-workers", "");
   // The storage target the archive is read from: automatic, the primary or a copy (copies.js).
   if (typeof copiesFillRestore === "function") copiesFillRestore(backup);
   updateRestoreMode(false);
@@ -3082,6 +3084,17 @@ function updateRestoreSubmit() {
 
 // Builds the body of a restore request (POST /api/v1/restore, and its preflight)
 // from the dialog; selected lists the chosen collections ([] = whole database).
+// restoreParallelPayload returns the mongorestore parallelism fields of the restore
+// dialog that hold a value (empty keeps the server default).
+function restoreParallelPayload() {
+  const out = {};
+  const collections = parseInt(getValue("restore-parallel-collections"), 10);
+  const workers = parseInt(getValue("restore-insertion-workers"), 10);
+  if (collections > 0) out.num_parallel_collections = collections;
+  if (workers > 0) out.insertion_workers_per_collection = workers;
+  return out;
+}
+
 function restoreRequestBody(selected) {
   const isSafeClone = document.getElementById("restore-safe-clone").checked;
   const usersRoles = document.getElementById("restore-users-roles");
@@ -3098,6 +3111,7 @@ function restoreRequestBody(selected) {
     ...(!isSafeClone && !usersRoles.disabled && usersRoles.checked ? { restore_users_and_roles: true } : {}),
     ...(selected.length > 0 ? { selected_collections: selected } : {}),
     ...(targetConnection ? { target_connection_id: targetConnection } : {}),
+    ...restoreParallelPayload(),
     ...(typeof copiesRestorePayload === "function" ? copiesRestorePayload() : {})
   };
 }
@@ -5085,6 +5099,8 @@ function fillGeneral(g) {
   setValue("set-restore-timeout", g.restore_timeout || "");
   setValue("set-post-restore-timeout", g.post_restore_command_timeout || "");
   setValue("set-storage-stall-timeout", g.storage_stall_timeout || "");
+  setValue("set-restore-parallel-collections", g.restore_num_parallel_collections ?? 0);
+  setValue("set-restore-insertion-workers", g.restore_insertion_workers_per_collection ?? 0);
   setValue("set-verify-policy", ["always", "auto", "never"].includes(g.restore_verify_policy) ? g.restore_verify_policy : "auto");
   setValue("set-log-retention-days", g.log_retention_days ?? 30);
   setValue("set-max-upload-mbps", g.max_upload_mbps || 0);
@@ -5265,6 +5281,8 @@ function collectGeneral() {
     restore_timeout: durationSetting("set-restore-timeout").raw,
     post_restore_command_timeout: durationSetting("set-post-restore-timeout", 1000).raw,
     storage_stall_timeout: durationSetting("set-storage-stall-timeout", 60000).raw,
+    restore_num_parallel_collections: intSetting("set-restore-parallel-collections"),
+    restore_insertion_workers_per_collection: intSetting("set-restore-insertion-workers"),
     restore_verify_policy: getValue("set-verify-policy"),
     log_retention_days: intSetting("set-log-retention-days"),
     max_upload_mbps: Math.max(parseFloat(String(getValue("set-max-upload-mbps")).replace(",", ".")) || 0, 0)

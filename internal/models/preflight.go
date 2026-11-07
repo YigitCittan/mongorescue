@@ -93,6 +93,13 @@ type PITRPreflight struct {
 	// rates ("default"); see PITREstimate.
 	EstimatedSeconds float64 `json:"estimated_seconds"`
 	EstimateFrom     string  `json:"estimate_from"`
+	// NumParallelCollections and InsertionWorkersPerCollection are the mongorestore
+	// parallelism the restore would run with and the estimate is made for;
+	// ParallelismMatched reports that its measured rates come from restores that
+	// ran with the same values (see PITREstimate).
+	NumParallelCollections        int  `json:"num_parallel_collections"`
+	InsertionWorkersPerCollection int  `json:"insertion_workers_per_collection"`
+	ParallelismMatched            bool `json:"parallelism_matched,omitempty"`
 }
 
 // PreflightCheck is the result of one restore preflight check.

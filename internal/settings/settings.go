@@ -165,6 +165,13 @@ type General struct {
 	// snapshot, re-encryption) whose storage target accepts no bytes for this long
 	// (MinStorageStallTimeout to MaxStorageStallTimeout).
 	StorageStallTimeout Duration `json:"storage_stall_timeout"`
+	// RestoreNumParallelCollections and RestoreInsertionWorkers are the mongorestore
+	// --numParallelCollections and --numInsertionWorkersPerCollection of restores
+	// that do not set their own (models.MaxRestoreParallelCollections and
+	// models.MaxInsertionWorkersPerCollection at most; 0 keeps mongorestore's
+	// defaults of 4 and 1).
+	RestoreNumParallelCollections int `json:"restore_num_parallel_collections"`
+	RestoreInsertionWorkers       int `json:"restore_insertion_workers_per_collection"`
 }
 
 // Limits of General.PostRestoreCommandTimeout.
@@ -432,17 +439,19 @@ type Patch struct {
 
 // GeneralPatch updates General; see General for the fields.
 type GeneralPatch struct {
-	DefaultRetentionDays      *int                 `json:"default_retention_days,omitempty"`
-	DefaultRetentionCount     *int                 `json:"default_retention_count,omitempty"`
-	DefaultGzip               *bool                `json:"default_gzip,omitempty"`
-	BackupTimeout             *Duration            `json:"backup_timeout,omitempty"`
-	BackupStallTimeout        *Duration            `json:"backup_stall_timeout,omitempty"`
-	RestoreTimeout            *Duration            `json:"restore_timeout,omitempty"`
-	RestoreVerifyPolicy       *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
-	LogRetentionDays          *int                 `json:"log_retention_days,omitempty"`
-	MaxUploadMbps             *float64             `json:"max_upload_mbps,omitempty"`
-	PostRestoreCommandTimeout *Duration            `json:"post_restore_command_timeout,omitempty"`
-	StorageStallTimeout       *Duration            `json:"storage_stall_timeout,omitempty"`
+	DefaultRetentionDays          *int                 `json:"default_retention_days,omitempty"`
+	DefaultRetentionCount         *int                 `json:"default_retention_count,omitempty"`
+	DefaultGzip                   *bool                `json:"default_gzip,omitempty"`
+	BackupTimeout                 *Duration            `json:"backup_timeout,omitempty"`
+	BackupStallTimeout            *Duration            `json:"backup_stall_timeout,omitempty"`
+	RestoreTimeout                *Duration            `json:"restore_timeout,omitempty"`
+	RestoreVerifyPolicy           *models.VerifyPolicy `json:"restore_verify_policy,omitempty"`
+	LogRetentionDays              *int                 `json:"log_retention_days,omitempty"`
+	MaxUploadMbps                 *float64             `json:"max_upload_mbps,omitempty"`
+	PostRestoreCommandTimeout     *Duration            `json:"post_restore_command_timeout,omitempty"`
+	StorageStallTimeout           *Duration            `json:"storage_stall_timeout,omitempty"`
+	RestoreNumParallelCollections *int                 `json:"restore_num_parallel_collections,omitempty"`
+	RestoreInsertionWorkers       *int                 `json:"restore_insertion_workers_per_collection,omitempty"`
 }
 
 // SecurityPatch updates Security; see Security for the fields.
@@ -494,6 +503,8 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.General.MaxUploadMbps, g.MaxUploadMbps)
 		setIf(&next.General.PostRestoreCommandTimeout, g.PostRestoreCommandTimeout)
 		setIf(&next.General.StorageStallTimeout, g.StorageStallTimeout)
+		setIf(&next.General.RestoreNumParallelCollections, g.RestoreNumParallelCollections)
+		setIf(&next.General.RestoreInsertionWorkers, g.RestoreInsertionWorkers)
 	}
 	if sec := p.Security; sec != nil {
 		setIf(&next.Security.SessionIdleTimeout, sec.SessionIdleTimeout)
@@ -616,6 +627,8 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return fmt.Errorf("%w: general.post_restore_command_timeout must be between 1s and 24h", ErrInvalid)
 	case g.StorageStallTimeout.Std() < MinStorageStallTimeout || g.StorageStallTimeout.Std() > MaxStorageStallTimeout:
 		return fmt.Errorf("%w: general.storage_stall_timeout must be between 1m and 1h", ErrInvalid)
+	case models.ValidateRestoreParallelism(g.RestoreNumParallelCollections, g.RestoreInsertionWorkers) != nil:
+		return fmt.Errorf("%w: general.restore_parallelism: %w", ErrInvalid, models.ValidateRestoreParallelism(g.RestoreNumParallelCollections, g.RestoreInsertionWorkers))
 	}
 
 	sec := &s.Security
