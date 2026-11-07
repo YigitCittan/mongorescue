@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
@@ -50,6 +51,9 @@ func (s *Server) handleDropKeptClones(w http.ResponseWriter, r *http.Request) {
 func (s *Server) warnings(ctx context.Context, svc *settings.Service) []settings.Warning {
 	out := svc.Warnings()
 	if w, ok := s.tlsWarning(ctx); ok {
+		out = append(out, w)
+	}
+	if w, ok := s.tlsCertWarning(ctx); ok {
 		out = append(out, w)
 	}
 	out = append(out, s.apiKeyWarnings(ctx)...)
@@ -207,6 +211,37 @@ func warningKeys(keys []*auth.APIKey) []settings.WarningAPIKey {
 		out = append(out, settings.WarningAPIKey{ID: k.ID, Name: k.Name, Prefix: k.Prefix, ExpiresAt: k.ExpiresAt})
 	}
 	return out
+}
+
+// tlsCertWarning returns the settings.WarningConnectionTLSCertExpiring warning
+// when a client or CA certificate of any connection expires within 30 days or has
+// expired.
+func (s *Server) tlsCertWarning(ctx context.Context) (settings.Warning, bool) {
+	if s.connections == nil {
+		return settings.Warning{}, false
+	}
+	list, err := s.connections.List(ctx)
+	if err != nil {
+		s.logger.Warn("could not list the connections for the certificate expiry warning", logsafe.Error(err))
+		return settings.Warning{}, false
+	}
+	now := time.Now()
+	var expiring []settings.WarningConnection
+	for _, c := range list {
+		var certs []settings.WarningCert
+		for _, e := range c.TLSCertExpiry {
+			if lvl := e.Level(now); lvl > models.TLSExpiryOK {
+				certs = append(certs, settings.WarningCert{Kind: e.Kind, NotAfter: e.NotAfter, Expired: lvl == models.TLSExpiryExpired})
+			}
+		}
+		if len(certs) > 0 {
+			expiring = append(expiring, settings.WarningConnection{ID: c.ID, Name: c.Name, Certs: certs})
+		}
+	}
+	if len(expiring) == 0 {
+		return settings.Warning{}, false
+	}
+	return settings.ConnectionTLSCertExpiring(expiring), true
 }
 
 // tlsWarning returns the settings.WarningConnectionTLSLoosened warning when any

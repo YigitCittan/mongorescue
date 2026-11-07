@@ -65,6 +65,11 @@ type Connection struct {
 	// client certificate), used instead of tls* file options in the URI.
 	ConnectionTLS
 
+	// TLSCertExpiry lists the earliest expiry of the client certificate chain and
+	// of the CA bundle, for the kinds that are set. API responses fill it in;
+	// it is never stored.
+	TLSCertExpiry []TLSCertExpiry `json:"tls_cert_expiry,omitempty"`
+
 	// CredentialSource is where the user name and password come from:
 	// CredentialsStored (or empty) in the URI, or CredentialsVault, read from
 	// Vault (see Vault) whenever the connection is used. With Vault the URI holds no

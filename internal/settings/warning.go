@@ -80,6 +80,36 @@ type WarningConnection struct {
 	// Insecure and AllowInvalidHostnames are the connection's loosened checks.
 	Insecure              bool `json:"tls_insecure,omitempty"`
 	AllowInvalidHostnames bool `json:"tls_allow_invalid_hostnames,omitempty"`
+	// Certs lists the expiring or expired certificates of a
+	// WarningConnectionTLSCertExpiring.
+	Certs []WarningCert `json:"certs,omitempty"`
+}
+
+// WarningCert is a certificate of a connection that expires soon or has expired.
+type WarningCert struct {
+	// Kind is "client" or "ca".
+	Kind string `json:"kind"`
+	// NotAfter is when the certificate expires or expired.
+	NotAfter time.Time `json:"not_after"`
+	// Expired reports that NotAfter has passed.
+	Expired bool `json:"expired,omitempty"`
+}
+
+// WarningConnectionTLSCertExpiring identifies the warning about connections whose
+// x509 client certificate or CA certificate expires within 30 days or has
+// expired. It is raised by the server from the connections (not stored here).
+const WarningConnectionTLSCertExpiring = "connection_tls_cert_expiring"
+
+// ConnectionTLSCertExpiring returns the WarningConnectionTLSCertExpiring warning
+// for conns.
+func ConnectionTLSCertExpiring(conns []WarningConnection) Warning {
+	names := make([]string, 0, len(conns))
+	for _, c := range conns {
+		names = append(names, c.Name)
+	}
+	return Warning{ID: WarningConnectionTLSCertExpiring, Setting: "connections", Connections: conns,
+		Message: fmt.Sprintf("The TLS certificates of these connections expire soon or have expired; backups through them fail once a client certificate expires: %s.",
+			strings.Join(names, ", "))}
 }
 
 // WarningConnectionTLSLoosened identifies the warning about connections that do

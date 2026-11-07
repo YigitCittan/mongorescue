@@ -148,6 +148,8 @@ type App struct {
 	diskGuard    *diskguard.Guard
 	// keyExpiry applies the API key expiry policy (active instance only).
 	keyExpiry *apiKeyExpiryMonitor
+	// tlsExpiry watches the connections' TLS certificate expiries (active instance only).
+	tlsExpiry *tlsExpiryMonitor
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -331,7 +333,9 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger),
 		targets.WithVault(vaultResolver.Configured()))
 	prober := mongoconn.New()
-	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger), connections.WithCredentials(vaultResolver))
+	tlsKick := make(chan struct{}, 1)
+	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger), connections.WithCredentials(vaultResolver),
+		connections.WithOnChange(kickFunc(tlsKick)))
 	importedKeySecret, err := secretbox.DeriveSubkey(key.Key, auth.ImportedKeySubkeyPurpose)
 	if err != nil {
 		return nil, fmt.Errorf("initialize authentication: %w", err)
@@ -1053,6 +1057,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		heartbeat:     heartbeatSvc,
 		diskGuard:     diskGuard,
 		keyExpiry:     newAPIKeyExpiryMonitor(authSvc, ops, metricSet, settingsSvc, logger),
+		tlsExpiry:     newTLSExpiryMonitor(connSvc, ops, metricSet, logger, tlsKick),
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 		vault:         vaultResolver,
@@ -1166,6 +1171,10 @@ func (a *App) startBackground(standby bool) (stop func()) {
 	var keyExpiryWG sync.WaitGroup
 	if a.keyExpiry != nil && !standby {
 		keyExpiryWG.Go(func() { a.keyExpiry.Run(keyExpiryCtx) })
+	}
+	// The connections' TLS certificate expiries share that lifecycle.
+	if a.tlsExpiry != nil && !standby {
+		keyExpiryWG.Go(func() { a.tlsExpiry.Run(keyExpiryCtx) })
 	}
 	// The space guard retries the saves a full data directory failed; it stops
 	// after the runs too, before the metadata database closes.

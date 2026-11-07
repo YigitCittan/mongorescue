@@ -868,6 +868,51 @@ tests:
               description: "Create replacements and update the scripts, CI jobs and MCP clients that use these keys before they are refused."
               runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpiring"
 
+  - name: connection TLS certificates expiring and expired
+    interval: 1m
+    input_series:
+      # A client certificate that expires in about 23 days, a CA that is valid for
+      # another 104 days, and a client certificate that expired after 50 minutes.
+      - series: 'mongorescue_connection_tls_cert_expiry_timestamp_seconds{job="backup", instance="mr:8080", connection="conn_a", kind="client"}'
+        values: "2000000x102"
+      - series: 'mongorescue_connection_tls_cert_expiry_timestamp_seconds{job="backup", instance="mr:8080", connection="conn_a", kind="ca"}'
+        values: "9000000x102"
+      - series: 'mongorescue_connection_tls_cert_expiry_timestamp_seconds{job="backup", instance="mr:8080", connection="conn_b", kind="client"}'
+        values: "3000x102"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MongoRescueConnectionCertExpiringSoon
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: MongoRescueConnectionCertExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: backup
+              instance: mr:8080
+              connection: conn_a
+              kind: client
+            exp_annotations:
+              summary: "The client certificate of MongoRescue connection conn_a expires in 23d 2h 3m 20s"
+              description: "Replace the TLS certificate in the connection's TLS settings before it expires; after that every backup through connection conn_a fails."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueconnectioncertexpiringsoon"
+      - eval_time: 30m
+        alertname: MongoRescueConnectionCertExpired
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: MongoRescueConnectionCertExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: mr:8080
+              connection: conn_b
+              kind: client
+            exp_annotations:
+              summary: "The client certificate of MongoRescue connection conn_b has expired"
+              description: "Backups, restores and the PITR collector of connection conn_b fail until the certificate is replaced in the connection's TLS settings."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueconnectioncertexpired"
+
   - name: disk filling up
     interval: 1m
     input_series:
