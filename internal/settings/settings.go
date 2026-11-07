@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
@@ -78,6 +79,7 @@ const (
 	maxRetentionDays    = 36500
 	maxRetentionCount   = 100000
 	maxCORSOrigins      = 50
+	maxTrustedProxies   = 50
 	maxRecipients       = 50
 	minSessionTimeout   = time.Minute
 	maxSessionTimeout   = 365 * 24 * time.Hour
@@ -188,6 +190,11 @@ type Security struct {
 	SecureCookies CookiePolicy `json:"secure_cookies"`
 	// TrustProxyHeaders honours X-Forwarded-For / X-Real-IP and X-Forwarded-Proto.
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+	// TrustedProxies lists the CIDRs (or single IPs) of the reverse proxies allowed to
+	// supply forwarding headers. A non-empty list enables header trust for those
+	// peers only; with TrustProxyHeaders on and the list empty, every peer is trusted
+	// (deprecated).
+	TrustedProxies []string `json:"trusted_proxies"`
 	// CORSOrigins lists browser origins allowed to call the API cross-origin.
 	CORSOrigins []string `json:"cors_origins"`
 	// MetricsPublic serves /metrics without an API key.
@@ -326,6 +333,7 @@ func Defaults() Settings {
 			SessionAbsoluteTimeout:    Duration(7 * 24 * time.Hour),
 			SecureCookies:             CookiesAuto,
 			CORSOrigins:               []string{},
+			TrustedProxies:            []string{},
 			MCPEnabled:                true,
 			DeleteGraceDays:           models.DefaultDeleteGraceDays,
 			APIKeyExpiryWarningDays:   DefaultAPIKeyExpiryWarningDays,
@@ -350,6 +358,7 @@ func Defaults() Settings {
 // Clone returns a deep copy.
 func (s Settings) Clone() Settings {
 	s.Security.CORSOrigins = slices.Clone(s.Security.CORSOrigins)
+	s.Security.TrustedProxies = slices.Clone(s.Security.TrustedProxies)
 	s.Encryption.Recipients = slices.Clone(s.Encryption.Recipients)
 	s.Encryption.RetiredKeys = slices.Clone(s.Encryption.RetiredKeys)
 	s.OIDC = s.OIDC.clone()
@@ -373,6 +382,9 @@ func (s Settings) Masked() Settings {
 	}
 	if out.Security.CORSOrigins == nil {
 		out.Security.CORSOrigins = []string{}
+	}
+	if out.Security.TrustedProxies == nil {
+		out.Security.TrustedProxies = []string{}
 	}
 	if out.Encryption.Recipients == nil {
 		out.Encryption.Recipients = []string{}
@@ -428,6 +440,7 @@ type SecurityPatch struct {
 	SecureCookies             *CookiePolicy `json:"secure_cookies,omitempty"`
 	TrustProxyHeaders         *bool         `json:"trust_proxy_headers,omitempty"`
 	CORSOrigins               *[]string     `json:"cors_origins,omitempty"`
+	TrustedProxies            *[]string     `json:"trusted_proxies,omitempty"`
 	MetricsPublic             *bool         `json:"metrics_public,omitempty"`
 	MCPEnabled                *bool         `json:"mcp_enabled,omitempty"`
 	DeleteGraceDays           *int          `json:"delete_grace_days,omitempty"`
@@ -476,6 +489,9 @@ func (p Patch) apply(cur Settings, now time.Time) (Settings, error) {
 		setIf(&next.Security.TrustProxyHeaders, sec.TrustProxyHeaders)
 		if sec.CORSOrigins != nil {
 			next.Security.CORSOrigins = slices.Clone(*sec.CORSOrigins)
+		}
+		if sec.TrustedProxies != nil {
+			next.Security.TrustedProxies = slices.Clone(*sec.TrustedProxies)
 		}
 		setIf(&next.Security.MetricsPublic, sec.MetricsPublic)
 		setIf(&next.Security.MCPEnabled, sec.MCPEnabled)
@@ -621,6 +637,11 @@ func validate(s *Settings, strictPassphrase bool) error {
 		return err
 	}
 	sec.CORSOrigins = origins
+	proxies, err := normalizeTrustedProxies(sec.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	sec.TrustedProxies = proxies
 
 	if err := validateIntegrity(&s.Integrity); err != nil {
 		return err
@@ -658,6 +679,25 @@ func normalizeOrigins(in []string) ([]string, error) {
 	}
 	if len(out) > maxCORSOrigins {
 		return nil, fmt.Errorf("%w: security.cors_origins allows at most %d entries", ErrInvalid, maxCORSOrigins)
+	}
+	return out, nil
+}
+
+// normalizeTrustedProxies checks the trusted proxy list: each entry is a CIDR or an IP
+// address and is stored as a canonical CIDR; duplicates are dropped.
+func normalizeTrustedProxies(in []string) ([]string, error) {
+	prefixes, err := clientip.ParseTrusted(in)
+	if err != nil {
+		return nil, fmt.Errorf("%w: security.trusted_proxies: %w", ErrInvalid, err)
+	}
+	out := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		if v := p.String(); !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	if len(out) > maxTrustedProxies {
+		return nil, fmt.Errorf("%w: security.trusted_proxies allows at most %d entries", ErrInvalid, maxTrustedProxies)
 	}
 	return out, nil
 }

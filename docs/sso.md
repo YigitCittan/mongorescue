@@ -13,7 +13,7 @@ listed in [configuration.md](configuration.md#single-sign-on).
 ## Before you start
 
 - Serve MongoRescue over HTTPS behind a reverse proxy ([production.md](production.md#tls-and-the-reverse-proxy)),
-  with *Trust proxy headers* on or *Secure cookies* set to *Always*.
+  with *Trusted proxies* set or *Secure cookies* set to *Always*.
 - Keep at least one **local administrator** with a strong password. MongoRescue
   refuses to turn single sign-on on without one, and refuses to delete or demote
   the last one while single sign-on is on.

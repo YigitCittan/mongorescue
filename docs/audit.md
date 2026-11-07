@@ -46,7 +46,7 @@ Other `GET` requests (with or without credentials), `/metrics` scrapes and MCP r
 | `action` | Route pattern, `MCP <tool>` or `SYSTEM <action>`; never the raw path or query |
 | `targets` | The path parameters (`{"id": "job_1"}`), names the handler adds (changed settings), the `id`/`*_id` arguments of a tool call or system action, or the window of a summary entry (below) |
 | `status`, `outcome` | HTTP status and `ok` (below 400), `denied` (401, 403), `rate_limited` (429) or `error`. Status 0 for MCP and system entries, and with outcome `error` for a request whose handler panicked or wrote no status |
-| `client_ip` | The client address; `X-Forwarded-For` (last entry) or `X-Real-IP` only with **Trust proxy headers** (`security.trust_proxy_headers`), the same rule as sign-in throttling |
+| `client_ip` | The client address; `X-Forwarded-For` or `X-Real-IP` only from a peer in **Trusted proxies** (`security.trusted_proxies`), the same rule as sign-in throttling |
 | `user_agent` | The `User-Agent` header, cut at 256 bytes |
 | `count` | `1`, or for a summary entry the number of identical refusals it stands for (see below) |
 | `hash` | The chain hash |

@@ -16,6 +16,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/operations"
@@ -341,26 +342,20 @@ func presentedKey(r *http.Request) string {
 	return ""
 }
 
-// clientIP returns the address used for login throttling. Forwarding headers are
-// honoured only with the security.trust_proxy_headers setting: the last
-// X-Forwarded-For entry (the one appended by the trusted proxy), else X-Real-IP.
+// trust returns the trusted proxy policy of the security settings. A non-empty
+// security.trusted_proxies enables header trust for those peers only; the deprecated
+// security.trust_proxy_headers alone trusts every peer (see clientip.Trust).
+func (s *Server) trust() clientip.Trust {
+	sec := s.security()
+	prefixes, _ := clientip.ParseTrusted(sec.TrustedProxies) // validated when stored; bad entries trust nothing
+	return clientip.Trust{Prefixes: prefixes, Legacy: sec.TrustProxyHeaders && len(sec.TrustedProxies) == 0}
+}
+
+// clientIP returns the address used for login throttling, rate limiting and the
+// audit log: the peer address, or, when the peer is a trusted proxy, the client it
+// reports (clientip.Trust.Resolve).
 func (s *Server) clientIP(r *http.Request) string {
-	if s.security().TrustProxyHeaders {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
-				return ip
-			}
-		}
-		if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
-			return ip
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return s.trust().Resolve(r)
 }
 
 // secureRequest reports whether cookies must carry the Secure attribute, following
@@ -376,7 +371,7 @@ func (s *Server) secureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	return sec.TrustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return s.trust().Proto(r) == "https"
 }
 
 // sessionCookie builds the session cookie (HttpOnly, SameSite=Strict, Path=/). It is

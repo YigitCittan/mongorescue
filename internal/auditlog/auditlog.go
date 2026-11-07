@@ -147,7 +147,7 @@ type Event struct {
 	// Outcome is OutcomeOK, OutcomeError, OutcomeDenied or OutcomeRateLimited.
 	Outcome string `json:"outcome"`
 	// ClientIP is the caller's address (forwarding headers only from a trusted
-	// proxy, see security.trust_proxy_headers).
+	// proxy, see security.trusted_proxies).
 	ClientIP string `json:"client_ip"`
 	// UserAgent is the caller's User-Agent, cut at MaxUserAgentLength bytes.
 	UserAgent string `json:"user_agent"`

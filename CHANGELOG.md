@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Client address handling behind reverse proxies (#216). New setting `security.trusted_proxies` (CIDRs or IPs, also in Settings → Security): `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` are read only when the connection peer is in it, so a client reaching the port around the proxy can no longer pick its own address. `X-Forwarded-For` is read over all header lines, right to left past trusted hops, and wins over `X-Real-IP`; a value that is not an IP address falls back to the peer address. The same rule drives the secure-cookie decision and the MCP loopback Host check. Login, setup-code and single sign-on attempt throttling now key IPv6 clients by `/64` (as the rate limiter already did). New warning when an untrusted peer sends forwarding headers.
+  - **Migration.** `security.trust_proxy_headers` keeps working: alone (empty `trusted_proxies`) it still trusts every peer, with a startup warning; set `trusted_proxies` to restrict it. A non-empty list enables header trust for those peers by itself. Clients behind an `X-Real-IP`-only proxy must also have `X-Forwarded-For` overwritten by the proxy (see docs/production.md).
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
