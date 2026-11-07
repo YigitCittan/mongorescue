@@ -88,6 +88,22 @@ jobs:
             echo "an unknown top-level value was accepted"; exit 1
           fi
 
+      - name: GitOps mode renders deterministically or fails with an actionable message
+        run: |
+          set -euo pipefail
+          args=(smoke deploy/helm/mongorescue --set secretKey.requireExternal=true)
+          helm template "${args[@]}" --set secretKey.existingSecret=mongorescue-key > "$RUNNER_TEMP/gitops-1.yaml"
+          helm template "${args[@]}" --set secretKey.existingSecret=mongorescue-key > "$RUNNER_TEMP/gitops-2.yaml"
+          diff -u "$RUNNER_TEMP/gitops-1.yaml" "$RUNNER_TEMP/gitops-2.yaml"
+          if grep -q 'kind: Secret' "$RUNNER_TEMP/gitops-1.yaml"; then
+            echo "the GitOps render holds a Secret of its own"; exit 1
+          fi
+          helm template "${args[@]}" --set keyWrap=aws-kms:arn:aws:kms:eu-central-1:123456789012:alias/mongorescue >/dev/null
+          if out=$(helm template "${args[@]}" 2>&1); then
+            echo "requireExternal rendered without existingSecret or keyWrap"; exit 1
+          fi
+          echo "$out" | grep -q 'secretKey.requireExternal is set: set secretKey.existingSecret' || { echo "$out"; exit 1; }
+
   kind:
     name: Helm (kind)
     runs-on: ubuntu-latest

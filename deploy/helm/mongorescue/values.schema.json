@@ -83,7 +83,8 @@
       "properties": {
         "existingSecret": { "type": "string" },
         "existingSecretKey": { "type": "string", "minLength": 1 },
-        "generate": { "type": "boolean" }
+        "generate": { "type": "boolean" },
+        "requireExternal": { "type": "boolean" }
       },
       "required": ["existingSecretKey"]
     },
