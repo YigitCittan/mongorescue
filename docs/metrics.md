@@ -36,6 +36,8 @@ MongoRescue exposes metrics in the Prometheus text format on `GET /metrics`.
 | `mongorescue_restore_tests_total` | counter | `job`, `result` | Automated restore tests (`ok`, `mismatch`, `error`) |
 | `mongorescue_last_successful_restore_test_timestamp_seconds` | gauge | `job` | Unix time of the last passed restore test |
 | `mongorescue_storage_orphan_archives` | gauge | `target` | Archives without a backup record found by the last storage scan |
+| `mongorescue_data_dir_free_bytes` | gauge | | Bytes available on the filesystem of the data directory (metadata database, secret key, logs). Measured at scrape time (cached for 15 s); not exposed by standby HA instances |
+| `mongorescue_storage_free_bytes` | gauge | `target` | Bytes available on the filesystem of a local storage target (ID); S3 targets have no series. Measured like the data directory gauge. There is no `mongorescue_storage_used_bytes`: the metadata store records sizes per backup, not per target, and listing a target to sum its objects is not cheap at scrape time |
 | `mongorescue_storage_missing_archives` | gauge | `target` | Backup records whose archive the last storage scan did not find |
 | `mongorescue_last_storage_scan_timestamp_seconds` | gauge | `target` | Unix time of the last storage scan |
 | `mongorescue_retention_deletions_total` | counter | `job` | Backups deleted by retention |

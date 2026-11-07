@@ -193,3 +193,230 @@ groups:
         annotations:
           summary: "A metadata snapshot was refused in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
           description: "{{ $labels.instance }} refused a metadata snapshot under _mongorescue/metadata/ha/{{ $labels.cluster }}/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
+
+  # Newer subsystems: point-in-time recovery, backup copies, notifications, queues,
+  # audit log, KMS key wrapping, API keys and free disk space. All of them read
+  # series a standby HA instance does not expose (see docs/metrics.md), so none
+  # fires on a standby.
+  - name: mongorescue-subsystems
+    rules:
+      # The oplog collector of a PITR stream is failing or stopped: the recovery
+      # window stops growing and the oplog headroom shrinks.
+      - alert: MongoRescuePITRCollectorDown
+        expr: mongorescue_pitr_collector_up == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The PITR collector of stream {{ $labels.stream }} is down"
+          description: "The oplog collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} has stored no chunk for 10 minutes. Check the stream's collector error in the dashboard (connection, storage target, permissions)."
+
+      # The newest stored chunk trails the replica set's newest write by more than
+      # 15 minutes (the product raises pitr.lag_high at max(5 minutes, 5 x the
+      # chunk interval); the default interval is 60 s, the maximum 900 s).
+      - alert: MongoRescuePITRLagHigh
+        expr: mongorescue_pitr_lag_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PITR stream {{ $labels.stream }} is {{ $value | humanizeDuration }} behind"
+          description: "The collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} has been more than 15 minutes behind the replica set for 10 minutes. Point-in-time restores cannot reach the newest writes; check the storage target's speed and the write load."
+
+      # How long the collector may stop before oplog entries are lost: below 6
+      # hours or below 3 x the current lag (the product raises pitr.window_low at
+      # the same bound). Losing them ends the chain and the recovery window.
+      - alert: MongoRescuePITROplogHeadroomLow
+        expr: mongorescue_pitr_oplog_headroom_seconds < clamp_min(3 * mongorescue_pitr_lag_seconds, 21600)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PITR stream {{ $labels.stream }} has {{ $value | humanizeDuration }} of oplog headroom left"
+          description: "The oplog of the replica set behind PITR stream {{ $labels.stream }} ({{ $labels.instance }}) holds only {{ $value | humanizeDuration }} of entries before the collector's position. If the collector stops for that long, entries are lost and the recovery window breaks. Grow the oplog or fix the collector lag."
+
+      # A chain ended by a gap, a replica set change or a divergence: a point-in-time
+      # restore cannot cross it. The second branch catches the first break of a
+      # stream, whose series starts at 1 (a series first seen above 1 is not new).
+      - alert: MongoRescuePITRChainBroken
+        expr: |
+          sum by (instance, job, stream, reason) (increase(mongorescue_pitr_chain_breaks_total[1h])) > 0
+          or
+          sum by (instance, job, stream, reason) (
+            (mongorescue_pitr_chain_breaks_total == 1)
+            unless mongorescue_pitr_chain_breaks_total offset 1h
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The PITR chain of stream {{ $labels.stream }} broke ({{ $labels.reason }})"
+          description: "The oplog chain of PITR stream {{ $labels.stream }} on {{ $labels.instance }} ended ({{ $labels.reason }}) in the last hour. Restores cannot cross the gap; a new base backup starts the next window."
+
+      # Several chunks failed in an hour: a single failure is retried and is not
+      # worth a page (MongoRescuePITRCollectorDown covers a collector that keeps failing).
+      - alert: MongoRescuePITRChunkErrors
+        expr: sum by (instance, job, stream) (increase(mongorescue_pitr_chunks_total{result="error"}[1h])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "PITR stream {{ $labels.stream }} failed {{ $value }} chunks in the last hour"
+          description: "The collector of PITR stream {{ $labels.stream }} on {{ $labels.instance }} could not store several oplog chunks in the last hour (storage target or encryption errors). Nothing was kept for them; they are read again."
+
+      # No chunk was stored for an hour although the replica set kept writing
+      # (the lag is above a minute). Normal on an idle replica set, whose lag is 0.
+      - alert: MongoRescuePITRStale
+        expr: |
+          (time() - mongorescue_pitr_last_chunk_timestamp_seconds > 3600)
+          and on (instance, job, stream)
+          (mongorescue_pitr_lag_seconds > 60)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PITR stream {{ $labels.stream }} stored no chunk for {{ $value | humanizeDuration }}"
+          description: "The newest chunk of PITR stream {{ $labels.stream }} on {{ $labels.instance }} ends {{ $value | humanizeDuration }} ago while the replica set keeps writing."
+
+      # A backup copy to a copy target failed (errors) in the last hour.
+      - alert: MongoRescueBackupCopyFailed
+        expr: increase(mongorescue_backup_copies_total{result="error"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A backup copy failed on {{ $labels.instance }}"
+          description: "{{ $value }} attempts to copy a backup to its copy target failed in the last hour. Failed copies are retried; check the copy target and the backup's copy status."
+
+      # A copy does not match the primary's checksum: the second location holds a
+      # damaged archive.
+      - alert: MongoRescueBackupCopyMismatch
+        expr: increase(mongorescue_backup_copies_total{result="mismatch"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A backup copy does not match its primary on {{ $labels.instance }}"
+          description: "A copy stored on a copy target did not match the checksum of the primary archive in the last hour. The 3-2-1 guarantee does not hold for that backup; check the copy target."
+
+      # The copy queue was never empty for 4 hours (the gauge existed 4 hours ago): copies are not keeping up
+      # with the backups (or a target is unreachable).
+      - alert: MongoRescueBackupCopyQueueGrowing
+        expr: |
+          min_over_time(mongorescue_backup_copy_queue_depth[4h]) > 0
+          and
+          mongorescue_backup_copy_queue_depth offset 4h
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The backup copy queue on {{ $labels.instance }} has not been empty for 4 hours"
+          description: "At least {{ $value }} backup copies waited in the queue at every moment of the last 4 hours. The copy target may be slow or unreachable, or backups outpace the copy bandwidth."
+
+      # More than half of a channel's notifications were given up in the last hour
+      # (at least 2): a broken channel cannot report itself.
+      - alert: MongoRescueNotificationFailures
+        expr: |
+          (
+            sum by (instance, job, channel_type) (increase(mongorescue_notifications_total{status="failure"}[1h]))
+            /
+            sum by (instance, job, channel_type) (increase(mongorescue_notifications_total[1h]))
+          ) > 0.5
+          and
+          sum by (instance, job, channel_type) (increase(mongorescue_notifications_total{status="failure"}[1h])) >= 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of {{ $labels.channel_type }} notifications failed"
+          description: "Notification deliveries through {{ $labels.channel_type }} on {{ $labels.instance }} are failing (given up after retries) in the last hour. Alerts may not reach you; test the channel in the dashboard."
+
+      # Notifications were dropped (the queue was full) or expired (waited longer
+      # than the maximum age): they were never delivered.
+      - alert: MongoRescueNotificationsLost
+        expr: sum by (instance, job, channel_type, status) (increase(mongorescue_notifications_total{status=~"dropped|expired"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.channel_type }} notifications were {{ $labels.status }}"
+          description: "{{ $value }} {{ $labels.channel_type }} notifications on {{ $labels.instance }} were {{ $labels.status }} in the last 15 minutes and never delivered. The channel is slower than the event rate or unreachable."
+
+      # Events were dropped because the event queue was full: metrics, notifications
+      # and the audit mirror missed them.
+      - alert: MongoRescueEventsDropped
+        expr: increase(mongorescue_events_dropped_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoRescue on {{ $labels.instance }} dropped events"
+          description: "{{ $value }} events were dropped in the last 15 minutes because the event queue was full or stopped. Their notifications and metrics are missing."
+
+      # Job heartbeat pings were dropped because 32 were already queued or in flight:
+      # the heartbeat endpoint is slow or unreachable.
+      - alert: MongoRescueHeartbeatsDropped
+        expr: increase(mongorescue_heartbeat_dropped_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoRescue on {{ $labels.instance }} dropped heartbeat pings"
+          description: "{{ $value }} job heartbeat pings were dropped in the last 15 minutes. The dead-man's-switch service may report a healthy job as missing; check its URL and latency."
+
+      # An audit log entry could not be stored: the hash chain misses an action.
+      - alert: MongoRescueAuditWriteFailed
+        expr: increase(mongorescue_audit_write_failures_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The audit log on {{ $labels.instance }} could not store entries"
+          description: "{{ $value }} audit log entries could not be stored in the last 15 minutes (metadata database full, read-only or locked). Check free disk space and the log."
+
+      # The audit webhook refuses or cannot be reached (failed) or its queue
+      # overflowed (dropped).
+      - alert: MongoRescueAuditForwardFailed
+        expr: sum by (instance, job, outcome) (increase(mongorescue_audit_forward_total{outcome=~"failed|dropped"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit log forwarding {{ $labels.outcome }} on {{ $labels.instance }}"
+          description: "{{ $value }} audit entries could not be forwarded to the audit webhook ({{ $labels.outcome }}) in the last 15 minutes. The local log is intact; check the webhook."
+
+      # Calls to the KMS that wraps secret.key fail (each retry counts). A restart
+      # needs the unwrap to succeed.
+      - alert: MongoRescueKeyWrapErrors
+        expr: sum by (instance, job, provider, operation) (increase(mongorescue_key_wrap_errors_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "KMS {{ $labels.operation }} calls to {{ $labels.provider }} fail"
+          description: "{{ $value }} {{ $labels.operation }} calls to {{ $labels.provider }} failed in the last 15 minutes on {{ $labels.instance }}. MongoRescue cannot restart without unwrapping secret.key; check the KMS permissions and reachability."
+
+      # Stored API keys are past their expiry: the automation using them is refused.
+      - alert: MongoRescueAPIKeysExpired
+        expr: mongorescue_api_keys_expired > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} MongoRescue API keys on {{ $labels.instance }} have expired"
+          description: "Expired API keys are refused. Rotate the keys of the scripts that use them and revoke the expired ones."
+
+      # API keys expire within security.api_key_expiry_warning_days.
+      - alert: MongoRescueAPIKeysExpiring
+        expr: mongorescue_api_keys_expiring > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} MongoRescue API keys on {{ $labels.instance }} expire soon"
+          description: "Create replacements and update the scripts, CI jobs and MCP clients that use these keys before they are refused."
+
+      # The free space of the data directory or a local storage target runs out
+      # within 24 hours at the rate of the last 6 hours. Backups are refused
+      # below the disk guard's threshold and fail at 0.
+      - alert: MongoRescueDiskFillingUp
+        expr: |
+          predict_linear(mongorescue_data_dir_free_bytes[6h], 24 * 3600) < 0
+          or
+          predict_linear(mongorescue_storage_free_bytes[6h], 24 * 3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ if $labels.target }}Storage target {{ $labels.target }}{{ else }}The data directory{{ end }} on {{ $labels.instance }} fills up within 24 hours"
+          description: "At the rate of the last 6 hours, the filesystem will have no free space in 24 hours ({{ if $labels.target }}local storage target {{ $labels.target }}{{ else }}data directory{{ end }}). Free space, shorten retention or add capacity."
