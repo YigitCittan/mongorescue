@@ -144,10 +144,11 @@ func newTestSettings(t *testing.T, repo settings.Repository, sec settings.Securi
 		t.Fatal(err)
 	}
 	origins := sec.CORSOrigins
+	proxies := sec.TrustedProxies
 	if _, err := svc.Update(context.Background(), settings.Patch{Security: &settings.SecurityPatch{
 		SessionIdleTimeout: &sec.SessionIdleTimeout, SessionAbsoluteTimeout: &sec.SessionAbsoluteTimeout,
 		SecureCookies: &sec.SecureCookies, TrustProxyHeaders: &sec.TrustProxyHeaders,
-		CORSOrigins: &origins, MetricsPublic: &sec.MetricsPublic,
+		CORSOrigins: &origins, TrustedProxies: &proxies, MetricsPublic: &sec.MetricsPublic,
 		APIRateLimitPerMinute: &sec.APIRateLimitPerMinute, APIRateLimitBurst: &sec.APIRateLimitBurst,
 		APIWorkRateLimitPerMinute: &sec.APIWorkRateLimitPerMinute, APIWorkRateLimitBurst: &sec.APIWorkRateLimitBurst,
 	}}); err != nil {

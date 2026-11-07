@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -112,6 +113,8 @@ func TestUpdateValidatesPersistsAndAppliesLive(t *testing.T) {
 		"cors path":          {Security: &SecurityPatch{CORSOrigins: ptr([]string{"https://a.example.com/path"})}},
 		"cors scheme":        {Security: &SecurityPatch{CORSOrigins: ptr([]string{"ftp://a.example.com"})}},
 		"cors wildcard":      {Security: &SecurityPatch{CORSOrigins: ptr([]string{"*"})}},
+		"proxy hostname":     {Security: &SecurityPatch{TrustedProxies: ptr([]string{"proxy.example.com"})}},
+		"proxy bad prefix":   {Security: &SecurityPatch{TrustedProxies: ptr([]string{"10.0.0.0/33"})}},
 		"mode":               {Encryption: &EncryptionPatch{Mode: ptr(EncryptionMode("rot13"))}},
 		"bad recipient":      {Encryption: &EncryptionPatch{Recipients: ptr([]string{"age1nope"})}},
 		"bad identity":       {Encryption: &EncryptionPatch{Identity: ptr("AGE-SECRET-KEY-1NOPE")}},
@@ -344,7 +347,23 @@ func TestKeysAndSecrets(t *testing.T) {
 	if !IsSecret(KeyHeartbeatURL) || IsSecret(KeyHeartbeatInterval) {
 		t.Fatal("monitoring secret classification is wrong")
 	}
-	if len(Keys()) != 62 || IsSecret(KeyAPIRateLimitPerMinute) || IsSecret(KeyAPIWorkRateLimitBurst) || IsSecret(KeyAPIKeyMaxLifetimeDays) || IsSecret(KeyAPIKeyExpiryWarningDays) || IsSecret(KeyRequireLockedCopies) || IsSecret(KeyStorageStallTimeout) || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
+	if len(Keys()) != 63 || IsSecret(KeyAPIRateLimitPerMinute) || IsSecret(KeyAPIWorkRateLimitBurst) || IsSecret(KeyAPIKeyMaxLifetimeDays) || IsSecret(KeyAPIKeyExpiryWarningDays) || IsSecret(KeyRequireLockedCopies) || IsSecret(KeyStorageStallTimeout) || IsSecret(KeyPostRestoreCommandTimeout) || IsSecret(KeyMCPEnabled) || IsSecret(KeyDeleteGraceDays) || IsSecret(KeyRequireSecondApprover) || IsSecret(KeyMetadataBackupTarget) || IsSecret(KeyLogRetentionDays) || IsSecret(KeyVerifyAfterBackup) {
 		t.Fatalf("Keys() = %d", len(Keys()))
+	}
+}
+
+func TestTrustedProxiesNormalized(t *testing.T) {
+	svc, err := NewService(context.Background(), &memRepo{values: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Update(context.Background(), Patch{Security: &SecurityPatch{
+		TrustedProxies: ptr([]string{" 10.1.2.3/8 ", "10.0.0.0/8", "192.0.2.7"})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.0.0.0/8", "192.0.2.7/32"}
+	if !slices.Equal(got.Security.TrustedProxies, want) {
+		t.Fatalf("TrustedProxies = %v; want %v", got.Security.TrustedProxies, want)
 	}
 }

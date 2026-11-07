@@ -134,7 +134,8 @@ Scheduled snapshots of MongoRescue's own database (Settings → Recovery); see [
 | `session_idle_timeout` | `12h` | End a session after this long without requests (1m to 8760h) |
 | `session_absolute_timeout` | `168h` | End a session this long after login; not shorter than the idle timeout. Shortening it also ends existing older sessions |
 | `secure_cookies` | `auto` | `auto`: `Secure` over TLS or behind a trusted proxy reporting `X-Forwarded-Proto: https`; `always`: for a TLS proxy that does not send it; `never`: plain-HTTP tests only |
-| `trust_proxy_headers` | `false` | Honour `X-Forwarded-For` / `X-Real-IP` (login throttling, the client address in the audit log) and `X-Forwarded-Proto`. Enable only behind a proxy that sets them |
+| `trusted_proxies` | `[]` | CIDRs or IP addresses of the reverse proxies allowed to send `X-Forwarded-For` / `X-Real-IP` / `X-Forwarded-Proto` (login, setup and SSO throttling, rate limits, the client address in the audit log, `Secure` cookies, the MCP loopback check). Headers from other peers are ignored. `X-Forwarded-For` (all lines, read right to left past trusted hops) wins over `X-Real-IP`. A non-empty list enables header trust for those peers. See [production.md](production.md#tls-and-the-reverse-proxy) |
+| `trust_proxy_headers` | `false` | Deprecated, use `trusted_proxies`. With an empty `trusted_proxies` it trusts forwarding headers from every peer (and logs a startup warning); with a list, the list decides |
 | `cors_origins` | empty | Exact origins (`https://ops.example.com`) allowed to call the API cross-origin; no wildcards. Empty disables CORS |
 | `metrics_public` | `false` | Serve `/metrics` without an API key |
 | `mcp_enabled` | `true` | Serve the [MCP endpoint](mcp.md) `/mcp` for AI assistants (API keys only). When off it answers `403` and the stdio bridge cannot connect |

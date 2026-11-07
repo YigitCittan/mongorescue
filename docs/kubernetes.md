@@ -135,7 +135,7 @@ networkPolicy:
 
 ## Ingress and TLS
 
-MongoRescue serves plain HTTP; terminate TLS at the Ingress. Then turn on **Settings → Security → Trust proxy headers**, so login throttling sees the client address and session cookies are marked `Secure` (or set *Secure cookies* to `always` if the controller does not send `X-Forwarded-Proto`), as described in [production.md](production.md#tls-and-the-reverse-proxy).
+MongoRescue serves plain HTTP; terminate TLS at the Ingress. Then set **Settings → Security → Trusted proxies** to the Ingress controller's pod CIDR, so login throttling sees the client address and session cookies are marked `Secure` (or set *Secure cookies* to `always` if the controller does not send `X-Forwarded-Proto`), as described in [production.md](production.md#tls-and-the-reverse-proxy).
 
 ```yaml
 ingress:

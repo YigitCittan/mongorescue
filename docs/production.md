@@ -4,7 +4,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 
 ## Checklist
 
-- [ ] TLS terminated by a reverse proxy in front of MongoRescue, with **Settings → Security → Trust proxy headers** on (or *Secure cookies: always*) so session cookies are marked `Secure`.
+- [ ] TLS terminated by a reverse proxy in front of MongoRescue, with **Settings → Security → Trusted proxies** set to the proxy's address (or *Secure cookies: always*) so session cookies are marked `Secure`.
 - [ ] Setup completed right after the first start (until then, anyone who can reach the port and read the logs can claim the instance).
 - [ ] The HTTP port reachable only from the proxy and your monitoring, not from the internet.
 - [ ] One user per person; API keys (not user passwords) for automation, one per consumer, with the smallest scope that works (`read` for dashboards and assistants that only report, `operator` for backup automation).
@@ -43,9 +43,19 @@ The checklist above secures the instance. This one makes sure you can still rest
 
 MongoRescue serves plain HTTP. Put it behind a proxy that terminates TLS, and make the MongoRescue port reachable only from the proxy: publish it on loopback (`-p 127.0.0.1:8080:8080`), or keep it on a private Docker network that only the proxy joins.
 
-Two optional settings (Settings → Security) make the proxy setup complete. With *Trust proxy headers* on, MongoRescue takes the client address for login throttling from the last `X-Forwarded-For` entry and marks the session cookie `Secure` when `X-Forwarded-Proto` is `https`. Enable it only when a proxy sets these headers: otherwise clients could spoof them. If your proxy does not send `X-Forwarded-Proto`, set *Secure cookies* to `always` instead.
+Set **Trusted proxies** (`security.trusted_proxies`, Settings → Security) to the address or CIDR of your reverse proxy, for example `10.0.0.0/8` or `172.18.0.0/16` for a Docker network. MongoRescue then reads forwarding headers only from connections whose peer address is in that list; a request that reaches the port by another route (a pod IP, a published Docker port) cannot choose its own address by sending `X-Forwarded-For`. For a trusted peer:
 
-**A reverse proxy requires *Trust proxy headers*.** Without it every request comes from the proxy's address, so all clients share one [rate limit budget](security.md#rest-api-rate-limits) for sign-ins and unauthenticated requests, and one login throttle: a few bad clients, or one script with a wrong key, lock everybody out. MongoRescue logs a warning once (`requests carry X-Forwarded-For or X-Real-IP but security.trust_proxy_headers is off`) when it sees forwarding headers while the setting is off.
+- **Client address** (login, setup and single sign-on throttling, the anonymous rate limit, the audit log). `X-Forwarded-For` wins: all header lines are joined and read right to left, skipping addresses in the trusted list, and the first other address is the client. Only when there is no `X-Forwarded-For` is `X-Real-IP` used. A value that is not an IP address discards the headers and the peer's address is used.
+- **Scheme.** The session cookie is marked `Secure` when the (rightmost) `X-Forwarded-Proto` is `https`. If your proxy does not send it, set *Secure cookies* to `always` instead.
+- **MCP.** The loopback Host check of the [MCP endpoint](mcp.md) is skipped for trusted peers. A proxy on the same host connects from `127.0.0.1`, so list it (`127.0.0.1/32`) for a different `Host`.
+
+Your proxy must overwrite what the client sent, or the address is still the client's choice. nginx with `X-Real-IP` only: `proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $remote_addr;` (the second line discards a client-supplied chain; `$proxy_add_x_forwarded_for` appends to it, which is fine too). Proxies that append to `X-Forwarded-For` (nginx `$proxy_add_x_forwarded_for`, HAProxy `option forwardfor`, Traefik, Caddy) need nothing more.
+
+IPv6 clients are throttled by their `/64`: rotating addresses inside one prefix does not reset the failed-login count, the setup-code counter, the single sign-on attempt budget or the anonymous rate limit.
+
+**Migrating from *Trust proxy headers*.** `security.trust_proxy_headers` (and `MONGORESCUE_TRUST_PROXY_HEADERS`) still works: on its own, with no trusted proxies listed, it trusts forwarding headers from every peer as before, and MongoRescue logs a warning at startup. Set `trusted_proxies` to switch to the safe behaviour; the checkbox may then stay on or be turned off, as a non-empty list alone enables header trust for its peers. To disable header trust entirely, clear the list and turn the checkbox off.
+
+**A reverse proxy requires trusted proxies.** Without them every request comes from the proxy's address, so all clients share one [rate limit budget](security.md#rest-api-rate-limits) for sign-ins and unauthenticated requests, and one login throttle: a few bad clients, or one script with a wrong key, lock everybody out. MongoRescue logs a warning once when it sees forwarding headers and no proxy is trusted, and another once when a peer outside the list sends them (a client spoofing, or a proxy missing from the list).
 
 Caddy example:
 

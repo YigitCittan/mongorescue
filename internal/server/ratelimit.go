@@ -3,14 +3,15 @@ package server
 import (
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/ratelimit"
 )
@@ -40,7 +41,7 @@ var (
 // request without valid credentials (a missing or wrong API key or session, on
 // any route, /mcp and /metrics included). Login and setup failures are throttled
 // further by internal/auth. Behind a reverse proxy every client has the proxy's
-// address unless security.trust_proxy_headers is on (see warnUntrustedProxy).
+// address unless a trusted proxy reports it (see warnUntrustedProxy).
 var (
 	authRateLimit      = ratelimit.Limit{PerMinute: 300, Burst: 100}
 	anonymousRateLimit = ratelimit.Limit{PerMinute: 300, Burst: 100}
@@ -126,23 +127,7 @@ func (s *Server) rateKey(r *http.Request, p *auth.Principal) (key, caller string
 	case p != nil && p.Method == auth.MethodSession:
 		return "session:" + p.SessionHash, rateCallerSession
 	}
-	return "ip:" + addressKey(s.clientIP(r)), rateCallerAnonymous
-}
-
-// addressKey returns the rate limit key of a client address: an IPv6 address by
-// its /64 (one host usually holds a whole /64), anything else as is.
-func addressKey(ip string) string {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return ip
-	}
-	addr = addr.Unmap()
-	if addr.Is6() {
-		if prefix, err := addr.Prefix(64); err == nil {
-			return prefix.String()
-		}
-	}
-	return addr.String()
+	return "ip:" + clientip.AddressKey(s.clientIP(r)), rateCallerAnonymous
 }
 
 // allowRate charges the request of p (nil: unauthenticated) to its budgets: the
@@ -175,22 +160,38 @@ func (s *Server) allowRate(w http.ResponseWriter, r *http.Request, p *auth.Princ
 	return false
 }
 
-// warnUntrustedProxy logs once per process that requests carry forwarding headers
-// while security.trust_proxy_headers is off: behind a reverse proxy every client
-// then has the proxy's address, and all of them share one budget of
-// unauthenticated requests (and one login throttle).
+// warnUntrustedProxy logs once per process (per kind) that a request carries
+// forwarding headers the server does not honour: either no proxy is trusted, so
+// behind a reverse proxy every client has the proxy's address and shares one budget
+// and login throttle, or the peer is outside security.trusted_proxies, which is
+// either a client spoofing headers or a proxy missing from the list.
 func (s *Server) warnUntrustedProxy(r *http.Request) {
-	if r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("X-Real-IP") == "" {
+	if !clientip.HasForwardingHeaders(r) {
 		return
 	}
-	if s.security().TrustProxyHeaders {
-		return
+	trust := s.trust()
+	switch {
+	case !trust.Enabled():
+		s.proxyWarning.Do(func() {
+			s.logger.Warn("requests carry X-Forwarded-For or X-Real-IP but no proxy is trusted: " +
+				"behind a reverse proxy every client has the proxy's address and they share one rate limit and login throttle; " +
+				"set security.trusted_proxies to the proxy's address or network (see docs/production.md)")
+		})
+	case !trust.PeerTrusted(r):
+		s.untrustedPeerWarning.Do(func() {
+			s.logger.Warn("a peer outside security.trusted_proxies sent X-Forwarded-For or X-Real-IP; the headers are ignored. "+
+				"Add the proxy to security.trusted_proxies if it is yours; otherwise a client is spoofing them",
+				logsafe.Attr("peer", peerHost(r)))
+		})
 	}
-	s.proxyWarning.Do(func() {
-		s.logger.Warn("requests carry X-Forwarded-For or X-Real-IP but security.trust_proxy_headers is off: " +
-			"behind a reverse proxy every client has the proxy's address and they share one rate limit and login throttle; " +
-			"turn trust_proxy_headers on if the proxy sets these headers (see docs/production.md)")
-	})
+}
+
+// peerHost returns the host part of the connection's remote address.
+func peerHost(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
 }
 
 // refuseRate answers 429 with Retry-After, counts the refusal and, at most once a

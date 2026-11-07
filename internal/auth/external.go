@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 )
 
@@ -424,7 +425,7 @@ const (
 // AllowOIDCAttempt counts one single sign-on request (kind "start" or "callback")
 // of clientIP and returns a *ThrottledError once the per-address budget is spent.
 func (s *Service) AllowOIDCAttempt(kind, clientIP string) error {
-	if wait := s.throttle.CountFailure("oidc|"+kind+"|"+clientIP, OIDCAttemptsPerWindow, OIDCAttemptWindow); wait > 0 {
+	if wait := s.throttle.CountFailure("oidc|"+kind+"|"+clientip.AddressKey(clientIP), OIDCAttemptsPerWindow, OIDCAttemptWindow); wait > 0 {
 		return &ThrottledError{RetryAfter: wait}
 	}
 	return nil

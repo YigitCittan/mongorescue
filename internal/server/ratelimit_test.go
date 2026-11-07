@@ -13,6 +13,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/clientip"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -194,7 +195,7 @@ func TestRateLimitPerAddressWithoutCredentials(t *testing.T) {
 }
 
 func TestForwardedHeadersWithoutTrustAreWarnedOnce(t *testing.T) {
-	const warning = "trust_proxy_headers is off"
+	const warning = "no proxy is trusted"
 	for _, trust := range []bool{false, true} {
 		logs := &lockedBuffer{}
 		f := newRateFixtureWith(t, 1000, 1000, 0, 1, slog.New(slog.NewTextHandler(logs, nil)), trust)
@@ -231,8 +232,8 @@ func TestAddressKeyGroupsIPv6By64(t *testing.T) {
 		"not-an-address":           "not-an-address",
 		"2001:db8:1:3:3:4:5:6%eth": "2001:db8:1:3::/64",
 	} {
-		if got := addressKey(in); got != want {
-			t.Errorf("addressKey(%q) = %q; want %q", in, got, want)
+		if got := clientip.AddressKey(in); got != want {
+			t.Errorf("clientip.AddressKey(%q) = %q; want %q", in, got, want)
 		}
 	}
 }

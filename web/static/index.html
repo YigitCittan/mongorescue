@@ -1289,6 +1289,11 @@
                 <span class="form-hint" data-i18n="settings.trust_proxy_hint">Use X-Forwarded-Proto and X-Forwarded-For. Enable only behind a reverse proxy you control.</span>
               </span>
             </label>
+            <div class="form-group">
+              <label class="form-label" for="set-trusted-proxies" data-i18n="settings.trusted_proxies">Trusted proxies (CIDR)</label>
+              <textarea id="set-trusted-proxies" class="form-input mono" rows="2" spellcheck="false" placeholder="10.0.0.0/8" aria-describedby="set-trusted-proxies-hint"></textarea>
+              <span class="form-hint" id="set-trusted-proxies-hint" data-i18n="settings.trusted_proxies_hint">One address or CIDR per line, such as 10.0.0.0/8. Forwarding headers are read only from these peers. Leave empty only if no proxy is used; "Trust proxy headers" without a list trusts every peer (deprecated).</span>
+            </div>
           </fieldset>
           <fieldset class="settings-group">
             <legend class="settings-group-title" data-i18n="settings.group_access">API access</legend>

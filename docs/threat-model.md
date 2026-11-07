@@ -61,7 +61,7 @@ Assumptions:
 | T | Cross-origin reads | `corsMiddleware`: off by default; an allow-list of exact origins, never `*`. |
 | R | Denying an action | Every authenticated mutating request and every refused one is recorded in the hash-chained, append-only audit log (`auditsAction`, `internal/server/auditlog.go`; triggers in `internal/store/migrations/0017_audit_events.sql`; see [audit.md](audit.md)). |
 | I | Credentials in responses, logs or errors | URIs go through `internal/redact`; other secrets are masked in API responses; client-supplied values go through `internal/logsafe` before logs. API, MCP and metrics responses carry `Cache-Control: no-store`. |
-| I | Spoofed client IPs in logs and throttling | `clientIP` honours `X-Forwarded-For` only with `security.trust_proxy_headers`. |
+| I | Spoofed client IPs in logs and throttling | `clientIP` reads `X-Forwarded-For` / `X-Real-IP` only when the connection peer is in `security.trusted_proxies` (right-to-left walk over all header lines, invalid values fall back to the peer address); the deprecated `trust_proxy_headers` alone trusts every peer. Login, setup and SSO throttles key IPv6 clients by `/64`. |
 | D | Slow or huge requests | `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` on the server (`internal/server/server.go`); `http.MaxBytesReader` on JSON bodies (`maxAuthBody`, `maxBulkBody`, `maxRotateBody`, …). |
 | E | A route without authorisation | One route → scope table (`routeScopes`, `internal/server/scopes.go`); an unlisted pattern requires admin (`requiredScope`); `TestEveryRouteHasAScope`, `TestScopesAreEnforcedForEveryRoute`. A standby instance serves no data (`standbyGate`, `internal/server/ha.go`). |
 

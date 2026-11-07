@@ -787,3 +787,20 @@ func TestPrincipalContext(t *testing.T) {
 		t.Fatal("UserID without a user must be empty")
 	}
 }
+
+func TestLoginThrottleSharesAnIPv6Prefix(t *testing.T) {
+	f := newFixture(t)
+	f.setup(t)
+	ctx := context.Background()
+	// Failures from different addresses of one /64 count against the same lock.
+	for i := range auth.FreeAttempts + 1 {
+		_, _ = f.svc.Login(ctx, fmt.Sprintf("2001:db8:1:2::%x", i+1), "admin", "wrong password!!")
+	}
+	var throttled *auth.ThrottledError
+	if _, err := f.svc.Login(ctx, "2001:db8:1:2:ffff::1", "admin", adminPassword); !errors.As(err, &throttled) {
+		t.Fatalf("login from another address of the same /64 = %v; want a lockout", err)
+	}
+	if _, err := f.svc.Login(ctx, "2001:db8:1:3::1", "admin", adminPassword); err != nil {
+		t.Fatalf("login from another /64: %v", err)
+	}
+}

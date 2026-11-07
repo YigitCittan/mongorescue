@@ -170,6 +170,8 @@ type Server struct {
 	rateObserve func(caller, budget string)
 	// proxyWarning logs the untrusted forwarding headers once (warnUntrustedProxy).
 	proxyWarning sync.Once
+	// untrustedPeerWarning logs a header-sending peer outside trusted_proxies once.
+	untrustedPeerWarning sync.Once
 }
 
 // WithDesktopCSP makes the server send desktopContentSecurityPolicy, which also
