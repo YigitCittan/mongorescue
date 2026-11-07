@@ -10,11 +10,11 @@ func TestVaultRefNormalize(t *testing.T) {
 	if err := kv.Normalize(VaultForConnection); err != nil {
 		t.Fatal(err)
 	}
-	if kv.Engine != VaultKV2 || kv.Mount != "secret" || kv.Path != "mongo/prod" || kv.UsernameField != "username" || kv.PasswordField != "password" {
+	if kv.Engine != VaultKV2 || kv.Mount != "secret" || kv.Path != "mongo/prod" || kv.UsernameField != "username" || kv.PassField != "password" {
 		t.Fatalf("kv = %+v", kv)
 	}
 	s3 := VaultRef{Engine: VaultKV2, Mount: "team/kv", Path: "s3", SessionTokenField: "token"}
-	if err := s3.Normalize(VaultForS3); err != nil || s3.AccessKeyField != "access_key" || s3.SecretKeyField != "secret_key" {
+	if err := s3.Normalize(VaultForS3); err != nil || s3.AccessKeyField != "access_key" || s3.SecField != "secret_key" {
 		t.Fatalf("s3 = %+v, %v", s3, err)
 	}
 	db := VaultRef{Engine: VaultDatabase, Role: "backup"}
@@ -40,8 +40,8 @@ func TestVaultRefNormalize(t *testing.T) {
 		"system mount":              {VaultRef{Engine: VaultKV2, Mount: "sys", Path: "leases"}, VaultForConnection},
 		"auth mount":                {VaultRef{Engine: VaultDatabase, Mount: "auth/token", Role: "r"}, VaultForConnection},
 		"s3 fields on a connection": {VaultRef{Engine: VaultKV2, Path: "p", AccessKeyField: "a"}, VaultForConnection},
-		"same field twice":          {VaultRef{Engine: VaultKV2, Path: "p", UsernameField: "x", PasswordField: "x"}, VaultForConnection},
-		"bad field name":            {VaultRef{Engine: VaultKV2, Path: "p", PasswordField: "pass word"}, VaultForConnection},
+		"same field twice":          {VaultRef{Engine: VaultKV2, Path: "p", UsernameField: "x", PassField: "x"}, VaultForConnection},
+		"bad field name":            {VaultRef{Engine: VaultKV2, Path: "p", PassField: "pass word"}, VaultForConnection},
 	} {
 		ref := tc.ref
 		if err := ref.Normalize(tc.use); !errors.Is(err, ErrInvalidVaultRef) {
@@ -57,7 +57,7 @@ func TestVaultRefNormalize(t *testing.T) {
 }
 
 func TestSameCredentialsWithVault(t *testing.T) {
-	ref := VaultRef{Engine: VaultKV2, Mount: "secret", Path: "s3", AccessKeyField: "access_key", SecretKeyField: "secret_key"}
+	ref := VaultRef{Engine: VaultKV2, Mount: "secret", Path: "s3", AccessKeyField: "access_key", SecField: "secret_key"}
 	a := &StorageTarget{Type: StorageS3, S3: &S3Target{Endpoint: "https://a.example", CredentialSource: CredentialsVault, Vault: ref}}
 	b := &StorageTarget{Type: StorageS3, S3: &S3Target{Endpoint: "https://b.example", CredentialSource: CredentialsVault, Vault: ref}}
 	if !SameCredentials(a, b) {

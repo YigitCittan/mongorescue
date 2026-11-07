@@ -29,12 +29,12 @@ func (r *Resolver) S3(ctx context.Context, ref models.VaultRef) (S3Keys, error) 
 	}
 	switch ref.Engine {
 	case models.VaultKV2:
-		vals, err := r.kv(ctx, ref, []string{ref.AccessKeyField, ref.SecretKeyField, ref.SessionTokenField})
+		vals, err := r.kv(ctx, ref, []string{ref.AccessKeyField, ref.SecField, ref.SessionTokenField})
 		if err != nil {
 			return S3Keys{}, r.failed(err)
 		}
 		r.succeeded()
-		return S3Keys{AccessKeyID: vals[ref.AccessKeyField], SecretAccessKey: vals[ref.SecretKeyField], SessionToken: vals[ref.SessionTokenField],
+		return S3Keys{AccessKeyID: vals[ref.AccessKeyField], SecretAccessKey: vals[ref.SecField], SessionToken: vals[ref.SessionTokenField],
 			Expires: r.now().Add(r.cacheTTL)}, nil
 	case models.VaultAWS:
 		l, err := r.issue(ctx, ref)
