@@ -91,6 +91,9 @@ Restores go into a safe clone unless you pass both `--in-place` and `--confirm`.
 
 ## Documentation
 
+The full documentation, with search, is at **[yigitcittan.github.io/mongorescue](https://yigitcittan.github.io/mongorescue/)**; the pages below are the same files. New here: the [five-minute CLI walkthrough](docs/getting-started-cli.md) (Linux, Windows and Docker), the [FAQ](docs/faq.md) and the [glossary](docs/glossary.md).
+
+- [Deployment recipes](docs/deployment-recipes.md): Caddy with HTTPS, a Kubernetes CronJob, GitHub Actions ([examples/](examples))
 - [Why MongoRescue: comparison with other tools](docs/comparison.md) and the [feature catalogue](docs/features.md)
 - [Configuration reference](docs/configuration.md)
 - [Connections: TLS, x509, LDAP, Kerberos, Atlas and AWS](docs/connections.md)
@@ -103,6 +106,8 @@ Restores go into a safe clone unless you pass both `--in-place` and `--confirm`.
 - [Running in production](docs/production.md) and the [production checklist](docs/production.md#production-checklist)
 - [Upgrading and rolling back](docs/upgrading.md): backups first, the pre-migration database copy, HA order, rollback
 - [Troubleshooting](docs/troubleshooting.md), [architecture](docs/architecture.md), [testing](docs/testing.md), [roadmap](docs/roadmap.md)
+- Design documents: [high availability](docs/design/ha.md), [point-in-time recovery storage and codec](docs/design/pitr.md), [roles and permissions](docs/design/roles.md), [OIDC](docs/design/oidc.md)
+- [Incident runbooks](docs/runbooks.md), [audit log](docs/audit.md), [single sign-on](docs/sso.md), [PITR](docs/pitr.md), [versioning policy](docs/versioning.md), [OpenAPI description](docs/openapi.md)
 
 ## Development
 

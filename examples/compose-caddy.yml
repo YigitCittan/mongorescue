@@ -1,0 +1,78 @@
+# MongoRescue behind Caddy with automatic HTTPS.
+#
+#   MONGORESCUE_DOMAIN=backup.example.com docker compose -f examples/compose-caddy.yml up -d
+#   docker compose -f examples/compose-caddy.yml logs mongorescue    # the one-time setup code
+#
+# Then open https://backup.example.com (https://localhost with the default domain; Caddy's
+# local CA is not trusted by your browser, accept the warning for a trial).
+#
+# After the first sign-in, set trusted proxies. Without this step every client appears
+# to come from Caddy: all users share one login throttle and rate limit, the audit log
+# shows Caddy's address, and the session cookie is not marked Secure. Settings > Security
+# > Trusted proxies: 172.28.0.0/24 (the proxy network below), or from a script with an
+# admin API key:
+#
+#   curl -X PUT https://backup.example.com/api/v1/settings \
+#     -H "Authorization: Bearer $MONGORESCUE_ADMIN_KEY" -H "Content-Type: application/json" \
+#     -d '{"security": {"trusted_proxies": ["172.28.0.0/24"]}}'
+#
+# security.trusted_proxies arrived after 0.28.0: use a newer release than that (set
+# MONGORESCUE_VERSION), or Settings > Security has only the deprecated "Trust proxy
+# headers" checkbox.
+#
+# Why the subnet is fixed: trusted_proxies takes addresses, and Docker assigns container
+# addresses from the network's subnet. Only Caddy and MongoRescue join this network, and
+# MongoRescue publishes no port, so a request can reach it only through Caddy; a request
+# that skips Caddy cannot spoof X-Forwarded-For. See docs/production.md#tls-and-the-reverse-proxy.
+#
+# To reach MongoDB in another Compose project, add that project's network to the
+# mongorescue service as in examples/compose-existing-stack.yml.
+
+services:
+  mongorescue:
+    image: ghcr.io/yigitcittan/mongorescue:${MONGORESCUE_VERSION:-latest}
+    restart: unless-stopped
+    # No ports: Caddy reaches it as mongorescue:8080 on the proxy network.
+    volumes:
+      - mongorescue_data:/data
+      - mongorescue_backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - proxy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      mongorescue:
+        condition: service_healthy
+    environment:
+      MONGORESCUE_DOMAIN: ${MONGORESCUE_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  mongorescue_data:
+  mongorescue_backups:
+  caddy_data:
+  caddy_config:

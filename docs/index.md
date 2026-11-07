@@ -65,4 +65,71 @@ docker run -d --name mongorescue -p 8080:8080 \
   <img src="assets/demo.gif" alt="Taking a backup and restoring it into a safe clone from the dashboard" width="800">
 </p>
 
-For Docker Compose, Kubernetes Helm charts, or standalone binary setups, check the [Configuration Guide](configuration.md) and [Kubernetes Deployment](kubernetes.md).
+Prefer a terminal, or running the binary on Linux or Windows? The [five-minute CLI walkthrough](getting-started-cli.md) takes you from nothing to a verified backup and a restore into a safe clone, with Linux, Windows (PowerShell) and Docker variants side by side. For Docker Compose, Kubernetes or standalone binary setups, see the [deployment recipes](deployment-recipes.md), the [Configuration Guide](configuration.md) and [Kubernetes Deployment](kubernetes.md).
+
+---
+
+## Find your way
+
+Every page of this site, grouped by what you are trying to do. The search box (top right) covers all of them; unfamiliar words are in the [glossary](glossary.md), common questions in the [FAQ](faq.md).
+
+### Start
+
+Understand what it is and get a first backup.
+
+- [Why MongoRescue](comparison.md): how it compares with `mongodump` + cron, Percona Backup for MongoDB, Atlas Backup, Ops Manager and restic/Velero, and who it is not for
+- [Feature catalogue](features.md): everything it does, in one list
+- [First backup from the CLI](getting-started-cli.md): five minutes, Linux, Windows and Docker
+- [MongoDB connections](connections.md): TLS, x509, LDAP, Kerberos, Atlas, AWS IAM, Vault, privileges
+- [Desktop application](desktop.md): Windows, macOS and Linux, with the tools bundled
+- [Kubernetes and Helm](kubernetes.md): the chart, the secret key, ingress, upgrades
+- [Deployment recipes](deployment-recipes.md): Caddy with HTTPS, a Kubernetes CronJob, GitHub Actions
+
+### Operate
+
+Run it, watch it, recover with it.
+
+- [Production checklist](production.md): TLS, authentication, the data directory, sizing, high availability, systemd and Compose
+- [Upgrading and rolling back](upgrading.md)
+- [Point-in-time recovery](pitr.md): continuous oplog collection and restores to the second
+- [Verification, restore tests and retention](verification.md)
+- [Monitoring and heartbeat](monitoring.md), [notifications and alerts](notifications.md)
+- [Incident runbooks](runbooks.md): one page per alert, [troubleshooting](troubleshooting.md)
+
+### Secure
+
+Protect the backups and the tool that holds them.
+
+- [Delete protection, Object Lock and key wrapping](security.md)
+- [Threat model (STRIDE)](threat-model.md)
+- [Age encryption](encryption.md) and key rotation
+- [Single sign-on (OIDC)](sso.md)
+- [Audit logging](audit.md)
+- [Privacy, retention and erasure requests](privacy.md)
+
+### Integrate
+
+Drive it from scripts, CI and assistants.
+
+- [Command line](cli.md): `backup`, `restore`, `list`, `verify`, `status`, exit codes, CI examples
+- [REST API](api.md) and its [OpenAPI description](openapi.md)
+- [MCP server](mcp.md) for AI assistants
+
+### Reference
+
+Look something up.
+
+- [Configuration](configuration.md): bootstrap flags, settings, storage and environment variables
+- [Prometheus metrics](metrics.md)
+- [FAQ](faq.md) and [glossary](glossary.md)
+- [Versioning policy](versioning.md) and the [roadmap](roadmap.md)
+
+### Design
+
+How it is built and why.
+
+- [Architecture overview](architecture.md)
+- [High availability (active-passive)](design/ha.md), [PITR storage and codec](design/pitr.md), [roles and permissions](design/roles.md), [OIDC architecture](design/oidc.md)
+- [Testing strategy](testing.md)
+
+Contributing, the changelog and the source are in the [repository](https://github.com/YigitCittan/mongorescue).

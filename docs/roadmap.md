@@ -75,4 +75,4 @@ These change deployment fundamentally and are only worth doing when users need t
 
 ## How this list changes
 
-Each phase is broken into issues before it starts. Items move between phases when real use shows a different priority, and the changelog records what shipped. Large or architectural items (2.1, 2.2, phase 3 and phase 5) start with a short design note that is agreed before implementation, as [AGENTS.md](../AGENTS.md) asks.
+Each phase is broken into issues before it starts. Items move between phases when real use shows a different priority, and the changelog records what shipped. Large or architectural items (2.1, 2.2, phase 3 and phase 5) start with a short design note that is agreed before implementation, as [AGENTS.md](https://github.com/YigitCittan/mongorescue/blob/main/AGENTS.md) asks.

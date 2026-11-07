@@ -51,4 +51,4 @@ CI (`scripts/check-chart-version.sh`, the *Helm chart version* job of `helm.yml`
 
 ## How to cut a release
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md#versioning-and-releases). Its first step reviews the README's [known limitations](../README.md#known-limitations) and the [production checklist](production.md#production-checklist), so they match what the release ships.
+See [CONTRIBUTING.md](https://github.com/YigitCittan/mongorescue/blob/main/CONTRIBUTING.md#versioning-and-releases). Its first step reviews the README's [known limitations](https://github.com/YigitCittan/mongorescue/blob/main/README.md#known-limitations) and the [production checklist](production.md#production-checklist), so they match what the release ships.
