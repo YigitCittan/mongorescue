@@ -15,9 +15,10 @@ import (
 // configured.
 const DefaultStallTimeout = 5 * time.Minute
 
-// ErrStorageStalled indicates that an upload made no progress on the storage side
-// for the stall timeout (a network partition or a hung disk) and was cancelled.
-var ErrStorageStalled = errors.New("storage: upload stalled")
+// ErrStorageStalled indicates that a transfer (an upload, or the download of a
+// restore, see S3Storage.Retrieve) made no progress on the storage side for the
+// stall timeout (a network partition or a hung disk) and was cancelled.
+var ErrStorageStalled = errors.New("storage: transfer stalled")
 
 // StallWatch configures the upload watchdog of a driver: an upload whose storage side
 // accepts no bytes for the stall timeout is cancelled and fails with an error

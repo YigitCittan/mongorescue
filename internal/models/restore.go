@@ -165,6 +165,17 @@ type RestoreRequest struct {
 	// archive. It is set by the application, never read from clients.
 	SourceFallback string `json:"-"`
 
+	// NumParallelCollections is mongorestore's --numParallelCollections for this
+	// restore (1 to MaxRestoreParallelCollections); 0 uses the
+	// general.restore_num_parallel_collections setting, then mongorestore's 4.
+	NumParallelCollections int `json:"num_parallel_collections,omitempty"`
+
+	// InsertionWorkersPerCollection is mongorestore's
+	// --numInsertionWorkersPerCollection (1 to MaxInsertionWorkersPerCollection); 0
+	// uses the general.restore_insertion_workers_per_collection setting, then
+	// mongorestore's 1.
+	InsertionWorkersPerCollection int `json:"insertion_workers_per_collection,omitempty"`
+
 	// Databases restricts a point-in-time restore to these databases; empty
 	// restores every database of the instance except admin, config and local.
 	Databases []string `json:"databases,omitempty"`
@@ -258,6 +269,9 @@ func (t PITRTarget) Target() pitr.Target {
 // ConfirmInPlace names exactly (ErrPITRInPlaceNotConfirmed). It returns nil for a
 // request without PITR.
 func (r RestoreRequest) ValidatePITR() error {
+	if err := r.ValidateParallelism(); err != nil {
+		return err
+	}
 	if r.PITR == nil {
 		if len(r.Databases) > 0 {
 			return errors.New(`"databases" is only used by point-in-time restores ("pitr")`)
@@ -491,6 +505,15 @@ type PITREstimate struct {
 	BaseBytesPerSecond     float64 `json:"base_bytes_per_second"`
 	ReplayBytesPerSecond   float64 `json:"replay_bytes_per_second"`
 	ReplayEntriesPerSecond float64 `json:"replay_entries_per_second"`
+	// NumParallelCollections and InsertionWorkersPerCollection are the mongorestore
+	// parallelism the estimate is made for (mongorestore's defaults of 4 and 1 when
+	// nothing is configured). ParallelismMatched reports that the measured rates
+	// come from restores that ran with exactly these values; when false, the rates
+	// are those of restores with other values (or the defaults) and the estimate
+	// does not yet reflect a change of the settings.
+	NumParallelCollections        int  `json:"num_parallel_collections"`
+	InsertionWorkersPerCollection int  `json:"insertion_workers_per_collection"`
+	ParallelismMatched            bool `json:"parallelism_matched,omitempty"`
 	// ReplayModel says how measured replays were fitted (PITRReplayModel*):
 	// what the replay time is proportional to. Empty without measured replays.
 	ReplayModel string `json:"replay_model,omitempty"`
@@ -653,6 +676,13 @@ type RestoreRecord struct {
 	// InPlace reports that the restore writes into an existing namespace instead of a
 	// fresh safe clone.
 	InPlace bool `json:"in_place,omitempty"`
+
+	// NumParallelCollections and InsertionWorkersPerCollection are the mongorestore
+	// parallelism the restore ran with (request, else setting, else mongorestore's
+	// defaults of 4 and 1); 0 on records of earlier releases. The RTO estimate of
+	// point-in-time restores only averages restores that ran with the same values.
+	NumParallelCollections        int `json:"num_parallel_collections,omitempty"`
+	InsertionWorkersPerCollection int `json:"insertion_workers_per_collection,omitempty"`
 
 	// UsersAndRoles reports that the restore also restored the users and roles of the
 	// source database (RestoreRequest.RestoreUsersAndRoles).

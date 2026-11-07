@@ -1199,6 +1199,12 @@ function pitrPlanHTML(res) {
     rows.push([t("pitr.restore_plan_clones"), `<db>${PITR_CLONE_PATTERN}`]);
     const note = p.estimate_from === "chain_test" ? t("pitr.restore_rto_chain_test") : t("pitr.restore_rto_default");
     rows.push([t("pitr.restore_plan_rto"), `${formatDuration(p.estimated_seconds)} (${note})`]);
+    if (p.num_parallel_collections > 0) {
+      const basis = p.parallelism_matched ? t("restore_checks.estimate_matched") : t("restore_checks.estimate_other");
+      rows.push([t("restore_checks.parallelism_row"), `${tf("restore_checks.parallelism_value", {
+        collections: p.num_parallel_collections, workers: p.insertion_workers_per_collection || 1
+      })} (${basis})`]);
+    }
   }
   const plan = rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
   const checks = (res.checks || []).map(c => {

@@ -891,6 +891,9 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	if err := req.ValidateTarget(); err != nil {
 		return nil, invalid(err)
 	}
+	if err := req.ValidateParallelism(); err != nil {
+		return nil, invalid(err)
+	}
 	// Users and roles are restored only in place; the backup is checked below.
 	if err := req.ValidateUsersAndRoles(nil); !forPreflight && errors.Is(err, models.ErrUsersAndRolesNotAllowed) {
 		return nil, invalid(err)

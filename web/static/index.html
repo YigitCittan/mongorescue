@@ -918,12 +918,22 @@
                 <span class="form-hint" id="set-post-restore-timeout-hint" data-i18n="postrestore.timeout_hint">Maximum run time of each post-restore command of a connection (1s to 24h); a command that takes longer fails the restore.</span>
               </div>
               <div class="form-group">
-                <label class="form-label" for="set-storage-stall-timeout" data-i18n="settings.storage_stall_timeout">Upload stall timeout</label>
+                <label class="form-label" for="set-storage-stall-timeout" data-i18n="settings.storage_stall_timeout">Storage stall timeout</label>
                 <div class="input-inline">
                   <input type="text" id="set-storage-stall-timeout" class="form-input mono duration-input" data-duration placeholder="5m" autocomplete="off" spellcheck="false" aria-describedby="set-storage-stall-timeout-hint set-storage-stall-timeout-preview">
                   <span class="duration-preview" id="set-storage-stall-timeout-preview" aria-live="polite"></span>
                 </div>
-                <span class="form-hint" id="set-storage-stall-timeout-hint" data-i18n="settings.storage_stall_timeout_hint">Fail an upload when the storage target accepts no data for this long (1m to 1h).</span>
+                <span class="form-hint" id="set-storage-stall-timeout-hint" data-i18n="settings.storage_stall_timeout_hint">Fail an upload, or the download of a restore, when the storage target transfers no data for this long (1m to 1h).</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="set-restore-parallel-collections" data-i18n="restore_checks.parallel_collections">Parallel collections</label>
+                <input type="number" id="set-restore-parallel-collections" class="form-input" min="0" max="16" step="1" aria-describedby="set-restore-parallel-collections-hint">
+                <span class="form-hint" id="set-restore-parallel-collections-hint" data-i18n="restore_checks.parallel_collections_hint">mongorestore --numParallelCollections, 1 to 16. Empty or 0 uses the default (the server setting, else 4).</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="set-restore-insertion-workers" data-i18n="restore_checks.insertion_workers">Insertion workers per collection</label>
+                <input type="number" id="set-restore-insertion-workers" class="form-input" min="0" max="32" step="1" aria-describedby="set-restore-insertion-workers-hint">
+                <span class="form-hint" id="set-restore-insertion-workers-hint" data-i18n="restore_checks.insertion_workers_hint">mongorestore --numInsertionWorkersPerCollection, 1 to 32. Empty or 0 uses the default (the server setting, else 1).</span>
               </div>
             </div>
             <p class="form-hint" data-i18n="settings.duration_help">Durations use Go syntax: 90s, 45m, 6h, 1h30m. There is no day unit: use 168h for 7 days.</p>
@@ -2299,6 +2309,19 @@
               <span class="form-hint" data-i18n="restore_checks.verify_restore_hint">After the restore, compares the document count and the indexes of every restored collection with the backup's manifest.</span>
             </span>
           </label>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="restore-parallel-collections" data-i18n="restore_checks.parallel_collections">Parallel collections</label>
+              <input type="number" id="restore-parallel-collections" class="form-input" min="1" max="16" step="1" aria-describedby="restore-parallel-collections-hint">
+              <span class="form-hint" id="restore-parallel-collections-hint" data-i18n="restore_checks.parallel_collections_hint">mongorestore --numParallelCollections, 1 to 16. Empty or 0 uses the default (the server setting, else 4).</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="restore-insertion-workers" data-i18n="restore_checks.insertion_workers">Insertion workers per collection</label>
+              <input type="number" id="restore-insertion-workers" class="form-input" min="1" max="32" step="1" aria-describedby="restore-insertion-workers-hint">
+              <span class="form-hint" id="restore-insertion-workers-hint" data-i18n="restore_checks.insertion_workers_hint">mongorestore --numInsertionWorkersPerCollection, 1 to 32. Empty or 0 uses the default (the server setting, else 1).</span>
+            </div>
+          </div>
 
           <section class="preflight" id="restore-preflight" aria-labelledby="restore-preflight-title" hidden>
             <div class="preflight-head">

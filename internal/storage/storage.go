@@ -23,6 +23,10 @@ var (
 
 	// ErrInvalidConfig indicates driver settings out of their allowed range.
 	ErrInvalidConfig = errors.New("storage: invalid configuration")
+
+	// ErrObjectChanged indicates that an object was replaced while it was being
+	// downloaded: a resumed read would splice two versions, so the download fails.
+	ErrObjectChanged = errors.New("storage: object changed during download")
 )
 
 // ArchiveLimiter is implemented by drivers that cannot store archives above a size,

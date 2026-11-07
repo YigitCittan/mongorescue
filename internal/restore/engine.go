@@ -125,6 +125,10 @@ type RunConfig struct {
 	Timeout time.Duration
 	// CommandTimeout bounds each post-restore command (0 = DefaultCommandTimeout).
 	CommandTimeout time.Duration
+	// NumParallelCollections and InsertionWorkersPerCollection are the mongorestore
+	// parallelism of requests that set none (0 = mongorestore's defaults).
+	NumParallelCollections        int
+	InsertionWorkersPerCollection int
 }
 
 // StorageFunc returns the storage driver of a storage target.
@@ -350,6 +354,10 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 	if err := req.ValidateUsersAndRoles(sourceRecord); err != nil {
 		return nil, fmt.Errorf("restore: %w", err)
 	}
+	if err := req.ValidateParallelism(); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
+	}
+	collections, workers := e.effectiveParallelism(req)
 
 	startTime := e.now().UTC()
 	// Sanitize the database component so the derived ID satisfies models.ValidateID.
@@ -404,7 +412,17 @@ func (e *Engine) Prepare(req models.RestoreRequest, sourceRecord *models.BackupR
 		InPlace:              req.InPlace(),
 		UsersAndRoles:        req.RestoreUsersAndRoles,
 		Phases:               models.RunPhases{Queued: models.Stamp(startTime)},
+
+		NumParallelCollections: collections, InsertionWorkersPerCollection: workers,
 	}, nil
+}
+
+// effectiveParallelism resolves the mongorestore parallelism of req: its own
+// values, else the configured defaults (RunConfig), else mongorestore's.
+func (e *Engine) effectiveParallelism(req models.RestoreRequest) (collections, workers int) {
+	cfg := e.runConfig()
+	return models.EffectiveRestoreParallelism(req.NumParallelCollections, req.InsertionWorkersPerCollection,
+		cfg.NumParallelCollections, cfg.InsertionWorkersPerCollection)
 }
 
 // selectedCollections returns the non-blank, trimmed entries of names (the ones
@@ -625,6 +643,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	defer cleanupConfig()
 
 	args := append(e.buildRestoreArgs(configArgs[0], sourceRecord.Database, targetDB, req, isGzip), configArgs[1:]...)
+	args = append(args, parallelArgs(record.NumParallelCollections, record.InsertionWorkersPerCollection)...)
 	if e.bypassValidation(ctx, mongoURI, targetDB) {
 		// A backup is restored as it was taken: documents that predate a collection's
 		// validator (or were written with validationAction "warn") would otherwise be
@@ -932,6 +951,22 @@ func (e *Engine) buildRestoreArgs(configArg, sourceDB, targetDB string, req mode
 		args = append(args, fmt.Sprintf("--nsInclude=%s.*", src))
 	}
 
+	return args
+}
+
+// parallelArgs returns the mongorestore arguments of the parallelism a restore
+// ran with (RestoreRecord.NumParallelCollections and InsertionWorkersPerCollection):
+// a value that is unset, or mongorestore's own default, adds nothing, so the
+// arguments of a default restore are unchanged. The values are bounded again here,
+// whatever a stored record holds.
+func parallelArgs(collections, workers int) []string {
+	var args []string
+	if collections > 0 && collections != models.MongorestoreParallelCollections {
+		args = append(args, fmt.Sprintf("--numParallelCollections=%d", min(collections, models.MaxRestoreParallelCollections)))
+	}
+	if workers > 0 && workers != models.MongorestoreInsertionWorkers {
+		args = append(args, fmt.Sprintf("--numInsertionWorkersPerCollection=%d", min(workers, models.MaxInsertionWorkersPerCollection)))
+	}
 	return args
 }
 

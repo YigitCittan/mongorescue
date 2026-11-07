@@ -112,8 +112,10 @@ type S3Storage struct {
 	partSize int64
 	// lock is the Object Lock applied to uploads.
 	lock ObjectLock
-	// stall is the upload watchdog.
+	// stall is the transfer watchdog (uploads and downloads).
 	stall StallWatch
+	// resume bounds the resumption of an interrupted download (see Retrieve).
+	resume resumePolicy
 }
 
 // Compile-time check that S3Storage reports its archive size limit.
@@ -213,6 +215,7 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 		partSize: partSize,
 		lock:     cfg.ObjectLock,
 		stall:    cfg.Stall,
+		resume:   defaultResumePolicy(),
 	}, nil
 }
 
@@ -382,27 +385,6 @@ func (s *S3Storage) abortFailedUpload(ctx context.Context, objKey string, upload
 			slog.String("error", redact.Text(err.Error())),
 		)
 	}
-}
-
-// Retrieve returns a streaming ReadCloser from S3.
-func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, error) {
-	objKey, err := s.objectKey(key)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(objKey),
-	})
-	if err != nil {
-		if isS3NotFound(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("s3 get object: %w", err)
-	}
-
-	return resp.Body, nil
 }
 
 // Delete removes an object from S3.
