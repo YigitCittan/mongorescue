@@ -54,6 +54,7 @@ mongorescue mcp [--url http://127.0.0.1:8080] [--log-level warn]
 | Instance URL | `--url` | `MONGORESCUE_MCP_URL` | `http://127.0.0.1:8080` |
 | API key | `--api-key` (discouraged: visible in the process list) | `MONGORESCUE_MCP_API_KEY` | required |
 | Log level | `--log-level` | | `warn` |
+| Log format | `--log-format` | `MONGORESCUE_LOG_FORMAT` | `text` (`json` for one object per line) |
 
 The bridge sends the API key only to the configured scheme and host and never follows HTTP redirects: if the instance redirects (for example from `http` to `https`), set `--url` to the final address. Logs go to stderr only, because stdout carries the protocol. The bridge lists the tools once at start, so it shows exactly what the key's scope allows; restart the assistant after changing a key.
 

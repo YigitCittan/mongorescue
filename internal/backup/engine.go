@@ -592,7 +592,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 		defer cancelTimeout()
 	}
 
-	e.logger.Info("initiating mongodb streaming backup",
+	e.logger.InfoContext(ctx, "initiating mongodb streaming backup",
 		logsafe.Attr("backup_id", backupID),
 		logsafe.Attr("database", opts.Database),
 		logsafe.Attr("target_key", targetKey),
@@ -779,7 +779,7 @@ func (e *Engine) execute(ctx context.Context, opts models.BackupOptions, record 
 	record.Phases.Finished = models.Stamp(finishTime)
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("backup completed: %d bytes, sha256 %s, %.1fs", record.SizeBytes, record.SHA256, record.DurationSeconds)
-	e.logger.Info("mongodb streaming backup completed successfully",
+	e.logger.InfoContext(ctx, "mongodb streaming backup completed successfully",
 		logsafe.Attr("backup_id", backupID),
 		slog.Int64("size_bytes", record.SizeBytes),
 		slog.String("sha256", record.SHA256),
@@ -959,7 +959,7 @@ func (e *Engine) deleteArtifact(ctx context.Context, record *models.BackupRecord
 	until, err := storage.Purge(cleanupCtx, e.storage, key, record.StorageVersionID, time.Now())
 	switch {
 	case err != nil && !errors.Is(err, storage.ErrNotFound):
-		e.logger.Warn("failed to delete partial backup artifact",
+		e.logger.WarnContext(ctx, "failed to delete partial backup artifact",
 			logsafe.Attr("storage_key", key),
 			logsafe.Error(err),
 		)
@@ -970,7 +970,7 @@ func (e *Engine) deleteArtifact(ctx context.Context, record *models.BackupRecord
 	case until != nil:
 		at := until.UTC()
 		record.RetainUntil, record.ArchiveCleanupPending = &at, true
-		e.logger.Info("the artifact of a failed backup is locked; the purge deletes it when the lock ends",
+		e.logger.InfoContext(ctx, "the artifact of a failed backup is locked; the purge deletes it when the lock ends",
 			logsafe.Attr("storage_key", key), slog.Time("retain_until", at))
 	}
 }

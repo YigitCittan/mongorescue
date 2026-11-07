@@ -29,6 +29,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/cli"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/keywrap"
+	"github.com/yigitcittan/mongorescue/internal/logging"
 )
 
 // Version metadata populated at build time via -ldflags.
@@ -79,7 +80,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 	cfg.LogLevel = logLevel
 
-	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := logging.New(stdout, cfg.LogFormat, cfg.LogLevel)
 	slog.SetDefault(logger)
 	logger.Info("booting mongorescue disaster recovery engine",
 		slog.String("version", Version),
@@ -136,6 +137,8 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	haRenew := fs.String("ha-renew-interval", "", "How often the HA lease is renewed or read, below half the TTL (env "+config.EnvHARenewInterval+", default 10s)")
 	haSnapshot := fs.String("ha-snapshot-interval", "", "Longest time between two metadata snapshots of the active instance (env "+config.EnvHASnapshotInterval+", default 5m)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn or error")
+	logFormat := fs.String("log-format", "", "Log format: text or json (env "+config.EnvLogFormat+", default text)")
+	accessLog := fs.Bool("access-log", false, "Log one line per HTTP request: method, route, status, duration, bytes, client address, request ID (env "+config.EnvAccessLog+", default false)")
 	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
 		return nil, 0, false, err
@@ -154,7 +157,7 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 	if err != nil {
 		return nil, 0, false, err
 	}
-	var graceErr, spaceErr, ageErr, copiesErr, haErr, wrapErr, vaultErr error
+	var graceErr, spaceErr, ageErr, copiesErr, haErr, wrapErr, vaultErr, logFormatErr error
 	haDuration := func(name, v string, dst *time.Duration) {
 		d, err := config.ParseHADuration(v)
 		if err != nil && haErr == nil {
@@ -170,6 +173,10 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			cfg.Host = *host
 		case "port":
 			cfg.Port = *port
+		case "log-format":
+			cfg.LogFormat, logFormatErr = logging.ParseFormat(*logFormat)
+		case "access-log":
+			cfg.AccessLog = *accessLog
 		case "dashboard":
 			cfg.Dashboard = *dashboard
 		case "tools-dir":
@@ -211,6 +218,9 @@ func parseFlags(args []string, getenv func(string) string, stderr io.Writer) (*c
 			haDuration(f.Name, *haSnapshot, &cfg.HA.SnapshotInterval)
 		}
 	})
+	if logFormatErr != nil {
+		return nil, 0, false, fmt.Errorf("-log-format: %w", logFormatErr)
+	}
 	if haErr != nil {
 		return nil, 0, false, haErr
 	}

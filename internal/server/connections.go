@@ -61,7 +61,7 @@ func (s *Server) writeConnectionError(w http.ResponseWriter, err error) {
 		// a value.
 		writeError(w, http.StatusBadGateway, redact.Text(err.Error()))
 	default:
-		s.logger.Error("connection request failed", logsafe.Error(err))
+		s.logger.Error("connection request failed", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

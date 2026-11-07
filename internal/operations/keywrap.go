@@ -29,6 +29,6 @@ func (s *Service) KeyWrappingChanged(ctx context.Context, c keywrap.Change) {
 			"fingerprint":  c.Fingerprint, "files": c.Files,
 		}))
 	}
-	s.logger.Info("secret key wrapping changed", slog.String("action", c.Action), slog.String("actor", actor),
+	s.logger.InfoContext(ctx, "secret key wrapping changed", slog.String("action", c.Action), slog.String("actor", actor),
 		slog.String("fingerprint", c.Fingerprint))
 }

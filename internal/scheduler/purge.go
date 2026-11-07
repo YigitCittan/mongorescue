@@ -152,7 +152,7 @@ func (p purgeRun) run(ctx context.Context) ([]string, error) {
 		}
 	}
 	if len(purged) > 0 || len(errs) > 0 {
-		p.logger.Info("purge of deleted backups finished", slog.Int("purged", len(purged)), slog.Int("failed", len(errs)))
+		p.logger.InfoContext(ctx, "purge of deleted backups finished", slog.Int("purged", len(purged)), slog.Int("failed", len(errs)))
 	}
 	if err := p.cleanupLockedArtifacts(ctx); err != nil {
 		errs = append(errs, err)
@@ -217,7 +217,7 @@ func (p purgeRun) cleanupOne(ctx context.Context, updater BackupUpdater, rec *mo
 		until, err = storage.Purge(ctx, driver, rec.StorageKey, rec.StorageVersionID, p.now)
 	}
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
-		p.logger.Warn("cannot delete the locked artifact of a failed backup; retried by the next purge",
+		p.logger.WarnContext(ctx, "cannot delete the locked artifact of a failed backup; retried by the next purge",
 			logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		return fmt.Errorf("delete the artifact of failed backup %s: %w", rec.ID, err)
 	}
@@ -231,7 +231,7 @@ func (p purgeRun) cleanupOne(ctx context.Context, updater BackupUpdater, rec *mo
 		return nil
 	})
 	if err == nil && until == nil {
-		p.logger.Info("deleted the locked artifact of a failed backup after its lock ended", logsafe.Attr("backup_id", rec.ID))
+		p.logger.InfoContext(ctx, "deleted the locked artifact of a failed backup after its lock ended", logsafe.Attr("backup_id", rec.ID))
 	}
 	return err
 }
@@ -352,7 +352,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 // waitForLock records until on deleted backup id: PurgeDue keeps it deleted until
 // its archive's lock ends.
 func (p purgeRun) waitForLock(ctx context.Context, id string, until time.Time) {
-	p.logger.Info("deleted backup waits for the S3 Object Lock of its archive to end",
+	p.logger.InfoContext(ctx, "deleted backup waits for the S3 Object Lock of its archive to end",
 		logsafe.Attr("backup_id", id), slog.Time("retain_until", until))
 	u, ok := p.store.(BackupUpdater)
 	if !ok {
@@ -363,7 +363,7 @@ func (p purgeRun) waitForLock(ctx context.Context, id string, until time.Time) {
 		r.RetainUntil = &at
 		return nil
 	}); err != nil {
-		p.logger.Warn("cannot record the lock of a deleted backup's archive", logsafe.Attr("backup_id", id), logsafe.Error(err))
+		p.logger.WarnContext(ctx, "cannot record the lock of a deleted backup's archive", logsafe.Attr("backup_id", id), logsafe.Error(err))
 	}
 }
 
@@ -504,7 +504,7 @@ func (s *Scheduler) runMaintenance() {
 func (s *Scheduler) Maintain(ctx context.Context) {
 	// An HA instance that lost the lease deletes nothing.
 	if err := s.checkFence(); err != nil {
-		s.logger.Warn("maintenance skipped: this instance does not hold the HA lease", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "maintenance skipped: this instance does not hold the HA lease", logsafe.Error(err))
 		return
 	}
 	run := purgeRun{now: s.clock(), grace: s.deleteGrace, store: s.metadataStore, storages: s.storageFor, logger: s.logger, onPurged: s.purged,
@@ -513,7 +513,7 @@ func (s *Scheduler) Maintain(ctx context.Context) {
 		run.locate = l.ObjectLocation
 	}
 	if _, err := run.run(ctx); err != nil {
-		s.logger.Warn("purge of deleted backups incomplete", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "purge of deleted backups incomplete", logsafe.Error(err))
 	}
 	for _, fn := range s.maintenance {
 		fn(ctx)
@@ -526,7 +526,7 @@ func (s *Scheduler) purged(ctx context.Context, o PurgeOutcome) {
 	rec := o.Backup
 	if s.registry != nil {
 		if err := s.registry.RemoveLog(rec.ID); err != nil {
-			s.logger.Warn("failed to delete the log of a purged backup", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "failed to delete the log of a purged backup", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}
 	}
 	detail := "backup " + rec.ID + " (db " + rec.Database + ") purged after its grace period"

@@ -123,7 +123,7 @@ func (s *Server) handleCreatePITRStream(w http.ResponseWriter, r *http.Request) 
 	}
 	auditlog.Annotate(r.Context(), targetPITRStream, st.ID)
 	auditlog.Annotate(r.Context(), targetPITREnabled, strconv.FormatBool(st.Enabled))
-	s.logger.Info("PITR stream created", logsafe.Attr("stream_id", st.ID), logsafe.Attr("connection_id", st.ConnectionID))
+	s.logger.InfoContext(r.Context(), "PITR stream created", logsafe.Attr("stream_id", st.ID), logsafe.Attr("connection_id", st.ConnectionID))
 	writeJSON(w, http.StatusCreated, st)
 }
 

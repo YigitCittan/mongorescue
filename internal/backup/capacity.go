@@ -43,7 +43,7 @@ func (e *Engine) warnArchiveSize(ctx context.Context, uri string, opts models.Ba
 	defer cancel()
 	size, source, err := e.estimateSize(estCtx, opts.ConnectionID, uri, opts.Database)
 	if err != nil {
-		e.logger.Debug("could not estimate the archive size",
+		e.logger.DebugContext(ctx, "could not estimate the archive size",
 			logsafe.Attr("backup_id", record.ID), logsafe.Attr("database", opts.Database), logsafe.Error(err))
 		return
 	}
@@ -53,7 +53,7 @@ func (e *Engine) warnArchiveSize(ctx context.Context, uri string, opts models.Ba
 	}
 	record.Warnings = append(record.Warnings, msg)
 	runs.FromContext(ctx).Printf("warning: %s", msg)
-	e.logger.Warn("backup may exceed the largest archive of its storage target",
+	e.logger.WarnContext(ctx, "backup may exceed the largest archive of its storage target",
 		logsafe.Attr("backup_id", record.ID),
 		logsafe.Attr("database", opts.Database),
 		logsafe.Attr("storage_target_id", opts.StorageTargetID),

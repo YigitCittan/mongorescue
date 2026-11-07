@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/keywrap"
+	"github.com/yigitcittan/mongorescue/internal/logging"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/vault"
@@ -48,6 +49,11 @@ const (
 	// "1", ...; see strconv.ParseBool). The container image sets it; installer-based
 	// installs use the desktop app instead.
 	EnvDashboard = "MONGORESCUE_DASHBOARD"
+	// EnvLogFormat selects the log format: text (default) or json.
+	EnvLogFormat = logging.EnvLogFormat
+	// EnvAccessLog ("true") logs one line per HTTP request (method, route, status,
+	// duration, bytes, client address, request ID); off by default.
+	EnvAccessLog = "MONGORESCUE_ACCESS_LOG"
 	// EnvToolsDir sets a directory searched first for mongodump and mongorestore
 	// (before <executable dir>/tools and PATH; see mongotools.Resolver).
 	EnvToolsDir = mongotools.EnvToolsDir
@@ -211,6 +217,10 @@ type Config struct {
 	Host string
 	// Port is the listen port.
 	Port int
+	// LogFormat is the log output format (text or json).
+	LogFormat logging.Format
+	// AccessLog logs one line per HTTP request (never the query string or body).
+	AccessLog bool
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
 	// SecretKey is the optional base64 key (MONGORESCUE_SECRET_KEY) that encrypts
@@ -261,7 +271,7 @@ type Config struct {
 
 // Default returns the defaults of the binary.
 func Default() *Config {
-	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo,
+	return &Config{DataDir: DefaultDataDir, Host: DefaultHost, Port: DefaultPort, LogLevel: slog.LevelInfo, LogFormat: logging.FormatText,
 		MinFreeSpaceMB: DefaultMinFreeSpaceMB, NotificationMaxAge: DefaultNotificationMaxAge, PreMigrationCopies: DefaultPreMigrationCopies, HA: defaultHA()}
 }
 
@@ -311,6 +321,20 @@ func FromEnv(getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("%s: %w", EnvDashboard, ErrInvalidDashboard)
 		}
 		cfg.Dashboard = b
+	}
+	if v := strings.TrimSpace(getenv(EnvLogFormat)); v != "" {
+		f, err := logging.ParseFormat(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvLogFormat, err)
+		}
+		cfg.LogFormat = f
+	}
+	if v := strings.TrimSpace(getenv(EnvAccessLog)); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: must be true or false", EnvAccessLog)
+		}
+		cfg.AccessLog = b
 	}
 	if v := strings.TrimSpace(getenv(EnvShutdownGrace)); v != "" {
 		d, err := ParseShutdownGrace(v)

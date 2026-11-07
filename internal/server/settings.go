@@ -52,7 +52,7 @@ func (s *Server) pendingChanges(r *http.Request) []*models.PendingChange {
 	}
 	list, err := s.ops.PendingChanges(r.Context())
 	if err != nil {
-		s.logger.Warn("cannot list pending protection changes", logsafe.Error(err))
+		s.logger.WarnContext(r.Context(), "cannot list pending protection changes", logsafe.Error(err))
 		return []*models.PendingChange{}
 	}
 	return list
@@ -171,7 +171,7 @@ func (s *Server) writeSettingsError(w http.ResponseWriter, err error) {
 	case errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrMaskedSecret), errors.Is(err, settings.ErrSecretReentry):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		s.logger.Error("settings request failed", slog.Any("error", err))
+		s.logger.Error("settings request failed", slog.Any("error", err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

@@ -172,7 +172,7 @@ func (s *Server) handleRotateSecretKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	case errors.Is(err, keyrotation.ErrIncomplete):
-		s.logger.Error("secret key rotation incomplete", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "secret key rotation incomplete", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	case err != nil:

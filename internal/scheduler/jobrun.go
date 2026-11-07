@@ -395,7 +395,7 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	}
 	plan.begun = true
 	if err := s.saveRunOf(ctx, plan); err != nil {
-		s.logger.Warn("failed to record the job run as running",
+		s.logger.WarnContext(ctx, "failed to record the job run as running",
 			slog.String("job_id", jobID), slog.String("run_id", plan.Run.ID), slog.Any("error", err))
 	}
 	s.runStarted(plan.Job, plan.Run)
@@ -403,14 +403,14 @@ func (s *Scheduler) BeginJobRun(ctx context.Context, plan *JobRunPlan) error {
 	for i, rec := range plan.Records {
 		if err := s.metadataStore.SaveBackupRecord(ctx, rec); err != nil {
 			s.diskGuard.Observe(ctx, err)
-			s.logger.Warn("failed to record a queued backup of the job run",
+			s.logger.WarnContext(ctx, "failed to record a queued backup of the job run",
 				logsafe.Attr("job_id", jobID), logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}
 		tracked, err := s.registry.Register(runs.Meta{
 			Kind: models.RunBackup, ID: rec.ID, JobID: jobID, Database: rec.Database, Group: plan.Run.ID,
 		})
 		if err != nil {
-			s.logger.Warn("backup of the job run is not tracked", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
+			s.logger.WarnContext(ctx, "backup of the job run is not tracked", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}
 		plan.trackers[i] = tracked
 	}
@@ -431,7 +431,7 @@ func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause e
 	for i, rec := range plan.Records {
 		rec.Status, rec.ErrorMessage = models.StatusFailed, msg
 		if err := s.metadataStore.SaveBackupRecord(persistCtx, rec); err != nil {
-			s.logger.Error("failed to persist an abandoned backup record", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
+			s.logger.ErrorContext(ctx, "failed to persist an abandoned backup record", logsafe.Attr("backup_id", rec.ID), logsafe.Error(err))
 		}
 		if i < len(plan.trackers) {
 			plan.trackers[i].End()
@@ -441,7 +441,7 @@ func (s *Scheduler) AbandonJobRun(ctx context.Context, plan *JobRunPlan, cause e
 	plan.Run.Error = msg
 	plan.Run.Finish(time.Now())
 	if err := s.saveRunOf(persistCtx, plan); err != nil {
-		s.logger.Error("failed to persist an abandoned job run", slog.String("run_id", plan.Run.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to persist an abandoned job run", slog.String("run_id", plan.Run.ID), slog.Any("error", err))
 	}
 	if !plan.adhoc {
 		s.releaseJobRun(plan.Job.ID, plan.Run.ID)
@@ -492,7 +492,7 @@ func (s *Scheduler) runMulti(ctx context.Context, plan *JobRunPlan, scheduled bo
 		}
 	}
 	defer release()
-	s.logger.Info("running multi-database backup job",
+	s.logger.InfoContext(ctx, "running multi-database backup job",
 		slog.String("job_id", plan.jobID()), slog.String("run_id", plan.Run.ID),
 		slog.Int("databases", len(plan.Records)), slog.Int("parallelism", plan.effectiveParallelism()))
 
@@ -591,7 +591,7 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 		}
 	}
 	if err != nil {
-		s.logger.Warn("database of the job run failed",
+		s.logger.WarnContext(ctx, "database of the job run failed",
 			logsafe.Attr("job_id", plan.jobID()), logsafe.Attr("run_id", plan.Run.ID),
 			logsafe.Attr("database", rec.Database), slog.String("status", string(rec.Status)), logsafe.Error(err))
 	}
@@ -602,7 +602,7 @@ func (s *Scheduler) runDatabase(ctx context.Context, plan *JobRunPlan, i int, mu
 	plan.Records[i] = rec
 	plan.setDatabase(rec)
 	if saveErr := s.saveRunOf(persistCtx, plan); saveErr != nil {
-		s.logger.Warn("failed to record the progress of the job run",
+		s.logger.WarnContext(ctx, "failed to record the progress of the job run",
 			slog.String("job_id", plan.jobID()), slog.String("run_id", plan.Run.ID), slog.Any("error", saveErr))
 	}
 	mu.Unlock()
@@ -653,7 +653,7 @@ func (s *Scheduler) waitForDatabase(ctx context.Context, rec *models.BackupRecor
 		}
 		if !logged {
 			logged = true
-			s.logger.Info("job run waits for another backup of the database to finish",
+			s.logger.InfoContext(ctx, "job run waits for another backup of the database to finish",
 				logsafe.Attr("backup_id", rec.ID), logsafe.Attr("database", rec.Database))
 		}
 		timer := time.NewTimer(poll)
@@ -679,7 +679,7 @@ func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan) (*models.
 		run.AddedDatabases = s.storeKnownDatabases(persistCtx, plan)
 	}
 	if err := s.saveRunOf(persistCtx, plan); err != nil {
-		s.logger.Error("failed to persist the job run", slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to persist the job run", slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
 	s.runFinished(ctx, plan.Job, run)
 	if s.publisher != nil {
@@ -689,7 +689,7 @@ func (s *Scheduler) finishMulti(ctx context.Context, plan *JobRunPlan) (*models.
 		s.publisher.Publish(persistCtx, events.JobRunEvent(run))
 	}
 	ok, failed, cancelled, _ := run.Counts()
-	s.logger.Info("multi-database backup job finished",
+	s.logger.InfoContext(ctx, "multi-database backup job finished",
 		slog.String("job_id", plan.jobID()), slog.String("run_id", run.ID), slog.String("status", string(run.Status)),
 		slog.Int("succeeded", ok), slog.Int("failed", failed), slog.Int("cancelled", cancelled),
 		slog.Int("new_databases", len(run.NewDatabases)))
@@ -784,7 +784,7 @@ func (s *Scheduler) storeKnownDatabases(ctx context.Context, plan *JobRunPlan) [
 	s.mu.Unlock()
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			s.logger.Error("failed to store the job's known databases", slog.String("job_id", plan.Job.ID), slog.Any("error", err))
+			s.logger.ErrorContext(ctx, "failed to store the job's known databases", slog.String("job_id", plan.Job.ID), slog.Any("error", err))
 		}
 		return nil
 	}
@@ -846,13 +846,13 @@ func (s *Scheduler) failRun(ctx context.Context, job *models.Job, run *models.Jo
 	s.recordRunTimes(persistCtx, job)
 	s.stampEpoch(run)
 	if err := s.metadataStore.SaveJobRun(persistCtx, run); err != nil {
-		s.logger.Error("failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to persist the job run", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", err))
 	}
 	s.runFinished(ctx, job, run)
 	if s.publisher != nil {
 		s.publisher.Publish(persistCtx, events.JobRunEvent(run))
 	}
-	s.logger.Error("backup job execution failed", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", cause))
+	s.logger.ErrorContext(ctx, "backup job execution failed", slog.String("job_id", job.ID), slog.String("run_id", run.ID), slog.Any("error", cause))
 	return run, cause
 }
 
@@ -879,7 +879,7 @@ func (s *Scheduler) recordRunTimes(ctx context.Context, job *models.Job) {
 		job.NextRun = next
 	}
 	if saveErr != nil && !errors.Is(saveErr, store.ErrNotFound) {
-		s.logger.Error("failed to persist job run metadata",
+		s.logger.ErrorContext(ctx, "failed to persist job run metadata",
 			slog.String("job_id", job.ID),
 			slog.Any("error", saveErr),
 		)
@@ -893,12 +893,12 @@ func (s *Scheduler) applyRetention(ctx context.Context, job *models.Job, record 
 		return
 	}
 	if err := s.checkFence(); err != nil {
-		s.logger.Warn("retention skipped: this instance does not hold the HA lease", slog.String("job_id", job.ID), logsafe.Error(err))
+		s.logger.WarnContext(ctx, "retention skipped: this instance does not hold the HA lease", slog.String("job_id", job.ID), logsafe.Error(err))
 		return
 	}
 	history, listErr := s.metadataStore.ListBackupRecords(ctx, record.Database)
 	if listErr != nil {
-		s.logger.Warn("retention skipped: the backups cannot be listed",
+		s.logger.WarnContext(ctx, "retention skipped: the backups cannot be listed",
 			slog.String("job_id", job.ID), slog.String("database", record.Database), slog.Any("error", listErr))
 		return
 	}

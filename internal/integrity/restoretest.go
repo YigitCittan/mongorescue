@@ -108,13 +108,13 @@ func (s *Service) AfterBackup(ctx context.Context, job *models.Job, record *mode
 	}
 	release, err := s.cfg.Runs.Acquire(keyPrefixRestoreTest + job.ID)
 	if err != nil {
-		s.logger.Info("skipping the scheduled restore test: one is already running", slog.String("job_id", job.ID))
+		s.logger.InfoContext(ctx, "skipping the scheduled restore test: one is already running", slog.String("job_id", job.ID))
 		return
 	}
 	defer release()
 	source, err := s.drillSource(ctx, current, record)
 	if err != nil {
-		s.logger.Info("skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID), logsafe.Error(err))
+		s.logger.InfoContext(ctx, "skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID), logsafe.Error(err))
 		return
 	}
 	s.runRestoreTest(ctx, current, source, TriggerScheduled)
@@ -169,7 +169,7 @@ func (s *Service) AfterRun(ctx context.Context, job *models.Job, records []*mode
 	}
 	release, err := s.cfg.Runs.Acquire(keyPrefixRestoreTest + job.ID)
 	if err != nil {
-		s.logger.Info("skipping the scheduled restore test: one is already running", slog.String("job_id", job.ID))
+		s.logger.InfoContext(ctx, "skipping the scheduled restore test: one is already running", slog.String("job_id", job.ID))
 		return
 	}
 	defer release()
@@ -179,7 +179,7 @@ func (s *Service) AfterRun(ctx context.Context, job *models.Job, records []*mode
 		}
 		source, err := s.drillSource(ctx, current, rec)
 		if err != nil {
-			s.logger.Info("skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID),
+			s.logger.InfoContext(ctx, "skipping the scheduled disaster recovery drill", slog.String("job_id", job.ID),
 				slog.String("database", rec.Database), logsafe.Error(err))
 			continue
 		}
@@ -264,12 +264,12 @@ func (s *Service) runRestoreTest(ctx context.Context, job *models.Job, backup *m
 	if src := drillTarget(job); src != "" && backup.StorageTargetID == src {
 		res.SourceTargetID, res.SourceTargetName = backup.StorageTargetID, backup.StorageTargetName
 	}
-	s.logger.Info("restore test started", slog.String("job_id", job.ID), slog.String("backup_id", backup.ID), slog.String("trigger", trigger),
+	s.logger.InfoContext(ctx, "restore test started", slog.String("job_id", job.ID), slog.String("backup_id", backup.ID), slog.String("trigger", trigger),
 		slog.String("source_target_id", res.SourceTargetID))
 	defer s.finishRestoreTest(ctx, job, res)
 	defer func() {
 		if p := recover(); p != nil {
-			s.logger.Error("restore test panicked", slog.Any("panic", p), slog.String("stack", string(debug.Stack())))
+			s.logger.ErrorContext(ctx, "restore test panicked", slog.Any("panic", p), slog.String("stack", string(debug.Stack())))
 			res.Status, res.Error = models.RestoreTestError, "internal error during the restore test"
 		}
 	}()
@@ -412,7 +412,7 @@ func (s *Service) dropTemp(ctx context.Context, uri, source, temp string, res *m
 	defer cancel()
 	if err := s.cfg.Admin.DropDatabase(dropCtx, uri, temp); err != nil {
 		res.DropError = redact.Text(err.Error())
-		s.logger.Error("failed to drop the restore test database; drop it manually",
+		s.logger.ErrorContext(ctx, "failed to drop the restore test database; drop it manually",
 			slog.String("database", temp), slog.String("error", res.DropError))
 		return
 	}
@@ -428,25 +428,25 @@ func (s *Service) finishRestoreTest(ctx context.Context, job *models.Job, res *m
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	if err := s.cfg.Store.SaveRestoreTest(writeCtx, res); err != nil {
-		s.logger.Error("failed to record the restore test", slog.String("job_id", job.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to record the restore test", slog.String("job_id", job.ID), slog.Any("error", err))
 	}
 	summary := res.Summary()
 	if err := s.cfg.Store.UpdateJobRestoreTest(writeCtx, job.ID, summary); err != nil && !errors.Is(err, store.ErrNotFound) {
-		s.logger.Error("failed to record the restore test on the job", slog.String("job_id", job.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to record the restore test on the job", slog.String("job_id", job.ID), slog.Any("error", err))
 	}
 	if _, err := s.cfg.Store.UpdateBackupRecord(writeCtx, res.BackupID, func(r *models.BackupRecord) error {
 		r.LastRestoreTest = summary
 		return nil
 	}); err != nil && !errors.Is(err, store.ErrNotFound) {
-		s.logger.Error("failed to record the restore test on the backup", slog.String("backup_id", res.BackupID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "failed to record the restore test on the backup", slog.String("backup_id", res.BackupID), slog.Any("error", err))
 	}
 	s.publish(writeCtx, events.RestoreTestEvent(res))
 	attrs := []any{slog.String("job_id", job.ID), slog.String("backup_id", res.BackupID), slog.String("status", string(res.Status)),
 		slog.Float64("duration_sec", res.DurationSeconds), slog.Bool("dropped", res.Dropped)}
 	if res.Status == models.RestoreTestOK {
-		s.logger.Info("restore test passed", attrs...)
+		s.logger.InfoContext(ctx, "restore test passed", attrs...)
 	} else {
-		s.logger.Warn("restore test failed", append(attrs, slog.String("error", res.Error), slog.Int("mismatches", len(res.Mismatches)))...)
+		s.logger.WarnContext(ctx, "restore test failed", append(attrs, slog.String("error", res.Error), slog.Int("mismatches", len(res.Mismatches)))...)
 	}
 }
 

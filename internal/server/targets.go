@@ -70,7 +70,7 @@ func (s *Server) writeTargetError(w http.ResponseWriter, err error) {
 	case errors.Is(err, targets.ErrInvalid), errors.Is(err, targets.ErrMaskedSecret):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
-		s.logger.Error("storage target request failed", logsafe.Error(err))
+		s.logger.Error("storage target request failed", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

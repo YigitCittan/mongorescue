@@ -115,7 +115,7 @@ func (s *Service) KeyRotationCompleted(ctx context.Context, m *store.KeyRotation
 			"actor": m.Actor, "approval_id": m.ApprovalID,
 		}))
 	}
-	s.logger.Info("key rotated", slog.String("kind", KeyKindSecretKey), slog.String("old_fingerprint", m.OldFingerprint),
+	s.logger.InfoContext(ctx, "key rotated", slog.String("kind", KeyKindSecretKey), slog.String("old_fingerprint", m.OldFingerprint),
 		slog.String("new_fingerprint", m.NewFingerprint), slog.String("completed", "at startup"))
 }
 

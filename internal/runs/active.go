@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yigitcittan/mongorescue/internal/logging"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/mongotools"
@@ -443,6 +444,34 @@ func (run *Run) ID() string {
 	return run.meta.ID
 }
 
+// logRunID is the run_id of the log lines of the run: the job run its backup belongs
+// to (Meta.Group, the run_id of the API), else the record ID of the run.
+func (run *Run) logRunID() string {
+	if run.meta.Group != "" {
+		return run.meta.Group
+	}
+	return run.meta.ID
+}
+
+// logRecordKey is the attribute that carries the record ID of the run in its log
+// lines: restore_id for a restore, backup_id otherwise.
+func (run *Run) logRecordKey() string {
+	if run.meta.Kind == models.RunRestore {
+		return "restore_id"
+	}
+	return "backup_id"
+}
+
+// logJobID is the job_id of the log lines of the run: its job, else the one ctx
+// already carries.
+func (run *Run) logJobID(ctx context.Context) string {
+	if run.meta.JobID != "" {
+		return run.meta.JobID
+	}
+	_, jobID := logging.Run(ctx)
+	return jobID
+}
+
 // Bind returns a context derived from ctx that the Registry can cancel and that
 // carries the run (see FromContext). A cancellation requested before Bind takes
 // effect at once.
@@ -452,6 +481,7 @@ func (run *Run) Bind(ctx context.Context) context.Context {
 	}
 	runCtx, cancel := context.WithCancelCause(ctx)
 	runCtx = context.WithValue(runCtx, runKey{}, run)
+	runCtx = logging.WithRecord(logging.WithRun(runCtx, run.logRunID(), run.logJobID(runCtx)), run.logRecordKey(), run.meta.ID)
 	run.mu.Lock()
 	run.cancel, run.ctx = cancel, runCtx
 	now := run.reg.now().UTC()

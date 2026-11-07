@@ -169,7 +169,7 @@ func (e *Engine) runPostRestore(ctx context.Context, uri string, cmds []models.P
 			report.ClonesKept = sortedClones(clones)
 			report.Note = fmt.Sprintf("command %d of %d failed", i+1, len(steps))
 			tracker.Printf("post-restore command %d of %d (%s on %s in %s) failed: %s", i+1, len(steps), step.Name, step.Collection, step.Target, res.Error)
-			e.logger.Warn("post-restore command failed",
+			e.logger.WarnContext(ctx, "post-restore command failed",
 				slog.String("restore_id", record.ID), logsafe.Attr("target_db", step.Target),
 				slog.String("command", step.Name), logsafe.Attr("collection", step.Collection), slog.String("error", res.Error))
 			return fmt.Errorf("%w: command %d of %d (%s on %s in %s): %s", ErrPostRestoreFailed, i+1, len(steps), step.Name, step.Collection, step.Target, res.Error)
@@ -178,7 +178,7 @@ func (e *Engine) runPostRestore(ctx context.Context, uri string, cmds []models.P
 			i+1, len(steps), step.Name, step.Collection, step.Target, res.N, res.Modified, res.Upserted, res.DurationMS)
 	}
 	report.Status = models.PostRestoreCompleted
-	e.logger.Info("post-restore commands applied", slog.String("restore_id", record.ID), slog.Int("commands", len(steps)))
+	e.logger.InfoContext(ctx, "post-restore commands applied", slog.String("restore_id", record.ID), slog.Int("commands", len(steps)))
 	return nil
 }
 

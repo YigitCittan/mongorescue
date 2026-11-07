@@ -43,7 +43,7 @@ func (s *Scheduler) CatchUp(ctx context.Context, now time.Time, imports ImportCh
 	}
 	jobs, err := s.metadataStore.ListJobs(ctx)
 	if err != nil {
-		s.logger.Warn("missed schedules not checked: cannot list the jobs", logsafe.Error(err))
+		s.logger.WarnContext(ctx, "missed schedules not checked: cannot list the jobs", logsafe.Error(err))
 		return nil
 	}
 	var started []string
@@ -65,7 +65,7 @@ func (s *Scheduler) CatchUp(ctx context.Context, now time.Time, imports ImportCh
 		if !s.startCatchUp(job.ID) {
 			continue
 		}
-		s.logger.Info("running a scheduled backup missed while no instance was active",
+		s.logger.InfoContext(ctx, "running a scheduled backup missed while no instance was active",
 			logsafe.Attr("job_id", job.ID), logsafe.Time("missed_fire", &fire))
 		started = append(started, job.ID)
 	}
@@ -91,7 +91,7 @@ func (s *Scheduler) unverifiable(ctx context.Context, job *models.Job, imports I
 func (s *Scheduler) catchUpSkipped(ctx context.Context, job *models.Job, fire time.Time, reason error) {
 	detail := fmt.Sprintf("the fire of job %s at %s was missed while no instance was active and is not caught up: could not verify that it did not run (%v); run the job by hand if it did not",
 		job.ID, fire.UTC().Format(time.RFC3339), reason)
-	s.logger.Warn("missed fire not caught up: could not verify", logsafe.Attr("job_id", job.ID),
+	s.logger.WarnContext(ctx, "missed fire not caught up: could not verify", logsafe.Attr("job_id", job.ID),
 		logsafe.Time("missed_fire", &fire), logsafe.Error(reason))
 	if s.publisher != nil {
 		s.publisher.Publish(ctx, events.Event{Type: events.HACatchUpSkipped, Time: time.Now().UTC(), JobID: job.ID,

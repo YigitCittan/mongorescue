@@ -192,7 +192,7 @@ func (s *Service) DropKeptClones(ctx context.Context, id string) (*models.Restor
 	var failed []string
 	for _, name := range pr.ClonesKept {
 		if dropErr := s.cfg.Dropper.DropDatabase(mongotls.NewContext(ctx, conn.TLS()), conn.URI, name); dropErr != nil {
-			s.logger.Warn("failed to drop a clone kept after a failed post-restore command",
+			s.logger.WarnContext(ctx, "failed to drop a clone kept after a failed post-restore command",
 				logsafe.Attr("restore_id", id), logsafe.Attr("database", name), logsafe.Error(dropErr))
 			failed = append(failed, name)
 		}

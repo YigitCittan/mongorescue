@@ -51,7 +51,7 @@ func (s *Scheduler) retentionDeleted(ctx context.Context, e models.RetentionLogE
 	if s.retentionLog != nil {
 		entry := e
 		if err := s.retentionLog.AppendRetentionLog(context.WithoutCancel(ctx), &entry); err != nil {
-			s.logger.Error("failed to record a retention deletion", slog.String("backup_id", e.BackupID), slog.Any("error", err))
+			s.logger.ErrorContext(ctx, "failed to record a retention deletion", slog.String("backup_id", e.BackupID), slog.Any("error", err))
 		}
 	}
 	if s.auditor != nil {

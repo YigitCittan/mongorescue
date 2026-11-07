@@ -70,14 +70,14 @@ func (s *Service) verifyCopies(ctx context.Context, rec *models.BackupRecord, by
 		switch res.Status {
 		case models.VerificationOK:
 			tally.ok++
-			s.logger.Info("backup copy verified", attrs...)
+			s.logger.InfoContext(ctx, "backup copy verified", attrs...)
 			continue
 		case models.VerificationMismatch:
 			tally.mismatch++
 		default:
 			tally.errors++
 		}
-		s.logger.Warn("backup copy verification failed", append(attrs, slog.String("error", updatedCopy.VerificationError))...)
+		s.logger.WarnContext(ctx, "backup copy verification failed", append(attrs, slog.String("error", updatedCopy.VerificationError))...)
 		if gone {
 			s.publish(ctx, events.Event{Type: events.BackupCopyFailed, Time: res.At.UTC(), JobID: rec.JobID, BackupID: rec.ID,
 				Database: rec.Database, Status: string(updatedCopy.Status), TargetID: c.TargetID, TargetName: c.TargetName,

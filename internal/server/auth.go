@@ -158,7 +158,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				w = rec
 			}
 			if !errors.Is(err, auth.ErrUnauthenticated) {
-				s.logger.Error("authentication failed", slog.Any("error", err))
+				s.logger.ErrorContext(r.Context(), "authentication failed", slog.Any("error", err))
 				writeError(w, http.StatusInternalServerError, "authentication failed")
 				return
 			}
@@ -476,7 +476,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrUnauthenticated):
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 	default:
-		s.logger.Error("auth request failed", logsafe.Error(err))
+		s.logger.Error("auth request failed", logsafe.Error(err), requestIDAttr(w))
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

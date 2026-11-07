@@ -155,7 +155,7 @@ func (s *Server) serveRunLog(w http.ResponseWriter, r *http.Request, open func(c
 	h.Set("Content-Length", strconv.FormatInt(rd.Size(), 10))
 	w.WriteHeader(http.StatusOK)
 	if _, err := rd.WriteTo(w); err != nil {
-		s.logger.Debug("run log download interrupted", "error", err)
+		s.logger.DebugContext(r.Context(), "run log download interrupted", "error", err)
 	}
 }
 

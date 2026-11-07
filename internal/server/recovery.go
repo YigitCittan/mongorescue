@@ -66,7 +66,7 @@ func (s *Server) handleRunMetadataBackup(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
-		s.logger.Error("metadata backup could not start", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "metadata backup could not start", logsafe.Error(err))
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -190,7 +190,7 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		s.logger.Error("recovery kit could not be prepared", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "recovery kit could not be prepared", logsafe.Error(err))
 		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusInternalServerError, "kit could not be prepared", plaintext)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -202,19 +202,19 @@ func (s *Server) handleDownloadRecoveryKit(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 	if err = s.recoveryKit.Seal(w, kit, req.Passphrase); err != nil {
 		// The status is sent; the client sees a truncated stream that does not decrypt.
-		s.logger.Error("recovery kit download failed", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "recovery kit download failed", logsafe.Error(err))
 		s.auditRecoveryKit(r.Context(), p, start, audit.ResultError, http.StatusOK, "download interrupted", plaintext)
 		return
 	}
 	if err = s.recoveryKit.MarkDownloaded(r.Context(), kit); err != nil {
-		s.logger.Error("could not record the recovery kit download", logsafe.Error(err))
+		s.logger.ErrorContext(r.Context(), "could not record the recovery kit download", logsafe.Error(err))
 	}
 	s.auditRecoveryKit(r.Context(), p, start, audit.ResultOK, http.StatusOK, "", plaintext)
 	if plaintext {
-		s.logger.Warn("recovery kit downloaded with the plaintext secret key, although it is wrapped by a KMS", logsafe.Attr("user_id", p.UserID()))
+		s.logger.WarnContext(r.Context(), "recovery kit downloaded with the plaintext secret key, although it is wrapped by a KMS", logsafe.Attr("user_id", p.UserID()))
 		return
 	}
-	s.logger.Info("recovery kit downloaded", logsafe.Attr("user_id", p.UserID()))
+	s.logger.InfoContext(r.Context(), "recovery kit downloaded", logsafe.Attr("user_id", p.UserID()))
 }
 
 // auditRecoveryKit records a recovery kit download attempt of p: who and the

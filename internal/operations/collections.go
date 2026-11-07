@@ -141,7 +141,7 @@ func (s *Service) ListBackupCollectionsWithin(ctx context.Context, id string, ti
 		// The client went away; nothing to report.
 		return nil, ctx.Err()
 	}
-	s.logger.Warn("could not read the collection list of a backup archive; using the record",
+	s.logger.WarnContext(ctx, "could not read the collection list of a backup archive; using the record",
 		slog.String("backup_id", rec.ID), logsafe.Error(err))
 
 	keyMissing := errors.Is(err, ErrKeyRequired)

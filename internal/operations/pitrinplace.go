@@ -290,7 +290,7 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 	tracker.Phase(models.PhaseFinishing, rec.Phases)
 	tracker.Printf("in-place point-in-time restore completed: %s hold their state at %s (safety backup(s) %s)",
 		strings.Join(ip.Swapped, ", "), rec.PITR.TargetTime.Format(time.RFC3339), strings.Join(ip.SafetyBackupIDs, ", "))
-	s.logger.Info("in-place point-in-time restore completed", logsafe.Attr("restore_id", rec.ID),
+	s.logger.InfoContext(ctx, "in-place point-in-time restore completed", logsafe.Attr("restore_id", rec.ID),
 		logsafe.Attr("databases", strings.Join(ip.Swapped, ",")), slog.Float64("duration_sec", rec.DurationSeconds))
 	return rec, nil
 }
@@ -363,7 +363,7 @@ func (s *Service) failInPlace(ctx context.Context, rec *models.RestoreRecord, er
 	tracker := runs.FromContext(ctx)
 	tracker.Phase(models.PhaseFinishing, rec.Phases)
 	tracker.Printf("in-place point-in-time restore failed: %s", rec.ErrorMessage)
-	s.logger.Error("in-place point-in-time restore failed", logsafe.Attr("restore_id", rec.ID), logsafe.Error(err))
+	s.logger.ErrorContext(ctx, "in-place point-in-time restore failed", logsafe.Attr("restore_id", rec.ID), logsafe.Error(err))
 	return rec, fmt.Errorf("in-place point-in-time restore: %w", err)
 }
 
@@ -379,7 +379,7 @@ func (s *Service) saveInPlace(ctx context.Context, rec *models.RestoreRecord) {
 	cp.PITR = &info
 	if err := s.cfg.Store.SaveRestoreRecord(saveCtx, &cp); err != nil {
 		s.cfg.DiskGuard.Observe(saveCtx, err)
-		s.logger.Error("failed to record the progress of an in-place point-in-time restore",
+		s.logger.ErrorContext(ctx, "failed to record the progress of an in-place point-in-time restore",
 			logsafe.Attr("restore_id", rec.ID), logsafe.Error(err))
 	}
 }
@@ -542,11 +542,11 @@ func (s *Service) resumeInterrupted(ctx context.Context, rec *models.RestoreReco
 		}
 		base, baseErr := s.StartBaseBackup(runCtx, id, models.TriggerManual)
 		if baseErr != nil {
-			s.logger.Warn("the base backup of a PITR stream resumed after an interrupted in-place restore could not be started; the base schedule retries it",
+			s.logger.WarnContext(ctx, "the base backup of a PITR stream resumed after an interrupted in-place restore could not be started; the base schedule retries it",
 				logsafe.Attr("stream_id", id), logsafe.Attr("restore_id", rec.ID), logsafe.Error(baseErr))
 			return
 		}
-		s.logger.Info("PITR stream resumed after an interrupted in-place restore", logsafe.Attr("stream_id", id),
+		s.logger.InfoContext(ctx, "PITR stream resumed after an interrupted in-place restore", logsafe.Attr("stream_id", id),
 			logsafe.Attr("restore_id", rec.ID), logsafe.Attr("backup_id", base.ID))
 	})
 	if goErr != nil {
@@ -560,7 +560,7 @@ func (s *Service) resumeInterrupted(ctx context.Context, rec *models.RestoreReco
 // collected.
 func (s *Service) alertResume(ctx context.Context, rec *models.RestoreRecord, err error) {
 	msg := redact.Text(err.Error())
-	s.logger.Error("the PITR stream paused by an interrupted in-place restore could not be enabled again",
+	s.logger.ErrorContext(ctx, "the PITR stream paused by an interrupted in-place restore could not be enabled again",
 		logsafe.Attr("stream_id", rec.PITR.StreamID), logsafe.Attr("restore_id", rec.ID), logsafe.Attr("error", msg))
 	s.publish(context.WithoutCancel(ctx), events.Event{Type: events.PITRCollectorFailed, Time: s.now().UTC(), Status: "failed",
 		Error: msg, Stream: rec.PITR.StreamID, ConnectionID: rec.TargetConnectionID, RestoreID: rec.ID,

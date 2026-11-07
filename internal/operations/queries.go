@@ -409,7 +409,7 @@ func (s *Service) computeStats(ctx context.Context) Stats {
 	}
 	if len(reasons) > 0 {
 		st.Degraded, st.DegradedReason = true, redact.Text(strings.Join(reasons, "; "))
-		s.logger.Warn("dashboard statistics are incomplete", slog.String("reason", st.DegradedReason))
+		s.logger.WarnContext(ctx, "dashboard statistics are incomplete", slog.String("reason", st.DegradedReason))
 	}
 	return st
 }

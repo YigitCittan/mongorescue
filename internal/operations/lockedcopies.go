@@ -197,7 +197,7 @@ func (s *Service) applyJobLockedCopiesChange(ctx context.Context, c *models.Pend
 	case c.JobCreatedAt != nil && !existing.CreatedAt.Equal(*c.JobCreatedAt), !existing.RequireLockedCopies:
 		return nil
 	case s.requireLockedCopiesSetting():
-		s.logger.Warn("dropping the pending change that turns off locked copies of a job: security.require_locked_copies is on",
+		s.logger.WarnContext(ctx, "dropping the pending change that turns off locked copies of a job: security.require_locked_copies is on",
 			logsafe.Attr("job_id", c.JobID))
 		return nil
 	}

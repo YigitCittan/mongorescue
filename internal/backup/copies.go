@@ -46,7 +46,7 @@ func (e *Engine) copySync(ctx context.Context, opts models.BackupOptions, record
 	}
 	tracker.Printf("copying the archive to %d copy target(s)", len(record.Copies))
 	if err := e.copier(ctx, record, e.uploadMbps(opts)); err != nil {
-		e.logger.Error("synchronous backup copy failed; deleting the archive and its copies",
+		e.logger.ErrorContext(ctx, "synchronous backup copy failed; deleting the archive and its copies",
 			logsafe.Attr("backup_id", record.ID), logsafe.Error(err))
 		e.deleteArtifact(ctx, record, record.StorageKey)
 		e.deleteCopies(ctx, record)
@@ -78,7 +78,7 @@ func (e *Engine) deleteCopies(ctx context.Context, record *models.BackupRecord) 
 		}
 		switch {
 		case err != nil && !errors.Is(err, storage.ErrNotFound):
-			e.logger.Warn("failed to delete the copy of a failed backup", logsafe.Attr("backup_id", record.ID),
+			e.logger.WarnContext(ctx, "failed to delete the copy of a failed backup", logsafe.Attr("backup_id", record.ID),
 				logsafe.Attr("storage_target_id", cp.TargetID), logsafe.Error(err))
 			record.ArchiveCleanupPending = true
 		case until != nil:

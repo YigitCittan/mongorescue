@@ -290,7 +290,7 @@ func (e *Engine) bypassValidation(ctx context.Context, uri, database string) boo
 	}
 	ok, err := e.canBypass(ctx, uri, database)
 	if err != nil {
-		e.logger.Warn("could not check the bypassDocumentValidation privilege; documents are validated",
+		e.logger.WarnContext(ctx, "could not check the bypassDocumentValidation privilege; documents are validated",
 			logsafe.Attr("target_db", database), slog.String("error", redact.Text(err.Error())))
 		return false
 	}
@@ -533,7 +533,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		defer cancel()
 	}
 
-	e.logger.Info("initiating mongodb streaming restore",
+	e.logger.InfoContext(ctx, "initiating mongodb streaming restore",
 		slog.String("restore_id", restoreID),
 		logsafe.Attr("backup_id", req.BackupID),
 		slog.String("source_db", sourceRecord.Database),
@@ -590,7 +590,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		record.Verified = true
 		record.Phases.VerifyDone = models.Stamp(time.Now())
 		tracker.Printf("backup artifact verified (sha256 %s)", sourceRecord.SHA256)
-		e.logger.Info("backup artifact verified before restore",
+		e.logger.InfoContext(ctx, "backup artifact verified before restore",
 			slog.String("restore_id", restoreID),
 			logsafe.Attr("backup_id", req.BackupID),
 		)
@@ -639,7 +639,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 			fmt.Sprintf("%s (target untouched): %v", stage, err))
 	}
 	if isGzip != keyGzip(sourceRecord.StorageKey) {
-		e.logger.Warn("backup compression differs from its storage key; using the archive content",
+		e.logger.WarnContext(ctx, "backup compression differs from its storage key; using the archive content",
 			logsafe.Attr("backup_id", req.BackupID), slog.Bool("gzip", isGzip))
 	}
 	input := &errTrackingReader{r: plain}
@@ -702,7 +702,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 		dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cloneDropTimeout)
 		defer cancel()
 		if err := e.admin.DropDatabase(dropCtx, mongoURI, targetDB); err != nil {
-			e.logger.Warn("failed to drop the safe clone of a failed restore",
+			e.logger.WarnContext(ctx, "failed to drop the safe clone of a failed restore",
 				slog.String("restore_id", restoreID), logsafe.Attr("target_db", targetDB),
 				slog.String("error", redact.Text(err.Error())))
 			return fmt.Sprintf("; dropping the partially restored clone %s failed (%v), drop it manually", targetDB, err)
@@ -795,7 +795,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	}
 	if !ok && !req.DryRun {
 		addWarning(record, "document counts unavailable: mongorestore printed no restored/failed summary")
-		e.logger.Warn("mongorestore printed no document summary; document counts unavailable",
+		e.logger.WarnContext(ctx, "mongorestore printed no document summary; document counts unavailable",
 			slog.String("restore_id", restoreID), logsafe.Attr("target_db", targetDB))
 	}
 
@@ -816,7 +816,7 @@ func (e *Engine) execute(ctx context.Context, req models.RestoreRequest, sourceR
 	record.Phases.Finished = models.Stamp(finishTime)
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("restore completed into %s.* in %.1fs", targetDB, record.DurationSeconds)
-	e.logger.Info("mongodb streaming restore finished successfully",
+	e.logger.InfoContext(ctx, "mongodb streaming restore finished successfully",
 		slog.String("restore_id", restoreID),
 		logsafe.Attr("target_db", targetDB),
 		slog.Float64("duration_sec", record.DurationSeconds),
@@ -860,7 +860,7 @@ func (e *Engine) cancelled(ctx context.Context, record *models.RestoreRecord, c 
 	tracker := runs.FromContext(ctx)
 	tracker.Phase(models.PhaseFinishing, record.Phases)
 	tracker.Printf("%s", record.ErrorMessage)
-	e.logger.Warn("restore cancelled", append([]any{
+	e.logger.WarnContext(ctx, "restore cancelled", append([]any{
 		logsafe.Attr("restore_id", record.ID),
 		logsafe.Attr("target_db", record.TargetDatabase),
 		slog.Bool("in_place", record.InPlace),

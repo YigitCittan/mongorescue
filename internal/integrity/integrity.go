@@ -304,18 +304,18 @@ func (s *Service) loop(ctx context.Context) {
 // after the other, and returns when they finished. The background loop calls it.
 func (s *Service) RunDue(ctx context.Context) {
 	if err := s.checkFence(); err != nil {
-		s.logger.Warn("integrity work skipped: this instance does not hold the HA lease", slog.Any("error", err))
+		s.logger.WarnContext(ctx, "integrity work skipped: this instance does not hold the HA lease", slog.Any("error", err))
 		return
 	}
 	now := s.now()
 	if due := s.nextSweep(ctx); due != nil && !now.Before(*due) {
 		if _, err := s.Sweep(ctx, TriggerScheduled); err != nil && !errors.Is(err, ErrBusy) && ctx.Err() == nil {
-			s.logger.Warn("scheduled integrity sweep failed", slog.Any("error", err))
+			s.logger.WarnContext(ctx, "scheduled integrity sweep failed", slog.Any("error", err))
 		}
 	}
 	if due := s.nextScan(ctx); due != nil && !now.Before(*due) {
 		if err := s.ScanAll(ctx, TriggerScheduled); err != nil && ctx.Err() == nil {
-			s.logger.Warn("scheduled storage scan failed", slog.Any("error", err))
+			s.logger.WarnContext(ctx, "scheduled storage scan failed", slog.Any("error", err))
 		}
 	}
 }

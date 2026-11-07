@@ -25,6 +25,12 @@ config:
   dashboard: true
   # debug, info, warn or error.
   logLevel: info
+  # text or json (-log-format, MONGORESCUE_LOG_FORMAT): json is one object per line,
+  # for Loki, ELK and CloudWatch.
+  logFormat: text
+  # Log one line per HTTP request (-access-log): method, route, status, duration,
+  # bytes, client address and request ID; never the query string or a body.
+  accessLog: false
   # How long a shutdown (pod deletion, rolling update, node drain) waits for running
   # backups and restores before it cancels them (MONGORESCUE_SHUTDOWN_GRACE). Empty
   # derives it from terminationGracePeriodSeconds minus 60 seconds, which MongoRescue
