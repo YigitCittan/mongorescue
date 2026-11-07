@@ -28,7 +28,11 @@ type lease struct {
 	// lastUse is when the lease was last handed out or released; lastShared when
 	// it was last handed out without a hold (Resolver.Connection).
 	lastUse, lastShared time.Time
-	holders             map[*holder]struct{}
+	// sharedSeq is the Resolver sequence number of the last share. It orders a
+	// share against a holder start exactly, which timestamps cannot do on a
+	// coarse clock (Windows ticks about every 15 ms).
+	sharedSeq uint64
+	holders   map[*holder]struct{}
 	// watching is set while keep runs; stop ends it.
 	watching bool
 	stop     chan struct{}
@@ -36,10 +40,10 @@ type lease struct {
 	ended error
 }
 
-// holder is one run holding a lease since since.
+// holder is one run holding a lease; seq orders its start against shares.
 type holder struct {
+	seq    uint64
 	cancel context.CancelCauseFunc
-	since  time.Time
 }
 
 // margin is how long before its expiry a lease that cannot be renewed ends for
@@ -101,6 +105,8 @@ func (r *Resolver) shared(ctx context.Context, ref models.VaultRef, share bool) 
 		l.lastUse = now
 		if share {
 			l.lastShared = now
+			r.seq++
+			l.sharedSeq = r.seq
 		}
 		r.mu.Unlock()
 		r.revokeAll(stale)
@@ -122,6 +128,10 @@ func (r *Resolver) shared(ctx context.Context, ref models.VaultRef, share bool) 
 		r.mu.Unlock()
 		r.revokeAll([]string{l.id})
 		return nil, fmt.Errorf("%w: MongoRescue is shutting down", ErrLeaseLost)
+	}
+	if share {
+		r.seq++
+		l.sharedSeq = r.seq
 	}
 	old := r.leases[key]
 	r.leases[key] = l
@@ -202,10 +212,9 @@ func (r *Resolver) release(l *lease, h *holder) {
 			close(l.stop)
 		}
 		current := r.leases[l.key] == l
-		// Shared since this run held it (equal times count: a coarse clock, such
-		// as Windows', gives the same reading to both): another run is about to
-		// use it.
-		sharedSince := !l.lastShared.Before(h.since) && now.Sub(l.lastShared) < idleGrace
+		// Shared since this run held it (by sequence, not time): another run is
+		// about to use it.
+		sharedSince := l.sharedSeq > h.seq && now.Sub(l.lastShared) < idleGrace
 		if !current || l.ended != nil || !sharedSince || r.closed {
 			if current {
 				delete(r.leases, l.key)

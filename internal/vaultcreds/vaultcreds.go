@@ -119,6 +119,9 @@ type Resolver struct {
 	unit time.Duration
 	now  func() time.Time
 
+	// seq numbers shares and holds in order (mu).
+	seq uint64
+
 	// ctx bounds the renewals and revocations; cancel ends them (Close).
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -270,7 +273,8 @@ func (r *Resolver) Hold(ctx context.Context, ref models.VaultRef) (context.Conte
 			return ctx, UserPassword{}, func() {}, r.failed(fmt.Errorf("%w: %s", ErrLeaseLost, ref.String()))
 		}
 		hctx, cancel := context.WithCancelCause(ctx)
-		h := &holder{cancel: cancel, since: r.now()}
+		r.seq++
+		h := &holder{cancel: cancel, seq: r.seq}
 		l.holders[h] = struct{}{}
 		if !l.watching {
 			l.watching = true

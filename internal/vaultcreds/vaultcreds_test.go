@@ -381,3 +381,39 @@ func TestErrorsNeverHoldValues(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// A clock that never advances (Windows readings repeat for about 15 ms) must
+// not change who revokes: the last run's release revokes a lease that was
+// shared only before it started, and keeps one shared after.
+func TestLeaseSharingOrderDoesNotDependOnTheClock(t *testing.T) {
+	f, srv := newFakeVault(t)
+	r := newTestResolver(t, srv, time.Second, nil)
+	frozen := time.Now()
+	r.now = func() time.Time { return frozen }
+	ctx := context.Background()
+
+	if _, err := r.Connection(ctx, dbRef()); err != nil { // shared, then held
+		t.Fatal(err)
+	}
+	_, _, release, err := r.Hold(ctx, dbRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	eventually(t, "revocation of a lease shared only before the hold", func() bool {
+		return get(f, func(f *fakeVault) int { return len(f.revoked) }) == 1
+	})
+
+	_, _, release, err = r.Hold(ctx, dbRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Connection(ctx, dbRef()); err != nil { // shared after the hold
+		t.Fatal(err)
+	}
+	release()
+	time.Sleep(50 * time.Millisecond)
+	if n := get(f, func(f *fakeVault) int { return len(f.revoked) }); n != 1 {
+		t.Fatalf("revoked %d lease(s); the second is about to be used", n)
+	}
+}
