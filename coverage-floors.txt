@@ -1,0 +1,34 @@
+# Per-package coverage floors, checked by scripts/coverage.sh (make coverage-check)
+# on the unit-test profile. "<package directory> <minimum percent>".
+#
+# A floor is the measured statement coverage (2026-11, unit tests with -race on
+# Linux) rounded down, minus one point for the run-to-run variation of timing
+# dependent code. Raise a floor when a package improves; lowering one needs a
+# reason in the pull request. internal/mongoconn is the driver adapter: its unit
+# tests cover little, the integration suite (which needs a real server) the rest.
+internal/apiclient 80
+internal/app 72
+internal/auth 83
+internal/backup 92
+internal/connections 87
+internal/encryption 92
+internal/integrity 79
+internal/mcp 84
+internal/mongoconn 42
+internal/mongotools 84
+internal/mongouri 95
+internal/notify 82
+internal/operations 79
+internal/oplog 91
+internal/pitr 93
+internal/postrestore 91
+internal/redact 96
+internal/restore 82
+internal/scheduler 85
+internal/secretbox 74
+internal/server 83
+internal/settings 84
+internal/storage 82
+internal/store 73
+internal/targets 81
+internal/verify 94

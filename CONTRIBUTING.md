@@ -46,7 +46,7 @@ Requirements: Go 1.26+ (releases, images and CI use the toolchain in `.go-versio
 ```bash
 make build                       # local binary in bin/
 make test-race                   # unit tests with the race detector
-make test-coverage && make coverage-check   # fails below 60% coverage
+make test-coverage && make coverage-check   # fails below 80% total or a package floor (coverage-floors.txt)
 golangci-lint run                # lint
 go vet ./... && go vet -tags integration ./...
 make cross-compile               # Linux, macOS, Windows
@@ -230,7 +230,7 @@ Before tagging, make sure `main` is green, `CHANGELOG.md` has a section for the 
 | Command | What it runs | Needs |
 |---|---|---|
 | `make test` / `make test-race` | Unit tests | Go |
-| `make test-coverage` + `make coverage-check` | Unit tests with coverage; fails below 60% | Go |
+| `make test-coverage` + `make coverage-check` | Unit tests with coverage; fails below 80% total or below a package's floor in `coverage-floors.txt` | Go |
 | `make test-integration` | Unit + `integration`-tagged tests against the services in your `MONGORESCUE_TEST_*` env; missing services are skipped | Go, MongoDB Database Tools |
 | `make test-integration-docker` | Same, against disposable MongoDB 7, MinIO and LocalStack containers | Docker, curl, Go, MongoDB Database Tools |
 | `make test-chaos-docker` | Fault-injection suite (`internal/chaos`, `chaos` tag) against MongoDB, MinIO and Toxiproxy containers; scenarios in [docs/testing.md](docs/testing.md#fault-injection-suite) | Docker, curl, Go, MongoDB Database Tools 100.12+ |
