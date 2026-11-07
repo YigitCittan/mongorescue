@@ -54,7 +54,7 @@ const (
 	// recovery window stops moving. It warns above pitr.base_window_risk_ratio.
 	PreflightCheckPITRBaseWindow = "pitr_base_window"
 	// PreflightCheckToolsVersion checks that mongorestore is recent enough for
-	// point-in-time restores (mongotools.MinPITRToolsVersion).
+	// point-in-time restores (mongotools.MinToolsVersion).
 	PreflightCheckToolsVersion = "tools_version"
 	// PreflightCheckPostRestore lists the post-restore commands of the target
 	// connection the restore runs against its clones (only when it has some).

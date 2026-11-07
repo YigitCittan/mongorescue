@@ -8,9 +8,15 @@ import (
 	"strings"
 )
 
-// MinPITRToolsVersion is the oldest MongoDB Database Tools release point-in-time
-// restores are tested with (docs/design/pitr.md).
-const MinPITRToolsVersion = "100.12.0"
+// MinToolsVersion is the oldest MongoDB Database Tools release MongoRescue
+// supports and the CI matrix runs the integration suite with. Everything that names
+// a minimum (the point-in-time restore preflight, README.md, docs/testing.md,
+// docs/pitr.md, scripts/docker-smoke.sh, .github/workflows/ci.yml) states this
+// version; TestMinToolsVersionDocumented keeps them in step. The argument handling
+// (--config, --archive, --nsInclude, --oplogReplay) would work from 100.3, but
+// 100.12 is the oldest release that is tested; the progress parser's bare
+// namespace branch (tools up to 100.9) runs only against recorded lines.
+const MinToolsVersion = "100.12.0"
 
 // ErrToolVersion is returned when a tool's version cannot be read from its output.
 var ErrToolVersion = errors.New("mongotools: cannot read the tool version")

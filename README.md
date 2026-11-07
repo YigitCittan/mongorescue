@@ -33,7 +33,7 @@ Open http://localhost:8080, enter the setup code from `docker compose logs mongo
 | | Supported | Tested in CI |
 | :--- | :--- | :--- |
 | MongoDB | 5.0, 6.0, 7.0, 8.0, standalone and replica set (point-in-time recovery: replica sets only) | All four versions, each standalone and as a single-node replica set |
-| Database Tools | Included in the image and the desktop app; the server binary needs them on `PATH` ([details](docs/configuration.md#mongodb-database-tools)) | 100.12.2 and 100.19.1 |
+| Database Tools | 100.12.0 or newer. Included in the image and the desktop app; the server binary needs them on `PATH` ([details](docs/configuration.md#mongodb-database-tools)) | 100.12.0 (the minimum, `mongotools.MinToolsVersion`) and 100.19.1; nightly also the newest release against `mongo:latest` |
 | MongoDB Atlas | `mongodb+srv://` connections ([guide](docs/connections.md#mongodb-atlas)) | Not tested in CI; a [manual checklist](docs/connections.md#atlas-manual-test-checklist) is provided |
 | Sharded clusters | Not supported ([#58](https://github.com/YigitCittan/mongorescue/issues/58)) | |
 | Storage | Local disk, AWS S3, MinIO, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, Wasabi | MinIO and LocalStack; real providers on pushes to `main` |

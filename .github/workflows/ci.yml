@@ -205,7 +205,7 @@ jobs:
   #    Every supported MongoDB release runs the full suite with MinIO, standalone
   #    and as a single-node replica set (which runs the point-in-time recovery
   #    tests); 7.0 also runs with LocalStack, and the 8.0 replica set also with the
-  #    newest Database Tools (the others use the oldest supported, 100.12.2). The
+  #    newest Database Tools (the others use the oldest supported, 100.12.0). The
   #    jobs run in parallel, so the wall time stays that of one job.
   integration:
     name: Integration (MongoDB ${{ matrix.mongo }} ${{ matrix.topology }}, ${{ matrix.emulator }}${{ matrix.tools && format(', tools {0}', matrix.tools) || '' }})
@@ -227,7 +227,7 @@ jobs:
           - { mongo: '8.0', topology: replset, emulator: minio }
           - { mongo: '8.0', topology: replset, emulator: minio, tools: '100.19.1' }
     env:
-      MONGO_TOOLS_VERSION: ${{ matrix.tools || '100.12.2' }}
+      MONGO_TOOLS_VERSION: ${{ matrix.tools || '100.12.0' }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -458,7 +458,7 @@ jobs:
       - name: Build Image
         run: docker build -t mongorescue:smoke .
 
-      - name: Smoke Test Container (zero env; setup, settings and storage via the API, bundled tools >= 100.3)
+      - name: Smoke Test Container (zero env; setup, settings and storage via the API, bundled tools >= 100.12)
         run: ./scripts/docker-smoke.sh mongorescue:smoke
 
       # The SARIF report is produced first (without failing) so code scanning is

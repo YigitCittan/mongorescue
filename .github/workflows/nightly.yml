@@ -107,6 +107,68 @@ jobs:
         if: always()
         run: df -h /
 
+  # Canary: the integration suite against the newest MongoDB image (mongo:latest) with
+  # the newest Database Tools release, which the pull request matrix does not follow.
+  # A failure here means upstream changed (a new server or Tools release), not that
+  # a change of ours broke; it is never required, and the failure issue says which
+  # version moved.
+  latest-canary:
+    name: Canary (mongo:latest ${{ matrix.topology }}, newest Database Tools)
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: [standalone, replset]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Install the newest MongoDB Database Tools
+        run: |
+          version="$(curl -fsSL https://downloads.mongodb.org/tools/db/release.json | jq -r '.versions[0].version')"
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected newest Tools version: ${version}" >&2; exit 1; }
+          echo "Newest Database Tools: ${version}"
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${version}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Pull mongo:latest and report its version
+        run: |
+          docker pull mongo:latest
+          docker run --rm --entrypoint mongod mongo:latest --version | head -n 1
+
+      - name: Run Integration Suite (mongo:latest ${{ matrix.topology }} + MinIO)
+        env:
+          MONGO_IMAGE: mongo:latest
+          MONGO_TOPOLOGY: ${{ matrix.topology }}
+          IT_PROVIDERS: minio
+        run: ./scripts/test-integration-docker.sh
+
   fuzz:
     name: Fuzz
     if: >-
