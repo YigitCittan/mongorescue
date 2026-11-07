@@ -2,6 +2,8 @@
 
 Every response uses the envelope `{"success": bool, "data": ..., "error": "..."}`. Every error response (status 400 and above) also carries a stable, machine-readable `code` next to `error`; match it rather than the English text, which may change between releases. See [Error codes](#error-codes).
 
+The API is also described as an [OpenAPI 3.1 document](openapi.md): [`docs/openapi.yaml`](openapi.yaml) in the repository and `GET /api/v1/openapi.json` (read scope) on a running instance. It lists every route with its parameters, bodies, responses, error `code` enum and required scope, and tests keep it equal to the server's route table; this page stays the reference for semantics and examples. CI flags breaking changes to it against the last release.
+
 ## Error codes
 
 `code` is a snake_case word from the closed set below. It never contains user input or secrets. A route may answer a status with a more precise code than the default of that status, so match the code, and use the status only for codes you do not know (new codes may be added in a minor release; treat an unknown code like the default of its status). The `apiclient` Go package, the command line (exit codes) and the [MCP](mcp.md) tools (the text ends with `(code: <code>)`) use the same codes.
