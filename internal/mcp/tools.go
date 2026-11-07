@@ -753,7 +753,7 @@ func (s *Server) listConnections(ctx context.Context, _ noInput) (connectionList
 		out.Connections = append(out.Connections, ConnectionView{
 			ID: c.ID, Name: c.Name, Hosts: connections.HostList(c.URI), Description: c.Description,
 			ServerVersion: c.ServerVersion, LastTestOK: c.LastTestOK, LastTestAt: c.LastTestAt,
-			AllowMongos: c.AllowMongos,
+			AllowMongos:      c.AllowMongos,
 			CredentialSource: credentialSource(c.FromVault()),
 		})
 		ids = append(ids, idText(c.ID))
