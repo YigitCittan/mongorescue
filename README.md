@@ -200,7 +200,7 @@ There is no configuration file. Environment variables of earlier builds are impo
 
 ## Development
 
-You need Go 1.26 or newer.
+You need Go 1.26 or newer (releases are built with the toolchain in `.go-version`).
 
 ```bash
 make build        # build ./bin/mongorescue

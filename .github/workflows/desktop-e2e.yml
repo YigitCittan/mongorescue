@@ -31,7 +31,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: '1.26'
   WAILS_VERSION: v2.16.0 # keep in sync with github.com/wailsapp/wails/v2 in go.mod and release.yml
 
 jobs:
@@ -61,8 +60,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          go-version-file: .go-version
           cache: true
 
       # The same dependencies as the release's desktop job.

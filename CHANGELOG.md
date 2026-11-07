@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- One source of truth for the release Go toolchain (#221). `.go-version` (1.27.3) is read by every workflow through `actions/setup-go`, so release binaries, desktop builds, CodeQL, govulncheck and the container image (new `GO_VERSION` build arg) use the same Go; they had drifted (image 1.27, binaries and govulncheck 1.26). The CI test matrix still tests the `go.mod` minimum (1.26.x) next to the release toolchain. `scripts/check-go-version.sh` (CI `security` job) fails when the Dockerfile default, a workflow or the govulncheck pin disagree. govulncheck is pinned to v1.9.0 in `ci.yml` and the Makefile instead of `@latest`.
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 

@@ -204,9 +204,12 @@ desktop-windows:
 
 .PHONY: desktop desktop-windows vulncheck lint-ci release-snapshot
 
+# Keep in sync with ci.yml (scripts/check-go-version.sh enforces it).
+GOVULNCHECK_VERSION ?= v1.9.0
+
 ## vulncheck: Scans reachable code for known vulnerabilities (govulncheck)
 vulncheck:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 ## lint-ci: Lints GitHub workflows (actionlint) and shell scripts (shellcheck)
 lint-ci:

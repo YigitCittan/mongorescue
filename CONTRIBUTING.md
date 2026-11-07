@@ -41,7 +41,7 @@ When the branch is ready, open a pull request against `main` and fill in the tem
 
 ## Building and testing
 
-Requirements: Go 1.26+, `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.3.0+ for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
+Requirements: Go 1.26+ (releases, images and CI use the toolchain in `.go-version`), `make`, and [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/) 100.3.0+ for integration tests. Linting uses [golangci-lint](https://golangci-lint.run) with the repository's `.golangci.yml`.
 
 ```bash
 make build                       # local binary in bin/
@@ -98,7 +98,7 @@ The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only 
 On every push and pull request (`.github/workflows/ci.yml`):
 
 - **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
-- **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum and release toolchain) and 1.27.x; coverage gate and report upload on Ubuntu.
+- **Test**: unit tests with `-race` on `ubuntu-latest` and `macos-latest` with Go 1.26.x (the `go.mod` minimum) and the release toolchain from `.go-version`; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
 - **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets and the fault-injection suite, and weekly the load test; see [docs/testing.md](docs/testing.md).
 - **E2E (Playwright)**: the browser suite in `e2e/` against MongoDB 7 and MinIO; the report and traces are uploaded when it fails.
@@ -126,7 +126,7 @@ Examples: `MR_TEST_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com` with 
 
 ### Automated checks
 
-Beyond `ci.yml`, every pull request is checked by CodeQL (Go and the web UI; a full analysis of the merged result, not only the changed lines, and the `Analyze` job fails on any result, since main carries no open alert), dependency review (fails on new high-severity advisories), a Conventional Commits title check and path-based area labels. The CI `security` job runs `govulncheck`, `actionlint` and `shellcheck` (`make vulncheck lint-ci` locally), and the Docker smoke job fails on fixable HIGH/CRITICAL findings from Trivy. OpenSSF Scorecard runs weekly. Workflow actions are pinned to commit SHAs and Dependabot keeps Go modules, actions and base images current. Releases ship SPDX SBOMs and GitHub build provenance attestations for archives and container images (`gh attestation verify <file> --repo YigitCittan/mongorescue`).
+Beyond `ci.yml`, every pull request is checked by CodeQL (Go and the web UI; a full analysis of the merged result, not only the changed lines, and the `Analyze` job fails on any result, since main carries no open alert), dependency review (fails on new high-severity advisories), a Conventional Commits title check and path-based area labels. The CI `security` job runs `govulncheck` (pinned in the Makefile and `ci.yml`), the Go toolchain drift check (`scripts/check-go-version.sh`), `actionlint` and `shellcheck` (`make vulncheck lint-ci` locally), and the Docker smoke job fails on fixable HIGH/CRITICAL findings from Trivy. OpenSSF Scorecard runs weekly. Workflow actions are pinned to commit SHAs and Dependabot keeps Go modules, actions and base images current. Releases ship SPDX SBOMs and GitHub build provenance attestations for archives and container images (`gh attestation verify <file> --repo YigitCittan/mongorescue`).
 
 ## Engineering standards
 

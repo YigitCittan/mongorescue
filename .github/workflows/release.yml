@@ -36,9 +36,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Keep in sync with GO_VERSION in ci.yml and the Dockerfile builder.
-          go-version: '1.26'
-          check-latest: true
+          # The release toolchain: .go-version, shared with CI, the image and govulncheck.
+          go-version-file: .go-version
           # No build cache in the release: signed and attested artifacts are built
           # from a clean module and build cache (zizmor cache-poisoning).
           cache: false
@@ -133,8 +132,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true
+          go-version-file: .go-version
           cache: false # clean release build, as in the goreleaser job
 
       # Pinned by version; the Go checksum database verifies the module.
@@ -217,8 +215,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true
+          go-version-file: .go-version
           cache: false # clean release build, as in the goreleaser job
 
       - name: Install Linux webview dependencies

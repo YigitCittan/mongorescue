@@ -16,9 +16,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Toolchain for lint, build, integration and security jobs; releases and images use
-  # the same minor version, so govulncheck results match what ships.
-  GO_VERSION: '1.26'
+  # The release toolchain (lint, build, integration, security, releases, images,
+  # desktop builds) is the single version in .go-version, read by actions/setup-go.
+  # scripts/check-go-version.sh (the go-version-drift job) fails when anything disagrees.
 
 jobs:
   # 1. Linting & Formatting Check
@@ -34,8 +34,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          go-version-file: .go-version
           cache: true
 
       - name: Run go vet
@@ -93,13 +92,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # 1.26.x is the go.mod minimum and the release toolchain; 1.27.x is the newest Go.
-        go-version: ['1.26.x', '1.27.x']
+        # 1.26.x is the go.mod minimum; "release" is the toolchain in .go-version
+        # (releases, images and govulncheck use it). Both are tested on purpose.
+        go-version: ['1.26.x', 'release']
         # Windows binaries ship too: unit-test them with the release toolchain only.
         # Integration and container jobs stay Linux-only.
         include:
           - os: windows-latest
-            go-version: '1.26.x'
+            go-version: 'release'
     defaults:
       run:
         # PowerShell would split "-coverprofile=coverage.out" at the dot.
@@ -110,10 +110,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Go
+      - name: Set up Go (go.mod minimum)
+        if: matrix.go-version != 'release'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Set up Go (release toolchain)
+        if: matrix.go-version == 'release'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
           cache: true
 
       - name: Run Unit Tests with Race Detector
@@ -124,7 +132,7 @@ jobs:
         run: make coverage-check COVERAGE_MIN=60
 
       - name: Upload Test Coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26.x'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'release'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: code-coverage-report
@@ -170,7 +178,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Cross-Compile All Platforms
@@ -218,7 +226,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Install MongoDB Database Tools
@@ -305,7 +313,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Install MongoDB Database Tools
@@ -348,7 +356,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Set up Node.js
@@ -464,12 +472,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          go-version-file: .go-version
           cache: true
 
       - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Check the Go toolchain is defined once (.go-version)
+        run: scripts/check-go-version.sh
 
       - name: Lint Workflows (actionlint)
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
