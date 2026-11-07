@@ -72,6 +72,8 @@ sudo journalctl -u mongorescue -n 50 --no-pager
 
 Verify the download first ([verifying releases](security.md#verifying-releases)). Keep the old binary (`mongorescue.<old version>`) next to it: rolling back needs it.
 
+**From the archive unit of a release before the Linux packages (#247).** The old `scripts/mongorescue.service` ran as `root` from `/usr/local/bin`. The current one runs as the `mongorescue` user with `StateDirectory=/var/lib/mongorescue` and `ExecStart=/usr/bin/mongorescue`. You can keep your old unit file (it still works with a newer binary). To move to the new one: stop the service, `sudo useradd --system --home-dir /var/lib/mongorescue --shell /usr/sbin/nologin mongorescue`, move your data directory under `/var/lib/mongorescue/data` (or point `-data-dir` at the old place), `sudo chown -R mongorescue:mongorescue` the data directory and any Local disk target (a target outside `/var/lib/mongorescue` also needs `ReadWritePaths=` in a drop-in), install the new unit, set `ExecStart=` to your binary path, then `sudo systemctl daemon-reload && sudo systemctl start mongorescue`. The `secret.key` in the data directory must stay with the data. See [systemd](production.md#systemd).
+
 ### Desktop app
 
 Install the update from the app (see [desktop.md](desktop.md#updates)) or run the new installer or archive over the old one. The data directory is `<user config dir>/MongoRescue/data` and survives. A *major* release is a mandatory update from 1.0. Before a feature release, use Settings → Recovery → *Back up now* or copy the data directory while the app is closed; the pre-migration copy appears in the same directory.

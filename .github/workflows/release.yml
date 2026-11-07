@@ -73,6 +73,8 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.rpm
             dist/checksums.txt
 
       - name: Hash release artifacts for the SLSA provenance
@@ -272,6 +274,96 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/release-verify.sh upgrade ./verify-bin/mongorescue "$VERSION"
+
+  # The deb and rpm packages of the draft release, installed the way users do it:
+  # the .deb on Ubuntu (apt, with a running systemd: the packaged service is started
+  # as the mongorescue user under the hardened unit and must answer health and serve
+  # the dashboard, then the package is removed with its data kept) and the .rpm in a
+  # Fedora container (dnf), each on amd64 and arm64, with --version, the service user,
+  # /var/lib/mongorescue, the 0600 /etc/default/mongorescue, the Recommends of the
+  # Database Tools and systemd-analyze verify of the unit (scripts/release-verify.sh
+  # deb and rpm). Packages are checked against checksums.txt first.
+  verify-packages:
+    name: Verify deb and rpm (${{ matrix.arch }})
+    needs: goreleaser
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: write # download the assets of the draft release
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.goreleaser.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download the packages and check their checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir verify-dl
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir verify-dl \
+            -p "mongorescue_${VERSION}_linux_${ARCH}.deb" -p "mongorescue_${VERSION}_linux_${ARCH}.rpm" -p checksums.txt
+          cd verify-dl
+          grep -E " mongorescue_${VERSION}_linux_${ARCH}\.(deb|rpm)\$" checksums.txt > check.txt
+          [ "$(wc -l < check.txt)" -eq 2 ]
+          sha256sum -c check.txt
+
+      - name: Install the .deb and run the service (Ubuntu, systemd)
+        run: ./scripts/release-verify.sh deb "verify-dl/mongorescue_${VERSION}_linux_${ARCH}.deb" "$VERSION"
+
+      - name: Install the .rpm (Fedora container)
+        run: ./scripts/release-verify.sh rpm "verify-dl/mongorescue_${VERSION}_linux_${ARCH}.rpm" "$VERSION"
+
+  # The generated Scoop, winget and Homebrew manifests of the draft release: valid
+  # JSON and Ruby, the version, and the SHA-256 and URL of every archive they name,
+  # checked against the archives downloaded from the release (the URLs point at the
+  # release that is still a draft, so the hashes are checked locally).
+  verify-manifests:
+    name: Verify the Scoop, winget and Homebrew manifests
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # download the assets of the draft release
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.goreleaser.outputs.version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the archives and manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir verify-dl
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir verify-dl \
+            -p "mongorescue_${VERSION}_*.tar.gz" -p "mongorescue_${VERSION}_*.zip" \
+            -p mongorescue.scoop.json -p mongorescue.cask.rb -p 'YigitCittan.MongoRescue*.yaml' -p checksums.txt
+          (cd verify-dl && grep -E ' mongorescue_.*\.(tar\.gz|zip)$' checksums.txt | sha256sum -c -)
+
+      - name: Check the manifests
+        run: ./scripts/release-verify.sh manifests verify-dl "$VERSION"
 
   # SLSA Build Level 3 provenance of the archives and checksums.txt, generated and
   # signed in the isolated reusable workflow of slsa-github-generator, so the build
@@ -673,9 +765,10 @@ jobs:
     # Publishing waits for the SLSA provenance too, so a published release always
     # carries it, and for the release verification (archives on every OS and
     # architecture, backup and restore of the binary and the image, the upgrade from
-    # the previous releases): a failure there leaves the release a draft and the
-    # image without version tags.
-    needs: [desktop, provenance-upload, image, verify-archives, verify-roundtrip, verify-upgrade]
+    # the previous releases, the deb and rpm packages and the package manager
+    # manifests): a failure there leaves the release a draft and the image without
+    # version tags.
+    needs: [desktop, provenance-upload, image, verify-archives, verify-roundtrip, verify-upgrade, verify-packages, verify-manifests]
     runs-on: ubuntu-latest
     permissions:
       contents: write # download and upload release assets
@@ -836,3 +929,59 @@ jobs:
           cosign sign --yes "${ref}@${digest}"
           cosign verify "${ref}@${digest}"             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           echo "Chart ${version} pushed as ${ref}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Pushes the Scoop manifest and the Homebrew cask of the published release to the
+  # bucket and tap repositories, after the release is public, so a manifest never
+  # points at a draft or at a release that failed verification. Skipped, with a
+  # notice, when the PACKAGES_TOKEN secret is not set (a fine-grained token with
+  # contents: write on the tap and bucket) and for pre-releases. The winget manifests
+  # stay release assets: the first submission to microsoft/winget-pkgs is manual
+  # (CONTRIBUTING.md, "To cut a release"). A failure here does not unpublish the
+  # release; re-run the job.
+  packages:
+    name: Package managers (Scoop bucket, Homebrew tap)
+    needs: [goreleaser, desktop-checksums]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # download the manifests of the published release
+    env:
+      TAG: ${{ github.ref_name }}
+      OWNER: ${{ github.repository_owner }}
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+    steps:
+      - name: Push the manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PACKAGES_TOKEN" ]; then
+            echo "::notice::PACKAGES_TOKEN is not set: the Scoop and Homebrew manifests stay release assets"
+            exit 0
+          fi
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          if [ "$prerelease" = "true" ]; then
+            echo "::notice::$TAG is a pre-release: the package manager repositories are not updated"
+            exit 0
+          fi
+          echo "::add-mask::$PACKAGES_TOKEN"
+          mkdir manifests
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir manifests -p mongorescue.scoop.json -p mongorescue.cask.rb
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PACKAGES_TOKEN" | base64 -w0)"
+          push() { # push REPO FILE DESTINATION
+            local repo=$1 src=$2 dst=$3
+            git -c "http.extraheader=$auth" clone --depth 1 "https://github.com/${OWNER}/${repo}.git" "clone-${repo}"
+            mkdir -p "clone-${repo}/$(dirname "$dst")"
+            cp "manifests/$src" "clone-${repo}/$dst"
+            cd "clone-${repo}"
+            git add "$dst"
+            if git diff --cached --quiet; then
+              echo "${repo} is already up to date"
+            else
+              git -c user.name=mongorescue-release -c user.email=noreply@github.com commit -m "mongorescue ${TAG}"
+              git -c "http.extraheader=$auth" push origin HEAD
+            fi
+            cd ..
+          }
+          push scoop-bucket mongorescue.scoop.json bucket/mongorescue.json
+          push homebrew-tap mongorescue.cask.rb Casks/mongorescue.rb

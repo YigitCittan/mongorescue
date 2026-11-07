@@ -544,4 +544,20 @@ To attach MongoRescue to a Compose project that already runs MongoDB, start from
 
 ## systemd
 
-`scripts/mongorescue.service` runs the binary as a daemon with `-data-dir=/var/lib/mongorescue/data`; the default "Local disk" storage target is then `/var/lib/mongorescue/backups`. Everything else is configured in the dashboard. To supply `MONGORESCUE_SECRET_KEY` from a file, use an `EnvironmentFile=` readable only by the service user. The shipped unit runs as `root`; consider a dedicated user that owns the data and backup directories. To let running backups finish on `systemctl stop`, set `Environment=MONGORESCUE_SHUTDOWN_GRACE=9m` and `TimeoutStopSec=10min` ([graceful shutdown](kubernetes.md#graceful-shutdown)).
+The deb and rpm packages of every release ([README](../README.md#install-options)) install the binary in `/usr/bin`, the unit `mongorescue.service` and the conffile `/etc/default/mongorescue`, and create the system user `mongorescue` with the state directory `/var/lib/mongorescue` (`0750`). The service is installed but not started:
+
+```bash
+sudo apt install ./mongorescue_<version>_linux_amd64.deb   # or: sudo dnf install ./mongorescue_<version>_linux_amd64.rpm
+sudo systemctl enable --now mongorescue
+sudo journalctl -u mongorescue | grep -i setup     # the one-time setup code
+```
+
+Then open http://127.0.0.1:8080. `/etc/default/mongorescue` (mode `0600`, kept across upgrades and removal) holds the bootstrap options as `KEY=value` lines: it enables the dashboard (`MONGORESCUE_DASHBOARD=true`) and listens on `127.0.0.1` only, because MongoRescue serves plain HTTP; put a [TLS reverse proxy](#tls-and-the-reverse-proxy) in front of it and set `MONGORESCUE_SERVER_HOST=0.0.0.0` only when you must expose it. `MONGORESCUE_SECRET_KEY` can be supplied from that file. The data directory is `/var/lib/mongorescue/data` and the default "Local disk" storage target `/var/lib/mongorescue/backups`; everything else is configured in the dashboard.
+
+- **Database Tools.** The packages only recommend `mongodb-database-tools` (apt and dnf install it from [MongoDB's repositories](https://www.mongodb.com/docs/database-tools/installation/installation/); the distributions do not package it). `mongodump` and `mongorestore` must be on `PATH` or in `MONGORESCUE_TOOLS_DIR` ([details](configuration.md#mongodb-database-tools)).
+- **Hardening.** The unit runs as `mongorescue` with no capabilities, `NoNewPrivileges`, `ProtectSystem=strict` (only `/var/lib/mongorescue` and a private `/tmp` are writable), `ProtectHome`, `PrivateDevices`, kernel and control-group protections, `RestrictAddressFamilies` (IPv4, IPv6, Unix), `MemoryDenyWriteExecute`, and a `@system-service` system call filter. A Local disk target outside `/var/lib/mongorescue` needs a drop-in (`systemctl edit mongorescue`): `[Service]` and `ReadWritePaths=/srv/backups`, owned by `mongorescue`.
+- **Graceful stop.** To let running backups finish on `systemctl stop`, set `MONGORESCUE_SHUTDOWN_GRACE=9m` in `/etc/default/mongorescue` and `TimeoutStopSec=10min` in a drop-in ([graceful shutdown](kubernetes.md#graceful-shutdown)).
+- **Upgrades** restart a running service; remove keeps `/var/lib/mongorescue`, the `mongorescue` user and the conffile (they hold the secret key). Back the directory up ([data directory](#data-directory)). Offline commands run as the service user: `sudo -u mongorescue mongorescue key status --data-dir /var/lib/mongorescue/data`.
+- **Verification.** The release workflow installs the produced deb on Ubuntu and the rpm in Fedora, validates the unit with `systemd-analyze verify`, and starts the service as `mongorescue`; packages are covered by `checksums.txt`, SBOMs and cosign bundles ([verifying releases](security.md#verifying-releases)).
+
+From an archive instead, install the binary, the unit and the user yourself: copy `scripts/mongorescue.service` to `/etc/systemd/system/`, change `ExecStart=` to the binary's path, run `useradd --system --home-dir /var/lib/mongorescue --shell /usr/sbin/nologin mongorescue`, and `systemctl enable --now mongorescue` (`StateDirectory=` creates and owns `/var/lib/mongorescue`; the `EnvironmentFile=` is optional).

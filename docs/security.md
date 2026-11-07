@@ -246,7 +246,8 @@ Every release after v0.27.0 can be verified without trusting the download locati
 | What | Signed with | Provenance |
 | :--- | :--- | :--- |
 | Server archives (`mongorescue_<version>_<os>_<arch>.tar.gz` / `.zip`), `checksums.txt` | cosign: `<asset>.sigstore.json` next to each asset | SLSA Build Level 3 (`mongorescue_<version>.intoto.jsonl`) and a GitHub artifact attestation |
-| SBOMs (`<archive>.sbom.json`) | cosign: `<asset>.sigstore.json` | |
+| Linux packages (`mongorescue_<version>_linux_<arch>.deb` / `.rpm`) | cosign: `<asset>.sigstore.json` next to each package, which is listed in `checksums.txt` | GitHub artifact attestation |
+| SBOMs (`<archive or package>.sbom.json`) | cosign: `<asset>.sigstore.json` | |
 | Desktop assets and `MongoRescue-desktop_<version>_checksums.txt` | cosign: `<asset>.sigstore.json` | GitHub artifact attestation (assets) |
 | Helm chart `oci://ghcr.io/yigitcittan/charts/mongorescue` | cosign, by digest, stored in GHCR | |
 | Container image `ghcr.io/yigitcittan/mongorescue` | cosign, by digest, stored in GHCR | GitHub artifact attestation, BuildKit SLSA provenance and SBOM |
