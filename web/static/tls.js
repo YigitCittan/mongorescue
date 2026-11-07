@@ -46,6 +46,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS not verified",
       badge_hostnames: "Hostname not checked",
       badge_x509: "x509 certificate",
+      badge_cert_expires: "Certificate expires in {days} days",
+      badge_cert_expired: "Certificate expired",
+      badge_cert_title: "The {kind} of this connection expires on {time}. Replace it in the connection's TLS settings.",
+      kind_client: "client certificate",
+      kind_ca: "CA certificate",
+      line_expires: "{name}: {kind} expires {time}",
+      line_expired: "{name}: {kind} expired {time}",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "Connection TLS certificates expire soon",
+      connection_tls_cert_expiring_desc: "These connections have a client or CA certificate that expires within 30 days or has expired. Once a client certificate expires, every backup through the connection fails. Replace the certificate in the connection's TLS settings.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "Connection TLS certificate expires soon",
+        connection_tls_cert_expired: "Connection TLS certificate expired",
+      },
     },
   },
   tr: {
@@ -76,6 +93,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS doğrulanmıyor",
       badge_hostnames: "Ana bilgisayar adı denetlenmiyor",
       badge_x509: "x509 sertifikası",
+      badge_cert_expires: "Sertifika {days} gün içinde sona eriyor",
+      badge_cert_expired: "Sertifikanın süresi doldu",
+      badge_cert_title: "Bu bağlantının {kind}, {time} tarihinde sona eriyor. Bağlantının TLS ayarlarında değiştirin.",
+      kind_client: "istemci sertifikası",
+      kind_ca: "CA sertifikası",
+      line_expires: "{name}: {kind} {time} tarihinde sona eriyor",
+      line_expired: "{name}: {kind} {time} tarihinde sona erdi",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "Bağlantı TLS sertifikalarının süresi yakında doluyor",
+      connection_tls_cert_expiring_desc: "Bu bağlantıların istemci veya CA sertifikasının süresi 30 gün içinde doluyor ya da doldu. Bir istemci sertifikasının süresi dolunca bağlantı üzerinden yapılan tüm yedeklemeler başarısız olur. Sertifikayı bağlantının TLS ayarlarında değiştirin.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "Bağlantı TLS sertifikasının süresi yakında doluyor",
+        connection_tls_cert_expired: "Bağlantı TLS sertifikasının süresi doldu",
+      },
     },
   },
   de: {
@@ -106,6 +140,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS nicht geprüft",
       badge_hostnames: "Hostname nicht geprüft",
       badge_x509: "x509-Zertifikat",
+      badge_cert_expires: "Zertifikat läuft in {days} Tagen ab",
+      badge_cert_expired: "Zertifikat abgelaufen",
+      badge_cert_title: "Das {kind} dieser Verbindung läuft am {time} ab. Ersetzen Sie es in den TLS-Einstellungen der Verbindung.",
+      kind_client: "Clientzertifikat",
+      kind_ca: "CA-Zertifikat",
+      line_expires: "{name}: {kind} läuft am {time} ab",
+      line_expired: "{name}: {kind} ist am {time} abgelaufen",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "TLS-Zertifikate von Verbindungen laufen bald ab",
+      connection_tls_cert_expiring_desc: "Bei diesen Verbindungen läuft ein Client- oder CA-Zertifikat innerhalb von 30 Tagen ab oder ist abgelaufen. Sobald ein Clientzertifikat abläuft, schlägt jedes Backup über die Verbindung fehl. Ersetzen Sie das Zertifikat in den TLS-Einstellungen der Verbindung.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "TLS-Zertifikat einer Verbindung läuft bald ab",
+        connection_tls_cert_expired: "TLS-Zertifikat einer Verbindung abgelaufen",
+      },
     },
   },
   es: {
@@ -136,6 +187,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS sin verificar",
       badge_hostnames: "Host sin comprobar",
       badge_x509: "Certificado x509",
+      badge_cert_expires: "El certificado caduca en {days} días",
+      badge_cert_expired: "Certificado caducado",
+      badge_cert_title: "El {kind} de esta conexión caduca el {time}. Sustitúyalo en los ajustes TLS de la conexión.",
+      kind_client: "certificado de cliente",
+      kind_ca: "certificado de la CA",
+      line_expires: "{name}: el {kind} caduca el {time}",
+      line_expired: "{name}: el {kind} caducó el {time}",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "Los certificados TLS de conexiones caducan pronto",
+      connection_tls_cert_expiring_desc: "Estas conexiones tienen un certificado de cliente o de CA que caduca en 30 días o ya ha caducado. Cuando caduca un certificado de cliente, todas las copias de seguridad por la conexión fallan. Sustituya el certificado en los ajustes TLS de la conexión.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "Certificado TLS de una conexión caduca pronto",
+        connection_tls_cert_expired: "Certificado TLS de una conexión caducado",
+      },
     },
   },
   fr: {
@@ -166,6 +234,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS non vérifié",
       badge_hostnames: "Nom d'hôte non vérifié",
       badge_x509: "Certificat x509",
+      badge_cert_expires: "Le certificat expire dans {days} jours",
+      badge_cert_expired: "Certificat expiré",
+      badge_cert_title: "Le {kind} de cette connexion expire le {time}. Remplacez-le dans les paramètres TLS de la connexion.",
+      kind_client: "certificat client",
+      kind_ca: "certificat de l'AC",
+      line_expires: "{name} : le {kind} expire le {time}",
+      line_expired: "{name} : le {kind} a expiré le {time}",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "Des certificats TLS de connexions expirent bientôt",
+      connection_tls_cert_expiring_desc: "Ces connexions ont un certificat client ou d'AC qui expire dans 30 jours ou a expiré. Dès qu'un certificat client expire, toutes les sauvegardes par la connexion échouent. Remplacez le certificat dans les paramètres TLS de la connexion.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "Certificat TLS d'une connexion expirant bientôt",
+        connection_tls_cert_expired: "Certificat TLS d'une connexion expiré",
+      },
     },
   },
   zh: {
@@ -196,6 +281,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS 未验证",
       badge_hostnames: "未检查主机名",
       badge_x509: "x509 证书",
+      badge_cert_expires: "证书将在 {days} 天后过期",
+      badge_cert_expired: "证书已过期",
+      badge_cert_title: "此连接的{kind}将于 {time} 过期。请在连接的 TLS 设置中更换。",
+      kind_client: "客户端证书",
+      kind_ca: "CA 证书",
+      line_expires: "{name}：{kind}将于 {time} 过期",
+      line_expired: "{name}：{kind}已于 {time} 过期",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "连接的 TLS 证书即将过期",
+      connection_tls_cert_expiring_desc: "这些连接的客户端证书或 CA 证书将在 30 天内过期或已过期。客户端证书一旦过期，通过该连接的所有备份都会失败。请在连接的 TLS 设置中更换证书。",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "连接的 TLS 证书即将过期",
+        connection_tls_cert_expired: "连接的 TLS 证书已过期",
+      },
     },
   },
   ja: {
@@ -226,6 +328,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS 未検証",
       badge_hostnames: "ホスト名未確認",
       badge_x509: "x509 証明書",
+      badge_cert_expires: "証明書の期限まであと {days} 日",
+      badge_cert_expired: "証明書の期限切れ",
+      badge_cert_title: "この接続の{kind}は {time} に期限切れになります。接続の TLS 設定で入れ替えてください。",
+      kind_client: "クライアント証明書",
+      kind_ca: "CA 証明書",
+      line_expires: "{name}：{kind}は {time} に期限切れになります",
+      line_expired: "{name}：{kind}は {time} に期限切れになりました",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "接続の TLS 証明書がまもなく期限切れ",
+      connection_tls_cert_expiring_desc: "これらの接続のクライアント証明書または CA 証明書は、30 日以内に期限が切れるか、すでに切れています。クライアント証明書が期限切れになると、その接続を通るバックアップはすべて失敗します。接続の TLS 設定で証明書を入れ替えてください。",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "接続の TLS 証明書がまもなく期限切れ",
+        connection_tls_cert_expired: "接続の TLS 証明書が期限切れ",
+      },
     },
   },
   ru: {
@@ -256,6 +375,23 @@ const TLS_TRANSLATIONS = {
       badge_insecure: "TLS не проверяется",
       badge_hostnames: "Имя хоста не проверяется",
       badge_x509: "Сертификат x509",
+      badge_cert_expires: "Сертификат истекает через {days} дн.",
+      badge_cert_expired: "Сертификат истёк",
+      badge_cert_title: "{kind} этого подключения истекает {time}. Замените его в настройках TLS подключения.",
+      kind_client: "Клиентский сертификат",
+      kind_ca: "Сертификат УЦ",
+      line_expires: "{name}: {kind} истекает {time}",
+      line_expired: "{name}: {kind} истёк {time}",
+    },
+    warnings: {
+      connection_tls_cert_expiring_title: "TLS-сертификаты подключений скоро истекают",
+      connection_tls_cert_expiring_desc: "У этих подключений клиентский сертификат или сертификат УЦ истекает в течение 30 дней или уже истёк. Когда клиентский сертификат истекает, все резервные копии через подключение завершаются ошибкой. Замените сертификат в настройках TLS подключения.",
+    },
+    notify: {
+      events: {
+        connection_tls_cert_expiring: "TLS-сертификат подключения скоро истекает",
+        connection_tls_cert_expired: "TLS-сертификат подключения истёк",
+      },
     },
   },
 };
@@ -422,7 +558,54 @@ function tlsConnectionBadges(c) {
   if (c.tls_insecure) out += ` ${statusBadge("danger", t("tls.badge_insecure"), t("tls.warn_insecure"))}`;
   else if (c.tls_allow_invalid_hostnames) out += ` ${statusBadge("warn", t("tls.badge_hostnames"), t("tls.warn_hostnames"))}`;
   if (c.tls_client_cert_pem) out += ` ${statusBadge("neutral", t("tls.badge_x509"))}`;
+  out += tlsCertExpiryBadge(c);
   return out;
+}
+
+// TLS_CERT_WARN_DAYS and TLS_CERT_CRITICAL_DAYS are models.TLSExpiryWarnWindow and
+// models.TLSExpiryCriticalWindow.
+const TLS_CERT_WARN_DAYS = 30;
+const TLS_CERT_CRITICAL_DAYS = 7;
+
+// tlsCertKindText names a certificate kind ("client" or "ca").
+function tlsCertKindText(kind) {
+  return t(kind === "ca" ? "tls.kind_ca" : "tls.kind_client");
+}
+
+// tlsCertSoonest returns the certificate of list (tls_cert_expiry of a connection,
+// or certs of a warning) that expires first as {kind, date}, or null.
+function tlsCertSoonest(list) {
+  let best = null;
+  (Array.isArray(list) ? list : []).forEach(e => {
+    const d = parseDate(e && e.not_after);
+    if (d && (!best || d < best.date)) best = { kind: e.kind, date: d };
+  });
+  return best;
+}
+
+// tlsCertExpiryBadge returns the badge of the connections table for a client or CA
+// certificate that expires within 30 days (danger within 7 days) or has expired.
+function tlsCertExpiryBadge(c) {
+  const soon = tlsCertSoonest(c && c.tls_cert_expiry);
+  if (!soon) return "";
+  const days = (soon.date.getTime() - Date.now()) / 86400000;
+  if (days > TLS_CERT_WARN_DAYS) return "";
+  const title = tf("tls.badge_cert_title", { kind: tlsCertKindText(soon.kind), time: formatAbsolute(soon.date) });
+  if (days <= 0) return ` ${statusBadge("danger", t("tls.badge_cert_expired"), title)}`;
+  const label = tf("tls.badge_cert_expires", { days: Math.max(1, Math.ceil(days)) });
+  return ` ${statusBadge(days <= TLS_CERT_CRITICAL_DAYS ? "danger" : "warn", label, title)}`;
+}
+
+// tlsCertWarningLines describes a connection of the connection_tls_cert_expiring
+// warning as plain text, one line per certificate.
+function tlsCertWarningLines(conn) {
+  const name = String((conn && (conn.name || conn.id)) || "");
+  return (Array.isArray(conn && conn.certs) ? conn.certs : []).map(cert => {
+    const d = parseDate(cert && cert.not_after);
+    return tf(cert && cert.expired ? "tls.line_expired" : "tls.line_expires", {
+      name, kind: tlsCertKindText(cert && cert.kind), time: d ? formatAbsolute(d) : "?",
+    });
+  });
 }
 
 // WARNING_CONNECTION_TLS_LOOSENED is settings.WarningConnectionTLSLoosened.

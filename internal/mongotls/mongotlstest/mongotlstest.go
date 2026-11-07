@@ -86,14 +86,28 @@ func (ca *CA) Client(cn string) (*Pair, error) {
 	})
 }
 
+// ClientExpiring issues a client certificate with common name cn that is valid
+// until notAfter (for tests of expiry checks).
+func (ca *CA) ClientExpiring(cn string, notAfter time.Time) (*Pair, error) {
+	return ca.issueUntil(&x509.Certificate{
+		Subject:     pkix.Name{CommonName: cn, Organization: []string{"MongoRescue"}, OrganizationalUnit: []string{"Clients"}},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, notAfter)
+}
+
 // issue signs tmpl with the CA.
 func (ca *CA) issue(tmpl *x509.Certificate) (*Pair, error) {
+	return ca.issueUntil(tmpl, time.Now().Add(24*time.Hour))
+}
+
+// issueUntil signs tmpl with the CA, valid until notAfter.
+func (ca *CA) issueUntil(tmpl *x509.Certificate, notAfter time.Time) (*Pair, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate key: %w", err)
 	}
 	tmpl.SerialNumber = serial()
-	tmpl.NotBefore, tmpl.NotAfter = time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour)
+	tmpl.NotBefore, tmpl.NotAfter = time.Now().Add(-time.Hour), notAfter
 	tmpl.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
 	if err != nil {

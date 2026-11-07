@@ -104,6 +104,8 @@ type Metrics struct {
 	keyWrap keyWrapSeries
 	// API key expiry (see apikeys.go).
 	apiKeys apiKeySeries
+	// Connection TLS certificate expiry (see tlscerts.go).
+	tlsCerts *tlsCertCollector
 	// REST API requests refused by the rate limit (see ratelimit.go).
 	apiRateLimited *prometheus.CounterVec
 	// REST API request counter and duration (see http.go).
@@ -268,6 +270,8 @@ func New(info BuildInfo) *Metrics {
 	m.registry.MustRegister(m.newHTTPSeries()...)
 	m.rpo = newRPOCollector()
 	m.registry.MustRegister(m.rpo)
+	m.tlsCerts = newTLSCertCollector()
+	m.registry.MustRegister(m.tlsCerts)
 	m.ha = newHACollector()
 	m.registry.MustRegister(m.ha)
 	m.disk = newDiskCollector()

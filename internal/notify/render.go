@@ -43,6 +43,8 @@ var subjectTemplates = map[events.EventType]struct{ icon, headline string }{
 	events.SecurityKeyWrapping:       {"🔑", "Secret key wrapping changed"},
 	events.APIKeyExpiring:            {"⏳", "API key expires soon"},
 	events.APIKeyDeadlineSet:         {"⏳", "API keys now expire"},
+	events.ConnectionTLSCertExpiring: {"⏳", "Connection TLS certificate expires soon"},
+	events.ConnectionTLSCertExpired:  {"🚨", "Connection TLS certificate expired"},
 	events.PITRChainBroken:           {"🚨", "PITR oplog chain broken"},
 	events.PITRDiverged:              {"🚨", "PITR oplog diverged"},
 	events.PITRLagHigh:               {"⏰", "PITR collector lagging"},
@@ -122,7 +124,7 @@ func Render(e events.Event) Message {
 		target = fmt.Sprintf("%s key rotated by %s: %s", e.Action, e.Actor, e.Detail)
 	case events.SecurityKeyWrapping:
 		target = fmt.Sprintf("%s by %s: %s", e.Action, e.Actor, e.Detail)
-	case events.APIKeyExpiring, events.APIKeyDeadlineSet:
+	case events.APIKeyExpiring, events.APIKeyDeadlineSet, events.ConnectionTLSCertExpiring, events.ConnectionTLSCertExpired:
 		target = e.Detail
 	case events.SecurityApprovalRequested:
 		target = fmt.Sprintf("%s requested by %s; another administrator must approve it (request %s)", e.Detail, e.Actor, e.ApprovalID)

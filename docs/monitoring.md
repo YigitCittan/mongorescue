@@ -106,6 +106,8 @@ With [`-access-log`](configuration.md#logging) every request also writes one lin
 | `MongoRescueKeyWrapErrors` | warning | KMS calls that wrap or unwrap `secret.key` failed in the last 15 minutes |
 | `MongoRescueAPIKeysExpired` | warning | Stored API keys are past their expiry (`mongorescue_api_keys_expired > 0`) for an hour |
 | `MongoRescueAPIKeysExpiring` | warning | API keys expire within the warning days (`mongorescue_api_keys_expiring > 0`) for an hour |
+| `MongoRescueConnectionCertExpiringSoon` | warning | A TLS client certificate or CA certificate of a connection expires within 30 days (`mongorescue_connection_tls_cert_expiry_timestamp_seconds`), for an hour |
+| `MongoRescueConnectionCertExpired` | critical | A TLS client certificate or CA certificate of a connection has expired, for 5 minutes |
 | `MongoRescueDiskFillingUp` | warning | `predict_linear` over the last 6 hours says the data directory or a local storage target (`mongorescue_data_dir_free_bytes`, `mongorescue_storage_free_bytes`) runs out of space within 24 hours, for 30 minutes |
 | `MongoRescueHANoActiveInstance` | critical | No instance of an [active-passive HA cluster](production.md#high-availability) has reported `role="active"` for a minute (twice the default lease TTL), while one of them exported `mongorescue_ha_role` in the last 10 minutes |
 
