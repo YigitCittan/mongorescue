@@ -49,7 +49,7 @@ func (p *jsLiteral) str() {
 	p.pos++
 	for p.pos < len(p.src) {
 		switch p.src[p.pos] {
-		case '\':
+		case '\\':
 			p.pos += 2
 			continue
 		case q:
