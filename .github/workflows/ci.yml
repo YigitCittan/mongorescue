@@ -57,6 +57,9 @@ jobs:
           # These tags only add test files, so this lints everything.
           args: --build-tags=integration,replset3,soak
 
+      # depguard (.golangci.yml) enforces the import rules, driver included, but
+      # does not look at blank imports (import _ "..."); this stays as the backstop
+      # that also covers those.
       - name: Verify the MongoDB driver is confined to internal/mongoconn
         run: |
           # Production code may import the driver only through the mongoconn adapter;

@@ -91,13 +91,13 @@ go test -tags desktop_e2e -run E2E ./internal/desktop/  # the release-server ove
 
 When the fuzzer finds a failure it writes the input to `testdata/fuzz/<FuzzFunc>/` in the package; fix the bug and commit that file as a regression seed. Register a new fuzz target in `FUZZ_TARGETS` in the `Makefile`, seed it with the table-test inputs and known-tricky values, and keep it hermetic (temporary directories only, no network, no host paths). The targets also run under [ClusterFuzzLite](.clusterfuzzlite/build.sh) (libFuzzer, on pull requests and in daily batch runs), which builds every target in `FUZZ_TARGETS` with the test files of its package: there `*testing.F` is a stand-in that does not implement all of `testing.TB`, so a seed helper a target calls with `f` must take a narrower interface (as `fataler` and `helperT` do); that stand-in's `Fatal` returns, so setup that can fail must not leave a nil value behind (`fuzzFail` panics after `Fatal`) and seed files must be optional; and work that must not repeat on every input (key generation, for example) belongs in a `sync.Once`, because libFuzzer runs the whole `Fuzz` function for each input.
 
-The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only by `internal/mongoconn` and `_test.go` files**, plus its `bson` codec (and nothing else from the driver) by `internal/oplog`; CI fails on any other import. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
+The MongoDB Go driver (`go.mongodb.org/mongo-driver/v2`) may be imported **only by `internal/mongoconn` and `_test.go` files**, plus its `bson` codec (and nothing else from the driver) by `internal/oplog`; `depguard` in `.golangci.yml` fails the lint job on any other import, and likewise on a business package (`backup`, `restore`, `scheduler`, `notify`) importing `internal/server` or `cmd`, and on `internal/apiclient` importing `internal/server`. New storage drivers must pass the shared conformance suite (`runStorageConformance`).
 
 ### What CI checks
 
 On every push and pull request (`.github/workflows/ci.yml`):
 
-- **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint`, the driver-not-in-binary check, and `go mod tidy` with no resulting diff.
+- **Lint**: `go vet` (with and without the `integration` tag), `golangci-lint` (with `depguard` for the import rules above and `errorlint` for error wrapping and comparison), and `go mod tidy` with no resulting diff.
 - **Test**: unit tests with `-race` on `ubuntu-latest`, `macos-latest` and `windows-latest` with Go 1.26.x (the `go.mod` minimum) and the release toolchain from `.go-version`; coverage gate and report upload on Ubuntu.
 - **Cross-compilation**: `make cross-compile` for Linux, macOS and Windows.
 - **Integration**: the integration suite against MongoDB 5.0, 6.0, 7.0 and 8.0 with MinIO, 7.0 with LocalStack and an 8.0 single-node replica set. A nightly workflow (`.github/workflows/nightly.yml`) runs the matrix with about 2 GiB of data and a 256 MiB memory limit, the fuzz targets and the fault-injection suite, and weekly the load test; see [docs/testing.md](docs/testing.md).

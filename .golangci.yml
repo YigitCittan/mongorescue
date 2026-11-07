@@ -12,10 +12,57 @@ run:
 linters:
   # The "standard" set (errcheck, govet, ineffassign, staticcheck, unused) plus:
   enable:
+    - depguard
+    - errorlint
     - gosec
     - misspell
     - revive
   settings:
+    # The import invariants of AGENTS.md. A rule applies to the files its "files"
+    # globs select ("$test" is every _test.go file, a "!" negates a glob); a
+    # violation fails the lint job.
+    depguard:
+      rules:
+        # The MongoDB Go driver only in the adapter (and tests).
+        mongo-driver:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/mongoconn/**"
+            - "!**/internal/oplog/**"
+          deny:
+            - pkg: go.mongodb.org/mongo-driver
+              desc: the MongoDB driver is allowed only in internal/mongoconn and _test.go files
+        # internal/oplog may use the bson codec and nothing else of the driver.
+        oplog-bson-only:
+          files:
+            - "**/internal/oplog/**"
+            - "!$test"
+          list-mode: lax
+          allow:
+            - go.mongodb.org/mongo-driver/v2/bson
+          deny:
+            - pkg: go.mongodb.org/mongo-driver
+              desc: internal/oplog may import only go.mongodb.org/mongo-driver/v2/bson from the driver
+        # Business packages never depend on the transport layers.
+        business-no-transport:
+          files:
+            - "**/internal/backup/**"
+            - "**/internal/restore/**"
+            - "**/internal/scheduler/**"
+            - "**/internal/notify/**"
+          deny:
+            - pkg: github.com/yigitcittan/mongorescue/internal/server
+              desc: business packages (backup, restore, scheduler, notify) must not depend on internal/server
+            - pkg: github.com/yigitcittan/mongorescue/cmd
+              desc: business packages (backup, restore, scheduler, notify) must not depend on cmd
+        # The REST client is shared with the MCP bridge and never knows the server.
+        apiclient-no-server:
+          files:
+            - "**/internal/apiclient/**"
+          deny:
+            - pkg: github.com/yigitcittan/mongorescue/internal/server
+              desc: internal/apiclient must not import internal/server
     govet:
       enable-all: true
       disable:

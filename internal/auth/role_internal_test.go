@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestEffectiveScope(t *testing.T) {
 	for _, tc := range []struct {
@@ -48,7 +51,8 @@ func TestScopeErrorNamesItsSource(t *testing.T) {
 		{&Principal{Method: MethodAPIKey, Role: RoleViewer, KeyScope: ScopeAdmin, Scope: ScopeRead},
 			`this API key has the "admin" scope, capped at "read" by its creator's role (viewer); this request needs "admin"`},
 	} {
-		se, ok := tc.p.Require(ScopeAdmin).(*ScopeError)
+		var se *ScopeError
+		ok := errors.As(tc.p.Require(ScopeAdmin), &se)
 		if !ok || se.Message() != tc.want || se.Error() != ErrForbidden.Error()+": "+tc.want {
 			t.Errorf("%+v: %v; want %q", tc.p, se, tc.want)
 		}

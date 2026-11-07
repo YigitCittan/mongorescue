@@ -153,7 +153,7 @@ func TestStartBackupsValidation(t *testing.T) {
 		if !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v; want %v", name, err, tc.want)
 		}
-		if tc.want != operations.ErrConnectionRequired && tc.want != operations.ErrUnknownConnection && !errors.Is(err, operations.ErrInvalid) {
+		if !errors.Is(tc.want, operations.ErrConnectionRequired) && !errors.Is(tc.want, operations.ErrUnknownConnection) && !errors.Is(err, operations.ErrInvalid) {
 			t.Errorf("%s: %v; want ErrInvalid", name, err)
 		}
 	}

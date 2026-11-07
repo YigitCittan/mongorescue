@@ -50,7 +50,7 @@ func TestRedactErr(t *testing.T) {
 		t.Fatal("redactErr(nil) must be nil")
 	}
 	plain := errors.New("connection refused")
-	if redactErr(plain) != plain {
+	if redactErr(plain) != plain { //nolint:errorlint // identity, not equivalence, is what the test asserts
 		t.Error("an error without credentials must be returned unchanged")
 	}
 	leaky := errors.Join(pitr.ErrOplogBehind, errors.New("dial mongodb://u:leak-pw-7@db1:27017/ failed"))
