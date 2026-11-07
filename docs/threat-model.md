@@ -67,7 +67,9 @@ Assumptions:
 
 **Residual risk**: plain-HTTP deployments send credentials in the clear (the session cookie is `Secure` only over TLS or behind a trusted proxy, `secureRequest`). Rate limits (#191) bound requests per API key and session (a general budget and a tighter one for routes that start work; MCP keeps its own per-key limit) and unauthenticated requests per client address (`allowRate`, `internal/server/ratelimit.go`; token buckets in `internal/ratelimit`), but they are kept in memory per instance and only slow a leaked key down.
 
-**Open items**: HSTS when the server knows it is behind TLS.
+**Mitigated**: HSTS (`security.hsts_max_age`) is sent only when the response is known to travel over TLS, directly or through a trusted proxy reporting `X-Forwarded-Proto: https` (`tlsRequest`, `internal/server/auth.go`). JSON request bodies are capped (`maxAPIBody`, 413 above the limit; `/mcp` 4 MiB) and the server closes idle connections after 120 s (`IdleTimeout`).
+
+**Open items**: none.
 
 ## 2. Authentication: sessions, API keys, SSO, CSRF, throttling
 
@@ -310,7 +312,7 @@ Assumptions:
 | Component | Item |
 | :--- | :--- |
 | HA | Separate credentials for the HA prefix (binding the snapshots' cluster and epoch and detecting rollbacks is done: [#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
-| HTTP API | HSTS when served over TLS (REST rate limits are done: [#191](https://github.com/YigitCittan/mongorescue/issues/191)). |
+| HTTP API | None (REST rate limits: [#191](https://github.com/YigitCittan/mongorescue/issues/191); HSTS, body caps and idle timeout: [#217](https://github.com/YigitCittan/mongorescue/issues/217)). |
 | Auth | MFA for local accounts (API key expiry is done: [#190](https://github.com/YigitCittan/mongorescue/issues/190)). |
 | Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
 | Notifications | An option to deny private ranges. |

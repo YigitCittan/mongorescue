@@ -125,8 +125,8 @@ type rejectRequest struct {
 // handleReject rejects a request.
 func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	var req rejectRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxProtectionBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if err := readJSON(w, r, &req, maxProtectionBody); err != nil && !errors.Is(err, io.EOF) {
+		writeDecodeError(w, err, "invalid request json")
 		return
 	}
 	a, err := s.ops.Reject(r.Context(), r.PathValue("id"), req.Reason)

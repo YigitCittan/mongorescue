@@ -151,6 +151,7 @@ func newTestSettings(t *testing.T, repo settings.Repository, sec settings.Securi
 		CORSOrigins: &origins, TrustedProxies: &proxies, MetricsPublic: &sec.MetricsPublic,
 		APIRateLimitPerMinute: &sec.APIRateLimitPerMinute, APIRateLimitBurst: &sec.APIRateLimitBurst,
 		APIWorkRateLimitPerMinute: &sec.APIWorkRateLimitPerMinute, APIWorkRateLimitBurst: &sec.APIWorkRateLimitBurst,
+		HSTSMaxAge: &sec.HSTSMaxAge,
 	}}); err != nil {
 		t.Fatal(err)
 	}

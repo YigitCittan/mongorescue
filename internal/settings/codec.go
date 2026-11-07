@@ -29,6 +29,7 @@ const (
 	KeySecureCookies          = "security.secure_cookies"
 	KeyTrustProxyHeaders      = "security.trust_proxy_headers"
 	KeyTrustedProxies         = "security.trusted_proxies"
+	KeyHSTSMaxAge             = "security.hsts_max_age"
 	KeyCORSOrigins            = "security.cors_origins"
 	KeyMetricsPublic          = "security.metrics_public"
 	KeyMCPEnabled             = "security.mcp_enabled"
@@ -128,6 +129,7 @@ var keyDefs = []keyDef{
 	field(KeySecureCookies, false, func(s *Settings) *CookiePolicy { return &s.Security.SecureCookies }),
 	field(KeyTrustProxyHeaders, false, func(s *Settings) *bool { return &s.Security.TrustProxyHeaders }),
 	field(KeyTrustedProxies, false, func(s *Settings) *[]string { return &s.Security.TrustedProxies }),
+	field(KeyHSTSMaxAge, false, func(s *Settings) *int { return &s.Security.HSTSMaxAge }),
 	field(KeyCORSOrigins, false, func(s *Settings) *[]string { return &s.Security.CORSOrigins }),
 	field(KeyMetricsPublic, false, func(s *Settings) *bool { return &s.Security.MetricsPublic }),
 	field(KeyMCPEnabled, false, func(s *Settings) *bool { return &s.Security.MCPEnabled }),

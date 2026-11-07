@@ -207,6 +207,11 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
 	writeTimeout      = 30 * time.Second
+	// idleTimeout is how long an idle keep-alive connection stays open. It must stay
+	// above the idle timeout of every proxy in front (ALB 60 s, nginx keepalive_timeout
+	// 60 s by default), or the proxy reuses a connection the server just closed and
+	// answers 502.
+	idleTimeout = 120 * time.Second
 )
 
 // WithJobDeletedHook registers fn to be called after a job has been deleted, e.g. to
@@ -290,7 +295,7 @@ func NewServer(
 	if s.desktopCSP {
 		csp = desktopContentSecurityPolicy
 	}
-	handler := s.loggingMiddleware(securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.fenceGate(s.authMiddleware(mux))))))
+	handler := s.loggingMiddleware(s.securityHeadersMiddleware(csp, s.corsMiddleware(s.standbyGate(s.fenceGate(s.authMiddleware(mux))))))
 	s.httpServer = NewHTTPServer(addr, handler)
 
 	return s
@@ -306,6 +311,7 @@ func NewHTTPServer(addr string, h http.Handler) *http.Server {
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 
@@ -556,8 +562,7 @@ type jobRequest struct {
 
 func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	var req jobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
 	job := req.Job
@@ -711,8 +716,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 // reschedules it at once. The id, creation time and run history are kept.
 func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 	var req operations.JobUpdate
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
 	res, err := s.ops.UpdateJob(r.Context(), r.PathValue("id"), req)
@@ -773,8 +777,7 @@ func (s *Server) handleTriggerJob(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	var req operations.BackupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
 	// databases backs up several databases in one run, answered with the run.
@@ -903,8 +906,7 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
 	var req models.RestoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
 	// The restore runs under the application lifecycle; clients poll GET /api/v1/restores.
@@ -920,8 +922,7 @@ func (s *Server) handleRunRestore(w http.ResponseWriter, r *http.Request) {
 // /api/v1/restore) without starting anything and answers the go/no-go summary.
 func (s *Server) handleRestorePreflight(w http.ResponseWriter, r *http.Request) {
 	var req models.RestoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request json")
+	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
 	res, err := s.ops.PreflightRestore(r.Context(), req)
@@ -1032,13 +1033,18 @@ const desktopContentSecurityPolicy = "default-src 'self' " + desktopOrigins + ";
 // Content-Security-Policy csp, X-Content-Type-Options: nosniff, X-Frame-Options: DENY
 // and Referrer-Policy: no-referrer. API, MCP and metrics responses carry
 // Cache-Control: no-store, so neither browsers nor proxies keep copies of them.
-func securityHeadersMiddleware(csp string, next http.Handler) http.Handler {
+// Strict-Transport-Security (security.hsts_max_age, 0 turns it off) is sent only when
+// the response is known to travel over TLS (tlsRequest), never on plain HTTP.
+func (s *Server) securityHeadersMiddleware(csp string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		if age := s.security().HSTSMaxAge; age > 0 && s.tlsRequest(r) {
+			h.Set("Strict-Transport-Security", "max-age="+strconv.Itoa(age))
+		}
 		if p := r.URL.Path; strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, oidcFlowCookiePath) || p == MCPPath || p == "/metrics" {
 			h.Set("Cache-Control", "no-store")
 		}
