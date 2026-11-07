@@ -211,6 +211,7 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 	}
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI, req.MongoTLS = conn.ID, conn.Name, conn.URI, conn.TLS()
 	req.PostRestoreCommands = models.ClonePostRestoreCommands(conn.PostRestoreCommands)
+	req.AllowMongos = conn.AllowMongos
 	out.req = req
 	return out, nil
 }
@@ -271,6 +272,9 @@ func (s *Service) runPITRRestore(ctx context.Context, pp *pitrPlan, done func(co
 	record.SourceTargetID, record.SourceTargetName, record.SourceFallback = pp.run.Base.StorageTargetID, pp.run.Base.StorageTargetName, pp.fallback
 	if s.cfg.Inspector != nil {
 		pre := s.preflightPITR(ctx, pp, record)
+		if err = refuseMongos(pre); err != nil {
+			return nil, err
+		}
 		if !pre.OK && !req.Force {
 			return nil, &PreflightError{Result: pre}
 		}

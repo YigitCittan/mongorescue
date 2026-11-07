@@ -63,6 +63,9 @@ const (
 	// backup or restore holds the databases it replaces, and what it does to them
 	// (safety backup, paused stream, swap).
 	PreflightCheckInPlace = "in_place"
+	// PreflightCheckTopology checks that the target is not a mongos: it fails
+	// (and Force does not override it) unless the connection sets allow_mongos.
+	PreflightCheckTopology = "topology"
 )
 
 // PITRPreflight summarises the plan of a point-in-time restore for its preflight.

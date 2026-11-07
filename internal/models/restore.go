@@ -181,6 +181,10 @@ type RestoreRequest struct {
 	// the target connection, never read from clients.
 	PostRestoreCommands []PostRestoreCommand `json:"-"`
 
+	// AllowMongos is the target connection's allow_mongos, set by code: without it
+	// a restore into a mongos is refused (ErrShardedUnsupported), also with Force.
+	AllowMongos bool `json:"-"`
+
 	// DeferPostRestore leaves the post-restore commands to the caller, which runs
 	// them through the restore engine's RunPostRestore once it has compared the
 	// restored data with the backup (restore verification, restore tests). Set by

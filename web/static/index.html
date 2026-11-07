@@ -2565,6 +2565,11 @@
             <input type="number" id="connection-max-concurrent" class="form-input" min="0" max="64" step="1" aria-describedby="connection-max-concurrent-hint">
             <span class="form-hint" id="connection-max-concurrent-hint" data-i18n="throttle.max_concurrent_hint">At most this many backups read from this connection at once; others wait (shown as waiting). Empty or 0 is unlimited.</span>
           </div>
+          <!-- Accept backups and restores through a mongos (throttle.js) -->
+          <div class="form-group">
+            <label class="check-inline"><input type="checkbox" id="connection-allow-mongos" aria-describedby="connection-allow-mongos-hint"><span data-i18n="conn.allow_mongos">Allow backups through mongos (sharded cluster)</span></label>
+            <span class="form-hint" id="connection-allow-mongos-hint" data-i18n="conn.allow_mongos_hint">Off by default: a dump through mongos is not consistent across shards, so backups and restores through this connection are refused. When on, backups carry a sharded_unsupported warning.</span>
+          </div>
           <!-- Post-restore commands of the connection, e.g. re-applied erasures (postrestore.js) -->
           <div class="form-group">
             <label class="form-label" for="connection-post-restore" data-i18n="postrestore.label">Post-restore commands</label>

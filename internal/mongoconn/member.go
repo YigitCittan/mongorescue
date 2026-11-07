@@ -35,6 +35,22 @@ func readPreferenceOf(ctx context.Context, uri string) *readpref.ReadPref {
 	return readpref.Primary()
 }
 
+// runHello runs hello on the admin database of c (isMaster before MongoDB
+// 4.4.2) and decodes the reply.
+func runHello(ctx context.Context, c *mongo.Client, run *options.RunCmdOptionsBuilder) (helloReply, error) {
+	admin := c.Database("admin")
+	var reply helloReply
+	err := admin.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}, run).Decode(&reply)
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) && cmdErr.Code == commandNotFound {
+		err = admin.RunCommand(ctx, bson.D{{Key: "isMaster", Value: 1}}, run).Decode(&reply)
+	}
+	if err != nil {
+		return reply, fmt.Errorf("hello: %w", err)
+	}
+	return reply, nil
+}
+
 // ServingMember returns the member a read with uri's read preference (its
 // readPreference and readPreferenceTags options) selects: hello runs on that
 // member and reports its host, its state and its replica set. With several
@@ -44,16 +60,9 @@ func (p *Prober) ServingMember(ctx context.Context, uri string) (models.SourceMe
 	rp := readPreferenceOf(ctx, uri)
 	var member models.SourceMember
 	err := withClient(ctx, uri, func(c *mongo.Client) error {
-		admin := c.Database("admin")
-		run := options.RunCmd().SetReadPreference(rp)
-		var reply helloReply
-		err := admin.RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}, run).Decode(&reply)
-		var cmdErr mongo.CommandError
-		if errors.As(err, &cmdErr) && cmdErr.Code == commandNotFound {
-			err = admin.RunCommand(ctx, bson.D{{Key: "isMaster", Value: 1}}, run).Decode(&reply)
-		}
+		reply, err := runHello(ctx, c, options.RunCmd().SetReadPreference(rp))
 		if err != nil {
-			return fmt.Errorf("hello: %w", err)
+			return err
 		}
 		member = memberOf(reply)
 		return nil

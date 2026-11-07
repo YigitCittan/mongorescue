@@ -26,6 +26,7 @@ import (
 type fakeInspector struct {
 	mu          sync.Mutex
 	pingErr     error
+	mongos      bool
 	version     string
 	exists      map[string]bool
 	takenPrefix string // every database name with this prefix exists
@@ -69,7 +70,7 @@ func (f *fakeInspector) Ping(context.Context) (connections.ServerInfo, error) {
 	if f.pingErr != nil {
 		return connections.ServerInfo{}, f.pingErr
 	}
-	return connections.ServerInfo{Version: f.version}, nil
+	return connections.ServerInfo{Version: f.version, Mongos: f.mongos}, nil
 }
 
 func (f *fakeInspector) DatabaseExists(_ context.Context, database string) (bool, error) {
@@ -170,6 +171,8 @@ type preflightEnv struct {
 	engine    *completingEngine
 	publisher *recordingPublisher
 	backup    *models.BackupRecord
+	// conn is the stored connection of the env; tests may change it.
+	conn *models.Connection
 }
 
 // backupManifest is the manifest of the env's backup.
@@ -192,13 +195,14 @@ func newPreflightEnvWith(t *testing.T, ins *fakeInspector, mutate func(*models.B
 	st := storetest.New(t)
 	manager := runs.NewManager(nil)
 	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
-	env := &preflightEnv{st: st, runs: manager, ins: ins, engine: &completingEngine{prep: restore.NewEngine(nil, "")}, publisher: &recordingPublisher{}}
+	conn := &models.Connection{ID: "conn_a", Name: "prod", URI: "mongodb://u:secret@db.internal:27017", PostRestoreCommands: cmds}
+	env := &preflightEnv{conn: conn, st: st, runs: manager, ins: ins, engine: &completingEngine{prep: restore.NewEngine(nil, "")}, publisher: &recordingPublisher{}}
 	cfg := operations.Config{
 		Store:       st,
 		Backup:      backup.NewEngine(storage.NewMockStorage(), ""),
 		Restore:     env.engine,
 		Runs:        manager,
-		Connections: fakeConnections{"conn_a": {ID: "conn_a", Name: "prod", URI: "mongodb://u:secret@db.internal:27017", PostRestoreCommands: cmds}},
+		Connections: fakeConnections{"conn_a": env.conn},
 		Publisher:   env.publisher,
 	}
 	if ins != nil {

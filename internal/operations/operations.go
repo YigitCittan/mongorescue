@@ -555,6 +555,7 @@ func (s *Service) manualOptions(ctx context.Context, req BackupRequest) (models.
 	opts.MongoURI, opts.MongoTLS, opts.ConnectionName = conn.URI, conn.TLS(), conn.Name
 	opts.ReadPreference = opts.ReadPreference.Or(conn.ReadPref())
 	opts.MaxConcurrentBackups = conn.MaxConcurrentBackups
+	opts.AllowMongos = conn.AllowMongos
 	target, err := s.ResolveTarget(ctx, opts.StorageTargetID)
 	if err != nil {
 		return opts, err
@@ -786,6 +787,9 @@ func (s *Service) StartRestore(ctx context.Context, req models.RestoreRequest) (
 	if s.cfg.Inspector != nil {
 		// The checks name the clone this restore creates: Prepare named it once.
 		pre := s.preflight(ctx, req, source, record.TargetDatabase, record.TargetDatabase)
+		if err = refuseMongos(pre); err != nil {
+			return nil, err
+		}
 		if !pre.OK && !req.Force && !req.DryRun {
 			return nil, &PreflightError{Result: pre}
 		}
@@ -960,6 +964,7 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	}
 	req.TargetConnectionID, req.TargetConnectionName, req.MongoURI, req.MongoTLS = target.ID, target.Name, target.URI, target.TLS()
 	req.PostRestoreCommands = models.ClonePostRestoreCommands(target.PostRestoreCommands)
+	req.AllowMongos = target.AllowMongos
 
 	// Key material is checked synchronously so the client learns about it immediately.
 	if !forPreflight && (source.Encrypted || strings.HasSuffix(source.StorageKey, encryption.FileExtension)) && !s.cfg.Restore.CanDecrypt() {

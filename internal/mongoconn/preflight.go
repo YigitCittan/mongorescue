@@ -16,6 +16,7 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/diskspace"
+	"github.com/yigitcittan/mongorescue/internal/models"
 )
 
 // Compile-time check that Target implements the domain port.
@@ -52,7 +53,13 @@ func (t *Target) Ping(ctx context.Context) (connections.ServerInfo, error) {
 	if err := admin.RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Err(); err != nil {
 		return connections.ServerInfo{}, fmt.Errorf("ping: %w", err)
 	}
-	return connections.ServerInfo{Version: serverVersion(ctx, t.client)}, nil
+	// The topology is part of the answer: a restore into a mongos is refused, so a
+	// server that cannot say what it is does not pass.
+	reply, err := runHello(ctx, t.client, options.RunCmd())
+	if err != nil {
+		return connections.ServerInfo{}, err
+	}
+	return connections.ServerInfo{Version: serverVersion(ctx, t.client), Mongos: memberOf(reply).State == models.MemberMongos}, nil
 }
 
 // DatabaseExists reports whether database exists (among the authorized databases).

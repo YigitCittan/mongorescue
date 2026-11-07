@@ -50,6 +50,12 @@ type Connection struct {
 	// the same time (0 = unlimited). Further backups wait, shown as "waiting".
 	MaxConcurrentBackups int `json:"max_concurrent_backups,omitempty"`
 
+	// AllowMongos accepts a connection that reaches a mongos (a sharded cluster):
+	// backups and restores through it are refused otherwise, because a dump
+	// through mongos is not consistent across shards. Backups with it carry the
+	// sharded_unsupported warning.
+	AllowMongos bool `json:"allow_mongos,omitempty"`
+
 	// PostRestoreCommands run against the databases every safe-clone restore into
 	// this connection creates, before the restore is reported complete (e.g. to
 	// re-apply erasures). Only administrators may set and see them.

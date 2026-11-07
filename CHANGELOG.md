@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Behaviour change:** backups and restores through a `mongos` are refused (#222). A dump through `mongos` is not consistent across shards, yet such backups were recorded as completed and verified. A backup whose connection reaches a `mongos` (or whose topology cannot be determined) now fails before `mongodump` starts, and a restore into a `mongos` is refused by its preflight (check `topology`, not overridden by `"force": true`), both with `sharded clusters are not supported`. Jobs on a `mongos` URI start failing after the upgrade until their connection sets the new opt-in `allow_mongos` (connection form, `allow_mongos` in the connections API; no migration). With it, backups carry the warning `sharded_unsupported`, and Recovery readiness warns with the reason `sharded_unsupported`. `list_connections` of the MCP server shows `allow_mongos`. Point-in-time streams were already refused on a `mongos`. See [docs/production.md](docs/production.md#sharded-clusters-mongos).
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
 ## [0.28.0] - 2026-10-14

@@ -98,9 +98,13 @@ func (e *Engine) interrupt(ctx context.Context, record *models.BackupRecord, err
 }
 
 // probeMember asks which member a read with opts' read preference selects and
-// records it on record. Only the read preference "secondary" makes a failure or a
-// member that is not a secondary fatal (ErrNoEligibleMember); otherwise the
-// backup goes on without a recorded member, and mongodump selects as it would.
+// records it on record. A mongos fails the backup with models.ErrShardedUnsupported
+// unless opts.AllowMongos is set (then the record gets the sharded_unsupported
+// warning), and so does a probe that fails (fail closed) unless it is. With the
+// read preference "secondary", a failure or a member that is not a secondary is
+// fatal too (ErrNoEligibleMember); otherwise an accepted failure lets the backup
+// go on without a recorded member, and mongodump selects as it would. Without a
+// probe (WithMemberProbe) nothing is checked; the application always sets one.
 func (e *Engine) probeMember(ctx context.Context, uri string, opts models.BackupOptions, record *models.BackupRecord) error {
 	rp := opts.ReadPreference
 	record.ReadPreference = rp.String()
@@ -114,12 +118,28 @@ func (e *Engine) probeMember(ctx context.Context, uri string, opts models.Backup
 	tracker := runs.FromContext(ctx)
 	if err != nil {
 		msg := redact.Text(err.Error())
-		if strict && ctx.Err() == nil {
-			return fmt.Errorf("%w: read preference %s: %s", ErrNoEligibleMember, rp, msg)
+		if ctx.Err() == nil {
+			if strict {
+				return fmt.Errorf("%w: read preference %s: %s", ErrNoEligibleMember, rp, msg)
+			}
+			if !opts.AllowMongos {
+				// Fail closed: a server that cannot say it is no mongos is refused
+				// like a mongos; allow_mongos on the connection accepts that.
+				return fmt.Errorf("%w: cannot verify that the connection does not reach a mongos: %s", models.ErrShardedUnsupported, msg)
+			}
 		}
 		e.logger.Warn("could not determine the member the backup reads from",
 			logsafe.Attr("backup_id", record.ID), slog.String("error", msg))
 		return nil
+	}
+	if member.State == models.MemberMongos {
+		if !opts.AllowMongos {
+			return fmt.Errorf("%w: the connection reaches a mongos and a dump through mongos is not consistent across shards;"+
+				" set allow_mongos on the connection to back up anyway", models.ErrShardedUnsupported)
+		}
+		record.Warnings = append(record.Warnings, models.ShardedWarning)
+		tracker.Printf("warning: %s", models.ShardedWarning)
+		e.logger.Warn("backup through a mongos (allow_mongos)", logsafe.Attr("backup_id", record.ID))
 	}
 	if strict && member.State != models.MemberSecondary && member.State != models.MemberMongos {
 		return fmt.Errorf("%w: read preference %s needs a replica set secondary, but the connection reaches only %s"+

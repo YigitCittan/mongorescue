@@ -204,7 +204,26 @@ var (
 	// ErrInvalidConcurrentBackups is returned for a max_concurrent_backups outside
 	// 0..MaxConcurrentBackupsLimit.
 	ErrInvalidConcurrentBackups = fmt.Errorf("max_concurrent_backups must be between 0 (unlimited) and %d", MaxConcurrentBackupsLimit)
+	// ErrShardedUnsupported is returned (wrapped) when a backup or a restore would
+	// go through a mongos, or when it cannot be told that it does not: a dump
+	// through mongos is not consistent across shards (balancer, chunk migrations).
+	// Set allow_mongos on the connection to accept that.
+	ErrShardedUnsupported = errors.New("sharded clusters are not supported")
 )
+
+// WarningShardedUnsupported is the code that starts the warning of a backup taken
+// through a mongos on a connection that sets allow_mongos. Recovery readiness
+// reports it as the reason sharded_unsupported.
+const WarningShardedUnsupported = "sharded_unsupported"
+
+// ShardedWarning is the warning a backup through a mongos carries.
+const ShardedWarning = WarningShardedUnsupported +
+	": the connection reaches a mongos; a dump through mongos is not consistent across shards (balancer, chunk migrations), so this backup may miss or duplicate documents"
+
+// IsShardedWarning reports whether warning is the sharded_unsupported warning.
+func IsShardedWarning(warning string) bool {
+	return strings.HasPrefix(warning, WarningShardedUnsupported+":")
+}
 
 // ValidateUploadMbps checks a max_upload_mbps value.
 func ValidateUploadMbps(mbps float64) error {
