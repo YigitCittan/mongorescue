@@ -45,6 +45,17 @@ Rules:
 - **The material belongs to the hosts it was saved for.** Testing a connection string with other hosts (`POST /api/v1/connections/test` with `connection_id`) uses none of the stored material: no CA, no client key, no loosened checks. Moving a connection that has `tls_insecure` to other hosts needs `tls_insecure_confirm` again.
 - **Loosened checks stay visible.** Turning `tls_insecure` or `tls_allow_invalid_hostnames` on or off is recorded in the [audit log](audit.md) of the request (`tls_insecure_from`/`tls_insecure_to`, `tls_allow_invalid_hostnames_from`/`tls_allow_invalid_hostnames_to`) and logged as a warning. While any connection has either on, `GET /api/v1/settings` reports the `connection_tls_loosened` warning with those connections (`connections`), and the dashboard shows it as a banner next to the badges in the connections table.
 
+### Certificate expiry
+
+An expired x509 client certificate makes every backup and the PITR collector of the connection fail at once, so MongoRescue reads the expiry (`NotAfter`) of the stored certificates: the earliest of the client certificate and its intermediates (`kind` `client`), and the earliest of the certificates in the CA bundle (`ca`). Certificates are public, so this needs no key; PEM contents are never logged.
+
+- **API.** `GET /api/v1/connections` and `GET /api/v1/connections/{id}` carry `tls_cert_expiry: [{kind, not_after}]` for the kinds that are set. The dashboard shows a badge in the connections table: *Certificate expires in N days* within 30 days (red within 7 days) and *Certificate expired*.
+- **Events.** `connection.tls_cert_expiring` when a certificate comes within 30 days of its expiry and again within 7 days, `connection.tls_cert_expired` once it has expired: each threshold is sent once per certificate (a renewed certificate starts over), routed through [notification rules](notifications.md). The thresholds are fixed. The record of what was announced is kept in memory, so after a restart each expiring certificate is announced once more at its current threshold.
+- **Settings warning.** `GET /api/v1/settings` reports `connection_tls_cert_expiring` with the affected connections (`connections[].certs: [{kind, not_after, expired}]`); it clears when the certificate is replaced and cannot be dismissed.
+- **Metric and alerts.** `mongorescue_connection_tls_cert_expiry_timestamp_seconds{connection,kind}` ([metrics](metrics.md)), with the alerts `MongoRescueConnectionCertExpiringSoon` and `MongoRescueConnectionCertExpired` ([runbooks](runbooks.md#mongorescueconnectioncertexpiringsoon)).
+
+The check runs on the active instance every hour and whenever a connection is created, changed or deleted.
+
 How the material is used:
 
 - **The driver** builds its TLS configuration in memory (TLS 1.2 or later). No file is written.

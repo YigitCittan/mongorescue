@@ -127,6 +127,16 @@ const (
 	// without an expiry, or with a later one, now expire at now + that lifetime
 	// (Event.Detail names the keys and the deadline).
 	APIKeyDeadlineSet EventType = "api_key.deadline_set"
+	// ConnectionTLSCertExpiring is emitted when an x509 client certificate or a CA
+	// certificate of a connection's TLS material comes within 30 days, and again
+	// within 7 days, of its expiry, once per threshold and certificate
+	// (Event.ConnectionID, Event.Action is the kind, "client" or "ca", Event.Detail
+	// the connection name and the expiry; never PEM). A client certificate that
+	// expires makes every backup and the PITR collector of the connection fail.
+	ConnectionTLSCertExpiring EventType = "connection.tls_cert_expiring"
+	// ConnectionTLSCertExpired is emitted once when such a certificate has expired
+	// (same fields as ConnectionTLSCertExpiring).
+	ConnectionTLSCertExpired EventType = "connection.tls_cert_expired"
 	// PITRChainBroken is emitted when a gap ends the oplog chain of a PITR stream:
 	// the oplog window was overrun or the replica set changed (Event.Stream,
 	// Event.Detail). It is a critical alert: point-in-time recovery cannot cross it.
@@ -253,7 +263,7 @@ var ruleTypes = []EventType{
 	VerificationFailed, RestoreTestSucceeded, RestoreTestFailed, DriftDetected, RetentionDeleted,
 	JobDatabasesAdded, MetadataBackupFailed, RestoreVerificationFailed, JobRPOMissed, JobRPORecovered,
 	SecurityDestructiveAction, SecurityApprovalRequested, SecurityKeyRotated, SecurityKeyWrapping,
-	APIKeyExpiring, APIKeyDeadlineSet,
+	APIKeyExpiring, APIKeyDeadlineSet, ConnectionTLSCertExpiring, ConnectionTLSCertExpired,
 	PITRChainBroken, PITRDiverged, PITRLagHigh, PITRLagRecovered, PITRWindowLow, PITRBaseWindowRisk, PITRCollectorFailed, PITRCollectorRecovered,
 	BackupCopyFailed, BackupCopyRecovered, BackupCopyExhausted,
 }

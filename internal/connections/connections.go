@@ -200,6 +200,8 @@ type Service struct {
 	now         func() time.Time
 	// creds resolves credentials read from Vault (nil: none can be used).
 	creds Credentials
+	// onChange is called after a connection was created, updated or deleted.
+	onChange func()
 }
 
 // Option customises a Service.
@@ -228,7 +230,7 @@ func NewService(repo Repository, prober Prober, opts ...Option) *Service {
 // admin scope, without its post-restore commands (which can name the people whose
 // data was erased).
 func forCaller(ctx context.Context, c *models.Connection) *models.Connection {
-	out := c.Redacted()
+	out := withExpiry(c.Redacted())
 	if auth.RequireScope(ctx, auth.ScopeAdmin) != nil {
 		out.PostRestoreCommands = nil
 	}
@@ -323,7 +325,8 @@ func (s *Service) create(ctx context.Context, in Input, checkURI func(string) er
 	s.logger.Info("connection created", slog.String("connection_id", c.ID), logsafe.Attr("uri", redact.URI(c.URI)))
 	s.warnTLS(c.ID, c.ConnectionTLS)
 	auditTLS(ctx, models.ConnectionTLS{}, c.ConnectionTLS)
-	return c.Redacted(), nil
+	s.changed()
+	return withExpiry(c.Redacted()), nil
 }
 
 // Update replaces the editable fields of connection id. A URI equal to the redacted
@@ -375,7 +378,8 @@ func (s *Service) Update(ctx context.Context, id string, in Input) (*models.Conn
 		auditTLS(ctx, existing.ConnectionTLS, updated.ConnectionTLS)
 		mongotls.Forget(&existing.ConnectionTLS)
 	}
-	return updated.Redacted(), nil
+	s.changed()
+	return withExpiry(updated.Redacted()), nil
 }
 
 // SetPostRestoreCommands replaces the post-restore commands of connection id,
@@ -430,6 +434,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	mongotls.Forget(&existing.ConnectionTLS)
+	s.changed()
 	return nil
 }
 

@@ -154,6 +154,21 @@ function runtimeRenderWarnings(list) {
       });
       body.append(ul);
     }
+    // The certificates of connection_tls_cert_expiring (tls.js).
+    const certConns = w.id === "connection_tls_cert_expiring" && Array.isArray(w.connections) ? w.connections : [];
+    if (certConns.length > 0) {
+      const ul = document.createElement("ul");
+      ul.className = "postrestore-kept-list";
+      certConns.forEach(c => {
+        const lines = typeof tlsCertWarningLines === "function" ? tlsCertWarningLines(c) : [String((c && c.name) || "")];
+        lines.forEach(line => {
+          const li = document.createElement("li");
+          li.textContent = line;
+          ul.append(li);
+        });
+      });
+      body.append(ul);
+    }
     section.append(body);
     box.append(section);
   });

@@ -30,7 +30,7 @@ Responses use the envelope `{"success": ..., "data": ...}` ([api.md](api.md)), s
     | High availability | [MongoRescueHANoActiveInstance](#mongorescuehanoactiveinstance), [MongoRescueHATakeoverFailed](#mongorescuehatakeoverfailed), [MongoRescueHAStartedFromEmptyState](#mongorescuehastartedfromemptystate), [MongoRescueHARollbackSuspected](#mongorescueharollbacksuspected), [MongoRescueHASnapshotRejected](#mongorescuehasnapshotrejected) |
     | Point-in-time recovery | [MongoRescuePITRCollectorDown](#mongorescuepitrcollectordown), [MongoRescuePITRLagHigh](#mongorescuepitrlaghigh), [MongoRescuePITROplogHeadroomLow](#mongorescuepitroplogheadroomlow), [MongoRescuePITRBaseWindowRisk](#mongorescuepitrbasewindowrisk), [MongoRescuePITRChainBroken](#mongorescuepitrchainbroken), [MongoRescuePITRChunkErrors](#mongorescuepitrchunkerrors), [MongoRescuePITRStale](#mongorescuepitrstale) |
     | Copies | [MongoRescueBackupCopyFailed](#mongorescuebackupcopyfailed), [MongoRescueBackupCopyMismatch](#mongorescuebackupcopymismatch), [MongoRescueBackupCopyQueueGrowing](#mongorescuebackupcopyqueuegrowing) |
-    | Notifications, events, audit, keys | [MongoRescueNotificationFailures](#mongorescuenotificationfailures), [MongoRescueNotificationsLost](#mongorescuenotificationslost), [MongoRescueEventsDropped](#mongorescueeventsdropped), [MongoRescueHeartbeatsDropped](#mongorescueheartbeatsdropped), [MongoRescueAuditWriteFailed](#mongorescueauditwritefailed), [MongoRescueAuditForwardFailed](#mongorescueauditforwardfailed), [MongoRescueKeyWrapErrors](#mongorescuekeywraperrors), [MongoRescueAPIKeysExpired](#mongorescueapikeysexpired), [MongoRescueAPIKeysExpiring](#mongorescueapikeysexpiring) |
+    | Notifications, events, audit, keys | [MongoRescueNotificationFailures](#mongorescuenotificationfailures), [MongoRescueNotificationsLost](#mongorescuenotificationslost), [MongoRescueEventsDropped](#mongorescueeventsdropped), [MongoRescueHeartbeatsDropped](#mongorescueheartbeatsdropped), [MongoRescueAuditWriteFailed](#mongorescueauditwritefailed), [MongoRescueAuditForwardFailed](#mongorescueauditforwardfailed), [MongoRescueKeyWrapErrors](#mongorescuekeywraperrors), [MongoRescueAPIKeysExpired](#mongorescueapikeysexpired), [MongoRescueAPIKeysExpiring](#mongorescueapikeysexpiring), [MongoRescueConnectionCertExpiringSoon](#mongorescueconnectioncertexpiringsoon), [MongoRescueConnectionCertExpired](#mongorescueconnectioncertexpired) |
 
 ## Process and scheduling
 
@@ -838,3 +838,34 @@ mr $MR/api/v1/api-keys | jq .data
 **Action.** Create replacements with the same scope, update scripts, CI jobs, the Prometheus scrape and MCP clients, then revoke the old keys. A shorter expiry on new keys keeps the habit of rotating.
 
 **Escalation.** None before the expiry; after it, this becomes [MongoRescueAPIKeysExpired](#mongorescueapikeysexpired) and the consumers fail.
+
+### MongoRescueConnectionCertExpiringSoon { #mongorescueconnectioncertexpiringsoon }
+
+**Symptom.** A TLS certificate of a connection expires within 30 days (`mongorescue_connection_tls_cert_expiry_timestamp_seconds - time() < 30 * 86400`) and the alert has been active for an hour. `kind="client"` is the x509 client certificate (with its intermediates), `kind="ca"` the CA bundle (the label names the certificate that expires first); `connection` is the connection ID. MongoRescue also sent `connection.tls_cert_expiring` at 30 and at 7 days and lists the connection in the `connection_tls_cert_expiring` settings warning and with a badge in the connections table.
+
+**Likely causes.** The certificate was issued with a short lifetime and nobody renews it, the issuing process (cert-manager, Vault PKI, an internal CA) stopped renewing, or the certificate was renewed on the MongoDB side only.
+
+**Diagnosis.**
+
+```sh
+mr $MR/api/v1/connections | jq '.data[] | select(.tls_cert_expiry != null) | {id, name, tls_cert_expiry}'
+```
+
+**Action.** Issue a new certificate for the same subject (an x509 user is named by the certificate subject, so keep it) and paste it with its key into the connection's TLS settings (`PUT /api/v1/connections/<id>` with `tls_client_cert_pem` and `tls_client_key_pem`, or `tls_ca_pem` for a CA). For a CA, add the new CA to the bundle before the old one expires and let the servers move to certificates it signs. Run the connection test; the alert clears within an hour, or at once when the connection is saved.
+
+**Escalation.** None before the expiry; after it, this becomes [MongoRescueConnectionCertExpired](#mongorescueconnectioncertexpired): every backup through the connection fails.
+
+### MongoRescueConnectionCertExpired { #mongorescueconnectioncertexpired }
+
+**Symptom.** A TLS certificate of a connection has expired for 5 minutes (`mongorescue_connection_tls_cert_expiry_timestamp_seconds - time() <= 0`). With an expired client certificate every backup, restore and the PITR collector of the connection fail at the TLS handshake or at x509 authentication; with an expired CA the server certificates it signed are no longer trusted.
+
+**Diagnosis.**
+
+```sh
+mr $MR/api/v1/connections | jq '.data[] | select(.tls_cert_expiry != null) | {id, name, tls_cert_expiry}'
+mr $MR/api/v1/connections/<id>/test -X POST | jq .
+```
+
+**Action.** Replace the certificate as described in [MongoRescueConnectionCertExpiringSoon](#mongorescueconnectioncertexpiringsoon), test the connection, then run a backup of the affected jobs. Check [MongoRescueRPOMissed](#mongorescuerpomissed) and the PITR alerts for the same connection: start with [MongoRescuePITRCollectorDown](#mongorescuepitrcollectordown), and see [MongoRescuePITRChainBroken](#mongorescuepitrchainbroken) if the oplog window was overrun while the collector could not connect.
+
+**Escalation.** The owner of the CA or the PKI that issues the certificate; if backups were missed, treat the gap like a failed-backup incident ([MongoRescueBackupFailed](#mongorescuebackupfailed)).

@@ -453,6 +453,33 @@ groups:
           description: "Create replacements and update the scripts, CI jobs and MCP clients that use these keys before they are refused."
           runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueapikeysexpiring"
 
+      # A TLS client certificate or CA certificate of a connection expires within
+      # 30 days. An expired client certificate fails every backup and the PITR
+      # collector of the connection at once.
+      - alert: MongoRescueConnectionCertExpiringSoon
+        expr: |
+          (mongorescue_connection_tls_cert_expiry_timestamp_seconds - time()) < 30 * 86400
+          and
+          (mongorescue_connection_tls_cert_expiry_timestamp_seconds - time()) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The {{ $labels.kind }} certificate of MongoRescue connection {{ $labels.connection }} expires in {{ $value | humanizeDuration }}"
+          description: "Replace the TLS certificate in the connection's TLS settings before it expires; after that every backup through connection {{ $labels.connection }} fails."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueconnectioncertexpiringsoon"
+
+      # A TLS client certificate or CA certificate of a connection has expired.
+      - alert: MongoRescueConnectionCertExpired
+        expr: (mongorescue_connection_tls_cert_expiry_timestamp_seconds - time()) <= 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The {{ $labels.kind }} certificate of MongoRescue connection {{ $labels.connection }} has expired"
+          description: "Backups, restores and the PITR collector of connection {{ $labels.connection }} fail until the certificate is replaced in the connection's TLS settings."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescueconnectioncertexpired"
+
       # The free space of the data directory or a local storage target runs out
       # within 24 hours at the rate of the last 6 hours. Backups are refused
       # below the disk guard's threshold and fail at 0.
