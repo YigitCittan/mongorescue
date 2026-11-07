@@ -69,7 +69,7 @@ The prompt talks to the app through `/desktop/update` endpoints answered in-proc
 
 ### How the update is tested
 
-The **Desktop update E2E** workflow (`.github/workflows/desktop-e2e.yml`) tests the in-app update end to end on `windows-latest`, `macos-latest` and `ubuntu-latest`. It runs on pull requests that touch `cmd/mongorescue-desktop`, `internal/desktop`, `internal/update` or the test itself and on `main`; it is not a required check. Run it locally with `make test-desktop-update-e2e` (see [CONTRIBUTING.md](../CONTRIBUTING.md#building-and-testing)).
+The **Desktop update E2E** workflow (`.github/workflows/desktop-e2e.yml`) tests the in-app update end to end on `windows-latest`, `macos-latest` and `ubuntu-latest`. It runs on pull requests that touch `cmd/mongorescue-desktop`, `internal/desktop`, `internal/update` or the test itself and on `main`; it is not a required check. Run it locally with `make test-desktop-update-e2e` (see [CONTRIBUTING.md](https://github.com/YigitCittan/mongorescue/blob/main/CONTRIBUTING.md#building-and-testing)).
 
 `scripts/test-desktop-update-e2e.sh` builds the app twice from the same commit with the Wails CLI, stamped `0.0.1` and `0.0.2` (`main.Version` and the bundle version, as the release does), packages each build as the release's *Package artifacts* step does and writes the checksums file. The bundled MongoDB Database Tools are replaced by small placeholder files, and the Windows installer by a placeholder that must never be downloaded or started. The Go test in `internal/desktop/updatee2e` then installs `0.0.1` as users do (`MongoRescue.app` in an Applications folder, the tarball in a directory, the portable archive in a per-user Programs folder), serves `0.0.2` as GitHub's latest release from a local server, and runs the installed app with a hidden `--e2e-update=<dir>` flag. Without a window, the app creates its updater as usual and drives it through the same `/desktop/update` endpoints the dashboard uses: check, install, and the status until the end. The installer launch, the file manager and the browser are replaced by records, so the test can check that none of them was used. Two cases run on each system:
 
@@ -168,7 +168,7 @@ Before building, the `desktop` job downloads the MongoDB Database Tools archive 
 
 ## Code signing
 
-The release workflow can sign the Windows desktop build through [SignPath](https://signpath.io) (free for open source through [SignPath Foundation](https://signpath.org); see the code signing policy in the [README](../README.md#code-signing-policy)). Signing is **off** until it is configured: without the secret and the organization variable below, every signing step of the `desktop` job is skipped and the release ships the unsigned `wails build -nsis` output, exactly as before. macOS and Linux builds are not signed.
+The release workflow can sign the Windows desktop build through [SignPath](https://signpath.io) (free for open source through [SignPath Foundation](https://signpath.org); see the code signing policy in the [README](https://github.com/YigitCittan/mongorescue/blob/main/README.md#code-signing-policy)). Signing is **off** until it is configured: without the secret and the organization variable below, every signing step of the `desktop` job is skipped and the release ships the unsigned `wails build -nsis` output, exactly as before. macOS and Linux builds are not signed.
 
 When it is on, the Windows leg of the `desktop` job:
 

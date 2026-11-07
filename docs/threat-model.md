@@ -2,7 +2,7 @@
 
 This page is the threat model of MongoRescue, component by component, using STRIDE (**S**poofing, **T**ampering, **R**epudiation, **I**nformation disclosure, **D**enial of service, **E**levation of privilege). For each component it names the assets, the trust boundaries, the threats, the mitigations that exist today with the code that implements them, the residual risk and the open items. It describes the code as it is; a mitigation that is not listed here does not exist.
 
-Related pages: [security.md](security.md) (delete protection, the two-person rule, Object Lock, and [verifying releases](security.md#verifying-releases)), [architecture.md](architecture.md#security-boundaries) (security boundaries), [design/roles.md](design/roles.md), [design/oidc.md](design/oidc.md), [design/ha.md](design/ha.md), [design/pitr.md](design/pitr.md), [encryption.md](encryption.md). Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
+Related pages: [security.md](security.md) (delete protection, the two-person rule, Object Lock, and [verifying releases](security.md#verifying-releases)), [architecture.md](architecture.md#security-boundaries) (security boundaries), [design/roles.md](design/roles.md), [design/oidc.md](design/oidc.md), [design/ha.md](design/ha.md), [design/pitr.md](design/pitr.md), [encryption.md](encryption.md). Report vulnerabilities as described in [SECURITY.md](https://github.com/YigitCittan/mongorescue/blob/main/SECURITY.md).
 
 ## Scope and assumptions
 

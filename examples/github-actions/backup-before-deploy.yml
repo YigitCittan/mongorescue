@@ -1,0 +1,67 @@
+# Back up a database with MongoRescue before a deployment, and stop the deployment when
+# the backup fails. Copy this file to .github/workflows/ in your application repository.
+#
+# The runner talks to your MongoRescue instance over HTTPS with an API key; it does not
+# need MongoDB credentials, the Database Tools or network access to MongoDB. The
+# MongoRescue image is used as the CLI (its entrypoint is the mongorescue binary), so
+# nothing has to be installed. Releases of the binary for Linux, macOS and Windows are on
+# https://github.com/YigitCittan/mongorescue/releases if you prefer it.
+#
+# Set up once:
+#   - Settings > API keys in MongoRescue: a key with scope "operator" (enough for backups
+#     and restores into a safe clone; docs/api.md#api-key-scopes).
+#   - In this repository, Settings > Secrets and variables > Actions:
+#       secret   MONGORESCUE_OPERATOR_KEY   the key
+#       variable MONGORESCUE_URL            https://backup.example.com
+#       variable MONGORESCUE_JOB            the job ID, from `mongorescue list jobs`
+#
+# `--wait` makes the step's exit code the backup's (docs/cli.md#exit-codes), so `deploy`
+# below never starts after a failed backup. The runner must be able to reach the URL: a
+# MongoRescue behind a VPN needs a self-hosted runner.
+
+name: Back up and deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Pin an exact release (or a digest) in your own workflow.
+  MONGORESCUE_IMAGE: ghcr.io/yigitcittan/mongorescue:0.28.0
+
+jobs:
+  backup:
+    name: Back up the shop database
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Run the backup job and wait for it
+        env:
+          MONGORESCUE_URL: ${{ vars.MONGORESCUE_URL }}
+          MONGORESCUE_CLI_API_KEY: ${{ secrets.MONGORESCUE_OPERATOR_KEY }}
+          MONGORESCUE_JOB: ${{ vars.MONGORESCUE_JOB }}
+        run: |
+          # -e VAR without a value passes the variable on without putting the key on the
+          # command line, where the job log and the process list would show it.
+          docker run --rm \
+            -e MONGORESCUE_URL \
+            -e MONGORESCUE_CLI_API_KEY \
+            "$MONGORESCUE_IMAGE" \
+            backup --job "$MONGORESCUE_JOB" --wait --timeout 30m
+
+  deploy:
+    name: Deploy
+    needs: backup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: echo "replace this step with your deployment"

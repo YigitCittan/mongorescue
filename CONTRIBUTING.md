@@ -155,6 +155,15 @@ A test that fails without a change that explains it (`-shuffle=on -count=5` make
 - **Documentation**: every exported identifier has a Godoc comment starting with its name, and every package has a package comment.
 - **API responses**: handlers use the shared helpers, which produce `{"success": true, "data": ...}` or `{"success": false, "error": "<message>"}` with a matching HTTP status.
 
+### Documentation
+
+The site is built from `docs/` and `mkdocs.yml` with `mkdocs build --strict`, which also fails on a broken link or anchor between pages. Check it before you push a documentation change: `pip install --require-hashes -r docs/requirements.txt && mkdocs build --strict` (or run the same two commands in a `python:3.12-slim` container). Link to files outside `docs/` (the README, `examples/`, `deploy/`) with a full `https://github.com/YigitCittan/mongorescue/blob/main/...` URL, since the site does not contain them. A new page goes into the `nav` of `mkdocs.yml` (start, operate, secure, integrate, reference or design) and into the groups of `docs/index.md`.
+
+### Translations
+
+- **The documentation (`docs/`, the README and this file) is English only.** One authoritative version cannot drift out of sync with the code the way translations do, and every page is checked by the docs build (`mkdocs build --strict`, including links and anchors). Translated copies of documentation pages are not maintained in this repository; fixes to the wording of the English pages are welcome.
+- **The dashboard is localized** in eight languages: English (`en`), Turkish (`tr`), German (`de`), Spanish (`es`), French (`fr`), Chinese (`zh`), Japanese (`ja`) and Russian (`ru`), all in `web/static/i18n.js`. English is the source: a missing key falls back to it. A user-facing string added to the dashboard needs its English key; add the other seven translations in the same change when you can, and say in the pull request which ones are missing otherwise. Error and log messages, the API, the CLI and the Prometheus metrics are not translated.
+
 ## Security rules
 
 - **Redact credentials.** MongoDB URIs pass through `internal/redact` before they reach logs, error messages, API responses or the UI. New secrets (tokens, passwords, keys) must be masked in API output and never logged. Tests should assert that the password does not leak.

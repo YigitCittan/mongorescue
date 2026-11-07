@@ -1,6 +1,6 @@
 # Incident runbooks
 
-One section per alert of [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml). Every rule carries a `runbook_url` annotation that points at the heading of its alert here (`runbooks/#<alertname in lower case>`), so the page Alertmanager shows is the page that tells you what to do. A test (`go test ./internal/metrics`) fails when a rule has no `runbook_url` or its anchor is missing from this page.
+One section per alert of [`deploy/prometheus/alerts.yml`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/prometheus/alerts.yml). Every rule carries a `runbook_url` annotation that points at the heading of its alert here (`runbooks/#<alertname in lower case>`), so the page Alertmanager shows is the page that tells you what to do. A test (`go test ./internal/metrics`) fails when a rule has no `runbook_url` or its anchor is missing from this page.
 
 Each runbook has the same parts: **Symptom** (what you see), **Likely causes**, **Diagnosis** (exact commands, API calls and PromQL), **Action** and **Escalation** (when to stop and who or what to involve). The [monitoring](monitoring.md#prometheus-alert-rules) page lists when each rule fires, [metrics](metrics.md) every series, and [production](production.md#service-level-objectives) the suggested SLOs.
 

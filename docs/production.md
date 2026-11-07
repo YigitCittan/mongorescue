@@ -19,7 +19,7 @@ MongoRescue holds credentials for your databases and your backup storage, and ca
 
 ## Production checklist
 
-The checklist above secures the instance. This one makes sure you can still restore after losing a database, a bucket, a cloud account or MongoRescue itself. Review it at every minor release, together with the README's [known limitations](../README.md#known-limitations).
+The checklist above secures the instance. This one makes sure you can still restore after losing a database, a bucket, a cloud account or MongoRescue itself. Review it at every minor release, together with the README's [known limitations](https://github.com/YigitCittan/mongorescue/blob/main/README.md#known-limitations).
 
 - [ ] **Object Lock in compliance mode, with versioning**, on every S3 target that holds backups ([Object Lock](configuration.md#immutable-backups-s3-object-lock), [threat model](security.md#immutable-backups-s3-object-lock)). Why: without it, anyone holding the bucket's credentials can delete every archive, and governance mode can be bypassed.
 - [ ] **A separate IAM account and credentials for copy targets** ([least-privilege credentials](#least-privilege-storage-credentials), [copies](configuration.md#copies-on-a-second-target-3-2-1)). Why: one leaked key, or one compromised account, must not reach the primary and its copies at once.
@@ -540,11 +540,13 @@ The repository's `docker-compose.yml` is hardened by default. Keep these propert
 
 - **Stopping during a backup.** `docker compose stop` gives the container 10 seconds by default, after which running backups are cancelled (recorded as cancelled, their partial archives removed). To let them finish, set `MONGORESCUE_SHUTDOWN_GRACE` (for example `9m`) and a longer `stop_grace_period` (for example `10m`); see [Graceful shutdown](kubernetes.md#graceful-shutdown).
 
-To attach MongoRescue to a Compose project that already runs MongoDB, start from [examples/compose-existing-stack.yml](../examples/compose-existing-stack.yml).
+A complete Compose file with Caddy, automatic HTTPS and the trusted-proxies setting explained is [examples/compose-caddy.yml](https://github.com/YigitCittan/mongorescue/blob/main/examples/compose-caddy.yml) ([recipe](deployment-recipes.md#caddy-with-automatic-https)).
+
+To attach MongoRescue to a Compose project that already runs MongoDB, start from [examples/compose-existing-stack.yml](https://github.com/YigitCittan/mongorescue/blob/main/examples/compose-existing-stack.yml).
 
 ## systemd
 
-The deb and rpm packages of every release ([README](../README.md#install-options)) install the binary in `/usr/bin`, the unit `mongorescue.service` and the conffile `/etc/default/mongorescue`, and create the system user `mongorescue` with the state directory `/var/lib/mongorescue` (`0750`). The service is installed but not started:
+The deb and rpm packages of every release ([README](https://github.com/YigitCittan/mongorescue/blob/main/README.md#install-options)) install the binary in `/usr/bin`, the unit `mongorescue.service` and the conffile `/etc/default/mongorescue`, and create the system user `mongorescue` with the state directory `/var/lib/mongorescue` (`0750`). The service is installed but not started:
 
 ```bash
 sudo apt install ./mongorescue_<version>_linux_amd64.deb   # or: sudo dnf install ./mongorescue_<version>_linux_amd64.rpm

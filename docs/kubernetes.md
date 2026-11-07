@@ -1,6 +1,6 @@
 # Kubernetes
 
-MongoRescue ships a Helm chart in [`deploy/helm/mongorescue`](../deploy/helm/mongorescue). It runs the same container image as Docker (`ghcr.io/yigitcittan/mongorescue`) as a one-replica StatefulSet. Everything except the bootstrap options is configured in the dashboard or the REST API and stored in the database on the data volume, exactly as with Docker.
+MongoRescue ships a Helm chart in [`deploy/helm/mongorescue`](https://github.com/YigitCittan/mongorescue/tree/main/deploy/helm/mongorescue). It runs the same container image as Docker (`ghcr.io/yigitcittan/mongorescue`) as a one-replica StatefulSet. Everything except the bootstrap options is configured in the dashboard or the REST API and stored in the database on the data volume, exactly as with Docker.
 
 ## Install
 
@@ -136,7 +136,7 @@ prometheusRule:
     release: kube-prometheus-stack
 ```
 
-The PrometheusRule holds the rules of [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) unchanged (the chart carries a copy in `files/alerts.yml`, and CI checks the two are equal); see [monitoring.md](monitoring.md#prometheus-alert-rules); every rule links to its [incident runbook](runbooks.md). Pair them with an external [heartbeat](monitoring.md#global-heartbeat): Prometheus in the same cluster fails with it.
+The PrometheusRule holds the rules of [`deploy/prometheus/alerts.yml`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/prometheus/alerts.yml) unchanged (the chart carries a copy in `files/alerts.yml`, and CI checks the two are equal); see [monitoring.md](monitoring.md#prometheus-alert-rules); every rule links to its [incident runbook](runbooks.md). Pair them with an external [heartbeat](monitoring.md#global-heartbeat): Prometheus in the same cluster fails with it.
 
 The [Grafana dashboard](monitoring.md#grafana-dashboard) can ship as a ConfigMap for the Grafana sidecar (kube-prometheus-stack or the Grafana chart), which imports every ConfigMap that carries its label:
 
@@ -289,6 +289,10 @@ Consequences of `readinessActiveOnly`:
 - A disk-full or read-only active instance leaves the Service while it still holds the lease. No instance is then Ready: that is a real outage of the dashboard and API, which `disk_full` / `store_unwritable` make visible instead of serving errors.
 
 Keep the two pods apart: the `affinity` and `topologySpreadConstraints` values above are rendered as given, and NOTES.txt warns when neither is set.
+
+## Running a job from a CronJob
+
+MongoRescue runs its own schedules. When Kubernetes should own the schedule or the result of a backup instead (a cadence managed with GitOps, a backup in a deployment window, alerting on failed Jobs), a CronJob can call `mongorescue backup --job ID --wait` from the same image: it needs only the Service address and an operator API key in a Secret, no MongoDB credentials and no volumes. The manifest, validated with `kubeconform`, is [examples/kubernetes/backup-cronjob.yaml](https://github.com/YigitCittan/mongorescue/blob/main/examples/kubernetes/backup-cronjob.yaml); how it works and its exit codes are in the [deployment recipes](deployment-recipes.md#kubernetes-cronjob-with-the-cli).
 
 ## Upgrades and backups of MongoRescue itself
 

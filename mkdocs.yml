@@ -54,8 +54,10 @@ plugins:
 
 validation:
   links:
-    not_found: ignore
-    unrecognized_links: ignore
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
 
 markdown_extensions:
   - admonition
@@ -82,40 +84,46 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
-  - Why MongoRescue: comparison.md
-  - Feature Catalogue: features.md
-  - Getting Started:
-      - Configuration: configuration.md
+  - Start:
+      - Why MongoRescue: comparison.md
+      - Feature Catalogue: features.md
+      - First Backup from the CLI: getting-started-cli.md
       - MongoDB Connections: connections.md
       - Desktop Application: desktop.md
       - Kubernetes & Helm: kubernetes.md
-  - Features:
+      - Deployment Recipes: deployment-recipes.md
+  - Operate:
+      - Production Checklist: production.md
+      - Upgrading & Rollback: upgrading.md
       - Point-in-Time Recovery (PITR): pitr.md
       - Verification & Testing: verification.md
-      - Age Encryption: encryption.md
+      - Monitoring & Heartbeat: monitoring.md
       - Notifications & Alerts: notifications.md
+      - Incident Runbooks: runbooks.md
+      - Troubleshooting: troubleshooting.md
+  - Secure:
+      - Security & Key Wrapping: security.md
+      - Threat Model: threat-model.md
+      - Age Encryption: encryption.md
+      - Single Sign-On (SSO): sso.md
+      - Audit Logging: audit.md
+      - Privacy & Retention: privacy.md
+  - Integrate:
       - Command Line (CLI): cli.md
       - REST API Reference: api.md
       - OpenAPI Description: openapi.md
       - MCP Server (AI Integration): mcp.md
-  - Operations & Production:
-      - Production Checklist: production.md
-      - Upgrading & Rollback: upgrading.md
-      - Security & Key Wrapping: security.md
-      - Threat Model: threat-model.md
-      - Monitoring & Heartbeat: monitoring.md
+  - Reference:
+      - Configuration: configuration.md
       - Prometheus Metrics: metrics.md
-      - Audit Logging: audit.md
-      - Single Sign-On (SSO): sso.md
-      - Incident Runbooks: runbooks.md
-      - Troubleshooting: troubleshooting.md
-  - Architecture & Design:
+      - FAQ: faq.md
+      - Glossary: glossary.md
+      - Versioning Policy: versioning.md
+      - Roadmap: roadmap.md
+  - Design:
       - Architecture Overview: architecture.md
       - High Availability (Active-Passive): design/ha.md
       - PITR Storage & Codec Design: design/pitr.md
       - Roles & Permissions Design: design/roles.md
       - OIDC Architecture: design/oidc.md
       - Testing Strategy: testing.md
-      - Versioning Policy: versioning.md
-      - Roadmap: roadmap.md
-      - Privacy & Retention: privacy.md

@@ -70,7 +70,7 @@ With [`-access-log`](configuration.md#logging) every request also writes one lin
 
 ## Prometheus alert rules
 
-[`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) holds alerting rules over the [metrics](metrics.md), unit-tested with `promtool test rules` in CI ([`alerts_test.yml`](../deploy/prometheus/alerts_test.yml); run them with `make test-prometheus-rules`):
+[`deploy/prometheus/alerts.yml`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/prometheus/alerts.yml) holds alerting rules over the [metrics](metrics.md), unit-tested with `promtool test rules` in CI ([`alerts_test.yml`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/prometheus/alerts_test.yml); run them with `make test-prometheus-rules`):
 
 | Alert | Severity | Fires when |
 | :--- | :--- | :--- |
@@ -122,7 +122,7 @@ Every rule carries a `runbook_url` annotation that points at its section of the 
 
 ## Grafana dashboard
 
-[`deploy/grafana/mongorescue.json`](../deploy/grafana/mongorescue.json) is a dashboard for Grafana 10 and later over the same metrics. Import it under **Dashboards → New → Import → Upload JSON file** and pick the Prometheus data source that scrapes MongoRescue; it needs nothing else. Variables: **Data source**, **Instance**, **Job** (the MongoRescue job ID), **Database** and **PITR stream**. Its rows:
+[`deploy/grafana/mongorescue.json`](https://github.com/YigitCittan/mongorescue/blob/main/deploy/grafana/mongorescue.json) is a dashboard for Grafana 10 and later over the same metrics. Import it under **Dashboards → New → Import → Upload JSON file** and pick the Prometheus data source that scrapes MongoRescue; it needs nothing else. Variables: **Data source**, **Instance**, **Job** (the MongoRescue job ID), **Database** and **PITR stream**. Its rows:
 
 | Row | Shows |
 | :--- | :--- |

@@ -131,4 +131,4 @@ Store identifiers rather than names, e-mail addresses or other direct personal d
 
 ## Contact
 
-Questions about this policy: open an [issue](https://github.com/YigitCittan/mongorescue/issues). For security issues, see [SECURITY.md](../SECURITY.md).
+Questions about this policy: open an [issue](https://github.com/YigitCittan/mongorescue/issues). For security issues, see [SECURITY.md](https://github.com/YigitCittan/mongorescue/blob/main/SECURITY.md).
