@@ -95,7 +95,7 @@ func (s *session) printVerification(res *apiclient.Result[models.BackupRecord]) 
 	case b.Verification == models.VerificationOK:
 		fmt.Fprintf(s.stdout, "Backup %s verified at %s: the archive matches its checksum.\n", b.ID, fmtTimePtr(b.VerifiedAt))
 	default:
-		fmt.Fprintf(s.stdout, "Backup %s verification %s at %s%s.\n", b.ID, b.Verification, fmtTimePtr(b.VerifiedAt), suffix(b.VerificationError))
+		fmt.Fprintf(s.stdout, "Backup %s verification %s at %s%s.\n", b.ID, s.paint(string(b.Verification)), fmtTimePtr(b.VerifiedAt), suffix(b.VerificationError))
 	}
 	if b.Verification != models.VerificationOK {
 		return s.reportedInText(failedErrorf("verification of backup %s: %s%s", b.ID, b.Verification, suffix(b.VerificationError)))

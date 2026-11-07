@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -68,14 +67,16 @@ func redactJSON(raw []byte) []byte {
 	return append(out, raw[last:]...)
 }
 
-// table writes aligned columns.
+// table writes aligned columns, two spaces apart, the last one unpadded. Widths
+// ignore ANSI colour sequences, so coloured cells stay aligned.
 type table struct {
-	tw *tabwriter.Writer
+	w    io.Writer
+	rows [][]string
 }
 
 // newTable starts a table with the header row.
 func newTable(w io.Writer, header ...string) *table {
-	t := &table{tw: tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)}
+	t := &table{w: w}
 	t.row(header...)
 	return t
 }
@@ -94,12 +95,33 @@ func (t *table) row(cells ...string) {
 		}
 		cells[i] = c
 	}
-	fmt.Fprintln(t.tw, strings.Join(cells, "\t"))
+	t.rows = append(t.rows, cells)
 }
 
 // flush writes the table.
 func (t *table) flush() error {
-	return t.tw.Flush()
+	var widths []int
+	for _, r := range t.rows {
+		for i, c := range r[:len(r)-1] {
+			if i == len(widths) {
+				widths = append(widths, 0)
+			}
+			widths[i] = max(widths[i], visibleWidth(c))
+		}
+	}
+	var buf strings.Builder
+	for _, r := range t.rows {
+		for i, c := range r {
+			buf.WriteString(c)
+			if i < len(r)-1 {
+				buf.WriteString(strings.Repeat(" ", widths[i]-visibleWidth(c)+2))
+			}
+		}
+		buf.WriteByte('\n')
+	}
+	t.rows = nil
+	_, err := io.WriteString(t.w, buf.String())
+	return err
 }
 
 // fmtTime formats t in UTC, or "-" for the zero time.

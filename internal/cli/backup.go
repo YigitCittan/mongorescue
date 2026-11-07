@@ -297,7 +297,7 @@ func (s *session) printRunBackups(run apiclient.BackupRun) error {
 		if b.Status == models.StatusCompleted {
 			size = fmtBytes(b.SizeBytes)
 		}
-		t.row(b.Database, b.ID, string(b.Status), size, clean(b.ErrorMessage))
+		t.row(b.Database, b.ID, s.paint(string(b.Status)), size, clean(b.ErrorMessage))
 	}
 	for _, b := range run.Busy {
 		t.row(b.Database, "", "skipped (already running)", "", clean(b.Error))
@@ -388,7 +388,7 @@ func (s *session) printBackup(res *apiclient.Result[models.BackupRecord], starte
 		_, err := fmt.Fprintf(s.stdout, "Started backup %s of %s (%s).\nFollow it with: mongorescue list backups --id %s\n", b.ID, b.Database, b.Status, b.ID)
 		return err
 	}
-	line := fmt.Sprintf("Backup %s of %s %s", b.ID, b.Database, b.Status)
+	line := fmt.Sprintf("Backup %s of %s %s", b.ID, b.Database, s.paint(string(b.Status)))
 	if b.Status == models.StatusCompleted {
 		line += fmt.Sprintf(": %s in %s", fmtBytes(b.SizeBytes), fmtSeconds(b.DurationSeconds))
 	} else if b.ErrorMessage != "" {
@@ -417,7 +417,7 @@ func (s *session) printRun(res *apiclient.Result[models.JobRun], started bool) e
 	}
 	t := newTable(s.stdout, "DATABASE", "BACKUP", "STATUS", "ERROR")
 	for _, d := range r.Databases {
-		t.row(d.Database, d.BackupID, string(d.Status), clean(d.Error))
+		t.row(d.Database, d.BackupID, s.paint(string(d.Status)), clean(d.Error))
 	}
 	return t.flush()
 }
