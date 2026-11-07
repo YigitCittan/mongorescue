@@ -12,6 +12,7 @@ MongoRescue exists to give back the data it was given. This page lists what the 
 | Integration | `internal/integration`, `integration` build tag | every push and pull request, MongoDB 5.0, 6.0, 7.0 and 8.0, each standalone and as a single-node replica set (which runs the point-in-time recovery tests), MinIO and LocalStack, Database Tools 100.12.2 and, on the 8.0 replica set, 100.19.1 | Real `mongodump`/`mongorestore` against a real server and real S3 implementations; see below. |
 | E2E (browser) | `e2e/` (Playwright, Chromium), `scripts/test-e2e-docker.sh` | job "E2E (Playwright)" of `ci.yml` on every push and pull request, against disposable MongoDB 7 and MinIO containers (not a required check yet) | The dashboard of the real binary works end to end in a browser: setup and sign-in, connections, storage targets, backups, safe-clone and point-in-time restores, deletes, viewer and per-connection access, single sign-on, monitoring, throttling and key rotation. Traces and the report are kept for failed runs. |
 | Desktop update E2E | `scripts/test-desktop-update-e2e.sh`, `.github/workflows/desktop-e2e.yml` | pull requests that touch the desktop app or updater and pushes to `main`, on Windows, macOS and Linux (not a required check) | The desktop app built twice (0.0.1 and 0.0.2) and packaged as the release is: the old version updates itself from a fake GitHub release on a loopback port (Windows swaps in place and restarts; macOS and Linux download, verify and show the archive), and a tampered archive fails and leaves the old version intact. See [desktop.md](desktop.md#how-the-update-is-tested). |
+| Release verification | `scripts/release-verify.sh`; jobs `verify-archives`, `verify-roundtrip` and `verify-upgrade` of `release.yml`, job "Upgrade from the previous releases" of `nightly.yml` | on every release tag, before the image is promoted and the release published (a failure keeps the draft); the upgrade job also nightly and on dispatch (not required) | The produced archives, the `sha-<commit>` image and the upgrade from real previous releases work; see [below](#release-verification). |
 | Cloud | the same suites against AWS S3, R2, B2, Spaces, Wasabi | pushes to `main` (maintainer secrets) | Storage conformance, round trips, the HTTP API, fidelity and corruption detection on real providers. |
 | PITR replica set | `internal/replset`, `replset3` build tag, `make test-pitr-replset` | nightly, 03:00 UTC (job "PITR replica set" of the Nightly workflow, not required): MongoDB 5.0 and 8.0, Database Tools 100.12.2 and 100.19.1 | On a three-member replica set: failovers during collection and during a restore, a rollback through network isolation and divergence after a forced reconfiguration keep the oplog chain unbroken (or end it exactly where the surviving history ends), lose and duplicate no entry, and never store a rolled-back write. See [below](#pitr-on-a-three-member-replica-set). |
 | PITR soak | `TestSoak`, build tags `replset3` and `soak`, `make test-pitr-soak` | weekly, Sunday 04:00 UTC, 5.5 hours (job "PITR soak" of the Nightly workflow, not required); 7 days by hand with `scripts/soak-pitr.sh` | Hours of collection under a write load: no gap and no false break, a bounded number of chunk objects and bases, retention deleting and purging what falls out of the window, and a passing chain test. See [below](#pitr-soak-test). |
@@ -80,6 +81,40 @@ MONGO_IMAGE=mongo:8.0 MONGO_TOPOLOGY=replset IT_PROVIDERS=minio IT_RACE=0 \
 The tests run in parallel, each on databases, storage prefixes and ports of its own. The tests that act on the whole instance (instance-scope base backups and point-in-time restores, `mongodump --oplog`, users in `admin`) run one after another as subtests of `TestWholeInstance`: on the server of `MONGORESCUE_TEST_WHOLE_INSTANCE_URI` in parallel with the rest, or, without it, alone before the other tests start.
 
 To run against services you manage, set `MONGORESCUE_TEST_MONGO_URI` and the `MONGORESCUE_TEST_S3_*` variables described in [CONTRIBUTING.md](../CONTRIBUTING.md#test-commands-and-variables) and run `make test-integration`. Tests whose services are not configured are skipped.
+
+## Release verification
+
+Unit and integration tests run on a checkout; a release is a different artifact (cross-compiled archives with ldflags and the embedded dashboard, a container image, and state written by earlier releases). `scripts/release-verify.sh` checks those, in three modes. The release workflow runs them against the draft release, and the job that promotes the image and publishes the release needs all of them, so a failure leaves the release a draft and the image without version tags.
+
+| Mode | What it proves | Where |
+| :--- | :--- | :--- |
+| `archive BINARY VERSION` | `--version` reports the tag with a commit and a build date (a broken `-X` ldflag fails), the server starts on an empty temporary data directory, `GET /api/v1/health` answers 200 with the version, the embedded dashboard is served (a missing embed fails), and SIGTERM ends it cleanly. Needs only bash and curl. | `verify-archives`: every archive on a native runner (linux amd64 and arm64, macOS amd64 and arm64, Windows amd64 and arm64), after the checksum was checked against `checksums.txt` |
+| `roundtrip binary BINARY VERSION`, `roundtrip image IMAGE VERSION` | One encrypted backup to MinIO and one safe-clone restore of a seeded database against a MongoDB 8.0 single-node replica set, through the REST API (setup, API key, storage target, connection, backup, restore), then the clone's document count and index are compared; no secret reaches the server log. | `verify-roundtrip`: the linux/amd64 binary and the image of the tag by digest (`sha-<commit>`, before promotion) |
+| `upgrade NEW_BINARY [VERSION]` | For each of the last two stable releases: the old release creates its state on a fresh data directory (storage target with S3 credentials, age encryption, a connection with a password, a job on a `* * * * *` schedule, an encrypted backup, a PITR stream), is stopped, and the new build opens the same data directory. The old API key and the admin password still work; stored secrets decrypt (the connection and storage target tests pass, encryption settings are intact); the old encrypted backup restores into a safe clone with the right data; the schedule continues (a new run of the old job completes); the PITR stream is running; and the new build takes a backup and restores it. | `verify-upgrade` of the release workflow (with the release binary) and the nightly job "Upgrade from the previous releases" (with a build of the commit; also `workflow_dispatch` with suite `upgrade`) |
+
+The database servers are disposable containers (MongoDB 8.0 with `GLIBC_TUNABLES=glibc.pthread.rseq=1`, SERVER-121912; the digest-pinned MinIO of the integration suite), removed on exit. Not covered: HA lease and snapshot files, key wrapping files (`secret.key.wrapped`) and run logs written by an older release; the migration fixtures of `internal/store` cover their schema, not a real old binary.
+
+Run it locally on Linux (Docker, `curl` 7.75+, `jq`, `gh` and `mongodump`/`mongorestore` 100.12 or newer on `PATH`; `scripts/release-verify.sh install-tools` installs the Tools on Debian and Ubuntu):
+
+```bash
+make build
+scripts/release-verify.sh upgrade bin/mongorescue          # last two releases, downloaded with gh
+UPGRADE_FROM="v0.28.0" UPGRADE_COUNT=1 scripts/release-verify.sh upgrade bin/mongorescue
+scripts/release-verify.sh roundtrip binary bin/mongorescue "$(bin/mongorescue --version | sed 's/^MongoRescue v\([^ ]*\) .*/\1/')"
+scripts/release-verify.sh archive path/to/unpacked/mongorescue 1.2.3   # any OS with bash and curl
+```
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `UPGRADE_COUNT` | `2` | How many previous stable releases to upgrade from |
+| `UPGRADE_FROM` | | Space-separated release tags instead of the latest ones |
+| `UPGRADE_CACHE` | temporary | Directory that keeps the downloaded archives between runs |
+| `UPGRADE_PITR` | `1` | `0` skips the PITR stream |
+| `UPGRADE_SCHEDULE_WAIT` | `150` | Seconds to wait for a scheduled run after the upgrade |
+| `MONGO_IMAGE`, `MINIO_IMAGE` | `mongo:8.0`, pinned | Service images |
+| `VERIFY_BIND`, `VERIFY_ADDR` | `127.0.0.1` | Where the services are published and the address they are reached at, for running the script itself inside a container (for example `0.0.0.0` and `host.docker.internal` on Docker Desktop) |
+
+Releases that predate a feature are skipped for it (a release without the PITR API logs it and goes on); a release that cannot be started on the fresh data directory, or whose state the new build cannot read, fails the run, which is the point.
 
 ## Fault-injection suite
 
