@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Dashboard (#224): the two confirmations for turning off TLS certificate verification (checking the box, and testing or saving with a changed connection string) use the styled confirmation dialog (danger variant, focus on Cancel) instead of the browser's `window.confirm`.
+- Dashboard (#224): the upload stall timeout strings for Chinese, Japanese and Russian now live in `i18n.js` with the other languages (the separate `stall.js` overlay is gone). A new Go test (`web/i18n_parity_test.go`) fails when any language of `i18n.js` lacks or adds a key compared with English.
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 

@@ -331,12 +331,19 @@ function tlsPlaceholders() {
   if (pw) pw.placeholder = tlsStored.password ? t("tls.password_stored") : "";
 }
 
+// tlsConfirmInsecure asks, in the app's own dialog (danger variant, focus on
+// Cancel), whether certificate verification may be turned off. It resolves to
+// true only when the user confirms.
+function tlsConfirmInsecure() {
+  return confirmDialog({ body: t("tls.insecure_confirm"), danger: true });
+}
+
 // tlsConfirmURI asks again before a connection that does not verify the server
-// certificate is tested or saved with another connection string. It returns
+// certificate is tested or saved with another connection string. It resolves to
 // false when the user declines.
-function tlsConfirmURI(uri) {
+async function tlsConfirmURI(uri) {
   if (!tlsChecked("connection-tls-insecure") || !tlsStored.insecure || uri === tlsStored.uri || tlsStored.reconfirmedURI === uri) return true;
-  if (!window.confirm(t("tls.insecure_confirm"))) return false;
+  if (!await tlsConfirmInsecure()) return false;
   tlsStored.reconfirmedURI = uri;
   return true;
 }
@@ -461,8 +468,8 @@ function setupTLS() {
   });
   const insecure = tlsEl("connection-tls-insecure");
   if (insecure) {
-    insecure.addEventListener("change", () => {
-      if (insecure.checked && !tlsStored.insecure && !window.confirm(t("tls.insecure_confirm"))) insecure.checked = false;
+    insecure.addEventListener("change", async () => {
+      if (insecure.checked && !tlsStored.insecure && !await tlsConfirmInsecure()) insecure.checked = false;
       tlsChanged();
     });
   }
