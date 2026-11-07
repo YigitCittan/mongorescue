@@ -1,5 +1,15 @@
 {
   "components": {
+    "headers": {
+      "XRequestId": {
+        "description": "The ID of the request, also in the log lines it wrote. A well-formed one sent by a trusted proxy is kept, otherwise the server generates one. Every response carries it.",
+        "schema": {
+          "maxLength": 128,
+          "minLength": 8,
+          "type": "string"
+        }
+      }
+    },
     "parameters": {
       "DatabaseName": {
         "in": "path",
@@ -103,7 +113,12 @@
             }
           }
         },
-        "description": "An error: the envelope with success false, an error text and a code."
+        "description": "An error: the envelope with success false, an error text and a code.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/XRequestId"
+          }
+        }
       },
       "Forbidden": {
         "content": {

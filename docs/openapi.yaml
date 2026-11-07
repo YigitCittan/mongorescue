@@ -4417,8 +4417,18 @@ components:
       schema:
         type: integer
         minimum: 0
+  headers:
+    XRequestId:
+      description: The ID of the request, also in the log lines it wrote. A well-formed one sent by a trusted proxy is kept, otherwise the server generates one. Every response carries it.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
   responses:
     Error:
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
       description: 'An error: the envelope with success false, an error text and a code.'
       content:
         application/json:
