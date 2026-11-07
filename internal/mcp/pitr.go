@@ -33,6 +33,9 @@ type pitrRestoreInput struct {
 	Databases          []string `json:"databases,omitempty" jsonschema:"only restore these databases (default: every database except admin, config and local)"`
 	TargetConnectionID string   `json:"target_connection_id,omitempty" jsonschema:"another connection to restore into (default: the stream's connection)"`
 	Force              bool     `json:"force,omitempty" jsonschema:"WARNING: starts the restore even though a preflight check failed; set it only after reading the failed checks"`
+
+	NumParallelCollections        int `json:"num_parallel_collections,omitempty" jsonschema:"mongorestore --numParallelCollections of the base restore, 1 to 16 (default: the server's setting, else 4)"`
+	InsertionWorkersPerCollection int `json:"insertion_workers_per_collection,omitempty" jsonschema:"mongorestore --numInsertionWorkersPerCollection of the base restore, 1 to 32 (default: the server's setting, else 1)"`
 }
 
 // registerPITRTools adds pitr_status and pitr_restore.
@@ -110,6 +113,8 @@ func pitrRestoreRequest(in pitrRestoreInput, at time.Time) models.RestoreRequest
 		Databases:          in.Databases,
 		TargetConnectionID: in.TargetConnectionID,
 		Force:              in.Force,
+
+		NumParallelCollections: in.NumParallelCollections, InsertionWorkersPerCollection: in.InsertionWorkersPerCollection,
 	}
 }
 

@@ -412,13 +412,12 @@ const (
 
 // estimatePITR returns the estimated duration of the restore of plan and where
 // its rates come from (see EstimatePITR).
-func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.RestorePlan) (float64, string) {
+func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.RestorePlan, collections, workers int) models.PITREstimate {
 	var entries int64
 	for _, c := range plan.Chunks {
 		entries += c.Entries
 	}
-	e := s.EstimatePITR(ctx, streamID, plan.Base.SizeBytes, plan.OplogBytes, entries)
-	return e.Seconds, e.Source
+	return s.EstimatePITRWith(ctx, streamID, plan.Base.SizeBytes, plan.OplogBytes, entries, collections, workers)
 }
 
 // EstimatePITR estimates the duration (RTO) of a point-in-time restore of stream
@@ -436,21 +435,44 @@ func (s *Service) estimatePITR(ctx context.Context, streamID string, plan *pitr.
 // newest chain test of an earlier release, then to the default rates (50 MiB/s
 // for the base; the slower of 4 MiB/s and 2,000 entries per second for the
 // oplog). It reads restore records only, never MongoDB.
+//
+// The base rate depends on the mongorestore parallelism: the estimate is made for
+// the parallelism a restore would use now (the general.restore_* settings, else
+// mongorestore's defaults; see EstimatePITRWith) and averages only restores that
+// ran with the same values when any of them was timed, so raising
+// num_parallel_collections shows in the estimate once a restore has run with it.
+// Without such a restore the rates of the others are used and
+// PITREstimate.ParallelismMatched is false.
 func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64) models.PITREstimate {
+	g := s.settings().General
+	return s.EstimatePITRWith(ctx, streamID, baseBytes, oplogBytes, oplogEntries, g.RestoreNumParallelCollections, g.RestoreInsertionWorkers)
+}
+
+// ranWith reports whether record r ran with mongorestore parallelism
+// (collections, workers); 0 on a record of an earlier release means the tool's
+// defaults it ran with.
+func ranWith(r *models.RestoreRecord, collections, workers int) bool {
+	rc, rw := models.EffectiveRestoreParallelism(r.NumParallelCollections, r.InsertionWorkersPerCollection, 0, 0)
+	return rc == collections && rw == workers
+}
+
+// EstimatePITRWith is EstimatePITR for a restore that runs with the given
+// mongorestore parallelism (0: the default of mongorestore, which a request or
+// setting resolves before it gets here; see models.EffectiveRestoreParallelism).
+func (s *Service) EstimatePITRWith(ctx context.Context, streamID string, baseBytes, oplogBytes, oplogEntries int64, collections, workers int) models.PITREstimate {
+	collections, workers = models.EffectiveRestoreParallelism(collections, workers, 0, 0)
 	out := models.PITREstimate{BaseBytes: baseBytes, OplogBytes: oplogBytes, OplogEntries: oplogEntries,
 		Source: models.PITREstimateDefault, BaseBytesPerSecond: defaultBaseRate, ReplayBytesPerSecond: defaultReplayRate,
-		ReplayEntriesPerSecond: defaultReplayEntryRate}
+		ReplayEntriesPerSecond: defaultReplayEntryRate, NumParallelCollections: collections, InsertionWorkersPerCollection: workers}
 	var baseB, baseS float64
 	var runs []replayRun
 	samples := 0
 	var legacy *models.RestoreRecord
 	if recs, err := s.store.ListRestoreRecords(ctx); err == nil {
+		recs = estimateRecords(recs, streamID, collections, workers, &out.ParallelismMatched)
 		for _, r := range recs {
 			if samples == rateSamples {
 				break
-			}
-			if r.PITR == nil || r.PITR.StreamID != streamID || r.Status != models.RestoreStatusCompleted {
-				continue
 			}
 			if r.PITR.BaseSeconds <= 0 && r.PITR.ReplaySeconds <= 0 {
 				if legacy == nil && r.PITR.ChainTest && r.DurationSeconds > 0 && r.PITR.BaseBytes+r.PITR.OplogBytes > 0 {
@@ -502,6 +524,29 @@ func (s *Service) EstimatePITR(ctx context.Context, streamID string, baseBytes, 
 	}
 	out.Seconds = float64(baseBytes)/out.BaseBytesPerSecond + replay()
 	return out
+}
+
+// estimateRecords returns the completed point-in-time restores of streamID, in the
+// order of recs, that the estimate averages: those that ran with the given
+// parallelism when at least one of them was timed (*matched is then true), else all.
+func estimateRecords(recs []*models.RestoreRecord, streamID string, collections, workers int, matched *bool) []*models.RestoreRecord {
+	var all, same []*models.RestoreRecord
+	timed := false
+	for _, r := range recs {
+		if r.PITR == nil || r.PITR.StreamID != streamID || r.Status != models.RestoreStatusCompleted {
+			continue
+		}
+		all = append(all, r)
+		if ranWith(r, collections, workers) {
+			same = append(same, r)
+			timed = timed || r.PITR.BaseSeconds > 0 || r.PITR.ReplaySeconds > 0
+		}
+	}
+	if timed {
+		*matched = true
+		return same
+	}
+	return all
 }
 
 // replayRun is one measured oplog replay: its entries, stored bytes and seconds.
@@ -620,13 +665,15 @@ func (p *preflightRun) pitrChain(pp *pitrPlan, record *models.RestoreRecord) {
 	if record == nil {
 		return
 	}
-	secs, from := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan)
+	est := p.svc.estimatePITR(p.ctx, pp.stream.ID, plan, record.NumParallelCollections, record.InsertionWorkersPerCollection)
 	p.res.PITR = &models.PITRPreflight{
-		BaseID: plan.Base.ID, BaseStartedAt: plan.Base.StartedAt, BaseConsistentAt: plan.Base.TAfter.TS.Time(),
+		NumParallelCollections: est.NumParallelCollections, InsertionWorkersPerCollection: est.InsertionWorkersPerCollection,
+		ParallelismMatched: est.ParallelismMatched,
+		BaseID:             plan.Base.ID, BaseStartedAt: plan.Base.StartedAt, BaseConsistentAt: plan.Base.TAfter.TS.Time(),
 		BaseBytes: plan.Base.SizeBytes, OplogBytes: plan.OplogBytes,
 		Chunks: plan.ChunkCount, UnverifiedChunks: plan.UnverifiedChunks,
 		TargetTime: plan.TargetTime, Limit: fmt.Sprintf("%d:%d", plan.Limit.T, plan.Limit.I),
-		CloneSuffix: record.PITR.CloneSuffix, EstimatedSeconds: secs, EstimateFrom: from,
+		CloneSuffix: record.PITR.CloneSuffix, EstimatedSeconds: est.Seconds, EstimateFrom: est.Source,
 	}
 }
 

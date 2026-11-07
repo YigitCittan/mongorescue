@@ -23,19 +23,23 @@ const (
 	KeyPostRestoreCommandTimeout = "general.post_restore_command_timeout"
 	// KeyStorageStallTimeout fails an upload whose storage target accepts no bytes
 	// for this long.
-	KeyStorageStallTimeout    = "general.storage_stall_timeout"
-	KeySessionIdleTimeout     = "security.session_idle_timeout"
-	KeySessionAbsoluteTimeout = "security.session_absolute_timeout"
-	KeySecureCookies          = "security.secure_cookies"
-	KeyTrustProxyHeaders      = "security.trust_proxy_headers"
-	KeyTrustedProxies         = "security.trusted_proxies"
-	KeyHSTSMaxAge             = "security.hsts_max_age"
-	KeyCORSOrigins            = "security.cors_origins"
-	KeyMetricsPublic          = "security.metrics_public"
-	KeyMCPEnabled             = "security.mcp_enabled"
-	KeyDeleteGraceDays        = "security.delete_grace_days"
-	KeyRequireSecondApprover  = "security.require_second_approver"
-	KeyRequireLockedCopies    = "security.require_locked_copies"
+	KeyStorageStallTimeout = "general.storage_stall_timeout"
+	// KeyRestoreNumParallelCollections and KeyRestoreInsertionWorkers are the default
+	// mongorestore parallelism of restores.
+	KeyRestoreNumParallelCollections = "general.restore_num_parallel_collections"
+	KeyRestoreInsertionWorkers       = "general.restore_insertion_workers_per_collection"
+	KeySessionIdleTimeout            = "security.session_idle_timeout"
+	KeySessionAbsoluteTimeout        = "security.session_absolute_timeout"
+	KeySecureCookies                 = "security.secure_cookies"
+	KeyTrustProxyHeaders             = "security.trust_proxy_headers"
+	KeyTrustedProxies                = "security.trusted_proxies"
+	KeyHSTSMaxAge                    = "security.hsts_max_age"
+	KeyCORSOrigins                   = "security.cors_origins"
+	KeyMetricsPublic                 = "security.metrics_public"
+	KeyMCPEnabled                    = "security.mcp_enabled"
+	KeyDeleteGraceDays               = "security.delete_grace_days"
+	KeyRequireSecondApprover         = "security.require_second_approver"
+	KeyRequireLockedCopies           = "security.require_locked_copies"
 	// KeyAPIKeyMaxLifetimeDays caps the lifetime of API keys (0: unlimited).
 	KeyAPIKeyMaxLifetimeDays = "security.api_key_max_lifetime_days"
 	// KeyAPIKeyExpiryWarningDays is how many days before its expiry a key is reported.
@@ -124,6 +128,8 @@ var keyDefs = []keyDef{
 	field(KeyMaxUploadMbps, false, func(s *Settings) *float64 { return &s.General.MaxUploadMbps }),
 	field(KeyPostRestoreCommandTimeout, false, func(s *Settings) *Duration { return &s.General.PostRestoreCommandTimeout }),
 	field(KeyStorageStallTimeout, false, func(s *Settings) *Duration { return &s.General.StorageStallTimeout }),
+	field(KeyRestoreNumParallelCollections, false, func(s *Settings) *int { return &s.General.RestoreNumParallelCollections }),
+	field(KeyRestoreInsertionWorkers, false, func(s *Settings) *int { return &s.General.RestoreInsertionWorkers }),
 	field(KeySessionIdleTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionIdleTimeout }),
 	field(KeySessionAbsoluteTimeout, false, func(s *Settings) *Duration { return &s.Security.SessionAbsoluteTimeout }),
 	field(KeySecureCookies, false, func(s *Settings) *CookiePolicy { return &s.Security.SecureCookies }),

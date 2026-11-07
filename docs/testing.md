@@ -280,7 +280,7 @@ It collects for 168 hours with 60-second chunks, a base every 6 hours, 4 bases k
 
 `TestThroughputAndMemory` generates incompressible 256 KiB documents, backs them up without gzip, restores them into a clone and checks the clone with `dbHash`. It logs throughput and the peak memory of the test process (RSS on Linux, memory held by the Go runtime elsewhere), sampled every 20 ms while each phase runs; in CI the numbers are also written to the job summary. `mongodump` and `mongorestore` run as separate processes and are not included.
 
-Streaming keeps MongoRescue's memory flat: on a laptop (Apple silicon, MongoDB 7, 512 MiB of data) backups ran at 47 to 124 MB/s and restores at 53 to 69 MB/s, with a peak of 15 to 43 MiB whatever the size; the S3 uploader's part buffers (2 × 5 MiB in flight) account for the higher figure. The nightly run enforces the 256 MiB limit with about 2 GiB of data and without the race detector, which inflates memory. Throughput depends on the disk, the network and the server far more than on MongoRescue.
+Streaming keeps MongoRescue's memory flat: on a laptop (Apple silicon, MongoDB 7, 512 MiB of data) backups ran at 47 to 124 MB/s and restores at 53 to 69 MB/s (with mongorestore's default of 4 collections at once and 1 insertion worker each; see [restore parallelism](configuration.md#restore-parallelism)), with a peak of 15 to 43 MiB whatever the size; the S3 uploader's part buffers (2 × 5 MiB in flight) account for the higher figure. The nightly run enforces the 256 MiB limit with about 2 GiB of data and without the race detector, which inflates memory. Throughput depends on the disk, the network and the server far more than on MongoRescue.
 
 ## Known limits
 

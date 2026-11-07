@@ -163,6 +163,7 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 		source, target = strings.Join(dbs, ","), strings.Join(clones, ",")
 	}
 	plan := run.Plan
+	collections, workers := e.effectiveParallelism(req)
 	var inPlace *models.PITRInPlace
 	if req.PITR.InPlace {
 		inPlace = &models.PITRInPlace{Databases: slices.Clone(dbs), Stage: models.PITRInPlaceRestoring, KeepClone: req.PITR.KeepClone}
@@ -178,6 +179,8 @@ func (e *Engine) PreparePITR(req models.RestoreRequest, run PITRRun) (*models.Re
 		StartedAt:            start,
 		Phases:               models.RunPhases{Queued: models.Stamp(start)},
 		InPlace:              inPlace != nil,
+
+		NumParallelCollections: collections, InsertionWorkersPerCollection: workers,
 		PITR: &models.PITRRestore{
 			StreamID: plan.StreamID, ChainID: plan.ChainID, BaseID: plan.Base.ID,
 			TargetTime: plan.TargetTime, Limit: plan.Limit,
@@ -287,7 +290,7 @@ func (e *Engine) executePITR(ctx context.Context, req models.RestoreRequest, run
 	tracker.Phase(models.PhaseRestoring, record.Phases)
 	tracker.Printf("pass 1 of 2: restoring base backup %s", base.ID)
 	baseStart := time.Now()
-	started, err := e.restorePITRBase(ctx, uri, run, info)
+	started, err := e.restorePITRBase(ctx, uri, run, info, parallelArgs(record.NumParallelCollections, record.InsertionWorkersPerCollection))
 	// A database the base held beyond its manifest has a clone too: record it (the
 	// suffix carries this restore's random clone ID, so no other database matches).
 	if started && e.listDatabases != nil {
@@ -528,8 +531,9 @@ func (e *Engine) dropPITRClones(ctx context.Context, uri string, info *models.PI
 
 // restorePITRBase runs pass 1: the base archive into the clones, without
 // --oplogReplay. started reports whether mongorestore was started (the target may
-// have been written to).
-func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, info *models.PITRRestore) (started bool, err error) {
+// have been written to). parallel are the parallelism arguments of the restore
+// (parallelArgs); only this pass takes them, the oplog replay is one stream.
+func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, info *models.PITRRestore, parallel []string) (started bool, err error) {
 	base := run.Base
 	tracker := runs.FromContext(ctx)
 	tracker.StartTransfer(base.SizeBytes)
@@ -564,7 +568,7 @@ func (e *Engine) restorePITRBase(ctx context.Context, uri string, run PITRRun, i
 		return false, fmt.Errorf("prepare mongorestore config: %w", err)
 	}
 	defer cleanup()
-	args := append(pitrBaseArgs(configArgs[0], info, run.Databases, isGzip), configArgs[1:]...)
+	args := append(append(pitrBaseArgs(configArgs[0], info, run.Databases, isGzip), parallel...), configArgs[1:]...)
 	if e.pitrBypass(ctx, uri, info) {
 		args = append(args, "--bypassDocumentValidation")
 	}

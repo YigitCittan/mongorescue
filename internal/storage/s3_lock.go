@@ -293,24 +293,10 @@ func (s *S3Storage) CheckObjectLock(ctx context.Context) error {
 	return nil
 }
 
-// RetrieveVersion streams version versionID of key.
+// RetrieveVersion streams version versionID of key, watched for stalls and resumed
+// after transient failures exactly like Retrieve.
 func (s *S3Storage) RetrieveVersion(ctx context.Context, key, versionID string) (io.ReadCloser, error) {
-	objKey, err := s.objectKey(key)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket:    aws.String(s.bucket),
-		Key:       aws.String(objKey),
-		VersionId: aws.String(versionID),
-	})
-	if err != nil {
-		if isS3NotFound(err) || isNoSuchVersion(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("s3 get object version: %w", err)
-	}
-	return resp.Body, nil
+	return s.download(ctx, key, versionID)
 }
 
 // DeleteVersion permanently deletes version versionID of key. It never bypasses a

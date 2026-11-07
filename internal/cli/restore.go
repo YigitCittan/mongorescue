@@ -46,6 +46,8 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 	stream := fs.String("pitr", "", "Restore to a point in time from this PITR stream or connection (operator)")
 	at := fs.String("at", "", "With --pitr: the RFC 3339 time to restore to, e.g. 2026-10-05T14:30:00Z")
 	databases := fs.String("database", "", "With --pitr: restore only these databases, comma-separated (default: all but admin, config and local)")
+	parallelCollections := fs.Int("parallel-collections", 0, "mongorestore --numParallelCollections, 1 to 16 (default: the server's setting, else 4)")
+	insertionWorkers := fs.Int("insertion-workers", 0, "mongorestore --numInsertionWorkersPerCollection, 1 to 32 (default: the server's setting, else 1)")
 	pos, err := s.parse(fs, args)
 	if err != nil {
 		return err
@@ -56,6 +58,7 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 			return pitrErr
 		}
 		req.TargetConnectionID = strings.TrimSpace(*targetConn)
+		req.NumParallelCollections, req.InsertionWorkersPerCollection = *parallelCollections, *insertionWorkers
 		return s.startRestore(ctx, req, *skipPreflight, *force, "restores")
 	}
 	id, err := onlyOneID(pos, "backup")
@@ -78,6 +81,8 @@ func runRestore(ctx context.Context, s *session, args []string) error {
 		BackupID: id, SelectedCollections: csv(*collections), DryRun: *dryRun,
 		TargetConnectionID: strings.TrimSpace(*targetConn), VerifyRestore: *verifyRestore,
 		SourceTargetID: strings.TrimSpace(*fromTarget),
+
+		NumParallelCollections: *parallelCollections, InsertionWorkersPerCollection: *insertionWorkers,
 	}
 	if *verifyArchive || *noVerifyArchive {
 		v := *verifyArchive
