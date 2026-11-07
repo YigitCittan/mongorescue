@@ -66,6 +66,26 @@ WARNING: backups.persistence.enabled is false: archives of the "Local disk" targ
 are lost with the pod. Add an S3 storage target and make it the default.
 {{- end }}
 
+{{- if .Values.ha.enabled }}
+
+5. High availability, cluster {{ .Values.ha.cluster }}: this release is one of two; the instance holding the lease is active.
+{{- if .Values.ha.readinessActiveOnly }}
+   Readiness follows the role (GET /api/v1/ready): only the active instance is Ready,
+   the standby is alive but never Ready, so do not `helm upgrade --wait` it.
+{{- else }}
+   Readiness is GET /api/v1/health: the standby is Ready too. Set ha.readinessActiveOnly=true
+   so that a Service or load balancer routes to the active instance only.
+{{- end }}
+{{- if .Values.ha.sharedService.enabled }}
+   Shared Service: {{ include "mongorescue.haServiceName" . }} (render it from one release only).
+{{- end }}
+{{- if not (or .Values.affinity .Values.topologySpreadConstraints) }}
+   WARNING: no affinity or topologySpreadConstraints is set: both releases may land on one
+   node and fail together. Examples: values.yaml, under ha (pods carry the label
+   mongorescue.io/ha-cluster={{ .Values.ha.cluster }}).
+{{- end }}
+{{- end }}
+
 Documentation: https://github.com/YigitCittan/mongorescue/blob/main/docs/kubernetes.md
 
 Temporary credentials: while a backup or restore runs, its connection string and

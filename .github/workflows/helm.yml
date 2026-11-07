@@ -88,6 +88,39 @@ jobs:
             echo "an unknown top-level value was accepted"; exit 1
           fi
 
+      - name: HA probes, shared Service and spread render as documented
+        run: |
+          set -euo pipefail
+          ha=(smoke deploy/helm/mongorescue --set secretKey.existingSecret=mongorescue-key
+              --set ha.enabled=true --set ha.target=s3://mongorescue-ha/prod --set ha.cluster=prod)
+          # Only the readiness probe changes with ha.readinessActiveOnly: liveness
+          # and startup keep /api/v1/health, so a standby is alive but not Ready.
+          probe_paths() { awk '/(startup|liveness|readiness)Probe:/ {p=$1} /path: \/api\/v1\// {print p, $2}' "$1"; }
+          helm template "${ha[@]}" > "$RUNNER_TEMP/ha-default.yaml"
+          helm template "${ha[@]}" --set ha.readinessActiveOnly=true > "$RUNNER_TEMP/ha-ready.yaml"
+          probe_paths "$RUNNER_TEMP/ha-default.yaml" | sort > "$RUNNER_TEMP/p-default.txt"
+          probe_paths "$RUNNER_TEMP/ha-ready.yaml" | sort > "$RUNNER_TEMP/p-ready.txt"
+          grep -qx 'readinessProbe: /api/v1/health' "$RUNNER_TEMP/p-default.txt"
+          grep -qx 'readinessProbe: /api/v1/ready' "$RUNNER_TEMP/p-ready.txt"
+          grep -qx 'livenessProbe: /api/v1/health' "$RUNNER_TEMP/p-ready.txt"
+          grep -qx 'startupProbe: /api/v1/health' "$RUNNER_TEMP/p-ready.txt"
+          # The pods of an HA release carry the cluster label; no shared Service by default.
+          grep -q 'mongorescue.io/ha-cluster: "prod"' "$RUNNER_TEMP/ha-default.yaml"
+          ! grep -q 'name: mongorescue-prod$' "$RUNNER_TEMP/ha-default.yaml"
+          helm template "${ha[@]}" --set ha.sharedService.enabled=true > "$RUNNER_TEMP/ha-svc.yaml"
+          grep -q 'name: mongorescue-prod$' "$RUNNER_TEMP/ha-svc.yaml"
+          # Outside HA the probes never change and the opt-ins are refused.
+          helm template smoke deploy/helm/mongorescue > "$RUNNER_TEMP/plain.yaml"
+          if grep -q 'path: /api/v1/ready' "$RUNNER_TEMP/plain.yaml"; then
+            echo "a non-HA release probes /ready"; exit 1
+          fi
+          if helm template smoke deploy/helm/mongorescue --set ha.readinessActiveOnly=true >/dev/null 2>&1; then
+            echo "ha.readinessActiveOnly was accepted without ha.enabled"; exit 1
+          fi
+          if helm template "${ha[@]}" --set ha.sharedService.type=ExternalName >/dev/null 2>&1; then
+            echo "an invalid shared Service type was accepted"; exit 1
+          fi
+
       - name: GitOps mode renders deterministically or fails with an actionable message
         run: |
           set -euo pipefail

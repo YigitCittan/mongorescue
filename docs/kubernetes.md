@@ -203,24 +203,50 @@ ha:
   enabled: true
   target: s3://mongorescue-ha/prod?region=eu-central-1
   cluster: prod
+  # Ready only on the active instance (GET /api/v1/ready), see below.
+  readinessActiveOnly: true
 extraEnvFrom:
   - secretRef:
       name: mongorescue-ha-s3
+# Keep the two releases on different nodes (required) and spread over zones (preferred).
+# Both carry the pod label mongorescue.io/ha-cluster=<ha.cluster>.
 affinity:
   podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          topologyKey: topology.kubernetes.io/zone
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: mongorescue
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            mongorescue.io/ha-cluster: prod
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        mongorescue.io/ha-cluster: prod
 EOF
-helm install mongorescue-a deploy/helm/mongorescue -f ha-values.yaml
+# The shared Service (mongorescue-prod) is rendered by ONE release only.
+helm install mongorescue-a deploy/helm/mongorescue -f ha-values.yaml --set ha.sharedService.enabled=true
 helm install mongorescue-b deploy/helm/mongorescue -f ha-values.yaml
 ```
 
-The chart refuses `ha.enabled` without `secretKey.existingSecret` or `keyWrap` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves no data and accepts no sign-in: only the health check, a static standby page and `/metrics` (process, build and HA series, without credentials), and `503` for everything else. Both answer the health check with `200`, so both stay *Ready*: point users and automation at the active one (its `GET /api/v1/health` reports `"role": "active"`); behind one Service, requests that reach the standby get `503` with `Retry-After`. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
+The chart refuses `ha.enabled` without `secretKey.existingSecret` or `keyWrap` (two generated keys would differ) or without `ha.target`. The instance holding the lease is active; the other serves no data and accepts no sign-in: only the health check, a static standby page and `/metrics` (process, build and HA series, without credentials), and `503` for everything else. Scrape both: the `MongoRescueHANoActiveInstance` alert in the PrometheusRule fires when no instance of a cluster is active. Prefer IRSA or Workload Identity over static keys for the HA bucket.
+
+### Readiness and the shared Service
+
+Kubernetes and load balancers route by status code. By default the probes all use `GET /api/v1/health`, which is the liveness check: the active and the standby both answer `200` (so neither is restarted), both are *Ready*, and a Service across them sends requests that reach the standby a `503` with `Retry-After`.
+
+Set `ha.readinessActiveOnly: true` to make the **readiness** probe use `GET /api/v1/ready` ([monitoring.md](monitoring.md#readiness-check), [api.md](api.md#readiness-check)): `200` only on the active instance when it is not draining, its database is writable and the disk guard is satisfied; otherwise `503` with a `code` (`not_active`, `draining`, `store_unwritable`, `disk_full`). The startup and liveness probes stay on `/api/v1/health`, so a standby is alive but not *Ready*. When the lease moves, the old active (or a draining one) drops out of the Service's endpoints and the new active joins within the probe's `periodSeconds` x `failureThreshold` (30 seconds by default for leaving, one period for joining), with no change to the Service.
+
+`ha.sharedService.enabled: true` renders that Service: `mongorescue-<cluster>` (`ha.sharedService.name` overrides it), selecting the pods of both releases by the `mongorescue.io/ha-cluster` label. Enable it in **one** release only (two releases would own the same object), install both releases in the same namespace, and point your Ingress, clients and the CLI at it. Without `readinessActiveOnly` it still selects both pods.
+
+Consequences of `readinessActiveOnly`:
+
+- The standby release never becomes *Ready*: do not `helm upgrade --wait` (or `helm install --wait`) it, and its own per-release Service, Ingress and ServiceMonitor targets have no ready endpoint until it holds the lease. Scrape both pods through the headless Service or pod monitors (`MongoRescueHANoActiveInstance` relies on both being scraped).
+- A rolling update of the active release stays unready until the new pod holds the lease; the standby takes over during the shutdown wait, which is the intended failover.
+- A disk-full or read-only active instance leaves the Service while it still holds the lease. No instance is then Ready: that is a real outage of the dashboard and API, which `disk_full` / `store_unwritable` make visible instead of serving errors.
+
+Keep the two pods apart: the `affinity` and `topologySpreadConstraints` values above are rendered as given, and NOTES.txt warns when neither is set.
 
 ## Upgrades and backups of MongoRescue itself
 
@@ -229,4 +255,4 @@ The chart refuses `ha.enabled` without `secretKey.existingSecret` or `keyWrap` (
 
 ## Testing the chart
 
-CI lints the chart (`helm lint --strict`), renders it with the default and an all-features values file (`ci/full-values.yaml`) and validates the manifests with kubeconform, including the ServiceMonitor and PrometheusRule CRDs. The *Helm (kind)* job then runs `scripts/test-helm-kind.sh`. It builds the image, installs the chart and a MongoDB pod on a kind cluster, waits for the probes, signs in through the setup API, runs a backup, checks that it completed, and checks that the backup is still listed after a rolling restart. Run the script locally with `docker`, `kind`, `kubectl`, `helm`, `curl` and `jq` on your `PATH`.
+CI lints the chart (`helm lint --strict`), renders it with the default and an all-features values file (`ci/full-values.yaml`) and validates the manifests with kubeconform, including the ServiceMonitor and PrometheusRule CRDs. The *Helm (kind)* job then runs `scripts/test-helm-kind.sh`. It builds the image, installs the chart and a MongoDB pod on a kind cluster, waits for the probes, signs in through the setup API, runs a backup, checks that it completed, and checks that the backup is still listed after a rolling restart. The probe switching, the shared Service, the pod label and the refusals of `ha.readinessActiveOnly` and `ha.sharedService` without `ha.enabled` are asserted on rendered manifests by a step of the *Helm lint* job (`.github/workflows/helm.yml`). A failover through the shared Service is not part of the kind test: it needs a second release, an S3-compatible lease store in the cluster and waits of lease TTL multiples, which would make the job slow and timing dependent. The role-to-status-code behaviour is covered by the unit tests of `GET /api/v1/ready` (`internal/server/ready_test.go`), including the standby's. Run the script locally with `docker`, `kind`, `kubectl`, `helm`, `curl` and `jq` on your `PATH`.
