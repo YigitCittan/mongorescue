@@ -202,8 +202,10 @@ func (r *Resolver) release(l *lease, h *holder) {
 			close(l.stop)
 		}
 		current := r.leases[l.key] == l
-		// Shared since this run held it: another run is about to use it.
-		sharedSince := l.lastShared.After(h.since) && now.Sub(l.lastShared) < idleGrace
+		// Shared since this run held it (equal times count: a coarse clock, such
+		// as Windows', gives the same reading to both): another run is about to
+		// use it.
+		sharedSince := !l.lastShared.Before(h.since) && now.Sub(l.lastShared) < idleGrace
 		if !current || l.ended != nil || !sharedSince || r.closed {
 			if current {
 				delete(r.leases, l.key)
