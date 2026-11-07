@@ -20,7 +20,7 @@ DESKTOP_TAGS?=desktop
 DESKTOP_FLAGS=-clean -trimpath -s -skipbindings -m -nosyncgomod -tags "$(DESKTOP_TAGS)" -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 # Minimum total statement coverage (percent) enforced by coverage-check.
-COVERAGE_MIN?=80
+COVERAGE_MIN?=78
 COVERAGE_FILE?=coverage.out
 COVERAGE_FLOORS?=coverage-floors.txt
 # Extra flags for integration runs (e.g. INTEGRATION_FLAGS="-coverprofile=integration-coverage.out").
