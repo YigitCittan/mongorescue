@@ -2,8 +2,9 @@ name: Nightly
 
 # Long-running checks that do not fit the pull request budget: the integration
 # matrix with about 2 GiB of generated data (throughput and a 256 MiB memory limit,
-# see docs/testing.md), the fuzz targets, the fault-injection suite and the PITR
-# scenarios on a three-member replica set (nightly), and the load test and the
+# see docs/testing.md), the fuzz targets, the fault-injection suite, the PITR
+# scenarios on a three-member replica set and the upgrade from the previous
+# releases (nightly), and the load test and the
 # PITR soak test (weekly). None of them runs on pull requests or is required.
 on:
   schedule:
@@ -20,6 +21,7 @@ on:
           - nightly
           - chaos
           - pitr
+          - upgrade
           - load
           - soak
           - all
@@ -201,6 +203,48 @@ jobs:
           path: ${{ runner.temp }}/chaos-report
           retention-days: 30
           if-no-files-found: warn
+
+  # The upgrade test with real previous releases (scripts/release-verify.sh upgrade;
+  # docs/testing.md#release-verification): the last two stable releases create their
+  # state (secrets, a job, backups, a PITR stream) and a build of this commit opens
+  # the same data directory. Run it, or dispatch it, before tagging; the release
+  # workflow repeats it with the release binary and holds the release in draft on a
+  # failure.
+  upgrade:
+    name: Upgrade from the previous releases
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'upgrade' || inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Install MongoDB Database Tools
+        run: ./scripts/release-verify.sh install-tools
+
+      - name: Build this commit
+        run: make build VERSION="0.0.0-nightly.${GITHUB_SHA::7}"
+
+      - name: Upgrade from the last two stable releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/release-verify.sh upgrade bin/mongorescue
 
   load:
     name: Load
