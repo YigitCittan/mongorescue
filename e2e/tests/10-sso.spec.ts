@@ -31,7 +31,7 @@ test("people sign in through Keycloak with the role of their group", async ({ pa
   }
   await panel.getByLabel("Enable single sign-on").check();
   await panel.getByRole("button", { name: "Save" }).click();
-  await expect(panel.getByText("Saved")).toBeVisible();
+  await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 
   const context = await browser.newContext({ baseURL: server.baseURL, storageState: { cookies: [], origins: [] } });
   try {
@@ -68,5 +68,5 @@ test("people sign in through Keycloak with the role of their group", async ({ pa
   await page.getByRole("button", { name: "Single sign-on", exact: true }).click();
   await panel.getByLabel("Enable single sign-on").uncheck();
   await panel.getByRole("button", { name: "Save" }).click();
-  await expect(panel.getByText("Saved")).toBeVisible();
+  await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 });

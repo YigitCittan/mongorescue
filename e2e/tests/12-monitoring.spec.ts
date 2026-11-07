@@ -18,7 +18,7 @@ test("configures the heartbeat and sends a test ping", async ({ page, server }) 
   await url.fill(heartbeatURL);
   await panel.getByLabel("Ping every (minutes)").fill("2");
   await panel.getByRole("button", { name: "Save" }).click();
-  await expect(panel.getByText("Saved")).toBeVisible();
+  await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
   // The stored URL comes back masked: only its origin is shown.
   await expect(url).toHaveValue(`${origin.protocol}//${origin.host}/******`);
 
@@ -33,5 +33,5 @@ test("configures the heartbeat and sends a test ping", async ({ page, server }) 
   // Turn the heartbeat off again, so later runs of the suite start clean.
   await url.fill("");
   await panel.getByRole("button", { name: "Save" }).click();
-  await expect(panel.getByText("Saved")).toBeVisible();
+  await expect(panel.getByText("Saved", { exact: true })).toBeVisible();
 });
