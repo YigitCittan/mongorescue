@@ -18,3 +18,76 @@ area/ci:
 docs:
   - changed-files:
       - any-glob-to-any-file: '**/*.md'
+
+area/backup:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/backup/**'
+          - 'internal/scheduler/**'
+          - 'internal/metabackup/**'
+
+area/restore:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/restore/**'
+          - 'internal/postrestore/**'
+
+area/pitr:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/pitr/**'
+          - 'internal/oplog/**'
+
+area/ha:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/ha/**'
+
+area/security:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/auth/**'
+          - 'internal/secretbox/**'
+          - 'internal/redact/**'
+          - 'internal/keywrap/**'
+
+area/mcp:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/mcp/**'
+
+area/cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/cli/**'
+          - 'internal/apiclient/**'
+
+area/api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/server/**'
+
+area/store:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/store/**'
+
+area/observability:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/metrics/**'
+          - 'internal/heartbeat/**'
+          - 'deploy/prometheus/**'
+
+area/deploy:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'deploy/helm/**'
+          - 'Dockerfile'
+
+area/docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - 'mkdocs.yml'
+          - 'docs/requirements.txt'
