@@ -193,8 +193,11 @@ var routeScopes = map[string]auth.Scope{
 	"PUT /api/v1/notifications/rules/{id}":          auth.ScopeAdmin,
 	"DELETE /api/v1/notifications/rules/{id}":       auth.ScopeAdmin,
 
-	"GET /metrics":      auth.ScopeRead,
-	"GET /api/v1/audit": auth.ScopeAdmin,
+	"GET /metrics": auth.ScopeRead,
+	// The OpenAPI description: not public (the public surface is pinned to six
+	// routes), readable by any signed-in user or key.
+	"GET " + openAPIPath: auth.ScopeRead,
+	"GET /api/v1/audit":  auth.ScopeAdmin,
 	// The audit log of every action, its export and verification: admin.
 	auditListRoute:   auth.ScopeAdmin,
 	auditExportRoute: auth.ScopeAdmin,

@@ -379,6 +379,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 	// API System & Stats
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET "+readyPath, s.handleReady)
+	mux.HandleFunc("GET "+openAPIPath, s.handleOpenAPI)
 	mux.HandleFunc("GET /api/v1/stats", s.handleStats)
 
 	// API Jobs (Cron & Retention)
