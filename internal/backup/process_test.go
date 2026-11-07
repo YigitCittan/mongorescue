@@ -145,11 +145,27 @@ func TestBackupTimeoutAbortsLongDump(t *testing.T) {
 	}
 }
 
+// instantDump is a mongodump stand-in whose stdout always has data ready, so a Read
+// from it never waits and only the storage side can be slow.
+type instantDump struct{}
+
+func (instantDump) Read(p []byte) (int, error) {
+	return copy(p, bytes.Repeat([]byte("bson"), 1024)), nil
+}
+
 func TestBackupStallTimeoutIgnoresSlowStorage(t *testing.T) {
-	t.Setenv(helperEnv, "slow")
-	// Storage that reads slowly: time blocked on the upload must not count as a stall.
-	engine := NewEngine(&slowStorage{MockStorage: storage.NewMockStorage(), pause: 150 * time.Millisecond, n: 4},
-		"mongodb://localhost:27017", WithRunner(realToolRunner), WithStallTimeout(100*time.Millisecond))
+	// The dump is in-process and never makes the engine wait, so the watchdog only
+	// sees Reads that are pending for microseconds. A spawned helper made this flaky
+	// on Windows: process start-up alone could exceed the timeout before the first
+	// byte (#276). The storage pause still exceeds the timeout, proving that time
+	// blocked on the upload is not a stall, and the timeout is about 16 Windows
+	// scheduler ticks.
+	const stallTimeout = 250 * time.Millisecond
+	runner := func(context.Context, string, ...string) (io.ReadCloser, io.Reader, func() error, error) {
+		return io.NopCloser(instantDump{}), strings.NewReader("writing archive"), func() error { return nil }, nil
+	}
+	engine := NewEngine(&slowStorage{MockStorage: storage.NewMockStorage(), pause: stallTimeout + 50*time.Millisecond, n: 3},
+		"mongodb://localhost:27017", WithRunner(runner), WithStallTimeout(stallTimeout))
 	_, err := runWithDeadline(t, func() (*models.BackupRecord, error) {
 		return engine.Run(context.Background(), models.BackupOptions{Database: "db"})
 	})
