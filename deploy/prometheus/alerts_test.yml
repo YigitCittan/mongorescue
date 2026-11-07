@@ -527,6 +527,7 @@ tests:
             exp_annotations:
               summary: "A base backup of PITR stream slow takes 75% of the oplog window"
               description: "The last successful base backup of PITR stream slow on mr:8080 took 75% of the current oplog window. If a base takes longer than the window it fails and the recovery window stops moving. Grow the oplog (replSetResizeOplog) or shorten the base backup; see the oplog sizing guide in docs/pitr.md."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuepitrbasewindowrisk"
 
   - name: PITR chain broken
     interval: 1m
