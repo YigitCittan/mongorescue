@@ -4,6 +4,12 @@
 # Note: Dependabot has no option to skip module updates that raise the `go`
 # directive in go.mod (currently 1.26.0). Such pull requests must be reviewed
 # against the supported Go versions before merging; CI tests the go.mod minimum.
+#
+# The release Go toolchain lives in .go-version (read by every workflow); the
+# Dockerfile's GO_VERSION default and builder digest must move with it, which
+# scripts/check-go-version.sh enforces. A Dependabot golang image bump therefore
+# needs a matching .go-version change. govulncheck is pinned in ci.yml and the
+# Makefile and is bumped by hand (Dependabot cannot update `go run pkg@version`).
 version: 2
 updates:
   - package-ecosystem: "gomod"

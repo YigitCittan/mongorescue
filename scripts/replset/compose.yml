@@ -8,6 +8,8 @@ name: ${RS_PROJECT:-mongorescue-rs}
 
 x-member: &member
   image: ${MONGO_IMAGE:-mongo:8.0}
+  # Each member sets GLIBC_TUNABLES=glibc.pthread.rseq=1: MongoDB 8.0 refuses to
+  # start on Linux 6.19+ when tcmalloc uses rseq (SERVER-121912).
   entrypoint: ["bash", "-c"]
   # $$ escapes compose interpolation: RS_KEY is expanded inside the container.
   # The scenarios restart killed members (docker start), so the key file of the
@@ -42,6 +44,7 @@ services:
     hostname: m1
     environment:
       RS_KEY: ${RS_KEY:?RS_KEY is required}
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: ${RS_PASSWORD:?RS_PASSWORD is required}
   m2:
@@ -49,11 +52,13 @@ services:
     hostname: m2
     environment:
       RS_KEY: ${RS_KEY:?RS_KEY is required}
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
   m3:
     <<: *member
     hostname: m3
     environment:
       RS_KEY: ${RS_KEY:?RS_KEY is required}
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
 
 networks:
   rs: {}

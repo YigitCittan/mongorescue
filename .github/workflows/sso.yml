@@ -19,7 +19,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: '1.26'
   MONGO_TOOLS_VERSION: '100.12.2'
 
 jobs:
@@ -42,15 +41,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Install MongoDB Database Tools
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 

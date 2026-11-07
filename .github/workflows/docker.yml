@@ -54,6 +54,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read the Go toolchain version
+        id: goversion
+        run: echo "version=$(tr -d '[:space:]' < .go-version)" >> "$GITHUB_OUTPUT"
+
       - name: Normalize Image Name
         # GHCR requires lowercase repository names.
         run: echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -83,6 +87,7 @@ jobs:
           build-args: |
             VERSION=${{ startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.version || 'dev' }}
             COMMIT=${{ github.sha }}
+            GO_VERSION=${{ steps.goversion.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # BuildKit SLSA provenance and SPDX SBOM, attached to the image index.

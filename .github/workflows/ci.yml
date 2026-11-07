@@ -15,10 +15,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Toolchain for lint, build, integration and security jobs; releases and images use
-  # the same minor version, so govulncheck results match what ships.
-  GO_VERSION: '1.26'
+# The release toolchain (lint, build, integration, security, releases, images,
+# desktop builds) is the single version in .go-version, read by actions/setup-go.
+# scripts/check-go-version.sh (the go-version-drift job) fails when anything disagrees.
 
 jobs:
   # 1. Linting & Formatting Check
@@ -34,8 +33,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          go-version-file: .go-version
           cache: true
 
       - name: Run go vet
@@ -52,7 +50,10 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.13.2
+          version: v2.15.0
+          # Build it with the job's Go (.go-version): a release binary built with an
+          # older Go cannot load the export data of a newer standard library.
+          install-mode: goinstall
           # These tags only add test files, so this lints everything.
           args: --build-tags=integration,replset3,soak
 
@@ -92,14 +93,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # 1.26.x is the go.mod minimum and the release toolchain; 1.27.x is the newest Go.
-        go-version: ['1.26.x', '1.27.x']
-        # Windows binaries ship too: unit-test them with the release toolchain only.
-        # Integration and container jobs stay Linux-only.
-        include:
-          - os: windows-latest
-            go-version: '1.26.x'
+        # Windows binaries ship too, so it gets both cells; integration and container
+        # jobs stay Linux-only. "Test (windows-latest - Go 1.26.x)" is a required check.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # 1.26.x is the go.mod minimum; "release" is the toolchain in .go-version
+        # (releases, images and govulncheck use it). Both are tested on purpose.
+        go-version: ['1.26.x', 'release']
     defaults:
       run:
         # PowerShell would split "-coverprofile=coverage.out" at the dot.
@@ -110,10 +109,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Go
+      - name: Set up Go (go.mod minimum)
+        if: matrix.go-version != 'release'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Set up Go (release toolchain)
+        if: matrix.go-version == 'release'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
           cache: true
 
       - name: Run Unit Tests with Race Detector
@@ -124,7 +131,7 @@ jobs:
         run: make coverage-check COVERAGE_MIN=60
 
       - name: Upload Test Coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26.x'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'release'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: code-coverage-report
@@ -170,7 +177,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Cross-Compile All Platforms
@@ -218,16 +225,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Install MongoDB Database Tools
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          echo "Downloading ${url}"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
@@ -305,15 +317,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Install MongoDB Database Tools
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
@@ -348,7 +366,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
           cache: true
 
       - name: Set up Node.js
@@ -362,9 +380,14 @@ jobs:
         run: |
           . /etc/os-release
           dist="ubuntu${VERSION_ID//./}"
-          url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${dist}-x86_64-${MONGO_TOOLS_VERSION}.deb"
-          echo "Downloading ${url}"
-          curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"
+          # Older Tools releases have no package for the newest Ubuntu runner image;
+          # the binaries are static, so fall back to the Ubuntu 24.04 package.
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
 
@@ -464,12 +487,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          go-version-file: .go-version
           cache: true
 
       - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Check the Go toolchain is defined once (.go-version)
+        run: scripts/check-go-version.sh
 
       - name: Lint Workflows (actionlint)
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

@@ -46,6 +46,10 @@ CONTAINERS=()
 # scripts/test-integration-docker.sh). Non-blocking delivery buffers (and beyond
 # max-buffer-size drops) lines instead.
 MONGO_LOG_OPTS=(--log-opt mode=non-blocking --log-opt max-buffer-size=8m)
+# MongoDB 8.0 refuses to start on Linux 6.19+ when tcmalloc's per-CPU caches use
+# rseq (SERVER-121912); CI runners now ship such kernels. Letting glibc own rseq
+# turns those caches off, so the startup check does not fire. Harmless elsewhere.
+MONGO_LOG_OPTS+=(-e GLIBC_TUNABLES=glibc.pthread.rseq=1)
 SMALL_DIR=""
 SMALL_DEV=""
 

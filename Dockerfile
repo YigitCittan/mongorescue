@@ -2,7 +2,11 @@
 # Produces a self-contained image (<30MB) with pre-installed MongoDB database tools.
 
 # Stage 1: Build static Go binary
-FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+# The Go toolchain: the default must equal .go-version (scripts/check-go-version.sh);
+# the Docker workflow passes it explicitly. The digest pins golang:<GO_VERSION>-alpine;
+# refresh it together with GO_VERSION (docker buildx imagetools inspect).
+ARG GO_VERSION=1.27.3
+FROM golang:${GO_VERSION}-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS builder
 
 WORKDIR /src
 
