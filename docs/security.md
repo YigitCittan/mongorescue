@@ -248,6 +248,7 @@ Every release after v0.27.0 can be verified without trusting the download locati
 | Server archives (`mongorescue_<version>_<os>_<arch>.tar.gz` / `.zip`), `checksums.txt` | cosign: `<asset>.sigstore.json` next to each asset | SLSA Build Level 3 (`mongorescue_<version>.intoto.jsonl`) and a GitHub artifact attestation |
 | SBOMs (`<archive>.sbom.json`) | cosign: `<asset>.sigstore.json` | |
 | Desktop assets and `MongoRescue-desktop_<version>_checksums.txt` | cosign: `<asset>.sigstore.json` | GitHub artifact attestation (assets) |
+| Helm chart `oci://ghcr.io/yigitcittan/charts/mongorescue` | cosign, by digest, stored in GHCR | |
 | Container image `ghcr.io/yigitcittan/mongorescue` | cosign, by digest, stored in GHCR | GitHub artifact attestation, BuildKit SLSA provenance and SBOM |
 
 The examples use version `0.28.0`; replace it with the release you downloaded. They need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later, [slsa-verifier](https://github.com/slsa-framework/slsa-verifier) 2.7 or later and the [GitHub CLI](https://cli.github.com/).
@@ -310,6 +311,17 @@ cosign verify ghcr.io/yigitcittan/mongorescue:0.28.0 \
 ```
 
 Pin the digest that `cosign verify` prints (`ghcr.io/yigitcittan/mongorescue@sha256:…`) in your deployment, so what runs is what you verified.
+
+### Helm chart (cosign)
+
+The chart is pushed and signed by digest by the `helm-chart` job of the release workflow (keyless, identity `release.yml@refs/tags/v<version>`), after the image of the release was promoted. Verify by tag, then install the digest cosign prints if you want to pin exactly what you verified:
+
+```sh
+cosign verify ghcr.io/yigitcittan/charts/mongorescue:0.2.0   --certificate-identity-regexp '^https://github\.com/YigitCittan/mongorescue/\.github/workflows/release\.yml@refs/tags/v.*$'   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+helm install mongorescue oci://ghcr.io/yigitcittan/charts/mongorescue --version 0.2.0
+```
+
+The chart version is the chart's own, not the application's; the chart's `appVersion` is the release that first shipped that chart version.
 
 ### How the provenance maps to SLSA build levels
 

@@ -4,14 +4,24 @@ MongoRescue ships a Helm chart in [`deploy/helm/mongorescue`](../deploy/helm/mon
 
 ## Install
 
+The chart is published as a signed OCI artifact at `oci://ghcr.io/yigitcittan/charts/mongorescue`. Its version is its own (see [Helm chart versions](versioning.md#helm-chart-versions)); list what exists under the package's page on GitHub, or pin one:
+
 ```bash
-helm install mongorescue ./deploy/helm/mongorescue \
+helm install mongorescue oci://ghcr.io/yigitcittan/charts/mongorescue --version 0.2.0 \
   --namespace mongorescue --create-namespace \
   --set secretKey.existingSecret=mongorescue-key   # recommended, see below
 kubectl -n mongorescue rollout status statefulset/mongorescue
 kubectl -n mongorescue logs statefulset/mongorescue | grep setup_code
 kubectl -n mongorescue port-forward svc/mongorescue 8080:8080
 ```
+
+Verify the chart's signature before installing (needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later; more in [Verifying releases](security.md#helm-chart-cosign)):
+
+```bash
+cosign verify ghcr.io/yigitcittan/charts/mongorescue:0.2.0   --certificate-identity-regexp '^https://github\.com/YigitCittan/mongorescue/\.github/workflows/release\.yml@refs/tags/v.*$'   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To work on the chart, install from a clone instead: replace the chart reference with `./deploy/helm/mongorescue`. Its `appVersion` is only a development default there, so set `image.tag` to a release you want.
 
 Open http://localhost:8080, enter the setup code and create the admin account. The chart's `NOTES.txt` prints these commands for your release. Pin the image with `image.tag` (an exact release such as `0.22.0`) or `image.digest`. By default the image tag is the chart's `appVersion`.
 
@@ -255,4 +265,4 @@ Keep the two pods apart: the `affinity` and `topologySpreadConstraints` values a
 
 ## Testing the chart
 
-CI lints the chart (`helm lint --strict`), renders it with the default and an all-features values file (`ci/full-values.yaml`) and validates the manifests with kubeconform, including the ServiceMonitor and PrometheusRule CRDs. The *Helm (kind)* job then runs `scripts/test-helm-kind.sh`. It builds the image, installs the chart and a MongoDB pod on a kind cluster, waits for the probes, signs in through the setup API, runs a backup, checks that it completed, and checks that the backup is still listed after a rolling restart. The probe switching, the shared Service, the pod label and the refusals of `ha.readinessActiveOnly` and `ha.sharedService` without `ha.enabled` are asserted on rendered manifests by a step of the *Helm lint* job (`.github/workflows/helm.yml`). A failover through the shared Service is not part of the kind test: it needs a second release, an S3-compatible lease store in the cluster and waits of lease TTL multiples, which would make the job slow and timing dependent. The role-to-status-code behaviour is covered by the unit tests of `GET /api/v1/ready` (`internal/server/ready_test.go`), including the standby's. Run the script locally with `docker`, `kind`, `kubectl`, `helm`, `curl` and `jq` on your `PATH`.
+CI lints the chart (`helm lint --strict`), packages it, fails a pull request that changes the chart without raising its version, , renders it with the default and an all-features values file (`ci/full-values.yaml`) and validates the manifests with kubeconform, including the ServiceMonitor and PrometheusRule CRDs. The *Helm (kind)* job then runs `scripts/test-helm-kind.sh`. It builds the image, installs the chart and a MongoDB pod on a kind cluster, waits for the probes, signs in through the setup API, runs a backup, checks that it completed, and checks that the backup is still listed after a rolling restart. The probe switching, the shared Service, the pod label and the refusals of `ha.readinessActiveOnly` and `ha.sharedService` without `ha.enabled` are asserted on rendered manifests by a step of the *Helm lint* job (`.github/workflows/helm.yml`). A failover through the shared Service is not part of the kind test: it needs a second release, an S3-compatible lease store in the cluster and waits of lease TTL multiples, which would make the job slow and timing dependent. The role-to-status-code behaviour is covered by the unit tests of `GET /api/v1/ready` (`internal/server/ready_test.go`), including the standby's. Run the script locally with `docker`, `kind`, `kubectl`, `helm`, `curl` and `jq` on your `PATH`.
