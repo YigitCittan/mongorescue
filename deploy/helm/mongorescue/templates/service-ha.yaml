@@ -1,0 +1,27 @@
+{{- if and .Values.ha.enabled .Values.ha.sharedService.enabled }}
+# The Service of the whole HA cluster: it selects the pods of both releases by the
+# cluster label, and with ha.readinessActiveOnly only the active one is Ready, so it
+# follows a failover without a change. Render it from ONE release only: two
+# releases would own the same Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mongorescue.haServiceName" . }}
+  labels:
+    {{- include "mongorescue.labels" . | nindent 4 }}
+    {{- include "mongorescue.haClusterLabel" . | nindent 4 }}
+  {{- with .Values.ha.sharedService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.ha.sharedService.type }}
+  ports:
+    - name: http
+      port: {{ .Values.ha.sharedService.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "mongorescue.name" . }}
+    {{- include "mongorescue.haClusterLabel" . | nindent 4 }}
+{{- end }}

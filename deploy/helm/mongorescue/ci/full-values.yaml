@@ -14,6 +14,18 @@ ha:
   leaseTTL: 30s
   renewInterval: 10s
   snapshotInterval: 5m
+  readinessActiveOnly: true
+  sharedService:
+    enabled: true
+    annotations:
+      example.com/team: data
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        mongorescue.io/ha-cluster: prod
 extraEnv:
   - name: AWS_REGION
     value: eu-central-1

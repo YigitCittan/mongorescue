@@ -19,7 +19,7 @@ Assumptions:
 
 | Actor | Trust | Reaches MongoRescue through |
 | :--- | :--- | :--- |
-| Anonymous network client | None | The five public routes (`/api/v1/health`, `/api/v1/setup/status`, `/api/v1/setup`, `/api/v1/auth/login`, the sign-in methods), static dashboard files, `/metrics` when made public |
+| Anonymous network client | None | The six public routes (`/api/v1/health`, `/api/v1/ready`, `/api/v1/setup/status`, `/api/v1/setup`, `/api/v1/auth/login`, the sign-in methods), static dashboard files, `/metrics` when made public |
 | Viewer, operator, administrator (local user or SSO) | Their role | Dashboard session |
 | Automation (CI, scripts, CLI, MCP clients, AI assistants) | The API key's scope, capped by its creator's role and connections | `Authorization: Bearer` / `X-API-Key` |
 | Storage provider and anyone with the bucket's or directory's credentials | Untrusted for integrity and confidentiality of archives | Backup archives, PITR chunks, metadata snapshots, the HA lease |
@@ -55,7 +55,7 @@ Assumptions:
 
 | | Threat | Mitigations (code) |
 | :--- | :--- | :--- |
-| S | Calling the API without credentials | `authMiddleware` (`internal/server/auth.go`) requires a session or API key for everything under `/api/` except `publicPaths` (exactly five routes, `TestPublicRoutesAreExactlyTheseFive`); `/mcp` accepts API keys only; `/metrics` needs a key unless `security.metrics_public`. |
+| S | Calling the API without credentials | `authMiddleware` (`internal/server/auth.go`) requires a session or API key for everything under `/api/` except `publicPaths` (exactly six routes, `TestPublicRoutesAreExactlyTheseSix`); `/mcp` accepts API keys only; `/metrics` needs a key unless `security.metrics_public`. |
 | S | Login CSRF and cross-site POSTs to the public routes | `allowPublicWrite` (`internal/server/auth.go`) requires a JSON body and a same-origin or allowed `Origin`. |
 | T | Cross-site request forgery with a session | `auth.CheckCSRF` (`internal/auth/service.go`): unsafe methods with a session need the session's CSRF token (constant-time compare); session cookie `SameSite=Strict`, `HttpOnly` (`sessionCookie`, `internal/server/auth.go`). |
 | T | Clickjacking, XSS, content sniffing | `securityHeadersMiddleware` (`internal/server/server.go`): CSP `default-src 'self'` without inline scripts, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`. |

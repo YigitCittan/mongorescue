@@ -112,6 +112,21 @@
           "type": "string",
           "description": "A Go duration from 30s to 24h.",
           "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
+        "readinessActiveOnly": {
+          "type": "boolean",
+          "description": "Readiness probe on GET /api/v1/ready: Ready only on the active instance."
+        },
+        "sharedService": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string", "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?$" },
+            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "annotations": { "$ref": "#/definitions/stringMap" }
+          }
         }
       }
     },
@@ -155,6 +170,7 @@
     "nodeSelector": { "$ref": "#/definitions/stringMap" },
     "tolerations": { "type": "array" },
     "affinity": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array" },
     "priorityClassName": { "type": "string" },
     "service": {
       "type": "object",

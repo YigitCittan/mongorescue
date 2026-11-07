@@ -35,7 +35,7 @@ There is no unauthenticated mode. Apart from the public routes below, every requ
 - a **session**: the `mr_session` cookie set by `POST /api/v1/setup` or `POST /api/v1/auth/login` (HttpOnly, `SameSite=Strict`, `Secure` over HTTPS). Unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`) must also send the session's CSRF token as `X-CSRF-Token`, or they are rejected with `403`; or
 - an **API key**: `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys are created under Settings → API keys (`mr_<prefix>_<secret>`, shown once); a `MONGORESCUE_API_KEY` of an earlier build is imported once as a key. API-key requests need no CSRF token. The [command line](cli.md) (`mongorescue backup`, `restore`, `list`, `verify`, `status`) is a client of these routes with an API key.
 
-Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/setup/status`, `POST /api/v1/setup`, `POST /api/v1/auth/login`, `GET /api/v1/auth/methods` and the [single sign-on](#single-sign-on) routes `GET /auth/oidc/start` and `GET /auth/oidc/callback`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": "", "role": "", "scope": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
+Public routes: `/` and the dashboard assets, `GET /api/v1/health`, `GET /api/v1/ready`, `GET /api/v1/setup/status`, `POST /api/v1/setup`, `POST /api/v1/auth/login`, `GET /api/v1/auth/methods` and the [single sign-on](#single-sign-on) routes `GET /auth/oidc/start` and `GET /auth/oidc/callback`. `GET /api/v1/auth/me` answers signed-out visitors with `200` and an empty session (`{"user": null, "csrf_token": "", "auth": "", "role": "", "scope": ""}`); every other protected route answers `401`. `/metrics` takes an API key (not a session) unless the `security.metrics_public` setting is on. `/mcp`, the [MCP endpoint](mcp.md), takes an API key only, never a session.
 
 ### Dashboard roles
 
@@ -63,7 +63,7 @@ A key may expire: `POST /api/v1/api-keys` takes `expires_at` (RFC 3339, in the f
 
 ### Rate limits
 
-Each API key and each session has a request budget (`security.api_rate_limit_per_minute`, default 1200, with bursts of `security.api_rate_limit_burst`, default 300), and routes that start work (backups, restores, job runs, verifications, scans, bulk actions, tests) spend a tighter one too (`security.api_work_rate_limit_per_minute`, default 60, bursts of 20). Unauthenticated requests get 300 a minute (bursts of 100) per client address, with the sign-in routes (setup, login, `GET /api/v1/auth/methods`, `GET /api/v1/auth/me`, single sign-on) in a bucket of their own, so failed credentials elsewhere cannot lock out signing in (behind a reverse proxy, turn on `security.trust_proxy_headers`). A request over a budget is refused before it runs: `429` with `Retry-After` (seconds) and `{"success": false, "error": "too many requests: over the general rate limit of 1200 per minute; retry in 3s", "code": "rate_limited"}`; send it again after that. `GET /api/v1/health` and `/metrics` with a valid key are never limited; `/mcp` has its own limit. See [security.md](security.md#rest-api-rate-limits).
+Each API key and each session has a request budget (`security.api_rate_limit_per_minute`, default 1200, with bursts of `security.api_rate_limit_burst`, default 300), and routes that start work (backups, restores, job runs, verifications, scans, bulk actions, tests) spend a tighter one too (`security.api_work_rate_limit_per_minute`, default 60, bursts of 20). Unauthenticated requests get 300 a minute (bursts of 100) per client address, with the sign-in routes (setup, login, `GET /api/v1/auth/methods`, `GET /api/v1/auth/me`, single sign-on) in a bucket of their own, so failed credentials elsewhere cannot lock out signing in (behind a reverse proxy, turn on `security.trust_proxy_headers`). A request over a budget is refused before it runs: `429` with `Retry-After` (seconds) and `{"success": false, "error": "too many requests: over the general rate limit of 1200 per minute; retry in 3s", "code": "rate_limited"}`; send it again after that. `GET /api/v1/health`, `GET /api/v1/ready` and `/metrics` with a valid key are never limited; `/mcp` has its own limit. See [security.md](security.md#rest-api-rate-limits).
 
 ### API key scopes
 
@@ -101,6 +101,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | Method | Endpoint | Description | Success | Errors |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/health` | Health check (`status`, `version`, `time`, `scheduler`, `scheduler_last_tick`, `draining`, and in HA mode `role` and `ha`); see [health](#health) | 200 | 503 stale scheduler |
+| `GET` | `/api/v1/ready` | Readiness check for load balancers and Services: `200` only on the active, non-draining instance with a writable database and free disk; see [readiness check](#readiness-check) | 200 | 503 with a `code` (`not_active`, `draining`, `store_unwritable`, `disk_full`) |
 | `GET` | `/api/v1/setup/status` | `{"setup_required": bool}` | 200 | |
 | `POST` | `/api/v1/setup` | `{setup_code, username, password}` → first user and session: `{user, csrf_token}` | 201 | 400, 403 wrong code, 409 already set up, 429 |
 | `POST` | `/api/v1/auth/login` | `{username, password}` → `{user, csrf_token}` | 200 | 401, 403 foreign origin or [password sign-in limited to local admins](#single-sign-on), 415, 429 |
@@ -736,6 +737,21 @@ Every query is answered from an index on `backups`, never by scanning the table,
 `GET /api/v1/health` (public) answers `200` with `{status: "healthy", version, time, scheduler, scheduler_last_tick}`. `scheduler` is `ok` while the scheduler records its liveness tick (every 30 seconds) and `not_started` before it starts; `scheduler_last_tick` is the time of the last tick. When the last tick is older than three intervals (90 seconds: the scheduler is deadlocked or stopped; the tick runs on a monotonic timer, so wall clock steps do not count, see [monitoring.md](monitoring.md#clock-steps)), the answer is `503` with `success: false` and `scheduler: "stale"` (`status` keeps its value `"healthy"`; read the HTTP status or `scheduler`), so the Docker `HEALTHCHECK`, a load balancer or an uptime monitor see the failure. While new runs are refused (a [graceful shutdown](kubernetes.md#graceful-shutdown) waiting for running backups, or the desktop app waiting before it quits) the answer adds `draining: true` and stays `200`. The fields of earlier releases are unchanged. The tick time is also exported as `mongorescue_scheduler_last_tick_timestamp_seconds` ([metrics](metrics.md)).
 
 In [active-passive HA mode](production.md#high-availability) the answer adds `role` (`active` or `standby`) and `ha`: `{role, cluster, epoch, holder, lease_healthy}`, where `holder` names the instance holding the lease as last seen. A standby answers `200` with `scheduler: "not_started"`. It serves no data and accepts no sign-in: every other API request, signing in and out, single sign-on and `/mcp` answer `503` with a `Retry-After` header and the error *this instance is the standby of HA cluster …; it serves no data and accepts no sign-ins: use the active instance* (`data: {role, cluster}`). `GET /metrics` on a standby needs no credentials and exposes only the process, Go runtime, build and HA series. While an instance changes role (a takeover or a step-down) or starts, the health check answers `200` with `role: "switching"` (`ha.role` too), `/metrics` serves the standby series, and every other request answers `503` with `Retry-After: 1` and the error *this instance of HA cluster … is changing role; retry in a second* (`data: {role, cluster}`); the port stays open ([details](design/ha.md#role-changes-and-the-http-listener)).
+
+## Readiness check
+
+`GET /api/v1/ready` (public, never rate limited) is the check a Kubernetes readiness probe, a shared Service or a load balancer routes by, because they read the status code, not the body. It is distinct from [`GET /api/v1/readiness`](#recovery-readiness), the recovery-readiness report (RPO, RTO, evidence), which needs the read scope. `GET /api/v1/health` stays the liveness check.
+
+It answers `200` with `{"success": true, "data": {"ready": true, "role": "active", "version": "..."}}` only when all of these hold, checked in this order:
+
+| `code` | Meaning |
+| :--- | :--- |
+| `not_active` | In [HA mode](production.md#high-availability) the instance is a standby, or between two roles (`switching`). |
+| `draining` | A graceful shutdown refuses new runs while it waits for the running ones. |
+| `store_unwritable` | The metadata database rejected a write probe (read-only, locked for more than 2 seconds, closed, failing disk). |
+| `disk_full` | The disk guard refuses new runs: the data directory is below `MONGORESCUE_MIN_FREE_SPACE_MB`, or a write failed because the disk is full. |
+
+Otherwise the answer is `503` with `Retry-After`, `success: false`, the first failing reason as `code`, a description in `error`, and `data` with `ready: false`, `reason` (the same value as `code`), `role`, `cluster` (HA mode) and `version`. Outside HA mode `role` is `active`. A standby, and an instance that is changing role, answer it too (its API is not served), always as `not_active`.
 
 ## Job heartbeats
 
