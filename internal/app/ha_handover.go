@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auditlog"
+	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/integrity"
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
+	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store"
 )
@@ -110,13 +112,15 @@ func newHASnapshotter(cfg *config.Config, rt *haRuntime, metaStore ha.VacuumStor
 	})
 }
 
-// kickOnFinishedRun asks for a snapshot after every finished backup or restore, so
-// the standby's view of the runs is current.
-func kickOnFinishedRun(snap *ha.Snapshotter) func(context.Context, events.Event) {
+// kickOnFinishedRun asks for a snapshot after every finished backup or restore and
+// every secret key rotation or wrapping change (a takeover must not roll those
+// back), so the standby's view is current.
+func kickOnFinishedRun(snap interface{ Kick() }) func(context.Context, events.Event) {
 	return func(_ context.Context, e events.Event) {
 		switch e.Type {
 		case events.BackupSucceeded, events.BackupFailed, events.BackupCancelled,
-			events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled:
+			events.RestoreSucceeded, events.RestoreFailed, events.RestoreCancelled,
+			events.SecurityKeyRotated, events.SecurityKeyWrapping:
 			snap.Kick()
 		}
 	}
@@ -609,4 +613,14 @@ func (s *haSupervisor) checkSnapshotKey(ctx context.Context) error {
 		}
 	}
 	return unreadable
+}
+
+// wireSecurityKicks asks for a snapshot after every committed change to users,
+// roles, sessions, API keys and connection grants (auth) and to any setting
+// (OIDC and security settings among them), so a takeover shortly after a
+// revocation cannot revive the revoked key, session or user. The snapshotter
+// coalesces the kicks (one per MinGap); Kick never blocks.
+func wireSecurityKicks(snap interface{ Kick() }, authSvc *auth.Service, settingsSvc *settings.Service) {
+	authSvc.SetOnChange(snap.Kick)
+	settingsSvc.OnChange(func([]string) { snap.Kick() })
 }

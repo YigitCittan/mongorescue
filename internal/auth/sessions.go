@@ -160,6 +160,7 @@ func (s *Service) RevokeSession(ctx context.Context, actor *Principal, id string
 		if err := s.repo.DeleteSession(ctx, sess.TokenHash); err != nil {
 			return false, err
 		}
+		s.changed()
 		s.logger.Info("session revoked", slog.String("session_id", id), slog.String("user_id", sess.UserID),
 			slog.String("by", actor.UserID()))
 		return isCurrentSession(actor, sess), nil

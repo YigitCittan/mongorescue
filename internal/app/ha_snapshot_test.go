@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,8 @@ type haWriter struct {
 	// skipRecord stops naming new snapshots in the lease (a crash between the
 	// snapshot and the lease update).
 	skipRecord bool
+	// written counts the snapshots stored so far.
+	written atomic.Int32
 }
 
 // newHAWriter returns the active instance of a cluster on shared, key.
@@ -78,8 +81,9 @@ func newHAWriter(t *testing.T, shared, key string) *haWriter {
 		t.Fatalf("the writer did not become active: %v", err)
 	}
 	w.snap, err = ha.NewSnapshotter(ha.SnapshotterConfig{Cluster: w.cluster, InstanceID: "previous", Store: w.meta, Storage: target,
-		Fence: w.mgr, Passphrase: w.pass, TempDir: t.TempDir(), Keep: 100,
+		Fence: w.mgr, Passphrase: w.pass, TempDir: t.TempDir(), Keep: 100, MinGap: 10 * time.Millisecond,
 		OnWritten: func(ctx context.Context, info ha.SnapshotInfo) {
+			w.written.Add(1)
 			if !w.skipRecord {
 				w.mgr.RecordSnapshot(ctx, info.Mark())
 			}
