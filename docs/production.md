@@ -69,7 +69,7 @@ Restores run in the background (`POST /api/v1/restore` answers `202`; poll `GET 
 
 **Idle timeout.** MongoRescue closes an idle keep-alive connection after 120 seconds. Keep the idle timeout of every proxy and load balancer in front of it **lower** (AWS ALB defaults to 60 s, nginx upstream `keepalive_timeout` to 60 s: set it to 55s or less, or close idle upstream connections sooner), or the proxy reuses a connection the server has just closed and answers an intermittent `502`.
 
-**HSTS.** Over TLS, directly or behind a trusted proxy that sends `X-Forwarded-Proto: https`, MongoRescue adds `Strict-Transport-Security: max-age=31536000` (`security.hsts_max_age`, `0` turns it off). Add the proxy to **Trusted proxies** for it to apply, since the server itself speaks plain HTTP.
+**HSTS.** Over TLS, directly or behind a trusted proxy that sends `X-Forwarded-Proto: https`, MongoRescue can add `Strict-Transport-Security`: it is off by default; set `security.hsts_max_age` (for example `31536000`, one year) once HTTPS works for every client. Add the proxy to **Trusted proxies** for it to apply, since the server itself speaks plain HTTP.
 
 **Request bodies.** The JSON bodies of the job, backup and restore endpoints are limited to 1 MiB, others to 64 KiB or less, and `/mcp` to 4 MiB; larger requests get `413`.
 

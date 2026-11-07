@@ -276,10 +276,13 @@ const (
 	// DefaultAPIWorkRateLimitPerMinute is the default
 	// security.api_work_rate_limit_per_minute.
 	DefaultAPIWorkRateLimitPerMinute = 60
-	// DefaultHSTSMaxAge is the default security.hsts_max_age: one year.
-	DefaultHSTSMaxAge = 365 * 24 * 60 * 60
+	// DefaultHSTSMaxAge is the default security.hsts_max_age: 0, HSTS is opt-in so an
+	// upgrade never pins browsers to HTTPS behind a proxy that was not ready for it.
+	DefaultHSTSMaxAge = 0
+	// RecommendedHSTSMaxAge is the suggested security.hsts_max_age once HTTPS works: one year.
+	RecommendedHSTSMaxAge = 365 * 24 * 60 * 60
 	// MaxHSTSMaxAge is the largest security.hsts_max_age: two years.
-	MaxHSTSMaxAge = 2 * DefaultHSTSMaxAge
+	MaxHSTSMaxAge = 2 * RecommendedHSTSMaxAge
 	// DefaultAPIWorkRateLimitBurst is the default security.api_work_rate_limit_burst.
 	DefaultAPIWorkRateLimitBurst = 20
 	// MaxAPIRateLimit bounds every rate limit setting.
