@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,7 +68,12 @@ func TestUnavailableAlertsOncePerEpisode(t *testing.T) {
 	f.kv["secret/x"] = map[string]any{"username": "u", "password": "never-logged-pass"}
 	var alerts []string
 	r := newTestResolver(t, srv, time.Second, &alerts)
-	r.cacheTTL = time.Nanosecond
+	// A clock that moves on every reading: the real one is coarse on Windows
+	// (about 15 ms), so a 1 ns cache would still serve a hit there.
+	var tick atomic.Int64
+	base := time.Now()
+	r.now = func() time.Time { return base.Add(time.Duration(tick.Add(1)) * time.Second) }
+	r.cacheTTL = time.Millisecond
 	ctx := context.Background()
 	f.set(func(f *fakeVault) { f.down = true })
 	for range 3 {
