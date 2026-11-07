@@ -224,12 +224,12 @@ func (r *Resolver) Connection(ctx context.Context, ref models.VaultRef) (UserPas
 	}
 	switch ref.Engine {
 	case models.VaultKV2:
-		vals, err := r.kv(ctx, ref, []string{ref.UsernameField, ref.PasswordField})
+		vals, err := r.kv(ctx, ref, []string{ref.UsernameField, ref.PassField})
 		if err != nil {
 			return UserPassword{}, r.failed(err)
 		}
 		r.succeeded()
-		return UserPassword{Username: vals[ref.UsernameField], Password: vals[ref.PasswordField]}, nil
+		return UserPassword{Username: vals[ref.UsernameField], Password: vals[ref.PassField]}, nil
 	case models.VaultDatabase:
 		l, err := r.shared(ctx, ref, true)
 		if err != nil {
@@ -434,7 +434,7 @@ func pick(ref models.VaultRef, data map[string]any, fields []string) (map[string
 // Fields returns the names of the fields a reference reads, sorted.
 func Fields(ref models.VaultRef) []string {
 	var out []string
-	for _, f := range []string{ref.UsernameField, ref.PasswordField, ref.AccessKeyField, ref.SecretKeyField, ref.SessionTokenField} {
+	for _, f := range []string{ref.UsernameField, ref.PassField, ref.AccessKeyField, ref.SecField, ref.SessionTokenField} {
 		if f != "" {
 			out = append(out, f)
 		}
