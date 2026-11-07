@@ -71,6 +71,25 @@ Scheduled jobs follow the wall clock, since cron expressions name wall-clock tim
 | `MongoRescueHAStartedFromEmptyState` | critical | An instance of an HA cluster found no lease and no metadata snapshot on the HA target in the last 15 minutes and became active with its own database. Expected once for a new cluster; otherwise check the HA target and run a storage scan of every storage target to re-import the archives |
 | `MongoRescueHARollbackSuspected` | critical | A standby of an HA cluster refused a takeover in the last 15 minutes because it could roll the metadata back (the lease is not authentic or missing, or the newest snapshot is older than the lease or the instance knows). No instance becomes active until an operator checks the HA target and runs `mongorescue ha force-takeover` ([how](design/ha.md#forcing-a-takeover)) |
 | `MongoRescueHASnapshotRejected` | critical | An instance of an HA cluster found a refused metadata snapshot on the HA target (it lasts until the snapshot is deleted) or refused one in the last 15 minutes: its authenticated header does not match its name or cluster (copied or renamed on the HA target), or it does not decrypt (altered). It is never restored nor deleted; delete it after the investigation ([how](design/ha.md#security)) |
+| `MongoRescuePITRCollectorDown` | critical | `mongorescue_pitr_collector_up == 0` for 10 minutes: the oplog collector of a [PITR](pitr.md) stream fails or is stopped |
+| `MongoRescuePITRLagHigh` | warning | A PITR stream's lag is above 15 minutes (900 s) for 10 minutes |
+| `MongoRescuePITROplogHeadroomLow` | critical | The oplog headroom of a PITR stream is below max(6 hours, 3 x the lag) for 10 minutes (the bound of the `pitr.window_low` event): entries are lost, and the recovery window breaks, if the collector stops that long |
+| `MongoRescuePITRChainBroken` | critical | A PITR chain ended in the last hour (`gap`, `replica_set_changed` or `diverged`): restores cannot cross it |
+| `MongoRescuePITRChunkErrors` | warning | At least 3 oplog chunks of a stream failed in the last hour |
+| `MongoRescuePITRStale` | warning | The newest chunk of a stream ends more than an hour ago while the lag is above 60 s (an idle replica set, lag 0, is not stale), for 10 minutes |
+| `MongoRescueBackupCopyFailed` | warning | A [backup copy](configuration.md#copies-on-a-second-target-3-2-1) failed (`result="error"`) in the last hour |
+| `MongoRescueBackupCopyMismatch` | critical | A backup copy did not match its primary's checksum in the last hour |
+| `MongoRescueBackupCopyQueueGrowing` | warning | The copy queue was never empty during the last 4 hours, for 10 minutes |
+| `MongoRescueNotificationFailures` | warning | More than half of a channel type's notifications, and at least 2, were given up (`status="failure"`) in the last hour |
+| `MongoRescueNotificationsLost` | warning | Notifications were `dropped` (queue full) or `expired` in the last 15 minutes |
+| `MongoRescueEventsDropped` | warning | Events were dropped because the event queue was full or stopped in the last 15 minutes |
+| `MongoRescueHeartbeatsDropped` | warning | Job heartbeat pings were dropped in the last 15 minutes |
+| `MongoRescueAuditWriteFailed` | critical | An [audit log](audit.md) entry could not be stored in the last 15 minutes |
+| `MongoRescueAuditForwardFailed` | warning | Audit entries failed to forward to the audit webhook (`failed` or `dropped`) in the last 15 minutes, for 5 minutes |
+| `MongoRescueKeyWrapErrors` | warning | KMS calls that wrap or unwrap `secret.key` failed in the last 15 minutes |
+| `MongoRescueAPIKeysExpired` | warning | Stored API keys are past their expiry (`mongorescue_api_keys_expired > 0`) for an hour |
+| `MongoRescueAPIKeysExpiring` | warning | API keys expire within the warning days (`mongorescue_api_keys_expiring > 0`) for an hour |
+| `MongoRescueDiskFillingUp` | warning | `predict_linear` over the last 6 hours says the data directory or a local storage target (`mongorescue_data_dir_free_bytes`, `mongorescue_storage_free_bytes`) runs out of space within 24 hours, for 30 minutes |
 | `MongoRescueHANoActiveInstance` | critical | No instance of an [active-passive HA cluster](production.md#high-availability) has reported `role="active"` for a minute (twice the default lease TTL), while one of them exported `mongorescue_ha_role` in the last 10 minutes |
 
 Load the file in `prometheus.yml`. The rules work with a default [scrape configuration](metrics.md#scrape-configuration) under any scrape job name: they select no job and do not need `honor_labels`. By default Prometheus renames the `job` label of per-job series (the MongoRescue job ID) to `exported_job`; the rules group by `job` and `exported_job` and name the job from whichever holds it, so `honor_labels: true` works too.

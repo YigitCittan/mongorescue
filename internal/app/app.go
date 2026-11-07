@@ -29,6 +29,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/copies"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
+	"github.com/yigitcittan/mongorescue/internal/diskspace"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/ha"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
@@ -733,6 +734,15 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	metricSet.SetScheduledJobsSource(sched.ActiveJobCount)
 	metricSet.SetSchedulerTickSource(sched.LastTick)
 	metricSet.SetSettingsWarningsSource(func() int { return len(settingsSvc.Warnings()) })
+	metricSet.SetDiskSource((&diskMetrics{
+		dataDir:   cfg.DataDir,
+		listLocal: targetSvc.List,
+		localPath: targetSvc.LocalPath,
+		free:      diskspace.Free,
+		logger:    logger,
+		ttl:       diskMetricsTTL,
+		now:       time.Now,
+	}).usage)
 	metricSet.InitAPIRateLimited(server.RateLimitCallers, server.RateLimitBudgets)
 	if o.ha != nil {
 		metricSet.SetHASource(o.ha.metricsState)

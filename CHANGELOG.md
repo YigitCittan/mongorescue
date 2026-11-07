@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Alert rules for the newer subsystems (#226): PITR (collector down, lag, oplog headroom, chain breaks, chunk errors, staleness), backup copies (failures, mismatch, queue growth), notifications (failure ratio, dropped or expired), dropped events and heartbeats, audit write and forward failures, KMS key-wrap errors, API keys expired or expiring, and `MongoRescueDiskFillingUp`. New gauges `mongorescue_data_dir_free_bytes` and `mongorescue_storage_free_bytes{target}` (local targets) feed the disk rule; the Helm `PrometheusRule` carries the same rules.
+
 ### Changed
 - Relicensed future versions from MIT to GNU Affero General Public License v3.0 (AGPL-3.0) to ensure that forks, modifications, and network/SaaS deployments remain open source.
 
