@@ -967,6 +967,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return nil, snapErr
 		}
 		bus.Subscribe(kickOnFinishedRun(haSnap))
+		wireSecurityKicks(haSnap, authSvc, settingsSvc)
 	}
 
 	return &App{

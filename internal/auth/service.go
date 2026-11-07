@@ -66,6 +66,9 @@ type Service struct {
 	// grantGate holds back admin grants while the two-person rule is on (guarded
 	// by mu; see SetAdminGrantGate).
 	grantGate AdminGrantGate
+	// onChange is told after every committed change to users, sessions or API keys
+	// (guarded by mu; see SetOnChange).
+	onChange func()
 }
 
 // Option customises a Service.
@@ -272,6 +275,7 @@ func (s *Service) Setup(ctx context.Context, clientIP, code, username, password 
 		s.setupCode = "" // single use
 	}
 	s.mu.Unlock()
+	s.changed()
 	s.logger.Info("setup completed: first user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username))
 	return s.startSession(ctx, user)
 }
@@ -373,7 +377,11 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
-	return s.repo.DeleteSession(ctx, HashToken(token))
+	if err := s.repo.DeleteSession(ctx, HashToken(token)); err != nil {
+		return err
+	}
+	s.changed()
+	return nil
 }
 
 // AuthenticateSession resolves a session token to a Principal, enforcing the idle and
@@ -562,6 +570,7 @@ func (s *Service) CreateUserWithConnections(ctx context.Context, actor *Principa
 	if err = s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
+	s.changed()
 	s.logger.Info("user created", slog.String("user_id", user.ID), logsafe.Attr("username", user.Username),
 		logsafe.Attr("role", string(user.Role)), slog.String("by", actor.UserID()))
 	if held {
@@ -600,6 +609,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Principal, id string) e
 	if err := s.repo.DeleteUser(ctx, actor.UserID(), id, s.OIDC().Enabled); err != nil {
 		return err
 	}
+	s.changed()
 	s.logger.Info("user deleted", slog.String("user_id", id), slog.String("by", actor.UserID()))
 	return nil
 }
@@ -660,6 +670,7 @@ func (s *Service) SetUserRole(ctx context.Context, actor *Principal, id string, 
 	if err != nil {
 		return nil, err
 	}
+	s.changed()
 	user, err := s.repo.GetUser(ctx, id)
 	if err != nil {
 		return nil, err
@@ -703,6 +714,7 @@ func (s *Service) SetUserConnections(ctx context.Context, actor *Principal, id s
 	if err != nil {
 		return nil, err
 	}
+	s.changed()
 	s.logger.Info("user connections changed", logsafe.Attr("user_id", user.ID),
 		slog.Bool("all_connections", access.AllConnections), slog.Int("connections", len(access.ConnectionIDs)), slog.String("by", actor.UserID()))
 	return user, nil
@@ -778,12 +790,14 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Principal, userID, 
 		if err := s.repo.ResetPassword(ctx, userID, string(hash), s.now().UTC()); err != nil {
 			return err
 		}
+		s.changed()
 		s.logger.Info("password reset", slog.String("user_id", userID), slog.String("by", actor.UserID()))
 		return nil
 	}
 	if err := s.repo.UpdatePassword(ctx, userID, string(hash), s.now().UTC(), actor.SessionHash); err != nil {
 		return err
 	}
+	s.changed()
 	s.logger.Info("password changed", slog.String("user_id", userID), slog.String("by", actor.UserID()))
 	return nil
 }
@@ -967,6 +981,7 @@ func (s *Service) CreateAPIKeyWithOptions(ctx context.Context, actor *Principal,
 		return nil, "", err
 	}
 	k.setEffective(access.ConnectionSet().Intersect(actor.Connections))
+	s.changed()
 	s.logger.Info("api key created", slog.String("api_key_id", k.ID), slog.String("prefix", k.Prefix),
 		logsafe.Attr("scope", string(k.Scope)), logsafe.Attr("by", actor.UserID()), slog.Any("expires_at", k.ExpiresAt))
 	if held {
@@ -1210,6 +1225,7 @@ func (s *Service) ImportAPIKey(ctx context.Context, key string) (bool, error) {
 	if err = s.repo.CreateAPIKey(ctx, k); err != nil {
 		return false, err
 	}
+	s.changed()
 	s.logger.Info("api key imported", slog.String("api_key_id", k.ID))
 	return true, nil
 }
@@ -1242,6 +1258,7 @@ func (s *Service) DeleteAPIKey(ctx context.Context, actor *Principal, id string)
 	if err := s.repo.DeleteAPIKey(ctx, id); err != nil {
 		return err
 	}
+	s.changed()
 	s.logger.Info("api key revoked", slog.String("api_key_id", id), slog.String("by", actor.UserID()))
 	return nil
 }
@@ -1280,4 +1297,26 @@ func (s *Service) newUser(username, password string, role Role) (*User, error) {
 	now := s.now().UTC()
 	return &User{ID: id, Username: username, Role: role, AuthProvider: ProviderLocal, PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now,
 		ConnectionAccess: EveryConnection()}, nil
+}
+
+// SetOnChange registers fn, called (never with a lock held; it must not block)
+// after every committed change to users, roles, connection access, sessions or API
+// keys, so the application can persist the change at once (the HA metadata
+// snapshot): a standby that takes over must not revive a revoked key, session or
+// user. Set it while wiring, before requests are served.
+func (s *Service) SetOnChange(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onChange = fn
+}
+
+// changed tells the OnChange callback that a change to the stored security state
+// was committed.
+func (s *Service) changed() {
+	s.mu.Lock()
+	fn := s.onChange
+	s.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
