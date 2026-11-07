@@ -28,6 +28,7 @@ grep -Eq '^FROM golang:\$\{GO_VERSION\}-alpine@sha256:' Dockerfile \
   || err "Dockerfile builder stage must be 'FROM golang:\${GO_VERSION}-alpine@sha256:...'"
 
 # The image workflow must pass the version as a build arg.
+# shellcheck disable=SC2016 # ${{ }} is GitHub Actions syntax, matched literally
 grep -q 'GO_VERSION=\${{ steps.goversion.outputs.version }}' .github/workflows/docker.yml \
   || err "docker.yml must pass GO_VERSION from .go-version as a build arg"
 

@@ -46,7 +46,9 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
       (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 refuses to start on Linux 6.19+ (SERVER-121912), the kernel of
+    # the Ubuntu 26.04 ubuntu-latest image; stay on 24.04 until that is fixed.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -278,7 +280,9 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
       (github.event_name == 'workflow_dispatch' && (inputs.suite == 'pitr' || inputs.suite == 'nightly' || inputs.suite == 'all'))
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 refuses to start on Linux 6.19+ (SERVER-121912), the kernel of
+    # the Ubuntu 26.04 ubuntu-latest image; stay on 24.04 until that is fixed.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -328,7 +332,9 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0') ||
       (github.event_name == 'workflow_dispatch' && (inputs.suite == 'soak' || inputs.suite == 'all'))
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 refuses to start on Linux 6.19+ (SERVER-121912), the kernel of
+    # the Ubuntu 26.04 ubuntu-latest image; stay on 24.04 until that is fixed.
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - name: Checkout Repository
