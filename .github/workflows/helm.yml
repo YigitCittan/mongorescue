@@ -1,7 +1,10 @@
 name: Helm
 
 # The Helm chart (deploy/helm/mongorescue): lint, render and schema-validate it, and
-# install it on a kind cluster with a MongoDB pod. Neither job is a required check.
+# install it on a kind cluster with a MongoDB pod, and (on pull requests) require a
+# chart version bump for chart changes. The job names "Helm lint", "Helm (kind)" and
+# "Helm chart version" are what branch protection refers to as required checks: do not
+# rename them without updating the ruleset.
 on:
   push:
     branches: [main]
@@ -32,6 +35,25 @@ env:
   CRD_CATALOG_REF: 4c8dc296d32b06d15ccde9668ff136c951f4d539
 
 jobs:
+  version:
+    name: Helm chart version
+    # A push to main has nothing to compare with; a skipped job counts as passed.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Rule: docs/versioning.md#helm-chart-versions.
+      - name: The chart version increased if the chart changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/check-chart-version.sh "origin/${BASE_REF}"
+
   lint:
     name: Helm lint
     runs-on: ubuntu-latest
@@ -78,6 +100,12 @@ jobs:
             -schema-location default \
             -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRD_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
             "$RUNNER_TEMP/default.yaml" "$RUNNER_TEMP/full.yaml" "$RUNNER_TEMP/ephemeral.yaml"
+
+      - name: helm package (the release workflow's command)
+        run: |
+          set -euo pipefail
+          helm package deploy/helm/mongorescue --app-version 0.0.0-ci --destination "$RUNNER_TEMP/chart"
+          helm show chart "$RUNNER_TEMP"/chart/mongorescue-*.tgz | grep -qx 'appVersion: 0.0.0-ci'
 
       - name: The values schema refuses invalid values
         run: |

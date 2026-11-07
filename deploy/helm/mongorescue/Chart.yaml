@@ -2,9 +2,10 @@ apiVersion: v2
 name: mongorescue
 description: MongoDB backup and restore with an embedded dashboard, safe-clone restores, age encryption and Prometheus metrics.
 type: application
-# The chart version follows its own changes; appVersion is the MongoRescue release
-# the default image tag points to.
-version: 0.1.0
+# The chart version follows its own changes (docs/versioning.md#helm-chart-versions). appVersion
+# here is only a development default: the release workflow sets it to the tag at package time.
+# The default image tag is the appVersion.
+version: 0.2.0
 appVersion: "0.28.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/YigitCittan/mongorescue
