@@ -26,6 +26,7 @@ func TestHAFromEnv(t *testing.T) {
 	env := map[string]string{
 		EnvHAMode: "Active-Passive", EnvHATarget: "s3://bucket/ha?endpoint=http://minio:9000&path_style=true",
 		EnvHACluster: "prod", EnvHALeaseTTL: "20s", EnvHARenewInterval: "5s", EnvHASnapshotInterval: "1m",
+		EnvHACAFile: " /etc/ssl/minio-ca.pem ",
 	}
 	cfg, err := FromEnv(func(k string) string { return env[k] })
 	if err != nil {
@@ -34,7 +35,8 @@ func TestHAFromEnv(t *testing.T) {
 	if err = cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.HA.Enabled() || cfg.HA.Cluster != "prod" || cfg.HA.LeaseTTL != 20*time.Second || cfg.HA.RenewInterval != 5*time.Second || cfg.HA.SnapshotInterval != time.Minute {
+	if !cfg.HA.Enabled() || cfg.HA.Cluster != "prod" || cfg.HA.LeaseTTL != 20*time.Second || cfg.HA.RenewInterval != 5*time.Second || cfg.HA.SnapshotInterval != time.Minute ||
+		cfg.HA.CAFile != "/etc/ssl/minio-ca.pem" {
 		t.Fatalf("HA = %+v", cfg.HA)
 	}
 	if _, err = FromEnv(func(k string) string {

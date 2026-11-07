@@ -70,6 +70,7 @@ func newForTarget(ctx context.Context, t *models.StorageTarget, localPath string
 			PartSizeMB:   t.S3.PartSizeMB,
 			ObjectLock:   ObjectLock{Mode: t.S3.ObjectLock, RetentionDays: t.S3.RetentionDays},
 			Stall:        stall,
+			CAPEM:        t.S3.CAPEM,
 		}
 		if t.S3.FromVault() {
 			if vault != nil {

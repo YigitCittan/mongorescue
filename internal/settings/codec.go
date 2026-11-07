@@ -40,6 +40,10 @@ const (
 	KeyDeleteGraceDays               = "security.delete_grace_days"
 	KeyRequireSecondApprover         = "security.require_second_approver"
 	KeyRequireLockedCopies           = "security.require_locked_copies"
+	// KeyRequireHTTPSEndpoints refuses http:// storage endpoints.
+	KeyRequireHTTPSEndpoints = "security.require_https_endpoints"
+	// KeyOutboundDenyPrivate refuses loopback, private, CGNAT and ULA destinations.
+	KeyOutboundDenyPrivate = "security.outbound_deny_private"
 	// KeyAPIKeyMaxLifetimeDays caps the lifetime of API keys (0: unlimited).
 	KeyAPIKeyMaxLifetimeDays = "security.api_key_max_lifetime_days"
 	// KeyAPIKeyExpiryWarningDays is how many days before its expiry a key is reported.
@@ -145,6 +149,8 @@ var keyDefs = []keyDef{
 	field(KeyDeleteGraceDays, false, func(s *Settings) *int { return &s.Security.DeleteGraceDays }),
 	field(KeyRequireSecondApprover, false, func(s *Settings) *bool { return &s.Security.RequireSecondApprover }),
 	field(KeyRequireLockedCopies, false, func(s *Settings) *bool { return &s.Security.RequireLockedCopies }),
+	field(KeyRequireHTTPSEndpoints, false, func(s *Settings) *bool { return &s.Security.RequireHTTPSEndpoints }),
+	field(KeyOutboundDenyPrivate, false, func(s *Settings) *bool { return &s.Security.OutboundDenyPrivate }),
 	field(KeyAPIKeyMaxLifetimeDays, false, func(s *Settings) *int { return &s.Security.APIKeyMaxLifetimeDays }),
 	field(KeyAPIKeyExpiryWarningDays, false, func(s *Settings) *int { return &s.Security.APIKeyExpiryWarningDays }),
 	field(KeyAPIRateLimitPerMinute, false, func(s *Settings) *int { return &s.Security.APIRateLimitPerMinute }),

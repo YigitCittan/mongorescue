@@ -4,6 +4,8 @@
  * Shows the persistent warnings of GET /api/v1/settings (settings.Warning) that
  * no feature module renders itself: a full data directory (data_dir_full),
  * notification channels that cannot be loaded (notification_channel_unreadable),
+ * storage targets with an http:// endpoint while https is required
+ * (storage_endpoint_insecure),
  * and any warning a newer server reports, with the server's English text when no
  * translation exists.
  *
@@ -23,6 +25,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "The metadata database cannot be written, so new backups and restores are refused. Free space on the disk of the data directory; MongoRescue resumes on its own once there is enough.",
       notification_channel_unreadable_title: "Notification channels cannot be loaded",
       notification_channel_unreadable_desc: "The notifications of these channels fail and are given up. Edit and save each channel (re-entering its secrets) or delete it.",
+      storage_endpoint_insecure_title: "Storage targets use plain http",
+      storage_endpoint_insecure_desc: "Require https for S3 endpoints is on, so backups to these targets fail. Change their endpoints to https (add the CA certificate of a private CA to the target) or turn the setting off.",
     },
   },
   tr: {
@@ -31,6 +35,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "Meta veri veritabanına yazılamıyor, bu yüzden yeni yedeklemeler ve geri yüklemeler reddediliyor. Veri dizininin diskinde yer açın; yeterli alan olduğunda MongoRescue kendiliğinden devam eder.",
       notification_channel_unreadable_title: "Bildirim kanalları yüklenemiyor",
       notification_channel_unreadable_desc: "Bu kanalların bildirimleri başarısız oluyor ve bırakılıyor. Her kanalı düzenleyip kaydedin (gizli bilgilerini yeniden girerek) ya da silin.",
+      storage_endpoint_insecure_title: "Depolama hedefleri düz http kullanıyor",
+      storage_endpoint_insecure_desc: "S3 uç noktaları için https zorunlu açık olduğundan bu hedeflere yapılan yedeklemeler başarısız olur. Uç noktalarını https olarak değiştirin (özel bir CA'nın sertifikasını hedefe ekleyin) ya da ayarı kapatın.",
     },
   },
   de: {
@@ -39,6 +45,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "Die Metadatenbank kann nicht beschrieben werden, daher werden neue Backups und Wiederherstellungen abgelehnt. Schaffen Sie Platz auf dem Datenträger des Datenverzeichnisses; MongoRescue macht von selbst weiter, sobald genug frei ist.",
       notification_channel_unreadable_title: "Benachrichtigungskanäle können nicht geladen werden",
       notification_channel_unreadable_desc: "Die Benachrichtigungen dieser Kanäle schlagen fehl und werden aufgegeben. Bearbeiten und speichern Sie jeden Kanal (mit erneut eingegebenen Geheimnissen) oder löschen Sie ihn.",
+      storage_endpoint_insecure_title: "Speicherziele verwenden unverschlüsseltes http",
+      storage_endpoint_insecure_desc: "„https für S3-Endpunkte verlangen“ ist aktiv, daher schlagen Backups auf diese Ziele fehl. Ändern Sie ihre Endpunkte auf https (das CA-Zertifikat einer privaten CA am Ziel hinterlegen) oder schalten Sie die Einstellung aus.",
     },
   },
   es: {
@@ -47,6 +55,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "No se puede escribir en la base de datos de metadatos, así que se rechazan nuevas copias de seguridad y restauraciones. Libere espacio en el disco del directorio de datos; MongoRescue continúa por sí solo cuando haya suficiente.",
       notification_channel_unreadable_title: "No se pueden cargar canales de notificación",
       notification_channel_unreadable_desc: "Las notificaciones de estos canales fallan y se abandonan. Edite y guarde cada canal (volviendo a introducir sus secretos) o elimínelo.",
+      storage_endpoint_insecure_title: "Destinos de almacenamiento con http sin cifrar",
+      storage_endpoint_insecure_desc: "«Exigir https en los endpoints S3» está activado, así que las copias a estos destinos fallan. Cambie sus endpoints a https (añada al destino el certificado de una CA privada) o desactive el ajuste.",
     },
   },
   fr: {
@@ -55,6 +65,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "La base de métadonnées ne peut pas être écrite, les nouvelles sauvegardes et restaurations sont donc refusées. Libérez de l'espace sur le disque du répertoire de données ; MongoRescue reprend de lui-même dès qu'il y en a assez.",
       notification_channel_unreadable_title: "Des canaux de notification ne peuvent pas être chargés",
       notification_channel_unreadable_desc: "Les notifications de ces canaux échouent et sont abandonnées. Modifiez et enregistrez chaque canal (en ressaisissant ses secrets) ou supprimez-le.",
+      storage_endpoint_insecure_title: "Des cibles de stockage utilisent http non chiffré",
+      storage_endpoint_insecure_desc: "« Exiger https pour les points de terminaison S3 » est activé : les sauvegardes vers ces cibles échouent. Passez leurs points de terminaison en https (ajoutez à la cible le certificat d'une AC privée) ou désactivez le réglage.",
     },
   },
   zh: {
@@ -63,6 +75,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "无法写入元数据数据库，因此新的备份和恢复会被拒绝。请释放数据目录所在磁盘的空间；空间足够后 MongoRescue 会自动恢复。",
       notification_channel_unreadable_title: "无法加载通知渠道",
       notification_channel_unreadable_desc: "这些渠道的通知会失败并被放弃。请编辑并保存每个渠道（重新输入其密钥），或将其删除。",
+      storage_endpoint_insecure_title: "存储目标使用明文 http",
+      storage_endpoint_insecure_desc: "已开启“S3 端点必须使用 https”，因此备份到这些目标会失败。请将其端点改为 https（为目标添加私有 CA 的证书），或关闭该设置。",
     },
   },
   ja: {
@@ -71,6 +85,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "メタデータベースに書き込めないため、新しいバックアップとリストアは拒否されます。データディレクトリのディスクの空き容量を増やしてください。十分な空きができると MongoRescue は自動的に再開します。",
       notification_channel_unreadable_title: "通知チャネルを読み込めません",
       notification_channel_unreadable_desc: "これらのチャネルの通知は失敗し、破棄されます。各チャネルを編集して保存する（シークレットを再入力する）か、削除してください。",
+      storage_endpoint_insecure_title: "ストレージターゲットが平文 http を使っています",
+      storage_endpoint_insecure_desc: "「S3 エンドポイントに https を必須にする」がオンのため、これらのターゲットへのバックアップは失敗します。エンドポイントを https に変更する（プライベート CA の証明書をターゲットに追加する）か、設定をオフにしてください。",
     },
   },
   ru: {
@@ -79,6 +95,8 @@ const RUNTIME_WARNING_TRANSLATIONS = {
       data_dir_full_desc: "Запись в базу метаданных невозможна, поэтому новые резервные копии и восстановления отклоняются. Освободите место на диске каталога данных; MongoRescue продолжит работу сам, когда места станет достаточно.",
       notification_channel_unreadable_title: "Не удаётся загрузить каналы уведомлений",
       notification_channel_unreadable_desc: "Уведомления этих каналов не доставляются и отбрасываются. Отредактируйте и сохраните каждый канал (заново введя его секреты) или удалите его.",
+      storage_endpoint_insecure_title: "Хранилища используют обычный http",
+      storage_endpoint_insecure_desc: "Включено «Требовать https для конечных точек S3», поэтому резервное копирование в эти хранилища не работает. Измените их конечные точки на https (добавьте в хранилище сертификат частного ЦС) или выключите настройку.",
     },
   },
 };
@@ -131,7 +149,9 @@ function runtimeRenderWarnings(list) {
     desc.className = "section-desc";
     desc.textContent = runtimeWarningText(w.id, "desc", w.message || "");
     body.append(title, desc);
-    const channels = Array.isArray(w.channels) ? w.channels : [];
+    // The channels of notification_channel_unreadable and the storage targets of
+    // storage_endpoint_insecure.
+    const channels = (Array.isArray(w.channels) ? w.channels : []).concat(Array.isArray(w.targets) ? w.targets : []);
     if (channels.length > 0) {
       const ul = document.createElement("ul");
       ul.className = "postrestore-kept-list";

@@ -229,6 +229,13 @@ type S3Target struct {
 	// Vault names the access keys in Vault (kv-v2 or the AWS secrets engine)
 	// when CredentialSource is CredentialsVault. It holds no secret.
 	Vault VaultRef `json:"vault,omitzero"`
+
+	// CAPEM is an optional PEM bundle of certificate authorities the endpoint's
+	// TLS certificate is verified against, in addition to the system roots (an
+	// on-premises MinIO behind a private CA). It applies to this target only:
+	// every request of the driver, downloads and the connection test included.
+	// Certificates are public, so it is stored and returned as it is.
+	CAPEM string `json:"ca_pem,omitempty"`
 }
 
 // FromVault reports whether the target's access keys are read from Vault.

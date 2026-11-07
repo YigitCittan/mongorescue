@@ -31,6 +31,8 @@ type Warning struct {
 	Connections []WarningConnection `json:"connections,omitempty"`
 	// Channels names the notification channels of a WarningChannelUnreadable.
 	Channels []string `json:"channels,omitempty"`
+	// Targets names the storage targets of a WarningInsecureStorageEndpoints.
+	Targets []string `json:"targets,omitempty"`
 	// APIKeys names the API keys of a WarningAPIKeysExpiring or a
 	// WarningAPIKeyNeverExpires.
 	APIKeys []WarningAPIKey `json:"api_keys,omitempty"`
@@ -141,6 +143,20 @@ func PostRestoreClonesKept(restoreID string, databases []string) Warning {
 	return Warning{ID: WarningPostRestoreClonesKept, RestoreID: restoreID, Databases: databases,
 		Message: fmt.Sprintf("Restore %s kept the clone(s) %s after a failed post-restore command; they still hold data the commands should have erased (such as erasures). Drop them when done.",
 			restoreID, strings.Join(databases, ", "))}
+}
+
+// WarningInsecureStorageEndpoints identifies the warning about storage targets
+// whose S3 endpoint is plain http:// while security.require_https_endpoints is on:
+// their requests are refused, so backups to them fail until the endpoint is changed
+// to https. It is raised by the server from the targets (not stored here).
+const WarningInsecureStorageEndpoints = "storage_endpoint_insecure"
+
+// InsecureStorageEndpoints returns the WarningInsecureStorageEndpoints warning for
+// the targets named, which use an http:// endpoint.
+func InsecureStorageEndpoints(names []string) Warning {
+	return Warning{ID: WarningInsecureStorageEndpoints, Setting: "storage", Targets: names,
+		Message: fmt.Sprintf("security.require_https_endpoints is on, so these storage targets with an http:// endpoint fail: %s. Change their endpoints to https (add the CA certificate of a private CA to the target) or turn the setting off.",
+			strings.Join(names, ", "))}
 }
 
 // encryptionOffMessage is the text of the WarningEncryptionOff warning.

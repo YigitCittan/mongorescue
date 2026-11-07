@@ -56,6 +56,9 @@ func (s *Server) warnings(ctx context.Context, svc *settings.Service) []settings
 	if w, ok := s.tlsCertWarning(ctx); ok {
 		out = append(out, w)
 	}
+	if w, ok := s.insecureEndpointWarning(ctx, svc); ok {
+		out = append(out, w)
+	}
 	out = append(out, s.apiKeyWarnings(ctx)...)
 	if s.ops == nil {
 		return out
@@ -242,6 +245,30 @@ func (s *Server) tlsCertWarning(ctx context.Context) (settings.Warning, bool) {
 		return settings.Warning{}, false
 	}
 	return settings.ConnectionTLSCertExpiring(expiring), true
+}
+
+// insecureEndpointWarning returns the settings.WarningInsecureStorageEndpoints
+// warning while security.require_https_endpoints is on and storage targets still
+// have an http:// endpoint (they are refused at use time, not silently broken).
+func (s *Server) insecureEndpointWarning(ctx context.Context, svc *settings.Service) (settings.Warning, bool) {
+	if s.targets == nil || !svc.Current().Security.RequireHTTPSEndpoints {
+		return settings.Warning{}, false
+	}
+	list, err := s.targets.List(ctx)
+	if err != nil {
+		s.logger.Warn("could not list the storage targets for the endpoint warning", logsafe.Error(err))
+		return settings.Warning{}, false
+	}
+	var names []string
+	for _, t := range list {
+		if t.Type == models.StorageS3 && t.S3 != nil && strings.HasPrefix(strings.ToLower(t.S3.Endpoint), "http://") {
+			names = append(names, t.Name)
+		}
+	}
+	if len(names) == 0 {
+		return settings.Warning{}, false
+	}
+	return settings.InsecureStorageEndpoints(names), true
 }
 
 // tlsWarning returns the settings.WarningConnectionTLSLoosened warning when any

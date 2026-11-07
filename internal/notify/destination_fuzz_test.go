@@ -94,7 +94,7 @@ func FuzzDestinationPolicy(f *testing.F) {
 				t.Fatalf("SMTP host %s refused = %v; want %v", host, got, want)
 			}
 			d := newGuardedDialer(func(context.Context, string, string) ([]netip.Addr, error) { return []netip.Addr{a}, nil })
-			if _, err := d.resolve(ctx, "tcp", "receiver.example"); errors.Is(err, ErrBlockedDestination) != want || (err != nil && !want) {
+			if _, err := d.Resolve(ctx, "tcp", "receiver.example"); errors.Is(err, ErrBlockedDestination) != want || (err != nil && !want) {
 				t.Fatalf("a name resolving to %s: err = %v; want blocked = %v", a, err, want)
 			}
 			if err := controlDestination("tcp", netip.AddrPortFrom(a, 443).String(), nil); errors.Is(err, ErrBlockedDestination) != want {

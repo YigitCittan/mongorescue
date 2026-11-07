@@ -4968,7 +4968,7 @@ components:
         s3:
           type: object
           additionalProperties: true
-          description: Secret keys are write-only; responses mask them.
+          description: Secret keys are write-only; responses mask them. ca_pem is an optional PEM bundle of certificate authorities trusted for the endpoint of this target in addition to the system roots; it is not secret and is returned as stored.
         created_at:
           type: string
           format: date-time

@@ -188,9 +188,18 @@ networkPolicy:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16   # the cloud metadata service (drop it for instance-profile S3 keys)
       ports:
-        - port: 443   # S3, webhooks, SSO
+        - port: 443   # S3, webhooks, heartbeat, SSO, KMS
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.25/32   # an on-premises SMTP relay
+      ports:
+        - port: 587
 ```
+
+The destinations, ports and proxy support of every outbound connection are listed in the [outbound connections table](production.md#outbound-connections). MongoRescue also refuses link-local and metadata addresses itself (and, with `security.outbound_deny_private`, private ones; [outbound policy](production.md#outbound-policy)), so the network policy is a second layer, not the only one.
 
 ## Ingress and TLS
 

@@ -147,9 +147,9 @@ Assumptions:
 | D | A full data directory, stalled writes | `internal/diskguard` refuses new runs while the data directory is short of space; a stall watch on local writes (`WithStallWatch`). |
 | E | — | The drivers act only for MongoRescue's own requests. |
 
-**Residual risk**: without Object Lock (and always on local targets), anyone with the storage's credentials or file system access can delete archives. S3 endpoints may be plain `http://` (`internal/targets/targets.go`), in which case unencrypted archives travel in clear text. An administrator can point a target at any endpoint, including internal services; target tests then connect there.
+**Residual risk**: without Object Lock (and always on local targets), anyone with the storage's credentials or file system access can delete archives. S3 endpoints may be plain `http://` unless `security.require_https_endpoints` is on, in which case unencrypted archives travel in clear text. Private and loopback endpoints stay allowed unless `security.outbound_deny_private` is on, so an administrator can still point a target at an internal service; target tests then connect there. Metadata and link-local endpoints are always refused.
 
-**Open items**: an option to require `https` S3 endpoints; applying the notification destination policy to S3 endpoints.
+**Open items**: none; the former gaps "no option to require `https` S3 endpoints" and "no destination policy for S3 endpoints" are closed by the shared outbound policy (`internal/netguard`, `internal/storage/s3_client.go`, `security.require_https_endpoints`, a per-target `ca_pem`; [#239](https://github.com/YigitCittan/mongorescue/issues/239)).
 
 ## 6. secretbox, secret.key and key rotation
 
@@ -273,15 +273,15 @@ Assumptions:
 | | Threat | Mitigations (code) |
 | :--- | :--- | :--- |
 | S | Forged webhook deliveries to receivers | `X-MongoRescue-Signature: sha256=<HMAC-SHA256(secret, body)>` when a secret is set; payloads carry an event ID for de-duplication (`internal/notify/webhook.go`). |
-| I | SSRF into metadata services and link-local networks | The destination policy (`internal/notify/destination.go`) blocks link-local, metadata (also via NAT64), unspecified, multicast and broadcast addresses and non-canonical numeric hosts, at save time and again after DNS resolution on every connection, also for the target of a proxied request; the client never follows redirects and times out (`internal/notify/http.go`); fuzzed by `FuzzDestinationPolicy`, `FuzzWebhookHostForms`, `FuzzValidateWebhook`. |
+| I | SSRF into metadata services and link-local networks | The destination policy (`internal/netguard`, used by the notifiers through `internal/notify/destination.go` and by the S3 driver) blocks link-local, metadata (also via NAT64), unspecified, multicast and broadcast addresses and non-canonical numeric hosts, at save time and again after DNS resolution on every connection, also for the target of a proxied request; the client never follows redirects and times out (`internal/notify/http.go`); fuzzed by `FuzzDestinationPolicy`, `FuzzWebhookHostForms`, `FuzzValidateWebhook`. |
 | I | SMTP credentials in clear | `AUTH PLAIN` only over TLS or to localhost (`internal/notify/email.go`). |
 | I | Secrets at rest or in the API | Sealed in the database and masked in responses. |
 | D | Slow receivers blocking work | Deliveries go through a durable outbox with retries (`internal/notify/outbox.go`) and a per-attempt timeout. |
 | E | A non-admin creating channels to exfiltrate events | Channels and rules need admin (`routeScopes`). |
 
-**Residual risk**: loopback and private addresses stay allowed on purpose (self-hosted receivers), so an administrator can make the server send requests to internal services.
+**Residual risk**: loopback and private addresses stay allowed by default (self-hosted receivers), so an administrator can make the server send requests to internal services; `security.outbound_deny_private` refuses them for notifications, the heartbeat and audit forwarders, OIDC and S3 (the policy lives in `internal/netguard`, shared with the S3 driver).
 
-**Open items**: an option to deny private ranges for deployments that do not need them.
+**Open items**: none; the option to deny private ranges is `security.outbound_deny_private` ([#239](https://github.com/YigitCittan/mongorescue/issues/239)).
 
 ## 13. Helm chart and container image
 
@@ -316,7 +316,7 @@ Assumptions:
 | HA | Separate credentials for the HA prefix (binding the snapshots' cluster and epoch and detecting rollbacks is done: [#189](https://github.com/YigitCittan/mongorescue/issues/189)). |
 | HTTP API | None (REST rate limits: [#191](https://github.com/YigitCittan/mongorescue/issues/191); HSTS, body caps and idle timeout: [#217](https://github.com/YigitCittan/mongorescue/issues/217)). |
 | Auth | MFA for local accounts (API key expiry is done: [#190](https://github.com/YigitCittan/mongorescue/issues/190)). |
-| Storage | An option to require `https` S3 endpoints; the destination policy for S3 endpoints. |
-| Notifications | An option to deny private ranges. |
+| Storage | None (https-only endpoints, the destination policy for S3 endpoints and a per-target CA: [#239](https://github.com/YigitCittan/mongorescue/issues/239)). |
+| Notifications | None (denying private ranges: [#239](https://github.com/YigitCittan/mongorescue/issues/239)). |
 | Release | SLSA Build Level 3 provenance for the container images (the images have Level 2 attestations and cosign signatures). |
 | Process | An independent security review of auth and RBAC, the two-person rule, secretbox and key rotation, PITR restore and Object Lock (issue #144). |
