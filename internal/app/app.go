@@ -468,6 +468,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}),
 	)
 	metricSet.SetActiveRunsSource(func(kind string) int { return registry.Count(models.RunKind(kind)) })
+	// The last-success and size gauges start from the store, not from the next backup.
+	seedBackupGauges(ctx, metaStore, metricSet, logger)
 	bus.Subscribe(metricSet.ObserveEvent)
 	bus.Subscribe(notifySvc.HandleEvent)
 	bus.Subscribe(watchEncryptionOffAlert(logger, settingsSvc))
