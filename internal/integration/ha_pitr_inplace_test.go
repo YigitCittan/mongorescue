@@ -167,6 +167,15 @@ func TestHAInPlacePITRSurvivesATakeover(t *testing.T) {
 		"endpoint": backupStore.Endpoint, "region": backupStore.Region, "bucket": backupStore.Bucket, "prefix": backupStore.Prefix,
 		"access_key_id": backupStore.AccessKey, "secret_access_key": backupStore.SecretKey, "use_path_style": backupStore.UsePathStyle,
 	}}, http.StatusCreated, &target)
+	// PITR needs backup encryption with age keys (the oplog keeps deleted data).
+	var key struct {
+		Identity  string `json:"identity"`
+		Recipient string `json:"recipient"`
+	}
+	apiA.data("POST", "/api/v1/settings/encryption/generate-key", nil, http.StatusOK, &key)
+	apiA.data("PUT", "/api/v1/settings", map[string]any{"encryption": map[string]any{
+		"enabled": true, "mode": "x25519", "recipients": []string{key.Recipient}, "identity": key.Identity,
+	}}, http.StatusOK, nil)
 	var stream struct {
 		ID string `json:"id"`
 	}
