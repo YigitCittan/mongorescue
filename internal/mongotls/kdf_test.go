@@ -93,6 +93,83 @@ func TestCheckKDF(t *testing.T) {
 	}
 }
 
+// withCipherParts returns der with its IV (when iv is not nil) and encrypted data (when
+// data is not nil) replaced.
+func withCipherParts(t *testing.T, der, iv, data []byte) []byte {
+	t.Helper()
+	var info encryptedPrivateKeyInfo
+	if _, err := asn1.Unmarshal(der, &info); err != nil {
+		t.Fatal(err)
+	}
+	var p2 pbes2Params
+	if _, err := asn1.Unmarshal(info.Algorithm.Parameters.FullBytes, &p2); err != nil {
+		t.Fatal(err)
+	}
+	if iv != nil {
+		raw, err := asn1.Marshal(iv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p2.EncryptionScheme.Parameters = asn1.RawValue{FullBytes: raw}
+		if raw, err = asn1.Marshal(p2); err != nil {
+			t.Fatal(err)
+		}
+		info.Algorithm.Parameters = asn1.RawValue{FullBytes: raw}
+	}
+	if data != nil {
+		info.EncryptedData = data
+	}
+	out, err := asn1.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestMalformedCiphertextIsRefused: an IV or ciphertext that is not made of whole
+// blocks used to make the PKCS#8 library panic in CryptBlocks (FuzzDecryptKey).
+func TestMalformedCiphertextIsRefused(t *testing.T) {
+	aes := encryptedDER(t, &pkcs8.Opts{Cipher: pkcs8.AES256CBC,
+		KDFOpts: pkcs8.PBKDF2Opts{SaltSize: 16, IterationCount: 1000, HMACHash: crypto.SHA256}})
+	des := encryptedDER(t, &pkcs8.Opts{Cipher: pkcs8.TripleDESCBC,
+		KDFOpts: pkcs8.PBKDF2Opts{SaltSize: 16, IterationCount: 1000, HMACHash: crypto.SHA256}})
+	var info encryptedPrivateKeyInfo
+	if _, err := asn1.Unmarshal(aes, &info); err != nil {
+		t.Fatal(err)
+	}
+	data := info.EncryptedData
+	cases := map[string]struct {
+		der  []byte
+		want error
+	}{
+		"aes intact":           {aes, nil},
+		"3des intact":          {des, nil},
+		"ciphertext truncated": {withCipherParts(t, aes, nil, data[:len(data)-1]), ErrMalformedEncryptedKey},
+		"ciphertext one block": {withCipherParts(t, aes, nil, data[:16]), nil},
+		"ciphertext 8 bytes":   {withCipherParts(t, aes, nil, data[:8]), ErrMalformedEncryptedKey},
+		"ciphertext empty":     {withCipherParts(t, aes, nil, []byte{}), ErrMalformedEncryptedKey},
+		"iv too short":         {withCipherParts(t, aes, make([]byte, 15), nil), ErrMalformedEncryptedKey},
+		"iv too long":          {withCipherParts(t, aes, make([]byte, 17), nil), ErrMalformedEncryptedKey},
+		"iv empty":             {withCipherParts(t, aes, []byte{}, nil), ErrMalformedEncryptedKey},
+		"3des with aes iv":     {withCipherParts(t, des, make([]byte, 16), nil), ErrMalformedEncryptedKey},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := checkKDF(tc.der); err != nil {
+				t.Fatalf("checkKDF = %v", err)
+			}
+			if err := checkCipher(tc.der); !errors.Is(err, tc.want) {
+				t.Fatalf("checkCipher = %v, want %v", err, tc.want)
+			}
+			pemKey := string(pem.EncodeToMemory(&pem.Block{Type: encryptedPKCS8Type, Bytes: tc.der}))
+			_, err := DecryptKey(pemKey, "pw") // must not panic
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("DecryptKey = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestExpensiveKeyIsRefusedBeforeDerivation saves (Validate) a key whose PBKDF2
 // iteration count is above the cap: it is refused without any derivation.
 func TestExpensiveKeyIsRefusedBeforeDerivation(t *testing.T) {

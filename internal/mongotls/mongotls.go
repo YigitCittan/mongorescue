@@ -181,6 +181,9 @@ func DecryptKey(keyPEM, password string) ([]byte, error) {
 		if err := checkKDF(block.Bytes); err != nil {
 			return nil, err
 		}
+		if err := checkCipher(block.Bytes); err != nil {
+			return nil, err
+		}
 		kdfRuns.Add(1)
 		key, err := pkcs8.ParsePKCS8PrivateKey(block.Bytes, []byte(password))
 		if err != nil {

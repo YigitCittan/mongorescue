@@ -34,7 +34,7 @@ var fuzzKeyTypes = []string{encryptedPKCS8Type, "PRIVATE KEY", "EC PRIVATE KEY",
 // fuzzSentinels are the errors DecryptKey and Config may return.
 var fuzzSentinels = []error{
 	ErrInvalidCA, ErrInvalidClientCert, ErrIncompleteClientCert, ErrKeyPassword,
-	ErrLegacyEncryptedKey, ErrTooLarge, ErrKDFTooExpensive, ErrUnsupportedKeyEncryption,
+	ErrLegacyEncryptedKey, ErrTooLarge, ErrKDFTooExpensive, ErrUnsupportedKeyEncryption, ErrMalformedEncryptedKey,
 }
 
 // fuzzSentinelText holds the messages of fuzzSentinels, so a password that happens to
