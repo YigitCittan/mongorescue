@@ -72,7 +72,7 @@ FUZZ_TARGETS?= \
 	./internal/update:FuzzFindChecksum \
 	./internal/update:FuzzParseVersion
 
-.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-pitr-soak test-e2e test-prometheus-rules test-desktop-update-e2e fuzz fuzz-list cross-compile docker-build docker-smoke run
+.PHONY: all build clean test test-race test-coverage coverage-check test-integration test-integration-docker test-chaos-docker test-load-docker test-pitr-replset test-pitr-soak test-e2e test-web test-prometheus-rules test-desktop-update-e2e fuzz fuzz-list cross-compile docker-build docker-smoke run
 
 all: test-race build
 
@@ -134,6 +134,10 @@ test-pitr-soak:
 ## test-e2e: Runs the Playwright browser suite (e2e/) against the built binary, MongoDB and MinIO in Docker
 test-e2e:
 	./scripts/test-e2e-docker.sh
+
+## test-web: Runs the dashboard unit tests (web/test, node --test; no browser, no Docker)
+test-web:
+	node --test "web/test/*.test.mjs"
 
 ## test-prometheus-rules: Checks and unit-tests the shipped alert rules (deploy/prometheus) with promtool in Docker
 test-prometheus-rules:
