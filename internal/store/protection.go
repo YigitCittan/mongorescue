@@ -115,6 +115,9 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, a *models.Approval) er
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO approvals (id, status, created_at, expires_at, data, secret) VALUES (?, ?, ?, ?, ?, ?)",
 			a.ID, string(a.Status), timeKey(a.CreatedAt), timeKey(a.ExpiresAt), data, secret); err != nil {
+			if isUniqueViolation(err) {
+				return ErrAlreadyExists
+			}
 			return fmt.Errorf("store: create approval %s: %w", a.ID, err)
 		}
 		return nil
