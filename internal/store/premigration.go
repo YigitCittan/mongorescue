@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -33,7 +34,9 @@ const preMigrationTmpSuffix = ".partial"
 // pending, and keep only the newest keep copies. A database without any applied
 // migration (a fresh one) is never copied. keep <= 0 turns the copies off. A copy
 // that cannot be written fails the open with ErrPreMigrationCopy instead of
-// migrating without one. secret.key is not part of the copy.
+// migrating without one. A database that predates the sealing of stored credentials
+// (no secrets format marker) is not copied, with a warning, so no copy ever holds
+// plaintext secrets. secret.key is not part of the copy.
 func WithPreMigrationCopies(keep int) Option {
 	return func(s *SQLiteStore) { s.keepCopies = keep }
 }
@@ -47,6 +50,21 @@ func PreMigrationCopyPath(dbPath string, from, to int) string {
 // preMigrationCopy copies the database before migrations from..to run, then drops the
 // oldest copies beyond the configured count.
 func (s *SQLiteStore) preMigrationCopy(ctx context.Context, from, to int) error {
+	// A database that has not been through the one-time sealing of secrets (see
+	// upgradeSecrets) may hold connection URIs, webhook secrets and S3 keys in
+	// plaintext. VACUUM INTO would write them, unprotected by secret.key, to a second
+	// file next to the live database, while opening the upgraded database seals only
+	// the live one. Sealing the copy instead would make it unreadable by the release
+	// that expects plaintext, so no copy is taken.
+	sealed, err := s.secretsSealedOnDisk(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPreMigrationCopy, err)
+	}
+	if !sealed {
+		s.logger.Warn("not copying the metadata database before migrating it: it predates the encryption of stored credentials and a copy would hold them in plaintext; to be able to roll back, restore from your own backup of the data directory",
+			slog.Int("from_version", from), slog.Int("to_version", to))
+		return nil
+	}
 	dest := PreMigrationCopyPath(s.path, from, to)
 	tmp := dest + preMigrationTmpSuffix
 	// VACUUM INTO refuses an existing target: clear leftovers of an earlier attempt.
@@ -70,6 +88,28 @@ func (s *SQLiteStore) preMigrationCopy(ctx context.Context, from, to int) error 
 		s.logger.Warn("could not remove old pre-migration copies", slog.Any("error", err))
 	}
 	return nil
+}
+
+// secretsSealedOnDisk reports whether the database carries the secrets format marker,
+// recorded in the same transaction that sealed every stored secret. A database
+// without it (or from before the settings table existed) may hold plaintext secrets.
+func (s *SQLiteStore) secretsSealedOnDisk(ctx context.Context) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'").Scan(&n); err != nil {
+		return false, fmt.Errorf("inspect schema: %w", err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	var v string
+	err := s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", secretsFormatSetting).Scan(&v)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read secrets format: %w", err)
+	}
+	return v == secretsFormatCurrent, nil
 }
 
 // finishCopy restricts tmp to dbFileMode, flushes it to disk and renames it to dest,
