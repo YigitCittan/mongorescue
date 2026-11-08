@@ -150,6 +150,36 @@ The HA supervisor, not the App of a role, owns the HTTP listener: it opens it at
 
 A graceful shutdown closes the listener first and waits for the requests in progress like a single instance (15 seconds), then aborts the rest. Outside HA mode each App owns its listener as before.
 
+## In-place PITR
+
+An [in-place point-in-time restore](../pitr.md#replacing-the-original-databases-in-place) (#142) replaces the original databases with `mongodump | mongorestore --drop`. That swap may run for hours (bounded at 6 h) and must not be killed midway, but an active instance has to step down within the lease TTL. So in HA a swap can **outlast its lease**: the instance that ran it may be fenced off, or die with `mongorestore` still writing, while another instance takes over from a metadata snapshot that shows the restore at an earlier stage. If the new active instance then ran the usual startup sweep, it would drop the clones the swap copies from, re-enable the stream the swap paused, and mark the restore interrupted while the old swap still wrote the databases (#171).
+
+Two options were considered. Holding the lease for the swap defers the step-down, and so keeps two guarantees weaker than they are today: the step-down bound (`ttl − renew`) would depend on a swap's progress, and a partitioned instance could hold the lease only as long as the lease store stays reachable, while its `mongorestore` keeps writing whatever happens. Letting the new active instance **recognise an in-flight swap of an older epoch** keeps the lease rules untouched (the fence, the step-down bound and the takeover proof are unchanged) and needs only one more authenticated object. MongoRescue implements the second.
+
+**The swap ledger.** One small object per swap on the HA target, `_mongorescue/ha/<cluster>/swaps/<restore id>.json`:
+
+```json
+{"marker":{"restore_id":"rst_…","stream_id":"str_…","connection_id":"conn_…","databases":["shop"],"clones":["shop_rescue_…"],
+  "stream_was_enabled":true,"safety_backup_ids":["bkp_…"],"epoch":7,"started_at":"…","phase":"swapping"},"mac":"…"}
+```
+
+- It is authenticated with an HKDF subkey of `secret.key` (HMAC-SHA256 over the cluster and the marker's exact bytes), like the lease. An object that does not authenticate, or that sits under another restore's key, is ignored and logged: whoever can write the prefix can already stop the cluster, and ignoring a forged marker is what deleting a real one would do.
+- It is written with a conditional create, one object per restore, so two instances never share one.
+- It carries what another instance needs to settle the restore without the swapping instance's metadata: the stream, the connection, the databases, the clones, the safety backups and whether the stream was enabled.
+
+**Rules.**
+
+1. **Announce, then check the fence.** Before the first original database is replaced, the swapping instance creates the marker under its epoch and *then* checks the fence. If the lease is still held when the create returned, the marker was committed before the lease deadline after which any takeover can acquire, so every takeover's listing sees it. If the fence fails, the marker is finished as `aborted`, the swap does not start, and the originals are untouched. The swap's bounded context is created before this check, so its 6 h bound starts before any marker or takeover exists.
+2. **The fence before every database.** The engine checks the fence before replacing each database. An instance that lost the lease finishes the database in flight (it cannot be cut without leaving it half replaced) and replaces no further one; the restore fails naming the databases that are untouched.
+3. **A fenced instance changes nothing else.** After a swap that ended without the lease, it neither enables the stream nor starts a base backup nor removes the marker: it writes the outcome into the marker (`finished`: `completed`, `failed` or `aborted`, with the databases that were swapped) and leaves the rest to the instance that holds the lease. Only the process that swapped ever finishes a marker, and it does so when its writes have stopped (after dropping the clones, before enabling the stream).
+4. **The new active instance leaves a swap of an older epoch alone.** At takeover, before the startup sweep and before any component starts, it lists the ledger (`AdoptSwaps`). If the ledger cannot be read the takeover is abandoned and retried: sweeping blindly could re-enable the stream the swap paused. For each marker:
+   - *finished*: the restore is settled now, from the marker (below);
+   - *swapping*: the swap is **held**. Its restore record is left out of the sweep (it may be stale or even absent: the snapshot may predate the restore); the concurrency keys of its databases, of the connection's base backups and of whole-instance operations are reserved, so no backup, restore or base backup touches them; its stream is paused (disabled, its open chain ended) so the collector never starts and the swap's writes never join a chain; the clones are not dropped. The held count is `mongorescue_ha_pitr_swaps_held`.
+5. **Resolution.** A monitor reads the marker every 10 s. When the swapping process finished it, the restore is settled; when the marker was removed by an operator, or **`MONGORESCUE_HA_SWAP_TIMEOUT` (default 6 h 10 min: the longest swap plus a margin) passed on this instance's own monotonic clock since it first saw the marker**, the restore is marked `failed` ("interrupted") with the message of an interrupted swap (the clones and safety backups named, the commands to finish or to go back, a warning that a process of the swap may still be writing), `restore.in_place_pitr` is sent as an alert, and `MongoRescueHAPITRSwapInterrupted` fires. The timeout counts from the new instance's first look, which is after the old lease's deadline, which is after the swap's own bounded context started, so a live process of the swap has stopped by then. **MongoRescue never resumes a swap and never writes the original databases after a takeover.** An instance that lost the lease settles nothing, however long it waited.
+6. **Settling** (a finished marker, or an interrupted one) updates the restore record when the snapshot has it (a completed swap ends `completed`, anything else `failed`), drops the clones of an *aborted* swap only (its originals are untouched), enables the stream the swap paused (ending any chain the snapshot still shows open first, so the swap's writes never join it) and starts a base backup of the new chain, publishes the restore events, counts the outcome in `mongorescue_ha_pitr_swap_handovers_total{outcome}` and removes the marker.
+
+**What this does not prove.** The swap's `mongodump | mongorestore` pipeline is two child processes of the swapping instance. If that instance is killed they may keep running (they are not tied to it on every platform), and a frozen instance cannot stop them. The guarantee therefore is: *MongoRescue itself* never writes the originals after a takeover, never runs a second swap over a running one, and never enables the stream while the marker says swapping, until the timeout, which bounds a live swap. A process orphaned by a killed instance has nothing that bounds it but its own progress; the runbook has the `currentOp` check to make before relying on the databases after a timeout.
+
 ## Metadata snapshots
 
 - Written by the active instance only, through the fencing check: right after it becomes active (so its epoch has a snapshot at once), after every finished backup, restore or job run (debounced to one per 10 s) and at least every `MONGORESCUE_HA_SNAPSHOT_INTERVAL` (default 5 minutes).
@@ -195,6 +225,7 @@ A target given by ID or name must exist in the instance's own database when it s
 | Standby has a different `secret.key` | It refuses to start | |
 | No usable snapshot at takeover | Takeover is abandoned; the lease is released; retried after `ttl` | Alerted |
 | A snapshot is copied or renamed on the HA target (another epoch, time or cluster), or altered | Refused: never restored, never deleted, never raises the epoch; the next verified snapshot is used. Logged as an error and counted in `mongorescue_ha_snapshots_rejected_total` | Alerted (`MongoRescueHASnapshotRejected`) |
+| Active instance dies or is fenced off during an in-place PITR swap | The new active instance finds the swap's marker, leaves the swap, its clones, databases and stream alone, reserves the databases, and settles the restore when the marker is finished, or marks it interrupted after `MONGORESCUE_HA_SWAP_TIMEOUT` ([In-place PITR](#in-place-pitr)) | 6 h 10 min by default; alerted when it times out |
 | Old active restarts | Starts as standby | |
 
 ## RTO and RPO
@@ -217,6 +248,7 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - `mongorescue_ha_empty_starts_total`: activations from empty state (no lease, no snapshot); alert `MongoRescueHAStartedFromEmptyState`, event `ha.empty_start`.
 - `mongorescue_ha_rollback_suspected_total{reason}`: takeovers refused because they could roll the metadata back ([Rollback protection](#rollback-protection)).
 - Alert rule `MongoRescueHANoActiveInstance`: no instance reports `role="active"` for twice the lease TTL (1 minute with the defaults). `MongoRescueHARollbackSuspected`: a takeover was refused in the last 15 minutes as a suspected rollback. `MongoRescueHASnapshotRejected`: the HA target holds a refused snapshot, or one was refused in the last 15 minutes.
+- `mongorescue_ha_pitr_swaps_held` and `mongorescue_ha_pitr_swap_handovers_total{outcome}` (the swaps of an older epoch the active instance holds and has settled; a standby exports neither). Alert rule `MongoRescueHAPITRSwapInterrupted`: a held swap timed out in the last 15 minutes.
 - A standby serves a static standby page instead of the dashboard; a dashboard open on an instance that becomes standby reloads into it.
 
 ## Security
@@ -233,3 +265,4 @@ With the defaults (`ttl` 30 s, `renew` 10 s, snapshots every 5 minutes):
 - `internal/storage`: the conditional writes of the local driver and of S3 against the hermetic fake (and a fake that ignores the headers, which the probe must catch); MinIO in the integration suite.
 - `internal/ha`: the lease manager against an in-memory store and a fake clock: takeover after expiry, a renewal delayed past the takeover, step-down on a failed or conflicting renewal, flapping storage, wall clock skew, release.
 - `internal/integration`: two real processes in HA mode on one MinIO and one MongoDB with a job every minute; `SIGKILL` the active one; the standby must become active within `ttl + renew + 30 s`, the next scheduled backup must run there, no fire may produce two completed backups, and the old instance must come back as standby.
+- In-place PITR (`TestHAInPlacePITRSurvivesATakeover`, a replica set and MinIO): two real processes; the active one is `SIGKILL`ed while its swap's marker says `swapping`; the standby takes over, must leave the stream disabled without a chain, the restore in progress and the clones in place, and the marker untouched until `MONGORESCUE_HA_SWAP_TIMEOUT`, then mark the restore interrupted, remove the marker and enable the stream again in a new chain. The ledger's authentication, the fence rules and the settling run hermetically in `internal/ha`, `internal/operations` and `internal/restore`.

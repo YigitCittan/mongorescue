@@ -45,6 +45,44 @@ func (c sweepConnections) Get(ctx context.Context, id string) (*models.Connectio
 
 func (sweepConnections) List(context.Context) ([]*models.Connection, error) { return nil, nil }
 
+// TestSweepLeavesAnAdoptedInPlaceSwapAlone: the startup sweep of an instance that
+// took over from one that was swapping (an in-place restore of an older HA epoch,
+// still in progress in the metadata snapshot) neither fails the record nor drops
+// its clones, while every other in-progress restore is swept as usual.
+func TestSweepLeavesAnAdoptedInPlaceSwapAlone(t *testing.T) {
+	ctx := context.Background()
+	fs := storetest.New(t)
+	swap := &models.RestoreRecord{ID: "rst_pitr_swap", TargetConnectionID: "conn_a", Status: models.RestoreStatusInProgress, InPlace: true,
+		PITR: &models.PITRRestore{StreamID: "str_a", CloneSuffix: "_rescue_20261005_120000_ab12", Clones: []string{"shop_rescue_20261005_120000_ab12"},
+			InPlace: &models.PITRInPlace{Databases: []string{"shop"}, Stage: models.PITRInPlaceSwapping, SwapStarted: true, StreamWasEnabled: true}}}
+	plain := &models.RestoreRecord{ID: "rst_plain", TargetDatabase: "shop_rescue_20261005_120000", Status: models.RestoreStatusInProgress}
+	for _, r := range []*models.RestoreRecord{swap, plain} {
+		if err := fs.SaveRestoreRecord(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adminDB := &sweepAdmin{}
+	mock := storage.NewMockStorage()
+	engine := restore.NewEngine(mock, "", restore.WithDatabaseAdmin(adminDB))
+	manager := runs.NewManager(nil)
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	ops := operations.New(operations.Config{Store: fs, Backup: backup.NewEngine(mock, ""), Restore: engine, Runs: manager,
+		Connections: sweepConnections{}, PITRRestore: engine})
+	a := &App{metaStore: fs, logger: slog.Default(), cleanupPITR: ops.CleanupInterruptedPITR,
+		adoptedSwaps: map[string]bool{"rst_pitr_swap": true}}
+	a.failInterruptedRuns(ctx)
+
+	if got, _ := fs.GetRestoreRecord(ctx, swap.ID); got.Status != models.RestoreStatusInProgress || got.ErrorMessage != "" {
+		t.Fatalf("the adopted swap was swept: %s %q", got.Status, got.ErrorMessage)
+	}
+	if len(adminDB.dropped) != 0 {
+		t.Fatalf("the sweep dropped %v while a swap may still copy from them", adminDB.dropped)
+	}
+	if got, _ := fs.GetRestoreRecord(ctx, plain.ID); got.Status != models.RestoreStatusFailed {
+		t.Fatalf("a database restore: %s", got.Status)
+	}
+}
+
 // TestRestartDropsTheRecordedClonesOfInterruptedPITRRuns simulates a restart after
 // a point-in-time restore and a chain test were interrupted: the new process drops
 // exactly the clones each record names and says so in its message.

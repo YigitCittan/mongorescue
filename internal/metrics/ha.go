@@ -46,6 +46,12 @@ type HAState struct {
 	// EmptyStarts counts the times this instance became active from empty state
 	// (no lease and no snapshot on the HA target).
 	EmptyStarts uint64
+	// SwapsHeld is how many in-place point-in-time swaps of an older epoch the
+	// active instance leaves alone, and SwapHandovers how many it settled, by
+	// outcome (completed, failed, timeout). Both are exported by the active
+	// instance only: a standby has no ledger and exports neither.
+	SwapsHeld     int
+	SwapHandovers map[string]uint64
 }
 
 // haRoles are the values of the role label.
@@ -66,6 +72,8 @@ type haCollector struct {
 	refused  *prometheus.Desc
 	rollback *prometheus.Desc
 	empty    *prometheus.Desc
+	held     *prometheus.Desc
+	handover *prometheus.Desc
 }
 
 // newHACollector returns the collector of mongorescue_ha_role,
@@ -89,6 +97,8 @@ func newHACollector() *haCollector {
 		failures: prometheus.NewDesc(name("takeover_failures_total"), "Total number of takeovers this instance gave up because no usable metadata snapshot was found; it stays standby.", cluster, nil),
 		rollback: prometheus.NewDesc(name("rollback_suspected_total"), "Total number of takeovers this instance refused because they could roll the cluster's metadata back (lease not authentic or missing, newest snapshot older than the lease or this instance knows), by reason; an operator forces them with mongorescue ha force-takeover.", []string{"cluster", "reason"}, nil),
 		empty:    prometheus.NewDesc(name("empty_starts_total"), "Total number of times this instance became active from empty state: no lease and no metadata snapshot on the HA target, so it kept its own database. Expected once for a new cluster; otherwise check the HA target.", cluster, nil),
+		held:     prometheus.NewDesc(name("pitr_swaps_held"), "Number of in-place point-in-time restore swaps of an older HA epoch this active instance leaves alone because the instance that ran them may still be writing the original databases (active instance only).", cluster, nil),
+		handover: prometheus.NewDesc(name("pitr_swap_handovers_total"), "Total number of in-place point-in-time restore swaps of an older HA epoch this instance settled, by outcome: completed or failed (the swapping process reported it), or timeout (it reported nothing in time and the restore was marked interrupted). Active instance only.", []string{"cluster", "outcome"}, nil),
 		refused:  prometheus.NewDesc(name("refused_snapshots"), "Number of metadata snapshots on the HA target that this instance found refused at its last check (copied, renamed or altered); they are kept until someone deletes them.", cluster, nil),
 		rejected: prometheus.NewDesc(name("snapshots_rejected_total"), "Total number of metadata snapshots this instance refused because their authenticated header did not match their name or cluster, or they did not decrypt (copied, renamed or altered on the HA target).", cluster, nil),
 	}
@@ -96,7 +106,7 @@ func newHACollector() *haCollector {
 
 // Describe implements prometheus.Collector.
 func (c *haCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down, c.rejected, c.refused, c.rollback, c.empty} {
+	for _, d := range []*prometheus.Desc{c.role, c.epoch, c.healthy, c.errors, c.takeover, c.duration, c.failures, c.down, c.rejected, c.refused, c.rollback, c.empty, c.held, c.handover} {
 		ch <- d
 	}
 }
@@ -123,6 +133,14 @@ func (c *haCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.empty, prometheus.CounterValue, float64(st.EmptyStarts), st.Cluster)
 	for reason, n := range st.RollbackSuspected {
 		ch <- prometheus.MustNewConstMetric(c.rollback, prometheus.CounterValue, float64(n), st.Cluster, reason)
+	}
+	// The swap series belong to the active instance: a standby exports none.
+	if st.Role != "active" {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(c.held, prometheus.GaugeValue, float64(st.SwapsHeld), st.Cluster)
+	for _, outcome := range []string{"completed", "failed", "timeout"} {
+		ch <- prometheus.MustNewConstMetric(c.handover, prometheus.CounterValue, float64(st.SwapHandovers[outcome]), st.Cluster, outcome)
 	}
 }
 

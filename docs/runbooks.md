@@ -432,6 +432,30 @@ increase(mongorescue_ha_snapshots_rejected_total[1h])
 
 **Escalation.** Treat a snapshot you cannot explain as tampering with the HA target: involve security, and do not force a takeover from it.
 
+### MongoRescueHAPITRSwapInterrupted { #mongorescuehapitrswapinterrupted }
+
+**Symptom.** After a takeover, the new active instance left an [in-place point-in-time restore](pitr.md#replacing-the-original-databases-in-place) of the previous active instance alone while it waited for the process that was swapping, heard nothing within `MONGORESCUE_HA_SWAP_TIMEOUT` (6 h 10 min by default) and marked the restore `failed` with "interrupted" (`mongorescue_ha_pitr_swap_handovers_total{outcome="timeout"}` grew; `restore.in_place_pitr` with status `failed`). While it waited, `mongorescue_ha_pitr_swaps_held` was above 0, the stream stayed paused and nobody could start a backup or restore of the databases (a `409` naming the in-place restore).
+
+**Likely causes.** The previous active instance was killed, lost its node or lost the HA target while it swapped, so nobody wrote the swap's end. The databases may be partially replaced, and a `mongorestore` it started may have kept running after it died.
+
+**Diagnosis.**
+
+```sh
+kubectl logs <pod> --since=12h | grep -i "swap of an older HA epoch"
+curl -s -H "Authorization: Bearer $KEY" "$URL/api/v1/restores?id=<restore id>"   # status, message, pitr.in_place
+mongosh "$URI" --eval 'db.adminCommand({listDatabases:1}).databases.map(d=>d.name)'   # the clones <db>_rescue_…
+mongosh "$URI" --eval 'db.currentOp({"command.$db": {$exists: true}, secs_running: {$gt: 60}})'  # a mongorestore still writing
+```
+
+```promql
+mongorescue_ha_pitr_swaps_held
+increase(mongorescue_ha_pitr_swap_handovers_total[6h])
+```
+
+**Action.** The restore's message names what is left and the exact commands. First make sure nothing still writes to the databases (`currentOp`; stop the stray `mongorestore` on the old node if it is still up). The clones (`<db>_rescue_…`) were kept and hold the restored state, and the safety backups (label `pre-pitr-in-place`) hold the state before the swap. Either copy each clone over its original with the `mongodump | mongorestore --drop` command in the message and drop the clones, or restore the safety backups in place to go back. The stream was enabled again with a new chain and a base backup of it was started: the points before the swap are still restorable from the old chain's last base, and the points after the swap only once the new base completed. Applications must stay stopped until the databases are what you want.
+
+**Escalation.** If the databases hold a mix of the old and the restored state and you can use neither a clone nor a safety backup, restore the databases from the last good backup (or a point-in-time restore into safe clones) and treat everything written since as unrecoverable until compared.
+
 ## Point-in-time recovery
 
 See [PITR](pitr.md) for what a stream, a base backup and a chunk are. A stream's series carry the label `stream`.

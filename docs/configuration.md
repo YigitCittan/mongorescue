@@ -56,6 +56,7 @@ Active-passive high availability ([production.md](production.md#high-availabilit
 | `-ha-lease-ttl` | `MONGORESCUE_HA_LEASE_TTL` | `30s` | How long the lease lives without renewal: `5s` to `10m`. A standby takes over at most `ttl + renew` after the active instance's last renewal |
 | `-ha-renew-interval` | `MONGORESCUE_HA_RENEW_INTERVAL` | `10s` | How often the active instance renews the lease and a standby reads it: at least `1s` and below half the TTL. The active instance stops working `ttl − renew` after its last successful renewal |
 | `-ha-snapshot-interval` | `MONGORESCUE_HA_SNAPSHOT_INTERVAL` | `5m` | Longest time between two metadata snapshots of the active instance (`30s` to `24h`); it also writes one after every finished backup or restore |
+| (environment only) | `MONGORESCUE_HA_SWAP_TIMEOUT` | `6h10m` | How long an instance that took over leaves an [in-place point-in-time swap](design/ha.md#in-place-pitr) of the previous active instance alone while that one reports nothing (`30s` to `168h`). The default is the longest swap (6 h) plus a margin; a shorter value trades the guarantee that the old swap has stopped for a quicker end of the wait, so keep it for tests |
 
 Every instance of a cluster needs the same secret key (`MONGORESCUE_SECRET_KEY`, the same `secret.key`, or with key wrapping the same `secret.key.wrapped`); an instance whose key differs refuses to start.
 

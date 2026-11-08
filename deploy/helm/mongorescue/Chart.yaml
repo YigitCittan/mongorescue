@@ -5,7 +5,7 @@ type: application
 # The chart version follows its own changes (docs/versioning.md#helm-chart-versions). appVersion
 # here is only a development default: the release workflow sets it to the tag at package time.
 # The default image tag is the appVersion.
-version: 0.4.0
+version: 0.4.1
 appVersion: "0.28.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/YigitCittan/mongorescue
