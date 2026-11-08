@@ -405,6 +405,34 @@ tests:
         alertname: MongoRescueHASnapshotRejected
         exp_alerts: []
 
+  - name: HA in-place PITR swap interrupted
+    interval: 1m
+    input_series:
+      - series: 'mongorescue_ha_pitr_swap_handovers_total{job="backup", instance="b:8080", cluster="prod", outcome="timeout"}'
+        values: "0 0 0 1 1 1x30"
+      - series: 'mongorescue_ha_pitr_swap_handovers_total{job="backup", instance="b:8080", cluster="prod", outcome="completed"}'
+        values: "0 0 0 1 1 1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: MongoRescueHAPITRSwapInterrupted
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MongoRescueHAPITRSwapInterrupted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: backup
+              instance: b:8080
+              cluster: prod
+              outcome: timeout
+            exp_annotations:
+              summary: "An in-place PITR swap was left unresolved in MongoRescue HA cluster prod on b:8080"
+              description: "b:8080 took over from an instance that was swapping an in-place point-in-time restore into the original databases and heard nothing from it within the handover timeout. The restore was marked interrupted: check the original databases, then finish the swap from the kept clones or go back to the safety backups (see the restore's message)."
+              runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehapitrswapinterrupted"
+      - eval_time: 25m
+        alertname: MongoRescueHAPITRSwapInterrupted
+        exp_alerts: []
+
   - name: PITR collector down
     interval: 1m
     input_series:

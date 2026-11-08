@@ -208,6 +208,20 @@ groups:
           description: "{{ $labels.instance }} refused a metadata snapshot under _mongorescue/metadata/ha/{{ $labels.cluster }}/ whose authenticated header does not match its name or cluster, or that does not decrypt: it was copied, renamed or altered on the HA target. The log names the object. Check who can write to the HA target, rotate its credentials if needed, and remove the object."
           runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehasnapshotrejected"
 
+      # The instance that took over from one that was swapping an in-place
+      # point-in-time restore heard nothing from the swap's process within the
+      # handover timeout and marked the restore interrupted. The original
+      # databases may be partially replaced and a process of the swap may still be
+      # writing to them; the clones and the safety backups are kept.
+      - alert: MongoRescueHAPITRSwapInterrupted
+        expr: increase(mongorescue_ha_pitr_swap_handovers_total{outcome="timeout"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "An in-place PITR swap was left unresolved in MongoRescue HA cluster {{ $labels.cluster }} on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} took over from an instance that was swapping an in-place point-in-time restore into the original databases and heard nothing from it within the handover timeout. The restore was marked interrupted: check the original databases, then finish the swap from the kept clones or go back to the safety backups (see the restore's message)."
+          runbook_url: "https://yigitcittan.github.io/mongorescue/runbooks/#mongorescuehapitrswapinterrupted"
+
   # Newer subsystems: point-in-time recovery, backup copies, notifications, queues,
   # audit log, KMS key wrapping, API keys and free disk space. All of them read
   # series a standby HA instance does not expose (see docs/metrics.md), so none

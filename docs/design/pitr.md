@@ -122,6 +122,7 @@ Spikes S1–S3 checked these on MongoDB 5.0.33 and 8.0.32 with Database Tools 10
   - The **swap** pipes `mongodump --archive --db=<clone>` into `mongorestore --archive --nsFrom=<clone>.* --nsTo=<db>.* --drop` (an OS pipe, no buffering) and drops the original's collections the clone lacks. Guards: the clones' collections and document counts are recorded right after the restore (`snapshots`); a clone that lists nothing ends the run before anything is touched, a clone that no longer lists its snapshot leaves its original untouched, and nothing is dropped unless the copy holds every collection of the snapshot with its count. A failure stops there and keeps the clones and the safety backups, which the record names with recovery steps.
   - The clones are dropped (unless `keep_clone`), the stream is enabled again, and a base of the new chain is started once the collector opened it.
   - The run holds the backup and restore keys of the replaced databases and the base key of the connection, so nothing else writes or dumps them meanwhile. Once the clones are complete it can no longer be cancelled.
+  - **In HA (#171)** the swap is announced on the HA target before it starts and its end is recorded there, so an instance that takes over from one that was swapping leaves the swap, its clones, databases and paused stream alone until the swap's process reports or a bounded timeout passes, and never resumes it; the engine checks the HA fence before each database. See [design/ha.md](ha.md#in-place-pitr).
   - MCP never sets it.
 
 ## Spike results (S1–S3)
@@ -203,7 +204,7 @@ The rule "the MongoDB driver only in `internal/mongoconn`" keeps every database 
 | 10 | The collector's read preference is `secondaryPreferred`. |
 | 11 | Base retention keeps 7 bases or 14 days, plus pins. `oplog_max_days` is unset by default. |
 | 12 | Per-database jobs and PITR streams coexist, with a warning when their schedules overlap. |
-| 13 | In-place PITR restores (#142) restore into clones, verify, take a safety backup, pause the stream and swap; admin only, two-person rule, never through MCP. |
+| 13 | In-place PITR restores (#142) restore into clones, verify, take a safety backup, pause the stream and swap; admin only, two-person rule, never through MCP. In HA (#171) the swap is announced on the HA target and a new active instance leaves it alone until it is resolved. |
 
 ## Testing
 

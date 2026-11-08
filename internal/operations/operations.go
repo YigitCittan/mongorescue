@@ -295,10 +295,21 @@ type Config struct {
 	// means pitr.SharedPins.
 	PITRPins *pitr.PinSet
 	// HAMode reports that the instance runs in active-passive high availability:
-	// in-place point-in-time restores are refused (ErrInPlaceHAMode), since a
-	// swap that outlasts the leader's lease could overlap the next leader's
-	// startup sweep.
+	// in-place point-in-time restores then need SwapLedger, and are refused
+	// (ErrInPlaceHAMode) without one.
 	HAMode bool
+	// SwapLedger records the swap of an in-place point-in-time restore on the HA
+	// target, so that the instance taking over from one that was swapping leaves
+	// the swap alone (AdoptSwaps) until its process reports its outcome or
+	// SwapHandoverTimeout passed. Set with HAMode; nil outside HA.
+	SwapLedger models.SwapLedger
+	// SwapHandoverTimeout bounds how long an instance that took over leaves a
+	// swap of an older epoch alone, measured on its own monotonic clock from its
+	// first look at the marker; 0 means DefaultSwapHandoverTimeout.
+	SwapHandoverTimeout time.Duration
+	// SwapHandoverPoll is how often a held swap's marker is read; 0 means
+	// DefaultSwapHandoverPoll.
+	SwapHandoverPoll time.Duration
 	// ArchiveSize estimates the archive size of a backup of database (from its last
 	// backup or the server's dbStats), for the size warnings of job previews; nil
 	// disables them. The backup engine's backup.SizeEstimator fits.
@@ -356,6 +367,9 @@ type Service struct {
 	historyCache *historyCache
 	// statsCache shares computed Stats (nil when Config.StatsCacheTTL is 0).
 	statsCache *statsCache
+
+	// swaps holds the swaps of an older epoch this instance leaves alone.
+	swaps heldSwaps
 }
 
 // New returns a Service. It panics when a required dependency is missing, which is a

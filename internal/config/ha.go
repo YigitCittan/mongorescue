@@ -37,6 +37,10 @@ const (
 	// EnvHASnapshotInterval is the longest time between two metadata snapshots of
 	// the active instance (default 5m).
 	EnvHASnapshotInterval = "MONGORESCUE_HA_SNAPSHOT_INTERVAL"
+	// EnvHASwapTimeout is how long an instance that took over leaves an in-place
+	// point-in-time swap of the previous active instance alone while that one
+	// reports nothing (default 6h10m: the longest swap plus a margin).
+	EnvHASwapTimeout = "MONGORESCUE_HA_SWAP_TIMEOUT"
 )
 
 // HA modes.
@@ -56,6 +60,11 @@ const (
 	// MinHASnapshotInterval and MaxHASnapshotInterval bound it.
 	MinHASnapshotInterval = 30 * time.Second
 	MaxHASnapshotInterval = 24 * time.Hour
+	// DefaultHASwapTimeout is the default swap handover timeout (0 in HAConfig
+	// means this); MinHASwapTimeout and MaxHASwapTimeout bound it.
+	DefaultHASwapTimeout = 6*time.Hour + 10*time.Minute
+	MinHASwapTimeout     = 30 * time.Second
+	MaxHASwapTimeout     = 7 * 24 * time.Hour
 )
 
 // ErrInvalidHA is returned for HA settings out of range.
@@ -76,12 +85,15 @@ type HAConfig struct {
 	RenewInterval time.Duration
 	// SnapshotInterval is the longest time between two metadata snapshots.
 	SnapshotInterval time.Duration
+	// SwapTimeout is how long a new active instance leaves an in-place PITR swap
+	// of an older epoch alone while its process reports nothing.
+	SwapTimeout time.Duration
 }
 
 // defaultHA returns the HA defaults (off).
 func defaultHA() HAConfig {
 	return HAConfig{Mode: HAModeOff, Cluster: DefaultHACluster, LeaseTTL: ha.DefaultTTL,
-		RenewInterval: ha.DefaultRenew, SnapshotInterval: DefaultHASnapshotInterval}
+		RenewInterval: ha.DefaultRenew, SnapshotInterval: DefaultHASnapshotInterval, SwapTimeout: DefaultHASwapTimeout}
 }
 
 // Enabled reports whether the instance runs in active-passive HA mode.
@@ -104,7 +116,7 @@ func haFromEnv(h *HAConfig, getenv func(string) string) error {
 	for _, d := range []struct {
 		env string
 		dst *time.Duration
-	}{{EnvHALeaseTTL, &h.LeaseTTL}, {EnvHARenewInterval, &h.RenewInterval}, {EnvHASnapshotInterval, &h.SnapshotInterval}} {
+	}{{EnvHALeaseTTL, &h.LeaseTTL}, {EnvHARenewInterval, &h.RenewInterval}, {EnvHASnapshotInterval, &h.SnapshotInterval}, {EnvHASwapTimeout, &h.SwapTimeout}} {
 		v := strings.TrimSpace(getenv(d.env))
 		if v == "" {
 			continue
@@ -150,6 +162,9 @@ func (h HAConfig) Validate() error {
 	}
 	if h.SnapshotInterval < MinHASnapshotInterval || h.SnapshotInterval > MaxHASnapshotInterval {
 		return fmt.Errorf("%s: %w: the snapshot interval must be %s to %s", EnvHASnapshotInterval, ErrInvalidHA, MinHASnapshotInterval, MaxHASnapshotInterval)
+	}
+	if h.SwapTimeout != 0 && (h.SwapTimeout < MinHASwapTimeout || h.SwapTimeout > MaxHASwapTimeout) {
+		return fmt.Errorf("%s: %w: the swap handover timeout must be %s to %s", EnvHASwapTimeout, ErrInvalidHA, MinHASwapTimeout, MaxHASwapTimeout)
 	}
 	return nil
 }

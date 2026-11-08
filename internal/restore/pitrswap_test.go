@@ -182,6 +182,44 @@ func TestSwapPITRClones(t *testing.T) {
 	}
 }
 
+// loseAfter is a fence that holds for n checks and then reports the lease lost.
+type loseAfter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (f *loseAfter) Check() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n--; f.n < 0 {
+		return errors.New("ha: this instance does not hold the HA lease")
+	}
+	return nil
+}
+
+func (f *loseAfter) Epoch() uint64 { return 3 }
+
+// TestSwapStopsBeforeTheNextDatabaseWhenTheLeaseIsLost: an instance that lost the
+// HA lease while it swapped finishes the database in flight and replaces no
+// further one (the instance that took over leaves them alone), and fails with
+// ErrSwapFailed naming the untouched database.
+func TestSwapStopsBeforeTheNextDatabaseWhenTheLeaseIsLost(t *testing.T) {
+	e, _, tools := swapEnv(t)
+	e.fence = &loseAfter{n: 1}
+	rec := swapRecord()
+	if err := e.SnapshotPITRClones(context.Background(), models.RestoreRequest{}, rec); err != nil {
+		t.Fatal(err)
+	}
+	var swapped []string
+	err := e.SwapPITRClones(context.Background(), models.RestoreRequest{}, rec, func(db string) { swapped = append(swapped, db) })
+	if !errors.Is(err, ErrSwapFailed) || !strings.Contains(err.Error(), "does not hold the HA lease") || !strings.Contains(err.Error(), "crm is untouched") {
+		t.Fatalf("swap = %v; want ErrSwapFailed naming the lost lease and crm", err)
+	}
+	if !slices.Equal(swapped, []string{"shop"}) || len(tools.restores) != 1 {
+		t.Fatalf("swapped %v, restores %d; want only shop", swapped, len(tools.restores))
+	}
+}
+
 // TestSnapshotRefusesAnEmptyClone is the regression test of an empty clone
 // listing (missing privileges, or a database absent at the target time): it must
 // never lead to emptying the original.

@@ -154,13 +154,14 @@ func newInPlaceEnv(t *testing.T, failBackup bool, mutate ...func(*operations.Con
 	return &inPlaceEnv{svc: svc, st: st, fakes: fakes, pub: pub, manager: manager}
 }
 
-// TestPITRInPlaceRefusedInHAMode: in active-passive HA mode an in-place
-// point-in-time restore and its preflight are refused before anything (an
-// approval request included) happens; restores into clones are unaffected.
-func TestPITRInPlaceRefusedInHAMode(t *testing.T) {
+// TestPITRInPlaceRefusedInHAModeWithoutALedger: in active-passive HA mode without
+// the swap ledger an in-place point-in-time restore and its preflight are refused
+// before anything (an approval request included) happens; restores into clones are
+// unaffected.
+func TestPITRInPlaceRefusedInHAModeWithoutALedger(t *testing.T) {
 	env := newInPlaceEnv(t, false, func(c *operations.Config) { c.HAMode = true })
 	if _, err := env.svc.StartRestore(admin(), pitrInPlace("shop")); !errors.Is(err, operations.ErrInPlaceHAMode) ||
-		!strings.Contains(err.Error(), "in-place PITR is not available in HA mode yet") {
+		!strings.Contains(err.Error(), "in-place PITR is not available in HA mode without the swap ledger") {
 		t.Fatalf("in place in HA mode: %v", err)
 	}
 	if _, err := env.svc.PreflightRestore(admin(), pitrInPlace("shop")); !errors.Is(err, operations.ErrInPlaceHAMode) {

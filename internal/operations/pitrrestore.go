@@ -144,7 +144,7 @@ func (s *Service) planPITR(ctx context.Context, req models.RestoreRequest, forPr
 		if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 			return nil, fmt.Errorf("in-place point-in-time restores need the admin role or an admin API key: %w", err)
 		}
-		if s.cfg.HAMode {
+		if s.cfg.HAMode && s.cfg.SwapLedger == nil {
 			return nil, ErrInPlaceHAMode
 		}
 	}
