@@ -7,21 +7,21 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
+  # Every pull request builds the site (it is cheap) so "Build Documentation"
+  # can be a required check; only pushes to main deploy.
   pull_request:
     branches:
       - main
-    paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - '.github/workflows/docs.yml'
   workflow_dispatch:
 permissions:
   contents: read
   pages: write
   id-token: write
+# Deployments queue on one group; pull request builds get their own per PR and
+# cancel superseded runs.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.event.pull_request.number) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build:
     name: Build Documentation
