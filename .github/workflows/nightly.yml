@@ -357,6 +357,9 @@ jobs:
   # shows up here and not in the single ordered run of the pull request. The seed
   # of each package is printed ("-test.shuffle N"); rerun a failure with
   # "go test -race -shuffle=N ./pkg". Fix it or quarantine it (CONTRIBUTING.md).
+  # -timeout=60m: internal/store alone takes ~200 s per race run, so five counts
+  # exceed the default 10 m (nightly 42468101400 timed out with no hang: the dump
+  # showed only parallel tests waiting).
   race-shuffle:
     name: Unit tests (-race -shuffle=on -count=5)
     if: >-
@@ -377,7 +380,7 @@ jobs:
           cache: true
 
       - name: Run the unit tests shuffled
-        run: go test -race -shuffle=on -count=5 ./...
+        run: go test -race -shuffle=on -count=5 -timeout=60m ./...
 
   fuzz:
     name: Fuzz
