@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
+	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/operations"
+	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
@@ -202,6 +204,23 @@ func TestUpdateJobRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// TestCreateJobRefusesATakenID checks that POST never edits: a job id that exists
+// answers 409 with the conflict code and leaves the stored job as it was.
+func TestCreateJobRefusesATakenID(t *testing.T) {
+	srv, metaStore, _ := setupTestServer(t)
+	h := srv.buildRoutes()
+	created := createTestJob(t, h, models.Job{Name: "nightly", Database: "shop", CronExpression: "@daily", Enabled: true, ConnectionID: testConnID})
+	body, _ := json.Marshal(models.Job{ID: created.ID, Name: "renamed", Database: "shop", CronExpression: "@hourly", ConnectionID: testConnID})
+	rec := serve(h, "POST", "/api/v1/jobs", body, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"conflict"`) {
+		t.Fatalf("POST with a taken id = %d %s; want 409 conflict", rec.Code, rec.Body.String())
+	}
+	stored, err := metaStore.GetJob(context.Background(), created.ID)
+	if err != nil || stored.Name != "nightly" || stored.CronExpression != "@daily" {
+		t.Fatalf("stored job = %+v, %v; want it untouched", stored, err)
+	}
+}
+
 func TestUpdateJobNeedsAdmin(t *testing.T) {
 	f := newScopeFixture(t)
 	body := []byte(`{"cron_expression":"@daily","database":"shop","connection_id":"` + testConnID + `"}`)
@@ -278,7 +297,7 @@ func TestConcurrentJobUpdatesStayConsistent(t *testing.T) {
 	}
 }
 
-// failingJobStore fails every job read with an unexpected error.
+// failingJobStore fails every job read and insert with an unexpected error.
 type failingJobStore struct {
 	operations.Store
 }
@@ -289,10 +308,15 @@ func (failingJobStore) GetJob(context.Context, string) (*models.Job, error) {
 	return nil, errors.New("disk I/O error")
 }
 
+func (failingJobStore) CreateJob(context.Context, *models.Job) error {
+	return errors.New("disk I/O error")
+}
+
 func TestJobStoreFailuresAreInternalErrors(t *testing.T) {
 	base := storetest.New(t)
 	failing := failingJobStore{Store: base}
-	srv := NewServer(bootConfig(), failing, nil, nil, storage.NewMockStorage(), nil, nil, nil, withTestConnection(t, base, nil))
+	mock := storage.NewMockStorage()
+	srv := NewServer(bootConfig(), failing, backup.NewEngine(mock, ""), restore.NewEngine(mock, ""), mock, nil, nil, nil, withTestConnection(t, base, nil))
 	h := srv.buildRoutes()
 	body := []byte(`{"id":"job_x","name":"n","cron_expression":"@daily","database":"shop","connection_id":"` + testConnID + `"}`)
 	for _, method := range []string{"PUT", "POST"} {

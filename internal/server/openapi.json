@@ -3994,6 +3994,7 @@
         "x-required-scope": "read"
       },
       "post": {
+        "description": "Creates a job and never edits one. A job id that is taken answers 409 with the code conflict; edit a job with PUT /api/v1/jobs/{id}.",
         "operationId": "post_jobs",
         "requestBody": {
           "content": {

@@ -154,15 +154,15 @@ func TestJobHeartbeatURLIsMaskedAndKept(t *testing.T) {
 		}
 	}
 
-	// Sending the masked value back keeps the URL (PUT and POST).
+	// Sending the masked value back keeps the URL (PUT); a new job has none to keep.
 	update := map[string]any{"name": "nightly", "database": "analytics", "cron_expression": "@daily",
 		"connection_id": testConnID, "heartbeat_url": masked}
 	if code, _, raw = serveJSON(t, mux, http.MethodPut, "/api/v1/jobs/"+id, update); code != http.StatusOK || strings.Contains(raw, "job-secret-uuid") {
 		t.Fatalf("PUT masked: %d %s", code, raw)
 	}
-	job["id"], job["heartbeat_url"] = id, masked
-	if code, _, raw = serveJSON(t, mux, http.MethodPost, "/api/v1/jobs", job); code != http.StatusCreated {
-		t.Fatalf("POST masked: %d %s", code, raw)
+	job["heartbeat_url"] = masked
+	if code, _, raw = serveJSON(t, mux, http.MethodPost, "/api/v1/jobs", job); code != http.StatusBadRequest {
+		t.Fatalf("POST masked: %d %s; want 400", code, raw)
 	}
 	if stored, _ = metaStore.GetJob(context.Background(), id); stored.HeartbeatURL != secretURL {
 		t.Fatalf("heartbeat after masked saves = %q", stored.HeartbeatURL)

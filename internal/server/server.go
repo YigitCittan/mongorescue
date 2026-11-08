@@ -47,7 +47,6 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/secretbox"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/targets"
 	"github.com/yigitcittan/mongorescue/internal/vaultcreds"
 )
@@ -66,10 +65,6 @@ var (
 	// that does not exist. It aliases operations.ErrUnknownConnection.
 	ErrUnknownConnection = operations.ErrUnknownConnection
 )
-
-// jobIDOverhead is the fixed length of the generated "job_<db>_<unix>_<random>"
-// wrapper (prefix, separators, a 10-digit Unix timestamp and the random suffix).
-const jobIDOverhead = len("job___") + 10 + models.IDSuffixLength
 
 // Server coordinates HTTP API routing and dashboard delivery.
 type Server struct {
@@ -597,158 +592,19 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	writeCursorList(w, cursorMeta{Total: page.Total, Limit: page.Limit, Next: page.Next}, page.Items)
 }
 
-// jobRequest is the body of POST /api/v1/jobs. Omitted retention and gzip fields take
-// the defaults from the general settings.
-type jobRequest struct {
-	models.Job
-	RetentionDays  *int  `json:"retention_days"`
-	RetentionCount *int  `json:"retention_count"`
-	Gzip           *bool `json:"gzip"`
-	// RequireLockedCopies, when omitted, keeps an existing job's policy and takes
-	// the security.require_locked_copies setting for a new job.
-	RequireLockedCopies *bool `json:"require_locked_copies"`
-}
-
+// handleSaveJob creates a job (POST /api/v1/jobs). A job id that is taken answers 409
+// (conflict); an existing job is edited with PUT /api/v1/jobs/{id}.
 func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
-	var req jobRequest
+	var req operations.JobCreate
 	if !decodeJSONLimit(w, r, &req, maxAPIBody) {
 		return
 	}
-	job := req.Job
-	general := s.currentSettings().General
-	job.RetentionDays = derefOr(req.RetentionDays, general.DefaultRetentionDays)
-	job.RetentionCount = derefOr(req.RetentionCount, general.DefaultRetentionCount)
-	job.Gzip = derefOr(req.Gzip, general.DefaultGzip)
-
-	// Existing records are updated regardless of ID format (legacy IDs may contain raw
-	// database-name characters); only new IDs must satisfy the strict pattern.
-	var existing *models.Job
-	if job.ID == "" {
-		suffix, err := models.NewIDSuffix()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		idName := job.Database
-		if sel := job.DatabaseSelection; idName == "" && sel.Multi() {
-			// A multi-database job is named after its mode ("job_all_…", "job_pattern_…").
-			idName = string(sel.Mode)
-		}
-		cleanName := models.SanitizeIDComponent(strings.ToLower(idName), models.MaxIDLength-jobIDOverhead)
-		job.ID = fmt.Sprintf("job_%s_%d_%s", cleanName, time.Now().Unix(), suffix)
-	} else {
-		found, err := s.metaStore.GetJob(r.Context(), job.ID)
-		switch {
-		case err == nil:
-			existing = found
-		case !errors.Is(err, store.ErrNotFound):
-			s.writeOperationError(w, err) // 500, logged
-			return
-		}
-	}
-	if existing == nil {
-		if err := models.ValidateID(job.ID); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	// The heartbeat URL is a secret: its masked form keeps the stored URL.
-	storedHeartbeat := ""
-	if existing != nil {
-		storedHeartbeat = existing.HeartbeatURL
-	}
-	heartbeatURL, hbErr := models.ResolveHeartbeatURL(job.HeartbeatURL, storedHeartbeat)
-	if hbErr != nil {
-		writeError(w, http.StatusBadRequest, hbErr.Error())
-		return
-	}
-	job.HeartbeatURL = heartbeatURL
-
-	if !job.Enabled {
-		if err := s.ops.ValidatePausedUntil(job.PausedUntil); err != nil {
-			s.writeJobError(w, err)
-			return
-		}
-	}
-	switch {
-	case req.RequireLockedCopies != nil:
-		job.RequireLockedCopies = *req.RequireLockedCopies
-	case existing != nil:
-		job.RequireLockedCopies = existing.RequireLockedCopies
-	default:
-		job.RequireLockedCopies = s.currentSettings().Security.RequireLockedCopies
-	}
-	// Known databases are server-managed: never taken from the client.
-	operations.CarryKnownDatabases(&job, existing)
-	if err := s.ops.ValidateJob(r.Context(), &job); err != nil {
+	res, err := s.ops.CreateJob(r.Context(), req)
+	if err != nil {
 		s.writeJobError(w, err)
 		return
 	}
-	// Turning require_locked_copies off is refused while the setting is on, and
-	// stored later (after the delete grace period) otherwise.
-	lockedHold, lockedErr := s.ops.HoldLockedCopies(r.Context(), existing, &job)
-	if lockedErr != nil {
-		s.writeJobError(w, lockedErr)
-		return
-	}
-	// A shorter retention is stored later, after the delete grace period.
-	hold, holdErr := s.ops.HoldRetention(r.Context(), existing, &job)
-	if holdErr != nil {
-		s.writeJobError(w, holdErr)
-		return
-	}
-	// A new job is inserted and never overwrites another; an existing one is updated
-	// and never recreated after a concurrent delete. Run history is owned by the
-	// scheduler, not by clients: it is re-read right before the write.
-	persist := func() error {
-		if existing == nil {
-			job.LastRestoreTest = nil // server-managed, never taken from clients
-			return s.metaStore.CreateJob(r.Context(), &job)
-		}
-		current, err := s.metaStore.GetJob(r.Context(), job.ID)
-		if err != nil {
-			return err
-		}
-		job.LastRun, job.NextRun, job.CreatedAt = current.LastRun, current.NextRun, current.CreatedAt
-		job.LastRestoreTest = current.LastRestoreTest
-		// Known databases a run recorded since existing was read are kept.
-		operations.RefreshKnownDatabases(&job, current)
-		return s.metaStore.UpdateJob(r.Context(), &job)
-	}
-	var saveErr error
-	if s.scheduler != nil {
-		// Stores and schedules the job under the scheduler's lock.
-		saveErr = s.scheduler.ApplyJobUpdate(&job, persist)
-	} else {
-		saveErr = persist()
-	}
-	switch {
-	case errors.Is(saveErr, store.ErrAlreadyExists):
-		writeError(w, http.StatusConflict, "a job with this id already exists")
-		return
-	case errors.Is(saveErr, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, "job not found (deleted meanwhile)")
-		return
-	case saveErr != nil:
-		s.writeOperationError(w, saveErr) // 500, logged
-		return
-	}
-	// The overview's history lists the jobs' schedules.
-	s.ops.InvalidateHistory()
-	changed := existing != nil && operations.RetentionChanged(existing, &job)
-	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
-	if holdErr != nil {
-		s.writeOperationError(w, holdErr)
-		return
-	}
-	if holdErr = s.ops.ApplyLockedCopiesHold(r.Context(), lockedHold, job.ID, prot); holdErr != nil {
-		s.writeOperationError(w, holdErr)
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: job.Redacted(), JobProtection: *prot,
-		Warnings: s.ops.JobWarnings(r.Context(), &job)})
+	writeJSON(w, http.StatusCreated, operations.JobSaveResult{Job: res.Redacted(), JobProtection: res.JobProtection, Warnings: res.Warnings})
 }
 
 // handleGetJob returns a job with its next activations.
@@ -906,6 +762,8 @@ func (s *Server) writeOperationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, operations.ErrApprovalNeedsSession), errors.Is(err, operations.ErrSelfApproval),
 		errors.Is(err, auth.ErrApproverTooRecent), errors.Is(err, operations.ErrRequesterUnknown):
 		writeErrorCode(w, http.StatusForbidden, apierr.ApprovalRefused, err.Error())
+	case errors.Is(err, operations.ErrAlreadyExists):
+		writeErrorCode(w, http.StatusConflict, apierr.Conflict, err.Error())
 	case errors.Is(err, operations.ErrJobRecreated), errors.Is(err, operations.ErrJobChanged):
 		writeErrorCode(w, http.StatusConflict, apierr.JobChanged, err.Error())
 	case errors.Is(err, operations.ErrUnavailable), errors.Is(err, operations.ErrPITRUnavailable):

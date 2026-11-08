@@ -70,10 +70,10 @@ func TestFullSaveKeepsKnownDatabasesARunRecorded(t *testing.T) {
 	st.mu.Unlock()
 
 	body, _ := json.Marshal(map[string]any{
-		"id": job.ID, "name": "apps renamed", "cron_expression": "@hourly", "connection_id": testConnID,
+		"name": "apps renamed", "cron_expression": "@hourly", "connection_id": testConnID,
 		"database_selection": sel, "known_databases": []string{"forged"},
 	})
-	if rec := serve(h, "POST", "/api/v1/jobs", body, nil); rec.Code != http.StatusCreated {
+	if rec := serve(h, "PUT", "/api/v1/jobs/"+job.ID, body, nil); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d %s", rec.Code, rec.Body)
 	}
 	stored, err := base.GetJob(ctx, job.ID)
