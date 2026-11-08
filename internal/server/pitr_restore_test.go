@@ -17,7 +17,7 @@ func TestInPlacePITRInHAModeAnswers409(t *testing.T) {
 	s := &Server{logger: slog.New(slog.DiscardHandler)}
 	rec := httptest.NewRecorder()
 	s.writeOperationError(rec, operations.ErrInPlaceHAMode)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "in-place PITR is not available in HA mode yet") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "in-place PITR is not available in HA mode without the swap ledger") {
 		t.Fatalf("HA mode: %d %s; want 409", rec.Code, rec.Body.String())
 	}
 }

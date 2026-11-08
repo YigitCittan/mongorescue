@@ -14,11 +14,11 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
-// TestInPlacePITRIsRefusedInHAMode checks the wiring of the HA guard: the active
-// instance of an active-passive cluster refuses an in-place point-in-time restore
-// with 409 (a swap that outlasts the lease could overlap the next leader's
-// startup), while a single instance does not refuse it for that reason.
-func TestInPlacePITRIsRefusedInHAMode(t *testing.T) {
+// TestInPlacePITRInHAMode checks the wiring of in-place point-in-time restores in
+// HA mode: the active instance has the swap ledger of the cluster and so gets past
+// the HA guard (to the missing stream), through the API as well; the standby App
+// has no ledger and keeps refusing them.
+func TestInPlacePITRInHAMode(t *testing.T) {
 	at := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	req := models.RestoreRequest{PITR: &models.PITRTarget{StreamID: "str_x", At: &at, InPlace: true, ConfirmInPlace: "shop"},
 		Databases: []string{"shop"}}
@@ -33,6 +33,9 @@ func TestInPlacePITRIsRefusedInHAMode(t *testing.T) {
 	if err = sup.bootstrap(context.Background(), standby); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = standby.ops.StartRestore(adminSession(), req); !errors.Is(err, operations.ErrInPlaceHAMode) {
+		t.Fatalf("in place on the standby App: %v; want ErrInPlaceHAMode", err)
+	}
 	_ = standby.Close()
 	// The active instance holds the lease, as in RunHA.
 	runManager(t, sup.rt.mgr())
@@ -41,11 +44,11 @@ func TestInPlacePITRIsRefusedInHAMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = active.Close() }()
-	if _, err = active.ops.StartRestore(adminSession(), req); !errors.Is(err, operations.ErrInPlaceHAMode) {
-		t.Fatalf("in place in HA mode: %v; want ErrInPlaceHAMode", err)
+	if _, err = active.ops.StartRestore(adminSession(), req); err == nil || errors.Is(err, operations.ErrInPlaceHAMode) {
+		t.Fatalf("in place on the active instance: %v; want a refusal other than ErrInPlaceHAMode", err)
 	}
 
-	// Through the REST API: 409 with the reason.
+	// Through the REST API: not the HA refusal either.
 	_, key, err := active.auth.CreateAPIKey(context.Background(), auth.SystemPrincipal(), "ha admin", auth.ScopeAdmin)
 	if err != nil {
 		t.Fatal(err)
@@ -57,18 +60,8 @@ func TestInPlacePITRIsRefusedInHAMode(t *testing.T) {
 		r.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		active.Handler().ServeHTTP(rec, r)
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "in-place PITR is not available in HA mode yet") {
-			t.Fatalf("%s in HA mode: %d %s; want 409", path, rec.Code, rec.Body.String())
+		if strings.Contains(rec.Body.String(), "swap ledger") {
+			t.Fatalf("%s in HA mode: %d %s; the active instance must not refuse for the HA mode", path, rec.Code, rec.Body.String())
 		}
-	}
-
-	// A single instance gets past the guard (to the missing stream).
-	single, err := New(testConfig(t), nil, WithGetenv(noEnv))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = single.Close() }()
-	if _, err = single.ops.StartRestore(adminSession(), req); err == nil || errors.Is(err, operations.ErrInPlaceHAMode) {
-		t.Fatalf("in place without HA: %v; want another refusal", err)
 	}
 }

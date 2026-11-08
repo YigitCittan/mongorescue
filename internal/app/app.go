@@ -139,6 +139,9 @@ type App struct {
 	// cleanupPITR drops the recorded clones of an interrupted point-in-time restore
 	// or chain test (operations.Service.CleanupInterruptedPITR).
 	cleanupPITR func(ctx context.Context, rec *models.RestoreRecord) string
+	// adoptedSwaps are the restores of in-place swaps of an older HA epoch that the
+	// startup sweep leaves to operations.Service.AdoptSwaps.
+	adoptedSwaps map[string]bool
 	// storages opens the storage driver of a target, for the startup recovery's
 	// look at the archives of interrupted backups (targets.Service.Storage).
 	storages     func(ctx context.Context, targetID string) (storage.Storage, error)
@@ -802,24 +805,42 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		}
 	}
 
+	// In HA mode the active instance announces the swap of an in-place
+	// point-in-time restore on the HA target (the swap ledger), so the next active
+	// instance leaves it alone. Without a usable HA target in-place restores stay
+	// refused (operations.ErrInPlaceHAMode).
+	var swapLedger models.SwapLedger
+	if o.ha != nil && o.ha.active {
+		o.ha.swapStats = func() (int, map[string]uint64) { return ops.HeldSwaps(), ops.SwapHandoverCounts() }
+		if st := o.ha.rt.storage(); st != nil {
+			if board, boardErr := ha.NewSwapBoard(cfg.HA.Cluster, st, key.Key, o.ha.rt, logger); boardErr != nil {
+				logger.Warn("in-place point-in-time restores stay refused: no swap ledger on the HA target", logsafe.Error(boardErr))
+			} else {
+				swapLedger = board
+			}
+		}
+	}
+
 	// 7. The backup, job and restore use cases are shared by the REST API and the MCP
 	// server, so both adapters apply exactly the same rules.
 	ops = operations.New(operations.Config{
-		PITRPins:    pitrPins,
-		OnChainTest: metricSet.SetPITRChainTestUnverified,
-		Store:       metaStore,
-		WakeCopies:  copySvc.Notify,
-		Backup:      backupEngine,
-		Restore:     restoreEngine,
-		Jobs:        sched,
-		Scheduler:   sched,
-		Runs:        runManager,
-		Registry:    registry,
-		Connections: connSvc,
-		Targets:     targetSvc,
-		Storage:     targetSvc.Storage,
-		ArchiveSize: sizeEstimator,
-		Settings:    settingsSvc.Current,
+		SwapLedger:          swapLedger,
+		SwapHandoverTimeout: cfg.HA.SwapTimeout,
+		PITRPins:            pitrPins,
+		OnChainTest:         metricSet.SetPITRChainTestUnverified,
+		Store:               metaStore,
+		WakeCopies:          copySvc.Notify,
+		Backup:              backupEngine,
+		Restore:             restoreEngine,
+		Jobs:                sched,
+		Scheduler:           sched,
+		Runs:                runManager,
+		Registry:            registry,
+		Connections:         connSvc,
+		Targets:             targetSvc,
+		Storage:             targetSvc.Storage,
+		ArchiveSize:         sizeEstimator,
+		Settings:            settingsSvc.Current,
 		// The delete protection: delayed and approved settings changes, and the
 		// two-person rule needing two administrators.
 		SettingsUpdater:     settingsSvc,
@@ -849,7 +870,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 			return pitrSvc.BaseWindow(id)
 		},
 		PITRSwap: restoreEngine,
-		// In-place point-in-time restores are refused in active-passive HA mode.
+		// In-place point-in-time restores in active-passive HA mode need the swap
+		// ledger (SwapLedger above).
 		HAMode: o.ha != nil,
 		// Synchronous changes of the API and MCP are fenced like the runs.
 		Fence: o.fence(),
@@ -1496,6 +1518,19 @@ func (a *App) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// An in-place point-in-time swap of an older HA epoch may still be writing the
+	// original databases: leave it alone (and its restore record out of the sweep)
+	// until its process reports its end or the handover timeout passes. When the
+	// ledger cannot be read, nothing is swept: a blind sweep could enable the
+	// stream the swap paused.
+	if a.ops != nil {
+		adopted, err := a.ops.AdoptSwaps(ctx)
+		if err != nil {
+			a.stopLocked()
+			return fmt.Errorf("take over in-place PITR swaps: %w", err)
+		}
+		a.adoptedSwaps = adopted
+	}
 	a.failInterruptedRuns(ctx)
 
 	// Start the event bus and notification workers. Stop drains them after the
@@ -1771,7 +1806,7 @@ func (a *App) failInterruptedRuns(ctx context.Context) {
 	}
 	if restores, err := a.metaStore.ListRestoreRecords(ctx); err == nil {
 		for _, r := range restores {
-			if r.Status == models.RestoreStatusInProgress {
+			if r.Status == models.RestoreStatusInProgress && !a.adoptedSwaps[r.ID] {
 				// An interrupted point-in-time restore or chain test drops the clones
 				// it recorded, and says so.
 				note := ""

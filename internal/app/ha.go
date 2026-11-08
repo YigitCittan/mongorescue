@@ -53,6 +53,10 @@ var ErrHANeedsSharedKey = errors.New("app: active-passive HA needs the secret ke
 type haRole struct {
 	rt     *haRuntime
 	active bool
+	// swapStats reports the in-place point-in-time swaps of an older epoch the
+	// active App leaves alone and has settled (operations.Service.HeldSwaps and
+	// SwapHandoverCounts); nil until the App's operations service exists.
+	swapStats func() (held int, handovers map[string]uint64)
 }
 
 // serverStatus is the HA status the App serves (health check, standby gate): the
@@ -74,6 +78,8 @@ func (r *haRole) metricsState() metrics.HAState {
 	ms := r.rt.metricsState()
 	if !r.active {
 		ms.Role = server.HARoleStandby
+	} else if r.swapStats != nil {
+		ms.SwapsHeld, ms.SwapHandovers = r.swapStats()
 	}
 	return ms
 }

@@ -131,6 +131,11 @@ func (e *Engine) SwapPITRClones(ctx context.Context, req models.RestoreRequest, 
 		if c := runs.CancellationOf(ctx); c != nil {
 			return fmt.Errorf("%w: %s: %w", ErrSwapFailed, db, c)
 		}
+		// An instance that lost the HA lease replaces no further database: the one
+		// in flight finishes, and the instance that took over leaves it alone.
+		if err := e.checkFence(); err != nil {
+			return fmt.Errorf("%w: %s: %w; %s is untouched", ErrSwapFailed, db, err, db)
+		}
 		snap := snapshotOf(info.InPlace, db)
 		if snap == nil {
 			return fmt.Errorf("%w: %s: %w: no record of what %s held after the restore; %s is untouched", ErrSwapFailed, db, ErrCloneUnreadable, clone, db)

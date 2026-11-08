@@ -39,8 +39,10 @@ type PITRSwapper interface {
 }
 
 // ErrInPlaceHAMode is returned for an in-place point-in-time restore (and its
-// preflight) while active-passive high availability is on (Config.HAMode).
-var ErrInPlaceHAMode = errors.New("in-place PITR is not available in HA mode yet: a swap that outlasts the leader's lease could overlap the next leader's startup; restore into safe clones instead")
+// preflight) while active-passive high availability is on (Config.HAMode) but no
+// swap ledger is wired (Config.SwapLedger): without one a swap that outlasts the
+// leader's lease could overlap the next leader's startup.
+var ErrInPlaceHAMode = errors.New("in-place PITR is not available in HA mode without the swap ledger: a swap that outlasts the leader's lease could overlap the next leader's startup; restore into safe clones instead")
 
 // MaxSwapDuration bounds the swap of an in-place point-in-time restore, which a
 // shutdown waits for (runs.Manager.Critical) instead of killing it midway.
@@ -249,13 +251,33 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 	// the swap runs under its own bounded context, not the run's, and the
 	// application waits for it before it kills tool processes (runs.Critical).
 	// The run is past its point of no return (cancellations fail).
+	//
+	// In HA mode the swap is announced on the HA target first (Begin): a marker
+	// under this instance's epoch, then a fence check. An instance that takes over
+	// from this one finds the marker and leaves the swap alone (AdoptSwaps). The
+	// swap's context exists before Begin and the fence is checked by the engine
+	// before every database, so no database is replaced once the lease is lost.
+	endCritical := s.cfg.Runs.Critical()
+	swapCtx, cancelSwap := context.WithTimeoutCause(context.WithoutCancel(ctx), MaxSwapDuration,
+		fmt.Errorf("the swap exceeded %s", MaxSwapDuration))
+	announced := false
+	if ledger := s.cfg.SwapLedger; ledger != nil {
+		beginCtx, cancelBegin := context.WithTimeout(swapCtx, swapLedgerTimeout)
+		err = ledger.Begin(beginCtx, s.swapMarker(rec))
+		cancelBegin()
+		if err != nil {
+			cancelSwap()
+			endCritical()
+			note := s.resumeAfterSwap(ctx, pp, rec, locks, false, true)
+			return s.failInPlace(ctx, rec, err, fmt.Sprintf("the swap was not started: %s; the original databases are untouched, the safety backup(s) %s are kept%s%s",
+				redact.Text(err.Error()), strings.Join(ip.SafetyBackupIDs, ", "), dropClones(), note))
+		}
+		announced = true
+	}
 	ip.Stage, ip.SwapStarted = models.PITRInPlaceSwapping, true
 	tracker.Finishing()
 	tracker.Phase(models.PhaseSwapping, rec.Phases)
 	save()
-	endCritical := s.cfg.Runs.Critical()
-	swapCtx, cancelSwap := context.WithTimeoutCause(context.WithoutCancel(ctx), MaxSwapDuration,
-		fmt.Errorf("the swap exceeded %s", MaxSwapDuration))
 	err = s.cfg.PITRSwap.SwapPITRClones(swapCtx, req, rec, func(db string) {
 		ip.Swapped = append(ip.Swapped, db)
 		save()
@@ -264,8 +286,15 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 	endCritical()
 	ip.Stage = models.PITRInPlaceResuming
 	if err != nil {
-		note := s.resumeInPlace(ctx, pp, rec, locks, true)
-		return s.failInPlace(ctx, rec, err, swapFailedMessage(rec, err)+note)
+		if announced {
+			s.finishSwap(ctx, rec, models.SwapFailed)
+		}
+		note := s.resumeAfterSwap(ctx, pp, rec, locks, true, announced)
+		rec2, err2 := s.failInPlace(ctx, rec, err, swapFailedMessage(rec, err)+note)
+		if announced {
+			s.resolveSwap(ctx, rec)
+		}
+		return rec2, err2
 	}
 	rec.Phases.RestoreDone = models.Stamp(time.Now())
 
@@ -275,10 +304,18 @@ func (s *Service) finishPITRInPlace(ctx context.Context, pp *pitrPlan, req model
 	} else if note := dropClones(); strings.Contains(note, "manually") {
 		addInPlaceWarning(rec, strings.TrimPrefix(note, "; "))
 	}
+	// Nothing writes to the originals any more: say so on the HA target, so an
+	// instance that took over does not wait for the timeout.
+	if announced {
+		s.finishSwap(ctx, rec, models.SwapCompleted)
+	}
 
 	// 5. The stream.
-	if note := s.resumeInPlace(ctx, pp, rec, locks, true); note != "" {
+	if note := s.resumeAfterSwap(ctx, pp, rec, locks, true, announced); note != "" {
 		addInPlaceWarning(rec, strings.TrimPrefix(note, "; "))
+	}
+	if announced {
+		s.resolveSwap(ctx, rec)
 	}
 	// The restored state now lives in the originals.
 	rec.TargetDatabase = strings.Join(ip.Swapped, ",")

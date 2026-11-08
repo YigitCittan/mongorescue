@@ -379,7 +379,7 @@ Things to know:
 - [ ] The instances on different hosts, zones or nodes (Kubernetes: anti-affinity), each with its own data directory.
 - [ ] The HA target reachable from every instance, without Object Lock, with credentials only MongoRescue holds.
 - [ ] Every storage target of every job reachable from every instance.
-- [ ] `MongoRescueHANoActiveInstance`, `MongoRescueHATakeoverFailed`, `MongoRescueHASnapshotRejected`, `MongoRescueHARollbackSuspected`, `MongoRescueHAStartedFromEmptyState` and `MongoRescueDown` alerts loaded, every instance scraped.
+- [ ] `MongoRescueHANoActiveInstance`, `MongoRescueHATakeoverFailed`, `MongoRescueHASnapshotRejected`, `MongoRescueHARollbackSuspected`, `MongoRescueHAStartedFromEmptyState`, `MongoRescueHAPITRSwapInterrupted` and `MongoRescueDown` alerts loaded, every instance scraped.
 - [ ] A takeover tested once: stop the active instance (or kill it), watch the standby report `"role": "active"`, check that the next scheduled backup runs there, and start the old instance again (it comes back as standby).
 
 ### Rotating the secret key of an HA cluster
