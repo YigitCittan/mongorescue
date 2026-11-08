@@ -125,6 +125,7 @@ nav:
       - Architecture Overview: architecture.md
       - High Availability (Active-Passive): design/ha.md
       - PITR Storage & Codec Design: design/pitr.md
+      - Sharded Cluster Backups (Research): design/sharded.md
       - Roles & Permissions Design: design/roles.md
       - OIDC Architecture: design/oidc.md
       - Testing Strategy: testing.md
