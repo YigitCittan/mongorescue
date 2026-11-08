@@ -732,7 +732,7 @@ func (s *Server) handleSaveJob(w http.ResponseWriter, r *http.Request) {
 	}
 	// The overview's history lists the jobs' schedules.
 	s.ops.InvalidateHistory()
-	changed := existing != nil && job.RetentionPolicy() != existing.RetentionPolicy()
+	changed := existing != nil && operations.RetentionChanged(existing, &job)
 	prot, holdErr := s.ops.ApplyRetentionHold(r.Context(), job.ID, hold, changed)
 	if holdErr != nil {
 		s.writeOperationError(w, holdErr)

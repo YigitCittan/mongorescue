@@ -52,13 +52,16 @@ func TestUpdateJobKeepsAndReplacesBuckets(t *testing.T) {
 		t.Fatalf("buckets after an update without them: %+v", job)
 	}
 	weekly, daily := 4, 0
-	job, err = e.svc.UpdateJob(ctx, "job_b", operations.JobUpdate{Name: "b", CronExpression: "@daily", ConnectionID: "conn_a", Database: "shop",
+	res, err := e.svc.UpdateJob(ctx, "job_b", operations.JobUpdate{Name: "b", CronExpression: "@daily", ConnectionID: "conn_a", Database: "shop",
 		KeepWeekly: &weekly, KeepDaily: &daily})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.KeepWeekly != 4 || job.KeepDaily != 0 || job.KeepMonthly != 12 {
-		t.Fatalf("buckets after replacing two: %+v", job)
+	// Raising keep_weekly applies at once; turning keep_daily off is held (see
+	// TestLoweringAGFSBucketIsHeld).
+	if res.KeepWeekly != 4 || res.KeepDaily != 7 || res.KeepMonthly != 12 || res.PendingRetention == nil ||
+		res.PendingRetention.KeepDaily == nil || *res.PendingRetention.KeepDaily != 0 {
+		t.Fatalf("buckets after replacing two: %+v, pending %+v", res.Job, res.PendingRetention)
 	}
 	over := 9999
 	if _, err = e.svc.UpdateJob(ctx, "job_b", operations.JobUpdate{Name: "b", CronExpression: "@daily", ConnectionID: "conn_a", Database: "shop", KeepYearly: &over}); !errors.Is(err, operations.ErrInvalid) {
