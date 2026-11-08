@@ -415,9 +415,10 @@ func TestLegacyIDsRemainActionable(t *testing.T) {
 
 	// Update an existing legacy job.
 	legacyJob.Name = "renamed"
-	body, _ := json.Marshal(legacyJob)
-	if rec := serve(h, "POST", "/api/v1/jobs", body, nil); rec.Code != http.StatusCreated {
-		t.Fatalf("update legacy job: expected 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	body, _ := json.Marshal(map[string]any{"name": legacyJob.Name, "database": legacyJob.Database,
+		"cron_expression": legacyJob.CronExpression, "connection_id": legacyJob.ConnectionID})
+	if rec := serve(h, "PUT", "/api/v1/jobs/job_a%2Bb_1700000000", body, nil); rec.Code != http.StatusOK {
+		t.Fatalf("update legacy job: expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	if stored, _ := metaStore.GetJob(ctx, legacyJob.ID); stored == nil || stored.Name != "renamed" {
 		t.Fatalf("legacy job update not persisted: %+v", stored)
