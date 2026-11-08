@@ -594,6 +594,7 @@ function trustFillJobForm(job) {
     hint.hidden = true;
     hint.textContent = "";
   }
+  trustRenderKept([]);
   if (job) trustScheduleRetentionPreview();
 }
 
@@ -634,9 +635,10 @@ async function trustRetentionPreview() {
   if (!hint || !editingJobId) return;
   const days = parseInt(getValue("job-retention-days"), 10) || 0;
   const count = parseInt(getValue("job-retention-count"), 10) || 0;
+  const gfs = ["daily", "weekly", "monthly", "yearly"].map(b => `keep_${b}=${parseInt(getValue(`job-keep-${b}`), 10) || 0}`).join("&");
   const seq = ++trust.preview.seq;
   try {
-    const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(editingJobId)}/retention/preview?retention_days=${days}&retention_count=${count}`);
+    const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(editingJobId)}/retention/preview?retention_days=${days}&retention_count=${count}&${gfs}`);
     if (seq !== trust.preview.seq || !json.success || !json.data) return;
     const n = (json.data.delete || []).length;
     const kept = (json.data.protected || []).length;
@@ -645,12 +647,36 @@ async function trustRetentionPreview() {
     // A multi-database job keeps N backups of each database (jobdbs.js).
     const perDb = typeof jobDbsRetentionBreakdown === "function" ? jobDbsRetentionBreakdown(json.data) : "";
     if (perDb) text += ` ${perDb}`;
+    // Copies that would outlive their primary (per copy target retention).
+    (json.data.copies || []).forEach(c => {
+      const outliving = (c.outliving || []).length;
+      if (outliving > 0) text += ` ${tf("modal_job.copy_outlive", { n: outliving, name: c.target_name || c.target_id })}`;
+    });
     hint.textContent = text;
     hint.classList.toggle("text-danger", n > 0);
     hint.hidden = false;
+    trustRenderKept(json.data.kept || []);
   } catch (err) {
     hint.hidden = true;
+    trustRenderKept([]);
   }
+}
+
+// trustRenderKept lists the backups that stay with the rules and buckets that keep
+// each ("keep_monthly 2026-10"). Text only reaches the DOM through textContent.
+function trustRenderKept(kept) {
+  const box = document.getElementById("job-retention-kept");
+  const list = document.getElementById("job-retention-kept-list");
+  if (!box || !list) return;
+  list.textContent = "";
+  const shown = kept.slice(0, 50);
+  shown.forEach(k => {
+    const li = document.createElement("li");
+    const reasons = (k.reasons || []).map(r => (r.bucket ? `${r.rule} ${r.bucket}` : r.rule)).join(", ");
+    li.textContent = tf("modal_job.kept_row", { id: k.backup_id, db: k.database, reasons });
+    list.appendChild(li);
+  });
+  box.hidden = shown.length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -907,7 +933,7 @@ function trustSetup() {
     form.addEventListener("input", () => { trust.integrityDirty = true; });
     form.addEventListener("change", () => { trust.integrityDirty = true; });
   }
-  ["job-retention-days", "job-retention-count"].forEach(id => {
+  ["job-retention-days", "job-retention-count", "job-keep-daily", "job-keep-weekly", "job-keep-monthly", "job-keep-yearly"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("input", trustScheduleRetentionPreview);
   });

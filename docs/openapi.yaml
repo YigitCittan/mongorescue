@@ -2015,6 +2015,48 @@ paths:
         - Jobs
       parameters:
         - $ref: '#/components/parameters/ID'
+        - name: retention_days
+          in: query
+          required: false
+          description: Preview this retention_days instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
+        - name: retention_count
+          in: query
+          required: false
+          description: Preview this retention_count instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
+        - name: keep_daily
+          in: query
+          required: false
+          description: Preview this keep_daily (0 = off) instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
+        - name: keep_weekly
+          in: query
+          required: false
+          description: Preview this keep_weekly (0 = off) instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
+        - name: keep_monthly
+          in: query
+          required: false
+          description: Preview this keep_monthly (0 = off) instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
+        - name: keep_yearly
+          in: query
+          required: false
+          description: Preview this keep_yearly (0 = off) instead of the job's.
+          schema:
+            type: integer
+            minimum: 0
       security:
         - sessionCookie: []
         - bearerAuth: []
@@ -4887,6 +4929,33 @@ components:
       required:
         - action
       additionalProperties: true
+    RetentionPolicy:
+      type: object
+      description: Retention rules of a copy target; at least one must be non-zero. A backup is kept while any rule keeps it.
+      properties:
+        retention_days:
+          type: integer
+          minimum: 0
+        retention_count:
+          type: integer
+          minimum: 0
+        keep_daily:
+          type: integer
+          minimum: 0
+          maximum: 400
+        keep_weekly:
+          type: integer
+          minimum: 0
+          maximum: 520
+        keep_monthly:
+          type: integer
+          minimum: 0
+          maximum: 240
+        keep_yearly:
+          type: integer
+          minimum: 0
+          maximum: 100
+      additionalProperties: false
     Job:
       type: object
       properties:
@@ -4917,6 +4986,35 @@ components:
           type: string
         retention_days:
           type: integer
+          description: Keep backups for this many days (0 = no age limit).
+        retention_count:
+          type: integer
+          description: Keep the newest N backups of each database (0 = no count limit).
+        keep_daily:
+          type: integer
+          minimum: 0
+          maximum: 400
+          description: Also keep the newest backup of each of the last N days that have one (0 = off), per database, in the zone of the schedule (CRON_TZ=, else UTC).
+        keep_weekly:
+          type: integer
+          minimum: 0
+          maximum: 520
+          description: Also keep the newest backup of each of the last N ISO weeks that have one (0 = off).
+        keep_monthly:
+          type: integer
+          minimum: 0
+          maximum: 240
+          description: Also keep the newest backup of each of the last N months that have one (0 = off).
+        keep_yearly:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Also keep the newest backup of each of the last N years that have one (0 = off).
+        copy_retention:
+          type: object
+          description: 'Per copy target retention, keyed by the ID of one of copy_targets. A copy whose target has an entry outlives its primary while the entry keeps the backup; copies without an entry are deleted with their primary.'
+          additionalProperties:
+            $ref: '#/components/schemas/RetentionPolicy'
         enabled:
           type: boolean
       required:

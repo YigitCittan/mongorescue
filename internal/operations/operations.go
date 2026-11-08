@@ -945,8 +945,14 @@ func (s *Service) planRestore(ctx context.Context, req models.RestoreRequest, fo
 	}
 	// A deleted backup is not restorable during its grace period: undelete it first
 	// (its archive is still there). A purged one has no archive any more.
+	// A copy that outlives its deleted primary (the job's copy_retention) is restored
+	// by naming its target as source_target_id.
 	if source.Status.Deleted() {
-		return nil, public(fmt.Sprintf("backup %s is %s; undelete it to restore it", source.ID, source.Status), ErrBackupDeleted)
+		if view := source.RetainedView(strings.TrimSpace(req.SourceTargetID)); view != nil {
+			source = view
+		} else {
+			return nil, public(fmt.Sprintf("backup %s is %s; undelete it to restore it", source.ID, source.Status), ErrBackupDeleted)
+		}
 	}
 	// A PITR base holds a whole instance: its restore (into safe clones, with the
 	// oplog replayed) comes with point-in-time restores.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -86,6 +87,15 @@ type JobUpdate struct {
 	RetentionDays *int `json:"retention_days"`
 	// RetentionCount keeps at most this many backups (0 = unlimited) when set.
 	RetentionCount *int `json:"retention_count"`
+	// KeepDaily, KeepWeekly, KeepMonthly and KeepYearly, when set, replace the job's
+	// grandfather-father-son buckets (0 = off, see models.RetentionPolicy).
+	KeepDaily   *int `json:"keep_daily"`
+	KeepWeekly  *int `json:"keep_weekly"`
+	KeepMonthly *int `json:"keep_monthly"`
+	KeepYearly  *int `json:"keep_yearly"`
+	// CopyRetention, when set, replaces the per copy target retention overrides
+	// (an empty object removes them).
+	CopyRetention *map[string]models.RetentionPolicy `json:"copy_retention"`
 	// Gzip compresses the dumps when set.
 	Gzip *bool `json:"gzip"`
 	// IncludeUsersAndRoles, when set, replaces whether the dumps include the users and
@@ -205,6 +215,9 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	if job.RetentionDays < 0 || job.RetentionCount < 0 {
 		return invalid(ErrNegativeRetention)
 	}
+	if err := job.RetentionPolicy().Validate(); err != nil {
+		return invalid(err)
+	}
 	if err := ValidateRPO(job.RPOMinutes); err != nil {
 		return err
 	}
@@ -246,6 +259,11 @@ func (s *Service) ValidateJob(ctx context.Context, job *models.Job) error {
 	}
 	if len(job.CopyTargets) == 0 {
 		job.CopyMode = ""
+	}
+	if len(job.CopyRetention) == 0 {
+		job.CopyRetention = nil
+	} else if err := models.ValidateCopyRetention(job.CopyRetention, job.CopyTargets); err != nil {
+		return invalid(err)
 	}
 	if rt := job.RestoreTest; rt != nil && rt.SourceTargetID != "" && !slices.Contains(job.CopyTargets, rt.SourceTargetID) {
 		return invalid(fmt.Errorf("%w: restore_test.source_target_id must be one of the job's copy targets", models.ErrInvalidRestoreTest))
@@ -415,6 +433,13 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	job.StorageTargetID = u.StorageTargetID
 	job.RetentionDays = derefOr(u.RetentionDays, existing.RetentionDays)
 	job.RetentionCount = derefOr(u.RetentionCount, existing.RetentionCount)
+	job.KeepDaily = derefOr(u.KeepDaily, existing.KeepDaily)
+	job.KeepWeekly = derefOr(u.KeepWeekly, existing.KeepWeekly)
+	job.KeepMonthly = derefOr(u.KeepMonthly, existing.KeepMonthly)
+	job.KeepYearly = derefOr(u.KeepYearly, existing.KeepYearly)
+	if u.CopyRetention != nil {
+		job.CopyRetention = maps.Clone(*u.CopyRetention)
+	}
 	job.Gzip = derefOr(u.Gzip, existing.Gzip)
 	job.IncludeUsersAndRoles = derefOr(u.IncludeUsersAndRoles, existing.IncludeUsersAndRoles)
 	if u.CopyTargets != nil {
@@ -495,7 +520,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	}
 	// The overview's history lists the jobs' schedules.
 	s.InvalidateHistory()
-	changed := job.RetentionDays != existing.RetentionDays || job.RetentionCount != existing.RetentionCount
+	changed := job.RetentionPolicy() != existing.RetentionPolicy()
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
 	if err != nil {
 		return nil, err

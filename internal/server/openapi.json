@@ -524,6 +524,13 @@
           "connection_id": {
             "type": "string"
           },
+          "copy_retention": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RetentionPolicy"
+            },
+            "description": "Per copy target retention, keyed by the ID of one of copy_targets. A copy whose target has an entry outlives its primary while the entry keeps the backup; copies without an entry are deleted with their primary.",
+            "type": "object"
+          },
           "cron_expression": {
             "type": "string"
           },
@@ -546,10 +553,39 @@
           "id": {
             "type": "string"
           },
+          "keep_daily": {
+            "description": "Also keep the newest backup of each of the last N days that have one (0 = off), per database, in the zone of the schedule (CRON_TZ=, else UTC).",
+            "maximum": 400,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_monthly": {
+            "description": "Also keep the newest backup of each of the last N months that have one (0 = off).",
+            "maximum": 240,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_weekly": {
+            "description": "Also keep the newest backup of each of the last N ISO weeks that have one (0 = off).",
+            "maximum": 520,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_yearly": {
+            "description": "Also keep the newest backup of each of the last N years that have one (0 = off).",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
+          "retention_count": {
+            "description": "Keep the newest N backups of each database (0 = no count limit).",
+            "type": "integer"
+          },
           "retention_days": {
+            "description": "Keep backups for this many days (0 = no age limit).",
             "type": "integer"
           },
           "storage_target_id": {
@@ -711,6 +747,41 @@
           },
           "verify": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "RetentionPolicy": {
+        "additionalProperties": false,
+        "description": "Retention rules of a copy target; at least one must be non-zero. A backup is kept while any rule keeps it.",
+        "properties": {
+          "keep_daily": {
+            "maximum": 400,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_monthly": {
+            "maximum": 240,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_weekly": {
+            "maximum": 520,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keep_yearly": {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retention_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retention_days": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -4376,6 +4447,66 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/ID"
+          },
+          {
+            "description": "Preview this retention_days instead of the job's.",
+            "in": "query",
+            "name": "retention_days",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Preview this retention_count instead of the job's.",
+            "in": "query",
+            "name": "retention_count",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Preview this keep_daily (0 = off) instead of the job's.",
+            "in": "query",
+            "name": "keep_daily",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Preview this keep_weekly (0 = off) instead of the job's.",
+            "in": "query",
+            "name": "keep_weekly",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Preview this keep_monthly (0 = off) instead of the job's.",
+            "in": "query",
+            "name": "keep_monthly",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Preview this keep_yearly (0 = off) instead of the job's.",
+            "in": "query",
+            "name": "keep_yearly",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {

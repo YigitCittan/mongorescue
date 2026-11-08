@@ -284,7 +284,71 @@ if (typeof translations === "object" && typeof mergeTranslations === "function")
 const COPIES_MAX = 3;
 
 // The copy targets and mode the job form shows (kept across re-renders).
-const copiesForm = { selected: [], mode: "async" };
+const copiesForm = { selected: [], mode: "async", retention: {} };
+
+// The retention override fields of a copy target: the API field, its label key and
+// its upper bound (0 turns a rule off; all zero means no override).
+const COPIES_RETENTION_FIELDS = [
+  { field: "retention_days", label: "modal_job.copy_days_label", max: 36500 },
+  { field: "retention_count", label: "modal_job.copy_count_label", max: 100000 },
+  { field: "keep_daily", label: "modal_job.keep_daily_label", max: 400 },
+  { field: "keep_weekly", label: "modal_job.keep_weekly_label", max: 520 },
+  { field: "keep_monthly", label: "modal_job.keep_monthly_label", max: 240 },
+  { field: "keep_yearly", label: "modal_job.keep_yearly_label", max: 100 }
+];
+
+// copiesRenderRetention renders, for every selected copy target, the optional
+// retention override that lets its copy outlive the primary backup.
+function copiesRenderRetention(list) {
+  let box = document.getElementById("job-copy-retention");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "job-copy-retention";
+    list.after(box);
+  }
+  box.textContent = "";
+  copiesForm.selected.forEach(id => {
+    const target = (state.storageTargets || []).find(s => s.id === id);
+    const name = target ? target.name : id;
+    const current = copiesForm.retention[id] || {};
+    const details = document.createElement("details");
+    details.className = "copy-retention";
+    if (COPIES_RETENTION_FIELDS.some(f => Number(current[f.field]) > 0)) details.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = tf("modal_job.copy_retention_title", { name });
+    details.appendChild(summary);
+    const hint = document.createElement("p");
+    hint.className = "form-hint";
+    hint.textContent = t("modal_job.copy_retention_hint");
+    details.appendChild(hint);
+    const row = document.createElement("div");
+    row.className = "form-row";
+    COPIES_RETENTION_FIELDS.forEach(f => {
+      const group = document.createElement("div");
+      group.className = "form-group";
+      const inputId = `job-copy-retention-${id}-${f.field}`;
+      const label = document.createElement("label");
+      label.className = "form-label";
+      label.htmlFor = inputId;
+      label.textContent = t(f.label);
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = "form-input";
+      input.id = inputId;
+      input.min = "0";
+      input.max = String(f.max);
+      input.step = "1";
+      input.value = String(Number(current[f.field]) || 0);
+      input.addEventListener("input", () => {
+        copiesForm.retention[id] = { ...(copiesForm.retention[id] || {}), [f.field]: parseInt(input.value, 10) || 0 };
+      });
+      group.append(label, input);
+      row.appendChild(group);
+    });
+    details.appendChild(row);
+    box.appendChild(details);
+  });
+}
 
 // copiesCount returns "1 copy", "2 copies" or "1 of 2 copies".
 function copiesCount(done, total) {
@@ -386,6 +450,7 @@ function copiesRenderJob() {
   hint.textContent = candidates.length === 0 ? t("copies.none_available")
     : full ? `${t("copies.targets_hint")} ${t("copies.max_reached")}` : t("copies.targets_hint");
   document.getElementById("job-copy-mode-wrap").hidden = copiesForm.selected.length === 0;
+  copiesRenderRetention(list);
   // The DR drill source follows the copy targets (dr.js).
   if (typeof drJobCopiesChanged === "function") drJobCopiesChanged();
 }
@@ -395,6 +460,7 @@ function copiesFillJobForm(job) {
   const j = job || {};
   copiesForm.selected = Array.isArray(j.copy_targets) ? j.copy_targets.slice(0, COPIES_MAX) : [];
   copiesForm.mode = j.copy_mode === "sync" ? "sync" : "async";
+  copiesForm.retention = j.copy_retention && typeof j.copy_retention === "object" ? JSON.parse(JSON.stringify(j.copy_retention)) : {};
   copiesRenderJob();
 }
 
@@ -402,7 +468,18 @@ function copiesFillJobForm(job) {
 function copiesJobPayload() {
   const primary = getValue("job-storage");
   const targets = copiesForm.selected.filter(id => id && id !== primary);
-  return { copy_targets: targets, copy_mode: targets.length > 0 ? copiesForm.mode : "" };
+  // Only selected targets with at least one rule keep an override.
+  const retention = {};
+  targets.forEach(id => {
+    const o = copiesForm.retention[id] || {};
+    if (COPIES_RETENTION_FIELDS.some(f => Number(o[f.field]) > 0)) {
+      retention[id] = {};
+      COPIES_RETENTION_FIELDS.forEach(f => {
+        if (Number(o[f.field]) > 0) retention[id][f.field] = Number(o[f.field]);
+      });
+    }
+  });
+  return { copy_targets: targets, copy_mode: targets.length > 0 ? copiesForm.mode : "", copy_retention: retention };
 }
 
 // ---------------------------------------------------------------------------

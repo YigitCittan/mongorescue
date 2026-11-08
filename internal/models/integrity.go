@@ -516,6 +516,9 @@ const (
 	RetentionMaxAge RetentionReason = "max_age"
 	// RetentionMaxCount is a backup beyond the job's retention_count newest ones.
 	RetentionMaxCount RetentionReason = "max_count"
+	// RetentionGFS is a backup no keep_daily, keep_weekly, keep_monthly or
+	// keep_yearly bucket keeps, under a policy without days and count.
+	RetentionGFS RetentionReason = "gfs"
 )
 
 // RetentionLogEntry records one backup deleted by retention.
