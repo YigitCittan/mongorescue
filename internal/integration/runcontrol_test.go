@@ -11,12 +11,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runlog"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
 )
+
+// progressSampleWait bounds how long the cancellation hook waits for mongodump's
+// first progress line to be parsed before it samples the run.
+const progressSampleWait = 10 * time.Second
 
 // TestCancelRealBackupMidRun cancels a real mongodump through the run registry (as
 // POST /api/v1/backups/{id}/cancel does) once the upload is past two S3 parts: the
@@ -37,7 +42,18 @@ func TestCancelRealBackupMidRun(t *testing.T) {
 			var progress models.RunProgress
 			st := &hookStorage{Storage: tg.Storage, after: interruptAfter, hook: func() {
 				if run := reg.Get(id); run != nil {
-					progress = run.Snapshot()
+					// The tool's stderr is read by its own goroutine and this hook runs on
+					// the stdout path: give the parser a bounded time to catch up with the
+					// "writing" line before sampling (the held write backpressures stdout
+					// only).
+					deadline := time.Now().Add(progressSampleWait)
+					for {
+						progress = run.Snapshot()
+						if progress.CurrentCollection != "" || time.Now().After(deadline) {
+							break
+						}
+						time.Sleep(20 * time.Millisecond)
+					}
 				}
 				_ = reg.Cancel(id, runs.Cancellation{By: "alice"})
 			}}
