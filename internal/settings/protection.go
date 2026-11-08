@@ -11,7 +11,8 @@ import (
 // ErrProtectionLowered is returned by Update for a change that lowers a delete
 // protection directly: security.delete_grace_days lowered,
 // security.require_second_approver or security.require_locked_copies turned off, or
-// (with the two-person rule on) an oidc change that can grant or take away admin.
+// (with the two-person rule on) an oidc change that can grant or take away admin, or
+// security.require_https_endpoints or security.outbound_deny_private turned off.
 // Those changes go through the operations service, which delays them by the
 // current grace period or asks a second administrator (see operations.UpdateSettings); it applies them with
 // WithLoweredProtection once they are due or approved. It wraps ErrInvalid.
@@ -42,6 +43,12 @@ func LowersProtection(cur, next Security) (grace, secondApprover bool) {
 // off compared with cur.
 func LowersLockedCopies(cur, next Security) bool {
 	return cur.RequireLockedCopies && !next.RequireLockedCopies
+}
+
+// LowersOutbound reports which outbound security settings next turns off compared
+// with cur: security.require_https_endpoints and security.outbound_deny_private.
+func LowersOutbound(cur, next Security) (httpsOff, denyPrivateOff bool) {
+	return cur.RequireHTTPSEndpoints && !next.RequireHTTPSEndpoints, cur.OutboundDenyPrivate && !next.OutboundDenyPrivate
 }
 
 // OIDCGrantsAdmin reports whether next can grant the admin role through single
@@ -120,6 +127,28 @@ func checkAdminGrant(ctx context.Context, cur, next Settings) error {
 	}
 	if OIDCRevokesAdmin(cur.OIDC, next.OIDC, false) {
 		return fmt.Errorf("%w: the oidc change can take the admin role away through single sign-on", ErrProtectionLowered)
+	}
+	return nil
+}
+
+// checkOutbound refuses, while the two-person rule is on, turning
+// security.require_https_endpoints or security.outbound_deny_private off outside
+// WithLoweredProtection: the operations service asks a second administrator first.
+// Turning them on is never refused.
+func checkOutbound(ctx context.Context, cur, next Settings) error {
+	if !cur.Security.RequireSecondApprover || loweringAllowed(ctx) {
+		return nil
+	}
+	httpsOff, denyOff := LowersOutbound(cur.Security, next.Security)
+	var errs []error
+	if httpsOff {
+		errs = append(errs, errors.New("security.require_https_endpoints is turned off"))
+	}
+	if denyOff {
+		errs = append(errs, errors.New("security.outbound_deny_private is turned off"))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrProtectionLowered, errors.Join(errs...))
 	}
 	return nil
 }

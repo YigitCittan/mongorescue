@@ -183,6 +183,9 @@ func (s *Service) UpdateChanged(ctx context.Context, p Patch) (Settings, []strin
 	if err = checkAdminGrant(ctx, cur, next); err != nil {
 		return Settings{}, nil, err
 	}
+	if err = checkOutbound(ctx, cur, next); err != nil {
+		return Settings{}, nil, err
+	}
 	if err = checkMetadataRetention(ctx, cur, next); err != nil {
 		return Settings{}, nil, err
 	}
