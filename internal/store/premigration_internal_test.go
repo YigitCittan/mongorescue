@@ -132,6 +132,57 @@ func TestRestoringTheCopyRollsBack(t *testing.T) {
 	}
 }
 
+// TestNoPlaintextSecretInAnyPreMigrationCopy upgrades a fixture of every older schema
+// version and checks that no pre-migration copy holds a secret in plaintext: a database
+// from before the sealing of credentials is not copied at all, a sealed one is.
+func TestNoPlaintextSecretInAnyPreMigrationCopy(t *testing.T) {
+	t.Parallel()
+	latest := latestSchema(t)
+	_, f := compatBox(t)
+	fixtures := buildCompatFixtures(t, t.TempDir(), f, latest-1)
+	secrets := []string{"legacy-pass-1", compatHookSecret, "path-token-5", "header-token-6"}
+	for version := 1; version < latest; version++ {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			t.Parallel()
+			raw, err := os.ReadFile(fixtures[version])
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "mongorescue.db")
+			if err = os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The fixture's sealed values need the key it was built with.
+			s, err := OpenSQLite(context.Background(), path, slog.New(slog.DiscardHandler), WithSecretBox(f.box), WithPreMigrationCopies(3))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			copies := copyNames(t, dir)
+			if version == 1 && len(copies) != 0 {
+				t.Fatalf("a database from before sealing was copied: %v", copies)
+			}
+			if version > 1 && len(copies) != 1 {
+				t.Fatalf("copies = %v; want one", copies)
+			}
+			for _, name := range copies {
+				data, readErr := os.ReadFile(filepath.Join(dir, name))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				for _, secret := range secrets {
+					if strings.Contains(string(data), secret) {
+						t.Errorf("%s holds %q in plaintext", name, secret)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestNoCopyOfAFreshOrCurrentDatabase(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
