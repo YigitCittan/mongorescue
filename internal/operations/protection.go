@@ -493,6 +493,11 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 			return "", err
 		}
 		return "the single sign-on settings that can grant admin are applied", nil
+	case models.ApprovalLowerOutbound:
+		if err := s.applyLowerOutbound(ctx, a); err != nil {
+			return "", err
+		}
+		return "the outbound security settings are turned off", nil
 	case models.ApprovalResetPassword:
 		if s.cfg.Users == nil {
 			return "", public("users are not available", ErrUnavailable)
@@ -817,6 +822,67 @@ func (s *Service) applyOIDCGrant(ctx context.Context, a *models.Approval) error 
 		return err
 	}
 	s.destructive(ctx, "oidc_admin_mapping", "single sign-on settings that can grant the admin role were applied", nil)
+	return nil
+}
+
+// holdLowerOutbound takes the turning off of security.require_https_endpoints and
+// security.outbound_deny_private out of p while the two-person rule is on, and asks
+// a second administrator to approve it; it returns the request (nil when nothing was
+// held). Turning them on is never held.
+func (s *Service) holdLowerOutbound(ctx context.Context, p *settings.Patch) (*models.Approval, error) {
+	if p.Security == nil || !s.needsApproval(ctx) {
+		return nil, nil
+	}
+	cur := s.settings().Security
+	sec := *p.Security
+	var held settings.SecurityPatch
+	var what []string
+	if v := sec.RequireHTTPSEndpoints; v != nil && !*v && cur.RequireHTTPSEndpoints {
+		held.RequireHTTPSEndpoints, sec.RequireHTTPSEndpoints = v, nil
+		what = append(what, settings.KeyRequireHTTPSEndpoints)
+	}
+	if v := sec.OutboundDenyPrivate; v != nil && !*v && cur.OutboundDenyPrivate {
+		held.OutboundDenyPrivate, sec.OutboundDenyPrivate = v, nil
+		what = append(what, settings.KeyOutboundDenyPrivate)
+	}
+	if len(what) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(held)
+	if err != nil {
+		return nil, fmt.Errorf("encode the outbound change: %w", err)
+	}
+	a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalLowerOutbound, Settings: raw,
+		Summary: "turn off " + strings.Join(what, " and ") + " (outbound destinations become less restricted)"})
+	if err != nil {
+		return nil, err
+	}
+	p.Security = &sec
+	return a, nil
+}
+
+// applyLowerOutbound turns off the outbound settings of approved request a.
+func (s *Service) applyLowerOutbound(ctx context.Context, a *models.Approval) error {
+	if s.cfg.SettingsUpdater == nil {
+		return public("settings are not available", ErrUnavailable)
+	}
+	var p settings.SecurityPatch
+	if err := json.Unmarshal(a.Settings, &p); err != nil || (p.RequireHTTPSEndpoints == nil && p.OutboundDenyPrivate == nil) {
+		return public("the request carries no valid outbound change", ErrInvalid)
+	}
+	// A request can only turn these two settings off, never change anything else.
+	off := false
+	patch := settings.SecurityPatch{}
+	if p.RequireHTTPSEndpoints != nil {
+		patch.RequireHTTPSEndpoints = &off
+	}
+	if p.OutboundDenyPrivate != nil {
+		patch.OutboundDenyPrivate = &off
+	}
+	if _, _, err := s.cfg.SettingsUpdater.UpdateChanged(settings.WithLoweredProtection(ctx), settings.Patch{Security: &patch}); err != nil {
+		return err
+	}
+	s.destructive(ctx, "lower_outbound_policy", "outbound security settings (require_https_endpoints, outbound_deny_private) were turned off", nil)
 	return nil
 }
 
@@ -1205,6 +1271,10 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 	if err != nil {
 		return nil, err
 	}
+	outboundHeld, err := s.holdLowerOutbound(ctx, &p)
+	if err != nil {
+		return nil, err
+	}
 	next, changed, err := s.cfg.SettingsUpdater.UpdateChanged(ctx, p)
 	if err != nil {
 		return nil, err
@@ -1212,6 +1282,9 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 	out := &SettingsUpdate{Settings: next, Changed: changed, Pending: []*models.PendingChange{}, Approvals: []*models.Approval{}}
 	if oidcHeld != nil {
 		out.Approvals = append(out.Approvals, oidcHeld)
+	}
+	if outboundHeld != nil {
+		out.Approvals = append(out.Approvals, outboundHeld)
 	}
 	if next.Security.DeleteGraceDays > cur.DeleteGraceDays {
 		if st, ok := s.cfg.Store.(pendingStore); ok {

@@ -135,6 +135,9 @@ const (
 	// ApprovalOIDCAdminMapping applies an oidc settings change (Settings) that can
 	// grant or take away admin through single sign-on.
 	ApprovalOIDCAdminMapping ApprovalAction = "oidc_admin_mapping"
+	// ApprovalLowerOutbound turns security.require_https_endpoints and/or
+	// security.outbound_deny_private off (Settings holds the security patch).
+	ApprovalLowerOutbound ApprovalAction = "lower_outbound_policy"
 	// ApprovalResetPassword sets the password of user Subject (another user's; the
 	// new bcrypt hash is kept apart from the request, never shown).
 	ApprovalResetPassword ApprovalAction = "reset_password"
@@ -218,7 +221,7 @@ type Approval struct {
 	// DeleteGraceDays is the new grace period (ApprovalLowerGrace).
 	DeleteGraceDays *int `json:"delete_grace_days,omitempty"`
 	// Settings is the settings change of ApprovalOIDCAdminMapping (the oidc group,
-	// never a secret).
+	// never a secret) or the security patch of ApprovalLowerOutbound.
 	Settings json.RawMessage `json:"settings,omitempty"`
 	// SubjectCreatedAt binds the request to the creation time of its job (or user):
 	// a job deleted and recreated under the same ID is refused.
