@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/storage"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // purgeCopies deletes every copy of rec whose object may exist (see
@@ -23,7 +25,8 @@ func (p purgeRun) purgeCopies(ctx context.Context, rec *models.BackupRecord) (*t
 	var lockedUntil *time.Time
 	for i := range rec.Copies {
 		c := rec.Copies[i]
-		if !c.MayExist() {
+		if !c.MayExist() || (c.Retained && c.Status == models.CopyDone) {
+			// A retained copy outlives its primary (see the job's copy_retention).
 			continue
 		}
 		until, err := p.purgeCopy(ctx, c)
@@ -48,6 +51,48 @@ func (p purgeRun) purgeCopies(ctx context.Context, rec *models.BackupRecord) (*t
 		}
 	}
 	return lockedUntil, nil
+}
+
+// releaseOrphanedCopies clears Retained on the copies of rec whose job no longer
+// exists or no longer has a copy_retention override for their target: nothing keeps
+// them, so the purge deletes them with the record. It returns the stored record
+// after the release (rec itself when nothing changed).
+func (p purgeRun) releaseOrphanedCopies(ctx context.Context, rec *models.BackupRecord) *models.BackupRecord {
+	job, err := p.store.GetJob(ctx, rec.JobID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return rec
+	}
+	orphaned := func(targetID string) bool {
+		if err != nil {
+			return true
+		}
+		_, ok := job.CopyRetention[targetID]
+		return !ok || !slices.Contains(job.CopyTargets, targetID)
+	}
+	var drop []string
+	for _, c := range rec.Copies {
+		if c.Retained && orphaned(c.TargetID) {
+			drop = append(drop, c.TargetID)
+		}
+	}
+	u, ok := p.store.(BackupUpdater)
+	if len(drop) == 0 || !ok {
+		return rec
+	}
+	updated, upErr := u.UpdateBackupRecord(ctx, rec.ID, func(r *models.BackupRecord) error {
+		for _, id := range drop {
+			if c := r.Copy(id); c != nil {
+				c.Retained, c.RetainedReason = false, ""
+			}
+		}
+		return nil
+	})
+	if upErr != nil {
+		p.logger.WarnContext(ctx, "cannot release the retained copy of a deleted backup", logsafe.Attr("backup_id", rec.ID), logsafe.Error(upErr))
+		return rec
+	}
+	p.logger.InfoContext(ctx, "the job no longer keeps the copy of a deleted backup; the purge deletes it", logsafe.Attr("backup_id", rec.ID))
+	return updated
 }
 
 // purgeCopy deletes copy c under the lock of its object. A copy already gone counts

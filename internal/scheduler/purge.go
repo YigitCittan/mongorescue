@@ -260,6 +260,14 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		return PurgeOutcome{}, errPurgeSkip
 	}
 	out := PurgeOutcome{Backup: current}
+	if current.HasRetainedCopies() {
+		// Copies that outlive the primary stay while the job's override keeps them.
+		current = p.releaseOrphanedCopies(ctx, current)
+		if current.PrimaryPurgedAt != nil && current.HasRetainedCopies() {
+			return PurgeOutcome{}, errPurgeSkip
+		}
+		out.Backup = current
+	}
 	// The copies on other storage targets go first, each honouring its own
 	// target's Object Lock; a locked copy keeps the backup deleted until it ends.
 	copiesLocked, err := p.purgeCopies(ctx, current)
@@ -271,7 +279,7 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 			logsafe.Attr("backup_id", current.ID), slog.Time("retain_until", *copiesLocked))
 		return PurgeOutcome{}, errPurgeSkip
 	}
-	if current.StorageKey != "" {
+	if current.StorageKey != "" && current.PrimaryPurgedAt == nil {
 		unlockArchive, lockErr := runs.LockDeletion(ctx, runs.ArchiveKey(current.StorageTargetID, current.StorageKey))
 		if lockErr != nil {
 			return PurgeOutcome{}, lockErr
@@ -323,11 +331,22 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 		}
 	}
 	at := now.UTC()
+	retained := false
 	markPurged := func(r *models.BackupRecord) error {
 		if !r.PurgeDue(now, grace) {
 			return errPurgeSkip
 		}
-		r.Status, r.PurgedAt, r.LegalHold = models.StatusPurged, &at, false
+		r.LegalHold = false
+		if r.HasRetainedCopies() {
+			// The primary archive is gone, a copy outlives it: the record stays
+			// deleted until the copy is released.
+			if r.PrimaryPurgedAt == nil {
+				r.PrimaryPurgedAt = &at
+			}
+			retained = true
+			return nil
+		}
+		r.Status, r.PurgedAt = models.StatusPurged, &at
 		return nil
 	}
 	if u, ok := metadataStore.(BackupUpdater); ok {
@@ -343,6 +362,12 @@ func (p purgeRun) purgeOne(ctx context.Context, rec *models.BackupRecord) (Purge
 	}
 	out.Backup = current
 	p.holders.forget(current.ID)
+	if retained {
+		logger.Info("primary archive of a deleted backup purged after its grace period; a copy outlives it per the job's copy retention",
+			logsafe.Attr("backup_id", current.ID), logsafe.Attr("database", current.Database),
+			slog.Bool("archive_deleted", out.ArchiveDeleted))
+		return out, nil
+	}
 	logger.Info("deleted backup purged after its grace period",
 		logsafe.Attr("backup_id", current.ID), logsafe.Attr("database", current.Database),
 		slog.Bool("archive_deleted", out.ArchiveDeleted))

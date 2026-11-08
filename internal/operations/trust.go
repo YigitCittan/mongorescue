@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -294,11 +296,50 @@ type RetentionPreview struct {
 	// the values asked for).
 	RetentionDays  int `json:"retention_days"`
 	RetentionCount int `json:"retention_count"`
+	// KeepDaily, KeepWeekly, KeepMonthly and KeepYearly are the buckets previewed.
+	KeepDaily   int `json:"keep_daily"`
+	KeepWeekly  int `json:"keep_weekly"`
+	KeepMonthly int `json:"keep_monthly"`
+	KeepYearly  int `json:"keep_yearly"`
+	// TimeZone is the zone the buckets are cut in: the zone of the job's schedule
+	// (CRON_TZ=), UTC otherwise.
+	TimeZone string `json:"time_zone"`
 	// At is the time the preview applies the policy at.
 	At time.Time `json:"at"`
-	// The plan: the backups deleted (oldest first) and the ones kept although a rule
-	// selects them (pinned, last verified).
+	// Copies previews the per copy target overrides, one entry per overridden target.
+	Copies []CopyRetentionPreview `json:"copies"`
+	// The plan: the backups deleted (oldest first), the ones kept although a rule
+	// selects them (pinned, last verified) and, in Kept, every backup that stays with
+	// the rules (and buckets) that keep it.
 	scheduler.RetentionPlan
+}
+
+// CopyRetentionPreview is what the retention override of one copy target keeps.
+type CopyRetentionPreview struct {
+	// TargetID and TargetName identify the copy target.
+	TargetID   string `json:"target_id"`
+	TargetName string `json:"target_name,omitempty"`
+	// Policy is the override.
+	Policy models.RetentionPolicy `json:"policy"`
+	// Kept lists the backups whose copy on the target the override keeps, with the
+	// rules that keep it.
+	Kept []scheduler.KeptBackup `json:"kept"`
+	// Outliving lists the backups the primary policy deletes whose copy this
+	// override keeps: the copies that will outlive their primary.
+	Outliving []string `json:"outliving"`
+	// Retained lists the deleted backups whose copy already outlives its primary.
+	Retained []string `json:"retained"`
+	// Release lists the retained copies the override no longer keeps: the purge
+	// deletes them.
+	Release []string `json:"release"`
+}
+
+// RetentionOverride is a retention policy previewed instead of the job's own: every
+// field that is set replaces the job's value (e.g. while the job is being edited).
+type RetentionOverride struct {
+	// Days, Count, Daily, Weekly, Monthly and Yearly replace retention_days,
+	// retention_count and the keep_* buckets.
+	Days, Count, Daily, Weekly, Monthly, Yearly *int
 }
 
 // RetentionPreview returns the backups job jobID's retention policy would delete if
@@ -308,13 +349,27 @@ type RetentionPreview struct {
 // backup, so a count policy then deletes one more. Expected failures: ErrNotFound
 // and ErrInvalid.
 func (s *Service) RetentionPreview(ctx context.Context, jobID string, days, count *int) (*RetentionPreview, error) {
+	return s.RetentionPreviewWith(ctx, jobID, RetentionOverride{Days: days, Count: count})
+}
+
+// RetentionPreviewWith is RetentionPreview for any of the policy's values (see
+// RetentionOverride): the buckets are cut in the zone of the job's schedule, and the
+// preview names, for every backup that stays, the rules and buckets that keep it.
+// Expected failures: ErrNotFound and ErrInvalid.
+func (s *Service) RetentionPreviewWith(ctx context.Context, jobID string, o RetentionOverride) (*RetentionPreview, error) {
 	job, err := s.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, err
 	}
-	d, c := derefOr(days, job.RetentionDays), derefOr(count, job.RetentionCount)
-	if d < 0 || c < 0 {
+	policy := job.RetentionPolicy()
+	policy.RetentionDays, policy.RetentionCount = derefOr(o.Days, policy.RetentionDays), derefOr(o.Count, policy.RetentionCount)
+	policy.KeepDaily, policy.KeepWeekly = derefOr(o.Daily, policy.KeepDaily), derefOr(o.Weekly, policy.KeepWeekly)
+	policy.KeepMonthly, policy.KeepYearly = derefOr(o.Monthly, policy.KeepMonthly), derefOr(o.Yearly, policy.KeepYearly)
+	if policy.RetentionDays < 0 || policy.RetentionCount < 0 {
 		return nil, invalid(ErrNegativeRetention)
+	}
+	if err = policy.Validate(); err != nil {
+		return nil, invalid(err)
 	}
 	// Every database of the job: the policy applies to each of them separately.
 	page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID})
@@ -332,8 +387,61 @@ func (s *Service) RetentionPreview(ctx context.Context, jobID string, days, coun
 		return nil, err
 	}
 	now := s.now().UTC()
-	plan := scheduler.PlanRetention(now, d, c, scheduler.JobRetentionHistory(job, target.ID, records))
-	return &RetentionPreview{JobID: job.ID, RetentionDays: d, RetentionCount: c, At: now, RetentionPlan: plan}, nil
+	loc := job.RetentionLocation()
+	plan := scheduler.PlanRetentionPolicy(now, policy, loc, scheduler.JobRetentionHistory(job, target.ID, records))
+	return &RetentionPreview{
+		JobID: job.ID, RetentionDays: policy.RetentionDays, RetentionCount: policy.RetentionCount,
+		KeepDaily: policy.KeepDaily, KeepWeekly: policy.KeepWeekly, KeepMonthly: policy.KeepMonthly, KeepYearly: policy.KeepYearly,
+		TimeZone: loc.String(), At: now, Copies: s.copyRetentionPreview(ctx, job, now, records, plan), RetentionPlan: plan,
+	}, nil
+}
+
+// copyRetentionPreview previews the copy retention overrides of job (sorted by
+// target ID) against the primary plan.
+func (s *Service) copyRetentionPreview(ctx context.Context, job *models.Job, now time.Time, records []*models.BackupRecord, plan scheduler.RetentionPlan) []CopyRetentionPreview {
+	out := []CopyRetentionPreview{}
+	keeps := scheduler.PlanCopyRetention(now, job, records)
+	deleting := map[string]bool{}
+	for _, d := range plan.Delete {
+		deleting[d.Backup.ID] = true
+	}
+	ids := make([]string, 0, len(job.CopyRetention))
+	for id := range job.CopyRetention {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		p := CopyRetentionPreview{TargetID: id, Policy: job.CopyRetention[id], Kept: []scheduler.KeptBackup{}, Outliving: []string{}, Retained: []string{}, Release: []string{}}
+		if s.cfg.Targets != nil {
+			if t, err := s.cfg.Targets.Resolve(ctx, id); err == nil {
+				p.TargetName = t.Name
+			}
+		}
+		for _, r := range records {
+			if r.JobID != job.ID || r.Copy(id) == nil {
+				continue
+			}
+			reasons, kept := keeps[id][r.ID]
+			switch {
+			case r.Status == models.StatusCompleted && kept:
+				p.Kept = append(p.Kept, scheduler.KeptBackup{BackupID: r.ID, Database: r.Database, Reasons: reasons})
+				if deleting[r.ID] {
+					p.Outliving = append(p.Outliving, r.ID)
+				}
+			case r.Status == models.StatusDeleted && r.Copy(id).Retained && kept:
+				p.Kept = append(p.Kept, scheduler.KeptBackup{BackupID: r.ID, Database: r.Database, Reasons: reasons})
+				p.Retained = append(p.Retained, r.ID)
+			case r.Status == models.StatusDeleted && r.Copy(id).Retained:
+				p.Release = append(p.Release, r.ID)
+			}
+		}
+		sort.Slice(p.Kept, func(i, j int) bool { return p.Kept[i].BackupID < p.Kept[j].BackupID })
+		slices.Sort(p.Outliving)
+		slices.Sort(p.Retained)
+		slices.Sort(p.Release)
+		out = append(out, p)
+	}
+	return out
 }
 
 // RetentionLog returns up to limit (at most MaxRetentionLogList) backups job jobID's

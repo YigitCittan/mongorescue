@@ -55,7 +55,9 @@ func (s *Server) registerTrustTools() {
 	addTool(s, &sdk.Tool{
 		Name: ToolRetentionPreview,
 		Description: "List the backups a job's retention policy would delete if it ran now, and why; pinned backups and " +
-			"the newest verified backup are listed as protected. Nothing is deleted.",
+			"the newest verified backup are listed as protected. Every backup that stays is listed in kept with the rules " +
+			"and keep_daily/weekly/monthly/yearly buckets that keep it; copies lists what each copy target's retention " +
+			"override keeps beyond the primary. Nothing is deleted.",
 		Annotations: readOnly("Preview retention"),
 		InputSchema: schemaFor[jobIDInput](func(p map[string]*jsonschema.Schema) { limitIDs(p, "job_id") }),
 	}, s.retentionPreview)
@@ -92,5 +94,5 @@ func (s *Server) retentionPreview(ctx context.Context, in jobIDInput) (*operatio
 	if err != nil {
 		return nil, "", err
 	}
-	return p, fmt.Sprintf("Job %s: retention would delete %d backup(s) now; %d protected.", idText(p.JobID), len(p.Delete), len(p.Protected)), nil
+	return p, fmt.Sprintf("Job %s: retention would delete %d backup(s) now; %d protected, %d kept.", idText(p.JobID), len(p.Delete), len(p.Protected), len(p.Kept)), nil
 }

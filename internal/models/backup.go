@@ -311,6 +311,11 @@ type BackupRecord struct {
 	// PurgedAt is when the purge removed the archive (StatusPurged).
 	PurgedAt *time.Time `json:"purged_at,omitempty"`
 
+	// PrimaryPurgedAt is when the purge removed the primary archive of a deleted backup
+	// that stays StatusDeleted because a copy outlives it (BackupCopy.Retained); the
+	// record is purged once that copy is released.
+	PrimaryPurgedAt *time.Time `json:"primary_purged_at,omitempty"`
+
 	// Scope is ScopeInstance for a PITR base backup of a whole replica set
 	// instance (mongodump --oplog, Database empty); empty for a backup of one
 	// database.
@@ -387,7 +392,7 @@ func (r *BackupRecord) Undelete() {
 // before it was raised). A pinned record, one without a deletion time, or one whose
 // archive is still under its S3 Object Lock retention (see LockedAt) is never due.
 func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
-	if r.Status != StatusDeleted || r.Pinned || r.DeletedAt == nil || r.PurgeAfter == nil || r.LockedAt(now) {
+	if r.Status != StatusDeleted || r.Pinned || r.DeletedAt == nil || r.PurgeAfter == nil || r.lockedAt(now, false) {
 		return false
 	}
 	end := *r.PurgeAfter
@@ -400,10 +405,19 @@ func (r *BackupRecord) PurgeDue(now time.Time, grace time.Duration) bool {
 // LockedAt reports whether r's archive, or one of its copies, is still under its S3
 // Object Lock retention at now.
 func (r *BackupRecord) LockedAt(now time.Time) bool {
+	return r.lockedAt(now, true)
+}
+
+// lockedAt is LockedAt that skips the copies that outlive the primary (retained)
+// unless withRetained: their lock does not hold the purge of the primary back.
+func (r *BackupRecord) lockedAt(now time.Time, withRetained bool) bool {
 	if r.RetainUntil != nil && now.Before(*r.RetainUntil) {
 		return true
 	}
 	for i := range r.Copies {
+		if r.Copies[i].Retained && !withRetained {
+			continue
+		}
 		if r.Copies[i].LockedAt(now) {
 			return true
 		}

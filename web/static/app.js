@@ -1885,9 +1885,16 @@ function cronWeekdays(field) {
 function retentionText(job) {
   const days = Number(job.retention_days) || 0;
   const count = Number(job.retention_count) || 0;
-  if (days > 0 && count > 0) return `${tf("retention.days_n", { n: days })} · ${tf("retention.max_n", { n: count })}`;
-  if (days > 0) return tf("retention.days_n", { n: days });
-  if (count > 0) return tf("retention.last_n", { n: count });
+  const gfs = ["daily", "weekly", "monthly", "yearly"].map(b => Number(job[`keep_${b}`]) || 0);
+  const gfsText = gfs.some(n => n > 0)
+    ? tf("retention.gfs", { daily: gfs[0], weekly: gfs[1], monthly: gfs[2], yearly: gfs[3] })
+    : "";
+  let base = "";
+  if (days > 0 && count > 0) base = `${tf("retention.days_n", { n: days })} · ${tf("retention.max_n", { n: count })}`;
+  else if (days > 0) base = tf("retention.days_n", { n: days });
+  else if (count > 0) base = tf("retention.last_n", { n: count });
+  if (base && gfsText) return `${base} · ${gfsText}`;
+  if (base || gfsText) return base || gfsText;
   return t("retention.indefinite");
 }
 
@@ -2482,6 +2489,10 @@ function setupForms() {
       cron_expression: getValue("job-cron"),
       retention_days: parseInt(getValue("job-retention-days"), 10) || 0,
       retention_count: parseInt(getValue("job-retention-count"), 10) || 0,
+      keep_daily: parseInt(getValue("job-keep-daily"), 10) || 0,
+      keep_weekly: parseInt(getValue("job-keep-weekly"), 10) || 0,
+      keep_monthly: parseInt(getValue("job-keep-monthly"), 10) || 0,
+      keep_yearly: parseInt(getValue("job-keep-yearly"), 10) || 0,
       ...storageSelection("job-storage"),
       ...trustJobPayload(),
       include_users_and_roles: document.getElementById("job-users-roles").checked,
@@ -2668,6 +2679,10 @@ function openJobModal(jobID) {
     setValue("job-cron", job.cron_expression || "");
     setValue("job-retention-days", Number(job.retention_days) || 0);
     setValue("job-retention-count", Number(job.retention_count) || 0);
+    setValue("job-keep-daily", Number(job.keep_daily) || 0);
+    setValue("job-keep-weekly", Number(job.keep_weekly) || 0);
+    setValue("job-keep-monthly", Number(job.keep_monthly) || 0);
+    setValue("job-keep-yearly", Number(job.keep_yearly) || 0);
     document.getElementById("job-enabled").checked = job.enabled !== false;
     document.getElementById("job-users-roles").checked = job.include_users_and_roles === true;
     presetPicker("job", job);
@@ -2677,6 +2692,7 @@ function openJobModal(jobID) {
     const general = settingsGroup("general");
     if (general.default_retention_days !== undefined) setValue("job-retention-days", general.default_retention_days);
     if (general.default_retention_count !== undefined) setValue("job-retention-count", general.default_retention_count);
+    ["daily", "weekly", "monthly", "yearly"].forEach(b => setValue(`job-keep-${b}`, 0));
     document.getElementById("job-enabled").checked = true;
     document.getElementById("job-users-roles").checked = false;
     resetPicker("job", "");

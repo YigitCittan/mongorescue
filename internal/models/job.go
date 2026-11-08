@@ -1,6 +1,7 @@
 package models
 
 import (
+	"maps"
 	"slices"
 	"time"
 )
@@ -55,6 +56,22 @@ type Job struct {
 
 	// RetentionCount specifies the maximum number of recent backups to keep (0 = unlimited).
 	RetentionCount int `json:"retention_count"`
+
+	// KeepDaily, KeepWeekly, KeepMonthly and KeepYearly are the grandfather-father-son
+	// buckets (0 = off, see RetentionPolicy): a backup is also kept when it is the
+	// newest of its day, ISO week, month or year among the last N such buckets with a
+	// backup, per database, in the job's time zone (RetentionLocation). They combine
+	// with RetentionDays and RetentionCount as a union of keep reasons.
+	KeepDaily   int `json:"keep_daily,omitempty"`
+	KeepWeekly  int `json:"keep_weekly,omitempty"`
+	KeepMonthly int `json:"keep_monthly,omitempty"`
+	KeepYearly  int `json:"keep_yearly,omitempty"`
+
+	// CopyRetention optionally overrides, per copy target (key: target ID, one of
+	// CopyTargets), how long the copy on that target is kept once its primary backup
+	// is deleted by retention: a copy outlives its primary while its policy keeps the
+	// backup. Without an entry a copy is deleted together with its primary.
+	CopyRetention map[string]RetentionPolicy `json:"copy_retention,omitempty"`
 
 	// Gzip determines whether dumps are compressed. Default is true.
 	Gzip bool `json:"gzip"`
@@ -155,6 +172,7 @@ func (j *Job) Clone() *Job {
 	clone.ReadPreferenceTags = CloneTagSets(j.ReadPreferenceTags)
 	clone.BackupWindow = j.BackupWindow.Clone()
 	clone.CopyTargets = slices.Clone(j.CopyTargets)
+	clone.CopyRetention = maps.Clone(j.CopyRetention)
 	if j.PausedUntil != nil {
 		until := *j.PausedUntil
 		clone.PausedUntil = &until
