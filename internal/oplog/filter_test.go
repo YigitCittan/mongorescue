@@ -978,3 +978,48 @@ func TestFilterTransactionNamespace(t *testing.T) {
 		t.Errorf("a transaction on admin.$cmd wrote %d entries, want 1", len(out))
 	}
 }
+
+// TestFilterStripsStorageIdents covers MongoDB 9.0, which logs the storage identifiers
+// of a new collection and index in o2: replayed through applyOps on the same server
+// they collide with the source's tables (issue 313).
+func TestFilterStripsStorageIdents(t *testing.T) {
+	idents := bson.D{
+		{Key: "catalogId", Value: int64(21)},
+		{Key: "ident", Value: "f558ce0d-bcb3-4270-8a83-46a3494493f4"},
+		{Key: "idIndexIdent", Value: "3b82d208-71f2-4f84-8a62-6eb6f163a515"},
+	}
+	create := append(command("shop", bson.D{{Key: "create", Value: "orders"}}), bson.E{Key: "o2", Value: idents})
+	out := mustRun(t, shopFilter(), entryAt(t, ts(1, 1), create))
+	if len(out) != 1 {
+		t.Fatalf("%d entries", len(out))
+	}
+	if _, err := out[0].LookupErr("o2"); err == nil {
+		t.Errorf("create kept o2: %v", out[0])
+	}
+
+	// Other o2 content survives next to the identifiers.
+	mixed := append(bson.D{}, idents...)
+	mixed = append(mixed, bson.E{Key: "numRecords", Value: int64(1)})
+	create = append(command("shop", bson.D{{Key: "create", Value: "orders"}}), bson.E{Key: "o2", Value: mixed})
+	out = mustRun(t, shopFilter(), entryAt(t, ts(1, 1), create))
+	o2 := out[0].Lookup("o2").Document()
+	if n, _ := o2.Lookup("numRecords").AsInt64OK(); n != 1 || len(o2) == 0 {
+		t.Errorf("o2 = %v", o2)
+	}
+	for _, k := range []string{"catalogId", "ident", "idIndexIdent"} {
+		if _, err := o2.LookupErr(k); err == nil {
+			t.Errorf("o2 kept %s", k)
+		}
+	}
+
+	spec := bson.D{{Key: "v", Value: 2}, {Key: "key", Value: bson.D{{Key: "x", Value: 1}}}, {Key: "name", Value: "x_1"}}
+	commit := append(command("shop", bson.D{{Key: "commitIndexBuild", Value: "orders"}, {Key: "indexes", Value: bson.A{spec}}}),
+		bson.E{Key: "o2", Value: bson.D{{Key: "indexes", Value: bson.A{bson.D{{Key: "indexIdent", Value: "2aa4e60e"}}}}}})
+	out = mustRun(t, shopFilter(), entryAt(t, ts(1, 2), commit))
+	if len(out) != 1 {
+		t.Fatalf("%d entries", len(out))
+	}
+	if _, err := out[0].LookupErr("o2"); err == nil {
+		t.Errorf("createIndexes kept o2: %v", out[0])
+	}
+}

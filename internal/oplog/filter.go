@@ -621,11 +621,35 @@ func (f *Filter) ddl(doc, o bson.Raw, db string) (bson.D, error) {
 		case key == "o2":
 			if spec, ok := v.DocumentOK(); ok {
 				d, err := renameSpecNS(spec, db, to)
-				return d, true, err
+				if err != nil {
+					return nil, false, err
+				}
+				d = withoutIdents(d)
+				return d, len(d) > 0, nil
 			}
 		}
 		return v, true, nil
 	})
+}
+
+// identFields are the storage identifiers MongoDB 9.0 logs in o2 of create and index
+// build commands (catalogId, ident, idIndexIdent, and indexes[].indexIdent). A
+// primary applying the entry uses them for the new collection's or index's table,
+// so replaying the entry of a collection that exists, or was just dropped, on the
+// same server collides with the source's table: ObjectIsBusy (the drop is still
+// pending) or a fatal assertion of mongod ("Generated ident cannot uniquely
+// identify a new collection's storage table"). The clone must get its own.
+var identFields = map[string]bool{"catalogId": true, "ident": true, "idIndexIdent": true, "indexes": true}
+
+// withoutIdents returns the o2 document of a command entry without the identFields.
+func withoutIdents(o2 bson.D) bson.D {
+	out := make(bson.D, 0, len(o2))
+	for _, e := range o2 {
+		if !identFields[e.Key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // commitIndexBuild turns a commitIndexBuild into one createIndexes entry per index,
@@ -664,7 +688,8 @@ func (f *Filter) commitIndexBuild(doc, o bson.Raw, db string) ([]bson.D, int64, 
 		create := append(bson.D{{Key: "createIndexes", Value: coll}}, renamed...)
 		d, err := rebuild(doc, func(key string, v bson.RawValue) (any, bool, error) {
 			switch {
-			case strippedFields[key]:
+			case strippedFields[key] || key == "o2":
+				// o2 only holds the index's storage identifier (identFields).
 				return nil, false, nil
 			case key == "ns":
 				return to + ".$cmd", true, nil
