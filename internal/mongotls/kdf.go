@@ -16,6 +16,61 @@ var ErrKDFTooExpensive = errors.New("mongotls: the client key's encryption param
 // PBES2 with PBKDF2 or scrypt.
 var ErrUnsupportedKeyEncryption = errors.New("mongotls: the client key must be encrypted with PBES2 (PBKDF2 or scrypt); re-encrypt it with 'openssl pkcs8 -topk8 -v2 aes256'")
 
+// ErrMalformedEncryptedKey is returned for an encrypted key whose cipher parameters
+// or ciphertext cannot be valid: an IV or ciphertext that does not fit the block size
+// of the cipher. Such a key can never be opened, whatever the password.
+var ErrMalformedEncryptedKey = errors.New("mongotls: the client key's encrypted data is malformed (bad IV or ciphertext length)")
+
+// Object identifiers of the CBC ciphers PKCS#8 keys are encrypted with.
+var (
+	oidAES128CBC  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 2}
+	oidAES192CBC  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 22}
+	oidAES256CBC  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 42}
+	oidDESEDE3CBC = asn1.ObjectIdentifier{1, 2, 840, 113549, 3, 7}
+)
+
+// cbcBlockSize returns the block size of the CBC cipher oid, or 0 when it is not one
+// DecryptKey opens.
+func cbcBlockSize(oid asn1.ObjectIdentifier) int {
+	switch {
+	case oid.Equal(oidAES128CBC), oid.Equal(oidAES192CBC), oid.Equal(oidAES256CBC):
+		return 16
+	case oid.Equal(oidDESEDE3CBC):
+		return 8
+	}
+	return 0
+}
+
+// checkCipher checks the encryption scheme of the DER EncryptedPrivateKeyInfo der
+// (already accepted by checkKDF) before it reaches the PKCS#8 library, whose CBC
+// decryption panics (cipher.BlockMode.CryptBlocks) on an IV or ciphertext that is not
+// made of whole blocks: the scheme must be a supported CBC cipher, the IV one block
+// and the ciphertext a non-empty whole number of blocks. The library does not strip
+// the padding itself; the PKCS#8 parser that follows rejects a malformed plaintext
+// with an error, so no padding index can run out of range here.
+func checkCipher(der []byte) error {
+	var info encryptedPrivateKeyInfo
+	if rest, err := asn1.Unmarshal(der, &info); err != nil || len(rest) != 0 {
+		return ErrInvalidClientCert
+	}
+	var params pbes2Params
+	if rest, err := asn1.Unmarshal(info.Algorithm.Parameters.FullBytes, &params); err != nil || len(rest) != 0 {
+		return ErrInvalidClientCert
+	}
+	bs := cbcBlockSize(params.EncryptionScheme.Algorithm)
+	if bs == 0 {
+		return ErrUnsupportedKeyEncryption
+	}
+	var iv []byte
+	if rest, err := asn1.Unmarshal(params.EncryptionScheme.Parameters.FullBytes, &iv); err != nil || len(rest) != 0 {
+		return ErrMalformedEncryptedKey
+	}
+	if len(iv) != bs || len(info.EncryptedData) == 0 || len(info.EncryptedData)%bs != 0 {
+		return ErrMalformedEncryptedKey
+	}
+	return nil
+}
+
 // Limits of the key derivation of an encrypted PKCS#8 key.
 const (
 	// MaxPBKDF2Iterations bounds the PBKDF2 iteration count.
