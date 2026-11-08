@@ -119,25 +119,9 @@ func (s *Service) softDelete(ctx context.Context, id, reason string) (*models.Ba
 		r.MarkDeleted(d)
 		return nil
 	}
-	var updated *models.BackupRecord
-	if u, ok := s.cfg.Store.(backupUpdater); ok {
-		rec, err := u.UpdateBackupRecord(ctx, id, mark)
-		if err != nil {
-			return nil, notFound(err, "backup not found (deleted meanwhile)")
-		}
-		updated = rec
-	} else {
-		rec, err := s.store.GetBackupRecord(ctx, id)
-		if err != nil {
-			return nil, notFound(err, "backup not found (deleted meanwhile)")
-		}
-		if err = mark(rec); err != nil {
-			return nil, err
-		}
-		if err = s.store.SaveBackupRecord(ctx, rec); err != nil {
-			return nil, fmt.Errorf("save deleted backup: %w", err)
-		}
-		updated = rec
+	updated, err := s.cfg.Store.UpdateBackupRecord(ctx, id, mark)
+	if err != nil {
+		return nil, notFound(err, "backup not found (deleted meanwhile)")
 	}
 	auditlog.Annotate(ctx, "protection", "soft_deleted")
 	auditlog.Annotate(ctx, "purge_after", updated.PurgeAfter.Format(time.RFC3339))
@@ -225,10 +209,8 @@ func (s *Service) DeleteJob(ctx context.Context, id string) error {
 	}
 	// A pending retention change belongs to the deleted job, never to a job created
 	// later under the same ID.
-	if st, ok := s.cfg.Store.(pendingStore); ok {
-		if _, err := st.DeletePendingChangesOf(ctx, models.PendingRetention, id); err != nil {
-			s.logger.WarnContext(ctx, "could not drop the pending retention change of a deleted job", logsafe.Attr("job_id", id), logsafe.Error(err))
-		}
+	if _, err := s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingRetention, id); err != nil {
+		s.logger.WarnContext(ctx, "could not drop the pending retention change of a deleted job", logsafe.Attr("job_id", id), logsafe.Error(err))
 	}
 	if s.cfg.OnJobDeleted != nil {
 		s.cfg.OnJobDeleted(id)

@@ -12,18 +12,18 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
 // asyncFixture serves the API with a mongodump stand-in that blocks until released.
 type asyncFixture struct {
 	h       http.Handler
-	store   store.Store
+	store   operations.Store
 	runs    *runs.Manager
 	release chan struct{}
 	started chan struct{}

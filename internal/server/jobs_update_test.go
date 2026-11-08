@@ -12,9 +12,9 @@ import (
 
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -280,8 +280,10 @@ func TestConcurrentJobUpdatesStayConsistent(t *testing.T) {
 
 // failingJobStore fails every job read with an unexpected error.
 type failingJobStore struct {
-	store.Store
+	operations.Store
 }
+
+var _ operations.Store = (*failingJobStore)(nil)
 
 func (failingJobStore) GetJob(context.Context, string) (*models.Job, error) {
 	return nil, errors.New("disk I/O error")

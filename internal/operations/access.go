@@ -18,7 +18,7 @@ import (
 // actions, statistics) sees only the jobs, backups and restores of the connections
 // the caller may touch. A record outside them reads as store.ErrNotFound, exactly
 // like one that does not exist, so the API answers 404 without leaking it. Writes
-// and the optional store interfaces (asserted on Config.Store) are not filtered:
+// and the extra store ports (see Store) are not filtered:
 // every use case reads a record through this view before it changes it.
 type accessStore struct {
 	store.Store

@@ -15,15 +15,15 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/settings"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
-func setupTestServer(t *testing.T) (*Server, store.Store, *storage.MockStorage) {
+func setupTestServer(t *testing.T) (*Server, operations.Store, *storage.MockStorage) {
 	metaStore := storetest.New(t)
 	mockStorage := storage.NewMockStorage()
 	cfg := bootConfig()
@@ -164,14 +164,14 @@ func TestBackupsAndRestoreEndpoints(t *testing.T) {
 // newChainServer builds a Server through NewServer with an embedded static FS and
 // returns its fully composed handler (logging -> CORS -> auth -> mux). When mutate
 // sets no API key, requests without credentials are authenticated with testAPIKey.
-func newChainServer(t *testing.T, mutate func(*testConfig)) (http.Handler, store.Store) {
+func newChainServer(t *testing.T, mutate func(*testConfig)) (http.Handler, operations.Store) {
 	t.Helper()
 	h, metaStore, _ := newChainServerWithStorage(t, mutate)
 	return h, metaStore
 }
 
 // newChainServerWithStorage is newChainServer that also exposes the mock storage driver.
-func newChainServerWithStorage(t *testing.T, mutate func(*testConfig)) (http.Handler, store.Store, *storage.MockStorage) {
+func newChainServerWithStorage(t *testing.T, mutate func(*testConfig)) (http.Handler, operations.Store, *storage.MockStorage) {
 	t.Helper()
 	srv, metaStore, mockStorage := setupTestServer(t)
 	cfg := newTestConfig()

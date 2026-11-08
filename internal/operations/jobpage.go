@@ -203,12 +203,6 @@ func (s *Service) ListJobsPage(ctx context.Context, req JobListRequest) (*JobPag
 	return page, nil
 }
 
-// foreignLastBackups is implemented by stores that keep the jobs' last status
-// (*store.SQLiteStore, see store.SQLiteStore.HasForeignLastBackups).
-type foreignLastBackups interface {
-	HasForeignLastBackups(ctx context.Context, set auth.ConnectionSet) (bool, error)
-}
-
 // indexedJobFilter reports whether the store answers the jobs list for filter f in
 // order sortBy with the same result as FilterJobs: always, except for a search or
 // database containing store.JobSearchSeparator, and for a last-status filter or
@@ -223,11 +217,7 @@ func (s *Service) indexedJobFilter(ctx context.Context, f *BulkFilter, sortBy st
 	if (f.LastStatus == "" && sortBy != JobSortLastStatus) || !set.Limited() {
 		return true, nil
 	}
-	fs, ok := s.cfg.Store.(foreignLastBackups)
-	if !ok {
-		return false, nil
-	}
-	foreign, err := fs.HasForeignLastBackups(ctx, set)
+	foreign, err := s.cfg.Store.HasForeignLastBackups(ctx, set)
 	if err != nil {
 		return false, fmt.Errorf("list jobs: %w", err)
 	}

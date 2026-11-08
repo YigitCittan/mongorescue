@@ -31,6 +31,8 @@ type statsCountingStore struct {
 	fail  error
 }
 
+var _ operations.Store = (*statsCountingStore)(nil)
+
 func (c *statsCountingStore) BackupStats(ctx context.Context, since time.Time) (*store.BackupStats, error) {
 	c.calls.Add(1)
 	c.mu.Lock()
@@ -43,19 +45,25 @@ func (c *statsCountingStore) BackupStats(ctx context.Context, since time.Time) (
 	return c.SQLiteStore.BackupStats(ctx, since)
 }
 
-// unstampedStore hides the change stamp: the cache then relies on the TTL and
+// unstampedStore keeps the change stamp constant, as a store whose writes it does
+// not see (every write is made outside it): the cache then relies on the TTL and
 // the events.
 type unstampedStore struct {
-	store.Store
+	operations.Store
 	calls *atomic.Int32
 }
+
+var _ operations.Store = unstampedStore{}
+
+// ChangeStamp never moves.
+func (unstampedStore) ChangeStamp(context.Context) (int64, error) { return 0, nil }
 
 func (u unstampedStore) BackupStats(ctx context.Context, since time.Time) (*store.BackupStats, error) {
 	u.calls.Add(1)
 	return u.Store.BackupStats(ctx, since)
 }
 
-func newStatsService(t *testing.T, st store.Store, ttl time.Duration) *operations.Service {
+func newStatsService(t *testing.T, st operations.Store, ttl time.Duration) *operations.Service {
 	t.Helper()
 	mock := storage.NewMockStorage()
 	bRunner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
@@ -147,8 +155,8 @@ func TestStatsCacheFollowsEveryWrite(t *testing.T) {
 	}
 }
 
-// TestStatsCacheWithoutStampUsesEvents checks that without a change stamp the
-// events and InvalidateHistory drop the cached statistics.
+// TestStatsCacheWithoutStampUsesEvents checks that with a change stamp that never
+// moves the events and InvalidateHistory drop the cached statistics.
 func TestStatsCacheWithoutStampUsesEvents(t *testing.T) {
 	st := storetest.New(t)
 	calls := &atomic.Int32{}

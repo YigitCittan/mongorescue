@@ -357,16 +357,12 @@ var errStatsDegraded = errors.New("operations: the statistics are degraded")
 // many ask at the same time. Degraded figures are never shared. The default
 // storage target is read for every call.
 func (s *Service) Stats(ctx context.Context) Stats {
-	stamper, ok := s.cfg.Store.(changeStamper)
 	if s.statsCache == nil {
 		return s.computeStats(ctx)
 	}
-	var stamp int64
-	if ok {
-		var err error
-		if stamp, err = stamper.ChangeStamp(ctx); err != nil {
-			return s.computeStats(ctx)
-		}
+	stamp, err := s.cfg.Store.ChangeStamp(ctx)
+	if err != nil {
+		return s.computeStats(ctx)
 	}
 	shared, _ := s.statsCache.Get(ctx, sharedcache.AccessKey(auth.ConnectionFilter(ctx)), stamp, func(ctx context.Context) (*Stats, error) {
 		st := s.computeStats(ctx)

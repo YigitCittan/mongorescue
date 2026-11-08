@@ -91,29 +91,6 @@ type SettingsUpdater interface {
 	UpdateChanged(ctx context.Context, p settings.Patch) (settings.Settings, []string, error)
 }
 
-// approvalStore persists approval requests (implemented by *store.SQLiteStore).
-type approvalStore interface {
-	CreateApproval(ctx context.Context, a *models.Approval) error
-	GetApproval(ctx context.Context, id string) (*models.Approval, error)
-	ListApprovals(ctx context.Context, status models.ApprovalStatus, limit int) ([]*models.Approval, error)
-	UpdateApproval(ctx context.Context, id string, fn func(*models.Approval) error) (*models.Approval, error)
-}
-
-// pendingStore persists pending changes (implemented by *store.SQLiteStore).
-type pendingStore interface {
-	ReplacePendingChange(ctx context.Context, c *models.PendingChange) (*models.PendingChange, error)
-	ListPendingChanges(ctx context.Context) ([]*models.PendingChange, error)
-	GetPendingChange(ctx context.Context, id string) (*models.PendingChange, error)
-	DeletePendingChange(ctx context.Context, id string) error
-	DeletePendingChangesOf(ctx context.Context, kind models.PendingChangeKind, subject string) (bool, error)
-}
-
-// approvalSecrets reads the secret kept apart from a request (implemented by
-// *store.SQLiteStore).
-type approvalSecrets interface {
-	ApprovalSecret(ctx context.Context, id string) (string, error)
-}
-
 // targetDeleter deletes storage targets (implemented by *targets.Service).
 type targetDeleter interface {
 	Delete(ctx context.Context, id string) error
@@ -222,10 +199,7 @@ func (s *Service) storeApproval(ctx context.Context, a *models.Approval) (*model
 		return nil, public("the two-person rule is on and this API key has no creator (it was imported or created before users existed), "+
 			"so its requests cannot be told apart from an approver's: use a key created by a user, or the dashboard", ErrRequesterUnknown)
 	}
-	st, ok := s.cfg.Store.(approvalStore)
-	if !ok {
-		return nil, public("the two-person rule is on but approval requests cannot be stored", ErrUnavailable)
-	}
+	st := s.cfg.Store
 	id, err := newProtectionID("apr_")
 	if err != nil {
 		return nil, err
@@ -251,15 +225,6 @@ func (s *Service) storeApproval(ctx context.Context, a *models.Approval) (*model
 	return a, nil
 }
 
-// approvals returns the approval store, or ErrUnavailable.
-func (s *Service) approvals() (approvalStore, error) {
-	st, ok := s.cfg.Store.(approvalStore)
-	if !ok {
-		return nil, public("approval requests are not available", ErrUnavailable)
-	}
-	return st, nil
-}
-
 // ListApprovals returns up to store.MaxApprovalList approval requests in status (""
 // for all), newest first. Requests past their expiry are reported expired. It needs
 // the admin scope.
@@ -272,11 +237,7 @@ func (s *Service) ListApprovals(ctx context.Context, status models.ApprovalStatu
 	default:
 		return nil, public("status must be pending, approved, failed, rejected or expired", ErrInvalid)
 	}
-	st, err := s.approvals()
-	if err != nil {
-		return nil, err
-	}
-	list, err := st.ListApprovals(ctx, "", store.MaxApprovalList)
+	list, err := s.cfg.Store.ListApprovals(ctx, "", store.MaxApprovalList)
 	if err != nil {
 		return nil, fmt.Errorf("list approvals: %w", err)
 	}
@@ -299,11 +260,7 @@ func (s *Service) GetApproval(ctx context.Context, id string) (*models.Approval,
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return nil, err
 	}
-	st, err := s.approvals()
-	if err != nil {
-		return nil, err
-	}
-	a, err := st.GetApproval(ctx, id)
+	a, err := s.cfg.Store.GetApproval(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "approval request not found")
 	}
@@ -316,14 +273,10 @@ func (s *Service) GetApproval(ctx context.Context, id string) (*models.Approval,
 // decide moves open approval id to status (approved or rejected) by the caller in
 // ctx. An expired request is stored as expired and refused (ErrApprovalClosed).
 func (s *Service) decide(ctx context.Context, id string, status models.ApprovalStatus, check func(*models.Approval) error, reason string) (*models.Approval, error) {
-	st, err := s.approvals()
-	if err != nil {
-		return nil, err
-	}
 	now := s.now().UTC()
 	p := auth.PrincipalFrom(ctx)
 	expired := false
-	a, err := st.UpdateApproval(ctx, id, func(a *models.Approval) error {
+	a, err := s.cfg.Store.UpdateApproval(ctx, id, func(a *models.Approval) error {
 		if a.Status != models.ApprovalPending {
 			return public(fmt.Sprintf("approval request %s is %s", a.ID, a.Status), ErrApprovalClosed)
 		}
@@ -364,10 +317,8 @@ func (s *Service) Approve(ctx context.Context, id string) (*models.Approval, err
 	}
 	// The secret (a new password hash) is read first: deciding clears it.
 	secret := ""
-	if sr, ok := s.cfg.Store.(approvalSecrets); ok {
-		if v, err := sr.ApprovalSecret(ctx, id); err == nil {
-			secret = v
-		}
+	if v, err := s.cfg.Store.ApprovalSecret(ctx, id); err == nil {
+		secret = v
 	}
 	a, err := s.decide(ctx, id, models.ApprovalApproved, func(a *models.Approval) error {
 		return auth.CheckApprover(auth.PrincipalFrom(ctx), a.RequestedByUserID, a.CreatedAt)
@@ -379,8 +330,7 @@ func (s *Service) Approve(ctx context.Context, id string) (*models.Approval, err
 	auditlog.Annotate(ctx, "protection", "approved")
 	auditlog.Annotate(ctx, "approval_action", string(a.Action))
 	result, execErr := s.executeApproval(withApproval(ctx, a, principalName(ctx)), a)
-	st, _ := s.approvals()
-	final, err := st.UpdateApproval(context.WithoutCancel(ctx), a.ID, func(r *models.Approval) error {
+	final, err := s.cfg.Store.UpdateApproval(context.WithoutCancel(ctx), a.ID, func(r *models.Approval) error {
 		if execErr != nil {
 			r.Status, r.Error = models.ApprovalFailed, redact.Text(execErr.Error())
 		} else {
@@ -628,11 +578,7 @@ type UserAdmin interface {
 // two-person rule is on (auth.AdminGrantGate). An open request for the same user and
 // role is not repeated at every sign-in.
 func (s *Service) RequestSignInDemotion(ctx context.Context, g auth.AdminGrant) error {
-	st, err := s.approvals()
-	if err != nil {
-		return err
-	}
-	open, err := st.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
+	open, err := s.cfg.Store.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
 	if err != nil {
 		return fmt.Errorf("list approval requests: %w", err)
 	}
@@ -723,18 +669,9 @@ func (s *Service) holdOIDCGrant(ctx context.Context, p *settings.Patch) (*models
 	return a, nil
 }
 
-// userLister lists the users (implemented by *store.SQLiteStore).
-type userLister interface {
-	ListUsers(ctx context.Context) ([]*auth.User, error)
-}
-
 // adminIDs returns the IDs of the users with the admin role, sorted by username.
 func (s *Service) adminIDs(ctx context.Context) ([]string, error) {
-	st, ok := s.cfg.Store.(userLister)
-	if !ok {
-		return nil, nil
-	}
-	users, err := st.ListUsers(ctx)
+	users, err := s.cfg.Store.ListUsers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -769,10 +706,7 @@ func (s *Service) adminLost(ctx context.Context, c *models.PendingChange) (strin
 // from the pending change that turns the two-person rule off: an approved loss of
 // the admin role does not cancel it (see adminLost).
 func (s *Service) forgetAdmin(ctx context.Context, id string) {
-	st, ok := s.cfg.Store.(pendingStore)
-	if !ok {
-		return
-	}
+	st := s.cfg.Store
 	list, err := st.ListPendingChanges(ctx)
 	if err != nil {
 		s.logger.WarnContext(ctx, "cannot list pending protection changes", logsafe.Error(err))
@@ -792,11 +726,7 @@ func (s *Service) forgetAdmin(ctx context.Context, id string) {
 // hasOIDCAdmins reports whether a user who signs in with single sign-on holds the
 // admin role; true when the users cannot be read.
 func (s *Service) hasOIDCAdmins(ctx context.Context) bool {
-	st, ok := s.cfg.Store.(userLister)
-	if !ok {
-		return false
-	}
-	users, err := st.ListUsers(ctx)
+	users, err := s.cfg.Store.ListUsers(ctx)
 	if err != nil {
 		return true
 	}
@@ -888,10 +818,7 @@ func (s *Service) applyLowerOutbound(ctx context.Context, a *models.Approval) er
 
 // ExpireApprovals stores every pending request past its expiry as expired.
 func (s *Service) ExpireApprovals(ctx context.Context) {
-	st, ok := s.cfg.Store.(approvalStore)
-	if !ok {
-		return
-	}
+	st := s.cfg.Store
 	list, err := st.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
 	if err != nil {
 		s.logger.WarnContext(ctx, "cannot list approval requests", logsafe.Error(err))
@@ -917,24 +844,11 @@ func (s *Service) ExpireApprovals(ctx context.Context) {
 // errNotDueYet skips a pending change or approval that changed since it was listed.
 var errNotDueYet = errors.New("operations: not due")
 
-// pending returns the pending change store, or ErrUnavailable.
-func (s *Service) pending() (pendingStore, error) {
-	st, ok := s.cfg.Store.(pendingStore)
-	if !ok {
-		return nil, public("delayed protection changes are not available", ErrUnavailable)
-	}
-	return st, nil
-}
-
 // PendingChanges returns every lowered protection waiting to take effect, the
 // earliest first. A caller limited to some connections sees the settings changes
 // and the retention changes of its own jobs.
 func (s *Service) PendingChanges(ctx context.Context) ([]*models.PendingChange, error) {
-	st, err := s.pending()
-	if err != nil {
-		return []*models.PendingChange{}, nil //nolint:nilerr // Without the store nothing is pending.
-	}
-	list, err := st.ListPendingChanges(ctx)
+	list, err := s.cfg.Store.ListPendingChanges(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list pending changes: %w", err)
 	}
@@ -971,11 +885,7 @@ func (s *Service) CancelPendingChange(ctx context.Context, id string) error {
 	if err := auth.RequireScope(ctx, auth.ScopeAdmin); err != nil {
 		return err
 	}
-	st, err := s.pending()
-	if err != nil {
-		return err
-	}
-	if err := st.DeletePendingChange(ctx, id); err != nil {
+	if err := s.cfg.Store.DeletePendingChange(ctx, id); err != nil {
 		return notFound(err, "pending change not found")
 	}
 	auditlog.Annotate(ctx, "protection", "pending_change_cancelled")
@@ -986,17 +896,14 @@ func (s *Service) CancelPendingChange(ctx context.Context, id string) error {
 // schedulePending stores c to take effect after the grace period in force, replacing
 // an earlier change of the same kind and subject.
 func (s *Service) schedulePending(ctx context.Context, c *models.PendingChange) (*models.PendingChange, error) {
-	st, err := s.pending()
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	if c.ID, err = newProtectionID("chg_"); err != nil {
 		return nil, err
 	}
 	now := s.now().UTC()
 	c.CreatedAt, c.EffectiveAt = now, now.Add(s.deleteGrace())
 	c.RequestedBy, c.ApprovedBy = actorNames(ctx)
-	if _, err := st.ReplacePendingChange(ctx, c); err != nil {
+	if _, err := s.cfg.Store.ReplacePendingChange(ctx, c); err != nil {
 		return nil, fmt.Errorf("store pending change: %w", err)
 	}
 	auditlog.Annotate(ctx, "pending_change_id", c.ID)
@@ -1050,10 +957,7 @@ func (s *Service) scheduleGrace(ctx context.Context, days int) (*models.PendingC
 // (scheduler.WithMaintenance).
 func (s *Service) ApplyDueChanges(ctx context.Context) {
 	s.ExpireApprovals(ctx)
-	st, ok := s.cfg.Store.(pendingStore)
-	if !ok {
-		return
-	}
+	st := s.cfg.Store
 	list, err := st.ListPendingChanges(ctx)
 	if err != nil {
 		s.logger.WarnContext(ctx, "cannot list pending protection changes", logsafe.Error(err))
@@ -1277,10 +1181,8 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		out.Approvals = append(out.Approvals, outboundHeld)
 	}
 	if next.Security.DeleteGraceDays > cur.DeleteGraceDays {
-		if st, ok := s.cfg.Store.(pendingStore); ok {
-			if _, err := st.DeletePendingChangesOf(ctx, models.PendingDeleteGrace, ""); err != nil {
-				return nil, fmt.Errorf("cancel the pending grace period change: %w", err)
-			}
+		if _, err := s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingDeleteGrace, ""); err != nil {
+			return nil, fmt.Errorf("cancel the pending grace period change: %w", err)
 		}
 	}
 	if lowerGrace != nil {
@@ -1300,10 +1202,8 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 		}
 	}
 	if next.MetadataBackup.RetentionCount > curMeta {
-		if st, ok := s.cfg.Store.(pendingStore); ok {
-			if _, err := st.DeletePendingChangesOf(ctx, models.PendingMetadataRetention, ""); err != nil {
-				return nil, fmt.Errorf("cancel the pending metadata retention change: %w", err)
-			}
+		if _, err := s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingMetadataRetention, ""); err != nil {
+			return nil, fmt.Errorf("cancel the pending metadata retention change: %w", err)
 		}
 	}
 	if lowerMeta != nil {
@@ -1358,10 +1258,8 @@ func (s *Service) UpdateSettings(ctx context.Context, p settings.Patch) (*Settin
 // the grace period or, with the two-person rule, asks a second administrator first.
 func (s *Service) holdLockedCopies(ctx context.Context, cur, next settings.Security, lower bool, out *SettingsUpdate) error {
 	if next.RequireLockedCopies && !cur.RequireLockedCopies {
-		if st, ok := s.cfg.Store.(pendingStore); ok {
-			if _, err := st.DeletePendingChangesOf(ctx, models.PendingDisableLockedCopies, ""); err != nil {
-				return fmt.Errorf("cancel the pending locked copies change: %w", err)
-			}
+		if _, err := s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingDisableLockedCopies, ""); err != nil {
+			return fmt.Errorf("cancel the pending locked copies change: %w", err)
 		}
 	}
 	if !lower {

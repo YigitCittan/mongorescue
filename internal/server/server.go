@@ -74,7 +74,7 @@ const jobIDOverhead = len("job___") + 10 + models.IDSuffixLength
 // Server coordinates HTTP API routing and dashboard delivery.
 type Server struct {
 	cfg           *config.Config
-	metaStore     store.Store
+	metaStore     operations.Store
 	backupEngine  *backup.Engine
 	restoreEngine *restore.Engine
 	storageDriver storage.Storage
@@ -256,7 +256,7 @@ func WithMetricsHandler(h http.Handler) Option {
 // NewServer initializes an HTTP Server with all delivery dependencies.
 func NewServer(
 	cfg *config.Config,
-	metaStore store.Store,
+	metaStore operations.Store,
 	backupEngine *backup.Engine,
 	restoreEngine *restore.Engine,
 	storageDriver storage.Storage,

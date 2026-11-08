@@ -49,12 +49,6 @@ func newStatsCache(ttl time.Duration) *statsCache {
 	return sharedcache.New[string, *Stats](sharedcache.Options{TTL: ttl, ServeStale: true})
 }
 
-// changeStamper is implemented by stores that count the writes to their tables
-// (*store.SQLiteStore, see store.SQLiteStore.ChangeStamp).
-type changeStamper interface {
-	ChangeStamp(ctx context.Context) (int64, error)
-}
-
 // InvalidateHistory drops the cached History and Stats (see
 // Config.HistoryCacheTTL and Config.StatsCacheTTL), for callers that changed jobs
 // outside the operations service. It does nothing without the caches.

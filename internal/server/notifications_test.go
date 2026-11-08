@@ -17,9 +17,9 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/metrics"
 	"github.com/yigitcittan/mongorescue/internal/notify"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/redact"
 	"github.com/yigitcittan/mongorescue/internal/settings"
-	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // syncPublisher feeds events straight into the metrics collector (no Bus) so tests can
@@ -56,7 +56,7 @@ func (b *lockedBuffer) String() string {
 
 type notifyFixture struct {
 	h       http.Handler
-	store   store.Store
+	store   operations.Store
 	metrics *metrics.Metrics
 	pub     *syncPublisher
 	logs    *lockedBuffer

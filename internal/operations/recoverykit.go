@@ -44,12 +44,8 @@ func (s *Service) AuthorizePlaintextRecoveryKit(ctx context.Context, approvalID 
 		return s.requestApproval(ctx, &models.Approval{Action: models.ApprovalPlaintextRecoveryKit, Subject: p.UserID(),
 			Summary: "download a recovery kit with the plaintext secret.key, which is otherwise only stored wrapped by a KMS"})
 	}
-	st, err := s.approvals()
-	if err != nil {
-		return err
-	}
 	now := s.now().UTC()
-	_, err = st.UpdateApproval(ctx, approvalID, func(a *models.Approval) error {
+	_, err := s.cfg.Store.UpdateApproval(ctx, approvalID, func(a *models.Approval) error {
 		if a.Action != models.ApprovalPlaintextRecoveryKit || a.Status != models.ApprovalApproved ||
 			a.RequestedByUserID == "" || a.RequestedByUserID != p.UserID() ||
 			a.DecidedAt == nil || now.Sub(*a.DecidedAt) > PlaintextKitGrantTTL || strings.HasPrefix(a.Result, plaintextKitUsed) {

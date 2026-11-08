@@ -20,8 +20,10 @@ import (
 
 // brokenStatsStore fails the job list and the backup aggregates.
 type brokenStatsStore struct {
-	store.Store
+	operations.Store
 }
+
+var _ operations.Store = (*brokenStatsStore)(nil)
 
 var errBroken = errors.New("database is locked")
 
@@ -31,7 +33,7 @@ func (brokenStatsStore) BackupStats(context.Context, time.Time) (*store.BackupSt
 	return nil, errBroken
 }
 
-func newServiceWith(t *testing.T, st store.Store) *operations.Service {
+func newServiceWith(t *testing.T, st operations.Store) *operations.Service {
 	t.Helper()
 	mock := storage.NewMockStorage()
 	bRunner := func(_ context.Context, _ string, _ ...string) (io.ReadCloser, io.Reader, func() error, error) {
