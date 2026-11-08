@@ -271,9 +271,24 @@ What you get:
 - **Restore from either target.** A restore reads the primary, and falls back to a healthy copy by itself when the primary archive is missing or has the wrong size; the restore record says so (`source_fallback`). The dashboard's restore dialog (*Read the archive from*), `--from-target` on the CLI and `source_target_id` in the API choose a copy explicitly.
 - **Verification of every copy.** The integrity sweep re-reads every copy like the primary and copies a damaged or missing one again.
 - **Alerts.** `backup.copy_failed` and `backup.copy_recovered` events (subscribe to them in notification rules), the `mongorescue_backup_copy_queue_depth` metric, and the readiness warning `copy_missing` when a backup's copies are not done six hours after it finished. The readiness row shows "N copies" for the newest backup.
-- **One lifecycle.** Retention and deletion apply to the backup with all its copies: a deleted backup can be undeleted with its copies during the grace period, and the purge then removes every copy, each after its own target's lock.
+- **One lifecycle by default.** Retention and deletion apply to the backup with all its copies: a deleted backup can be undeleted with its copies during the grace period, and the purge then removes every copy, each after its own target's lock. A copy target can instead get its own retention, see [Copy retention](#copy-retention-outliving-the-primary).
 
-Copies read storage, not MongoDB, so they run outside backup windows too; they upload at the job's (or the general) `max_upload_mbps`. Size the copy target like the primary: it holds the same archives for as long as the primary does.
+Copies read storage, not MongoDB, so they run outside backup windows too; they upload at the job's (or the general) `max_upload_mbps`. Size the copy target like the primary: without a copy retention it holds the same archives for as long as the primary does.
+
+### Copy retention: outliving the primary
+
+A cheap long-term target can hold archives longer than the primary. In the job form, open *Retention of the copy on <target>* under *Copy targets* (or set `copy_retention` in the API: `{"<copy target id>": {"keep_monthly": 12, "keep_yearly": 7}}`). An override takes the same six rules as the job (`retention_days`, `retention_count`, `keep_daily`, `keep_weekly`, `keep_monthly`, `keep_yearly`; at least one non-zero, see [verification.md](verification.md#rules-days-count-and-gfs-buckets) for how they combine), evaluated per database in the job's time zone on the copies' own state: only backups with a completed copy on that target count, and the copy's own verification decides its "newest verified" floor.
+
+The lifecycle, precisely:
+
+1. **While the primary exists, the copy follows it.** An override never deletes a copy before its primary (a shorter override has no effect).
+2. **When the job's retention deletes the primary backup,** the same transaction marks every completed copy the override keeps as *retained* (`copies[].retained`, with `retained_reason` such as `keep_monthly 2026-10`). The backup becomes `deleted` as always. After the grace period the purge deletes the primary archive and every copy that is not retained; the retained copies stay on their targets, and the record stays `deleted` with `primary_purged_at` set instead of becoming `purged`. An S3 Object Lock on a retained copy does not hold back the purge of the primary.
+3. **A retained copy stays while the override keeps it.** Every retention run re-evaluates the retained copies together with the live backups. When the override stops keeping one (newer backups pushed it out of its buckets, or you changed the policy), it is released; the next purge deletes it, and only after its target's Object Lock has ended: **Object Lock on the copy target always wins** and the record waits for it.
+4. **Copies of deleted primaries are released when nothing keeps them:** the job's override for that target was removed, the target was removed from the job, or the job was deleted. The purge releases them by itself, so no retained copy is orphaned forever.
+5. **An explicit delete wins.** Only retention retains copies. A backup deleted by a user, an API key or a bulk delete is purged with all its copies, as before.
+6. **Restoring from a retained copy.** A deleted backup whose copy is retained cannot be restored from its primary, but it can be restored by naming the copy target: `source_target_id` in the API, *Read the archive from* in the dashboard, `--from-target` on the CLI. The copy must be healthy and made from the backup's current archive.
+
+The retention preview shows, per overridden target, the copies it keeps (`kept`, with their buckets), the ones that will outlive their primary (`outliving`), those already `retained` and those it would `release`. Pinned backups are never deleted by retention, so their copies follow them.
 
 ## Cross-region disaster recovery
 

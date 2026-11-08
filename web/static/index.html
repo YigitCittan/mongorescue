@@ -2017,7 +2017,30 @@
               <span class="form-hint" id="job-count-hint" data-i18n="modal_job.count_hint">Newest N backups. 0 means unlimited.</span>
             </div>
           </div>
+          <div class="form-row" id="job-gfs-row">
+            <div class="form-group">
+              <label class="form-label" for="job-keep-daily" data-i18n="modal_job.keep_daily_label">Keep daily</label>
+              <input type="number" id="job-keep-daily" class="form-input" value="0" min="0" max="400" step="1" aria-describedby="job-gfs-hint">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="job-keep-weekly" data-i18n="modal_job.keep_weekly_label">Keep weekly</label>
+              <input type="number" id="job-keep-weekly" class="form-input" value="0" min="0" max="520" step="1" aria-describedby="job-gfs-hint">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="job-keep-monthly" data-i18n="modal_job.keep_monthly_label">Keep monthly</label>
+              <input type="number" id="job-keep-monthly" class="form-input" value="0" min="0" max="240" step="1" aria-describedby="job-gfs-hint">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="job-keep-yearly" data-i18n="modal_job.keep_yearly_label">Keep yearly</label>
+              <input type="number" id="job-keep-yearly" class="form-input" value="0" min="0" max="100" step="1" aria-describedby="job-gfs-hint">
+            </div>
+          </div>
+          <span class="form-hint" id="job-gfs-hint" data-i18n="modal_job.gfs_hint">Also keep the newest backup of each of the last N days, ISO weeks, months or years that have one.</span>
           <p class="form-hint retention-preview" id="job-retention-preview" role="status" aria-live="polite" hidden></p>
+          <details class="retention-kept" id="job-retention-kept" hidden>
+            <summary data-i18n="modal_job.kept_summary">Backups that stay, and why</summary>
+            <ul class="retention-kept-list" id="job-retention-kept-list"></ul>
+          </details>
           <fieldset class="settings-group job-trust">
             <legend class="settings-group-title" data-i18n="trust.job_section">Integrity</legend>
             <div class="form-group">

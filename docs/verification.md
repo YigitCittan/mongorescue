@@ -71,9 +71,34 @@ Any restore can be compared with its backup's manifest too: `"verify_restore": t
 
 ## Retention
 
+### Rules: days, count and GFS buckets
+
+A job keeps its scheduled backups by up to six rules, all optional (0 turns a rule off). They apply to each database of the job separately.
+
+| Field | Keeps |
+| :--- | :--- |
+| `retention_days` | backups younger than N days |
+| `retention_count` | the newest N backups (never deleting one younger than a day) |
+| `keep_daily` | the newest backup of each of the last N days that have one |
+| `keep_weekly` | the newest backup of each of the last N ISO weeks that have one |
+| `keep_monthly` | the newest backup of each of the last N months that have one |
+| `keep_yearly` | the newest backup of each of the last N years that have one |
+
+The `keep_*` fields are the grandfather-father-son (GFS) buckets: *30 daily, 12 monthly, 7 yearly* is `keep_daily: 30`, `keep_monthly: 12`, `keep_yearly: 7`. Bounds: `keep_daily` up to 400, `keep_weekly` up to 520, `keep_monthly` up to 240, `keep_yearly` up to 100. A bucket is **populated**: "the last N buckets" means the N most recent days, weeks, months or years that contain a backup, so a gap (a failed month) does not shorten the history; the newest backup of each such bucket is kept.
+
+**Time zone.** Buckets are cut in the time zone of the job's schedule: a `CRON_TZ=Europe/Istanbul` (or `TZ=`) prefix of `cron_expression`. Without one, or with an unknown zone, they are cut in UTC. A backup taken at 23:30 UTC belongs to the next day, week, month or year east of Greenwich when the zone says so; a 23- or 25-hour day around a DST change is still one day; weeks are ISO weeks (a week belongs to the ISO year of its Thursday, so 31 December can be in week 1 of the next year and 1 January in week 53 of the old one). The preview names the zone (`time_zone`).
+
+**How the rules combine.** A backup is kept as long as any rule keeps it (a union of keep reasons), and deleted only when none does:
+
+- `retention_days` and `retention_count` together form the age and count rule exactly as before buckets existed: with both set a backup must be within the days *and* within the count to be kept by that rule (whichever is stricter deletes). With neither set the rule is absent: it does not mean "keep everything" once a bucket is on.
+- A bucket rule keeps a backup independently: a backup older than `retention_days`, or beyond `retention_count`, stays when it is the newest of a bucket still within its N.
+- A job with no `keep_*` field behaves exactly as before. A job with buckets only (days and count 0) keeps the bucket backups and the newest backup, and deletes the rest.
+
+Every safety floor stays in force under buckets: the `max(retention_count, 1)` newest scheduled backups are never deleted, count-based pruning never deletes a backup younger than a day, pinned backups and the newest backup of each database whose archive passed verification are never deleted ([Never the last verified backup](#never-the-last-verified-backup)), and a deletion is soft: the archive stays for the delete grace period ([Soft deletes](#soft-deletes-and-shared-archives)). A backup under S3 Object Lock is kept by storage until its lock ends whatever the plan says. Lowering a bucket (or turning it off) is not held by [delete protection](security.md#delete-protection) the way a shorter `retention_days` or `retention_count` is: it takes effect with the next run, and the soft-delete grace period is the safety net.
+
 ### Preview
 
-`GET /api/v1/jobs/{id}/retention/preview` lists the backups the job's policy would delete if it ran now, oldest first, each with its rule (`max_age`: older than `retention_days`; `max_count`: beyond the `retention_count` newest), and the backups a rule selects but that are kept (`protected`: pinned or the last verified one). `?retention_days=` and `?retention_count=` preview other values without saving them; the job form uses them to show *Bu ayarla N yedek silinecek* while you edit. The preview and the actual pruning share one function, so the preview is exactly what the next prune deletes (that prune runs after the next scheduled backup, which adds one more backup to count). The MCP tool `retention_preview` returns the same.
+`GET /api/v1/jobs/{id}/retention/preview` lists the backups the job's policy would delete if it ran now, oldest first, each with its rule (`max_age`: older than `retention_days`; `max_count`: beyond the `retention_count` newest; `gfs`: in no `keep_*` bucket under a policy without days and count), and the backups a rule selects but that are kept (`protected`: pinned or the last verified one). `kept` lists every backup that stays with the reasons that keep it: `{backup_id, database, reasons: [{rule, bucket}]}`, for example `{"rule": "keep_monthly", "bucket": "2026-10"}` (day buckets are `2026-11-08`, weeks `2026-W45`, years `2026`; other rules are `newest`, `retention_days`, `retention_count`, `pinned`, `last_verified`). `?retention_days=`, `?retention_count=`, `?keep_daily=`, `?keep_weekly=`, `?keep_monthly=` and `?keep_yearly=` preview other values without saving them; the job form uses them to show *With these settings N backup(s) would be deleted now* and the list of backups that stay, with their buckets, while you edit. `copies` previews the [per copy target retention](production.md#copy-retention-outliving-the-primary). The preview and the actual pruning share one function, so the preview is exactly what the next prune deletes (that prune runs after the next scheduled backup, which adds one more backup to count). The MCP tool `retention_preview` returns the same.
 
 ### Pins (legal hold)
 

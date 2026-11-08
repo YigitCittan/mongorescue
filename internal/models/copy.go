@@ -97,6 +97,52 @@ type BackupCopy struct {
 	VerificationError string             `json:"verification_error,omitempty"`
 	// PurgedAt is when the copy was removed (CopyPurged).
 	PurgedAt *time.Time `json:"purged_at,omitempty"`
+	// Retained marks a done copy that outlives its deleted primary: the job's
+	// copy_retention for the copy target keeps the backup (RetainedReason names the
+	// rule), so the purge leaves the copy on its target. It is set when retention
+	// deletes the primary and cleared when the policy stops keeping the backup, the
+	// job's override for the target is removed or the job is deleted.
+	Retained bool `json:"retained,omitempty"`
+	// RetainedReason is the rule and bucket that keep a Retained copy (for example
+	// "keep_monthly 2026-10").
+	RetainedReason string `json:"retained_reason,omitempty"`
+}
+
+// HasRetainedCopies reports whether a done copy of r outlives its primary.
+func (r *BackupRecord) HasRetainedCopies() bool {
+	for i := range r.Copies {
+		if r.Copies[i].Retained && r.Copies[i].Status == CopyDone {
+			return true
+		}
+	}
+	return false
+}
+
+// ReleaseCopies clears Retained on every copy of r (the purge then deletes them) and
+// reports whether there was one.
+func (r *BackupRecord) ReleaseCopies() bool {
+	released := false
+	for i := range r.Copies {
+		if c := &r.Copies[i]; c.Retained {
+			c.Retained, c.RetainedReason = false, ""
+			released = true
+		}
+	}
+	return released
+}
+
+// RetainedView returns a shallow copy of r that reads its archive from the retained
+// copy on target targetID (see AtCopy) and counts as a completed backup, so a restore
+// of a deleted backup whose copy outlives it can read it. It returns nil when there is
+// no healthy, current retained copy on targetID.
+func (r *BackupRecord) RetainedView(targetID string) *BackupRecord {
+	c := r.Copy(targetID)
+	if c == nil || !c.Retained || !r.CopyUsable(c) {
+		return nil
+	}
+	v := r.AtCopy(c)
+	v.Status = StatusCompleted
+	return v
 }
 
 // Healthy reports whether c is a completed copy whose last check did not find it

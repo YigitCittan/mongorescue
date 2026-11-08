@@ -889,7 +889,8 @@ func (s *Scheduler) recordRunTimes(ctx context.Context, job *models.Job) {
 // applyRetention prunes the job's scheduled backups of record's database after the
 // successful scheduled backup record.
 func (s *Scheduler) applyRetention(ctx context.Context, job *models.Job, record *models.BackupRecord) {
-	if record == nil || record.Status != models.StatusCompleted || (job.RetentionDays <= 0 && job.RetentionCount <= 0) {
+	policy := job.RetentionPolicy()
+	if record == nil || record.Status != models.StatusCompleted || (!policy.Active() && len(job.CopyRetention) == 0) {
 		return
 	}
 	if err := s.checkFence(); err != nil {
@@ -904,9 +905,18 @@ func (s *Scheduler) applyRetention(ctx context.Context, job *models.Job, record 
 	}
 	// Retention only ever sees this job's own scheduled backups (see
 	// JobRetentionHistory).
+	now := s.clock().UTC()
+	// The copies the per copy target overrides keep are decided before the primaries
+	// are deleted: the deleting transaction marks them Retained. Copies that
+	// outlived a primary and are no longer kept are released to the purge.
+	var keeps CopyKeeps
+	if len(job.CopyRetention) > 0 {
+		keeps = PlanCopyRetention(now, job, history)
+		releaseCopies(ctx, s.metadataStore, job, keeps, history, s.logger)
+	}
 	history = JobRetentionHistory(job, record.StorageTargetID, history)
 	// Retention deletes softly: the archives stay for the grace period, the purge
 	// removes them (and the run logs) afterwards.
-	_, _ = prune(ctx, s.clock().UTC(), s.deleteGrace(), job.RetentionDays, job.RetentionCount, history,
+	_, _ = pruneJob(ctx, now, s.deleteGrace(), policy, job.RetentionLocation(), keeps, history,
 		s.metadataStore, s.logger, s.retentionDeleted)
 }

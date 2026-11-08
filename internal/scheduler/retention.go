@@ -59,6 +59,9 @@ type RetentionPlan struct {
 	Delete []RetentionDecision `json:"delete"`
 	// Protected lists the backups a rule selects but that are kept.
 	Protected []ProtectedBackup `json:"protected"`
+	// Kept lists every considered backup that stays, with the reasons that keep it
+	// (newest first within each database).
+	Kept []KeptBackup `json:"kept"`
 	// Considered counts the completed scheduled backups the policy applies to.
 	Considered int `json:"considered"`
 	// Databases breaks the plan down per database, sorted by name: a job's policy
@@ -83,24 +86,42 @@ type DatabaseRetention struct {
 }
 
 // PlanRetention decides which of records a policy of retentionDays and
-// retentionCount deletes at now, without changing anything. PruneBackupsOn deletes
-// exactly the backups it lists, so it doubles as the dry-run preview.
+// retentionCount deletes at now, without changing anything. It is
+// PlanRetentionPolicy for a policy without buckets; PruneBackupsOn deletes
+// exactly the backups the plan lists, so it doubles as the dry-run preview.
+func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*models.BackupRecord) RetentionPlan {
+	return PlanRetentionPolicy(now, models.RetentionPolicy{RetentionDays: retentionDays, RetentionCount: retentionCount}, time.UTC, records)
+}
+
+// PlanRetentionPolicy decides which of records policy p deletes at now, without
+// changing anything. Buckets (keep_daily, keep_weekly, keep_monthly, keep_yearly)
+// are cut in loc (UTC for a nil loc): see models.Job.RetentionLocation.
 //
 // Only completed scheduled backups (models.TriggerScheduled, see
 // BackupRecord.EffectiveTrigger) are considered; on-demand, manual and MCP backups
 // are never pruned automatically, and neither are PITR base backups
-// (models.ScopeInstance), which their stream's retention owns. The policy applies to every database separately
-// (a multi-database job keeps N backups of each of its databases), and so do the
-// floors that protect the scheduled ones: the max(retentionCount, 1) most recent of
-// each database are never deleted (by either rule), so a database whose backup
-// failed today keeps its last good one; count-based retention never deletes a
-// backup younger than MinCountPruneAge, pinned backups are never deleted, and
-// neither is the newest backup of each database whose archive passed verification.
+// (models.ScopeInstance), which their stream's retention owns. The policy applies to
+// every database separately (a multi-database job keeps N backups of each of its
+// databases), and so do the floors that protect the scheduled ones: the
+// max(retentionCount, 1) most recent of each database are never deleted (by any
+// rule), count-based retention never deletes a backup younger than MinCountPruneAge,
+// pinned backups are never deleted, and neither is the newest backup of each
+// database whose archive passed verification.
+//
+// A backup is kept when any of these keeps it (a union of keep reasons): the age and
+// count rule (retention_days and retention_count together: with both set a backup
+// must satisfy both to be kept by them, as before buckets existed; with neither set
+// the rule is absent, not "keep everything"), or a bucket rule: the newest backup of
+// its day, ISO week, month or year, among the last N such buckets that hold a backup.
+// Every kept backup is listed in the plan's Kept with the reasons that keep it.
 // Callers pass the records of one job (see JobRetentionHistory).
-func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*models.BackupRecord) RetentionPlan {
-	plan := RetentionPlan{Delete: []RetentionDecision{}, Protected: []ProtectedBackup{}, Databases: []DatabaseRetention{}}
-	if retentionDays <= 0 && retentionCount <= 0 {
+func PlanRetentionPolicy(now time.Time, p models.RetentionPolicy, loc *time.Location, records []*models.BackupRecord) RetentionPlan {
+	plan := RetentionPlan{Delete: []RetentionDecision{}, Protected: []ProtectedBackup{}, Kept: []KeptBackup{}, Databases: []DatabaseRetention{}}
+	if !p.Active() {
 		return plan
+	}
+	if loc == nil {
+		loc = time.UTC
 	}
 	byDatabase := map[string][]*models.BackupRecord{}
 	for _, r := range records {
@@ -114,11 +135,12 @@ func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*
 	}
 	slices.Sort(names)
 	for _, name := range names {
-		del, protected := planDatabase(now, retentionDays, retentionCount, byDatabase[name])
 		successful := byDatabase[name]
+		del, protected, kept := planDatabase(now, p, loc, successful)
 		plan.Considered += len(successful)
 		plan.Delete = append(plan.Delete, del...)
 		plan.Protected = append(plan.Protected, protected...)
+		plan.Kept = append(plan.Kept, kept...)
 		plan.Databases = append(plan.Databases, DatabaseRetention{
 			Database: name, Considered: len(successful), Delete: len(del), Protected: len(protected),
 			Kept: len(successful) - len(del), LastGood: successful[0].ID,
@@ -132,10 +154,12 @@ func PlanRetention(now time.Time, retentionDays, retentionCount int, records []*
 }
 
 // planDatabase plans the retention of the completed scheduled backups of one
-// database; it sorts successful newest first.
-func planDatabase(now time.Time, retentionDays, retentionCount int, successful []*models.BackupRecord) ([]RetentionDecision, []ProtectedBackup) {
+// database; it sorts successful newest first. Kept lists every backup that stays,
+// newest first.
+func planDatabase(now time.Time, p models.RetentionPolicy, loc *time.Location, successful []*models.BackupRecord) ([]RetentionDecision, []ProtectedBackup, []KeptBackup) {
 	var del []RetentionDecision
 	var protected []ProtectedBackup
+	var kept []KeptBackup
 	// Newest first.
 	sort.SliceStable(successful, func(i, j int) bool {
 		return successful[i].StartedAt.After(successful[j].StartedAt)
@@ -148,28 +172,60 @@ func planDatabase(now time.Time, retentionDays, retentionCount int, successful [
 		}
 	}
 
-	floor := max(retentionCount, 1)
-	cutoff := now.AddDate(0, 0, -retentionDays)
-	for _, rec := range successful[min(floor, len(successful)):] {
+	baseOn := p.RetentionDays > 0 || p.RetentionCount > 0
+	floor := max(p.RetentionCount, 1)
+	cutoff := now.AddDate(0, 0, -p.RetentionDays)
+	buckets := bucketKeeps(p, loc, successful)
+	for i, rec := range successful {
+		reasons := buckets[rec.ID]
 		var d *RetentionDecision
-		switch {
-		case retentionDays > 0 && rec.StartedAt.Before(cutoff):
-			d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxAge, Detail: fmt.Sprintf("older than %d days", retentionDays)}
-		case retentionCount > 0 && now.Sub(rec.StartedAt) >= MinCountPruneAge:
-			d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxCount, Detail: fmt.Sprintf("beyond the %d newest backups", retentionCount)}
+		if i < floor {
+			rule := KeepNewest
+			if p.RetentionCount > 0 {
+				rule = KeepCount
+			}
+			reasons = append([]KeepReason{{Rule: rule}}, reasons...)
+		} else if baseOn {
+			switch {
+			case p.RetentionDays > 0 && rec.StartedAt.Before(cutoff):
+				d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxAge, Detail: fmt.Sprintf("older than %d days", p.RetentionDays)}
+			case p.RetentionCount > 0 && now.Sub(rec.StartedAt) >= MinCountPruneAge:
+				d = &RetentionDecision{Backup: rec, Reason: models.RetentionMaxCount, Detail: fmt.Sprintf("beyond the %d newest backups", p.RetentionCount)}
+			default:
+				// Kept by the age and count rule.
+				if p.RetentionDays > 0 {
+					reasons = append(reasons, KeepReason{Rule: KeepDays})
+				}
+				if p.RetentionCount > 0 {
+					reasons = append(reasons, KeepReason{Rule: KeepCount})
+				}
+			}
+		} else if len(reasons) == 0 {
+			d = &RetentionDecision{Backup: rec, Reason: models.RetentionGFS, Detail: "in no " + bucketNames(p) + " bucket"}
+		}
+		if d != nil && len(buckets[rec.ID]) > 0 {
+			// A bucket keeps it: the union keeps the backup.
+			d = nil
+		}
+		if d != nil && baseOn && p.GFS() {
+			d.Detail += " and in no " + bucketNames(p) + " bucket"
 		}
 		switch {
 		case d == nil:
 		case rec.Pinned:
 			protected = append(protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedPinned})
+			reasons = append(reasons, KeepReason{Rule: ProtectedPinned})
 		case rec.ID == lastVerified:
 			protected = append(protected, ProtectedBackup{BackupID: rec.ID, Reason: ProtectedLastVerified})
+			reasons = append(reasons, KeepReason{Rule: ProtectedLastVerified})
 		default:
 			del = append(del, *d)
+			continue
 		}
+		kept = append(kept, KeptBackup{BackupID: rec.ID, Database: rec.Database, Reasons: reasons})
 	}
 	slices.Reverse(del)
-	return del, protected
+	return del, protected, kept
 }
 
 // JobRetentionHistory returns the records job's retention applies to: the job's own
@@ -249,10 +305,30 @@ func prune(
 	logger *slog.Logger,
 	onDeleted func(ctx context.Context, e models.RetentionLogEntry),
 ) ([]string, error) {
+	return pruneJob(ctx, now, grace, models.RetentionPolicy{RetentionDays: retentionDays, RetentionCount: retentionCount},
+		time.UTC, nil, records, metadataStore, logger, onDeleted)
+}
+
+// pruneJob is prune for a policy with buckets cut in loc. keeps (optional, see
+// PlanCopyRetention) names the copies that outlive the primaries it deletes: the
+// deleting transaction marks them Retained, so the purge leaves them on their
+// targets.
+func pruneJob(
+	ctx context.Context,
+	now time.Time,
+	grace time.Duration,
+	policy models.RetentionPolicy,
+	loc *time.Location,
+	keeps CopyKeeps,
+	records []*models.BackupRecord,
+	metadataStore store.Store,
+	logger *slog.Logger,
+	onDeleted func(ctx context.Context, e models.RetentionLogEntry),
+) ([]string, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	plan := PlanRetention(now, retentionDays, retentionCount, records)
+	plan := PlanRetentionPolicy(now, policy, loc, records)
 	for _, p := range plan.Protected {
 		logger.Info("retention keeps a backup its policy selects",
 			logsafe.Attr("backup_id", p.BackupID), slog.String("reason", p.Reason))
@@ -285,6 +361,7 @@ func prune(
 			)
 			mark := func(r *models.BackupRecord) {
 				r.MarkDeleted(models.SoftDelete{At: now, PurgeAfter: purgeAfter, By: RetentionActor, Reason: d.Detail})
+				keeps.retain(r)
 			}
 
 			// Mark the record deleted, re-checking it: a backup pinned (or otherwise

@@ -140,17 +140,24 @@ func optionalInt(w http.ResponseWriter, r *http.Request, name string) (*int, boo
 }
 
 // handleRetentionPreview lists the backups a job's retention would delete now (or
-// with the retention_days / retention_count query values), without deleting.
+// with the retention_days, retention_count and keep_daily / keep_weekly /
+// keep_monthly / keep_yearly query values), without deleting.
 func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) {
-	days, ok := optionalInt(w, r, "retention_days")
-	if !ok {
-		return
+	var o operations.RetentionOverride
+	for _, f := range []struct {
+		name string
+		dst  **int
+	}{
+		{"retention_days", &o.Days}, {"retention_count", &o.Count},
+		{"keep_daily", &o.Daily}, {"keep_weekly", &o.Weekly}, {"keep_monthly", &o.Monthly}, {"keep_yearly", &o.Yearly},
+	} {
+		v, ok := optionalInt(w, r, f.name)
+		if !ok {
+			return
+		}
+		*f.dst = v
 	}
-	count, ok := optionalInt(w, r, "retention_count")
-	if !ok {
-		return
-	}
-	preview, err := s.ops.RetentionPreview(r.Context(), r.PathValue("id"), days, count)
+	preview, err := s.ops.RetentionPreviewWith(r.Context(), r.PathValue("id"), o)
 	if err != nil {
 		s.writeIntegrityError(w, err)
 		return
