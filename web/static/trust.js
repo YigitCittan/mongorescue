@@ -652,6 +652,15 @@ async function trustRetentionPreview() {
       const outliving = (c.outliving || []).length;
       if (outliving > 0) text += ` ${tf("modal_job.copy_outlive", { n: outliving, name: c.target_name || c.target_id })}`;
     });
+    // A held lowering of the stored retention (waiting for the grace period or a
+    // second administrator): what it would release.
+    const pending = json.data.pending;
+    if (pending) {
+      text += ` ${tf("protection.pending_releases", { n: (pending.release || []).length })}`;
+      (pending.copies || []).forEach(c => {
+        text += ` ${tf("protection.pending_releases_copies", { n: (c.backups || []).length, name: c.target_name || c.target_id })}`;
+      });
+    }
     hint.textContent = text;
     hint.classList.toggle("text-danger", n > 0);
     hint.hidden = false;

@@ -2011,6 +2011,7 @@ paths:
     get:
       operationId: get_jobs_by_id_retention_preview
       summary: Preview what retention would delete
+      description: Lists the backups the policy would delete now, those that stay with the rule and bucket that keep them, and the copies each copy_retention override keeps. While a lowering of the job's retention (a shorter retention_days or retention_count, a lower keep_* bucket, a lower or removed copy_retention override) waits for the delete grace period or a second administrator, the answer adds pending, the backups and copies the change would release.
       tags:
         - Jobs
       parameters:

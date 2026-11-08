@@ -520,7 +520,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	}
 	// The overview's history lists the jobs' schedules.
 	s.InvalidateHistory()
-	changed := job.RetentionPolicy() != existing.RetentionPolicy()
+	changed := RetentionChanged(existing, job)
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
 	if err != nil {
 		return nil, err

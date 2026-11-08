@@ -79,7 +79,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Saved. The lower grace period takes effect on {when}.",
       approval_requested_saved: "Saved. A change waits for a second administrator.",
       retention_pending_saved: "Saved. The shorter retention takes effect on {when}.",
-      retention_approval_saved: "Saved. The shorter retention waits for a second administrator."
+      retention_approval_saved: "Saved. The shorter retention waits for a second administrator.",
+      pending_copy_override: "Copy retention of {target}: {value}",
+      pending_copy_removed: "Copy retention override of {target} removed",
+      pending_releases: "Would release {n} backups for deletion",
+      pending_releases_copies: "{n} copies on {name} would lose their retention"
     }
   },
   tr: {
@@ -141,7 +145,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Kaydedildi. Daha kısa bekleme süresi {when} tarihinde geçerli olur.",
       approval_requested_saved: "Kaydedildi. Bir değişiklik ikinci bir yöneticiyi bekliyor.",
       retention_pending_saved: "Kaydedildi. Daha kısa saklama süresi {when} tarihinde geçerli olur.",
-      retention_approval_saved: "Kaydedildi. Daha kısa saklama süresi ikinci bir yöneticiyi bekliyor."
+      retention_approval_saved: "Kaydedildi. Daha kısa saklama süresi ikinci bir yöneticiyi bekliyor.",
+      pending_copy_override: "{target} kopya saklaması: {value}",
+      pending_copy_removed: "{target} kopya saklama geçersiz kılması kaldırıldı",
+      pending_releases: "{n} yedeği silinmeye bırakır",
+      pending_releases_copies: "{name} üzerindeki {n} kopya saklamasını yitirir"
     }
   },
   de: {
@@ -203,7 +211,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Gespeichert. Die kürzere Karenzzeit gilt ab {when}.",
       approval_requested_saved: "Gespeichert. Eine Änderung wartet auf einen zweiten Administrator.",
       retention_pending_saved: "Gespeichert. Die kürzere Aufbewahrung gilt ab {when}.",
-      retention_approval_saved: "Gespeichert. Die kürzere Aufbewahrung wartet auf einen zweiten Administrator."
+      retention_approval_saved: "Gespeichert. Die kürzere Aufbewahrung wartet auf einen zweiten Administrator.",
+      pending_copy_override: "Kopie-Aufbewahrung von {target}: {value}",
+      pending_copy_removed: "Kopie-Aufbewahrung von {target} entfernt",
+      pending_releases: "Gäbe {n} Backups zum Löschen frei",
+      pending_releases_copies: "{n} Kopien auf {name} würden ihre Aufbewahrung verlieren"
     }
   },
   es: {
@@ -265,7 +277,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Guardado. El periodo de gracia más corto se aplica el {when}.",
       approval_requested_saved: "Guardado. Un cambio espera a un segundo administrador.",
       retention_pending_saved: "Guardado. La retención más corta se aplica el {when}.",
-      retention_approval_saved: "Guardado. La retención más corta espera a un segundo administrador."
+      retention_approval_saved: "Guardado. La retención más corta espera a un segundo administrador.",
+      pending_copy_override: "Retención de copias de {target}: {value}",
+      pending_copy_removed: "Retención de copias de {target} eliminada",
+      pending_releases: "Liberaría {n} copias de seguridad para eliminarlas",
+      pending_releases_copies: "{n} copias en {name} perderían su retención"
     }
   },
   fr: {
@@ -327,7 +343,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Enregistré. Le délai de grâce plus court s'applique le {when}.",
       approval_requested_saved: "Enregistré. Un changement attend un second administrateur.",
       retention_pending_saved: "Enregistré. La rétention plus courte s'applique le {when}.",
-      retention_approval_saved: "Enregistré. La rétention plus courte attend un second administrateur."
+      retention_approval_saved: "Enregistré. La rétention plus courte attend un second administrateur.",
+      pending_copy_override: "Rétention des copies de {target} : {value}",
+      pending_copy_removed: "Rétention des copies de {target} supprimée",
+      pending_releases: "Libérerait {n} sauvegardes pour suppression",
+      pending_releases_copies: "{n} copies sur {name} perdraient leur rétention"
     }
   },
   zh: {
@@ -389,7 +409,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "已保存。更短的宽限期将于 {when} 生效。",
       approval_requested_saved: "已保存。有一项更改等待第二位管理员审批。",
       retention_pending_saved: "已保存。更短的保留期将于 {when} 生效。",
-      retention_approval_saved: "已保存。更短的保留期等待第二位管理员审批。"
+      retention_approval_saved: "已保存。更短的保留期等待第二位管理员审批。",
+      pending_copy_override: "{target} 的副本保留期：{value}",
+      pending_copy_removed: "已移除 {target} 的副本保留期覆盖",
+      pending_releases: "将释放 {n} 个备份以供删除",
+      pending_releases_copies: "{name} 上的 {n} 个副本将失去保留"
     }
   },
   ja: {
@@ -451,7 +475,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "保存しました。短い猶予期間は {when} に有効になります。",
       approval_requested_saved: "保存しました。変更が 2 人目の管理者を待っています。",
       retention_pending_saved: "保存しました。短い保持期間は {when} に有効になります。",
-      retention_approval_saved: "保存しました。短い保持期間は 2 人目の管理者を待っています。"
+      retention_approval_saved: "保存しました。短い保持期間は 2 人目の管理者を待っています。",
+      pending_copy_override: "{target} のコピー保持期間: {value}",
+      pending_copy_removed: "{target} のコピー保持期間の上書きを削除",
+      pending_releases: "{n} 件のバックアップを削除対象にします",
+      pending_releases_copies: "{name} 上の {n} 件のコピーが保持されなくなります"
     }
   },
   ru: {
@@ -513,7 +541,11 @@ const PROTECTION_TRANSLATIONS = {
       pending_saved: "Сохранено. Более короткая отсрочка вступит в силу {when}.",
       approval_requested_saved: "Сохранено. Изменение ждёт второго администратора.",
       retention_pending_saved: "Сохранено. Более короткое хранение вступит в силу {when}.",
-      retention_approval_saved: "Сохранено. Более короткое хранение ждёт второго администратора."
+      retention_approval_saved: "Сохранено. Более короткое хранение ждёт второго администратора.",
+      pending_copy_override: "Хранение копий для {target}: {value}",
+      pending_copy_removed: "Переопределение хранения копий для {target} удалено",
+      pending_releases: "Освободит {n} бэкапов для удаления",
+      pending_releases_copies: "{n} копий на {name} перестанут храниться"
     }
   }
 };
@@ -886,7 +918,44 @@ function pendingRetentionText(c) {
   const parts = [];
   if (c.retention_days != null) parts.push(Number(c.retention_days) > 0 ? tf("retention.days_n", { n: Number(c.retention_days) }) : t("retention.indefinite"));
   if (c.retention_count != null) parts.push(tf("retention.max_n", { n: Number(c.retention_count) }));
+  ["daily", "weekly", "monthly", "yearly"].forEach(b => {
+    if (c[`keep_${b}`] != null) parts.push(`${t(`modal_job.keep_${b}_label`)} ${Number(c[`keep_${b}`])}`);
+  });
+  const copies = c.copy_retention && typeof c.copy_retention === "object" ? c.copy_retention : {};
+  Object.keys(copies).sort().forEach(id => {
+    const p = copies[id];
+    parts.push(p == null ? tf("protection.pending_copy_removed", { target: id }) : tf("protection.pending_copy_override", { target: id, value: copyPolicyText(p) }));
+  });
   return parts.join(" · ");
+}
+
+// copyPolicyText lists the rules a copy retention override turns on.
+function copyPolicyText(p) {
+  const parts = [];
+  if (Number(p.retention_days) > 0) parts.push(tf("retention.days_n", { n: Number(p.retention_days) }));
+  if (Number(p.retention_count) > 0) parts.push(tf("retention.max_n", { n: Number(p.retention_count) }));
+  ["daily", "weekly", "monthly", "yearly"].forEach(b => {
+    if (Number(p[`keep_${b}`]) > 0) parts.push(`${t(`modal_job.keep_${b}_label`)} ${Number(p[`keep_${b}`])}`);
+  });
+  return parts.join(", ");
+}
+
+// protectionFillReleases adds, to every pending retention change, the number of
+// backups and copies it would release (the retention preview's pending part).
+async function protectionFillReleases(root) {
+  for (const span of root.querySelectorAll("[data-release-job]")) {
+    try {
+      const json = await apiJSON(`/api/v1/jobs/${encodeURIComponent(span.dataset.releaseJob)}/retention/preview`);
+      const p = json.success && json.data ? json.data.pending : null;
+      if (!p) continue;
+      const parts = [tf("protection.pending_releases", { n: (p.release || []).length })];
+      (p.copies || []).forEach(c => parts.push(tf("protection.pending_releases_copies", { n: (c.backups || []).length, name: c.target_name || c.target_id })));
+      span.textContent = parts.join(" · ");
+      span.title = (p.release || []).map(r => r.backup_id).join(", ");
+    } catch (err) {
+      // The note is optional.
+    }
+  }
 }
 
 function renderPendingChanges() {
@@ -908,9 +977,11 @@ function renderPendingChanges() {
     // Locked copies no longer required (dr.js).
     if ((c.kind === "disable_locked_copies" || c.kind === "job_locked_copies") && typeof drPendingText === "function") text = drPendingText(c, when);
     const by = c.requested_by ? ` <span class="muted">(${escapeHtml(tf("protection.pending_by", { who: String(c.requested_by) }))})</span>` : "";
-    return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}
+    const release = c.kind === "retention" ? ` <span class="muted" data-release-job="${escapeHtml(String(c.job_id || ""))}"></span>` : "";
+    return `<li class="pending-item"><span>${escapeHtml(text)}</span>${by}${release}
       <button type="button" class="btn btn-secondary btn-sm" data-action="pending-cancel" data-id="${escapeHtml(c.id)}">${escapeHtml(t("protection.pending_cancel"))}</button></li>`;
   }).join("")}</ul>`;
+  protectionFillReleases(el);
 }
 
 async function loadPendingChanges() {

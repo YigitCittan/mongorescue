@@ -67,6 +67,15 @@ type PendingChange struct {
 	// job's current one (PendingRetention).
 	RetentionDays  *int `json:"retention_days,omitempty"`
 	RetentionCount *int `json:"retention_count,omitempty"`
+	// KeepDaily, KeepWeekly, KeepMonthly and KeepYearly are the new GFS bucket
+	// values; nil keeps the job's current one (PendingRetention).
+	KeepDaily   *int `json:"keep_daily,omitempty"`
+	KeepWeekly  *int `json:"keep_weekly,omitempty"`
+	KeepMonthly *int `json:"keep_monthly,omitempty"`
+	KeepYearly  *int `json:"keep_yearly,omitempty"`
+	// CopyRetention holds the new per copy target retention overrides by copy
+	// target ID; a null value removes the target's override (PendingRetention).
+	CopyRetention map[string]*RetentionPolicy `json:"copy_retention,omitempty"`
 	// DeleteGraceDays is the new grace period (PendingDeleteGrace).
 	DeleteGraceDays *int `json:"delete_grace_days,omitempty"`
 	// MetadataRetentionCount is the new metadata snapshot count
@@ -218,6 +227,14 @@ type Approval struct {
 	// RetentionDays and RetentionCount are the new retention (ApprovalShortenRetention).
 	RetentionDays  *int `json:"retention_days,omitempty"`
 	RetentionCount *int `json:"retention_count,omitempty"`
+	// KeepDaily, KeepWeekly, KeepMonthly and KeepYearly are the new GFS bucket
+	// values and CopyRetention the new copy target overrides (null removes one), all
+	// of ApprovalShortenRetention; nil keeps the job's current value.
+	KeepDaily     *int                        `json:"keep_daily,omitempty"`
+	KeepWeekly    *int                        `json:"keep_weekly,omitempty"`
+	KeepMonthly   *int                        `json:"keep_monthly,omitempty"`
+	KeepYearly    *int                        `json:"keep_yearly,omitempty"`
+	CopyRetention map[string]*RetentionPolicy `json:"copy_retention,omitempty"`
 	// DeleteGraceDays is the new grace period (ApprovalLowerGrace).
 	DeleteGraceDays *int `json:"delete_grace_days,omitempty"`
 	// Settings is the settings change of ApprovalOIDCAdminMapping (the oidc group,
