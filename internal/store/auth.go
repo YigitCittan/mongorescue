@@ -948,8 +948,3 @@ func nullTime(t *time.Time) any {
 	}
 	return timeKey(*t)
 }
-
-// isUniqueViolation reports whether err is an SQLite UNIQUE constraint failure.
-func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
-}

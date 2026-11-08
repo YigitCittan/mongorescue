@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
@@ -96,11 +95,12 @@ func (s *SQLiteStore) UpdateStream(ctx context.Context, st *pitr.Stream) error {
 
 // streamWriteError maps a failed insert or update of a stream to the port's errors.
 func streamWriteError(err error, id, op string) error {
-	if isUniqueViolation(err) {
-		if strings.Contains(err.Error(), "connection_id") {
-			return pitr.ErrConnectionTaken
-		}
+	switch {
+	case isPrimaryKeyViolation(err):
 		return pitr.ErrAlreadyExists
+	case isUniqueIndexViolation(err):
+		// The only other unique column of a stream is its connection.
+		return pitr.ErrConnectionTaken
 	}
 	return fmt.Errorf("store: %s PITR stream %s: %w", op, id, err)
 }
