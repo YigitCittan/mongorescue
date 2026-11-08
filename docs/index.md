@@ -94,6 +94,7 @@ Run it, watch it, recover with it.
 - [Point-in-time recovery](pitr.md): continuous oplog collection and restores to the second
 - [Verification, restore tests and retention](verification.md)
 - [Monitoring and heartbeat](monitoring.md), [notifications and alerts](notifications.md)
+- [Storage usage and cost](cost.md): stored size per target over time, an estimated monthly cost from your prices, egress
 - [Incident runbooks](runbooks.md): one page per alert, [troubleshooting](troubleshooting.md)
 
 ### Secure

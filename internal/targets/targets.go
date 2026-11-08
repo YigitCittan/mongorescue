@@ -146,6 +146,9 @@ type Input struct {
 	// nil keeps the stored one on an update. An S3 target without a region (here or
 	// in s3.region) takes its bucket's location when storage tells it.
 	Region *string `json:"region,omitempty"`
+	// Pricing is the price for the cost estimate (models.StoragePricing); nil keeps
+	// the stored one on an update, an empty object (no currency, prices 0) removes it.
+	Pricing *models.StoragePricing `json:"pricing,omitempty"`
 }
 
 // TestResult is the outcome of a target test.
@@ -952,6 +955,19 @@ func (s *Service) fromInput(in Input, existing *models.StorageTarget) (*models.S
 		t.S3 = &s3
 	default:
 		return nil, fmt.Errorf("%w: type must be local or s3", ErrInvalid)
+	}
+	switch {
+	case in.Pricing != nil:
+		p := *in.Pricing
+		p.Normalize()
+		if !p.IsZero() {
+			if err := p.Validate(); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+			t.Pricing = &p
+		}
+	case existing != nil:
+		t.Pricing = existing.Pricing
 	}
 	if in.Region == nil && existing != nil {
 		t.Region, t.RegionDetected = existing.Region, existing.RegionDetected

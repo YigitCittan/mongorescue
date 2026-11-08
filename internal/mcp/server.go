@@ -86,6 +86,8 @@ type Config struct {
 	Targets TargetService
 	// PITR reports PITR streams for pitr_status; nil reports none.
 	PITR PITRService
+	// Cost reports the storage usage and cost for get_storage_usage; nil reports it unavailable.
+	Cost CostService
 	// Audit records every tool call; nil disables auditing.
 	Audit *audit.Service
 	// ObserveCall counts tool calls by tool and result (metrics); nil disables it.
