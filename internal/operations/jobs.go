@@ -12,6 +12,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/logsafe"
 	"github.com/yigitcittan/mongorescue/internal/models"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
+	"github.com/yigitcittan/mongorescue/internal/store"
 )
 
 // DefaultCronExpression is the schedule of a job saved without one.
@@ -522,6 +523,129 @@ func (s *Service) UpdateJob(ctx context.Context, id string, u JobUpdate) (*JobSa
 	s.InvalidateHistory()
 	changed := RetentionChanged(existing, job)
 	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, changed)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.ApplyLockedCopiesHold(ctx, lockedHold, job.ID, prot); err != nil {
+		return nil, err
+	}
+	return &JobSaveResult{Job: job, JobProtection: *prot, Warnings: s.JobWarnings(ctx, job)}, nil
+}
+
+// JobCreate is the request of CreateJob: a new job as a client describes it. Omitted
+// retention and gzip fields take the defaults of the general settings.
+type JobCreate struct {
+	models.Job
+	// RetentionDays keeps backups for this many days (0 = forever); the general
+	// default when omitted.
+	RetentionDays *int `json:"retention_days"`
+	// RetentionCount keeps at most this many backups (0 = unlimited); the general
+	// default when omitted.
+	RetentionCount *int `json:"retention_count"`
+	// Gzip compresses the dumps; the general default when omitted.
+	Gzip *bool `json:"gzip"`
+	// RequireLockedCopies takes the security.require_locked_copies setting when
+	// omitted.
+	RequireLockedCopies *bool `json:"require_locked_copies"`
+}
+
+// jobIDOverhead is the fixed length of the generated "job_<db>_<unix>_<random>" ID
+// besides the database name.
+const jobIDOverhead = len("job___") + 10 + models.IDSuffixLength
+
+// newJobID returns a fresh ID for job: "job_<database>_<unix>_<random>", named after
+// the selection mode for a job covering several databases.
+func (s *Service) newJobID(job *models.Job) (string, error) {
+	suffix, err := models.NewIDSuffix()
+	if err != nil {
+		return "", fmt.Errorf("generate a job id: %w", err)
+	}
+	idName := job.Database
+	if sel := job.DatabaseSelection; idName == "" && sel.Multi() {
+		// A multi-database job is named after its mode ("job_all_...", "job_pattern_...").
+		idName = string(sel.Mode)
+	}
+	cleanName := models.SanitizeIDComponent(strings.ToLower(idName), models.MaxIDLength-jobIDOverhead)
+	return fmt.Sprintf("job_%s_%d_%s", cleanName, s.now().Unix(), suffix), nil
+}
+
+// CreateJob validates in like any job (see ValidateJob), stores it as a new job and
+// schedules it at once. The ID is generated when in has none; a given one must be a
+// valid ID. A job never replaces another: a taken ID returns ErrAlreadyExists (use
+// UpdateJob to edit). The run history is server-managed and never taken from the
+// request. Expected failures: ErrAlreadyExists, ErrPausedUntilPast, ErrInvalid for
+// a malformed ID or heartbeat URL, and those of ValidateJob.
+func (s *Service) CreateJob(ctx context.Context, in JobCreate) (*JobSaveResult, error) {
+	job := in.Clone()
+	general := s.settings().General
+	job.RetentionDays = derefOr(in.RetentionDays, general.DefaultRetentionDays)
+	job.RetentionCount = derefOr(in.RetentionCount, general.DefaultRetentionCount)
+	job.Gzip = derefOr(in.Gzip, general.DefaultGzip)
+	if job.ID == "" {
+		id, err := s.newJobID(job)
+		if err != nil {
+			return nil, err
+		}
+		job.ID = id
+	} else if err := models.ValidateID(job.ID); err != nil {
+		return nil, invalid(err)
+	}
+
+	// The heartbeat URL is a secret: a masked value has nothing stored to keep.
+	heartbeatURL, err := models.ResolveHeartbeatURL(job.HeartbeatURL, "")
+	if err != nil {
+		return nil, invalid(err)
+	}
+	job.HeartbeatURL = heartbeatURL
+	if !job.Enabled {
+		if err = s.ValidatePausedUntil(job.PausedUntil); err != nil {
+			return nil, err
+		}
+	}
+	job.RequireLockedCopies = derefOr(in.RequireLockedCopies, s.settings().Security.RequireLockedCopies)
+	// Known databases and the run history are server-managed, never taken from the
+	// client.
+	CarryKnownDatabases(job, nil)
+	job.LastRun, job.NextRun, job.LastRestoreTest = nil, nil, nil
+	if err = s.ValidateJob(ctx, job); err != nil {
+		return nil, err
+	}
+	lockedHold, err := s.HoldLockedCopies(ctx, nil, job)
+	if err != nil {
+		return nil, err
+	}
+	hold, err := s.HoldRetention(ctx, nil, job)
+	if err != nil {
+		return nil, err
+	}
+	if job.Enabled && s.cfg.Scheduler == nil {
+		job.NextRun = nextRunOf(job.CronExpression, s.now())
+	}
+	// A new job is inserted and never overwrites another, under the scheduler's lock
+	// when there is one.
+	persist := func() error {
+		if fenceErr := s.checkFence(); fenceErr != nil {
+			return fenceErr
+		}
+		if createErr := s.cfg.Store.CreateJob(ctx, job); createErr != nil {
+			if errors.Is(createErr, store.ErrAlreadyExists) {
+				return public("a job with this id already exists", ErrAlreadyExists, createErr)
+			}
+			return createErr
+		}
+		return nil
+	}
+	if s.cfg.Scheduler != nil {
+		err = s.cfg.Scheduler.ApplyJobUpdate(job, persist)
+	} else {
+		err = persist()
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The overview's history lists the jobs' schedules.
+	s.InvalidateHistory()
+	prot, err := s.ApplyRetentionHold(ctx, job.ID, hold, false)
 	if err != nil {
 		return nil, err
 	}

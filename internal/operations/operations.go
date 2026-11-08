@@ -45,6 +45,8 @@ var (
 	ErrInvalid = errors.New("operations: invalid request")
 	// ErrNotFound marks a job, backup or restore that does not exist.
 	ErrNotFound = errors.New("operations: not found")
+	// ErrAlreadyExists is returned when a job is created under an ID that is taken.
+	ErrAlreadyExists = errors.New("operations: already exists")
 	// ErrConnectionRequired is returned when a backup or restore names no connection.
 	ErrConnectionRequired = errors.New("connection_id is required")
 	// ErrUnknownConnection is returned when a request names a connection that does not
