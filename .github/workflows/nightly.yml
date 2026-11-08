@@ -6,7 +6,8 @@ name: Nightly
 # scenarios on a three-member replica set and the upgrade from the previous
 # releases (nightly), and the load test and the
 # PITR soak test (weekly), and the cross-version restore, the native Windows and
-# macOS run, the canary on mongo:latest and the shuffled unit tests (nightly). None
+# macOS run, the canary on mongo:latest, the shuffled unit tests and the dashboard
+# suite in Firefox and WebKit (nightly, informational). None
 # of them runs on pull requests or is required. The report-failures job at the end
 # opens (or comments on) an issue labelled ci-nightly-failure when a job fails.
 on:
@@ -267,6 +268,89 @@ jobs:
 
       - name: Run the native end-to-end tests
         run: ./scripts/test-native-e2e.sh
+
+  # The dashboard's Playwright suite (e2e/) in Firefox and WebKit, the browsers
+  # the pull request run does not cover (it uses Chromium). Same journey, same
+  # disposable MongoDB and MinIO as the E2E job of ci.yml; E2E_CROSS_BROWSER adds
+  # the firefox and webkit projects to e2e/playwright.config.ts. Informational: a
+  # failure is visible in this run and its report but does not open the nightly
+  # failure issue (continue-on-error), because the browsers differ in details the
+  # dashboard does not promise yet.
+  cross-browser-e2e:
+    name: E2E (${{ matrix.browser }})
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.suite == 'nightly' || inputs.suite == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull Docker Hub images through mirror.gcr.io
+        uses: ./.github/actions/docker-hub-mirror
+        with:
+          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install MongoDB Database Tools
+        run: |
+          . /etc/os-release
+          dist="ubuntu${VERSION_ID//./}"
+          for d in "${dist}" ubuntu2404; do
+            url="https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${d}-x86_64-${MONGO_TOOLS_VERSION}.deb"
+            echo "Downloading ${url}"
+            if curl -fsSL -o "${RUNNER_TEMP}/mongodb-database-tools.deb" "${url}"; then break; fi
+            [ "${d}" = ubuntu2404 ] && exit 1
+          done
+          sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
+          mongodump --version
+
+      - name: Install e2e Dependencies and ${{ matrix.browser }}
+        working-directory: e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium ${{ matrix.browser }}
+
+      - name: Run the Playwright suite in ${{ matrix.browser }}
+        env:
+          E2E_SKIP_INSTALL: '1'
+          E2E_CROSS_BROWSER: '1'
+          PLAYWRIGHT_ARGS: --project=${{ matrix.browser }}
+        run: ./scripts/test-e2e-docker.sh
+
+      - name: Upload Playwright Report and Traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+            e2e/.run/server.log
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: ignore
 
   # The unit tests with the race detector, in random order and five times over: a
   # test that depends on the order of the others, on leftover state or on timing

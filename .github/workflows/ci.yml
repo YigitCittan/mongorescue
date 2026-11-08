@@ -404,7 +404,9 @@ jobs:
         run: ./scripts/test-integration-docker.sh
 
   # 5b. Browser tests: the Playwright suite in e2e/ drives the dashboard of the real
-  #     binary in Chromium against disposable MongoDB and MinIO containers.
+  #     binary in Chromium against disposable MongoDB and MinIO containers, including
+  #     the axe accessibility scan (e2e/tests/26-a11y.spec.ts). The dashboard unit
+  #     tests (node --test web/test/, no browser) run first in the same job.
   #     Not a required check yet; the maintainer adds it once it has been stable.
   e2e:
     name: E2E (Playwright)
@@ -452,6 +454,9 @@ jobs:
           done
           sudo apt-get install -y "${RUNNER_TEMP}/mongodb-database-tools.deb"
           mongodump --version
+
+      - name: Dashboard Unit Tests (node --test; helpers, i18n, script load order)
+        run: node --test "web/test/*.test.mjs"
 
       - name: Install e2e Dependencies and Chromium
         working-directory: e2e
