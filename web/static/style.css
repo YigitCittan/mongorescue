@@ -112,7 +112,9 @@
   --neutral-bg: var(--surface-2);
   --neutral-fg: var(--muted);
   --text-muted: var(--muted);
-  --text-subtle: color-mix(in srgb, var(--muted) 72%, var(--bg));
+  /* Secondary text (ids, sub-lines): 4.5:1 or better on bg, surface and surface-2 in both
+     themes (axe color-contrast, e2e/tests/26-a11y.spec.ts); 72% gave 3.4:1 and 4.3:1. */
+  --text-subtle: color-mix(in srgb, var(--muted) 95%, var(--bg));
   --border-strong: color-mix(in srgb, var(--border) 82%, var(--text));
   --focus: var(--accent);
   --backdrop: rgba(0, 0, 0, 0.45);
