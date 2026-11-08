@@ -394,6 +394,8 @@ async function overviewRefresh(force) {
     const [json] = await Promise.all([
       apiJSON(`/api/v1/stats/history?days=${OVERVIEW_DAYS}${tz}&tz_offset=${offset}`),
       typeof readinessLoad === "function" ? readinessLoad() : Promise.resolve(),
+      // The storage usage card (cost.js) loads on its own and never throws.
+      typeof costLoad === "function" ? costLoad(force) : Promise.resolve(),
     ]);
     if (json.success && json.data) {
       overview.data = json.data;
@@ -698,6 +700,8 @@ function overviewRender() {
   if (status) status.classList.toggle("text-danger", !!overview.error);
   // Recovery readiness (readiness.js) does not depend on the history.
   if (typeof readinessRender === "function") readinessRender();
+  // So does the storage usage and cost card (cost.js).
+  if (typeof costRender === "function") costRender();
   if (!h) return;
   const daily = Array.isArray(h.daily) ? h.daily : [];
 

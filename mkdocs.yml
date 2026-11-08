@@ -97,6 +97,7 @@ nav:
       - Upgrading & Rollback: upgrading.md
       - Point-in-Time Recovery (PITR): pitr.md
       - Verification & Testing: verification.md
+      - Storage Usage & Cost: cost.md
       - Monitoring & Heartbeat: monitoring.md
       - Notifications & Alerts: notifications.md
       - Incident Runbooks: runbooks.md

@@ -96,6 +96,10 @@ type StorageTarget struct {
 	// LastTestError is the failure reason of the last test.
 	LastTestError string `json:"last_test_error,omitempty"`
 
+	// Pricing is the optional price the operator entered, for the cost estimate
+	// (see StoragePricing); nil when none was set.
+	Pricing *StoragePricing `json:"pricing,omitempty"`
+
 	// Hints are notes on how well the target protects backups against deletion
 	// (see ImmutabilityHint). They are computed for API responses (Redacted), never
 	// stored.
@@ -381,6 +385,10 @@ func (t *StorageTarget) Clone() *StorageTarget {
 	if t.LastTestAt != nil {
 		at := *t.LastTestAt
 		clone.LastTestAt = &at
+	}
+	if t.Pricing != nil {
+		p := *t.Pricing
+		clone.Pricing = &p
 	}
 	clone.Hints = slices.Clone(t.Hints)
 	return &clone

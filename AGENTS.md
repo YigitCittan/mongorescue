@@ -53,6 +53,7 @@ go mod tidy                    # must leave go.mod/go.sum unchanged
 | `internal/pitr` | Point-in-time recovery domain: streams, chains, oplog chunks, collector state and the `Repository` port (store in `internal/store`, oplog reads in `internal/mongoconn`) |
 | `internal/runlog` | Per-run log files under `<datadir>/logs` (redacted, 5 MiB cap with head and tail), read by the run registry in `internal/runs` |
 | `internal/audit` | Audit log of MCP tool calls |
+| `internal/cost` | Storage usage and cost tracking: stored bytes per target, job and database from the backup, copy and PITR chunk records, the daily snapshot (`storage_usage_daily`), price math from the target's optional `pricing`, the egress estimate; no cloud billing calls |
 | `internal/server` | REST API, auth, route → scope table, dashboard serving |
 | `internal/mcp` | MCP adapter: tools, resources, prompts, Streamable HTTP handler, stdio bridge |
 | `internal/cli` | CLI commands (`backup`, `restore`, `list`, `verify`, `status`) over the REST API: flags, API key sources, `--wait`, output, exit codes |

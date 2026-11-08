@@ -32,6 +32,7 @@ var toolRoutes = map[string]string{
 	mcp.ToolPreviewJobDatabases:   "GET /api/v1/jobs/{id}/databases/preview",
 	mcp.ToolListJobRuns:           "GET /api/v1/jobs/{id}/runs",
 	mcp.ToolPITRStatus:            pitrStreamsRoute,
+	mcp.ToolGetStorageUsage:       "GET /api/v1/storage/usage",
 	mcp.ToolPITRRestore:           "POST /api/v1/restore",
 }
 

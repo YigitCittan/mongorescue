@@ -76,6 +76,8 @@ var routeScopes = map[string]auth.Scope{
 	"GET /api/v1/schedule/preview": auth.ScopeRead,
 	// Recovery readiness per database (no credentials, no URIs).
 	"GET /api/v1/readiness": auth.ScopeRead,
+	// Stored size, estimated cost and egress per storage target.
+	"GET /api/v1/storage/usage": auth.ScopeRead,
 
 	"GET /api/v1/jobs":           auth.ScopeRead,
 	"POST /api/v1/jobs":          auth.ScopeAdmin,

@@ -28,6 +28,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
 	"github.com/yigitcittan/mongorescue/internal/copies"
+	"github.com/yigitcittan/mongorescue/internal/cost"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/diskspace"
 	"github.com/yigitcittan/mongorescue/internal/events"
@@ -150,6 +151,8 @@ type App struct {
 	keyExpiry *apiKeyExpiryMonitor
 	// tlsExpiry watches the connections' TLS certificate expiries (active instance only).
 	tlsExpiry *tlsExpiryMonitor
+	// costUsage takes the daily storage usage snapshot (active instance only).
+	costUsage *costMonitor
 
 	// storeCloser releases the metadata database and dirLock the data directory;
 	// Close releases both once.
@@ -334,6 +337,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 	targetSvc := targets.NewService(metaStore, storageFactory, cfg.DataDir, targets.WithLogger(logger),
 		targets.WithVault(vaultResolver.Configured()),
 		targets.WithRequireHTTPS(func() bool { return settingsSvc.Current().Security.RequireHTTPSEndpoints }))
+	costSvc := cost.New(metaStore, targetSvc, cost.WithLogger(logger))
 	prober := mongoconn.New()
 	tlsKick := make(chan struct{}, 1)
 	connSvc := connections.NewService(metaStore, prober, connections.WithLogger(logger), connections.WithCredentials(vaultResolver),
@@ -974,6 +978,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		Connections: connSvc,
 		Targets:     targetSvc,
 		PITR:        pitrSvc,
+		Cost:        costSvc,
 		Audit:       auditSvc,
 		ObserveCall: metricSet.ObserveMCPCall,
 		Version:     o.version,
@@ -984,6 +989,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		server.WithOperations(ops),
 		server.WithVaultCredentials(vaultResolver),
 		server.WithMCPHandler(mcpSrv.Handler()),
+		server.WithCost(costSvc),
 		server.WithAudit(auditSvc),
 		server.WithAuditLog(auditLog),
 		server.WithEventPublisher(bus),
@@ -1060,6 +1066,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) (_ *App, err e
 		diskGuard:     diskGuard,
 		keyExpiry:     newAPIKeyExpiryMonitor(authSvc, ops, metricSet, settingsSvc, logger),
 		tlsExpiry:     newTLSExpiryMonitor(connSvc, ops, metricSet, logger, tlsKick),
+		costUsage:     newCostMonitor(costSvc, metricSet, logger),
 		storeCloser:   metaStore,
 		dirLock:       dirLock,
 		vault:         vaultResolver,
@@ -1177,6 +1184,10 @@ func (a *App) startBackground(standby bool) (stop func()) {
 	// The connections' TLS certificate expiries share that lifecycle.
 	if a.tlsExpiry != nil && !standby {
 		keyExpiryWG.Go(func() { a.tlsExpiry.Run(keyExpiryCtx) })
+	}
+	// So does the daily storage usage snapshot (the active instance only).
+	if a.costUsage != nil && !standby {
+		keyExpiryWG.Go(func() { a.costUsage.Run(keyExpiryCtx) })
 	}
 	// The space guard retries the saves a full data directory failed; it stops
 	// after the runs too, before the metadata database closes.

@@ -4088,6 +4088,48 @@ paths:
           $ref: '#/components/responses/Conflict'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/storage/usage:
+    get:
+      operationId: get_storage_usage
+      summary: Get the stored size, estimated cost and egress per storage target
+      description: Estimate from MongoRescue's own records, not a bill. Per storage target it reports the bytes held now (backup archives, copies, retained copies and PITR oplog chunks), their daily history, the estimated monthly cost from the price entered on the target (nil without one) and the estimated egress of verification, restore tests and copies; plus the largest jobs and databases. It spans every connection, so a key limited to some connections is refused with 403.
+      tags:
+        - Stats
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: Range of the history and of the egress window in days (1 to 400, default 30).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+            default: 30
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+        - apiKeyHeader: []
+      x-required-scope: read
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StorageUsage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/users:
     get:
       operationId: get_users
@@ -5078,10 +5120,150 @@ components:
           format: date-time
         last_test_ok:
           type: boolean
+        pricing:
+          $ref: '#/components/schemas/StoragePricing'
       required:
         - name
         - type
       additionalProperties: true
+    StoragePricing:
+      type: object
+      description: The price entered for a target, for the cost estimate. Configuration, not a secret. On a save, omit it to keep the stored price and send an empty object to remove it.
+      properties:
+        currency:
+          type: string
+          description: ISO 4217 code of both prices, three letters (USD, EUR).
+          example: USD
+        storage_per_gib_month:
+          type: number
+          minimum: 0
+          description: Price of keeping one GiB (2^30 bytes) for a month.
+        egress_per_gib:
+          type: number
+          minimum: 0
+          description: Price of reading one GiB back out of the target.
+      required:
+        - currency
+        - storage_per_gib_month
+        - egress_per_gib
+    StorageUsage:
+      type: object
+      description: Stored size and estimated cost and egress per storage target.
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        days:
+          type: integer
+        from:
+          type: string
+          description: First UTC day of the range (YYYY-MM-DD).
+        to:
+          type: string
+          description: Last UTC day of the range (YYYY-MM-DD).
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageTargetUsage'
+        totals:
+          type: array
+          description: Costs of the priced targets, per currency.
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              monthly_cost:
+                type: number
+              egress_cost:
+                type: number
+        jobs:
+          type: array
+          description: The largest jobs now (backups and copies, not PITR), biggest first.
+          items:
+            $ref: '#/components/schemas/StorageConsumer'
+        databases:
+          type: array
+          description: The largest databases now (backups and copies, not PITR), biggest first.
+          items:
+            $ref: '#/components/schemas/StorageConsumer'
+        basis:
+          type: string
+          description: What the estimate is and is not.
+      required:
+        - targets
+        - totals
+        - jobs
+        - databases
+        - basis
+    StorageTargetUsage:
+      type: object
+      properties:
+        target_id:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/StorageType'
+        stored_bytes:
+          type: integer
+          format: int64
+        objects:
+          type: integer
+          format: int64
+        by_kind:
+          type: object
+          description: Stored bytes per kind (backup, copy, retained, pitr).
+          additionalProperties:
+            type: integer
+            format: int64
+        growth_bytes:
+          type: integer
+          format: int64
+          description: Latest snapshot minus the earliest one of the range.
+        pricing:
+          $ref: '#/components/schemas/StoragePricing'
+        monthly_cost:
+          type: number
+          description: Estimated cost of keeping stored_bytes for a month, in the currency of pricing; absent without a price.
+        egress:
+          type: object
+          properties:
+            bytes:
+              type: integer
+              format: int64
+            by_source:
+              type: object
+              description: Bytes read back per source (verification, copy, restore_test). A lower bound, since only the last verification of an archive is recorded.
+              additionalProperties:
+                type: integer
+                format: int64
+            cost:
+              type: number
+              description: Estimated egress cost in the currency of pricing; absent without a price.
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+              bytes:
+                type: integer
+                format: int64
+    StorageConsumer:
+      type: object
+      properties:
+        job_id:
+          type: string
+        database:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        objects:
+          type: integer
+          format: int64
     BackupList:
       type: array
       items:

@@ -102,7 +102,7 @@ The full documentation, with search, is at **[yigitcittan.github.io/mongorescue]
 - [Encryption and verified restores](docs/encryption.md), [verification, restore tests and retention safety](docs/verification.md)
 - [Delete protection and its threat model](docs/security.md), [threat model (STRIDE)](docs/threat-model.md), [verifying releases](docs/security.md#verifying-releases)
 - [Privacy, retention and erasure requests](docs/privacy.md)
-- [Notifications](docs/notifications.md), [metrics and alerting](docs/metrics.md), [monitoring](docs/monitoring.md)
+- [Notifications](docs/notifications.md), [metrics and alerting](docs/metrics.md), [monitoring](docs/monitoring.md), [storage usage and cost](docs/cost.md)
 - [Running in production](docs/production.md) and the [production checklist](docs/production.md#production-checklist)
 - [Upgrading and rolling back](docs/upgrading.md): backups first, the pre-migration database copy, HA order, rollback
 - [Troubleshooting](docs/troubleshooting.md), [architecture](docs/architecture.md), [testing](docs/testing.md), [roadmap](docs/roadmap.md)

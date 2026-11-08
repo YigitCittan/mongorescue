@@ -1351,6 +1351,31 @@ var compatSteps = []compatStep{
 			}
 		},
 	},
+	{
+		version: 32,
+		seed: func(t *testing.T, f *compatFixture) {
+			f.exec(t, `INSERT INTO storage_targets (id, name, is_default, data) VALUES (?, ?, ?, ?)`,
+				"tgt_v32_priced", "Priced", 0, jsonDoc(t, map[string]any{
+					"id": "tgt_v32_priced", "name": "Priced", "type": "local", "is_default": false,
+					"local":      map[string]any{"path": "/backups/priced"},
+					"pricing":    map[string]any{"currency": "EUR", "storage_per_gib_month": 0.02, "egress_per_gib": 0.05},
+					"created_at": rfc(70 * time.Hour), "updated_at": rfc(70 * time.Hour),
+				}))
+			f.exec(t, `INSERT INTO storage_usage_daily (day, target_id, kind, job_id, database_name, stream_id, objects, bytes)
+				VALUES ('2026-09-25', 'tgt_v32_priced', 'backup', 'job_v32', 'shop', '', 3, 3072)`)
+		},
+		check: func(t *testing.T, _ *compatFixture, s *SQLiteStore) {
+			ctx := context.Background()
+			tgt, err := s.GetStorageTarget(ctx, "tgt_v32_priced")
+			if err != nil || tgt.Pricing == nil || tgt.Pricing.Currency != "EUR" || tgt.Pricing.EgressPerGiB != 0.05 {
+				t.Errorf("tgt_v32_priced = %+v, %v; want its price", tgt, err)
+			}
+			hist, err := s.UsageHistory(ctx, "2026-09-01", "2026-09-30")
+			if err != nil || len(hist) != 1 || hist[0].Bytes != 3072 || hist[0].Objects != 3 || hist[0].Database != "shop" {
+				t.Errorf("usage history = %+v, %v", hist, err)
+			}
+		},
+	},
 }
 
 // assertJobColumnsCurrent fails unless every readable job's filter columns are

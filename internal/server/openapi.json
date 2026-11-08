@@ -891,6 +891,51 @@
         ],
         "type": "object"
       },
+      "StorageConsumer": {
+        "properties": {
+          "bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "database": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "objects": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "StoragePricing": {
+        "description": "The price entered for a target, for the cost estimate. Configuration, not a secret. On a save, omit it to keep the stored price and send an empty object to remove it.",
+        "properties": {
+          "currency": {
+            "description": "ISO 4217 code of both prices, three letters (USD, EUR).",
+            "example": "USD",
+            "type": "string"
+          },
+          "egress_per_gib": {
+            "description": "Price of reading one GiB back out of the target.",
+            "minimum": 0,
+            "type": "number"
+          },
+          "storage_per_gib_month": {
+            "description": "Price of keeping one GiB (2^30 bytes) for a month.",
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "currency",
+          "storage_per_gib_month",
+          "egress_per_gib"
+        ],
+        "type": "object"
+      },
       "StorageTarget": {
         "additionalProperties": true,
         "properties": {
@@ -918,6 +963,9 @@
           "name": {
             "type": "string"
           },
+          "pricing": {
+            "$ref": "#/components/schemas/StoragePricing"
+          },
           "s3": {
             "additionalProperties": true,
             "description": "Secret keys are write-only; responses mask them. ca_pem is an optional PEM bundle of certificate authorities trusted for the endpoint of this target in addition to the system roots; it is not secret and is returned as stored.",
@@ -943,12 +991,160 @@
         },
         "type": "array"
       },
+      "StorageTargetUsage": {
+        "properties": {
+          "by_kind": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "description": "Stored bytes per kind (backup, copy, retained, pitr).",
+            "type": "object"
+          },
+          "egress": {
+            "properties": {
+              "by_source": {
+                "additionalProperties": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "description": "Bytes read back per source (verification, copy, restore_test). A lower bound, since only the last verification of an archive is recorded.",
+                "type": "object"
+              },
+              "bytes": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "cost": {
+                "description": "Estimated egress cost in the currency of pricing; absent without a price.",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "growth_bytes": {
+            "description": "Latest snapshot minus the earliest one of the range.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "history": {
+            "items": {
+              "properties": {
+                "bytes": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "date": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "monthly_cost": {
+            "description": "Estimated cost of keeping stored_bytes for a month, in the currency of pricing; absent without a price.",
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "objects": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pricing": {
+            "$ref": "#/components/schemas/StoragePricing"
+          },
+          "stored_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/StorageType"
+          }
+        },
+        "type": "object"
+      },
       "StorageType": {
         "enum": [
           "local",
           "s3"
         ],
         "type": "string"
+      },
+      "StorageUsage": {
+        "description": "Stored size and estimated cost and egress per storage target.",
+        "properties": {
+          "basis": {
+            "description": "What the estimate is and is not.",
+            "type": "string"
+          },
+          "databases": {
+            "description": "The largest databases now (backups and copies, not PITR), biggest first.",
+            "items": {
+              "$ref": "#/components/schemas/StorageConsumer"
+            },
+            "type": "array"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "from": {
+            "description": "First UTC day of the range (YYYY-MM-DD).",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "jobs": {
+            "description": "The largest jobs now (backups and copies, not PITR), biggest first.",
+            "items": {
+              "$ref": "#/components/schemas/StorageConsumer"
+            },
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/StorageTargetUsage"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "Last UTC day of the range (YYYY-MM-DD).",
+            "type": "string"
+          },
+          "totals": {
+            "description": "Costs of the priced targets, per currency.",
+            "items": {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "egress_cost": {
+                  "type": "number"
+                },
+                "monthly_cost": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets",
+          "totals",
+          "jobs",
+          "databases",
+          "basis"
+        ],
+        "type": "object"
       },
       "User": {
         "additionalProperties": true,
@@ -8001,6 +8197,78 @@
           "Storage targets"
         ],
         "x-required-scope": "admin"
+      }
+    },
+    "/api/v1/storage/usage": {
+      "get": {
+        "description": "Estimate from MongoRescue's own records, not a bill. Per storage target it reports the bytes held now (backup archives, copies, retained copies and PITR oplog chunks), their daily history, the estimated monthly cost from the price entered on the target (nil without one) and the estimated egress of verification, restore tests and copies; plus the largest jobs and databases. It spans every connection, so a key limited to some connections is refused with 403.",
+        "operationId": "get_storage_usage",
+        "parameters": [
+          {
+            "description": "Range of the history and of the egress window in days (1 to 400, default 30).",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 400,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Envelope"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/StorageUsage"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyHeader": []
+          }
+        ],
+        "summary": "Get the stored size, estimated cost and egress per storage target",
+        "tags": [
+          "Stats"
+        ],
+        "x-required-scope": "read"
       }
     },
     "/api/v1/users": {
