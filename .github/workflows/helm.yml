@@ -69,11 +69,11 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
           cd "$RUNNER_TEMP"
-          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
           echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
           tar -xzf helm.tgz linux-amd64/helm
           install -m 0755 linux-amd64/helm bin/helm
-          curl -fsSLo kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
           tar -xzf kubeconform.tgz kubeconform
           install -m 0755 kubeconform bin/kubeconform
@@ -220,13 +220,13 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
           cd "$RUNNER_TEMP"
-          curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
           echo "${KIND_SHA256}  kind" | sha256sum -c -
           install -m 0755 kind bin/kind
-          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
           echo "${KUBECTL_SHA256}  kubectl" | sha256sum -c -
           install -m 0755 kubectl bin/kubectl
-          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
           echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
           tar -xzf helm.tgz linux-amd64/helm
           install -m 0755 linux-amd64/helm bin/helm
