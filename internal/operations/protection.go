@@ -451,7 +451,7 @@ func (s *Service) executeApproval(ctx context.Context, a *models.Approval) (stri
 		if a.SubjectCreatedAt == nil {
 			return "", public("the request is not bound to a job; request it again", ErrInvalid)
 		}
-		c, err := s.scheduleRetention(ctx, a.Subject, a.RetentionDays, a.RetentionCount, a.SubjectCreatedAt)
+		c, err := s.scheduleRetention(ctx, holdOfApproval(a), a.SubjectCreatedAt)
 		if err != nil {
 			return "", err
 		}
@@ -1004,12 +1004,14 @@ func (s *Service) schedulePending(ctx context.Context, c *models.PendingChange) 
 	return c, nil
 }
 
-// scheduleRetention schedules the shortening of job jobID's retention to days and
-// count (nil keeps a value) after the grace period.
+// scheduleRetention schedules the lowering h of a job's retention (nil values keep
+// the job's current ones) after the grace period. A lowering already pending for the
+// job keeps the values h does not set.
 //
 // bound, when set, is the creation time of the job the request was made for: a job
 // deleted and recreated under the same ID since is refused (ErrJobRecreated).
-func (s *Service) scheduleRetention(ctx context.Context, jobID string, days, count *int, bound *time.Time) (*models.PendingChange, error) {
+func (s *Service) scheduleRetention(ctx context.Context, h *RetentionHold, bound *time.Time) (*models.PendingChange, error) {
+	jobID := h.JobID
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, notFound(err, "job not found")
@@ -1018,11 +1020,16 @@ func (s *Service) scheduleRetention(ctx context.Context, jobID string, days, cou
 		return nil, public(fmt.Sprintf("job %s was deleted and created again since the request; the request does not apply to the new job", jobID), ErrJobRecreated)
 	}
 	created := job.CreatedAt
-	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingRetention, JobID: jobID, RetentionDays: days, RetentionCount: count, JobCreatedAt: &created})
+	if earlier := s.pendingRetention(ctx, jobID); earlier != nil && earlier.JobCreatedAt != nil && earlier.JobCreatedAt.Equal(created) {
+		h = h.merge(holdOfPending(earlier))
+	}
+	c, err := s.schedulePending(ctx, &models.PendingChange{Kind: models.PendingRetention, JobID: jobID, JobCreatedAt: &created,
+		RetentionDays: h.Days, RetentionCount: h.Count,
+		KeepDaily: h.Daily, KeepWeekly: h.Weekly, KeepMonthly: h.Monthly, KeepYearly: h.Yearly, CopyRetention: h.Copies})
 	if err != nil {
 		return nil, err
 	}
-	s.destructive(ctx, "shorten_retention", fmt.Sprintf("retention of job %s shortened to %s, effective %s", jobID, retentionText(days, count), c.EffectiveAt.Format(time.RFC3339)),
+	s.destructive(ctx, "shorten_retention", fmt.Sprintf("retention of job %s lowered to %s, effective %s", jobID, h.text(), c.EffectiveAt.Format(time.RFC3339)),
 		func(e *events.Event) { e.JobID = jobID })
 	return c, nil
 }
@@ -1036,18 +1043,6 @@ func (s *Service) scheduleGrace(ctx context.Context, days int) (*models.PendingC
 	}
 	s.destructive(ctx, "lower_delete_grace", fmt.Sprintf("delete grace period lowered to %d days, effective %s", days, c.EffectiveAt.Format(time.RFC3339)), nil)
 	return c, nil
-}
-
-// retentionText describes a retention change.
-func retentionText(days, count *int) string {
-	var parts []string
-	if days != nil {
-		parts = append(parts, fmt.Sprintf("%d days", *days))
-	}
-	if count != nil {
-		parts = append(parts, fmt.Sprintf("%d backups", *count))
-	}
-	return strings.Join(parts, " and ")
 }
 
 // ApplyDueChanges applies every pending change whose time has come and expires
@@ -1144,12 +1139,7 @@ func (s *Service) applyRetentionChange(ctx context.Context, c *models.PendingCha
 			return errNotDueYet
 		}
 		*job = *current.Clone()
-		if c.RetentionDays != nil {
-			job.RetentionDays = *c.RetentionDays
-		}
-		if c.RetentionCount != nil {
-			job.RetentionCount = *c.RetentionCount
-		}
+		holdOfPending(c).applyTo(job)
 		return s.store.UpdateJob(ctx, job)
 	}
 	if s.cfg.Scheduler != nil {
@@ -1481,19 +1471,6 @@ func (s *Service) DeleteTarget(ctx context.Context, id string) error {
 	return nil
 }
 
-// RetentionHold is a shortening of a job's retention that a job edit held back: the
-// job is stored with its current retention, and the shorter values take effect after
-// the grace period (ApplyRetentionHold).
-type RetentionHold struct {
-	// JobID is the job.
-	JobID string
-	// Days and Count are the requested shorter values; nil when that value was not
-	// shortened.
-	Days, Count *int
-	// From describes the retention in force.
-	From string
-}
-
 // JobProtection reports what a job edit deferred.
 type JobProtection struct {
 	// PendingRetention is the scheduled retention shortening, if any.
@@ -1506,84 +1483,6 @@ type JobProtection struct {
 	// administrator that comes first under the two-person rule.
 	PendingLockedCopies  *models.PendingChange `json:"pending_locked_copies,omitempty"`
 	LockedCopiesApproval *models.Approval      `json:"locked_copies_approval,omitempty"`
-}
-
-// shorter reports whether retention value v (0 keeps forever) keeps less than old.
-func shorter(v, old int) bool {
-	return v > 0 && (old == 0 || v < old)
-}
-
-// HoldRetention compares the retention of job, about to be stored, with that of
-// existing (nil for a new job). A shortened value is reset to the current one in job
-// and returned in the hold, to be applied with ApplyRetentionHold once job is stored.
-// A new job whose ID already names backups counts as keeping them forever, so it
-// cannot shorten their retention either. It returns nil when nothing was shortened.
-func (s *Service) HoldRetention(ctx context.Context, existing, job *models.Job) (*RetentionHold, error) {
-	baseline := existing
-	if baseline == nil {
-		page, err := s.store.QueryBackupRecords(ctx, store.BackupFilter{JobID: job.ID, Limit: 1})
-		if err != nil {
-			return nil, fmt.Errorf("check the backups of job %s: %w", job.ID, err)
-		}
-		if page.Total == 0 {
-			return nil, nil
-		}
-		baseline = &models.Job{}
-	}
-	h := &RetentionHold{JobID: job.ID, From: fmt.Sprintf("%d days and %d backups", baseline.RetentionDays, baseline.RetentionCount)}
-	if shorter(job.RetentionDays, baseline.RetentionDays) {
-		v := job.RetentionDays
-		h.Days, job.RetentionDays = &v, baseline.RetentionDays
-	}
-	if shorter(job.RetentionCount, baseline.RetentionCount) {
-		v := job.RetentionCount
-		h.Count, job.RetentionCount = &v, baseline.RetentionCount
-	}
-	if h.Days == nil && h.Count == nil {
-		return nil, nil
-	}
-	return h, nil
-}
-
-// ApplyRetentionHold schedules the shortening h after the grace period or, with the
-// two-person rule, asks a second administrator first. retentionChanged reports that
-// the stored job's retention changed otherwise (lengthened): that drops a pending
-// shortening of the job when there is no new one.
-func (s *Service) ApplyRetentionHold(ctx context.Context, jobID string, h *RetentionHold, retentionChanged bool) (*JobProtection, error) {
-	out := &JobProtection{}
-	if h == nil {
-		if retentionChanged {
-			if st, ok := s.cfg.Store.(pendingStore); ok {
-				if _, err := st.DeletePendingChangesOf(ctx, models.PendingRetention, jobID); err != nil {
-					return nil, fmt.Errorf("cancel the pending retention change: %w", err)
-				}
-			}
-		}
-		out.PendingRetention = s.pendingRetention(ctx, jobID)
-		return out, nil
-	}
-	if s.needsApproval(ctx) {
-		var bound *time.Time
-		if job, err := s.store.GetJob(ctx, jobID); err == nil {
-			created := job.CreatedAt
-			bound = &created
-		}
-		a, err := s.storeApproval(ctx, &models.Approval{Action: models.ApprovalShortenRetention, Subject: jobID,
-			RetentionDays: h.Days, RetentionCount: h.Count, SubjectCreatedAt: bound,
-			Summary: fmt.Sprintf("shorten the retention of job %s from %s to %s", jobID, h.From, retentionText(h.Days, h.Count))})
-		if err != nil {
-			return nil, err
-		}
-		out.Approval = a
-		out.PendingRetention = s.pendingRetention(ctx, jobID)
-		return out, nil
-	}
-	c, err := s.scheduleRetention(ctx, jobID, h.Days, h.Count, nil)
-	if err != nil {
-		return nil, err
-	}
-	out.PendingRetention = c
-	return out, nil
 }
 
 // systemAudit is the audit entry of a system action (mirrored into the audit log as

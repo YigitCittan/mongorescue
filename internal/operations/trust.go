@@ -308,6 +308,10 @@ type RetentionPreview struct {
 	At time.Time `json:"at"`
 	// Copies previews the per copy target overrides, one entry per overridden target.
 	Copies []CopyRetentionPreview `json:"copies"`
+	// Pending previews the lowering of the job's retention that waits for the delete
+	// grace period or a second administrator: the backups and copies it would
+	// release. Absent when none waits.
+	Pending *PendingRetentionImpact `json:"pending,omitempty"`
 	// The plan: the backups deleted (oldest first), the ones kept although a rule
 	// selects them (pinned, last verified) and, in Kept, every backup that stays with
 	// the rules (and buckets) that keep it.
@@ -393,6 +397,7 @@ func (s *Service) RetentionPreviewWith(ctx context.Context, jobID string, o Rete
 		JobID: job.ID, RetentionDays: policy.RetentionDays, RetentionCount: policy.RetentionCount,
 		KeepDaily: policy.KeepDaily, KeepWeekly: policy.KeepWeekly, KeepMonthly: policy.KeepMonthly, KeepYearly: policy.KeepYearly,
 		TimeZone: loc.String(), At: now, Copies: s.copyRetentionPreview(ctx, job, now, records, plan), RetentionPlan: plan,
+		Pending: s.pendingRetentionImpact(ctx, job, now, records, target.ID),
 	}, nil
 }
 
