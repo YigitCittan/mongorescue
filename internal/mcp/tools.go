@@ -82,6 +82,7 @@ const (
 	ToolListJobRuns           = "list_job_runs"
 	ToolPITRStatus            = "pitr_status"
 	ToolPITRRestore           = "pitr_restore"
+	ToolGetStorageUsage       = "get_storage_usage"
 )
 
 // ToolScopes maps every tool to the API key scope it requires. It is the single
@@ -109,6 +110,7 @@ var ToolScopes = map[string]auth.Scope{
 	ToolPreviewJobDatabases:   auth.ScopeRead,
 	ToolListJobRuns:           auth.ScopeRead,
 	ToolPITRStatus:            auth.ScopeRead,
+	ToolGetStorageUsage:       auth.ScopeRead,
 	// Point-in-time restores only add safe clones: operator, like
 	// restore_safe_clone (docs/design/pitr.md, decision 8).
 	ToolPITRRestore: auth.ScopeOperator,
@@ -642,6 +644,7 @@ func (s *Server) registerTools() {
 	s.registerTrustTools()
 	s.registerJobDatabaseTools()
 	s.registerPITRTools()
+	s.registerCostTools()
 }
 
 func (s *Server) cancelRun(ctx context.Context, in cancelRunInput) (runCancelled, string, error) {

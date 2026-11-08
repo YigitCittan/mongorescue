@@ -87,9 +87,9 @@ func TestToolListIsFilteredByScope(t *testing.T) {
 	f := newFixture(t, nil)
 	read := toolNames(t, f.session(t, principal(auth.ScopeRead)))
 	op := toolNames(t, f.session(t, principal(auth.ScopeOperator)))
-	if len(read) != 16 || slices.Contains(read, ToolStartBackup) || slices.Contains(read, ToolRestoreSafeClone) || slices.Contains(read, ToolRunJob) ||
+	if len(read) != 17 || slices.Contains(read, ToolStartBackup) || slices.Contains(read, ToolRestoreSafeClone) || slices.Contains(read, ToolRunJob) ||
 		slices.Contains(read, ToolVerifyBackup) || slices.Contains(read, ToolPinBackup) {
-		t.Fatalf("read key sees %v; want only the 16 read tools", read)
+		t.Fatalf("read key sees %v; want only the 17 read tools", read)
 	}
 	if len(op) != len(ToolScopes) || !slices.Contains(op, ToolStartBackup) || !slices.Contains(op, ToolPITRRestore) {
 		t.Fatalf("operator key sees %v; want all %d tools", op, len(ToolScopes))

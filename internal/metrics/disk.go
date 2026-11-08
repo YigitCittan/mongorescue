@@ -83,8 +83,8 @@ func (c *diskCollector) Collect(ch chan<- prometheus.Metric) {
 // SetDiskSource registers the function reporting the free disk space; the
 // mongorescue_data_dir_free_bytes and mongorescue_storage_free_bytes gauges are
 // exported only while one is set. Standby HA instances do not export them (see
-// StandbyHandler). There is no used-bytes gauge: no cheap source of the bytes a
-// target holds exists (the metadata store keeps sizes per backup, not per target).
+// StandbyHandler). The bytes MongoRescue stores on a target come from the usage
+// snapshot, see SetStoredBytes.
 func (m *Metrics) SetDiskSource(fn DiskSource) {
 	if fn == nil {
 		m.disk.source.Store(nil)

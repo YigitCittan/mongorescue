@@ -5895,6 +5895,8 @@ function openStorageModal(id) {
   if (typeof vaultFillTargetForm === "function") vaultFillTargetForm(target ? s3 : null);
   // The region label (dr.js).
   if (typeof drFillTargetForm === "function") drFillTargetForm(target);
+  // The price for the cost estimate (cost.js).
+  if (typeof costFillTargetForm === "function") costFillTargetForm(target);
   const provider = target ? inferProvider(target) : state.storageTargets.some(s => s.type === "local") ? "aws" : "local";
   setValue("storage-provider", provider);
   applyProvider(provider, !target);
@@ -6006,7 +6008,11 @@ function describeStorageTest(data) {
 
 function storageFormPayload() {
   try {
-    return storagePayload();
+    const payload = storagePayload();
+    // The price is saved with the target but is not part of its test; an invalid
+    // entry is reported here, before anything is sent (cost.js).
+    if (typeof costTargetPayload === "function") costTargetPayload();
+    return payload;
   } catch (err) {
     if (!(err instanceof FieldError)) throw err;
     showStorageTestResult("fail", err.message);
@@ -6080,7 +6086,7 @@ async function saveStorageTarget(e) {
     const json = await apiJSON(url, {
       method: id ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(typeof drTargetPayload === "function" ? { ...payload, ...drTargetPayload() } : payload)
+      body: JSON.stringify({ ...payload, ...(typeof drTargetPayload === "function" ? drTargetPayload() : {}), ...(typeof costTargetPayload === "function" ? costTargetPayload() : {}) })
     });
     if (!json.success) {
       showToast(json.error || t("notify.toast_save_failed"), "error");

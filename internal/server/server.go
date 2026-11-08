@@ -25,6 +25,7 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/config"
 	"github.com/yigitcittan/mongorescue/internal/connections"
+	"github.com/yigitcittan/mongorescue/internal/cost"
 	"github.com/yigitcittan/mongorescue/internal/diskguard"
 	"github.com/yigitcittan/mongorescue/internal/events"
 	"github.com/yigitcittan/mongorescue/internal/heartbeat"
@@ -119,6 +120,8 @@ type Server struct {
 
 	// readiness reports the RPO, RTO and evidence of every database a job backs up.
 	readiness *readiness.Service
+	// cost reports the stored size and estimated cost per storage target.
+	cost *cost.Service
 	// readinessBodies holds the encoded responses of the newest shared reports.
 	readinessBodies encodedReports
 
@@ -421,6 +424,7 @@ func (s *Server) buildRoutes() *http.ServeMux {
 
 	// Recovery readiness: RPO, RTO and evidence per database
 	s.registerReadinessRoutes(mux)
+	s.registerCostRoutes(mux)
 	s.registerPITRRoutes(mux)
 
 	// Bulk actions on backups, restores and jobs

@@ -135,6 +135,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/connections/{id}/databases/{db}/collections` | `[{name, type}]` | 200 | 404, 502 |
 | `GET` | `/api/v1/stats` | Dashboard KPIs over every record: counts, `failed_backups_24h`, `total_restores`, `last_backup`, `job_last_backups` ([details](#listing-backups-and-restores)) | 200 | |
 | `GET` | `/api/v1/stats/history` | Outcomes and stored size per day, each job's recent runs, the next 24 hours' scheduled runs and failed verifications (`?days=` 1-366, default 30; `?tz_offset=` minutes east of UTC) ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
+| `GET` | `/api/v1/storage/usage` | Stored bytes per storage target (backups, copies, retained copies, PITR chunks) with a daily history, the largest jobs and databases, the estimated monthly cost from the price entered on each target and the estimated egress of verification, restore tests and copies (`?days=` 1-400, default 30); an estimate, not a bill, and `403` for a key limited to some connections ([details](cost.md)) | 200 | 400, 403, 503 |
 | `GET` | `/api/v1/schedule/preview` | Whether `?cron=` is a valid schedule and its next `?n=` (1-10, default 3) activations, as the scheduler computes them ([details](#overview-history-and-schedule-preview)) | 200 | 400 |
 | `GET` | `/api/v1/readiness` | One row per database a job backs up: last good, verified and restore-tested backups, RPO, estimated RTO, escrowed keys and an `ok` / `warn` / `fail` status ([details](#recovery-readiness)) | 200 | |
 | `GET` | `/api/v1/pitr/streams` | Every PITR stream with its status ([details](#point-in-time-recovery-streams)) | 200 | 503 |
@@ -155,7 +156,7 @@ While group mappings exist, the role of a single sign-on user is recomputed at e
 | `GET` | `/api/v1/recovery-kit` | When the last recovery kit was downloaded and whether it is still current | 200 | 503 |
 | `POST` | `/api/v1/recovery-kit` | Download the recovery kit `{passphrase, current_password}` as an age-encrypted tar (admin, signed-in users only) ([details](#metadata-backups-and-the-recovery-kit)) | 200 | 400, 403, 429 |
 | `GET` / `POST` | `/api/v1/storage-targets` | List / create `{name, type, local \| s3}` (the first target becomes the default) | 200 / 201 | 400 |
-| `GET` / `PUT` | `/api/v1/storage-targets/{id}` | Get / update a target | 200 | 400, 404, 409 changed meanwhile, location locked, or new credentials of a target in use failed the connection test |
+| `GET` / `PUT` | `/api/v1/storage-targets/{id}` | Get / update a target (an optional `pricing` `{currency, storage_per_gib_month, egress_per_gib}` feeds the [cost estimate](cost.md#entering-a-price): omit it to keep the price, `{}` removes it) | 200 | 400, 404, 409 changed meanwhile, location locked, or new credentials of a target in use failed the connection test |
 | `DELETE` | `/api/v1/storage-targets/{id}` | Delete a target nothing references; with the two-person rule `202` with an [approval request](#delete-protection) | 200, 202 | 404, 409 default or in use (by a job or any backup record but purged ones) |
 | `POST` | `/api/v1/storage-targets/{id}/test` | Test a saved target → `{ok, latency_ms, error}` | 200 | 404 |
 | `POST` | `/api/v1/storage-targets/test` | Test an unsaved target (plus `id` when editing, for its masked secret) | 200 | 400 |

@@ -730,3 +730,48 @@ a.menu-item {
 .cronb-reading {
   color: var(--text);
 }
+
+/* Storage usage and cost (cost.js): a full-width card with the targets table. */
+.cost-table td.num,
+.cost-table th.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cost-total {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.cost-tops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+  margin-top: 10px;
+}
+
+.cost-top-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.cost-top-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.cost-basis {
+  margin-top: 10px;
+}
+
+#storage-cost-group {
+  border: 0;
+  margin-inline: 0;
+  padding: 0;
+  min-width: 0;
+}

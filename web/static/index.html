@@ -336,6 +336,14 @@
           <p class="ov-card-sub" id="ov-readiness-sub" role="status" aria-live="polite"></p>
           <div class="ov-chart" id="ov-readiness-table"></div>
         </section>
+        <section class="ov-card ov-card-wide" id="ov-cost-card" aria-labelledby="ov-cost-title" hidden>
+          <div class="ov-card-head">
+            <h3 class="ov-card-title" id="ov-cost-title" data-i18n="cost.title">Storage usage and cost</h3>
+            <span class="ov-figure" id="ov-cost-figure">—</span>
+          </div>
+          <p class="ov-card-sub" id="ov-cost-sub" role="status" aria-live="polite"></p>
+          <div class="ov-chart" id="ov-cost-body"></div>
+        </section>
       </div>
     </section>
 
@@ -3494,6 +3502,7 @@
   <script src="/apikeys.js"></script>
   <script src="/ratelimit.js"></script>
   <script src="/outbound.js"></script>
+  <script src="/cost.js"></script>
   <script src="/runtimewarnings.js"></script>
   <script src="/ha.js"></script>
   <script src="/widgets.js"></script>

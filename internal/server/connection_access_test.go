@@ -432,6 +432,13 @@ func (f *accessFixture) checkRoute(t *testing.T, pattern, who string, session bo
 		}
 		return
 	}
+	if path == "/api/v1/storage/usage" {
+		// The usage report covers every connection: refused for a limited caller.
+		if rec := serve(f.h, method, path, nil, headers); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "storage usage") {
+			t.Errorf("%s: GET %s %d %s; want 403 (the report covers every connection)", who, path, rec.Code, rec.Body.String())
+		}
+		return
+	}
 	type variant struct {
 		side          int
 		path, request string
