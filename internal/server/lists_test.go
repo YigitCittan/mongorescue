@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/yigitcittan/mongorescue/internal/models"
-	"github.com/yigitcittan/mongorescue/internal/store"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 )
 
 // listResponse is the decoded shape of a list endpoint.
@@ -48,7 +48,7 @@ func itemIDs(items []map[string]any) []string {
 
 // seedLists stores 30 backups (bkp_00 oldest, every third failed, bkp_05 retried by
 // bkp_29) and 5 restores.
-func seedLists(t *testing.T, st store.Store) time.Time {
+func seedLists(t *testing.T, st operations.Store) time.Time {
 	t.Helper()
 	ctx := context.Background()
 	t0 := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)

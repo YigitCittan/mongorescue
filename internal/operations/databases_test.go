@@ -18,7 +18,6 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/runs"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -26,7 +25,7 @@ import (
 // databases in server.
 type multiEnv struct {
 	svc    *operations.Service
-	st     store.Store
+	st     operations.Store
 	sched  *scheduler.Scheduler
 	runs   *runs.Manager
 	mu     sync.Mutex

@@ -336,10 +336,8 @@ func (s *Service) ApplyRetentionHold(ctx context.Context, jobID string, h *Reten
 	if retentionChanged {
 		// A raise cancels the pending lowering; the values of it the edit left alone
 		// are in h again.
-		if st, ok := s.cfg.Store.(pendingStore); ok {
-			if _, err := st.DeletePendingChangesOf(ctx, models.PendingRetention, jobID); err != nil {
-				return nil, fmt.Errorf("cancel the pending retention change: %w", err)
-			}
+		if _, err := s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingRetention, jobID); err != nil {
+			return nil, fmt.Errorf("cancel the pending retention change: %w", err)
 		}
 	}
 	if h == nil {
@@ -481,11 +479,7 @@ func (s *Service) pendingRetentionImpact(ctx context.Context, job *models.Job, n
 		out.ChangeID = c.ID
 		return out
 	}
-	st, err := s.approvals()
-	if err != nil {
-		return nil
-	}
-	list, err := st.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
+	list, err := s.cfg.Store.ListApprovals(ctx, models.ApprovalPending, store.MaxApprovalList)
 	if err != nil {
 		return nil
 	}

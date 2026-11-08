@@ -45,17 +45,6 @@ type Verifier interface {
 	StartVerify(ctx context.Context, id string) (*models.BackupRecord, error)
 }
 
-// backupUpdater updates a backup record atomically (implemented by
-// *store.SQLiteStore).
-type backupUpdater interface {
-	UpdateBackupRecord(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error)
-}
-
-// retentionLogReader reads the retention log (implemented by *store.SQLiteStore).
-type retentionLogReader interface {
-	ListRetentionLog(ctx context.Context, jobID string, limit int) ([]*models.RetentionLogEntry, error)
-}
-
 // VerifyBackup verifies the archive of backup id in the background; poll the
 // backup for verified_at and verification. The integrity service's errors
 // (not found, not verifiable, busy) are returned unchanged; without one it returns
@@ -229,11 +218,7 @@ func (s *Service) UnpinBackup(ctx context.Context, id string) (*models.BackupRec
 
 // updateBackup applies fn to backup id atomically.
 func (s *Service) updateBackup(ctx context.Context, id string, fn func(*models.BackupRecord) error) (*models.BackupRecord, error) {
-	u, ok := s.cfg.Store.(backupUpdater)
-	if !ok {
-		return nil, public("updating backups is not available", ErrUnavailable)
-	}
-	rec, err := u.UpdateBackupRecord(ctx, id, func(r *models.BackupRecord) error {
+	rec, err := s.cfg.Store.UpdateBackupRecord(ctx, id, func(r *models.BackupRecord) error {
 		// The updater reads the raw store: apply the caller's connection access here.
 		if !backupVisible(ctx, r) {
 			return hidden("backup", id)
@@ -455,14 +440,10 @@ func (s *Service) RetentionLog(ctx context.Context, jobID string, limit int) ([]
 	if _, err := s.GetJob(ctx, jobID); err != nil {
 		return nil, err
 	}
-	r, ok := s.cfg.Store.(retentionLogReader)
-	if !ok {
-		return []*models.RetentionLogEntry{}, nil
-	}
 	if limit <= 0 || limit > MaxRetentionLogList {
 		limit = MaxRetentionLogList
 	}
-	list, err := r.ListRetentionLog(ctx, jobID, limit)
+	list, err := s.cfg.Store.ListRetentionLog(ctx, jobID, limit)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("list retention log: %w", err)
 	}

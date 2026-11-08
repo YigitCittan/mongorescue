@@ -80,10 +80,8 @@ func (s *Service) UpdateTarget(ctx context.Context, id string, in targets.Input)
 	changed := t.S3 != nil && existing.S3 != nil && t.S3.LockSettings() != existing.S3.LockSettings()
 	if held == nil {
 		if changed {
-			if st, stOK := s.cfg.Store.(pendingStore); stOK {
-				if _, err = st.DeletePendingChangesOf(ctx, models.PendingObjectLock, id); err != nil {
-					return nil, fmt.Errorf("cancel the pending object lock change: %w", err)
-				}
+			if _, err = s.cfg.Store.DeletePendingChangesOf(ctx, models.PendingObjectLock, id); err != nil {
+				return nil, fmt.Errorf("cancel the pending object lock change: %w", err)
 			}
 		}
 		out.PendingObjectLock = s.pendingObjectLock(ctx, id)

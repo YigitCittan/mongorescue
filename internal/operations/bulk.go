@@ -1026,7 +1026,6 @@ func (s *Service) registerBulkActions() {
 	})
 	s.RegisterBulkAction(BulkAction{
 		Resource: BulkBackups, Name: BulkPin, Scope: auth.ScopeOperator,
-		Available: func(s *Service) bool { _, ok := s.cfg.Store.(backupUpdater); return ok },
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if it.Backup.Pinned {
 				return &BulkSkip{Reason: SkipAlreadyPinned}
@@ -1042,7 +1041,6 @@ func (s *Service) registerBulkActions() {
 	})
 	s.RegisterBulkAction(BulkAction{
 		Resource: BulkBackups, Name: BulkUnpin, Scope: auth.ScopeAdmin, NeedsApproval: true,
-		Available: func(s *Service) bool { _, ok := s.cfg.Store.(backupUpdater); return ok },
 		Check: func(_ context.Context, _ *Service, _ *BulkRun, it BulkItem) *BulkSkip {
 			if !it.Backup.Pinned {
 				return &BulkSkip{Reason: SkipNotPinned}

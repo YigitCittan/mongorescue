@@ -87,14 +87,10 @@ func (s *Service) archiveProblem(ctx context.Context, rec *models.BackupRecord) 
 // gets the mismatch too and is queued to be copied again. A record whose archive
 // changed meanwhile is left alone.
 func (s *Service) recordArchiveMismatch(ctx context.Context, view *models.BackupRecord, cause error) {
-	u, ok := s.cfg.Store.(backupUpdater)
-	if !ok {
-		return
-	}
 	at := time.Now().UTC()
 	msg := redact.Text(cause.Error())
 	requeued := false
-	_, err := u.UpdateBackupRecord(ctx, view.ID, func(r *models.BackupRecord) error {
+	_, err := s.cfg.Store.UpdateBackupRecord(ctx, view.ID, func(r *models.BackupRecord) error {
 		if r.SHA256 != view.SHA256 {
 			return errArchiveChanged
 		}

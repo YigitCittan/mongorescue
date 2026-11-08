@@ -16,10 +16,10 @@ import (
 	"github.com/yigitcittan/mongorescue/internal/auth"
 	"github.com/yigitcittan/mongorescue/internal/backup"
 	"github.com/yigitcittan/mongorescue/internal/models"
+	"github.com/yigitcittan/mongorescue/internal/operations"
 	"github.com/yigitcittan/mongorescue/internal/restore"
 	"github.com/yigitcittan/mongorescue/internal/scheduler"
 	"github.com/yigitcittan/mongorescue/internal/storage"
-	"github.com/yigitcittan/mongorescue/internal/store"
 	"github.com/yigitcittan/mongorescue/internal/store/storetest"
 )
 
@@ -39,7 +39,7 @@ func (f *testFence) Epoch() uint64 { return 1 }
 
 // setupFencedServer is setupTestServer with the HA fence fence, and a completed
 // backup fd_1 whose archive is stored.
-func setupFencedServer(t *testing.T, fence models.Fence) (*Server, store.Store) {
+func setupFencedServer(t *testing.T, fence models.Fence) (*Server, operations.Store) {
 	t.Helper()
 	metaStore := storetest.New(t)
 	mockStorage := storage.NewMockStorage()

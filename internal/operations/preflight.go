@@ -52,13 +52,6 @@ type RestoreInspector interface {
 	Manifest(ctx context.Context, uri, database string) (*models.Manifest, error)
 }
 
-// manifestStore is the part of the metadata store that keeps backup manifests
-// (implemented by *store.SQLiteStore).
-type manifestStore interface {
-	// GetManifest returns the manifest of backup id, or store.ErrNotFound.
-	GetManifest(ctx context.Context, id string) (*models.Manifest, error)
-}
-
 // Preflight limits.
 const (
 	// preflightTimeout bounds all the checks of one preflight, which share one
@@ -599,17 +592,15 @@ func diskSpaceCaveat(source string) string {
 	return "drop_target frees the space of the collections it replaces"
 }
 
-// manifest returns the manifest of backup source, or nil when it has none or the
-// store does not keep manifests.
+// manifest returns the manifest of backup source, or nil when it has none.
 func (s *Service) manifest(ctx context.Context, source *models.BackupRecord) *models.Manifest {
 	if source.Manifest != nil {
 		return source.Manifest
 	}
-	ms, ok := s.cfg.Store.(manifestStore)
-	if !ok || !source.HasManifest {
+	if !source.HasManifest {
 		return nil
 	}
-	m, err := ms.GetManifest(ctx, source.ID)
+	m, err := s.cfg.Store.GetManifest(ctx, source.ID)
 	if err != nil {
 		return nil
 	}

@@ -564,7 +564,7 @@ func TestBulkStopsWhenTheRequestEnds(t *testing.T) {
 
 // blockingRunner runs jobs until release is closed.
 type blockingRunner struct {
-	st      store.Store
+	st      operations.Store
 	release chan struct{}
 }
 

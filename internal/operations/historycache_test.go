@@ -25,12 +25,14 @@ import (
 // countingStore counts the history aggregations; while gate is set they wait for
 // it, and fail is the error of the next one.
 type countingStore struct {
-	store.Store
+	operations.Store
 	calls atomic.Int32
 	gate  chan struct{}
 	mu    sync.Mutex
 	fail  error
 }
+
+var _ operations.Store = (*countingStore)(nil)
 
 func (c *countingStore) BackupHistory(ctx context.Context, q store.BackupHistoryQuery) (*store.BackupHistory, error) {
 	c.calls.Add(1)

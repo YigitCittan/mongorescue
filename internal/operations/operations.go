@@ -198,7 +198,7 @@ type Auditor interface {
 // required; the others are optional (nil disables the features that need them).
 type Config struct {
 	// Store persists jobs and backup and restore records.
-	Store store.Store
+	Store Store
 	// Backup runs backups.
 	Backup BackupEngine
 	// Restore runs restores.
@@ -338,8 +338,8 @@ type Config struct {
 	// the same connection access while the store's change stamp (every write to
 	// jobs, backups, runs and restores) is unchanged, computing them once however
 	// many ask at the same time; events (HandleEvent) and InvalidateHistory drop
-	// them earlier. Without a store that counts its writes (ChangeStamp), the TTL
-	// and the events alone decide. 0 disables the cache; a negative value means
+	// them earlier. When the change stamp cannot be read, the figures are computed
+	// without sharing. 0 disables the cache; a negative value means
 	// DefaultStatsCacheTTL.
 	StatsCacheTTL time.Duration
 }
