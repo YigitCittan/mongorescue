@@ -880,6 +880,10 @@ jobs:
       # Same pinned helm as helm.yml.
       HELM_VERSION: v4.3.0
       HELM_SHA256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+      # The helm binary inside that archive, and the same release as an image
+      # (fallback when get.helm.sh fails; scripts/install-helm.sh checks both).
+      HELM_BIN_SHA256: 57ce7fc4ea77b28ee6fa91ae071abcade74d3f524e80c9decff5877a5ac8eda4
+      HELM_IMAGE: docker.io/alpine/helm:4.3.0@sha256:377d0fc44fb5513cc6efd7b04e5a44d732fa82df2389aa03097f1aa0e103a731
     steps:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -891,10 +895,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
           cd "$RUNNER_TEMP"
-          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
-          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c -
-          tar -xzf helm.tgz linux-amd64/helm
-          install -m 0755 linux-amd64/helm bin/helm
+          "$GITHUB_WORKSPACE/scripts/install-helm.sh" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Install cosign
