@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # The release toolchain: .go-version, shared with CI, the image and govulncheck.
           go-version-file: .go-version
@@ -43,7 +43,7 @@ jobs:
           cache: false
 
       - name: Install Syft (SBOM generator used by GoReleaser)
-        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        uses: anchore/sbom-action/download-syft@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
 
       # GoReleaser's signs section runs cosign sign-blob keyless (GitHub OIDC,
       # Fulcio certificate, Rekor entry) on every archive, SBOM and checksums.txt
@@ -204,7 +204,7 @@ jobs:
           dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -410,7 +410,7 @@ jobs:
           name: ${{ needs.provenance.outputs.provenance-name }}
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: .go-version
           cache: false # clean release build, as in the goreleaser job
@@ -493,7 +493,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: .go-version
           cache: false # clean release build, as in the goreleaser job
@@ -633,7 +633,7 @@ jobs:
 
       - name: Sign the exe (SignPath)
         if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
-        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -675,7 +675,7 @@ jobs:
 
       - name: Sign the installer (SignPath)
         if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
-        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        uses: signpath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3.2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -811,7 +811,7 @@ jobs:
           gh release upload "$TAG" "$sums" "$sums.sigstore.json" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Log in to GitHub Container Registry (GHCR)
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
